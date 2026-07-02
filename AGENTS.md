@@ -2,7 +2,23 @@
 
 ## Project Structure & Module Organization
 
-MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, with the entry point at `src/index.ts`. Key areas are organized by responsibility: `src/core/` is intentionally narrow and contains the routing/intent/execution-policy seam plus shared primitives; `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval; `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export; `src/execution/` owns execution runtime, fallback chain, orchestration, aggregation, progress, workspace, and conversation runtime; `src/executor/` owns executor adapters plus profile/admin/seeder services, prompts, and skill packages; `src/guidance/`, `src/learning/`, `src/intent/`, `src/delivery/`, and `src/routing/` own their named domains; `src/session/` coordinates interactive/script/gateway sessions and persistence; `src/storage/` holds SQLite repositories and migrations; `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations; `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities. Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current routing vocabulary and migration context live in `CONTEXT.md`.
+MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, with the entry point at `src/index.ts`.
+
+Key areas are organized by responsibility:
+
+- `src/core/` is intentionally narrow and contains shared primitives, active session-intake helpers, strategy primitives, and legacy routing compatibility seams.
+- `src/session/` coordinates interactive/script/gateway session intake, `IntentOrchestrator` application, task admission, planner dispatch, and persistence.
+- `src/planner/` owns planner-first durable execution dispatch, work graph, and subtask planning skills after session intake has created or bound a task.
+- `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
+- `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
+- `src/execution/` owns execution runtime, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
+- `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
+- `src/guidance/`, `src/learning/`, `src/intent/`, `src/delivery/`, and `src/routing/` own their named domains, with `src/routing/` now treated as a legacy policy reference layer rather than the main dispatch path.
+- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, and events.
+- `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
+- `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.
+
+Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current planner/work-unit vocabulary and migration context live in `CONTEXT.md`.
 
 ## Build, Test, and Development Commands
 

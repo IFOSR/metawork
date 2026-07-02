@@ -2,9 +2,9 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-MetaClaw 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、路由到合适的执行器，并把最终产物交付到用户真正查看的地方。
+MetaClaw 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
-它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，执行有路由，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
+它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，durable execution dispatch 采用 planner-first，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
 
 ## 核心能力
 
@@ -12,16 +12,16 @@ MetaClaw 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 - 中断后通过 resume context 继续，不从头重做。
 - 系统空闲时自动恢复满足条件的挂起任务。
 - 用语义优先级判断可执行任务的调度顺序，不靠关键词匹配。
-- 当前强制单一活跃顶层任务，避免路由层重构期间出现多任务并存的歧义。
+- 当前强制单一活跃顶层任务，避免 planner/work-unit dispatch 加固期间出现多任务并存的歧义。
 - 通过本地 SQLite FTS 索引检索历史任务，并结合混合召回恢复相关上下文。
-- 将复杂任务规划为 work units、验收标准和聚合规则。
-- 按任务意图、执行器能力和执行边界自动路由。
+- 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
+- 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
 - 已实现并测试 Agentic Loop 核心层：聚合执行器结果、检查证据、发现不满足验收的部分并反馈重试。
 - 只自动注入明确适用的记忆和偏好；不确定召回默认跳过，飞书和无人值守执行器不会等待确认。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 MetaClaw runtime。
-- 交互式 TUI 会展示用户提交内容、当前任务、路由状态、执行准备、执行器进度和最终任务结果，让用户能看到核心执行路径，而不是只看到最后答案。
+- 交互式 TUI 会展示用户提交内容、当前任务、planner 状态、执行准备、work-unit dispatch、执行器进度和最终任务结果，让用户能看到核心执行路径，而不是只看到最后答案。
 - TUI 输入框支持常见终端编辑行为：空格、多行输入、左右光标移动、按光标位置 Backspace 删除前一个字符，以及终端发出原始 Delete escape sequence 时的向前删除。
 - 提供 `npm run smoke:metaclaw` 真实端到端烟测，实际启动 MetaClaw CLI、执行器、文件产物捕获和回归检查。
 
@@ -33,8 +33,8 @@ MetaClaw 是面向任务的系统，而不是纯 session agent。普通 agent se
 flowchart LR
   User[用户] --> Surfaces[客户端入口<br/>TUI、CLI、Gateway、飞书]
   Surfaces --> Session[MetaclawSession<br/>统一 runtime 协调层]
-  Session --> Intent[意图层<br/>理解用户请求]
-  Intent --> Choice{这是什么请求？}
+  Session --> Intake[Session intake<br/>IntentOrchestrator + SessionIntentApplicationService]
+  Intake --> Choice{这是什么请求？}
   Choice -->|现在回答| Conversation[Direct reply<br/>不创建持久任务]
   Choice -->|控制任务| Control[Task control<br/>状态、恢复、清理、解除阻塞]
   Choice -->|执行工作| Durable[Durable task<br/>状态、门禁、产物]
@@ -42,26 +42,39 @@ flowchart LR
   Conversation --> Context[上下文和记忆<br/>最近会话优先]
   Control --> TaskOS[Task OS<br/>TaskEngine 和 Scheduler]
   Durable --> TaskOS
-  Context --> Executors[Executor runtime<br/>Codex、Pi、Hermes、自定义 CLI]
-  TaskOS --> Executors
-  Executors --> Verify[验收<br/>测试、证据、产物]
+  Context --> DirectExec[ConversationRuntimeService<br/>直接执行器回答]
+  DirectExec --> Delivery
+  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>上下文、durable execution dispatch]
+  ExecCoord --> Memory[MemoryContextService<br/>恢复包、偏好、材料]
+  Memory --> Planner[PlannerRuntimeService<br/>durable execution planner]
+  Planner --> DispatchGate{Dispatch outcome}
+  DispatchGate -->|guard：无需执行| NoDispatch[清理 dispatch<br/>保留任务状态]
+  DispatchGate -->|plan_work_graph| Graph[Work Graph<br/>持久化 Subtasks]
+  Graph --> Claim[WorkUnitClaimService<br/>claim 空闲 executor WorkUnit]
+  Claim --> Spec[SubtaskExecutionSpec<br/>subtask、work unit、agent class]
+  Spec --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
+  Executors --> Verify[验收和交付<br/>测试、证据、产物]
   Verify --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Delivery --> User
 
-  Session <--> Store[(本地 SQLite<br/>任务、记忆、路由、反馈)]
-  Context <--> Store
+  Session <--> Store[(本地 SQLite<br/>任务、subtasks、agent classes、<br/>work units、events、memory)]
+  Memory <--> Store
   TaskOS <--> Store
+  Graph <--> Store
+  Claim <--> Store
 ```
 
-主干逻辑很简单：所有输入进入同一个 runtime，先做语义裁决，然后走三条路径之一。短回答保持轻量；任务控制只改变已有任务状态；真正要执行的工作变成持久任务，进入调度、恢复、验收和交付链路。
+主干逻辑很简单：所有输入进入同一个 runtime，先经过 session intake 决策，然后走三条路径之一。短回答保持轻量；任务控制只改变已有任务状态；真正要执行的工作变成持久任务。当前代码里，raw user input 仍由 `IntentOrchestrator` 分类，并由 `SessionIntentApplicationService` 应用；durable task 被接纳并进入调度后，`PlannerRuntimeService` 才接管执行分发表面：复用 intake 决策，恢复或创建 subtask work graph，再把资源仲裁交给平台层。平台层 claim 空闲 executor work units，维护 heartbeat/lease，并把已 claim 的 subtask 交给 `ExecutionRuntime`。
 
 ### 普通问答路径
 
 ```mermaid
 flowchart LR
   Input[用户提问] --> Intent[IntentOrchestrator]
-  Intent --> Direct[direct_reply]
-  Direct --> Recall[ContextRecaller<br/>最近会话上下文优先]
+  Intent --> Apply[SessionIntentApplicationService]
+  Apply --> Direct[direct_reply]
+  Direct --> Runtime[ConversationRuntimeService]
+  Runtime --> Recall[ContextRecaller<br/>最近会话上下文优先]
   Recall --> Executor[默认 executor<br/>通常是 codex-cli]
   Executor --> Answer[最终回答]
   Answer --> Persist[记录交互]
@@ -75,21 +88,26 @@ flowchart LR
 ```mermaid
 flowchart LR
   Input[用户要求执行工作] --> Intent[IntentOrchestrator]
-  Intent --> Gate[TaskAdmissionGate<br/>单活跃顶层任务]
+  Intent --> Apply[SessionIntentApplicationService]
+  Apply --> Gate[TaskAdmissionGate<br/>单活跃顶层任务]
   Gate --> Task[TaskRuntimeService<br/>创建或绑定任务]
   Task --> Scheduler[SchedulerEngine<br/>准备度、优先级、空闲恢复]
   Scheduler --> Context[MemoryContextService<br/>恢复包、偏好、材料]
-  Context --> Route[ExecutorRoutingCoordinator<br/>选择 executor]
-  Route --> Run[ExecutionRuntime<br/>运行 adapter]
+  Context --> Planner[PlannerRuntimeService<br/>durable execution planning]
+  Planner --> WorkGraph[Work Graph<br/>持久化 Subtasks]
+  WorkGraph --> Ready[Ready Subtask<br/>dependsOn 已满足]
+  Ready --> Claim[WorkUnitClaimService<br/>claim 空闲 executor WorkUnit]
+  Claim --> Spec[SubtaskExecutionSpec<br/>subtask、work unit、agent class]
+  Spec --> Run[ExecutionRuntime<br/>运行 adapter]
   Run --> Verify[VerificationAndDeliveryService]
   Verify --> Done{是否通过？}
   Done -->|是| Result[完成并记录产物]
   Done -->|否| Blocked[阻塞并给出恢复提示]
 ```
 
-这就是 Task OS 路径。任务状态、恢复上下文、调度、产物捕获和验收都在这里发生。
+这就是 Task OS 路径。任务状态、恢复上下文、planner recovery、subtask 状态、work-unit lease、产物捕获和验收都在这里发生。第一版生产路径保持一个已接纳的顶层任务，并在该任务内部按依赖顺序串行推进 ready subtasks。
 
-当前公开入口有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务会被拒绝，并给出可见提示，直到当前任务完成或取消。这样可以在 ExecutionPolicy 路由和 fallback 行为加固期间保持用户路径可预测。
+当前公开入口有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务会被拒绝，并给出可见提示，直到当前任务完成或取消。这样可以在 planner-first work graph dispatch 和 work-unit 生命周期管理加固期间保持用户路径可预测。
 
 ### 飞书和进度展示路径
 
@@ -104,7 +122,7 @@ flowchart LR
   Reply --> Files[产物上传和 Markdown 预览链接]
 ```
 
-飞书进度会刻意区分 MetaClaw 里程碑和具体 executor 里程碑。用户能看到当前是 MetaClaw 在路由、召回上下文、调度，还是具体 executor 正在执行。
+飞书进度会刻意区分 MetaClaw 里程碑和具体 executor 里程碑。用户能看到当前是 MetaClaw 在规划、召回上下文、调度、claim work unit，还是具体 executor 正在执行。
 
 conversation / task 的边界很重要：
 
@@ -112,9 +130,9 @@ conversation / task 的边界很重要：
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 先展示意图理解，再召回最近对话上下文，然后把回答交给选中的 executor。飞书和 TUI 会区分 `MetaClaw` 里程碑和具体 `Executor: <name>` 里程碑，让用户知道当前是路由器、调度器还是执行器在工作。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
+当前 direct reply 路径是显式的：MetaClaw 先展示意图理解，再召回最近对话上下文，然后把回答交给选中的 executor。飞书和 TUI 会区分 `MetaClaw` 里程碑和具体 `Executor: <name>` 里程碑，让用户知道当前是 planner、调度器、work-unit dispatcher 还是执行器在工作。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
 
-[MetaClaw Task OS 架构与策略升级方案](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、执行策略规划、多执行器 work units、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
+[MetaClaw Task OS 架构与策略升级方案](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、planner-first work graph generation、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
 重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
 
@@ -126,7 +144,7 @@ conversation / task 的边界很重要：
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
 | Hermes Agent | `hermes` | 调研、多工具编排、记忆/网关/助手工作流 | 安装并登录 Hermes |
 
-默认运行时命令是 `codex`，内部表示为 `codex-cli` executor profile。当前路由路径基于 ExecutionPolicy：MetaClaw 将请求分类为 capability class，从显式意图和可用 profile 中选择 primary executor，记录 fallback 候选，然后通过执行 runtime 运行。Pi Agent 和 Hermes Agent 在已安装时可以作为调研类工作的候选或被选用。DeepSeek TUI、Claude Code 和 OpenClaw 仍然可用于显式本地配置，但除非被选为默认 executor，否则不会进入默认注册表。
+默认运行时命令是 `codex`，内部表示为 `codex-cli` executor agent class 加一个空闲 executor work unit。当前 dispatch 路径是 planner-first：MetaClaw 识别 durable task intent，构建 subtask work graph，排序可用 executor `AgentClass` 候选，然后由 `WorkUnitClaimService` claim 一个空闲 executor `WorkUnit`，再交给 `ExecutionRuntime` 运行 adapter。Pi Agent 和 Hermes Agent 在对应 agent class 可用时可以作为调研类工作的候选或被选用。DeepSeek TUI、Claude Code 和 OpenClaw 仍然可用于显式本地配置，但除非被选为默认 executor，否则不会进入默认注册表。
 
 ## 前提条件
 
@@ -152,7 +170,7 @@ sudo apt-get install -y build-essential python3 make g++
 执行器前提：
 
 - 使用默认 `codex-cli`：安装并登录 OpenAI Codex CLI。
-- 如果希望调研类工作可路由到默认执行器之外：安装并登录 Pi Agent 或 Hermes Agent。
+- 如果希望调研类工作可分配到默认执行器之外：安装并登录 Pi Agent 或 Hermes Agent。
 
 飞书集成前提：
 
@@ -302,10 +320,11 @@ MetaClaw 不内置下游执行器 CLI。你需要自己安装要使用的执行�
 
 ### 注册自定义 Executor
 
-Executor 是 MetaClaw 可以路由任务的运行时工人。一个已注册 Executor 现在包含两层信息：
+Executor 是 MetaClaw 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
 
-- 路由画像：适用领域、能力、风险等级、历史成功率、输入/输出类型和适用场景。
+- `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
 - 运行绑定：本机命令、非交互参数、安装检测命令和可选项目地址。
+- 至少一个 executor `WorkUnit`：一个具体的空闲 runtime slot，一次 claim 一个 ready subtask。
 
 如果不确定具体该填什么，使用问答式注册向导：
 
@@ -327,7 +346,7 @@ Executor 是 MetaClaw 可以路由任务的运行时工人。一个已注册 Exe
   --capabilities research,report_generation
 ```
 
-`{prompt}` 会被替换为任务提示词。如果 `--args` 不包含 `{prompt}`，MetaClaw 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，MetaClaw 会先执行配置的检测命令；检测失败时会把该 Executor 标记为 `unavailable`，并回退默认 Executor。
+`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，MetaClaw 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，MetaClaw 会先执行配置的检测命令；检测失败时会把该 agent class 标记为 `unavailable`。不可用的 agent class 不会进入 planner candidates；如果没有可 claim 的 executor work unit，任务会进入 blocked 并给出恢复提示，而不是静默改派默认 executor。
 
 Executor 扩展契约：
 
@@ -345,7 +364,8 @@ Executor 扩展契约：
 - `primaryUseCases`：适合路由给它的典型任务。
 - `avoidUseCases`：不适合路由给它的任务。
 - `riskLevel`：`low`、`medium` 或 `high`。
-- `historicalSuccess`：历史成功分数，后续可随任务结果影响排序。
+- `intentAffinity`：按 route intent 记录的 affinity，例如 `repo_execution`、`research_workflow`、`memory_agent_ops` 和 `general`。
+- `historicalSuccess`：兼容保留的成功元数据；当 route-intent affinity 不存在时可作为候选排序的 fallback 信号。
 - `projectUrl`：项目仓库或文档地址。
 
 必需的运行绑定：
@@ -441,7 +461,7 @@ MetaClaw 调用方式：
 hermes --oneshot "<prompt>" --yolo --accept-hooks
 ```
 
-`--oneshot` 让 Hermes 以脚本/headless 模式运行，`--yolo` 跳过危险命令确认，`--accept-hooks` 自动接受未见过的 hooks。当前 single-executor 调研路由不会默认让 Pi Agent 和 Hermes Agent 竞速。MetaClaw 会根据 ExecutionPolicy 选择一个 primary executor；只有 primary executor 失败时，才按 fallback chain 尝试兜底。复杂 multi-executor 策略仍可以在同一个顶层任务内部，把不同 work unit 分配给不同 executor。
+`--oneshot` 让 Hermes 以脚本/headless 模式运行，`--yolo` 跳过危险命令确认，`--accept-hooks` 自动接受未见过的 hooks。当前调研 dispatch 不会默认让 Pi Agent 和 Hermes Agent 竞速。Planner 会为每个 subtask 排序可用 executor agent classes，平台层再从候选集合里 claim 一个空闲 work unit。如果没有空闲或可用的 work unit 能 claim 该 subtask，任务会 blocked 等待恢复；自动平台 fallback 目前刻意留给后续 planner replanning。
 
 ### 已退役的兼容 Adapter
 
@@ -466,15 +486,15 @@ Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么�
 Executor 的优势：
 
 - 增加新的 runtime 边界，包括模型、工具、凭证、权限和命令行行为。
-- 让 MetaClaw 可以把任务路由给最适合的执行者。
-- 支持不同 Agent 之间的回退、交叉验证和审计。
+- 让 MetaClaw 可以把 ready subtask 分配给最适合该工作的 executor work unit。
+- 支持 planner-driven reassignment、交叉验证和审计。
 - 可以接入通用 Skill 无法访问的私有系统或垂直领域系统。
 
 Executor 的代价：
 
 - 安装和配置更重。
 - 必须明确非交互运行命令和可用性检测方式。
-- 需要处理权限、超时、失败和回退。
+- 需要处理权限、超时、失败、heartbeat 和恢复。
 - 多个 runtime 行为不一致时，会增加运维复杂度。
 
 Skill 的优势：
@@ -503,7 +523,7 @@ metaclaw
 - 用户提交的输入会回显到 transcript。
 - 输入框状态会显示 `processing`、`running <executor>`、`blocked` 或 `idle`。
 - 状态栏会展示当前任务 ID、任务状态和标题。
-- 路由和执行过程会展示核心进度，包括理解用户请求、执行策略、上下文召回、执行上下文构建、执行器路由、执行器进度、验收和最终结果。
+- Planner 和执行过程会展示核心进度，包括理解用户请求、work graph planning、上下文召回、执行上下文构建、work-unit claim、执行器进度、验收和最终结果。
 - MetaClaw 自身的调度/编排里程碑会标为 `【MetaClaw｜...】`；具体执行器的里程碑会标为 `【Executor: <name>｜...】`，执行器进度行也会带上实际 executor 名称，避免把 MetaClaw 的调度动作和真正处理任务的 runtime 混在一起。
 - 输入框支持正常终端编辑：空格、多行输入、左右移动光标、Backspace 删除光标前字符，以及原始 Delete escape sequence 的向前删除。
 
@@ -642,7 +662,7 @@ MetaClaw 将“文档生成”和“飞书交付”分开处理：
 
 执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，MetaClaw 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
 
-飞书进度卡片会明确展示执行链路。MetaClaw 先进行意图解析和执行准备，然后展示 ExecutionPolicy 决策、路由原因，以及真正启动任务的执行器。这样飞书用户不会把意图解析器或策略规划器误认为最终执行器。
+飞书进度卡片会明确展示执行链路。MetaClaw 先进行意图解析和执行准备，然后展示 planner work-graph 决策、work-unit claim 状态，以及真正启动 subtask 的执行器。这样飞书用户不会把意图解析器、planner 或 dispatcher 误认为最终执行器。
 
 最终飞书回复优先使用 Markdown message card。长回复会拆成多张卡片；如果某个卡片 chunk 失败，MetaClaw 会把该 chunk 重试为富文本 post；如果仍有 chunk 无法投递，会上传完整最终答案 Markdown 文件，避免用户只收到半截结果。
 
@@ -693,9 +713,9 @@ MetaClaw 会：
 2. 创建新任务或定位已有任务。
 3. 检索可用的历史任务上下文。
 4. 计算语义优先级。
-5. 路由到最合适的 executor。
-6. 对复杂任务生成 work units 和验收标准。
-7. 执行并持续记录进展。
+5. 让 planner 选择 planner outcome，或构建 subtask work graph。
+6. 持久化带依赖、候选 agent classes 和验收标准的 ready subtasks。
+7. 为每个 ready subtask claim 一个空闲 executor work unit，并持续记录进展。
 8. 保存结果摘要、文件产物和任务记忆。
 9. 给出下一步建议。
 
@@ -766,33 +786,38 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 当一个顶层任务正在运行时，`TaskAdmissionGate` 会拒绝新的无关 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
-这样既防止排队任务浪费算力，又保证任务安全。如果 ExecutionPolicy 策略需要，单个已接纳的顶层任务内部仍然可以运行 multi-executor work units。
+这样既防止排队任务浪费算力，又保证任务安全。单个已接纳的顶层任务内部仍然可以存在多个 subtasks；当前 dispatcher 会按依赖满足情况串行推进 ready subtasks。
 
-## Executor 路由
+## Planner 和 Work Unit Dispatch
 
-路由现在是策略优先。`IntentOrchestrator` 产出结构化决策，包含单一的 capability class，如 `code_edit`、`research`、`messaging`、`memory_ops`、`office_automation`、`conversation` 或 `general`。`ExecutionPolicyPlanner` 将其转化为 primary executor、候选 executor、fallback chain、风险等级、验证级别、验收标准和策略。
+Durable execution dispatch 现在是 planner-first。Raw user-input 边界仍由 `IntentOrchestrator` 和 `SessionIntentApplicationService` 处理；这一层决定是直接回答、应用任务控制、绑定已有任务，还是创建 durable task。Durable task 到达 `SessionExecutionCoordinator` 后，active execution path 才进入 `PlannerRuntimeService`。Planner 结合 `IntentRecognitionSkill` 和 `PlannerRoutingSkill`，返回以下 dispatch 结果之一：
 
-旧版 `ExecutorRouter` 和 `repo_execution`、`research_workflow` 等遗留路由意图名称仍保留作为路由事件、预览和旧调用方的兼容边界。它们不再主导主执行路径，历史成功元数据也不影响当前策略评分。
+- `direct_reply`、`clarification`、`task_control` 或 `no_action`：这是 queued/resumed durable dispatch 不应 claim executor work unit 时的 guard outcome。正常 direct reply 和 task-control 请求会更早被 session-intake 层消费。
+- `plan_work_graph`：planner 持久化一个 work graph，节点是 `Subtask` 记录。每个 subtask 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
+
+Planning 之后，平台层只做资源仲裁。`WorkUnitClaimService` 会 sweep 过期 lease，寻找空闲 executor `WorkUnit`，维护 claimed/running/waiting/failed/released 状态，并记录 work-unit events。`ExecutionRuntime` 接收 `SubtaskExecutionSpec`，其中包含已 claim 的 subtask、work unit、agent class runtime config、上下文和验收要求。它不再接收 `ExecutionPolicy`、`primaryExecutor`、`candidateExecutors` 或 `fallbackChain`。
+
+旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator` 和 `ExecutionPolicyPlanner` 仍作为迁移参考或旧测试/admin preview 的兼容 seam 保留。它们不再拥有主执行路径。`repo_execution`、`research_workflow` 等旧 route intent 名称仍作为 agent class 排序的 affinity key 存在，而不是独立 executor-selection 层。
 
 ## 复杂任务策略和 Agentic Loop
 
-MetaClaw 可以把复杂需求表示成执行策略，而不是把整段需求一次性塞给一个 executor。策略规划器会在两种模式之间选择：
+MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。`PlannerRoutingSkill` 复用 strategy planner 启发式，在两种模式之间选择：
 
 - `single_executor`：任务足够集中，一个 executor 可以完成。
-- `multi_executor`：任务被拆成多个 work units，每个 unit 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
+- `multi_executor`：任务被拆成多个 subtasks，每个 subtask 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
 
-触发复杂策略的信号包括：用户明确要求多 agent 或多视角、任务横跨多个能力域、存在先后阶段依赖、涉及高风险验证、包含多个资源或命中多个相关历史任务。
+触发复杂策略的信号包括：用户明确要求多 agent 或多视角、任务横跨多个能力域、存在先后阶段依赖、涉及高风险验证、包含多个资源或命中多个相关历史任务。在 active session path 中，这些 strategy units 会变成持久化 `Subtask` 节点；dispatcher 再按依赖顺序 claim 并执行 ready subtasks。
 
 Agentic Loop 核心流程：
 
-1. `MultiExecutorOrchestrator` 执行 work units，可串行也可并行。
+1. `MultiExecutorOrchestrator` 执行 subtasks，可串行也可并行。
 2. `ExecutionAggregator` 汇总各 executor 结果。
-3. 检查验收证据：是否满足用户原始需求，patch 是否有测试证据，调研是否有来源，artifact 是否有路径，review 是否有 pass/concerns，是否缺少 work unit，多个结果之间是否冲突。
+3. 检查验收证据：是否满足用户原始需求，patch 是否有测试证据，调研是否有来源，artifact 是否有路径，review 是否有 pass/concerns，是否缺少 subtask，多个结果之间是否冲突。
 4. 如果验收通过，输出最终聚合结果。
-5. 如果验收有 concerns，把针对性反馈追加回失败的 work units 并重试。
+5. 如果验收有 concerns，把针对性反馈追加回失败的 subtasks 并重试。
 6. 如果达到最大迭代仍未通过，返回 `blocked` 和原因，而不是把未验收的结果交付给用户。
 
-这就是 MetaClaw 对 agentic work 的验收层：executor 返回文本不等于任务完成。核心模块已经实现并有针对性测试覆盖；不同用户入口的接入会分阶段推进，以保持现有 runtime 稳定。
+这就是 MetaClaw 对 agentic work 的验收层：executor 返回文本不等于任务完成。核心模块已经实现并有针对性测试覆盖。当前 active session path 使用持久化 subtasks 和串行 work-unit dispatch；更深入的自动重试、reviewer 和 fallback 行为会在 planner replanning 后续阶段逐步接入。
 
 ## 记忆和召回审查
 
@@ -859,10 +884,12 @@ metaclaw --script /tmp/metaclaw-flow.txt
 针对性测试：
 
 ```bash
-npm test -- tests/core/executor-router.test.ts
-npm test -- tests/core/execution-planning-service.test.ts
+npm test -- tests/session/planner-work-unit-bugfix.test.ts
+npm test -- tests/planner/planner-routing-skill.test.ts
+npm test -- tests/execution/work-unit-claim-service.test.ts
+npm test -- tests/storage/subtask-repo.test.ts
 npm test -- tests/core/semantic-intent-router.test.ts
-npm test -- tests/core/scheduler.test.ts
+npm test -- tests/task/scheduler.test.ts
 npm test -- tests/session/task-admission-gate.test.ts
 npm test -- tests/execution/execution-runtime.test.ts
 npm test -- tests/integrations/feishu-app.test.ts
@@ -875,10 +902,10 @@ npm test -- tests/session/scripted-session.test.ts
 src/
 ├── cli/            # CLI 参数解析：--script、--gateway、--connect
 ├── commands/       # Slash command 路由和命令处理
-├── core/           # 路由/意图/执行策略 seam，以及共享基础类型
+├── core/           # 共享基础类型、active intake helpers、策略基础和 legacy policy seams
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
-├── execution/      # 执行 runtime、fallback chain、多 executor 编排、聚合、进度、workspace、对话 runtime
-├── executor/       # Executor adapter，以及 profile/admin/seeder、prompt、skill package
+├── execution/      # 执行 runtime、work-unit claim、编排、聚合、进度、workspace、对话 runtime
+├── executor/       # Executor adapter，以及 AgentClass admin/seeder、prompt、skill package
 ├── gateway/        # 本地 Gateway server/client 和飞书 Gateway runtime
 ├── guidance/       # 主动引导、任务信号、引导策略和仪表盘编排
 ├── integrations/   # 外部集成辅助能力，例如 Markdown preview
@@ -886,7 +913,8 @@ src/
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 记忆捕获、召回、召回审查、偏好、上下文 bundle 和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
-├── routing/        # ExecutionPolicy planner 和正在演进的 routing policy 层
+├── planner/        # PlannerRuntimeService 和用于意图/work graph 规划的 planner skills
+├── routing/        # Legacy ExecutionPolicy planner 和 routing-policy 参考层
 ├── session/        # 交互/script/gateway session 协调和持久化
 ├── storage/        # SQLite migrations 和 repositories
 ├── task/           # 任务状态机、runtime、调度、恢复规划、排序、语义/embedding 检索
@@ -894,7 +922,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：只保留 routing / intent / policy seam（如 `IntentOrchestrator`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionStrategyPlanner`、`ExecutionPolicy`、`CapabilityClass`、`RuleHintsProvider`、`SemanticIntentRouter`、`task-routing`、`llm-bridge`）以及共享基础类型（`types.ts`、`embedding-provider.ts`）。业务实现应放回对应领域目录，不再回流到 `core`。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、active session-intake helpers（`IntentOrchestrator`、`RuleHintsProvider`、`SemanticIntentRouter`、`llm-bridge`）、策略基础（`ExecutionStrategyPlanner`、`CapabilityClass`），以及 legacy policy seams（`ExecutionPlanningService`、`ExecutionPolicy`、legacy `ExecutorRouter`、`task-routing`）。Active durable-task dispatch 逻辑位于 `src/planner/`、`src/session/`、`src/execution/work-unit-claim-service.ts` 和 storage repositories，不再回流到 `core`。
 
 ## License
 
