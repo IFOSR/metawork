@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="docs/assets/brand-lockup.svg" alt="AnyInt x MetaFusion" width="620" />
+  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="96" align="middle" /></a>
+  <img src="docs/assets/brand-times.svg" alt="x" height="96" align="middle" />
+  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="96" align="middle" /></a>
 </p>
 
 <div align="center">

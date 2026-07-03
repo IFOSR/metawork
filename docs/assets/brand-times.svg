@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="128" viewBox="0 0 80 128" role="img" aria-label="x">
+  <style>
+    .times { fill: #57606a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; font-size: 54px; font-weight: 700; }
+    @media (prefers-color-scheme: dark) { .times { fill: #c9d1d9; } }
+  </style>
+  <text class="times" x="40" y="64" text-anchor="middle" dominant-baseline="central">&#215;</text>
+</svg>
