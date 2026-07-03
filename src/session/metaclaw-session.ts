@@ -65,7 +65,7 @@ import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import { createDefaultSemanticPlanningAgent, type SemanticPlanningAgentDeps } from '../planning/semantic-planning-agent.js';
+import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
 import { KernelDecisionApplier } from './kernel-decision-applier.js';
@@ -82,7 +82,6 @@ export interface MetaclawSessionDeps {
   contextRecaller: ContextRecaller;
   llmBridge: LlmBridge;
   planningAgent?: PlanningAgent;
-  intentOrchestrator?: SemanticPlanningAgentDeps['intentOrchestrator'];
   notifier?: NotificationService;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
@@ -237,9 +236,8 @@ export class MetaclawSession {
       getFocusContext: () => this.getFocusContext(),
       getTimeoutMs: () => this.getLlmTimeoutMs(),
     });
-    this.planningAgent = deps.planningAgent ?? createDefaultSemanticPlanningAgent({
+    this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
       llmBridge: deps.llmBridge,
-      intentOrchestrator: deps.intentOrchestrator,
     });
     this.policyKernel = new PolicyKernel();
     this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);

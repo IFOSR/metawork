@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, directReplyPlan, workGraphPlan, clarificationPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -67,30 +68,6 @@ function createDeferredResult() {
   return { promise, resolve };
 }
 
-function semanticDurableTask(reason: string) {
-  return JSON.stringify({
-    interactionType: 'durable_task',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'new', taskId: null, reason },
-    taskControl: null,
-    executorDecision: {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      confidence: 0.9,
-      primaryIntent: 'repo_execution',
-      matchedBoundary: ['repo_execution'],
-      reason,
-      candidates: [{ executorName: 'codex-cli', score: 0.9, reason, matchedBoundary: ['repo_execution'] }],
-      rejected: [],
-    },
-  });
-}
-
 afterEach(() => {
   inputCapture.handler = undefined;
 });
@@ -115,16 +92,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'conversation',
-        reason: 'history navigation test',
-        response: 'ok',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -139,6 +106,10 @@ describe('App input availability', () => {
         sessionId: 'sess_input_history',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          directReplyPlan({ reason: 'history navigation test' }),
+          directReplyPlan({ reason: 'history navigation test' }),
+        ),
       })
     );
 
@@ -198,16 +169,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'conversation',
-        reason: 'multiline editor test',
-        response: 'ok',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -222,6 +183,7 @@ describe('App input availability', () => {
         sessionId: 'sess_multiline_editor',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'multiline editor test' })),
       })
     );
 
@@ -236,7 +198,6 @@ describe('App input availability', () => {
     await (inputCapture.handler?.('', { return: true, shift: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    expect(llmBridge.resolveRoute).not.toHaveBeenCalled();
     expect(app.lastFrame()).toContain('第一行');
 
     await typeText('第二  错行');
@@ -253,10 +214,6 @@ describe('App input availability', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    expect(llmBridge.resolveRoute).toHaveBeenCalledWith(
-      '第一行\n第二 补  充行',
-      expect.any(Array),
-    );
     expect(app.lastFrame()).toContain('> 第一行');
     expect(app.lastFrame()).toContain('第二 补  充行');
 
@@ -283,16 +240,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'conversation',
-        reason: 'backspace test',
-        response: 'ok',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -307,6 +254,7 @@ describe('App input availability', () => {
         sessionId: 'sess_normal_backspace',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'backspace test' })),
       })
     );
 
@@ -346,16 +294,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'conversation',
-        reason: 'raw LF submit test',
-        response: 'ok',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -370,6 +308,7 @@ describe('App input availability', () => {
         sessionId: 'sess_raw_lf_submit',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'raw LF submit test' })),
       })
     );
 
@@ -380,7 +319,6 @@ describe('App input availability', () => {
     await inputCapture.handler?.('\n', {});
     await flushUpdates();
 
-    expect(llmBridge.resolveRoute).toHaveBeenCalledWith('请生成报告', expect.any(Array));
     expect(app.lastFrame()).toContain('> 请生成报告');
 
     await inputCapture.handler?.('X', {});
@@ -410,16 +348,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'conversation',
-        reason: 'command suggestion test',
-        response: 'ok',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -434,6 +362,7 @@ describe('App input availability', () => {
         sessionId: 'sess_command_suggestions',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'command suggestion test' })),
       })
     );
 
@@ -479,14 +408,7 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn()
-        .mockResolvedValueOnce(semanticDurableTask('主线任务'))
-        .mockResolvedValueOnce(semanticDurableTask('排队任务')),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -500,6 +422,10 @@ describe('App input availability', () => {
         sessionId: 'sess_test',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }),
+          workGraphPlan({ goal: '排队任务', matchedBoundary: ['repo_execution'] }),
+        ),
       })
     );
 
@@ -555,19 +481,14 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    let resolveRoute!: (value: string) => void;
-    const pendingRoute = new Promise<string>(resolve => {
-      resolveRoute = resolve;
+    let resolvePlan!: (value: ReturnType<typeof workGraphPlan>) => void;
+    const pendingPlan = new Promise<ReturnType<typeof workGraphPlan>>(resolve => {
+      resolvePlan = resolve;
     });
     const llmBridge = {
-      query: vi.fn().mockImplementation(() => pendingRoute),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
+    const planningAgent = { plan: vi.fn().mockReturnValue(pendingPlan) };
 
     const app = render(
       React.createElement(App, {
@@ -580,6 +501,7 @@ describe('App input availability', () => {
         sessionId: 'sess_processing_status',
         contextRecaller,
         llmBridge,
+        planningAgent,
       })
     );
 
@@ -595,7 +517,7 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
     expect(app.lastFrame()).toContain('→ MetaClaw：正在分析目标、上下文与可执行边界');
 
-    resolveRoute(semanticDurableTask('生成状态报告'));
+    resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
     await flushUpdates();
 
     expect(app.lastFrame()).toContain('→ MetaClaw：已识别可执行任务');
@@ -639,14 +561,7 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn()
-        .mockResolvedValueOnce(semanticDurableTask('普通任务'))
-        .mockResolvedValueOnce(semanticDurableTask('紧急任务')),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -660,6 +575,10 @@ describe('App input availability', () => {
         sessionId: 'sess_test',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          workGraphPlan({ goal: '普通任务', matchedBoundary: ['repo_execution'] }),
+          workGraphPlan({ goal: '紧急优先处理这个任务', matchedBoundary: ['repo_execution'] }),
+        ),
       })
     );
 
@@ -712,16 +631,19 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const never = () => new Promise<never>(() => {});
     const llmBridge = {
-      resolveRoute: vi.fn()
-        .mockResolvedValueOnce({ route: 'durable_task', reason: '首个任务' })
-        .mockImplementationOnce(never),
-      resolveIntent: vi.fn()
-        .mockResolvedValueOnce({ type: 'new', taskId: null, reason: '首个任务' })
-        .mockResolvedValueOnce({ type: 'new', taskId: null, reason: '忙时 fallback 后的新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
+    // Second turn: the planner cannot confidently decide and stays conservative
+    // (clarification) instead of queueing keyword-fallback work. (The old
+    // '统一意图裁决置信度不足' clarification narrative is preserved; the former
+    // IntentOrchestrator-internal 'intent orchestrator timeout' string no longer
+    // exists — the planner now owns its own timeout/fallback.)
+    const planningAgent = {
+      plan: vi.fn()
+        .mockResolvedValueOnce(workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }))
+        .mockResolvedValueOnce(clarificationPlan('我不确定你想继续聊天、创建新任务，还是恢复某个已有任务。')),
+    };
 
     const app = render(
       React.createElement(App, {
@@ -734,6 +656,7 @@ describe('App input availability', () => {
         sessionId: 'sess_llm_stalled_while_running',
         contextRecaller,
         llmBridge,
+        planningAgent,
       })
     );
 
@@ -753,7 +676,6 @@ describe('App input availability', () => {
     await flushUpdates();
 
     expect(app.lastFrame()).toContain('统一意图裁决置信度不足');
-    expect(app.lastFrame()).toContain('intent orchestrator timeout');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     await secondSubmit;
@@ -790,8 +712,6 @@ describe('App input availability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'research automation' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -808,6 +728,9 @@ describe('App input availability', () => {
         llmBridge,
         executorFactory: (name: string) => name === 'pi-agent' ? piExecutor : null,
         availableExecutorCommands: new Set(['codex', 'pi']),
+        planningAgent: stubPlanningAgent(
+          workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli', matchedBoundary: ['repo_execution'] }),
+        ),
       })
     );
 

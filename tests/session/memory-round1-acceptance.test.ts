@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -40,17 +41,8 @@ function createConfig(): Config {
   };
 }
 
-function createDurableRouteBridge(): LlmBridge {
+function createMinimalBridge(): LlmBridge {
   return {
-    resolveRoute: vi.fn().mockResolvedValue({
-      route: 'durable_task',
-      reason: 'memory acceptance task',
-    }),
-    resolveIntent: vi.fn().mockResolvedValue({
-      type: 'new',
-      taskId: null,
-      reason: 'new task',
-    }),
     rankInteractions: vi.fn().mockResolvedValue([]),
   } as unknown as LlmBridge;
 }
@@ -86,7 +78,13 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_round1_confirm',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '给张总写一封邮件，内容是汇报本周进展，用正式语气' }),
+        workGraphPlan({ goal: '再给张总写一封邮件，内容是同步项目风险，用正式语气' }),
+        workGraphPlan({ goal: '继续给张总准备一封邮件，内容是安排下周会议，用正式语气' }),
+        workGraphPlan({ goal: '给张总再起草一封邮件，内容是提醒确认预算' }),
+      ),
     });
 
     session.initialize();
@@ -159,7 +157,10 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_round1_precedence',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '给张总整理一份 Phoenix 项目周报，今天明确要求先保留表格格式' }),
+      ),
     });
 
     session.initialize();
@@ -218,7 +219,12 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_round1_inline_confirm',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '给张总写一封邮件，内容是汇报本周进展，用正式语气' }),
+        workGraphPlan({ goal: '再给张总写一封邮件，内容是同步项目风险，用正式语气' }),
+        workGraphPlan({ goal: '继续给张总准备一封邮件，内容是安排下周会议，用正式语气' }),
+      ),
     });
 
     session.initialize();
@@ -264,7 +270,13 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_round1_inline_edit',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '给张总写一封邮件，内容是汇报本周进展，用正式语气' }),
+        workGraphPlan({ goal: '再给张总写一封邮件，内容是同步项目风险，用正式语气' }),
+        workGraphPlan({ goal: '继续给张总准备一封邮件，内容是安排下周会议，用正式语气' }),
+        workGraphPlan({ goal: 'e 给张总的邮件使用非常正式语气' }),
+      ),
     });
 
     session.initialize();
@@ -310,8 +322,9 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_high_confidence_user_statement',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
       notifier,
+      planningAgent: stubPlanningAgent(),
     });
 
     session.initialize();
@@ -359,8 +372,11 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_high_confidence_executor_statement',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
       executorFactory: () => executor,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '刚才基于上下文你能提炼出什么工作记忆？' }),
+      ),
     });
 
     session.initialize();
@@ -401,7 +417,8 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_auto_capture_low_risk',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(),
     });
 
     session.initialize();
@@ -450,7 +467,8 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_auto_capture_high_risk',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(),
     });
 
     session.initialize();

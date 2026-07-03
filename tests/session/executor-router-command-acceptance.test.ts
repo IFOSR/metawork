@@ -12,6 +12,8 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import type { PlanningAgent } from '../../src/planning/planning-agent.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -35,6 +37,7 @@ function createSession(input: {
   executor: ExecutorAdapter;
   sessionId: string;
   llmBridge?: Partial<LlmBridge>;
+  planningAgent?: PlanningAgent;
 }) {
   return new MetaclawSession({
     taskEngine: input.taskEngine,
@@ -51,6 +54,7 @@ function createSession(input: {
       rankInteractions: vi.fn().mockResolvedValue([]),
       ...input.llmBridge,
     } as unknown as LlmBridge,
+    planningAgent: input.planningAgent,
   });
 }
 
@@ -178,7 +182,16 @@ describe('planner-first executor command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_planner_exec' });
+    const session = createSession({
+      db,
+      taskEngine,
+      memoryEngine,
+      executor,
+      sessionId: 'sess_planner_exec',
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
+      ),
+    });
 
     session.initialize();
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
@@ -235,6 +248,9 @@ describe('planner-first executor command acceptance', () => {
       } as unknown as LlmBridge,
       executorFactory: name => name === 'pi-agent' ? piExecutor : null,
       availableExecutorCommands: new Set(['codex', 'pi']),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli' }),
+      ),
     });
 
     session.initialize();
@@ -265,7 +281,16 @@ describe('planner-first executor command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_no_platform_fallback' });
+    const session = createSession({
+      db,
+      taskEngine,
+      memoryEngine,
+      executor,
+      sessionId: 'sess_no_platform_fallback',
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
+      ),
+    });
 
     session.initialize();
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });

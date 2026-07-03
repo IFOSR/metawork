@@ -12,6 +12,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -91,6 +92,9 @@ describe('global style scene gating', () => {
       sessionId: 'sess_round13_global_style_scene',
       contextRecaller,
       llmBridge: createDurableRouteBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '直接把刚才我们讨论的内容整理成ppt' }),
+      ),
     });
 
     session.initialize();
@@ -144,6 +148,9 @@ describe('global style scene gating', () => {
       contextRecaller,
       llmBridge: createDurableRouteBridge(),
       executorFactory: () => executor,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '帮我写一份正式的行业调研报告' }),
+      ),
     });
 
     session.initialize();

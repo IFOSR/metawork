@@ -14,6 +14,8 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import type { PlanningAgent } from '../../src/planning/planning-agent.js';
+import { workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -99,27 +101,27 @@ describe('App resume-running task noop', () => {
     };
 
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '创建调研任务',
-      }),
-      resolveIntent: vi.fn().mockImplementation(async (userInput: string) => {
-        if (userInput.includes('把之前挂起的任务继续完成')) {
-          return {
-            type: 'reference',
-            taskId: taskRepo.findByStatus('running')[0]?.id ?? null,
-            reason: '用户是在继续之前挂起、现已恢复中的任务',
-          };
-        }
-
-        return {
-          type: 'new',
-          taskId: null,
-          reason: '创建任务',
-        };
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
+
+    // Turn 1 creates the durable task; turn 2 references the now-running task and
+    // asks to continue it. The running task id is only known after turn 1, so the
+    // resume plan resolves it lazily from the repo at plan() time.
+    const planningAgent: PlanningAgent = {
+      plan: vi.fn().mockImplementation(async (context: { userInput: string }) => {
+        if (context.userInput.includes('把之前挂起的任务继续完成')) {
+          return taskControlPlan({
+            control: 'resume_task',
+            taskId: taskRepo.findByStatus('running')[0]?.id ?? null,
+            scope: null,
+          });
+        }
+        return workGraphPlan({
+          goal: '给 agent 增加 memory 功能，请实现本地代码改动',
+          canModifyFiles: true,
+        });
+      }),
+    };
 
     const app = render(
       React.createElement(App, {
@@ -133,6 +135,7 @@ describe('App resume-running task noop', () => {
         contextRecaller,
         llmBridge,
         availableExecutorCommands: new Set(['codex']),
+        planningAgent,
       }),
     );
 

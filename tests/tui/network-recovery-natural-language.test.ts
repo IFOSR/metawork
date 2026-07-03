@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -59,21 +60,6 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-function semanticRecoverBlocked(taskId: string, reason: string) {
-  return JSON.stringify({
-    interactionType: 'task_control',
-    confidence: 0.95,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'reference', taskId, reason },
-    taskControl: { kind: 'recover_blocked', taskId, scope: null, reason },
-    executorDecision: null,
-  });
-}
-
 afterEach(() => {
   inputCapture.handler = undefined;
 });
@@ -109,12 +95,7 @@ describe('App network recovery natural-language control', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn().mockResolvedValue(semanticRecoverBlocked(blockedTask.id, '用户说明网络恢复')),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'reference',
-        taskId: blockedTask.id,
-        reason: '用户在说网络恢复后继续刚才任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -128,6 +109,9 @@ describe('App network recovery natural-language control', () => {
         sessionId: 'sess_network_nl_recovery',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          taskControlPlan({ control: 'recover_blocked', taskId: blockedTask.id, scope: null }),
+        ),
       }),
     );
 

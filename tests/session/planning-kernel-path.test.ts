@@ -13,7 +13,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import type { IntentDecisionV2 } from '../../src/core/intent-orchestrator.js';
+import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 
 function createConfig(): Config {
   return {
@@ -24,14 +24,24 @@ function createConfig(): Config {
   };
 }
 
-function decision(overrides: Partial<IntentDecisionV2> = {}): IntentDecisionV2 {
+function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
-    interactionType: 'durable_task',
+    id: 'plan_test',
+    schemaVersion: 1,
+    action: 'plan_work_graph',
     confidence: 0.9,
-    reason: '统一意图裁决',
+    reason: 'planner 直接产出工作图',
     clarificationQuestion: null,
-    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-    task: { binding: 'new', taskId: null, control: 'none', scope: null },
+    response: { directReply: null },
+    task: {
+      binding: 'new',
+      taskId: null,
+      control: 'none',
+      scope: null,
+      title: '普通功能',
+      goal: '实现一个普通功能',
+      includeRecentConversationContext: false,
+    },
     execution: {
       mode: 'single_executor',
       complexity: 'simple',
@@ -41,13 +51,30 @@ function decision(overrides: Partial<IntentDecisionV2> = {}): IntentDecisionV2 {
       canModifyFiles: true,
       requiresExternalGateway: false,
       capabilityClass: 'code_edit',
+      matchedBoundary: [],
     },
-    hints: [],
+    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    workGraph: {
+      reason: 'single executor work graph',
+      subtasks: [{
+        id: 'subtask_execute',
+        title: '实现一个普通功能',
+        goal: '实现一个普通功能',
+        dependsOn: [],
+        requiredAgentClassKind: 'executor',
+        agentClassHint: 'codex-cli',
+        candidateAgentClasses: ['codex-cli'],
+        expectedOutput: 'patch',
+        acceptance: ['List changed files and provide test command output or explain why tests were not run.'],
+        riskLevel: 'low',
+      }],
+    },
+    source: 'codex-planner',
     ...overrides,
   };
 }
 
-function createSession(sessionId: string, intentDecision: IntentDecisionV2) {
+function createSession(sessionId: string, planningPlan: PlanningAgentPlan) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
@@ -75,7 +102,7 @@ function createSession(sessionId: string, intentDecision: IntentDecisionV2) {
     sessionId,
     contextRecaller: new ContextRecaller(db),
     llmBridge,
-    intentOrchestrator: { decide: vi.fn().mockResolvedValue(intentDecision) },
+    planningAgent: { plan: vi.fn().mockResolvedValue(planningPlan) },
     availableExecutorCommands: new Set(['codex']),
   });
   session.initialize({ resumeStartupTasks: false });
@@ -88,7 +115,7 @@ function createSession(sessionId: string, intentDecision: IntentDecisionV2) {
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
   it('authorizes a durable task, dispatches the executor, and audits the decision', async () => {
-    const harness = createSession('sess_durable', decision());
+    const harness = createSession('sess_durable', plan());
 
     await harness.session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
@@ -106,10 +133,18 @@ describe('natural-language planning/kernel path', () => {
   });
 
   it('handles a direct reply without creating a task and audits it', async () => {
-    const harness = createSession('sess_direct', decision({
-      interactionType: 'direct_reply',
+    const harness = createSession('sess_direct', plan({
+      action: 'direct_reply',
       reason: '普通对话',
-      task: { binding: 'none', taskId: null, control: 'none', scope: null },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+      },
       execution: {
         mode: 'none',
         complexity: 'simple',
@@ -119,7 +154,9 @@ describe('natural-language planning/kernel path', () => {
         canModifyFiles: false,
         requiresExternalGateway: false,
         capabilityClass: 'conversation',
+        matchedBoundary: [],
       },
+      workGraph: null,
     }));
 
     await harness.session.submit('你好呀', { awaitAsyncWork: true });
@@ -132,23 +169,11 @@ describe('natural-language planning/kernel path', () => {
     expect(audits[0]!.taskId).toBeNull();
   });
 
-  it('clarifies a low-confidence turn without creating or dispatching a task', async () => {
-    const harness = createSession('sess_clarify', decision({
-      interactionType: 'clarification',
+  it('clarifies a low-confidence state-changing turn without creating or dispatching a task', async () => {
+    const harness = createSession('sess_clarify', plan({
       confidence: 0.2,
       reason: '低置信度',
       clarificationQuestion: '请明确是聊天还是创建任务。',
-      task: { binding: 'none', taskId: null, control: 'none', scope: null },
-      execution: {
-        mode: 'none',
-        complexity: 'simple',
-        selectedExecutor: null,
-        candidateExecutors: [],
-        requiresVerification: false,
-        canModifyFiles: false,
-        requiresExternalGateway: false,
-        capabilityClass: 'conversation',
-      },
     }));
 
     await harness.session.submit('这个可能要处理一下', { awaitAsyncWork: true });

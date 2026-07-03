@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -98,15 +99,7 @@ describe('App execution indicator', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -120,6 +113,7 @@ describe('App execution indicator', () => {
         sessionId: 'sess_test',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(workGraphPlan({ goal: '执行任务' })),
       })
     );
 
@@ -190,8 +184,7 @@ describe('App execution indicator', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -205,6 +198,7 @@ describe('App execution indicator', () => {
         sessionId: 'sess_parked_summary',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(),
       })
     );
 
@@ -232,15 +226,7 @@ describe('App execution indicator', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -254,6 +240,7 @@ describe('App execution indicator', () => {
         sessionId: 'sess_last_event',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(workGraphPlan({ goal: '执行任务' })),
       })
     );
 

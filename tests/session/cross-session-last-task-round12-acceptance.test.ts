@@ -12,6 +12,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -55,45 +56,6 @@ function createDurableRouteBridge(overrides: Partial<LlmBridge> = {}) {
   } as unknown as LlmBridge;
 }
 
-function semanticDurableTask(reason: string) {
-  return JSON.stringify({
-    interactionType: 'durable_task',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'new', taskId: null, reason },
-    taskControl: null,
-    executorDecision: {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      confidence: 0.9,
-      primaryIntent: 'general',
-      matchedBoundary: ['general'],
-      reason,
-      candidates: [{ executorName: 'codex-cli', score: 0.9, reason, matchedBoundary: ['general'] }],
-      rejected: [],
-    },
-  });
-}
-
-function semanticLastTaskContinuation(reason: string) {
-  return JSON.stringify({
-    interactionType: 'task_control',
-    confidence: 0.92,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'none', taskId: null, reason },
-    taskControl: { kind: 'last_task_continuation', taskId: null, scope: null, reason },
-    executorDecision: null,
-  });
-}
-
 describe('cross-session last-task continuation', () => {
   it('auto-creates a follow-up instead of asking for confirmation when the last focused task is done', async () => {
     const db = createTestDb();
@@ -123,9 +85,10 @@ describe('cross-session last-task continuation', () => {
       config: createConfig(),
       sessionId: 'sess_round12_a',
       contextRecaller,
-      llmBridge: createDurableRouteBridge({
-        query: vi.fn().mockResolvedValue(semanticDurableTask('明确任务')),
-      }),
+      llmBridge: createDurableRouteBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '智谱这家公司从现在看是否值得投资？你怎么看？' }),
+      ),
       availableExecutorCommands: new Set(['codex']),
     });
 
@@ -144,9 +107,7 @@ describe('cross-session last-task continuation', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge2 = createDurableRouteBridge({
-      query: vi.fn().mockResolvedValue(semanticLastTaskContinuation('继续上次任务')),
-    });
+    const llmBridge2 = createDurableRouteBridge();
     const session2 = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -157,6 +118,9 @@ describe('cross-session last-task continuation', () => {
       sessionId: 'sess_round12_b',
       contextRecaller,
       llmBridge: llmBridge2,
+      planningAgent: stubPlanningAgent(
+        taskControlPlan({ control: 'last_task_continuation' }),
+      ),
       availableExecutorCommands: new Set(['codex']),
     });
 
@@ -167,8 +131,6 @@ describe('cross-session last-task continuation', () => {
     expect(output).toContain('上次任务自动处理');
     expect(output).toContain('上一个任务已完成');
     expect(output).toContain('自动决策：基于上一个任务创建 follow-up');
-    expect(llmBridge2.resolveRoute).not.toHaveBeenCalled();
-    expect(llmBridge2.resolveIntent).not.toHaveBeenCalled();
 
     expect(executor2.execute).toHaveBeenCalledTimes(1);
     const followUpInput = (executor2.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -205,9 +167,10 @@ describe('cross-session last-task continuation', () => {
       config: createConfig(),
       sessionId: 'sess_round12_c',
       contextRecaller,
-      llmBridge: createDurableRouteBridge({
-        query: vi.fn().mockResolvedValue(semanticDurableTask('明确任务')),
-      }),
+      llmBridge: createDurableRouteBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '智谱这家公司从现在看是否值得投资？你怎么看？' }),
+      ),
       availableExecutorCommands: new Set(['codex']),
     });
 
@@ -239,9 +202,7 @@ describe('cross-session last-task continuation', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge2 = createDurableRouteBridge({
-      query: vi.fn().mockResolvedValue(semanticLastTaskContinuation('继续上次任务')),
-    });
+    const llmBridge2 = createDurableRouteBridge();
     const session2 = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -252,6 +213,9 @@ describe('cross-session last-task continuation', () => {
       sessionId: 'sess_round12_d',
       contextRecaller,
       llmBridge: llmBridge2,
+      planningAgent: stubPlanningAgent(
+        taskControlPlan({ control: 'last_task_continuation' }),
+      ),
       availableExecutorCommands: new Set(['codex']),
     });
 
@@ -266,8 +230,6 @@ describe('cross-session last-task continuation', () => {
     const resumedInput = (executor2.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(resumedInput.task.id).toBe(unfinishedTask.id);
     expect(resumedInput.executionContextBundle.mode).toBe('resume-parked');
-    expect(llmBridge2.resolveRoute).not.toHaveBeenCalled();
-    expect(llmBridge2.resolveIntent).not.toHaveBeenCalled();
   });
 
   it('falls back to LLM intent resolution only when persisted last-task pointers are unavailable', async () => {
@@ -302,17 +264,7 @@ describe('cross-session last-task continuation', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = createDurableRouteBridge({
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'task_control',
-        reason: '显式继续任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'reference',
-        taskId: parkedTask.id,
-        reason: '命中旧任务',
-      }),
-    });
+    const llmBridge = createDurableRouteBridge();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -323,14 +275,15 @@ describe('cross-session last-task continuation', () => {
       sessionId: 'sess_round12_e',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
+      ),
       availableExecutorCommands: new Set(['codex']),
     });
 
     session.initialize();
     await session.submit('继续之前的任务', { awaitAsyncWork: true });
 
-    expect(llmBridge.resolveRoute).toHaveBeenCalledTimes(1);
-    expect(llmBridge.resolveIntent).toHaveBeenCalledTimes(1);
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 });

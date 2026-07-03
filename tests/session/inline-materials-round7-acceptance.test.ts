@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -85,6 +86,9 @@ describe('Round 7 inline materials acceptance', () => {
       sessionId: 'sess_round7_inline_materials',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: `基于 ${weeklyPath} 和 ${riskPath} 整理 Phoenix 周报，输出一个简短结论` }),
+      ),
     });
 
     session.initialize();

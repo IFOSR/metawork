@@ -41,14 +41,15 @@ The first version preserves current product behavior: one active top-level task,
 
 ## Future Work
 
-- Replace the internal semantic adapter with a real Codex CLI planner adapter.
+- ~~Replace the internal semantic adapter with a real Codex CLI planner adapter.~~ Done: `CodexPlanningAgent` emits `PlanningAgentPlan` (with multi-subtask DAG work graphs) directly from Codex CLI; the `IntentOrchestrator` semantic adapter is no longer on the planning path.
 - Fold memory/preference policy into a kernel-compatible decision path.
 - Add error-type-driven automatic retry and recovery.
 - Add urgent preemption and conflict-task parking.
 - Add elastic work-unit spawn and capacity management.
 - Add parallel subtask dispatch with real worktree lease enforcement.
 
-The v1 legacy-compat shims retained to keep this change scoped (semantic-intent
-adapter, `agentClassToLegacyProfile`, `intentDecisionFromPlan`, `bindPlanToTask`)
-are tracked for removal in [docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md);
-each is marked `TODO(adr-0014-compat)` in source.
+The remaining legacy-compat shims (`intentDecisionFromPlan`, `bindPlanToTask` — both
+feeding the not-yet-migrated `TaskResumePlanner`) are tracked for removal in
+[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md); each is
+marked `TODO(adr-0014-compat)` in source. The planner adapter and its
+`AgentClass → ExecutorProfile` down-cast have already been removed (see that doc, #1/#2).

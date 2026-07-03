@@ -10,15 +10,18 @@
 
 ## 兼容层清单
 
-### 1. `SemanticPlanningAgent` 内部复用 `IntentOrchestrator`
-- 位置：[src/planning/semantic-planning-agent.ts](../../src/planning/semantic-planning-agent.ts)
-- 现状：`PlanningAgent.plan()` 并非调用真实 planner，而是把 `PlanningContext` 转成 `IntentOrchestratorInput`，调用旧的 `IntentOrchestrator.decide()`，再用 `planningPlanFromIntentDecision` 把 `IntentDecisionV2` 映射回 `PlanningAgentPlan`。输出计划带 `source: 'semantic-intent-adapter'` 标记。
-- 目标：用真实的 Codex CLI planner adapter 直接产出 `PlanningAgentPlan`，删除对 `IntentOrchestrator` / `IntentDecisionV2` 的依赖。
+### 1. `SemanticPlanningAgent` 内部复用 `IntentOrchestrator` — ✅ 已移除（第一步）
+- 状态：**已移除**。原 `src/planning/semantic-planning-agent.ts` 已删除，由真实的
+  [src/planning/codex-planning-agent.ts](../../src/planning/codex-planning-agent.ts)（`CodexPlanningAgent`）取代：
+  直接调 Codex CLI 产出 `PlanningAgentPlan`（含多子任务 DAG 工作图），自带 schema+依赖图校验与一次修复重试，
+  失败时保守降级为 `direct_reply`。输出计划标记改为 `source: 'codex-planner'`。
+- 遗留：`IntentOrchestrator` 类目前仅剩测试/ghost 引用，`IntentDecisionV2` 类型仍被 #3/#4 消费，
+  待第二步随 `TaskResumePlanner` 迁移一并删除。
 
-### 2. `agentClassToLegacyProfile`（AgentClass → ExecutorProfile 手工降级）
-- 位置：[src/planning/semantic-planning-agent.ts](../../src/planning/semantic-planning-agent.ts) 底部
-- 现状：逐字段（18 个）把 `AgentClass` 拷成旧的 `ExecutorProfile`，只为喂给 `IntentOrchestrator`。字段是手写映射，`ExecutorProfile`/`AgentClass` 任一演进都得手动同步，漏改不会被编译器发现。
-- 目标：planner 直接消费 `AgentClass`，删除 `ExecutorProfile` 及这个映射。随 #1 一并移除。
+### 2. `agentClassToLegacyProfile`（AgentClass → ExecutorProfile 手工降级）— ✅ 已移除（第一步）
+- 状态：**已移除**。随 `semantic-planning-agent.ts` 一并删除。`CodexPlanningAgent` 直接消费
+  `AgentClass`（在 prompt 中透传 `skills`/`mcpServers`/`harness`/`model` 等原先被丢弃的字段），
+  不再降级成 `ExecutorProfile`。`ExecutorProfile` 类型本身仍被 `executor-router` 等旧模块使用，留待后续。
 
 ### 3. `intentDecisionFromPlan`（PlanningAgentPlan → IntentDecisionV2 回转）
 - 位置：[src/session/kernel-decision-applier.ts](../../src/session/kernel-decision-applier.ts)
@@ -32,8 +35,8 @@
 
 ## 移除顺序建议
 
-1. 先落地真实 planner adapter（解决 #1、#2）——这是其余项的前提。
-2. 迁移 `TaskResumePlanner` 到 `PlanningAgentPlan`（解决 #3、#4）。
-3. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射，回收 `semantic-intent-adapter` 标记。
+1. ~~先落地真实 planner adapter（解决 #1、#2）~~ —— ✅ 已完成。
+2. 迁移 `TaskResumePlanner` 到 `PlanningAgentPlan`（解决 #3、#4）。**下一步。**
+3. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射。
 
 相关背景见 [docs/adr/0014-planning-agent-policy-kernel-boundary.md](../adr/0014-planning-agent-policy-kernel-boundary.md) 的 Future Work 一节。

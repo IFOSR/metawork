@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -84,6 +85,9 @@ describe('Round 8 inline web links acceptance', () => {
       sessionId: 'sess_round8_inline_links',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: `基于 ${weeklyPath} 和 ${weeklyUrl} 整理 Phoenix 周报，输出一个简短结论` }),
+      ),
     });
 
     session.initialize();

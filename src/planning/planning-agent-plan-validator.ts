@@ -1,9 +1,14 @@
+import type { AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
 import type { PlanningAgentPlan, PlanningAction, SubtaskProposal } from './planning-types.js';
 
 export interface PlanningAgentPlanValidationResult {
   valid: boolean;
   errors: string[];
 }
+
+const AGENT_CLASS_KINDS = new Set<AgentClassKind>(['planner', 'executor']);
+const EXPECTED_OUTPUTS = new Set<Subtask['expectedOutput']>(['analysis', 'patch', 'artifact', 'review', 'summary']);
+const RISK_LEVELS = new Set<AgentClassRiskLevel>(['low', 'medium', 'high']);
 
 const ACTIONS: PlanningAction[] = [
   'direct_reply',
@@ -64,5 +69,70 @@ function validateWorkGraph(subtasks: unknown, errors: string[]): void {
     if (!Array.isArray(subtask.dependsOn)) errors.push('subtask.dependsOn must be an array');
     if (!Array.isArray(subtask.candidateAgentClasses)) errors.push('subtask.candidateAgentClasses must be an array');
     if (!Array.isArray(subtask.acceptance)) errors.push('subtask.acceptance must be an array');
+    if (subtask.requiredAgentClassKind !== undefined && !AGENT_CLASS_KINDS.has(subtask.requiredAgentClassKind)) {
+      errors.push(`subtask.requiredAgentClassKind is invalid: ${String(subtask.requiredAgentClassKind)}`);
+    }
+    if (subtask.expectedOutput !== undefined && !EXPECTED_OUTPUTS.has(subtask.expectedOutput)) {
+      errors.push(`subtask.expectedOutput is invalid: ${String(subtask.expectedOutput)}`);
+    }
+    if (subtask.riskLevel !== undefined && !RISK_LEVELS.has(subtask.riskLevel)) {
+      errors.push(`subtask.riskLevel is invalid: ${String(subtask.riskLevel)}`);
+    }
   }
+
+  // dependsOn must reference known subtasks, and the graph must be acyclic —
+  // otherwise the runtime's dependency-gated dispatch (findNextReadySubtask)
+  // would silently stall on a subtask whose dependencies never complete.
+  validateDependencyGraph(subtasks as Partial<SubtaskProposal>[], ids, errors);
+}
+
+function validateDependencyGraph(
+  subtasks: Partial<SubtaskProposal>[],
+  ids: Set<string>,
+  errors: string[],
+): void {
+  const edges = new Map<string, string[]>();
+  for (const subtask of subtasks) {
+    if (!subtask.id || !Array.isArray(subtask.dependsOn)) continue;
+    const deps: string[] = [];
+    for (const dependencyId of subtask.dependsOn) {
+      if (typeof dependencyId !== 'string' || !ids.has(dependencyId)) {
+        errors.push(`subtask ${subtask.id} depends on unknown subtask: ${String(dependencyId)}`);
+        continue;
+      }
+      if (dependencyId === subtask.id) {
+        errors.push(`subtask ${subtask.id} depends on itself`);
+        continue;
+      }
+      deps.push(dependencyId);
+    }
+    edges.set(subtask.id, deps);
+  }
+
+  if (hasCycle(edges)) {
+    errors.push('workGraph.subtasks contains a dependency cycle');
+  }
+}
+
+function hasCycle(edges: Map<string, string[]>): boolean {
+  const VISITING = 1;
+  const DONE = 2;
+  const state = new Map<string, number>();
+
+  const visit = (node: string): boolean => {
+    const current = state.get(node);
+    if (current === VISITING) return true;
+    if (current === DONE) return false;
+    state.set(node, VISITING);
+    for (const next of edges.get(node) ?? []) {
+      if (visit(next)) return true;
+    }
+    state.set(node, DONE);
+    return false;
+  };
+
+  for (const node of edges.keys()) {
+    if (visit(node)) return true;
+  }
+  return false;
 }

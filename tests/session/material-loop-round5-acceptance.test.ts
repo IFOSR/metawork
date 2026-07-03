@@ -12,6 +12,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { runScriptedSession } from '../../src/session/scripted-session.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -60,8 +61,6 @@ describe('Round 5 material loop acceptance', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -80,6 +79,9 @@ describe('Round 5 material loop acceptance', () => {
       sessionId: 'sess_round5_materials',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
+      ),
     });
 
     const output = result.output.join('\n');

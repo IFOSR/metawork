@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
+import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -40,45 +41,6 @@ function createConfig(): Config {
       dashboard_on_start: true,
     },
   };
-}
-
-function semanticDurableTask(reason: string) {
-  return JSON.stringify({
-    interactionType: 'durable_task',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'new', taskId: null, reason },
-    taskControl: null,
-    executorDecision: {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      confidence: 0.9,
-      primaryIntent: 'general',
-      matchedBoundary: ['general'],
-      reason,
-      candidates: [{ executorName: 'codex-cli', score: 0.9, reason, matchedBoundary: ['general'] }],
-      rejected: [],
-    },
-  });
-}
-
-function semanticStatusQuery(scope: 'blocked' | 'running' | 'dashboard', reason: string) {
-  return JSON.stringify({
-    interactionType: 'task_control',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'none', taskId: null, reason },
-    taskControl: { kind: 'status_query', taskId: null, scope, reason },
-    executorDecision: null,
-  });
 }
 
 describe('blocked task user journey', () => {
@@ -113,11 +75,6 @@ describe('blocked task user journey', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn()
-        .mockResolvedValueOnce(semanticDurableTask('明确验收任务'))
-        .mockResolvedValueOnce(semanticStatusQuery('blocked', '查询阻塞任务')),
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确验收任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '默认优先级' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
@@ -133,6 +90,10 @@ describe('blocked task user journey', () => {
       llmBridge,
       notifier,
       availableExecutorCommands: new Set(['codex']),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '整理 blocked 任务用户旅程验收报告', executor: 'codex-cli', matchedBoundary: ['general'] }),
+        taskControlPlan({ control: 'status_query', scope: 'blocked' }),
+      ),
     });
 
     session.initialize();

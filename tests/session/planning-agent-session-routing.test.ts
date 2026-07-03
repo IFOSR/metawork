@@ -12,7 +12,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import type { IntentDecisionV2 } from '../../src/core/intent-orchestrator.js';
+import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -37,22 +37,26 @@ function createConfig(): Config {
   };
 }
 
-function decision(overrides: Partial<IntentDecisionV2> = {}): IntentDecisionV2 {
+// A valid plan_work_graph plan routed at a single available executor. Overrides
+// let each test reshape the action/execution/work graph while keeping the seam
+// (an injected PlanningAgent returning a PlanningAgentPlan directly) identical.
+function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
-    interactionType: 'durable_task',
+    id: 'plan_test',
+    schemaVersion: 1,
+    action: 'plan_work_graph',
     confidence: 0.9,
-    reason: '统一意图裁决',
+    reason: 'planner 直接产出工作图',
     clarificationQuestion: null,
-    risk: {
-      level: 'low',
-      requiresConfirmation: false,
-      reasons: [],
-    },
+    response: { directReply: null },
     task: {
       binding: 'new',
       taskId: null,
       control: 'none',
       scope: null,
+      title: '普通功能',
+      goal: '实现一个普通功能',
+      includeRecentConversationContext: false,
     },
     execution: {
       mode: 'single_executor',
@@ -63,17 +67,34 @@ function decision(overrides: Partial<IntentDecisionV2> = {}): IntentDecisionV2 {
       canModifyFiles: true,
       requiresExternalGateway: false,
       capabilityClass: 'code_edit',
+      matchedBoundary: [],
     },
-    hints: [],
+    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    workGraph: {
+      reason: 'single executor work graph',
+      subtasks: [{
+        id: 'subtask_execute',
+        title: '实现一个普通功能',
+        goal: '实现一个普通功能',
+        dependsOn: [],
+        requiredAgentClassKind: 'executor',
+        agentClassHint: 'codex-cli',
+        candidateAgentClasses: ['codex-cli'],
+        expectedOutput: 'patch',
+        acceptance: ['List changed files and provide test command output or explain why tests were not run.'],
+        riskLevel: 'low',
+      }],
+    },
+    source: 'codex-planner',
     ...overrides,
   };
 }
 
-describe('MetaclawSession IntentOrchestrator integration', () => {
-  it('routes natural language through IntentOrchestrator without directly calling legacy route or intent methods', async () => {
+describe('MetaclawSession planning-agent routing', () => {
+  it('routes natural language through the injected PlanningAgent without touching legacy llmBridge intent methods', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-intent-orchestrator');
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-route');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
@@ -94,8 +115,8 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       resolveTaskStateOwnership: vi.fn(),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
-    const intentOrchestrator = {
-      decide: vi.fn().mockResolvedValue(decision()),
+    const planningAgent = {
+      plan: vi.fn().mockResolvedValue(workGraphPlan()),
     };
 
     const session = new MetaclawSession({
@@ -105,17 +126,17 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       executor,
       db,
       config: createConfig(),
-      sessionId: 'sess_intent_orchestrator_route',
+      sessionId: 'sess_planning_agent_route',
       contextRecaller,
       llmBridge,
-      intentOrchestrator,
+      planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
     await session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
-    expect(intentOrchestrator.decide).toHaveBeenCalledTimes(1);
+    expect(planningAgent.plan).toHaveBeenCalledTimes(1);
     expect(llmBridge.resolveRoute).not.toHaveBeenCalled();
     expect(llmBridge.resolveIntent).not.toHaveBeenCalled();
     expect(llmBridge.resolveTaskStateOwnership).not.toHaveBeenCalled();
@@ -123,10 +144,10 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
     expect(session.getSnapshot().output.join('\n')).toContain('任务 #');
   });
 
-  it('uses IntentDecisionV2 clarification without creating or executing a task', async () => {
+  it('surfaces a clarification plan without creating or executing a task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-intent-clarification');
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-clarify');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
@@ -141,9 +162,9 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       resolveIntent: vi.fn(),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
-    const intentOrchestrator = {
-      decide: vi.fn().mockResolvedValue(decision({
-        interactionType: 'clarification',
+    const planningAgent = {
+      plan: vi.fn().mockResolvedValue(workGraphPlan({
+        action: 'clarification',
         confidence: 0.2,
         reason: '低置信度',
         clarificationQuestion: '请明确是聊天还是创建任务。',
@@ -152,6 +173,9 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
           taskId: null,
           control: 'none',
           scope: null,
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
         },
         execution: {
           mode: 'none',
@@ -162,7 +186,9 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
           canModifyFiles: false,
           requiresExternalGateway: false,
           capabilityClass: 'conversation',
+          matchedBoundary: [],
         },
+        workGraph: null,
       })),
     };
 
@@ -173,16 +199,17 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       executor,
       db,
       config: createConfig(),
-      sessionId: 'sess_intent_orchestrator_clarification',
+      sessionId: 'sess_planning_agent_clarify',
       contextRecaller,
       llmBridge,
-      intentOrchestrator,
+      planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
     await session.submit('这个可能要处理一下', { awaitAsyncWork: true });
 
+    expect(planningAgent.plan).toHaveBeenCalledTimes(1);
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(executor.execute).not.toHaveBeenCalled();
     expect(session.getSnapshot().output.join('\n')).toContain('请明确是聊天还是创建任务。');
@@ -191,7 +218,7 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
   it('blocks repo execution completion when verifier acceptance criteria lack test evidence', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-intent-verifier');
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-verifier');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
@@ -212,8 +239,18 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       resolveTaskStateOwnership: vi.fn(),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
-    const intentOrchestrator = {
-      decide: vi.fn().mockResolvedValue(decision({
+    const planningAgent = {
+      plan: vi.fn().mockResolvedValue(workGraphPlan({
+        reason: '修改仓库代码',
+        task: {
+          binding: 'new',
+          taskId: null,
+          control: 'none',
+          scope: null,
+          title: '修改仓库代码',
+          goal: '修改仓库代码实现一个功能',
+          includeRecentConversationContext: false,
+        },
         execution: {
           mode: 'single_executor',
           complexity: 'simple',
@@ -223,7 +260,6 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
           canModifyFiles: true,
           requiresExternalGateway: false,
           capabilityClass: 'code_edit',
-          primaryIntent: 'repo_execution',
           matchedBoundary: ['repo_execution'],
         },
       })),
@@ -236,10 +272,10 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       executor,
       db,
       config: createConfig(),
-      sessionId: 'sess_intent_orchestrator_verifier',
+      sessionId: 'sess_planning_agent_verifier',
       contextRecaller,
       llmBridge,
-      intentOrchestrator,
+      planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
