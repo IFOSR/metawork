@@ -131,6 +131,56 @@ describe('CodexPlanningAgent', () => {
   });
 
   it.each([
+    { label: 'invalid expectedOutput', bad: { expectedOutput: 'nonsense' } },
+    { label: 'invalid requiredAgentClassKind', bad: { requiredAgentClassKind: 'wizard' } },
+    { label: 'invalid riskLevel', bad: { riskLevel: 'nuclear' } },
+  ])('does not silently default a present-but-invalid enum ($label) — it rejects and repairs', async ({ bad }) => {
+    const badJson = JSON.stringify({
+      action: 'plan_work_graph', confidence: 0.9, reason: 'x', capabilityClass: 'code_edit',
+      task: { binding: 'new' }, execution: { mode: 'single_executor' }, risk: { level: 'low' },
+      workGraph: {
+        reason: 'bad', subtasks: [{
+          id: 'a', title: 't', goal: 'g', dependsOn: [],
+          requiredAgentClassKind: 'executor', candidateAgentClasses: ['codex-cli'],
+          expectedOutput: 'patch', acceptance: ['ok'], riskLevel: 'low',
+          ...bad,
+        }],
+      },
+    });
+    const query = vi.fn()
+      .mockResolvedValueOnce(badJson)
+      .mockResolvedValueOnce(MULTI_SUBTASK_JSON);
+    const agent = new CodexPlanningAgent({ llmBridge: { query } });
+
+    const result = await agent.plan(context());
+
+    // The invalid enum must NOT be silently coerced to a default on attempt 1;
+    // it must fail validation and trigger the repair retry.
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('falls back conservatively when an invalid enum is never repaired', async () => {
+    const badEnumJson = JSON.stringify({
+      action: 'plan_work_graph', confidence: 0.9, reason: 'x', capabilityClass: 'code_edit',
+      task: { binding: 'new' }, execution: { mode: 'single_executor' }, risk: { level: 'low' },
+      workGraph: {
+        reason: 'bad', subtasks: [{
+          id: 'a', title: 't', goal: 'g', dependsOn: [],
+          requiredAgentClassKind: 'executor', candidateAgentClasses: ['codex-cli'],
+          expectedOutput: 'nonsense', acceptance: ['ok'], riskLevel: 'low',
+        }],
+      },
+    });
+    const agent = new CodexPlanningAgent({ llmBridge: bridge(async () => badEnumJson) });
+
+    const result = await agent.plan(context());
+
+    expect(result.action).toBe('direct_reply');
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it.each([
     { label: 'transport failure', query: async () => { throw new Error('spawn failed'); } },
     { label: 'unparseable output', query: async () => 'not json at all' },
     {

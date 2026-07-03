@@ -48,14 +48,6 @@ const TASK_CONTROLS = new Set<IntentTaskControl>([
 const EXECUTION_MODES = new Set<IntentExecutionMode>(['none', 'single_executor', 'multi_executor']);
 const COMPLEXITIES = new Set<IntentExecutionComplexity>(['simple', 'moderate', 'complex']);
 const RISK_LEVELS = new Set<IntentRiskLevel>(['low', 'medium', 'high']);
-const AGENT_CLASS_KINDS = new Set(['planner', 'executor']);
-const EXPECTED_OUTPUTS = new Set<SubtaskProposal['expectedOutput']>([
-  'analysis',
-  'patch',
-  'artifact',
-  'review',
-  'summary',
-]);
 
 /**
  * Real planner adapter: prompts Codex CLI (via LlmBridge) for a PlanningAgentPlan
@@ -188,24 +180,24 @@ export class CodexPlanningAgent implements PlanningAgent {
   ): SubtaskProposal {
     const candidateAgentClasses = asStringArray(raw.candidateAgentClasses);
     const hint = asString(raw.agentClassHint) || null;
-    const expectedOutput = EXPECTED_OUTPUTS.has(raw.expectedOutput as SubtaskProposal['expectedOutput'])
-      ? (raw.expectedOutput as SubtaskProposal['expectedOutput'])
-      : capabilityClass === 'code_edit' ? 'patch' : 'summary';
+    // For enum fields the validator can reject, only substitute a default when
+    // the field is genuinely absent. A present-but-invalid value is preserved so
+    // validatePlanningAgentPlan rejects it and the planner triggers a repair
+    // retry, rather than silently rewriting a wrong agent/output/risk intent.
     return {
       id: asString(raw.id) || `subtask_${index + 1}`,
       title: asString(raw.title) || context.userInput.slice(0, 50) || 'Execute task',
       goal: asString(raw.goal) || context.userInput,
       dependsOn: asStringArray(raw.dependsOn),
-      requiredAgentClassKind: AGENT_CLASS_KINDS.has(asString(raw.requiredAgentClassKind))
-        ? (raw.requiredAgentClassKind as SubtaskProposal['requiredAgentClassKind'])
-        : 'executor',
+      requiredAgentClassKind: enumOrRaw<SubtaskProposal['requiredAgentClassKind']>(raw.requiredAgentClassKind, 'executor'),
       agentClassHint: hint,
       candidateAgentClasses,
-      expectedOutput,
+      expectedOutput: enumOrRaw<SubtaskProposal['expectedOutput']>(
+        raw.expectedOutput,
+        capabilityClass === 'code_edit' ? 'patch' : 'summary',
+      ),
       acceptance: asStringArray(raw.acceptance),
-      riskLevel: RISK_LEVELS.has(raw.riskLevel as IntentRiskLevel)
-        ? (raw.riskLevel as SubtaskProposal['riskLevel'])
-        : 'low',
+      riskLevel: enumOrRaw<SubtaskProposal['riskLevel']>(raw.riskLevel, 'low'),
     };
   }
 
@@ -376,6 +368,13 @@ const PLAN_SCHEMA_EXAMPLE = {
 
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+// Substitute `fallback` only when the field is genuinely absent. A present but
+// invalid value is passed through unchanged so validatePlanningAgentPlan can
+// reject it (triggering a repair retry) instead of being silently defaulted.
+function enumOrRaw<T>(raw: unknown, fallback: T): T {
+  return raw === undefined || raw === null || raw === '' ? fallback : (raw as T);
 }
 
 function asStringArray(value: unknown): string[] {
