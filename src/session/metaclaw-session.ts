@@ -21,8 +21,6 @@ import type { DispatchContext } from '../task/scheduler.js';
 import {
   filterDurableTasks,
 } from '../core/task-routing.js';
-import { RuleHintsProvider } from '../core/rule-hints-provider.js';
-import { IntentOrchestrator, type IntentDecisionV2, type IntentOrchestratorInput } from '../core/intent-orchestrator.js';
 import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
 import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
@@ -39,7 +37,7 @@ import { learningCommand } from '../commands/learning-commands.js';
 import { dashboardCommand, attachCommand, historyCommand, configCommand, helpCommand, exitCommand } from '../commands/global-commands.js';
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
-import type { ExecutorProfile, IntentDecision } from '../core/executor-router.js';
+import type { IntentDecision } from '../core/executor-router.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { TaskSemanticService } from '../task/task-semantic-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
@@ -60,11 +58,17 @@ import {
   parsePriorityHint,
   type QueuedExecutionRequest,
 } from './session-helpers.js';
-import { SessionIntentApplicationService } from './session-intent-application-service.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
-import { PlannerRuntimeService } from '../planner/planner-runtime-service.js';
+import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import type { PlanningAgent } from '../planning/planning-agent.js';
+import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
+import { createDefaultSemanticPlanningAgent, type SemanticPlanningAgentDeps } from '../planning/semantic-planning-agent.js';
+import type { PlanningAgentPlan } from '../planning/planning-types.js';
+import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
+import { KernelDecisionApplier } from './kernel-decision-applier.js';
+import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -76,9 +80,8 @@ export interface MetaclawSessionDeps {
   sessionId: string;
   contextRecaller: ContextRecaller;
   llmBridge: LlmBridge;
-  intentOrchestrator?: {
-    decide(input: IntentOrchestratorInput): Promise<IntentDecisionV2>;
-  };
+  planningAgent?: PlanningAgent;
+  intentOrchestrator?: SemanticPlanningAgentDeps['intentOrchestrator'];
   notifier?: NotificationService;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
@@ -103,28 +106,6 @@ interface FocusContext {
 
 const BUSY_LLM_TIMEOUT_MS = 250;
 const DEFAULT_LLM_TIMEOUT_MS = 5_000;
-
-function agentClassToLegacyProfile(agentClass: AgentClass): ExecutorProfile {
-  return {
-    name: agentClass.name,
-    domains: agentClass.domains,
-    capabilities: agentClass.capabilities,
-    inputTypes: agentClass.inputTypes,
-    outputTypes: agentClass.outputTypes,
-    strengths: agentClass.strengths,
-    weaknesses: agentClass.weaknesses,
-    primaryUseCases: agentClass.primaryUseCases,
-    avoidUseCases: agentClass.avoidUseCases,
-    intentAffinity: agentClass.intentAffinity,
-    riskLevel: agentClass.riskLevel,
-    availability: agentClass.availability,
-    historicalSuccess: agentClass.historicalSuccess,
-    runtimeCommand: agentClass.runtimeCommand,
-    runtimeArgs: agentClass.runtimeArgs,
-    runtimeCheckCommand: agentClass.runtimeCheckCommand,
-    projectUrl: agentClass.projectUrl,
-  };
-}
 
 export class MetaclawSession {
   private output: string[] = [];
@@ -166,22 +147,22 @@ export class MetaclawSession {
   private readonly agentClassService: AgentClassService;
   private readonly executorAdminService: ExecutorAdminService;
   private readonly executionProgressService: ExecutionProgressService;
-  private readonly plannerRuntimeService: PlannerRuntimeService;
+  private readonly planningContextBuilder: PlanningContextBuilder;
+  private readonly planningAgent: PlanningAgent;
+  private readonly policyKernel: PolicyKernel;
+  private readonly planningDecisionRepo: PlanningDecisionRepo;
+  private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
   private readonly workspaceTargetService: WorkspaceTargetService;
   private readonly sessionExecutionCoordinator: SessionExecutionCoordinator;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
-  private readonly sessionIntentApplicationService: SessionIntentApplicationService;
-  private readonly intentOrchestrator: {
-    decide(input: IntentOrchestratorInput): Promise<IntentDecisionV2>;
-  } | null;
+  private readonly kernelDecisionApplier: KernelDecisionApplier;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
     this.sessionStateRepo = new SessionStateRepo(deps.db);
-    this.intentOrchestrator = deps.intentOrchestrator ?? null;
     this.taskRuntimeService = new TaskRuntimeService({
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
@@ -213,7 +194,7 @@ export class MetaclawSession {
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
-    this.plannerRuntimeService = new PlannerRuntimeService(this.subtaskRepo, this.taskEventRepo);
+    this.workGraphRuntimeService = new WorkGraphRuntimeService(this.subtaskRepo, this.taskEventRepo);
     this.workUnitClaimService = new WorkUnitClaimService(new WorkUnitRepo(deps.db));
     this.workspaceTargetService = new WorkspaceTargetService();
     this.memoryContextService = new MemoryContextService({
@@ -248,6 +229,19 @@ export class MetaclawSession {
       taskSemanticService: this.taskSemanticService,
       sessionStateRepo: this.sessionStateRepo,
     });
+    this.planningContextBuilder = new PlanningContextBuilder({
+      listTasks: () => this.taskRuntimeService.listTasks(),
+      listAgentClasses: () => this.listRuntimeVisibleAgentClasses(),
+      defaultExecutorName: deps.executor.name,
+      getFocusContext: () => this.getFocusContext(),
+      getTimeoutMs: () => this.getLlmTimeoutMs(),
+    });
+    this.planningAgent = deps.planningAgent ?? createDefaultSemanticPlanningAgent({
+      llmBridge: deps.llmBridge,
+      intentOrchestrator: deps.intentOrchestrator,
+    });
+    this.policyKernel = new PolicyKernel();
+    this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);
     this.router = createDefaultCommandRouter();
     this.scheduler = new SchedulerEngine<QueuedExecutionRequest>(
       deps.taskEngine,
@@ -274,7 +268,7 @@ export class MetaclawSession {
       taskRuntimeService: this.taskRuntimeService,
       memoryContextService: this.memoryContextService,
       agentClassService: this.agentClassService,
-      plannerRuntimeService: this.plannerRuntimeService,
+      workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
@@ -313,7 +307,9 @@ export class MetaclawSession {
         notify: () => this.notify(),
       },
     });
-    this.sessionIntentApplicationService = new SessionIntentApplicationService({
+    this.kernelDecisionApplier = new KernelDecisionApplier({
+      sessionId: deps.sessionId,
+      planningDecisionRepo: this.planningDecisionRepo,
       taskRuntimeService: this.taskRuntimeService,
       taskSemanticService: this.taskSemanticService,
       taskResumePlanner: this.taskResumePlanner,
@@ -323,7 +319,7 @@ export class MetaclawSession {
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        appendIntentClarification: (userInput, decision) => this.appendIntentClarification(userInput, decision),
+        appendPlanningClarification: (userInput, plan, decision) => this.appendPlanningClarification(userInput, plan, decision),
         runConversationInput: userInput => this.runConversationInput(userInput),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
@@ -731,39 +727,30 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
-  private async maybeHandleIntentOrchestratorDecision(
+  private async handlePlanningKernelDecision(
     userInput: string,
     options: { suppressSafetyGuardHints?: boolean } = {},
   ): Promise<boolean> {
-    const recentTasks = this.buildRecentTaskSummaries(this.taskRuntimeService.listTasks());
     this.appendOutput(
       '【MetaClaw｜理解用户请求】',
       '→ MetaClaw：正在分析目标、上下文与可执行边界',
     );
-    const decision = await this.getIntentOrchestrator().decide(
-      this.buildIntentOrchestratorInput(userInput, recentTasks, options),
-    );
-
-    return this.sessionIntentApplicationService.apply({
+    const context = this.planningContextBuilder.build({
       userInput,
-      decision,
-      recentTasks,
+      suppressSafetyGuardHints: options.suppressSafetyGuardHints,
     });
-  }
+    const plan = await this.planningAgent.plan(context);
+    const decision = this.policyKernel.decide(plan, {
+      tasks: this.taskRuntimeService.listTasks(),
+      runningTask: this.taskRuntimeService.getCurrentRunningTask(),
+      agentClasses: this.listRuntimeVisibleAgentClasses(),
+      currentFocus: this.getFocusContext(),
+    });
 
-  private getIntentOrchestrator(): {
-    decide(input: IntentOrchestratorInput): Promise<IntentDecisionV2>;
-  } {
-    if (this.intentOrchestrator) {
-      return this.intentOrchestrator;
-    }
-
-    const executorProfiles = this.agentClassService.listAgentClasses().map(agentClassToLegacyProfile);
-    return IntentOrchestrator.createDefault({
-      llmBridge: this.deps.llmBridge,
-      executorProfiles,
-      defaultExecutorName: this.deps.executor.name,
-      llmTimeoutMs: this.getLlmTimeoutMs(),
+    return this.kernelDecisionApplier.apply({
+      userInput,
+      plan,
+      decision,
     });
   }
 
@@ -777,34 +764,21 @@ export class MetaclawSession {
     }));
   }
 
-  private buildIntentOrchestratorInput(
-    userInput: string,
-    recentTasks: TaskSummary[],
-    options: { suppressSafetyGuardHints?: boolean } = {},
-  ): IntentOrchestratorInput {
-    const executorProfiles = this.agentClassService.listAgentClasses().map(agentClassToLegacyProfile);
-    const hints = new RuleHintsProvider(process.cwd()).collect(userInput);
-    return {
-      userInput,
-      recentTasks,
-      executorProfiles,
-      defaultExecutorName: this.deps.executor.name,
-      currentFocus: this.getFocusContext(),
-      hints: options.suppressSafetyGuardHints
-        ? hints.filter(hint => hint.source !== 'safety_guard')
-        : hints,
-      allowDurableTask: true,
-      allowFileModification: true,
-      timeoutMs: this.getLlmTimeoutMs(),
-    };
+  private listRuntimeVisibleAgentClasses(): AgentClass[] {
+    return this.agentClassService.listAgentClasses().map(agentClass => {
+      if (agentClass.kind === 'executor' && agentClass.name === this.deps.executor.name) {
+        return { ...agentClass, availability: 'available' as const };
+      }
+      return agentClass;
+    });
   }
 
-  private appendIntentClarification(userInput: string, decision: IntentDecisionV2): void {
+  private appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void {
     this.appendOutput(
       '→ 统一意图裁决置信度不足，未创建任务、未恢复旧任务、未派发执行器。',
       `→ 输入：${userInput}`,
-      `→ 判断：${decision.reason || '无可靠语义裁决'} (confidence=${decision.confidence.toFixed(2)})`,
-      decision.clarificationQuestion
+      `→ 判断：${decision.reason || plan.reason || '无可靠语义裁决'} (confidence=${plan.confidence.toFixed(2)})`,
+      plan.clarificationQuestion
         || '我不确定你是想继续聊天、创建新任务，还是恢复某个已有任务。请明确说明下一步动作。',
     );
   }
@@ -975,32 +949,16 @@ export class MetaclawSession {
       );
     }
 
-    if (await this.maybeHandleIntentOrchestratorDecision(userInput, {
+    if (await this.handlePlanningKernelDecision(userInput, {
       suppressSafetyGuardHints: riskAlreadyWarned,
     })) {
       return;
     }
 
-    this.appendIntentClarification(userInput, {
-      interactionType: 'clarification',
-      confidence: 0,
-      reason: '统一意图裁决未产生可执行动作',
-      clarificationQuestion: '我不确定你是要聊天、创建新任务、恢复旧任务还是派发执行器。请明确说明下一步动作。',
-      risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-      task: { binding: 'none', taskId: null, control: 'none', scope: null },
-      execution: {
-        mode: 'none',
-        complexity: 'simple',
-        selectedExecutor: null,
-        candidateExecutors: [],
-        requiresVerification: false,
-        canModifyFiles: false,
-        requiresExternalGateway: false,
-        capabilityClass: 'general',
-        matchedBoundary: [],
-      },
-      hints: [],
-    });
+    this.appendOutput(
+      '-> PolicyKernel did not produce a runtime action.',
+      'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
+    );
   }
 
   private async applySemanticPriority(taskId: string, userInput: string): Promise<void> {

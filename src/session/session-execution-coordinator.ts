@@ -16,11 +16,11 @@ import { formatExecutorError, isRecoverableExecutorFailure } from '../executor/e
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { SessionPresentationService, GuidanceState } from './session-presentation-service.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
-import type { PlannerRuntimeService } from '../planner/planner-runtime-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
 import type { WorkUnitClaim, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import type { AcceptanceCriterion } from '../core/execution-strategy-planner.js';
+import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -41,7 +41,7 @@ export interface SessionExecutionCoordinatorDeps {
   taskRuntimeService: TaskRuntimeService;
   memoryContextService: MemoryContextService;
   agentClassService: AgentClassService;
-  plannerRuntimeService: PlannerRuntimeService;
+  workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
   taskEventRepo: TaskEventRepo;
   workUnitClaimService: WorkUnitClaimService;
@@ -154,28 +154,23 @@ export class SessionExecutionCoordinator {
       this.recoverExpiredWorkUnits();
 
       const agentClasses = this.deps.agentClassService.listAgentClasses();
-      const plannerResult = this.deps.plannerRuntimeService.plan({
-        task: currentTask,
-        userPrompt,
-        taskExecutionPlan: this.deps.taskRuntimeService.buildExecutionPlan(currentTask, userPrompt),
-        intentDecision: request.executionMode === 'fresh' ? request.intentDecision : null,
-        agentClasses,
-        resources: currentTask.resources,
-        recalledTaskIds: approvedRecallSelection?.relatedTaskIds ?? [],
-      });
-
-      if (plannerResult.intent.action !== 'plan_work_graph') {
-        this.deps.scheduler.clearDispatch(taskId, plannerResult.intent.reason);
+      if (request.planningPlan && request.planningPlan.action !== 'plan_work_graph') {
+        this.deps.scheduler.clearDispatch(taskId, request.planningPlan.reason);
         await finishExecution([
-          `-> Planner: ${plannerResult.intent.action} (${plannerResult.intent.reason})`,
+          `-> PolicyKernel: no executor dispatch for ${request.planningPlan.action} (${request.planningPlan.reason})`,
         ], { scheduleNext: false });
         progressTracker.clear();
         return;
       }
 
+      const workGraphResult = this.deps.workGraphRuntimeService.apply({
+        task: currentTask,
+        userPrompt,
+        approvedPlan: request.planningPlan ?? null,
+      });
       this.deps.callbacks.appendOutput(
-        `-> Planner: planned ${plannerResult.subtasks.length} subtask(s)`,
-        `-> Planner: ${plannerResult.workGraph?.reason ?? 'work graph ready'}`,
+        `-> PolicyKernel: authorized ${workGraphResult.subtasks.length} subtask(s)`,
+        `-> Runtime: ${workGraphResult.workGraph.reason}`,
       );
 
       const executionOutputs: Array<{ subtaskId: string; title: string; output: string }> = [];

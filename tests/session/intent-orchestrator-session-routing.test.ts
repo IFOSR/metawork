@@ -109,6 +109,7 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       contextRecaller,
       llmBridge,
       intentOrchestrator,
+      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
@@ -176,6 +177,7 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       contextRecaller,
       llmBridge,
       intentOrchestrator,
+      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
@@ -238,6 +240,7 @@ describe('MetaclawSession IntentOrchestrator integration', () => {
       contextRecaller,
       llmBridge,
       intentOrchestrator,
+      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 

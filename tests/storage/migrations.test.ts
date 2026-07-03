@@ -71,7 +71,7 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -142,6 +142,20 @@ describe('runMigrations', () => {
       'claimed_subtask_id',
       'heartbeat_at',
       'lease_expires_at',
+    ]));
+
+    const planningDecisionColumns = db.prepare('PRAGMA table_info(planning_decisions)').all() as Array<{ name: string }>;
+    expect(planningDecisionColumns.map(column => column.name)).toEqual(expect.arrayContaining([
+      'id',
+      'session_id',
+      'request_id',
+      'task_id',
+      'user_input',
+      'plan_json',
+      'decision_json',
+      'outcome',
+      'reason',
+      'created_at',
     ]));
 
     const taskSearchIndexColumns = db.prepare('PRAGMA table_info(task_search_index)').all() as Array<{ name: string }>;

@@ -1,6 +1,7 @@
 import type { TaskRecoveryTrigger } from '../core/types.js';
 import type { IntentDecision } from '../core/executor-router.js';
 import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
+import type { PlanningAgentPlan } from '../planning/planning-types.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
 export {
   extractInlineResourceMatches,
@@ -13,6 +14,8 @@ export type QueuedExecutionRequest = {
   contextTaskId: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   intentDecision?: IntentDecisionV2 | null;
+  planningPlan?: PlanningAgentPlan | null;
+  kernelDecisionId?: string | null;
   semanticExecutorDecision?: IntentDecision | null;
   origin?: 'user' | 'system';
   schedulingReason?: string;

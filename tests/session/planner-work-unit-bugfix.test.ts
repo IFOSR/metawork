@@ -16,6 +16,7 @@ import type { ExecutorAdapter, ExecutorInput } from '../../src/executor/adapter.
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { IntentDecisionV2 } from '../../src/core/intent-orchestrator.js';
 import type { QueuedExecutionRequest } from '../../src/session/session-helpers.js';
+import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -144,6 +145,41 @@ function directReplyIntent(): IntentDecisionV2 {
   };
 }
 
+function directReplyPlan(): PlanningAgentPlan {
+  return {
+    id: 'plan_direct_reply',
+    schemaVersion: 1,
+    action: 'direct_reply',
+    confidence: 0.9,
+    reason: 'answer directly',
+    clarificationQuestion: null,
+    response: { directReply: null },
+    task: {
+      binding: 'none',
+      taskId: null,
+      control: 'none',
+      scope: null,
+      title: null,
+      goal: null,
+      includeRecentConversationContext: false,
+    },
+    execution: {
+      mode: 'none',
+      complexity: 'simple',
+      selectedExecutor: null,
+      candidateExecutors: [],
+      requiresVerification: false,
+      canModifyFiles: false,
+      requiresExternalGateway: false,
+      capabilityClass: 'conversation',
+      matchedBoundary: [],
+    },
+    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    workGraph: null,
+    source: 'test',
+  };
+}
+
 describe('planner/work-unit active path regressions', () => {
   it('recovers a persisted running subtask to ready and executes it instead of false-successing', async () => {
     const executor = createExecutor(async () => ({ success: true, output: 'resumed subtask done', exitCode: 0, durationMs: 10 }));
@@ -174,7 +210,10 @@ describe('planner/work-unit active path regressions', () => {
     const harness = createHarness({ executor, sessionId: 'sess_non_plan_no_done' });
     const task = readyTask(harness.taskEngine, 'non-plan task');
 
-    await dispatchExistingTask(harness, task.id, request(task.id, 'answer directly', directReplyIntent()));
+    await dispatchExistingTask(harness, task.id, {
+      ...request(task.id, 'answer directly', directReplyIntent()),
+      planningPlan: directReplyPlan(),
+    });
 
     expect(executor.execute).not.toHaveBeenCalled();
     expect(harness.taskRepo.findById(task.id)?.status).toBe('running');

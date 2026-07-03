@@ -1,14 +1,14 @@
-# MetaClaw Planner And Work Unit Context
+# MetaClaw Planning Agent And Work Unit Context
 
-The vocabulary for how MetaClaw turns a user task into planner-owned subtasks and runtime-owned work-unit claims. Exists because the old routing layer conflated several concepts (task, subtask, agent class, executor instance, policy, fallback) under one executor-routing path, which made long-thread recovery and lifecycle management hard to reason about.
+The vocabulary for how MetaClaw turns user intent into kernel-authorized task, subtask, and work-unit runtime actions. Exists because earlier routing layers conflated intent understanding, policy authorization, task state changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
-The active durable execution path is planner-first after session intake. Raw natural-language input still enters `IntentOrchestrator` and `SessionIntentApplicationService` first; that layer answers direct replies, applies task control, binds existing tasks, or creates durable tasks. Once a durable task is admitted and scheduled, session execution prepares durable task context, asks `src/planner/planner-runtime-service.ts` to recognize dispatch intent and produce or recover a work graph, persists `Subtask` nodes, claims an idle executor `WorkUnit`, and calls `ExecutionRuntime` with a `SubtaskExecutionSpec`.
+The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. A planner work unit implements the `PlanningAgent` interface, which understands the user input and proposes a structured `PlanningAgentPlan`. The deterministic `PolicyKernel` validates or rewrites that plan against the current runtime snapshot and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting approved subtasks, claiming an idle executor `WorkUnit`, or calling `ExecutionRuntime` with a `SubtaskExecutionSpec`.
 
-`src/planner/intent-recognition-skill.ts` owns the reusable dispatch-intent normalization logic inside the durable execution path. It consumes the session-intake `IntentDecisionV2` when present, can guard against direct reply, task control, clarification, no action, and durable work outcomes, and must not output a selected executor or work unit.
+`src/planning/` owns the PlanningAgent interface, planning context construction, plan validation, and the first adapter that reuses existing semantic intent logic behind the planner seam. Session code must not call the old intent orchestrator directly as a fallback.
 
-`src/planner/planner-routing-skill.ts` owns reusable planning and routing heuristics. It may rank candidate `AgentClass` values and produce `SubtaskPlan` nodes, but it must not claim a `WorkUnit`, write route events, or produce an `ExecutionPolicy`.
+`src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
 
 `src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions for concrete work units. `SessionExecutionCoordinator` calls its lightweight sweep before dispatch and claim attempts so expired executor leases can be observed and their subtasks can be made recoverable.
 
@@ -37,8 +37,28 @@ A fixed configuration template for a type of agent, including its harness, model
 _Avoid_: executor profile, capability class, instance, worker
 
 **Planner**:
-The agent class responsible for durable execution planning after session intake has created or bound a task. In the current code, `PlannerRuntimeService` owns dispatch-intent normalization, subtask planning or recovery, work graph events, and executor work-unit handoff; raw user-input classification still belongs to `IntentOrchestrator` and `SessionIntentApplicationService`.
+The agent class responsible for understanding user intent and proposing structured plans. A concrete planner work unit implements the PlanningAgent interface; it proposes but does not authorize or apply runtime state changes.
 _Avoid_: leader, router agent, implementation agent, executor
+
+**PlanningAgent**:
+The small interface exposed by a planner work unit: given a planning context, return a structured PlanningAgentPlan. It is the semantic understanding seam, not a storage or runtime authority.
+_Avoid_: policy kernel, session intent service, executor
+
+**PlanningAgentPlan**:
+A structured proposal from the PlanningAgent describing intent, target, task control, executor candidates, optional work graph proposals, risk, confidence, and clarification needs. A plan is not executable until the PolicyKernel accepts or rewrites it.
+_Avoid_: runtime command, task event, execution policy
+
+**PolicyKernel**:
+The deterministic authorization module that validates or rewrites a PlanningAgentPlan against the current RuntimeSnapshot. It is the only natural-language policy seam allowed to approve task creation, task control, work graph persistence, executor selection, or clarification.
+_Avoid_: planning agent, runtime applier, executor router
+
+**KernelDecision**:
+The PolicyKernel output that the runtime may apply. It records whether the plan was accepted, rewritten, rejected, or converted into clarification, and contains the runtime action to perform.
+_Avoid_: raw plan, route decision, executor output
+
+**RuntimeSnapshot**:
+The immutable view of current session, task, subtask, agent class, and work-unit state used by the PolicyKernel to decide whether a plan is allowed.
+_Avoid_: live repository handle, mutable runtime state, session transcript
 
 **Executor**:
 The agent class responsible for carrying out claimed subtasks and reporting results back to the planner/task context. Executors do not own task planning.

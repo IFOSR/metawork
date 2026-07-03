@@ -4,7 +4,7 @@
 
 MetaClaw is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
 
-It is built for teams who need agents to do more than answer the current turn. MetaClaw gives long-running AI work a task state machine, memory boundary, planner-first durable execution dispatch layer, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
+It is built for teams who need agents to do more than answer the current turn. MetaClaw gives long-running AI work a task state machine, memory boundary, PlanningAgent/PolicyKernel decision layer, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
 ## What MetaClaw Does
 
@@ -12,7 +12,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 - Restores interrupted work with resume context instead of restarting from scratch.
 - Auto-resumes executable parked tasks when the scheduler is idle.
 - Uses semantic priority, not keyword matching, for scheduler ordering when work is eligible to run.
-- Enforces one active top-level task at a time while the planner/work-unit dispatch layer is being hardened.
+- Enforces one active top-level task at a time while the PlanningAgent/PolicyKernel and work-unit dispatch layers are being hardened.
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned subtask graph, ranks candidate agent classes, and lets idle executor work units claim ready subtasks.
@@ -21,7 +21,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one MetaClaw runtime.
-- Shows the interactive TUI input, current task, planner status, execution preparation, work-unit dispatch, executor progress, and final task result so users can follow the core execution path instead of seeing only the final answer.
+- Shows the interactive TUI input, current task, planning and policy milestones, execution preparation, work-unit dispatch, executor progress, and final task result so users can follow the core execution path instead of seeing only the final answer.
 - Supports terminal-native editing in the TUI composer, including spaces, multiline input, left/right cursor movement, Backspace at the cursor, and forward delete when the terminal emits a raw delete sequence.
 - Ships with `npm run smoke:metaclaw`, a real MetaClaw end-to-end smoke gate that runs the CLI, executor, artifact capture, and regression checks.
 
@@ -33,51 +33,59 @@ MetaClaw is task-oriented rather than session-only. A normal agent session answe
 flowchart LR
   User[User] --> Surfaces[Client surfaces<br/>TUI, CLI, Gateway, Feishu]
   Surfaces --> Session[MetaclawSession<br/>single runtime coordinator]
-  Session --> Intake[Session intake<br/>IntentOrchestrator + SessionIntentApplicationService]
-  Intake --> Choice{What is this?}
-  Choice -->|answer now| Conversation[Direct reply<br/>no durable task]
-  Choice -->|control task| Control[Task control<br/>status, resume, clear, recover]
-  Choice -->|do work| Durable[Durable task<br/>state, admission, artifacts]
+  Session --> MemoryFast[Explicit memory and preference fast path]
+  Session --> Planning[Planner Work Unit<br/>PlanningAgent]
+  Planning --> Plan[PlanningAgentPlan<br/>intent, target, candidates,<br/>work graph proposal]
+  Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>executor availability]
+  Kernel --> Decision{KernelDecision}
+  Decision -->|direct_reply| Conversation[ConversationRuntimeService<br/>answer without durable task]
+  Decision -->|clarification| Clarify[Clarification<br/>ask for missing input]
+  Decision -->|task_control| Control[Task control runtime<br/>status, resume, clear, recover]
+  Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>create or bind task]
+  Decision -->|reject/no_action| Stop[No execution<br/>preserve state]
 
-  Conversation --> Context[Context and memory<br/>recent session first]
-  Control --> TaskOS[Task OS<br/>TaskEngine and Scheduler]
-  Durable --> TaskOS
-  Context --> DirectExec[ConversationRuntimeService<br/>direct executor answer]
-  DirectExec --> Delivery
-  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>context, durable execution dispatch]
+  Runtime --> TaskOS[Task OS<br/>TaskRuntimeService and Scheduler]
+  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>context and dispatch loop]
   ExecCoord --> Memory[MemoryContextService<br/>resume pack, preferences, materials]
-  Memory --> Planner[PlannerRuntimeService<br/>durable execution planner]
-  Planner --> DispatchGate{Dispatch outcome}
-  DispatchGate -->|guard: no execution needed| NoDispatch[Clear dispatch<br/>keep task state]
-  DispatchGate -->|plan_work_graph| Graph[Work Graph<br/>persisted Subtasks]
+  Memory --> GraphRuntime[WorkGraphRuntimeService<br/>apply approved work graph]
+  GraphRuntime --> Graph[Work Graph<br/>persisted Subtasks]
   Graph --> Claim[WorkUnitClaimService<br/>claim idle executor WorkUnit]
   Claim --> Spec[SubtaskExecutionSpec<br/>subtask, work unit, agent class]
   Spec --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
   Executors --> Verify[Verification and delivery<br/>tests, evidence, artifacts]
   Verify --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
+  Conversation --> Delivery
+  Clarify --> Delivery
+  Control --> Delivery
+  Stop --> Delivery
   Delivery --> User
 
   Session <--> Store[(Local SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
+  Kernel -. audit .-> Decisions[(planning_decisions)]
   Memory <--> Store
   TaskOS <--> Store
   Graph <--> Store
   Claim <--> Store
 ```
 
-The main idea is simple: every input enters one runtime, gets a session-intake decision, then follows one of three paths. Short answers stay light. Task-control requests change existing state. Real work becomes a durable task. In the current implementation, raw user input is still classified by `IntentOrchestrator` and applied by `SessionIntentApplicationService`; after a durable task is admitted and scheduled, `PlannerRuntimeService` owns the execution dispatch surface by reusing that decision, recovering or creating a work graph of subtasks, and handing resource arbitration to the platform layer. The platform layer claims idle executor work units, watches heartbeats and leases, and runs a claimed subtask through `ExecutionRuntime`.
+The main idea is simple: every natural-language input enters one runtime, then a planner work unit exposes the `PlanningAgent` interface and proposes a structured `PlanningAgentPlan`. `PolicyKernel` is the single authorization layer for natural-language planning: it validates the plan, checks task state and conflicts, rewrites unavailable executor candidates, and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting kernel-approved subtasks, claiming idle executor work units, and running claimed subtasks through `ExecutionRuntime`.
+
+The first `PlanningAgent` adapter reuses the existing `IntentOrchestrator` and semantic router logic internally. That logic is now behind the planner interface; `MetaclawSession` no longer calls it directly as the main natural-language path.
 
 ### Direct Reply Path
 
 ```mermaid
 flowchart LR
-  Input[User asks a question] --> Intent[IntentOrchestrator]
-  Intent --> Apply[SessionIntentApplicationService]
-  Apply --> Direct[direct_reply]
-  Direct --> Runtime[ConversationRuntimeService]
-  Runtime --> Recall[ContextRecaller<br/>recent session context first]
+  Input[User asks a question] --> Planning[PlanningAgent]
+  Planning --> Plan[PlanningAgentPlan<br/>direct_reply]
+  Plan --> Kernel[PolicyKernel]
+  Kernel --> Decision[KernelDecision<br/>direct_reply]
+  Decision --> Runtime[KernelDecisionApplier]
+  Runtime --> Conversation[ConversationRuntimeService]
+  Conversation --> Recall[ContextRecaller<br/>recent session context first]
   Recall --> Executor[Default executor<br/>usually codex-cli]
   Executor --> Answer[Final answer]
-  Answer --> Persist[Record interaction]
+  Answer --> Persist[Record interaction<br/>and planning_decision]
   Answer --> UI[TUI or Feishu]
 ```
 
@@ -87,14 +95,16 @@ This path is still semantic. "Continue" or "you stopped halfway" is resolved fro
 
 ```mermaid
 flowchart LR
-  Input[User asks MetaClaw to do work] --> Intent[IntentOrchestrator]
-  Intent --> Apply[SessionIntentApplicationService]
-  Apply --> Gate[TaskAdmissionGate<br/>single active top-level task]
-  Gate --> Task[TaskRuntimeService<br/>create or bind task]
+  Input[User asks MetaClaw to do work] --> Planning[PlanningAgent]
+  Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
+  Proposal --> Kernel[PolicyKernel<br/>authorize or rewrite]
+  Kernel --> Decision[KernelDecision<br/>plan_work_graph]
+  Decision --> Apply[KernelDecisionApplier]
+  Apply --> Task[TaskRuntimeService<br/>create or bind task]
   Task --> Scheduler[SchedulerEngine<br/>readiness, priority, idle resume]
   Scheduler --> Context[MemoryContextService<br/>resume pack, preferences, materials]
-  Context --> Planner[PlannerRuntimeService<br/>durable execution planning]
-  Planner --> WorkGraph[Work Graph<br/>persist Subtasks]
+  Context --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply approved graph]
+  WorkGraphRuntime --> WorkGraph[Work Graph<br/>persist Subtasks]
   WorkGraph --> Ready[Ready Subtask<br/>dependsOn satisfied]
   Ready --> Claim[WorkUnitClaimService<br/>claim idle executor WorkUnit]
   Claim --> Spec[SubtaskExecutionSpec<br/>subtask, work unit, agent class]
@@ -105,9 +115,9 @@ flowchart LR
   Done -->|no| Blocked[Blocked with recovery hint]
 ```
 
-This is the Task OS path. It is where task state, resume context, planner recovery, subtask state, work-unit leases, artifact capture, and verification matter. The first production version keeps one admitted top-level task and advances ready subtasks serially inside that task.
+This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, and verification matter. The first production version keeps one admitted top-level task and advances ready subtasks serially inside that task.
 
-The current public intake deliberately allows only one active top-level task at a time. Direct replies, clarifications, status queries, clear-task commands, and requests that reference the active task itself are still allowed. A new unrelated top-level task is rejected with a visible message until the active task is finished or cancelled. This keeps the user path predictable while planner-first work graph dispatch and work-unit lifecycle management are being hardened.
+The current natural-language path deliberately allows only one active top-level task at a time. Direct replies, clarifications, status queries, clear-task commands, and requests that reference the active task itself are still allowed. A new unrelated top-level task is rejected by `PolicyKernel` with a visible message until the active task is finished or cancelled. Slash-command and deterministic execution paths still use the existing task-admission gate. This keeps the user path predictable while the planning-agent, policy-kernel, and work-unit lifecycle layers are being hardened.
 
 ### Feishu And Progress Path
 
@@ -130,9 +140,9 @@ The conversation/task boundary matters:
 - Task control: inspect or change existing task state. Good for "what is running?", "resume that task", or "clear blocked tasks".
 - Durable task: create or continue work that needs execution, persistence, artifacts, recovery, scheduling, or later retrieval.
 
-The current direct-reply path is explicit: MetaClaw first shows intent understanding, then recalls recent conversation context, then sends the answer to the selected executor. Feishu and TUI output separate `MetaClaw` milestones from concrete `Executor: <name>` milestones so users can see whether the planner, scheduler, work-unit dispatcher, or executor is doing the work. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
+The current direct-reply path is explicit: MetaClaw first shows planning and policy milestones, then recalls recent conversation context, then sends the answer to the selected executor. Feishu and TUI output separate `MetaClaw` milestones from concrete `Executor: <name>` milestones so users can see whether the planning agent, policy kernel, scheduler, work-unit dispatcher, or executor is doing the work. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
 
-The Task OS upgrade described in [MetaClaw Task OS Architecture And Strategy Upgrade](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, planner-first work graph generation, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
+The Task OS upgrade described in [MetaClaw Task OS Architecture And Strategy Upgrade](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, PlanningAgent work graph proposals, PolicyKernel authorization, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
 Important runtime boundary: the Agentic Loop is implemented as a core architecture layer and tested directly. The current interactive/script session path uses the session runtime unless a feature path explicitly calls the strategy/orchestration loop.
 
@@ -146,7 +156,7 @@ MetaClaw supports these executor adapters:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
 | Hermes Agent | `hermes` | Research tasks, multi-tool orchestration, memory/gateway/assistant workflows | Install and authenticate Hermes |
 
-The default runtime command is `codex`, represented internally as the `codex-cli` executor agent class plus an idle executor work unit. The active dispatch path is planner-first: MetaClaw recognizes the durable task intent, builds a work graph of subtasks, ranks available executor `AgentClass` candidates, and lets `WorkUnitClaimService` claim an idle executor `WorkUnit` before `ExecutionRuntime` runs the adapter. Pi Agent and Hermes Agent can be selected or used as candidates for research-style work when their agent classes are available. DeepSeek TUI, Claude Code, and OpenClaw remain available for explicit local configuration, but they are not seeded into the default registry unless selected as the default executor.
+The default runtime command is `codex`, represented internally as the `codex-cli` executor agent class plus an idle executor work unit. The active natural-language dispatch path is `PlanningAgent -> PolicyKernel -> Runtime`: MetaClaw recognizes the durable task intent, proposes a work graph of subtasks, authorizes or rewrites available executor `AgentClass` candidates, and lets `WorkUnitClaimService` claim an idle executor `WorkUnit` before `ExecutionRuntime` runs the adapter. Pi Agent and Hermes Agent can be selected or used as candidates for research-style work when their agent classes are available. DeepSeek TUI, Claude Code, and OpenClaw remain available for explicit local configuration, but they are not seeded into the default registry unless selected as the default executor.
 
 ## Prerequisites
 
@@ -749,29 +759,31 @@ MetaClaw currently uses a single active top-level task with a scheduler in front
 - Material, permission, authorization, and access blocks stay blocked until the user provides the missing input or explicitly unblocks the task.
 - Not-ready tasks do not auto-run.
 
-While one top-level task is running, `TaskAdmissionGate` rejects new unrelated durable tasks and execution requests for other tasks. It still allows direct replies, clarifications, status queries, clear-task commands, and work that explicitly targets the active task. Queueing, urgent preemption, and auto-resume of a second top-level task are intentionally disabled in the current scope; ADR-0011 tracks this as a reversible decision.
+While one top-level task is running, `PolicyKernel` rejects new unrelated natural-language durable tasks and execution requests for other tasks. It still allows direct replies, clarifications, status queries, clear-task commands, and work that explicitly targets the active task. Slash-command and deterministic execution paths still pass through `TaskAdmissionGate`. Queueing, urgent preemption, and auto-resume of a second top-level task are intentionally disabled in the current scope; ADR-0011 tracks this as a reversible decision.
 
 This prevents queued work from wasting compute while preserving task safety. Multiple subtasks can still exist inside the one admitted top-level task; the current dispatcher advances ready subtasks serially as their dependencies are satisfied.
 
-## Planner And Work Unit Dispatch
+## Planning Agent, Policy Kernel, And Work Units
 
-Durable execution dispatch is now planner-first. The raw user-input boundary is still handled by `IntentOrchestrator` and `SessionIntentApplicationService`; that layer decides whether to answer directly, apply task control, bind to an existing task, or create a durable task. Once a durable task reaches `SessionExecutionCoordinator`, the active execution path enters `PlannerRuntimeService`. The planner combines `IntentRecognitionSkill` and `PlannerRoutingSkill` to return one of these dispatch outcomes:
+Natural-language dispatch is now split into planner understanding, kernel authorization, and runtime execution. After explicit memory/preference fast paths, raw user input enters `PlanningAgent`. The first adapter reuses existing `IntentOrchestrator` and `SemanticIntentRouter` behavior internally, but session code no longer calls those services as its own routing fallback. `PlanningAgent` returns a structured `PlanningAgentPlan` with one of these proposed actions:
 
-- `direct_reply`, `clarification`, `task_control`, or `no_action`: guard outcomes for cases where a queued or resumed durable dispatch should not claim an executor work unit. Normal direct replies and task-control requests are consumed earlier by the session-intake layer.
-- `plan_work_graph`: the planner persists a work graph whose nodes are `Subtask` records. Each subtask carries dependencies, acceptance criteria, expected output, required agent-class kind, and candidate executor agent classes.
+- `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
+- `plan_work_graph`: the planner proposes a work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, required agent-class kind, and candidate executor agent classes.
 
-After planning, the platform layer does resource arbitration only. `WorkUnitClaimService` sweeps expired leases, finds an idle executor `WorkUnit`, marks it claimed/running/waiting/failed/released, and records work-unit events. `ExecutionRuntime` receives a `SubtaskExecutionSpec` containing the claimed subtask, work unit, agent class runtime config, context, and acceptance requirements. It no longer receives an `ExecutionPolicy`, `primaryExecutor`, `candidateExecutors`, or `fallbackChain`.
+`PolicyKernel` then validates schema shape, confidence, task status, single-active-task conflicts, blocked/recovery evidence, and executor availability. It returns `accept`, `rewrite`, `reject`, or `clarify` plus a `KernelDecision`. The kernel is deliberately pure: it does not write repositories, claim work units, call executors, or send UI/delivery messages.
+
+Runtime services apply kernel decisions. `KernelDecisionApplier` writes the `planning_decisions` audit row and dispatches to conversation, task-control presentation, or durable task preparation. `WorkGraphRuntimeService` persists only kernel-approved work graphs and recovers existing unfinished subtasks for dispatch. `WorkUnitClaimService` sweeps expired leases, finds an idle executor `WorkUnit`, marks it claimed/running/waiting/failed/released, and records work-unit events. `ExecutionRuntime` receives a `SubtaskExecutionSpec` containing the claimed subtask, work unit, agent class runtime config, context, and acceptance requirements. It no longer receives an `ExecutionPolicy`, `primaryExecutor`, `candidateExecutors`, or `fallbackChain`.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, and `ExecutionPolicyPlanner` are retained as migration reference or compatibility seams for older tests and admin previews. They do not own the main execution path. Legacy route intent names such as `repo_execution` and `research_workflow` still exist as affinity keys for ranking agent classes, not as a separate executor-selection layer.
 
 ## Complex Task Strategy And Agentic Loop
 
-MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. `PlannerRoutingSkill` reuses the strategy planner heuristics to decide between:
+MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. `PlanningAgent` can use planner skills such as `PlannerRoutingSkill`, which reuses the strategy planner heuristics to decide between:
 
 - `single_executor`: one executor is enough.
 - `multi_executor`: split the request into subtasks with executor hints, dependencies, inputs, expected output type, risk level, and acceptance checks.
 
-The planner uses complexity signals such as explicit multi-agent wording, multiple capability domains, staged dependencies, high-risk validation, multiple resources, and relevant historical tasks. In the active session path, these strategy units become persisted `Subtask` nodes. The dispatcher then claims and executes ready subtasks serially in dependency order.
+The planner uses complexity signals such as explicit multi-agent wording, multiple capability domains, staged dependencies, high-risk validation, multiple resources, and relevant historical tasks. In the active session path, these strategy units become persisted `Subtask` nodes only after `PolicyKernel` accepts or rewrites the plan. The dispatcher then claims and executes ready subtasks serially in dependency order.
 
 For multi-executor strategies, the Agentic Loop core is:
 
@@ -914,19 +926,21 @@ src/
 ├── guidance/       # Proactive guidance, task signals, guidance policy, dashboard orchestration
 ├── integrations/   # External integration helpers such as Markdown preview
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
+├── kernel/         # Pure PolicyKernel authorization for PlanningAgentPlan decisions
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Memory capture, recall, recall review, preferences, context bundles, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
-├── planner/        # PlannerRuntimeService and planner skills for intent and work graph planning
+├── planner/        # Pure planner skills and legacy planner-runtime compatibility reference
+├── planning/       # PlanningAgent interface, context builder, plan schema, semantic adapter
 ├── routing/        # Legacy ExecutionPolicy planner and routing-policy reference layer
-├── session/        # Interactive/script/gateway session coordination and persistence
+├── session/        # Session coordination, PlanningAgent/PolicyKernel wiring, decision application
 ├── storage/        # SQLite migrations and repositories
 ├── task/           # Task state machine, runtime, scheduler, resume planning, ranking, semantic/embedding retrieval
 ├── tui/            # Ink terminal UI
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), active session-intake helpers (`IntentOrchestrator`, `RuleHintsProvider`, `SemanticIntentRouter`, `llm-bridge`), strategy primitives (`ExecutionStrategyPlanner`, `CapabilityClass`), and legacy policy seams (`ExecutionPlanningService`, `ExecutionPolicy`, legacy `ExecutorRouter`, `task-routing`). The active durable-task dispatch logic lives in `src/planner/`, `src/session/`, `src/execution/work-unit-claim-service.ts`, and the storage repositories rather than returning to `core`.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), reusable semantic-intent helpers (`IntentOrchestrator`, `RuleHintsProvider`, `SemanticIntentRouter`, `llm-bridge`), strategy primitives (`ExecutionStrategyPlanner`, `CapabilityClass`), and legacy policy seams (`ExecutionPlanningService`, `ExecutionPolicy`, legacy `ExecutorRouter`, `task-routing`). The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories rather than returning to `core`.
 
 ## License
 

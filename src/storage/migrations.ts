@@ -597,6 +597,28 @@ const MIGRATIONS: Migration[] = [
       `).run(now, now);
     },
   },
+  {
+    version: 16,
+    up: `
+      CREATE TABLE IF NOT EXISTS planning_decisions (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        task_id TEXT,
+        user_input TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        decision_json TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_planning_decisions_session
+        ON planning_decisions(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_planning_decisions_task
+        ON planning_decisions(task_id, created_at);
+    `,
+  },
 ];
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {

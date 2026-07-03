@@ -9,11 +9,12 @@ function readSource(path: string): string {
 }
 
 describe('Execution planning architecture boundaries', () => {
-  it('keeps business dispatch in PlannerRoutingSkill and resource arbitration in WorkUnitClaimService', () => {
+  it('keeps business planning in PlanningAgent/PolicyKernel and resource arbitration in WorkUnitClaimService', () => {
     const sessionSource = readSource('src/session/metaclaw-session.ts');
     const coordinatorSource = readSource('src/session/session-execution-coordinator.ts');
     const executorCommandSource = readSource('src/commands/executor-commands.ts');
     const plannerRoutingSource = readSource('src/planner/planner-routing-skill.ts');
+    const plannerRuntimeSource = readSource('src/planner/planner-runtime-service.ts');
     const strategyPlannerSource = readSource('src/core/execution-strategy-planner.ts');
 
     expect(sessionSource).not.toContain('new ExecutorRouter');
@@ -22,11 +23,14 @@ describe('Execution planning architecture boundaries', () => {
     expect(coordinatorSource).not.toContain('resolveForTask');
     expect(coordinatorSource).not.toContain('ExecutionPolicyPlanner');
     expect(coordinatorSource).not.toContain('fallbackChain');
-    expect(coordinatorSource).toContain('plannerRuntimeService.plan');
+    expect(coordinatorSource).toContain('workGraphRuntimeService.apply');
+    expect(sessionSource).toContain('planningAgent.plan');
+    expect(sessionSource).toContain('policyKernel.decide');
     expect(coordinatorSource).toContain('workUnitClaimService.claim');
     expect(executorCommandSource).not.toContain('ExecutionPlanningService');
     expect(executorCommandSource).toContain('PlannerRoutingSkill');
     expect(sessionSource).not.toContain('executionPlanningService.plan');
+    expect(plannerRuntimeSource).not.toContain('subtaskRepo.upsert');
     expect(plannerRoutingSource).toContain('ExecutionStrategyPlanner');
     expect(plannerRoutingSource).not.toContain('ExecutionPolicy');
     expect(plannerRoutingSource).not.toContain('fallbackChain');

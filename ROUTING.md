@@ -1,22 +1,39 @@
-# MetaClaw Planner And Work Unit Dispatch
+# MetaClaw Planning Agent And Policy Kernel Routing
 
-This root document is the readable routing overview for the current codebase. Older policy-first routing plans and ADRs remain in `docs/`, but the active durable execution path is now planner-first after session intake.
+This root document is the readable routing overview for the current codebase. Older policy-first and planner-first routing plans remain in `docs/`, but the active natural-language path is now:
 
-For canonical terminology, see [`CONTEXT.md`](CONTEXT.md). For the current architectural decision, see [`docs/adr/0013-planner-first-work-unit-dispatch.md`](docs/adr/0013-planner-first-work-unit-dispatch.md). This file summarizes the implemented path without changing those ADR or plan files.
+```text
+User natural-language input
+  -> Planner Work Unit implements PlanningAgent
+  -> PlanningAgentPlan
+  -> PolicyKernel
+  -> KernelDecision
+  -> MetaClaw Runtime
+  -> Executor Work Unit / Conversation / Task Control / Delivery
+```
+
+For canonical terminology, see [`CONTEXT.md`](CONTEXT.md). For the current architectural decision, see [`docs/adr/0014-planning-agent-policy-kernel-boundary.md`](docs/adr/0014-planning-agent-policy-kernel-boundary.md). This file summarizes the implemented path without changing historical ADR or plan files.
 
 ## Current Data Flow
 
 ```text
 User input
   -> MetaclawSession
-  -> IntentOrchestrator / SessionIntentApplicationService session intake
-  -> TaskRuntimeService creates or binds a Task
+  -> explicit memory/preference fast path when applicable
+  -> PlanningContextBuilder
+  -> PlanningAgent
+       -> first adapter reuses IntentOrchestrator/SemanticIntentRouter internally
+  -> PlanningAgentPlan
+  -> PolicyKernel
+       -> validate schema, task state, confidence, conflicts, executor availability
+  -> KernelDecision
+  -> KernelDecisionApplier
+       -> record planning_decisions audit row
+       -> answer directly, ask clarification, apply task control, or prepare durable work
+  -> TaskRuntimeService creates or binds a Task when durable work is authorized
   -> SchedulerEngine starts dispatch when the Task is runnable
   -> SessionExecutionCoordinator prepares execution context
-  -> PlannerRuntimeService
-       -> IntentRecognitionSkill
-       -> PlannerRoutingSkill when work should be planned
-  -> Work Graph persisted as Subtask records
+  -> WorkGraphRuntimeService applies the kernel-approved Work Graph as Subtask records
   -> find ready Subtask whose dependencies are done
   -> WorkUnitClaimService claims an idle executor WorkUnit
   -> ExecutionRuntime receives SubtaskExecutionSpec
@@ -24,11 +41,11 @@ User input
   -> task events, work unit events, artifacts, verification, delivery
 ```
 
-The important boundary is that session intake still owns raw user-input classification, the planner owns durable execution dispatch, and the platform owns resource arbitration:
+The important boundary is that planner understanding, kernel authorization, and runtime side effects are separate:
 
-- `IntentOrchestrator` and `SessionIntentApplicationService` decide whether raw input is direct reply, task control, clarification, existing-task reference, or a new durable task.
-- The planner may guard a queued/resumed dispatch with `direct_reply`, `clarification`, `task_control`, or `no_action`, but normal direct replies and task-control requests are consumed before durable execution dispatch.
-- Only `plan_work_graph` creates or resumes executable subtasks.
+- `PlanningAgent` owns semantic understanding, target/task intent, clarification needs, executor candidates, and work graph proposals.
+- `PolicyKernel` owns deterministic authorization: mode validation, task status checks, single-active-task conflicts, blocked/recovery constraints, executor availability, rewrite/reject/clarify decisions.
+- Runtime services own side effects: task creation or binding, task-control presentation, subtask persistence, work-unit claim, execution, verification, delivery, and audit persistence.
 - `Subtask` is the work graph node.
 - `WorkUnit` is a concrete runtime resource, not a planned unit of work.
 - `AgentClass` is the reusable configuration for a planner or executor type.
@@ -37,33 +54,40 @@ The important boundary is that session intake still owns raw user-input classifi
 
 ## What Is No Longer The Main Path
 
-The following code remains as compatibility or migration reference, not as the primary durable-task dispatch layer:
+The following code remains as reusable semantic logic, compatibility, or migration reference, not as the primary natural-language dispatch layer:
 
+- `src/core/intent-orchestrator.ts` when called directly from session code
+- `src/session/session-intent-application-service.ts`
 - `src/core/executor-router.ts`
 - `src/core/executor-routing-coordinator.ts`
 - `src/routing/execution-policy-planner.ts`
 - `ExecutionPolicy` and `fallbackChain` as runtime inputs
 
-Do not add new primary dispatch behavior there. Reusable logic should move into planner skills or work-unit services.
+Do not add new primary dispatch behavior there. Reusable semantic understanding should live behind `PlanningAgent`; deterministic authorization should live in `PolicyKernel`; runtime state changes should live in runtime/application services.
 
 ## Current Constraints
 
-- One top-level task is admitted at a time.
+- One top-level natural-language durable task is admitted at a time.
+- Slash-command and deterministic execution paths still use the existing task-admission gate.
 - Subtasks inside the active task are dispatched serially by dependency readiness.
 - The first work-unit pool is fixed: default seeding creates `planner-1` and `executor-1`.
 - Registering an executor `AgentClass` creates a default idle executor work unit.
 - Heartbeat sweep is synchronous before dispatch and claim attempts, not a background timer.
 - If no available/idle executor work unit can claim a ready subtask, the task is blocked with a recovery hint.
-- Automatic fallback is deferred to planner recovery/replanning rather than performed by the platform dispatcher.
+- Automatic retry, preemption, conflict-task parking, elastic work-unit spawn, and parallel subtasks are deferred.
 
 ## Tests To Update First
 
 When changing dispatch behavior, update or run these focused tests before broad suite work:
 
 ```bash
+npm test -- tests/session/metaclaw-session-architecture-boundary.test.ts
+npm test -- tests/core/execution-planning-boundary.test.ts
+npm test -- tests/kernel/policy-kernel.test.ts
+npm test -- tests/planning/planning-agent-plan-validator.test.ts
+npm test -- tests/execution/work-graph-runtime-service.test.ts
 npm test -- tests/session/planner-work-unit-bugfix.test.ts
 npm test -- tests/planner/planner-routing-skill.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
-npm test -- tests/storage/subtask-repo.test.ts
-npm test -- tests/core/executor-admin-and-routing-services.test.ts
+npm test -- tests/storage/planning-decision-repo.test.ts
 ```

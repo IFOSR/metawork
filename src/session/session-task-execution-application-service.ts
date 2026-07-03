@@ -46,14 +46,16 @@ export class SessionTaskExecutionApplicationService {
       return;
     }
 
-    const admission = this.taskAdmissionGate.evaluateExecution({
-      taskId,
-      runningTask: this.deps.taskRuntimeService.getCurrentRunningTask(),
-    });
-    if (!admission.allowed) {
-      this.deps.callbacks.appendOutput(...admission.lines);
-      this.deps.callbacks.refreshRuntimeState();
-      return;
+    if (!request.kernelDecisionId) {
+      const admission = this.taskAdmissionGate.evaluateExecution({
+        taskId,
+        runningTask: this.deps.taskRuntimeService.getCurrentRunningTask(),
+      });
+      if (!admission.allowed) {
+        this.deps.callbacks.appendOutput(...admission.lines);
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
     }
 
     const recallApplication = await this.deps.recallReviewApplicationService.apply({
