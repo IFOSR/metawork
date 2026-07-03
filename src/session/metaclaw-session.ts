@@ -15,12 +15,13 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import { NoopNotificationService, type NotificationService } from '../notifications/types.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
-import type { LlmBridge, TaskSummary } from '../core/llm-bridge.js';
+import type { LlmBridge } from '../core/llm-bridge.js';
 import { SchedulerEngine } from '../task/scheduler.js';
 import type { DispatchContext } from '../task/scheduler.js';
 import {
   filterDurableTasks,
 } from '../core/task-routing.js';
+import { buildRecentTaskSummaries } from '../core/task-summary.js';
 import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
 import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
@@ -326,7 +327,7 @@ export class MetaclawSession {
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
-        buildRecentTaskSummaries: tasks => this.buildRecentTaskSummaries(tasks),
+        buildRecentTaskSummaries,
         buildRecoveryTrigger: (task, input) => this.buildRecoveryTrigger(task, input),
       },
     });
@@ -754,16 +755,6 @@ export class MetaclawSession {
     });
   }
 
-  private buildRecentTaskSummaries(tasks: Task[]): TaskSummary[] {
-    return tasks.map(task => ({
-      id: task.id,
-      title: task.title,
-      goal: task.goal,
-      summary: task.summary,
-      status: task.status,
-    }));
-  }
-
   private listRuntimeVisibleAgentClasses(): AgentClass[] {
     return this.agentClassService.listAgentClasses().map(agentClass => {
       if (agentClass.kind === 'executor' && agentClass.name === this.deps.executor.name) {
@@ -1076,7 +1067,7 @@ export class MetaclawSession {
       if (task.status === 'parked') {
         await this.taskSemanticService.observeResumeIntent(
           '启动后继续未完成任务',
-          this.buildRecentTaskSummaries([task]),
+          buildRecentTaskSummaries([task]),
         );
         this.resumeParkedTaskIfStillParked(task.id);
       }

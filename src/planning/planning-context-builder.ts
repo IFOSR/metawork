@@ -1,6 +1,6 @@
 import type { AgentClass, Task } from '../core/types.js';
-import type { TaskSummary } from '../core/llm-bridge.js';
 import { RuleHintsProvider } from '../core/rule-hints-provider.js';
+import { buildRecentTaskSummaries } from '../core/task-summary.js';
 import type { PlanningContext } from './planning-types.js';
 
 export interface PlanningContextBuilderDeps {
@@ -34,14 +34,4 @@ export class PlanningContextBuilder {
       timeoutMs: this.deps.getTimeoutMs(),
     };
   }
-}
-
-function buildRecentTaskSummaries(tasks: Task[]): TaskSummary[] {
-  return tasks.map(task => ({
-    id: task.id,
-    title: task.title,
-    goal: task.goal,
-    summary: task.summary,
-    status: task.status,
-  }));
 }

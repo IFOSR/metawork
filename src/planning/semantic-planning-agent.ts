@@ -18,6 +18,12 @@ export interface SemanticPlanningAgentDeps {
   };
 }
 
+// TODO(adr-0014-compat) HIGH: this adapter fakes a PlanningAgent by delegating
+// to the legacy IntentOrchestrator and mapping IntentDecisionV2 back into a
+// PlanningAgentPlan (source: 'semantic-intent-adapter'). Replace with a real
+// Codex CLI planner that emits PlanningAgentPlan directly, then delete the
+// IntentOrchestrator/IntentDecisionV2 dependency.
+// See docs/tech-debt/legacy-compat-layers.md (#1).
 export class SemanticPlanningAgent implements PlanningAgent {
   constructor(private readonly deps: SemanticPlanningAgentDeps) {}
 
@@ -167,6 +173,10 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)));
 }
 
+// TODO(adr-0014-compat) HIGH: hand-maintained 18-field down-cast from AgentClass
+// to the legacy ExecutorProfile, only needed to feed IntentOrchestrator. The
+// planner should consume AgentClass directly; remove alongside the adapter above.
+// See docs/tech-debt/legacy-compat-layers.md (#2).
 function agentClassToLegacyProfile(agentClass: AgentClass): ExecutorProfile {
   return {
     name: agentClass.name,

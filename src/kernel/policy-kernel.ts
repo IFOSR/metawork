@@ -47,12 +47,11 @@ export class PolicyKernel {
         outcome: 'clarify',
         runtimeAction: 'clarification',
         reason: `low confidence state-changing plan (${plan.confidence.toFixed(2)})`,
-        plan: {
-          ...plan,
-          action: 'clarification',
-          clarificationQuestion: plan.clarificationQuestion
+        plan: toClarificationPlan(
+          plan,
+          plan.clarificationQuestion
             ?? 'Please clarify whether you want to continue an existing task or start a new executable task.',
-        },
+        ),
         rejected: false,
       };
     }
@@ -208,4 +207,28 @@ export class PolicyKernel {
 function actionToRuntimeAction(action: PlanningAction): KernelRuntimeAction {
   if (action === 'plan_work_graph') return 'plan_work_graph';
   return action;
+}
+
+/**
+ * Reshape a plan into a clarification: strip the work graph and neutralize
+ * execution routing so the persisted decision cannot be mistaken for an
+ * executable plan (only the clarification-relevant fields remain meaningful).
+ */
+function toClarificationPlan(plan: PlanningAgentPlan, clarificationQuestion: string): PlanningAgentPlan {
+  return {
+    ...plan,
+    action: 'clarification',
+    clarificationQuestion,
+    workGraph: null,
+    execution: {
+      ...plan.execution,
+      mode: 'none',
+      selectedExecutor: null,
+      candidateExecutors: [],
+      requiresVerification: false,
+      canModifyFiles: false,
+      requiresExternalGateway: false,
+      matchedBoundary: [],
+    },
+  };
 }

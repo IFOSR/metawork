@@ -2,7 +2,7 @@ import type { Subtask, Task } from '../core/types.js';
 import type { PlanningAgentPlan, SubtaskProposal, WorkGraphProposal } from '../planning/planning-types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { generateInteractionId } from '../utils/id.js';
+import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 
 export interface WorkGraphRuntimeResult {
   workGraph: WorkGraphProposal;
@@ -11,40 +11,60 @@ export interface WorkGraphRuntimeResult {
 }
 
 export class WorkGraphRuntimeService {
+  private readonly taskEvents: TaskEventRecorder;
+
   constructor(
     private readonly subtaskRepo: SubtaskRepo,
-    private readonly taskEventRepo: TaskEventRepo,
-  ) {}
+    taskEventRepo: TaskEventRepo,
+  ) {
+    this.taskEvents = new TaskEventRecorder(taskEventRepo);
+  }
 
   apply(input: {
     task: Task;
     userPrompt: string;
     approvedPlan?: PlanningAgentPlan | null;
   }): WorkGraphRuntimeResult {
+    const approvedPlan = input.approvedPlan ?? null;
     const existing = this.subtaskRepo.listByTask(input.task.id);
     if (existing.length > 0) {
-      return this.recoverExisting(input.task.id, existing);
+      return this.recoverExisting(input.task.id, existing, approvedPlan);
     }
 
-    const workGraph = input.approvedPlan?.workGraph ?? fallbackWorkGraph(input.task, input.userPrompt);
+    const workGraph = approvedPlan?.workGraph ?? fallbackWorkGraph(input.task, input.userPrompt, approvedPlan);
     const subtasks = this.persistWorkGraph(input.task.id, workGraph);
     return { workGraph, subtasks, recovered: false };
   }
 
-  private recoverExisting(taskId: string, existing: Subtask[]): WorkGraphRuntimeResult {
+  private recoverExisting(taskId: string, existing: Subtask[], approvedPlan: PlanningAgentPlan | null): WorkGraphRuntimeResult {
+    // Kernel-approved executor routing (e.g. after rewriteUnavailableExecutors)
+    // must win over the stale persisted routing when recovering a task.
+    const approvedRouting = buildApprovedRoutingMap(taskId, approvedPlan);
     const subtasks = existing.map(subtask => {
-      if (subtask.status === 'done') {
+      // Terminal subtasks are never resurrected — flipping a done/cancelled/
+      // archived subtask back to ready would silently re-run finished or
+      // deliberately-stopped work.
+      if (isTerminalStatus(subtask.status)) {
         return subtask;
       }
       const previousStatus = subtask.status;
-      const readySubtask = {
+      const routing = approvedRouting.get(subtask.id) ?? null;
+      const rerouted = routing !== null && (
+        routing.agentClassHint !== subtask.agentClassHint
+        || !sameStringList(routing.candidateAgentClasses, subtask.candidateAgentClasses)
+      );
+      const readySubtask: Subtask = {
         ...subtask,
         status: 'ready' as const,
+        ...(routing
+          ? { agentClassHint: routing.agentClassHint, candidateAgentClasses: routing.candidateAgentClasses }
+          : {}),
       };
-      if (previousStatus !== 'ready') {
+      if (previousStatus !== 'ready' || rerouted) {
         this.subtaskRepo.upsert(readySubtask);
-        this.recordTaskEvent(taskId, readySubtask.id, 'subtask_recovered_for_dispatch', readySubtask.title, {
+        this.taskEvents.record(taskId, readySubtask.id, 'subtask_recovered_for_dispatch', readySubtask.title, {
           previousStatus,
+          rerouted,
         });
       }
       return readySubtask;
@@ -77,38 +97,32 @@ export class WorkGraphRuntimeService {
 
     for (const subtask of subtasks) {
       this.subtaskRepo.upsert(subtask);
-      this.recordTaskEvent(taskId, subtask.id, 'subtask_planned', subtask.title, {
+      this.taskEvents.record(taskId, subtask.id, 'subtask_planned', subtask.title, {
         dependsOn: subtask.dependsOn,
         candidateAgentClasses: subtask.candidateAgentClasses,
       });
     }
-    this.recordTaskEvent(taskId, null, 'work_graph_applied', workGraph.reason, {
+    this.taskEvents.record(taskId, null, 'work_graph_applied', workGraph.reason, {
       subtaskIds: subtasks.map(subtask => subtask.id),
     });
 
     return subtasks;
   }
-
-  private recordTaskEvent(
-    taskId: string,
-    subtaskId: string | null,
-    eventType: string,
-    message: string,
-    payload: Record<string, unknown>,
-  ): void {
-    this.taskEventRepo.insert({
-      id: `te_${generateInteractionId()}`,
-      taskId,
-      subtaskId,
-      eventType,
-      message,
-      payload,
-      createdAt: new Date().toISOString(),
-    });
-  }
 }
 
-function fallbackWorkGraph(task: Task, userPrompt: string): WorkGraphProposal {
+/**
+ * Runtime fallback for a scheduled task whose plan carries no work graph
+ * (e.g. a resume/continuation relabeled to plan_work_graph). When an approved
+ * plan is present, its execution routing and risk are threaded into the
+ * fallback subtask instead of a fully generic one, so planned executor
+ * candidates / expected output are not silently discarded.
+ */
+function fallbackWorkGraph(task: Task, userPrompt: string, approvedPlan: PlanningAgentPlan | null): WorkGraphProposal {
+  const execution = approvedPlan?.execution ?? null;
+  const candidateAgentClasses = execution
+    ? uniqueStrings([execution.selectedExecutor, ...execution.candidateExecutors])
+    : [];
+  const expectedOutput: Subtask['expectedOutput'] = execution?.capabilityClass === 'code_edit' ? 'patch' : 'summary';
   return {
     reason: 'runtime fallback for scheduled task without an approved work graph proposal',
     subtasks: [{
@@ -117,13 +131,55 @@ function fallbackWorkGraph(task: Task, userPrompt: string): WorkGraphProposal {
       goal: userPrompt,
       dependsOn: [],
       requiredAgentClassKind: 'executor',
-      agentClassHint: null,
-      candidateAgentClasses: [],
-      expectedOutput: 'summary',
-      acceptance: ['Satisfy the user request and report verification or remaining risk.'],
-      riskLevel: 'medium',
+      agentClassHint: candidateAgentClasses[0] ?? null,
+      candidateAgentClasses,
+      expectedOutput,
+      acceptance: expectedOutput === 'patch'
+        ? ['List changed files and provide test command output or explain why tests were not run.']
+        : ['Satisfy the user request and report verification or remaining risk.'],
+      riskLevel: mapRiskLevel(approvedPlan?.risk.level),
     }],
   };
+}
+
+function mapRiskLevel(level: PlanningAgentPlan['risk']['level'] | undefined): Subtask['riskLevel'] {
+  if (level === 'high') return 'high';
+  if (level === 'low') return 'low';
+  return 'medium';
+}
+
+function uniqueStrings(items: Array<string | null>): string[] {
+  return Array.from(new Set(items.filter((item): item is string => Boolean(item))));
+}
+
+function sameStringList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+const TERMINAL_SUBTASK_STATUSES: ReadonlySet<Subtask['status']> = new Set(['done', 'cancelled', 'archived']);
+
+function isTerminalStatus(status: Subtask['status']): boolean {
+  return TERMINAL_SUBTASK_STATUSES.has(status);
+}
+
+/**
+ * Map persisted subtask id -> kernel-approved executor routing, keyed by the
+ * same normalized id the proposals persist under, so recovery can adopt the
+ * approved candidates/hint for a matching subtask.
+ */
+function buildApprovedRoutingMap(
+  taskId: string,
+  approvedPlan: PlanningAgentPlan | null,
+): Map<string, { agentClassHint: string | null; candidateAgentClasses: string[] }> {
+  const routing = new Map<string, { agentClassHint: string | null; candidateAgentClasses: string[] }>();
+  const proposals = approvedPlan?.workGraph?.subtasks ?? [];
+  for (const proposal of proposals) {
+    routing.set(normalizeSubtaskId(taskId, proposal.id), {
+      agentClassHint: proposal.agentClassHint,
+      candidateAgentClasses: proposal.candidateAgentClasses,
+    });
+  }
+  return routing;
 }
 
 function subtaskToProposal(subtask: Subtask): SubtaskProposal {

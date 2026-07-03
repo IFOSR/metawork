@@ -88,23 +88,58 @@ function plan(taskId: string): PlanningAgentPlan {
 }
 
 describe('WorkGraphRuntimeService', () => {
-  it('persists only the kernel-approved work graph proposal', () => {
+  it('persists the kernel-approved proposal content, not a generic fallback', () => {
     const db = createDb();
     const taskRecord = task();
     new TaskRepo(db).insert(taskRecord);
     const subtaskRepo = new SubtaskRepo(db);
     const service = new WorkGraphRuntimeService(subtaskRepo, new TaskEventRepo(db));
 
-    const result = service.apply({ task: taskRecord, userPrompt: 'Do work', approvedPlan: plan(taskRecord.id) });
+    // Distinctive approved content: a patch subtask routed to a specific
+    // executor with concrete acceptance — none of which the fallback produces.
+    const approved = plan(taskRecord.id);
+    approved.workGraph!.subtasks[0] = {
+      ...approved.workGraph!.subtasks[0]!,
+      expectedOutput: 'patch',
+      acceptance: ['run the unit tests'],
+      candidateAgentClasses: ['codex-cli'],
+    };
+
+    const result = service.apply({ task: taskRecord, userPrompt: 'Do work', approvedPlan: approved });
 
     expect(result.workGraph.reason).toBe('approved plan');
     expect(result.subtasks).toHaveLength(1);
+    // The persisted subtask carries the approved plan's content verbatim; if the
+    // service ignored approvedPlan and fell back, expectedOutput/acceptance/
+    // candidates would be the generic fallback values instead.
     expect(result.subtasks[0]).toMatchObject({
       id: `${taskRecord.id}_execute`,
       status: 'ready',
+      expectedOutput: 'patch',
+      acceptance: ['run the unit tests'],
       candidateAgentClasses: ['codex-cli'],
     });
     expect(subtaskRepo.listByTask(taskRecord.id)).toHaveLength(1);
+  });
+
+  it('falls back to a generic single subtask only when no plan is approved', () => {
+    const db = createDb();
+    const taskRecord = task('task_fallback');
+    new TaskRepo(db).insert(taskRecord);
+    const subtaskRepo = new SubtaskRepo(db);
+    const service = new WorkGraphRuntimeService(subtaskRepo, new TaskEventRepo(db));
+
+    const result = service.apply({ task: taskRecord, userPrompt: 'just do it', approvedPlan: null });
+
+    // No approved plan -> exactly one runtime fallback subtask, clearly distinct
+    // from an approved proposal (generic summary output, goal = raw prompt).
+    expect(result.subtasks).toHaveLength(1);
+    expect(result.subtasks[0]).toMatchObject({
+      status: 'ready',
+      expectedOutput: 'summary',
+      goal: 'just do it',
+    });
+    expect(result.workGraph.reason).toContain('fallback');
   });
 
   it('recovers existing non-done subtasks to ready without replacing done subtasks', () => {

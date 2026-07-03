@@ -203,20 +203,36 @@ export class KernelDecisionApplier {
       return true;
     }
     if (plan.task.control === 'recover_blocked') {
-      return this.applyResumePlanResult(userInput, this.deps.taskResumePlanner.planBlockedRecovery(userInput), plan, kernelDecisionId);
+      return this.finishAuthorizedResume(userInput, this.deps.taskResumePlanner.planBlockedRecovery(userInput), plan, kernelDecisionId);
     }
     if (plan.task.control === 'last_task_continuation') {
-      return this.applyResumePlanResult(userInput, await this.deps.taskResumePlanner.planLastTaskContinuation(userInput), plan, kernelDecisionId);
+      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planLastTaskContinuation(userInput), plan, kernelDecisionId);
     }
     if (plan.task.control === 'resume_task') {
-      return this.applyResumePlanResult(
-        userInput,
-        await this.deps.taskResumePlanner.planNaturalLanguageResume(userInput),
-        plan,
-        kernelDecisionId,
-      );
+      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planNaturalLanguageResume(userInput), plan, kernelDecisionId);
     }
     this.deps.callbacks.appendOutput('No matching task control action was found.');
+    return true;
+  }
+
+  /**
+   * The kernel already authorized this task-control turn, so the applier owns
+   * the outcome. If the resume planner cannot locate a target ('not_handled'),
+   * surface a coherent message here rather than propagating `false` up to the
+   * session, which would print a contradictory "no runtime action" clarification
+   * despite the already-recorded accept.
+   */
+  private async finishAuthorizedResume(
+    userInput: string,
+    result: ResumePlanResult,
+    plan: PlanningAgentPlan,
+    kernelDecisionId: string,
+  ): Promise<boolean> {
+    const handled = await this.applyResumePlanResult(userInput, result, plan, kernelDecisionId);
+    if (!handled) {
+      this.deps.callbacks.appendOutput('→ 未找到可恢复或可继续的任务，请确认目标任务是否仍然存在。');
+      this.deps.callbacks.refreshRuntimeState();
+    }
     return true;
   }
 
@@ -392,6 +408,12 @@ export class KernelDecisionApplier {
   }
 }
 
+// TODO(adr-0014-compat) HIGH: forcing action to 'plan_work_graph' on resume/fork
+// makes the persisted decision.action disagree with the plan's real origin
+// (often task_control), and relies on the runtime fallback work graph to fill in
+// executable subtasks. resume/fork should produce a real workGraph via the
+// planner/kernel instead of relabeling here.
+// See docs/tech-debt/legacy-compat-layers.md (#4).
 function bindPlanToTask(plan: PlanningAgentPlan, taskId: string): PlanningAgentPlan {
   return {
     ...plan,
@@ -404,6 +426,11 @@ function bindPlanToTask(plan: PlanningAgentPlan, taskId: string): PlanningAgentP
   };
 }
 
+// TODO(adr-0014-compat) HIGH: lossy round-trip of PlanningAgentPlan back into the
+// legacy IntentDecisionV2, only to satisfy TaskResumePlanner which hasn't been
+// migrated (hints hard-coded to [], response/workGraph dropped). Migrate
+// TaskResumePlanner to consume PlanningAgentPlan and delete this shim.
+// See docs/tech-debt/legacy-compat-layers.md (#3).
 function intentDecisionFromPlan(plan: PlanningAgentPlan): IntentDecisionV2 {
   return {
     interactionType: plan.action === 'task_control' ? 'task_control' : 'durable_task',

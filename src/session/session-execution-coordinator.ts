@@ -18,6 +18,7 @@ import type { SessionPresentationService, GuidanceState } from './session-presen
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
+import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkUnitClaim, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import type { AcceptanceCriterion } from '../core/execution-strategy-planner.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
@@ -71,7 +72,11 @@ export interface SessionExecutionCoordinatorDeps {
 }
 
 export class SessionExecutionCoordinator {
-  constructor(private readonly deps: SessionExecutionCoordinatorDeps) {}
+  private readonly taskEvents: TaskEventRecorder;
+
+  constructor(private readonly deps: SessionExecutionCoordinatorDeps) {
+    this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+  }
 
   async execute(input: SessionExecutionCoordinatorInput): Promise<void> {
     const { taskId, request, approvedRecallSelection } = input;
@@ -591,15 +596,7 @@ export class SessionExecutionCoordinator {
     message: string,
     payload: Record<string, unknown>,
   ): void {
-    this.deps.taskEventRepo.insert({
-      id: `te_${generateInteractionId()}`,
-      taskId,
-      subtaskId,
-      eventType,
-      message,
-      payload,
-      createdAt: new Date().toISOString(),
-    });
+    this.taskEvents.record(taskId, subtaskId, eventType, message, payload);
   }
 
   private buildCompletionNextStep(suggestion: { recommendedAction: string } | null): string {

@@ -47,3 +47,8 @@ The first version preserves current product behavior: one active top-level task,
 - Add urgent preemption and conflict-task parking.
 - Add elastic work-unit spawn and capacity management.
 - Add parallel subtask dispatch with real worktree lease enforcement.
+
+The v1 legacy-compat shims retained to keep this change scoped (semantic-intent
+adapter, `agentClassToLegacyProfile`, `intentDecisionFromPlan`, `bindPlanToTask`)
+are tracked for removal in [docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md);
+each is marked `TODO(adr-0014-compat)` in source.
