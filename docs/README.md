@@ -5,6 +5,7 @@ This directory contains both current technical documentation and historical plan
 ## Current Docs
 
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
+- [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, PolicyKernel, and work-unit migration vocabulary.
 

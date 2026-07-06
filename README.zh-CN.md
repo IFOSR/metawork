@@ -16,7 +16,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 
-[技术总览](docs/current/technical-overview.md) | [文档地图](docs/README.md) | [架构决策](docs/adr) | [English](README.md)
+[技术总览](docs/current/technical-overview.zh-CN.md) | [文档地图](docs/README.md) | [架构决策](docs/adr) | [English](README.md)
 
 </div>
 
@@ -204,7 +204,7 @@ flowchart LR
 | `npm run lint` | 使用 `tsc --noEmit` 做类型检查。 |
 | `npm run smoke:metaclaw` | 运行真实端到端任务烟测。 |
 
-更深入的实现细节见 [技术总览](docs/current/technical-overview.md)。文档入口、ADR 和历史计划请从 [文档地图](docs/README.md) 开始。
+更深入的实现细节见 [技术总览](docs/current/technical-overview.zh-CN.md)。文档入口、ADR 和历史计划请从 [文档地图](docs/README.md) 开始。
 
 ## 许可证
 
