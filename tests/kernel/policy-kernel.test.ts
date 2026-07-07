@@ -288,15 +288,28 @@ describe('PolicyKernel task-state policy', () => {
     expect(decision.reason).toContain('单活跃任务限制');
   });
 
-  it('requires explicit control target while another task is running', () => {
-    const running = task('task_1', 'running');
+  it.each(['resume_task', 'recover_blocked'] as const)(
+    'forces clarification when %s has no explicit taskId (no runtime guessing)',
+    (control) => {
+      const decision = new PolicyKernel().decide(
+        controlPlan(control),
+        snapshot(),
+      );
+
+      expect(decision.outcome).toBe('clarify');
+      expect(decision.runtimeAction).toBe('clarification');
+      expect(decision.reason).toContain('explicit taskId');
+    },
+  );
+
+  it('rejects resume_task referencing a non-existent task', () => {
     const decision = new PolicyKernel().decide(
-      controlPlan('resume_task'),
-      snapshot({ tasks: [running], runningTask: running }),
+      controlPlan('resume_task', { binding: 'reference', taskId: 'ghost' }),
+      snapshot(),
     );
 
     expect(decision.outcome).toBe('reject');
-    expect(decision.reason).toContain('单活跃任务限制');
+    expect(decision.reason).toContain('task not found');
   });
 
   it.each(['status_query', 'clear_tasks'] as const)(

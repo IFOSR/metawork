@@ -162,10 +162,6 @@ export function isResumeReferenceInstruction(input: string): boolean {
   return /挂起|恢复|继续之前|继续刚才|接着刚才|继续完成/.test(input);
 }
 
-export function isContinuePreviousTaskInstruction(input: string): boolean {
-  return /继续之前的任务|继续之前任务|继续上一个任务|继续上次的任务|继续刚才的任务|继续刚才那个任务|接着上次|接着之前的任务|继续上一轮任务|继续上一个任务/.test(input.trim());
-}
-
 export function isConversationalContinuationInstruction(input: string): boolean {
   const normalized = input.trim();
   if (!normalized) return false;

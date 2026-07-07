@@ -40,7 +40,6 @@ export interface SemanticTaskControl {
     | 'status_query'
     | 'resume_task'
     | 'recover_blocked'
-    | 'last_task_continuation'
     | 'unknown';
   taskId: string | null;
   scope: TaskClearScope | TaskStatusQueryScope | null;
@@ -273,9 +272,7 @@ export class SemanticIntentRouter {
       return {
         kind: resumeHint.evidence === 'recover_blocked'
           ? 'recover_blocked'
-          : resumeHint.evidence === 'last_task_continuation'
-            ? 'last_task_continuation'
-            : 'resume_task',
+          : 'resume_task',
         taskId: explicitTaskId,
         scope: explicitTaskId ? null : resumeHint.evidence as TaskClearScope | TaskStatusQueryScope,
         reason: resumeHint.reason,
@@ -358,7 +355,6 @@ export class SemanticIntentRouter {
       || value === 'status_query'
       || value === 'resume_task'
       || value === 'recover_blocked'
-      || value === 'last_task_continuation'
     ) {
       return value;
     }
@@ -618,7 +614,7 @@ export class SemanticIntentRouter {
           reason: '绑定原因',
         },
         taskControl: {
-          kind: 'clear_tasks|status_query|resume_task|recover_blocked|last_task_continuation|unknown',
+          kind: 'clear_tasks|status_query|resume_task|recover_blocked|unknown',
           taskId: 'task id or null',
           scope: 'all|parked|blocked|running|dashboard|null',
           reason: '任务控制原因',

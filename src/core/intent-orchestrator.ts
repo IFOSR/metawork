@@ -19,7 +19,6 @@ export type IntentTaskControl =
   | 'status_query'
   | 'resume_task'
   | 'recover_blocked'
-  | 'last_task_continuation'
   | 'none';
 export type IntentExecutionMode = 'none' | 'single_executor' | 'multi_executor';
 export type IntentExecutionComplexity = 'simple' | 'moderate' | 'complex';
@@ -252,7 +251,6 @@ export class IntentOrchestrator {
       || kind === 'status_query'
       || kind === 'resume_task'
       || kind === 'recover_blocked'
-      || kind === 'last_task_continuation'
     ) {
       return kind;
     }

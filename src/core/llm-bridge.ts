@@ -13,6 +13,9 @@ export interface TaskSummary {
   goal: string;
   summary: string;
   status: TaskStatus;
+  lastInterruptionReason: string;
+  nextStep: string;
+  blockedReason: string | null;
 }
 
 export interface InteractionSummary {

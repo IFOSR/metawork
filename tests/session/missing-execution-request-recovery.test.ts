@@ -324,7 +324,7 @@ describe('session dispatch recovery', () => {
       executorFactory: () => executor,
       notifier,
       planningAgent: stubPlanningAgent(
-        taskControlPlan({ control: 'recover_blocked', reason: '用户补充了阻塞任务所需材料' }),
+        taskControlPlan({ control: 'recover_blocked', taskId: task.id, reason: '用户补充了阻塞任务所需材料' }),
       ),
     });
 
@@ -336,7 +336,10 @@ describe('session dispatch recovery', () => {
     expect(executionInput.executionContextBundle.mode).toBe('resume-blocked');
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`检测到任务 #${task.id} 的阻塞条件已满足`);
+    // Runtime no longer "detects which task" — the planner pinned it. Output now
+    // associates to the referenced task and surfaces the recovery reason.
+    expect(output).toContain(`关联到任务 #${task.id}`);
+    expect(output).toContain('检测到用户补充了阻塞所需信息');
     expect(output).toContain('✓ 旧阻塞任务已完成');
     expect(output).toContain('这是针对旧任务的答案');
     expect(output).toContain(`任务：#${task.id} 飞书 Client API 调研`);

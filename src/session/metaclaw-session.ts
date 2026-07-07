@@ -226,8 +226,6 @@ export class MetaclawSession {
     });
     this.taskResumePlanner = new TaskResumePlanner({
       taskRuntimeService: this.taskRuntimeService,
-      taskSemanticService: this.taskSemanticService,
-      sessionStateRepo: this.sessionStateRepo,
     });
     this.planningContextBuilder = new PlanningContextBuilder({
       listTasks: () => this.taskRuntimeService.listTasks(),

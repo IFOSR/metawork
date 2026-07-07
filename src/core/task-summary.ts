@@ -13,5 +13,8 @@ export function buildRecentTaskSummaries(tasks: Task[]): TaskSummary[] {
     goal: task.goal,
     summary: task.summary,
     status: task.status,
+    lastInterruptionReason: task.lastInterruptionReason,
+    nextStep: task.snapshots.at(-1)?.nextStep ?? '',
+    blockedReason: task.dependencies.find(dependency => dependency.status === 'waiting')?.description ?? null,
   }));
 }

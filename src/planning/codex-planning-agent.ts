@@ -42,7 +42,6 @@ const TASK_CONTROLS = new Set<IntentTaskControl>([
   'status_query',
   'resume_task',
   'recover_blocked',
-  'last_task_continuation',
   'none',
 ]);
 const EXECUTION_MODES = new Set<IntentExecutionMode>(['none', 'single_executor', 'multi_executor']);
@@ -255,6 +254,12 @@ export class CodexPlanningAgent implements PlanningAgent {
       '- clarification：低置信度、歧义、高风险，需要先追问。',
       '- no_action：无需任何动作。',
       '',
+      '恢复/继续/解除阻塞旧任务（resume_task / recover_blocked）的硬约束：',
+      '- 必须从下方“最近任务”候选里选定一个明确的 taskId，输出 task.binding="reference" + task.taskId + task.control。',
+      '- 不得输出无 taskId 的 resume/recover_blocked 计划。无法唯一确定目标（多个候选都可能、或语义模糊）时，必须返回 action="clarification" 并给出追问问题。',
+      '- currentFocus 是当前焦点任务；recentTasks 含每个任务的状态/挂起原因(lastInterruptionReason)/下一步(nextStep)/阻塞原因(blockedReason)，据此选择 taskId。',
+      '- “继续刚才的任务”“恢复刚才那个”等表达若无法确定具体 taskId，按 clarification 处理，不要默认指向某个任务。',
+      '',
       '工作图（仅 plan_work_graph 需要）：',
       '- 简单请求用单个子任务即可；确有多阶段/多能力/依赖关系时才拆成多子任务 DAG。',
       '- 每个子任务需要唯一 id；dependsOn 只能引用本工作图内其他子任务的 id，且不得成环。',
@@ -330,7 +335,7 @@ const PLAN_SCHEMA_EXAMPLE = {
   task: {
     binding: 'new|reference|none',
     taskId: 'task id or null',
-    control: 'clear_tasks|status_query|resume_task|recover_blocked|last_task_continuation|none',
+    control: 'clear_tasks|status_query|resume_task|recover_blocked|none',
     scope: 'all|parked|blocked|running|dashboard|null',
     title: '任务标题 or null',
     goal: '任务目标 or null',

@@ -201,37 +201,15 @@ export class KernelDecisionApplier {
       }));
       return true;
     }
-    if (plan.task.control === 'recover_blocked') {
-      return this.finishAuthorizedResume(userInput, this.deps.taskResumePlanner.planBlockedRecovery(userInput, plan), plan, kernelDecisionId);
-    }
-    if (plan.task.control === 'last_task_continuation') {
-      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planLastTaskContinuation(userInput, plan), plan, kernelDecisionId);
-    }
-    if (plan.task.control === 'resume_task') {
-      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planNaturalLanguageResume(userInput, plan), plan, kernelDecisionId);
+    // resume_task / recover_blocked without an explicit taskId are already
+    // forced to clarification by the kernel; reaching here without one is a
+    // defensive fallback, not a guess-the-task path.
+    if (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked') {
+      this.deps.callbacks.appendOutput('→ 未指定要恢复的目标任务，请明确要恢复哪个任务。');
+      this.deps.callbacks.refreshRuntimeState();
+      return true;
     }
     this.deps.callbacks.appendOutput('No matching task control action was found.');
-    return true;
-  }
-
-  /**
-   * The kernel already authorized this task-control turn, so the applier owns
-   * the outcome. If the resume planner cannot locate a target ('not_handled'),
-   * surface a coherent message here rather than propagating `false` up to the
-   * session, which would print a contradictory "no runtime action" clarification
-   * despite the already-recorded accept.
-   */
-  private async finishAuthorizedResume(
-    userInput: string,
-    result: ResumePlanResult,
-    plan: PlanningAgentPlan,
-    kernelDecisionId: string,
-  ): Promise<boolean> {
-    const handled = await this.applyResumePlanResult(userInput, result, plan, kernelDecisionId);
-    if (!handled) {
-      this.deps.callbacks.appendOutput('→ 未找到可恢复或可继续的任务，请确认目标任务是否仍然存在。');
-      this.deps.callbacks.refreshRuntimeState();
-    }
     return true;
   }
 

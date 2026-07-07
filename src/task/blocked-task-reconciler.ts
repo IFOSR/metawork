@@ -9,28 +9,12 @@ export interface BlockedTaskReconcileDecision {
   newlyProvidedResources: string[];
 }
 
-export function reconcileBlockedTasksFromInput(
-  tasks: Task[],
-  userInput: string,
-  cwd = process.cwd(),
-): BlockedTaskReconcileDecision | null {
-  const blockedTasks = tasks.filter(task => task.status === 'blocked');
-  if (blockedTasks.length === 0) {
-    return null;
-  }
-
-  const decisions = blockedTasks
-    .map(task => evaluateBlockedTask(task, userInput, cwd))
-    .filter((decision): decision is BlockedTaskReconcileDecision => Boolean(decision));
-
-  if (decisions.length !== 1) {
-    return null;
-  }
-
-  return decisions[0];
-}
-
-function evaluateBlockedTask(task: Task, userInput: string, cwd: string): BlockedTaskReconcileDecision | null {
+/**
+ * Evaluate whether a single known blocked task can be recovered from the user
+ * input, extracting any inline resources provided. Unlike a list-picking
+ * reconciler, this operates on a task the planner already selected — no guessing.
+ */
+export function evaluateBlockedTask(task: Task, userInput: string, cwd = process.cwd()): BlockedTaskReconcileDecision | null {
   const waitingDependencies = task.dependencies.filter(dependency => dependency.status === 'waiting');
   if (waitingDependencies.length === 0) {
     return null;

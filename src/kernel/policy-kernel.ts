@@ -80,6 +80,19 @@ export class PolicyKernel {
       return this.reject(plan, `task not found: ${plan.task.taskId}`);
     }
 
+    // resume_task / recover_blocked require an explicit target the planner selected.
+    // The runtime must not fall back to guessing which task to resume — if the
+    // planner did not pin a taskId, force a clarification instead.
+    if (
+      (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked')
+      && (plan.task.binding !== 'reference' || !plan.task.taskId)
+    ) {
+      return this.clarify(
+        plan,
+        'resume/recover_blocked requires an explicit taskId; planner did not select a target',
+      );
+    }
+
     if (
       snapshot.runningTask
       && !targetTask
@@ -200,6 +213,21 @@ export class PolicyKernel {
       reason,
       plan,
       rejected: true,
+    };
+  }
+
+  private clarify(plan: PlanningAgentPlan, reason: string): KernelDecision {
+    return {
+      id: `kd_${generateInteractionId()}`,
+      outcome: 'clarify',
+      runtimeAction: 'clarification',
+      reason,
+      plan: toClarificationPlan(
+        plan,
+        plan.clarificationQuestion
+          ?? 'Please clarify which existing task you want to resume or unblock.',
+      ),
+      rejected: false,
     };
   }
 }

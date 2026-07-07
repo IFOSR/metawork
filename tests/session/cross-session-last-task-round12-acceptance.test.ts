@@ -108,6 +108,10 @@ describe('cross-session last-task continuation', () => {
       abort: vi.fn(),
     };
     const llmBridge2 = createDurableRouteBridge();
+    // The planner sees session1's completed task in recentTasks and pins it by
+    // taskId. Runtime then forks a follow-up from that referenced done task —
+    // no session-pointer guessing, no 'last_task_continuation' control.
+    const completedTaskId = taskRepo.findByStatus('done')[0]!.id;
     const session2 = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -119,18 +123,13 @@ describe('cross-session last-task continuation', () => {
       contextRecaller,
       llmBridge: llmBridge2,
       planningAgent: stubPlanningAgent(
-        taskControlPlan({ control: 'last_task_continuation' }),
+        taskControlPlan({ control: 'resume_task', taskId: completedTaskId, reason: '继续之前的任务' }),
       ),
       availableExecutorCommands: new Set(['codex']),
     });
 
     session2.initialize();
     await session2.submit('继续之前的任务', { awaitAsyncWork: true });
-
-    const output = session2.getSnapshot().output.join('\n');
-    expect(output).toContain('上次任务自动处理');
-    expect(output).toContain('上一个任务已完成');
-    expect(output).toContain('自动决策：基于上一个任务创建 follow-up');
 
     expect(executor2.execute).toHaveBeenCalledTimes(1);
     const followUpInput = (executor2.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -214,7 +213,7 @@ describe('cross-session last-task continuation', () => {
       contextRecaller,
       llmBridge: llmBridge2,
       planningAgent: stubPlanningAgent(
-        taskControlPlan({ control: 'last_task_continuation' }),
+        taskControlPlan({ control: 'resume_task', taskId: unfinishedTask.id, reason: '继续之前的任务' }),
       ),
       availableExecutorCommands: new Set(['codex']),
     });
