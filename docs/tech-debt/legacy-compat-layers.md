@@ -38,24 +38,28 @@
 - 现状：resume/fork 时把计划 `action` 强制改写成 `plan_work_graph` 并绑定 `taskId`，使 coordinator 走执行分支。这导致持久化的决策 `action` 与真实来源（可能是 task_control）不一致；只有靠 fallback work graph 才能补出可执行的子任务。
 - 目标：resume/fork 由 planner/kernel 显式产出带 `workGraph` 的执行计划，不再在应用层临时改写 `action`。**下一步。**
 
-### 5. `TaskResumePlanner.planLegacyOrNaturalLanguageResume` 仍依赖旧 LLM 路由匹配
-- 位置：[src/task/task-resume-planner.ts](../../src/task/task-resume-planner.ts)（`planLegacyOrNaturalLanguageResume` → `TaskSemanticService.resolveLegacyResumeIntent`）
-- 现状：`last_task_continuation` 由关键词触发（`isContinuePreviousTaskInstruction`），planner 看不到
-  `sessionStateRepo` 的 `lastFocusedTaskId`/`lastCompletedTaskId` 指针，无法在 `plan.task.taskId` 指明
-  targetTask。当 sessionStateRepo 指针缺失时，`planLegacyOrNaturalLanguageResume` 退回调用旧的
-  `llmBridge.resolveRoute`/`resolveIntent`（经 `resolveLegacyResumeIntent`）做兜底语义匹配找 targetTask。
-  第三步已删掉该分支里手搓 `IntentDecisionV2` 的代码（改用传入的 plan），但**旧 LLM 路由调用本身仍在**。
-- 目标：让 planner 在 `last_task_continuation` 场景直接产出 targetTask（需把 sessionStateRepo 指针喂进
-  `PlanningContext`），或由 kernel 显式解析指针，从而删除 `resolveLegacyResumeIntent`/
-  `hasLegacyResumeResolver` 及 `llmBridge.resolveRoute`/`resolveIntent` 的 resume 兜底依赖。
+### 5. `TaskResumePlanner` 的 resume 目标选择（旧 LLM 路由 + session 指针猜测）— ✅ 已移除（第四步）
+- 状态：**已移除**。恢复哪个任务的判断已上移到 `PlanningAgent`：planner 读 `PlanningContext.recentTasks`
+  （已扩展 `lastInterruptionReason`/`nextStep`/`blockedReason` 投影）+ `currentFocus`，选定 taskId 后产出
+  `binding='reference'` + `taskId` + `control='resume_task'|'recover_blocked'`，选不定则返回 `clarification`。
+  [PolicyKernel](../../src/kernel/policy-kernel.ts) 强制 `resume_task`/`recover_blocked` 必须带明确 taskId，
+  否则改判 clarify；runtime 不再兜底猜任务。
+- 已删除：`TaskResumePlanner.planLastTaskContinuation`/`planNaturalLanguageResume`/
+  `planLegacyOrNaturalLanguageResume`/`findMostRecentUnfinishedTask`；`TaskSemanticService.decideResumeTarget`/
+  `resolveLegacyResumeIntent`/`hasTaskResumeResolver`/`hasLegacyResumeResolver` 及对应 `llmBridge` 依赖；
+  `last_task_continuation` control（含 `IntentTaskControl`/`SemanticTaskControl` 枚举与 rule-hints 关键词注入）；
+  list-picking 的 `reconcileBlockedTasksFromInput`（改为对已知任务的 `evaluateBlockedTask`）。
+- 保留：`planReferencedTask`（对已知 referencedTask 按 status 做确定性恢复）与 `evaluateBlockedTask` 的
+  补充材料提取能力（现只对 planner 已选定的任务执行）。
 
 ## 移除顺序建议
 
 1. ~~先落地真实 planner adapter（解决 #1、#2）~~ —— ✅ 已完成。
 2. ~~迁移 `TaskResumePlanner` 到 `PlanningAgentPlan`（解决 #3）~~ —— ✅ 已完成。附带清理 ghost 文件
    `SessionIntentApplicationService`；新增 #5 记录遗留的旧 LLM 路由兜底。
-3. 解决 #4（`bindPlanToTask`）——让 resume/fork 由 planner/kernel 显式产出 workGraph。
-4. 解决 #5——把 sessionStateRepo 指针喂给 planner，删除 `resolveLegacyResumeIntent` 旧路由依赖。
+3. ~~解决 #5——把 resume 目标选择上移到 planner，删除 `resolveLegacyResumeIntent`/`decideResumeTarget`
+   旧路由依赖与 `last_task_continuation` control~~ —— ✅ 已完成。
+4. 解决 #4（`bindPlanToTask`）——让 resume/fork 由 planner/kernel 显式产出 workGraph。
 5. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射（届时新主路径已完全不消费）。
 
 相关背景见 [docs/adr/0014-planning-agent-policy-kernel-boundary.md](../adr/0014-planning-agent-policy-kernel-boundary.md) 的 Future Work 一节。
