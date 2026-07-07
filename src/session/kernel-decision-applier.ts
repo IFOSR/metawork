@@ -7,7 +7,6 @@ import type { TaskSemanticService } from '../task/task-semantic-service.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
 import { filterDurableTasks, type TaskClearScope, type TaskStatusQueryScope } from '../core/task-routing.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
-import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
 import type { KernelDecision } from '../kernel/policy-kernel.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import { buildSchedulingReason, parsePriorityHint, type QueuedExecutionRequest } from './session-helpers.js';
@@ -203,13 +202,13 @@ export class KernelDecisionApplier {
       return true;
     }
     if (plan.task.control === 'recover_blocked') {
-      return this.finishAuthorizedResume(userInput, this.deps.taskResumePlanner.planBlockedRecovery(userInput), plan, kernelDecisionId);
+      return this.finishAuthorizedResume(userInput, this.deps.taskResumePlanner.planBlockedRecovery(userInput, plan), plan, kernelDecisionId);
     }
     if (plan.task.control === 'last_task_continuation') {
-      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planLastTaskContinuation(userInput), plan, kernelDecisionId);
+      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planLastTaskContinuation(userInput, plan), plan, kernelDecisionId);
     }
     if (plan.task.control === 'resume_task') {
-      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planNaturalLanguageResume(userInput), plan, kernelDecisionId);
+      return this.finishAuthorizedResume(userInput, await this.deps.taskResumePlanner.planNaturalLanguageResume(userInput, plan), plan, kernelDecisionId);
     }
     this.deps.callbacks.appendOutput('No matching task control action was found.');
     return true;
@@ -279,7 +278,7 @@ export class KernelDecisionApplier {
     await this.applyResumePlanResult(userInput, this.deps.taskResumePlanner.planReferencedTask({
       userInput,
       referencedTask,
-      intentDecision: intentDecisionFromPlan(plan),
+      plan,
     }), plan, kernelDecisionId);
   }
 
@@ -423,38 +422,5 @@ function bindPlanToTask(plan: PlanningAgentPlan, taskId: string): PlanningAgentP
       taskId,
       binding: 'reference',
     },
-  };
-}
-
-// TODO(adr-0014-compat) HIGH: lossy round-trip of PlanningAgentPlan back into the
-// legacy IntentDecisionV2, only to satisfy TaskResumePlanner which hasn't been
-// migrated (hints hard-coded to [], response/workGraph dropped). Migrate
-// TaskResumePlanner to consume PlanningAgentPlan and delete this shim.
-// See docs/tech-debt/legacy-compat-layers.md (#3).
-function intentDecisionFromPlan(plan: PlanningAgentPlan): IntentDecisionV2 {
-  return {
-    interactionType: plan.action === 'task_control' ? 'task_control' : 'durable_task',
-    confidence: plan.confidence,
-    reason: plan.reason,
-    clarificationQuestion: plan.clarificationQuestion,
-    risk: plan.risk,
-    task: {
-      binding: plan.task.binding,
-      taskId: plan.task.taskId,
-      control: plan.task.control,
-      scope: plan.task.scope,
-    },
-    execution: {
-      mode: plan.execution.mode,
-      complexity: plan.execution.complexity,
-      selectedExecutor: plan.execution.selectedExecutor,
-      candidateExecutors: plan.execution.candidateExecutors,
-      requiresVerification: plan.execution.requiresVerification,
-      canModifyFiles: plan.execution.canModifyFiles,
-      requiresExternalGateway: plan.execution.requiresExternalGateway,
-      capabilityClass: plan.execution.capabilityClass,
-      matchedBoundary: plan.execution.matchedBoundary,
-    },
-    hints: [],
   };
 }

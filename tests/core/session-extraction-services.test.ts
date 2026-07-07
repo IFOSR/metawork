@@ -6,6 +6,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { SessionPersistenceService } from '../../src/session/session-persistence-service.js';
 import { MemoryCaptureService } from '../../src/memory/memory-capture-service.js';
 import { TaskResumePlanner } from '../../src/task/task-resume-planner.js';
+import { taskControlPlan } from '../support/planning-agent-plans.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { ObservationRepo } from '../../src/storage/observation-repo.js';
@@ -127,7 +128,7 @@ describe('session extraction services', () => {
       pauseReason: 'pause',
     });
     sessionStateRepo.get.mockReturnValue({ lastFocusedTaskId: parked.id, lastCompletedTaskId: null });
-    const resume = await planner.planLastTaskContinuation('继续刚才的任务');
+    const resume = await planner.planLastTaskContinuation('继续刚才的任务', taskControlPlan({ control: 'last_task_continuation', taskId: parked.id }));
     expect(resume.action).toBe('execute_existing');
     expect(resume.action === 'execute_existing' ? resume.executionMode : null).toBe('resume-parked');
 
@@ -140,7 +141,7 @@ describe('session extraction services', () => {
       description: '等待材料',
       status: 'waiting',
     });
-    const recovery = planner.planBlockedRecovery('材料已补充，可以继续');
+    const recovery = planner.planBlockedRecovery('材料已补充，可以继续', taskControlPlan({ control: 'recover_blocked', taskId: blocked.id }));
     expect(recovery.action).toBe('unblock_and_execute');
 
     const blockedSnapshot = taskRuntimeService.findTask(blocked.id);
@@ -148,25 +149,7 @@ describe('session extraction services', () => {
     const referencedBlockedRecovery = planner.planReferencedTask({
       userInput: `执行阻塞任务 ${blocked.id}`,
       referencedTask: blockedSnapshot!,
-      intentDecision: {
-        interactionType: 'task_control',
-        confidence: 1,
-        reason: 'explicit blocked resume',
-        clarificationQuestion: null,
-        risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-        task: { binding: 'reference', taskId: blocked.id, control: 'recover_blocked', scope: null },
-        execution: {
-          mode: 'none',
-          complexity: 'simple',
-          selectedExecutor: null,
-          candidateExecutors: [],
-          requiresVerification: false,
-          canModifyFiles: false,
-          requiresExternalGateway: false,
-          capabilityClass: 'conversation',
-        },
-        hints: [],
-      },
+      plan: taskControlPlan({ control: 'recover_blocked', taskId: blocked.id, reason: 'explicit blocked resume' }),
     });
     expect(referencedBlockedRecovery.action).toBe('unblock_and_execute');
     expect(referencedBlockedRecovery.action === 'unblock_and_execute'
@@ -180,25 +163,7 @@ describe('session extraction services', () => {
     expect(planner.planReferencedTask({
       userInput: '基于它继续做',
       referencedTask: done,
-      intentDecision: {
-        interactionType: 'task_control',
-        confidence: 1,
-        reason: 'reference',
-        clarificationQuestion: null,
-        risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-        task: { binding: 'reference', taskId: done.id, control: 'resume_task', scope: null },
-        execution: {
-          mode: 'none',
-          complexity: 'simple',
-          selectedExecutor: null,
-          candidateExecutors: [],
-          requiresVerification: false,
-          canModifyFiles: false,
-          requiresExternalGateway: false,
-          capabilityClass: 'conversation',
-        },
-        hints: [],
-      },
+      plan: taskControlPlan({ control: 'resume_task', taskId: done.id, reason: 'reference' }),
     }).action).toBe('fork_follow_up');
   });
 

@@ -1,4 +1,4 @@
-import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
+import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import type { TaskSemanticService } from './task-semantic-service.js';
 import type { TaskRuntimeService } from './task-runtime-service.js';
 import type { TaskSummary } from '../core/llm-bridge.js';
@@ -54,15 +54,15 @@ export class TaskResumePlanner {
   planReferencedTask(input: {
     userInput: string;
     referencedTask: Task;
-    intentDecision: IntentDecisionV2;
+    plan: PlanningAgentPlan;
   }): ResumePlanResult {
-    const { userInput, referencedTask, intentDecision } = input;
+    const { userInput, referencedTask, plan: agentPlan } = input;
     const plan = this.deps.taskRuntimeService.buildExecutionPlan(referencedTask, userInput);
     if (plan.mode === 'blocked') {
       const blockedReason = this.getWaitingBlockReason(referencedTask);
-      const explicitlyRequestedBlockedResume = intentDecision.task.binding === 'reference'
-        && intentDecision.task.taskId === referencedTask.id
-        && (intentDecision.task.control === 'resume_task' || intentDecision.task.control === 'recover_blocked');
+      const explicitlyRequestedBlockedResume = agentPlan.task.binding === 'reference'
+        && agentPlan.task.taskId === referencedTask.id
+        && (agentPlan.task.control === 'resume_task' || agentPlan.task.control === 'recover_blocked');
       if (blockedReason && explicitlyRequestedBlockedResume) {
         return {
           action: 'unblock_and_execute',
@@ -115,14 +115,14 @@ export class TaskResumePlanner {
     };
   }
 
-  async planLastTaskContinuation(userInput: string): Promise<ResumePlanResult> {
+  async planLastTaskContinuation(userInput: string, plan: PlanningAgentPlan): Promise<ResumePlanResult> {
     if (!isContinuePreviousTaskInstruction(userInput)) {
       return { action: 'not_handled' };
     }
 
     const state = this.deps.sessionStateRepo.get();
     if (!state) {
-      return this.planLegacyOrNaturalLanguageResume(userInput);
+      return this.planLegacyOrNaturalLanguageResume(userInput, plan);
     }
 
     const lastFocusedTask = state.lastFocusedTaskId
@@ -133,21 +133,21 @@ export class TaskResumePlanner {
       : null;
     const targetTask = lastFocusedTask ?? lastCompletedTask;
     if (!targetTask) {
-      return this.planLegacyOrNaturalLanguageResume(userInput);
+      return this.planLegacyOrNaturalLanguageResume(userInput, plan);
     }
 
     if (['created', 'ready', 'running', 'parked', 'blocked'].includes(targetTask.status)) {
-      const plan = this.deps.taskRuntimeService.buildExecutionPlan(targetTask, userInput);
-      if (plan.mode === 'blocked') {
-        return { action: 'message', lines: [`错误：${plan.error}`] };
+      const executionPlan = this.deps.taskRuntimeService.buildExecutionPlan(targetTask, userInput);
+      if (executionPlan.mode === 'blocked') {
+        return { action: 'message', lines: [`错误：${executionPlan.error}`] };
       }
-      if (plan.mode === 'fork-follow-up') {
+      if (executionPlan.mode === 'fork-follow-up') {
         return { action: 'not_handled' };
       }
       return {
         action: 'execute_existing',
         task: targetTask,
-        plan,
+        plan: executionPlan,
         lines: [`→ 命中上次任务指针 #${targetTask.id}`],
         observeResumeIntent: targetTask.status === 'parked',
         schedulingReason: targetTask.status === 'parked' ? '恢复上一个任务' : '继续上一个任务',
@@ -164,12 +164,12 @@ export class TaskResumePlanner {
 
     const unfinishedTask = this.findMostRecentUnfinishedTask([completedTask.id]);
     if (unfinishedTask) {
-      const plan = this.deps.taskRuntimeService.buildExecutionPlan(unfinishedTask, userInput);
-      if (plan.mode === 'reuse-existing') {
+      const executionPlan = this.deps.taskRuntimeService.buildExecutionPlan(unfinishedTask, userInput);
+      if (executionPlan.mode === 'reuse-existing') {
         return {
           action: 'execute_existing',
           task: unfinishedTask,
-          plan,
+          plan: executionPlan,
           lines: [
             ...this.buildLastTaskAutoDecisionBlock(completedTask, unfinishedTask),
             `→ 改为恢复最近未完成任务 #${unfinishedTask.id}`,
@@ -197,7 +197,10 @@ export class TaskResumePlanner {
     };
   }
 
-  private async planLegacyOrNaturalLanguageResume(userInput: string): Promise<ResumePlanResult> {
+  private async planLegacyOrNaturalLanguageResume(
+    userInput: string,
+    plan: PlanningAgentPlan,
+  ): Promise<ResumePlanResult> {
     const candidates = filterDurableTasks(this.deps.taskRuntimeService.listTasks());
     if (!this.deps.taskSemanticService.hasTaskResumeResolver() && this.deps.taskSemanticService.hasLegacyResumeResolver()) {
       const { intent } = await this.deps.taskSemanticService.resolveLegacyResumeIntent(
@@ -216,40 +219,16 @@ export class TaskResumePlanner {
           return this.planReferencedTask({
             userInput,
             referencedTask: targetTask,
-            intentDecision: {
-              interactionType: 'task_control',
-              confidence: 0.7,
-              reason: intent.reason,
-              clarificationQuestion: null,
-              risk: { level: 'low', requiresConfirmation: false, reasons: [intent.reason] },
-              task: {
-                binding: 'reference',
-                taskId: targetTask.id,
-                control: 'resume_task',
-                scope: null,
-              },
-              execution: {
-                mode: 'none',
-                complexity: 'simple',
-                selectedExecutor: null,
-                candidateExecutors: [],
-                requiresVerification: false,
-                canModifyFiles: false,
-                requiresExternalGateway: false,
-                capabilityClass: 'conversation',
-                matchedBoundary: [],
-              },
-              hints: [],
-            },
+            plan,
           });
         }
       }
     }
 
-    return this.planNaturalLanguageResume(userInput);
+    return this.planNaturalLanguageResume(userInput, plan);
   }
 
-  async planNaturalLanguageResume(userInput: string): Promise<ResumePlanResult> {
+  async planNaturalLanguageResume(userInput: string, plan: PlanningAgentPlan): Promise<ResumePlanResult> {
     const candidates = filterDurableTasks(this.deps.taskRuntimeService.listTasks())
       .filter(task => task.status === 'parked' || task.status === 'blocked' || task.status === 'running');
     if (candidates.length === 0) {
@@ -275,8 +254,8 @@ export class TaskResumePlanner {
       return { action: 'not_handled' };
     }
 
-    const plan = this.deps.taskRuntimeService.buildExecutionPlan(targetTask, userInput);
-    if (plan.mode === 'blocked') {
+    const executionPlan = this.deps.taskRuntimeService.buildExecutionPlan(targetTask, userInput);
+    if (executionPlan.mode === 'blocked') {
       return {
         action: 'unblock_and_execute',
         task: targetTask,
@@ -292,14 +271,14 @@ export class TaskResumePlanner {
       };
     }
 
-    if (plan.mode === 'fork-follow-up') {
+    if (executionPlan.mode === 'fork-follow-up') {
       return { action: 'not_handled' };
     }
 
     return {
       action: 'execute_existing',
       task: targetTask,
-      plan,
+      plan: executionPlan,
       lines: [
         `→ 命中已有${targetTask.status === 'parked' ? '挂起' : '未完成'}任务 #${targetTask.id}`,
         `→ 语义判断：${decision.reason} (confidence=${decision.confidence.toFixed(2)})`,
@@ -310,7 +289,7 @@ export class TaskResumePlanner {
     };
   }
 
-  planBlockedRecovery(userInput: string): ResumePlanResult {
+  planBlockedRecovery(userInput: string, _plan: PlanningAgentPlan): ResumePlanResult {
     const durableTasks = filterDurableTasks(this.deps.taskRuntimeService.listTasks());
     const blockedTasks = durableTasks.filter(task => task.status === 'blocked');
     const decision = reconcileBlockedTasksFromInput(durableTasks, userInput) ?? (blockedTasks.length === 1
