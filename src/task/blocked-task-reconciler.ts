@@ -1,3 +1,4 @@
+// Detects when new user input resolves or supplies material for a blocked task.
 import type { Task } from '../core/types.js';
 import { isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { extractInlineResourceMatches, isRecoverableBlockedResumeInstruction } from '../session/session-helpers.js';

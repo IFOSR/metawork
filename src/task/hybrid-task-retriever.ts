@@ -165,6 +165,7 @@ function shouldExcludeTask(taskId: string, input: HybridTaskRetrieverInput, sour
   return sourceKind !== 'explicit' && sourceKind !== 'focus';
 }
 
+/** Combines task recall signals into ranked candidates for resume or reference decisions. */
 export class HybridTaskRetriever {
   constructor(private readonly deps: HybridTaskRetrieverDeps) {}
 

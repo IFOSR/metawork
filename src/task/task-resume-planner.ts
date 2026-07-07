@@ -1,3 +1,4 @@
+// Plans how user input should resume, unblock, continue, or fork existing tasks.
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import type { TaskSemanticService } from './task-semantic-service.js';
 import type { TaskRuntimeService } from './task-runtime-service.js';
@@ -42,6 +43,7 @@ export type ResumePlanResult =
       schedulingReason: string;
     };
 
+/** Converts task references, continuation requests, and blocked-task signals into executable resume plans. */
 export class TaskResumePlanner {
   constructor(
     private readonly deps: {

@@ -1,3 +1,4 @@
+// Owns the core task state machine and snapshot persistence primitives.
 import type { Task, TaskStatus, TaskSnapshot, Dependency, ResumeSummary } from '../core/types.js';
 import type { TaskRepo } from '../storage/task-repo.js';
 import { generateTaskId } from '../utils/id.js';
@@ -17,6 +18,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   cancelled: [],
 };
 
+/** Encapsulates task creation, state transitions, blocking, parking, resuming, and resource attachment. */
 export class TaskEngine {
   constructor(
     private taskRepo: TaskRepo,
