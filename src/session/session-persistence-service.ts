@@ -1,3 +1,5 @@
+// Persists session interactions and executor-route decisions behind a small
+// service used by conversation and execution flows.
 import type Database from 'better-sqlite3';
 import type { ExecutorRouteDecision } from '../core/executor-router.js';
 import { ExecutorRouteEventRepo } from '../storage/executor-route-event-repo.js';
@@ -17,6 +19,7 @@ export interface RouteEventRecordInput {
   decision: ExecutorRouteDecision;
 }
 
+/** Writes session transcript records and route-event audit rows to SQLite. */
 export class SessionPersistenceService {
   private readonly routeEventRepo: ExecutorRouteEventRepo;
 

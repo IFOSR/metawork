@@ -1,3 +1,5 @@
+// Shared session helpers for execution requests, lightweight intent heuristics,
+// inline resources, editor submission, priority hints, and preference capture.
 import type { TaskRecoveryTrigger } from '../core/types.js';
 import type { IntentDecision } from '../core/executor-router.js';
 import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';

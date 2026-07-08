@@ -1,3 +1,5 @@
+// Routes one raw user submission through the session port as wizard input,
+// slash command input, or natural-language work.
 export interface InputControllerSubmitOptions {
   awaitAsyncWork?: boolean;
 }
@@ -16,6 +18,7 @@ export interface InputControllerPort {
   handleSubmitError(error: unknown): void;
 }
 
+/** Coordinates input submission flow without owning any session state itself. */
 export class InputController {
   constructor(private readonly port: InputControllerPort) {}
 

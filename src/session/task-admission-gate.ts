@@ -1,3 +1,5 @@
+// Enforces the single-active-top-level-task rule for intent admission and
+// execution dispatch before work reaches the scheduler.
 import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
 import type { Task } from '../core/types.js';
 
@@ -16,6 +18,7 @@ interface ExecutionAdmissionInput {
   runningTask: Task | null;
 }
 
+/** Decides whether a new intent or execution request may enter while another top-level task is running. */
 export class TaskAdmissionGate {
   evaluateIntent(input: IntentAdmissionInput): TaskAdmissionGateResult {
     const { decision, runningTask } = input;

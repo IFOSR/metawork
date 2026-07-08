@@ -1,3 +1,5 @@
+// Formats session-facing status, guidance, recall review, queue, and recovery
+// messages so orchestration code can work with domain facts instead of strings.
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../core/task-routing.js';
@@ -57,6 +59,7 @@ const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   blocked: '阻塞任务',
 };
 
+/** Centralizes user-visible session formatting for task state, guidance, recall, and executor setup output. */
 export class SessionPresentationService {
   private readonly queueLimit: number;
 

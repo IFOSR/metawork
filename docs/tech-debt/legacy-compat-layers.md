@@ -34,9 +34,22 @@
   （旧 `IntentDecisionV2` 主路径，功能已被 `KernelDecisionApplier` 完整覆盖）。
 
 ### 4. `bindPlanToTask`（把 task_control 计划强改成 plan_work_graph）
-- 位置：[src/session/kernel-decision-applier.ts](../../src/session/kernel-decision-applier.ts)
-- 现状：resume/fork 时把计划 `action` 强制改写成 `plan_work_graph` 并绑定 `taskId`，使 coordinator 走执行分支。这导致持久化的决策 `action` 与真实来源（可能是 task_control）不一致；只有靠 fallback work graph 才能补出可执行的子任务。
-- 目标：resume/fork 由 planner/kernel 显式产出带 `workGraph` 的执行计划，不再在应用层临时改写 `action`。**下一步。**
+- 位置：[src/session/kernel-decision-applier.ts](../../src/session/kernel-decision-applier.ts)（`bindPlanToTask`，标注 `TODO(adr-0014-compat)`）
+- 现状：resume/fork/unblock 时把计划 `action` 强制改写成 `plan_work_graph` 并绑定 `taskId`，使 coordinator 走执行分支。
+- 澄清（残留比这条标题暗示的窄）：执行侧的 workGraph 复用其实是健康的。
+  [work-graph-runtime-service.ts](../../src/execution/work-graph-runtime-service.ts) 的 `apply()` 先查
+  `subtaskRepo.listByTask(taskId)`：**已有子任务就走 `recoverExisting()` 复用任务自己的历史工作图**
+  （把未完成子任务翻回 `ready`，terminal 的不复活，并用 kernel 最新路由覆盖过期路由），根本不碰 `fallbackWorkGraph`。
+  因此 **resume parked / recover blocked 都在复用历史 workGraph，不走兜底。**
+- 真正的两处残留：
+  1. **审计失真（所有 task_control 都中招）**：`bindPlanToTask` 无条件把 `action` 改成 `plan_work_graph`，
+     即便执行侧走的是复用历史图的 `recoverExisting`，持久化的 `decision.action` 仍谎报成"新工作图"、丢失
+     task_control 出身——账实不符，与是否复用历史图无关。
+  2. **fork 跟进任务缺真实规划**：`fork_follow_up` 会 `createTask` 一个全新 taskId，新任务没有历史子任务
+     （`existing.length === 0`）→ 落到 `fallbackWorkGraph` 的通用单子任务。这里**不能借源任务的历史图**
+     （跟进是新目标，旧图不适配），本应由 planner 为新目标现产一张 `workGraph`。这才是唯一真正"缺图靠兜底"的场景。
+- 目标：resume/fork 由 planner/kernel 显式产出带 `workGraph`（或原生 task_control）的执行计划，不再在应用层临时
+  改写 `action`；fork 跟进由 planner 为新目标现产工作图，取代通用 fallback。**下一步。**
 
 ### 5. `TaskResumePlanner` 的 resume 目标选择（旧 LLM 路由 + session 指针猜测）— ✅ 已移除（第四步）
 - 状态：**已移除**。恢复哪个任务的判断已上移到 `PlanningAgent`：planner 读 `PlanningContext.recentTasks`
@@ -59,7 +72,7 @@
    `SessionIntentApplicationService`；新增 #5 记录遗留的旧 LLM 路由兜底。
 3. ~~解决 #5——把 resume 目标选择上移到 planner，删除 `resolveLegacyResumeIntent`/`decideResumeTarget`
    旧路由依赖与 `last_task_continuation` control~~ —— ✅ 已完成。
-4. 解决 #4（`bindPlanToTask`）——让 resume/fork 由 planner/kernel 显式产出 workGraph。
+4. 解决 #4（`bindPlanToTask`）——停止在应用层改写 `action`（修审计失真）；fork 跟进由 planner 为新目标现产 workGraph，取代通用 fallback。（resume 复用历史图已健康，无需改。）
 5. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射（届时新主路径已完全不消费）。
 
 相关背景见 [docs/adr/0014-planning-agent-policy-kernel-boundary.md](../adr/0014-planning-agent-policy-kernel-boundary.md) 的 Future Work 一节。

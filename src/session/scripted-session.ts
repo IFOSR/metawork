@@ -1,3 +1,5 @@
+// Runs MetaClaw sessions from plain-text scripts, including task-id placeholder
+// substitution between submitted lines.
 import { readFileSync } from 'fs';
 import { MetaclawSession, type MetaclawSessionDeps } from './metaclaw-session.js';
 

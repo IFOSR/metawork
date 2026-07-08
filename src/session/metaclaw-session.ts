@@ -107,6 +107,7 @@ interface FocusContext {
 const BUSY_LLM_TIMEOUT_MS = 250;
 const DEFAULT_LLM_TIMEOUT_MS = 5_000;
 
+/** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
 export class MetaclawSession {
   private output: string[] = [];
   private runtimeState: RuntimeState = {

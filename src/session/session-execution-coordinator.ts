@@ -1,3 +1,5 @@
+// Executes scheduled task work from memory-context preparation through work
+// graph dispatch, executor runs, verification, persistence, and completion.
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { MemoryContextService, ExecutionRecallSelection } from '../memory/memory-context-service.js';
@@ -71,6 +73,7 @@ export interface SessionExecutionCoordinatorDeps {
   };
 }
 
+/** Owns the per-task execution lifecycle once scheduler admission has selected work to run. */
 export class SessionExecutionCoordinator {
   private readonly taskEvents: TaskEventRecorder;
 

@@ -1,3 +1,5 @@
+// Applies PolicyKernel decisions to the live session by recording planning
+// outcomes and translating accepted plans into task control or execution work.
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskSummary } from '../core/llm-bridge.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
@@ -53,6 +55,7 @@ export interface KernelDecisionApplierDeps {
   callbacks: KernelDecisionApplierCallbacks;
 }
 
+/** Turns kernel runtime actions into concrete session state changes and execution requests. */
 export class KernelDecisionApplier {
   constructor(private readonly deps: KernelDecisionApplierDeps) {}
 
