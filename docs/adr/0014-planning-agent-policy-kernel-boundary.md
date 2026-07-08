@@ -48,9 +48,11 @@ The first version preserves current product behavior: one active top-level task,
 - Add elastic work-unit spawn and capacity management.
 - Add parallel subtask dispatch with real worktree lease enforcement.
 
-The remaining legacy-compat shims (`bindPlanToTask`, and the
-`resolveLegacyResumeIntent` fallback in `TaskResumePlanner`) are tracked for removal in
-[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md) (#4, #5); each is
+The remaining legacy-compat shim (`bindPlanToTask`) is tracked for removal in
+[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md) (#4) and is
 marked `TODO(adr-0014-compat)` in source. The planner adapter (#1/#2), its
-`AgentClass → ExecutorProfile` down-cast, and the `intentDecisionFromPlan` round-trip (#3)
-have already been removed (see that doc).
+`AgentClass → ExecutorProfile` down-cast, the `intentDecisionFromPlan` round-trip (#3), and
+the runtime resume-target selection (#5 — `resolveLegacyResumeIntent`/`decideResumeTarget`
+and the `last_task_continuation` control) have already been removed: which task to resume is
+now decided by the `PlanningAgent`, and the `PolicyKernel` forces a clarification when a
+resume plan lacks an explicit `taskId` (see that doc).

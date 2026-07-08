@@ -118,6 +118,14 @@ export class TaskResumePlanner {
       return { action: 'message', lines: [`错误：${executionPlan.error}`] };
     }
 
+    if (!blockedReason) {
+      // The task is 'blocked' but carries no waiting dependency to clear, so
+      // there is nothing a resume can resolve (e.g. it was blocked for a
+      // non-dependency reason, or its deps were already marked resolved).
+      // Surface the block error instead of silently force-unblocking it.
+      return { action: 'message', lines: [`错误：${executionPlan.error}`] };
+    }
+
     const recovery = evaluateBlockedTask(referencedTask, userInput, this.deps.cwd ?? process.cwd());
     if (!recovery) {
       // No recoverable signal in input: unblock directly per the planner's

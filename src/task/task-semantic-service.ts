@@ -1,14 +1,9 @@
 // Wraps LLM-based task priority and resume-intent observation with timeout fallbacks.
-import type { IntentResult, LlmBridge, RouteResult, TaskPriorityResult, TaskResumeIntentResult, TaskSummary } from '../core/llm-bridge.js';
+import type { LlmBridge, TaskPriorityResult, TaskResumeIntentResult, TaskSummary } from '../core/llm-bridge.js';
 
 export interface TaskSemanticServiceDeps {
   llmBridge: Partial<Pick<LlmBridge, 'resolveTaskPriority' | 'resolveTaskResumeIntent'>>;
   timeoutMs: () => number;
-}
-
-export interface LegacyResumeResolutionResult {
-  route: RouteResult | null;
-  intent: IntentResult | null;
 }
 
 /**

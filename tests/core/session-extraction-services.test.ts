@@ -173,6 +173,54 @@ describe('session extraction services', () => {
       : null).toBe(true);
   });
 
+  it('reports a running planner-pinned task as already executing instead of re-queueing it', () => {
+    const db = createTestDb();
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
+
+    const task = taskEngine.create({ title: 'running', goal: 'running' });
+    taskEngine.transition(task.id, 'ready');
+    const running = taskEngine.transition(task.id, 'running');
+
+    const result = planner.planReferencedTask({
+      userInput: `恢复任务 ${task.id}`,
+      referencedTask: running,
+      plan: taskControlPlan({ control: 'resume_task', taskId: task.id, reason: 'resume running' }),
+    });
+
+    expect(result.action).toBe('message');
+    expect(result.action === 'message' ? result.lines.join('\n') : '').toContain('已在执行中');
+  });
+
+  it('surfaces an error for a blocked task with no waiting dependency instead of force-unblocking it', () => {
+    const db = createTestDb();
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
+
+    const task = taskEngine.create({ title: 'blocked-no-dep', goal: 'blocked-no-dep' });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    // Blocked but with no *waiting* dependency to clear (already-resolved dep):
+    // a resume has nothing to unblock, so it must not silently push the task on.
+    taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: 'resolved out-of-band',
+      status: 'resolved',
+    });
+    const blocked = taskRuntimeService.findTask(task.id)!;
+    expect(blocked.status).toBe('blocked');
+
+    const result = planner.planReferencedTask({
+      userInput: `网络好了，继续 ${task.id}`,
+      referencedTask: blocked,
+      plan: taskControlPlan({ control: 'recover_blocked', taskId: task.id, reason: 'resume blocked' }),
+    });
+
+    expect(result.action).toBe('message');
+    expect(result.action === 'message' ? result.lines.join('\n') : '').toContain('错误');
+  });
+
   it('runs normal conversation through a core runtime service and persists successful turns', async () => {
     const db = createTestDb();
     const conversationHistory = [{
