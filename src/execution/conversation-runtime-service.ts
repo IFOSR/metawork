@@ -1,3 +1,4 @@
+// Executes non-durable conversation turns with recalled context and interaction persistence.
 import type { ConversationTurn, ExecutorAdapter } from '../executor/adapter.js';
 import { generateInteractionId } from '../utils/id.js';
 import type { SessionPersistenceService } from '../session/session-persistence-service.js';
@@ -26,6 +27,7 @@ export interface ConversationRuntimeResult {
   focus: TaskFocusContext | null;
 }
 
+/** Runs lightweight conversation requests through the configured executor without creating durable task state. */
 export class ConversationRuntimeService {
   constructor(private readonly deps: ConversationRuntimeServiceDeps) {}
 

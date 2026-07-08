@@ -1,3 +1,4 @@
+// Aggregates subtask executor outputs, verifies expected evidence, and prepares retry feedback.
 import type { AggregationPlan, ExecutionSubtask } from '../core/execution-strategy-planner.js';
 import type { SubtaskResult } from './multi-executor-orchestrator.js';
 
@@ -43,6 +44,7 @@ function hasConflict(left: SubtaskResult, right: SubtaskResult): boolean {
   return /(冲突|conflict|contradict|不一致)/i.test(pair);
 }
 
+/** Verifies multi-executor subtask results and composes final output plus per-subtask retry feedback. */
 export class ExecutionAggregator {
   aggregate(input: ExecutionAggregationInput): ExecutionAggregationResult {
     const concerns = this.verify(input);

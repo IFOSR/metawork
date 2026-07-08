@@ -1,3 +1,4 @@
+// Claims idle executor work units for ready subtasks and maintains their lease heartbeat state.
 import type { AgentClassKind, Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -11,6 +12,7 @@ export interface WorkUnitClaim {
   markFailed(message?: string): void;
 }
 
+/** Leases matching work units to subtasks, records lifecycle events, and releases or expires stale claims. */
 export class WorkUnitClaimService {
   constructor(
     private readonly workUnitRepo: WorkUnitRepo,

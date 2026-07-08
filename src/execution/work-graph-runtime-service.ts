@@ -1,3 +1,4 @@
+// Applies approved task work graphs by persisting or recovering dispatch-ready subtasks.
 import type { Subtask, Task } from '../core/types.js';
 import type { PlanningAgentPlan, SubtaskProposal, WorkGraphProposal } from '../planning/planning-types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -10,6 +11,7 @@ export interface WorkGraphRuntimeResult {
   recovered: boolean;
 }
 
+/** Materializes planning work graphs into persisted subtasks and safely recovers existing non-terminal subtasks. */
 export class WorkGraphRuntimeService {
   private readonly taskEvents: TaskEventRecorder;
 

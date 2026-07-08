@@ -1,3 +1,4 @@
+// Runs multi-executor work through aggregation-driven retry loops until results pass verification or become blocked.
 import { ExecutionAggregator, type ExecutionAggregationResult } from './execution-aggregator.js';
 import type { ExecutionStrategy, ExecutionSubtask } from '../core/execution-strategy-planner.js';
 import type { MultiExecutorOrchestrator, SubtaskResult } from './multi-executor-orchestrator.js';
@@ -48,6 +49,7 @@ function appendFeedbackToSubtask(unit: ExecutionSubtask, feedback: string, itera
   };
 }
 
+/** Coordinates repeated multi-executor orchestration passes and feeds aggregation feedback into retry subtasks. */
 export class AgenticLoopController {
   async run(input: AgenticLoopInput): Promise<AgenticLoopResult> {
     const aggregator = input.aggregator ?? new ExecutionAggregator();

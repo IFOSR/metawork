@@ -1,4 +1,4 @@
-// Execution runtime module that runs an already-claimed subtask on one executor work unit.
+// Resolves executor adapters and runs claimed subtask specs through the execution result normalization path.
 import type Database from 'better-sqlite3';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProgressEvent } from '../executor/adapter.js';
 import { ClaudeCodeAdapter } from '../executor/claude-code.js';
@@ -41,6 +41,7 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+/** Registers built-in executor adapter factories and maps runtime command aliases to adapter names. */
 export class ExecutorAdapterRegistry {
   private readonly factories = new Map<string, AdapterFactory>();
   private readonly commandAliases = new Map<string, string>();
@@ -75,6 +76,7 @@ export function createDefaultExecutorAdapterRegistry(): ExecutorAdapterRegistry 
     .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }), ['openclaw']);
 }
 
+/** Resolves executor names from injected defaults, registered adapters, or custom AgentClass runtime commands. */
 export class ExecutorRegistry {
   private readonly adapterRegistry: ExecutorAdapterRegistry;
 
@@ -155,6 +157,7 @@ export interface SubtaskExecutionSpec {
   expectedOutput: Subtask['expectedOutput'];
 }
 
+/** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
 export class ExecutionRuntime {
   constructor(
     private readonly registry: ExecutorRegistry,

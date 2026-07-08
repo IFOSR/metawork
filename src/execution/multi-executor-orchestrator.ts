@@ -1,3 +1,4 @@
+// Executes dependency-ordered multi-executor subtasks and returns normalized subtask results.
 import type { ExecutorAdapter, ExecutorInput } from '../executor/adapter.js';
 import type { ExecutionStrategy, ExecutionSubtask } from '../core/execution-strategy-planner.js';
 import type { ExecutorResult, Task } from '../core/types.js';
@@ -47,6 +48,7 @@ function canRun(unit: ExecutionSubtask, completed: Set<string>): boolean {
   return unit.dependsOn.every(dep => completed.has(dep));
 }
 
+/** Dispatches runnable subtask batches to hinted executors while enforcing dependency completion order. */
 export class MultiExecutorOrchestrator {
   async run(input: MultiExecutorOrchestratorInput): Promise<MultiExecutorOrchestrationResult> {
     const pending = [...input.strategy.subtasks];
