@@ -1,8 +1,8 @@
-# 遗留兼容层清单（亟待在下一步移除）
+# 遗留兼容层清单（有损桥接已全部移除）
 
-> 状态：**高优先级技术债**。这些是 ADR-0014（`PlanningAgent → PolicyKernel → Runtime` 回正）为了控制改动面而保留的旧体系（`IntentOrchestrator` / `IntentDecisionV2` / `ExecutorProfile`）适配层。它们让新主路径能在不重写 `TaskResumePlanner`、`IntentOrchestrator` 的前提下先跑通，但都属于"往回转成旧结构"的有损桥接，应在下一轮统一移除。
+> 状态：**#1~#5 兼容 shim 全部已移除**。这些曾是 ADR-0014（`PlanningAgent → PolicyKernel → Runtime` 回正）为了控制改动面而保留的旧体系（`IntentOrchestrator` / `IntentDecisionV2` / `ExecutorProfile`）适配层——"往回转成旧结构"的有损桥接。它们已在数轮重构中逐个拆除，`src/` 内不再有 `TODO(adr-0014-compat)` 标记。
 >
-> 每一处源码都用 `TODO(adr-0014-compat)` 标注，可全局搜索定位。
+> 仅剩「移除顺序」第 5 步：删除 `ExecutorProfile` / `IntentOrchestrator` / `IntentDecisionV2` 等**类型与死代码**（不是有损桥接，而是新主路径已不消费的残留符号），涉及面广，单独评估。
 
 ## 为什么先保留
 
@@ -33,23 +33,23 @@
 - 附带清理：删除了 ADR-0014 后零引用的 ghost 文件 `src/session/session-intent-application-service.ts`
   （旧 `IntentDecisionV2` 主路径，功能已被 `KernelDecisionApplier` 完整覆盖）。
 
-### 4. `bindPlanToTask`（把 task_control 计划强改成 plan_work_graph）
-- 位置：[src/session/kernel-decision-applier.ts](../../src/session/kernel-decision-applier.ts)（`bindPlanToTask`，标注 `TODO(adr-0014-compat)`）
-- 现状：resume/fork/unblock 时把计划 `action` 强制改写成 `plan_work_graph` 并绑定 `taskId`，使 coordinator 走执行分支。
-- 澄清（残留比这条标题暗示的窄）：执行侧的 workGraph 复用其实是健康的。
-  [work-graph-runtime-service.ts](../../src/execution/work-graph-runtime-service.ts) 的 `apply()` 先查
-  `subtaskRepo.listByTask(taskId)`：**已有子任务就走 `recoverExisting()` 复用任务自己的历史工作图**
-  （把未完成子任务翻回 `ready`，terminal 的不复活，并用 kernel 最新路由覆盖过期路由），根本不碰 `fallbackWorkGraph`。
-  因此 **resume parked / recover blocked 都在复用历史 workGraph，不走兜底。**
-- 真正的两处残留：
-  1. **审计失真（所有 task_control 都中招）**：`bindPlanToTask` 无条件把 `action` 改成 `plan_work_graph`，
-     即便执行侧走的是复用历史图的 `recoverExisting`，持久化的 `decision.action` 仍谎报成"新工作图"、丢失
-     task_control 出身——账实不符，与是否复用历史图无关。
-  2. **fork 跟进任务缺真实规划**：`fork_follow_up` 会 `createTask` 一个全新 taskId，新任务没有历史子任务
-     （`existing.length === 0`）→ 落到 `fallbackWorkGraph` 的通用单子任务。这里**不能借源任务的历史图**
-     （跟进是新目标，旧图不适配），本应由 planner 为新目标现产一张 `workGraph`。这才是唯一真正"缺图靠兜底"的场景。
-- 目标：resume/fork 由 planner/kernel 显式产出带 `workGraph`（或原生 task_control）的执行计划，不再在应用层临时
-  改写 `action`；fork 跟进由 planner 为新目标现产工作图，取代通用 fallback。**下一步。**
+### 4. `bindPlanToTask`（resume/fork 时把 `action` 伪装成 plan_work_graph）— ✅ 已移除
+- 状态：**已移除**。`bindPlanToTask` 改名为 `bindPlanToReferencedTask`，只固定任务引用
+  （`taskId` + `binding='reference'`），**不再改写 `action`**；[session-execution-coordinator.ts](../../src/session/session-execution-coordinator.ts)
+  里那道 `action !== 'plan_work_graph'` 的 guard 一并删除。
+- 纠正一处此前的错误描述：**不存在"审计失真"。** `recordPlanningDecision` 在 `apply()` 顶部就用**原始**
+  plan+decision 落库，`bindPlanToTask` 改写出的副本只挂在临时的 `QueuedExecutionRequest.planningPlan` 上、
+  **从不持久化**。持久化的 `plan.action`=`task_control`、`decision.runtimeAction`=`task_control`，始终如实。
+- `bindPlanToTask` 的**唯一**真实作用，是把 resume/fork 的 `action` 伪装成 `plan_work_graph`，好绕过 coordinator
+  那道 guard。而该 guard 本身是**死防御**：只有 `createAndPrepareTask`（原生 `plan_work_graph`）和这 3 个改写站点
+  才会给请求带 `planningPlan`；定时/调度自动恢复路径不带 plan（`&&` 短路），所以 guard 的 "no executor dispatch"
+  分支根本不可达。凡进入调度的请求都意在执行（create/resume/fork/unblock），因此改为诚实信号 + 删 guard。
+- 执行侧行为不变：[work-graph-runtime-service.ts](../../src/execution/work-graph-runtime-service.ts) 的 `apply()`
+  先查 `subtaskRepo.listByTask(taskId)`——已有子任务走 `recoverExisting()` 复用历史工作图（resume parked /
+  recover blocked / execute_existing），fork 的全新 taskId 无历史子任务仍走 `fallbackWorkGraph`。
+- **不在本项范围**：fork 目前是"完成后续作"（NL 语义触发、带旧 resources + 旧任务作上下文、不拷工作图、落
+  fallback；MetaClaw 无 per-task 工作区实体）。"显式克隆 fork"（用户显式 command 触发 + 克隆工作区 + 原封拷
+  工作图）是一个**独立新特性**，不属于兼容层移除，另开计划评估，详见下方备注。
 
 ### 5. `TaskResumePlanner` 的 resume 目标选择（旧 LLM 路由 + session 指针猜测）— ✅ 已移除（第四步）
 - 状态：**已移除**。恢复哪个任务的判断已上移到 `PlanningAgent`：planner 读 `PlanningContext.recentTasks`
@@ -72,7 +72,13 @@
    `SessionIntentApplicationService`；新增 #5 记录遗留的旧 LLM 路由兜底。
 3. ~~解决 #5——把 resume 目标选择上移到 planner，删除 `resolveLegacyResumeIntent`/`decideResumeTarget`
    旧路由依赖与 `last_task_continuation` control~~ —— ✅ 已完成。
-4. 解决 #4（`bindPlanToTask`）——停止在应用层改写 `action`（修审计失真）；fork 跟进由 planner 为新目标现产 workGraph，取代通用 fallback。（resume 复用历史图已健康，无需改。）
-5. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射（届时新主路径已完全不消费）。
+4. ~~解决 #4（`bindPlanToTask`）——停止在应用层改写 `action`，改为诚实信号并删除那道死防御 guard~~ —— ✅ 已完成。
+5. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射（届时新主路径已完全不消费）。**唯一剩余项。**
+
+## 备注：本清单已全部关闭，仅剩类型删除（第 5 步）
+
+#1~#5 的兼容 shim 均已移除，`src/` 内不再有 `TODO(adr-0014-compat)` 标记。移除顺序只剩第 5 步的类型/死代码删除，涉及面较广（40+ 文件交叉引用），需单独一轮"证死再删"评估，不属于本清单的"有损桥接"性质。
+
+"显式克隆 fork"（command 触发 + 克隆工作区 + 原封拷工作图）与上述兼容层无关，是独立产品特性，另行立项。
 
 相关背景见 [docs/adr/0014-planning-agent-policy-kernel-boundary.md](../adr/0014-planning-agent-policy-kernel-boundary.md) 的 Future Work 一节。

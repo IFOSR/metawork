@@ -48,11 +48,13 @@ The first version preserves current product behavior: one active top-level task,
 - Add elastic work-unit spawn and capacity management.
 - Add parallel subtask dispatch with real worktree lease enforcement.
 
-The remaining legacy-compat shim (`bindPlanToTask`) is tracked for removal in
-[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md) (#4) and is
-marked `TODO(adr-0014-compat)` in source. The planner adapter (#1/#2), its
-`AgentClass → ExecutorProfile` down-cast, the `intentDecisionFromPlan` round-trip (#3), and
-the runtime resume-target selection (#5 — `resolveLegacyResumeIntent`/`decideResumeTarget`
-and the `last_task_continuation` control) have already been removed: which task to resume is
-now decided by the `PlanningAgent`, and the `PolicyKernel` forces a clarification when a
-resume plan lacks an explicit `taskId` (see that doc).
+All lossy legacy-compat shims tracked in
+[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md) have been
+removed, and no `TODO(adr-0014-compat)` marker remains in source. The planner adapter (#1/#2),
+its `AgentClass → ExecutorProfile` down-cast, the `intentDecisionFromPlan` round-trip (#3),
+the runtime resume-target selection (#5), and the `bindPlanToTask` action-relabel (#4) are all
+gone: resume/fork plans now keep their truthful `action` (e.g. `task_control`) instead of being
+disguised as `plan_work_graph` to slip past a vestigial coordinator guard, which was deleted.
+The only remaining item is removal-order step 5 — deleting the now-unconsumed
+`ExecutorProfile` / `IntentOrchestrator` / `IntentDecisionV2` types and their mappers — which is
+dead-symbol cleanup rather than a lossy bridge and is scoped separately.

@@ -24,6 +24,12 @@ import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkUnitClaim, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import type { AcceptanceCriterion } from '../core/execution-strategy-planner.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import type { PlanningAction } from '../planning/planning-types.js';
+
+// Plan actions that intend executor work when they reach dispatch. resume/fork
+// carry 'task_control' (no longer relabeled to 'plan_work_graph'); everything
+// else (direct_reply / clarification / no_action) is a non-executing outcome.
+const EXECUTABLE_PLAN_ACTIONS = new Set<PlanningAction>(['plan_work_graph', 'task_control']);
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -162,7 +168,13 @@ export class SessionExecutionCoordinator {
       this.recoverExpiredWorkUnits();
 
       const agentClasses = this.deps.agentClassService.listAgentClasses();
-      if (request.planningPlan && request.planningPlan.action !== 'plan_work_graph') {
+      // Defense-in-depth: only executable plans dispatch an executor. resume/fork
+      // requests keep their truthful 'task_control' action (we no longer relabel
+      // them to 'plan_work_graph'), so the guard admits both plan_work_graph and
+      // task_control. Non-executing plans (direct_reply / clarification / no_action)
+      // are handled inline in KernelDecisionApplier and should never run here — if
+      // one still reaches dispatch, skip execution instead of false-succeeding.
+      if (request.planningPlan && !EXECUTABLE_PLAN_ACTIONS.has(request.planningPlan.action)) {
         this.deps.scheduler.clearDispatch(taskId, request.planningPlan.reason);
         await finishExecution([
           `-> PolicyKernel: no executor dispatch for ${request.planningPlan.action} (${request.planningPlan.reason})`,

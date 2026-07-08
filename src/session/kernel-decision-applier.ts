@@ -288,7 +288,7 @@ export class KernelDecisionApplier {
         contextTaskId: result.plan.contextTaskId,
         executionMode: 'follow-up',
         schedulingReason: result.schedulingReason,
-        planningPlan: plan ? bindPlanToTask(plan, followUpTask.id) : null,
+        planningPlan: plan ? bindPlanToReferencedTask(plan, followUpTask.id) : null,
         kernelDecisionId,
       });
       return true;
@@ -313,7 +313,7 @@ export class KernelDecisionApplier {
         executionMode: 'resume-blocked',
         schedulingReason: result.schedulingReason,
         newlyProvidedResources: result.newlyProvidedResources,
-        planningPlan: plan ? bindPlanToTask(plan, result.task.id) : null,
+        planningPlan: plan ? bindPlanToReferencedTask(plan, result.task.id) : null,
         kernelDecisionId,
         recoveryTrigger: this.deps.callbacks.buildRecoveryTrigger(result.task, {
           kind: result.triggerKind ?? 'natural-language-resume',
@@ -342,7 +342,7 @@ export class KernelDecisionApplier {
       contextTaskId: result.plan.contextTaskId,
       executionMode: result.executionMode,
       schedulingReason: result.schedulingReason,
-      planningPlan: plan ? bindPlanToTask(plan, result.plan.executionTaskId) : null,
+      planningPlan: plan ? bindPlanToReferencedTask(plan, result.plan.executionTaskId) : null,
       kernelDecisionId,
     });
     return true;
@@ -388,16 +388,14 @@ export class KernelDecisionApplier {
   }
 }
 
-// TODO(adr-0014-compat) HIGH: forcing action to 'plan_work_graph' on resume/fork
-// makes the persisted decision.action disagree with the plan's real origin
-// (often task_control), and relies on the runtime fallback work graph to fill in
-// executable subtasks. resume/fork should produce a real workGraph via the
-// planner/kernel instead of relabeling here.
-// See docs/tech-debt/legacy-compat-layers.md (#4).
-function bindPlanToTask(plan: PlanningAgentPlan, taskId: string): PlanningAgentPlan {
+// Pins a resume/fork plan to the concrete task the runtime is about to execute.
+// This only fixes the task reference (taskId + binding); it does NOT rewrite the
+// plan's action. The action stays truthful (e.g. 'task_control' for a resume),
+// and the coordinator dispatches every request that carries a plan — see the
+// note at session-execution-coordinator.ts.
+function bindPlanToReferencedTask(plan: PlanningAgentPlan, taskId: string): PlanningAgentPlan {
   return {
     ...plan,
-    action: 'plan_work_graph',
     task: {
       ...plan.task,
       taskId,
