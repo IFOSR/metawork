@@ -73,12 +73,18 @@
 3. ~~解决 #5——把 resume 目标选择上移到 planner，删除 `resolveLegacyResumeIntent`/`decideResumeTarget`
    旧路由依赖与 `last_task_continuation` control~~ —— ✅ 已完成。
 4. ~~解决 #4（`bindPlanToTask`）——停止在应用层改写 `action`，改为诚实信号并删除那道死防御 guard~~ —— ✅ 已完成。
-5. 删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射（届时新主路径已完全不消费）。**唯一剩余项。**
+5. ~~删除 `ExecutorProfile`、`IntentOrchestrator`、`IntentDecisionV2` 及相关映射~~ —— ✅ 已完成。
 
-## 备注：本清单已全部关闭，仅剩类型删除（第 5 步）
+## ✅ 本清单已关闭
 
-#1~#5 的兼容 shim 均已移除，`src/` 内不再有 `TODO(adr-0014-compat)` 标记。移除顺序只剩第 5 步的类型/死代码删除，涉及面较广（40+ 文件交叉引用），需单独一轮"证死再删"评估，不属于本清单的"有损桥接"性质。
+`#1~#5` 全部完成。第 5 步的"证死再删"扫描发现旧类型并非纯死代码——新主路径仍在复用其中的小型字符串联合类型别名，`llm-bridge` 仍用到少量工具函数，且一个 `/executor route` 预览命令还在养活旧 `PlannerRoutingSkill`。据此完成了以下收尾（见对应提交）：
 
-"显式克隆 fork"（command 触发 + 克隆工作区 + 原封拷工作图）与上述兼容层无关，是独立产品特性，另行立项。
+- **删除**整棵旧路由/意图子系统：`src/core/{intent-orchestrator,semantic-intent-router,executor-router,execution-planning-service}.ts`、`src/routing/execution-policy-planner.ts`、`src/planner/*`（`planner-runtime-service`/`intent-recognition-skill`/`planner-routing-skill`）、`src/storage/executor-route-event-repo.ts`，以及对应的测试套件。
+- **迁移**仍被主路径消费的类型到活代码家：`Intent*` 字符串联合别名 → `src/planning/planning-types.ts`；`ExecutionResult` → `src/execution/execution-runtime.ts`。
+- **精简**活文件中的死链：`llm-bridge` 的 `resolveIntentDecision` 链、`session-persistence-service` 的 route-event 写入、`QueuedExecutionRequest` 的 `intentDecision`/`semanticExecutorDecision` 字段、`TaskAdmissionGate.evaluateIntent`、`/executor route` 预览子命令（该命令预览的是已退役的旧路由，已随子系统删除）。
+
+`src/` 内不再有 `TODO(adr-0014-compat)` 标记，`src/routing`、`src/planner` 目录已消失。
+
+> 与本清单无关的后续想法：**"显式克隆 fork"**（command 触发 + 克隆工作区 + 原封拷工作图）是独立产品特性，不是兼容层，另行立项。
 
 相关背景见 [docs/adr/0014-planning-agent-policy-kernel-boundary.md](../adr/0014-planning-agent-policy-kernel-boundary.md) 的 Future Work 一节。

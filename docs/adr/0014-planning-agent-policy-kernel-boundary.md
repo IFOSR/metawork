@@ -55,6 +55,9 @@ its `AgentClass → ExecutorProfile` down-cast, the `intentDecisionFromPlan` rou
 the runtime resume-target selection (#5), and the `bindPlanToTask` action-relabel (#4) are all
 gone: resume/fork plans now keep their truthful `action` (e.g. `task_control`) instead of being
 disguised as `plan_work_graph` to slip past a vestigial coordinator guard, which was deleted.
-The only remaining item is removal-order step 5 — deleting the now-unconsumed
-`ExecutorProfile` / `IntentOrchestrator` / `IntentDecisionV2` types and their mappers — which is
-dead-symbol cleanup rather than a lossy bridge and is scoped separately.
+The final cleanup also removed the entire legacy routing/intent subsystem — `ExecutorProfile`,
+`IntentOrchestrator`, `IntentDecisionV2`, `SemanticIntentRouter`, `ExecutorRouter`,
+`ExecutionPlanningService`, the `ExecutionPolicyPlanner`, and the `src/planner/` skill subtree —
+relocating the few still-consumed types (`Intent*` unions to `planning-types`, `ExecutionResult`
+to `execution-runtime`) onto the live path. The `legacy-compat-layers.md` tech-debt list is now
+closed.

@@ -32,11 +32,11 @@ describe('Memory context architecture boundaries', () => {
 
   it('defines ExecutionContextBundleV2 as the execution context contract', () => {
     const typesSource = readSource('src/core/types.ts');
-    const planningSource = readSource('src/core/execution-planning-service.ts');
+    const runtimeSource = readSource('src/execution/execution-runtime.ts');
 
     expect(typesSource).toContain('export interface ExecutionContextBundleV2');
     expect(typesSource).toContain('export type ExecutionContextBundle = ExecutionContextBundleV2');
-    expect(planningSource).toContain('ExecutionContextBundleV2');
-    expect(planningSource).toContain('context: ExecutionContextBundleV2');
+    expect(runtimeSource).toContain('ExecutionContextBundleV2');
+    expect(runtimeSource).toContain('context: ExecutionContextBundleV2');
   });
 });

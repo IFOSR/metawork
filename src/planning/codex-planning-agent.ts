@@ -1,11 +1,4 @@
 import type { AgentClass } from '../core/types.js';
-import type {
-  IntentExecutionComplexity,
-  IntentExecutionMode,
-  IntentRiskLevel,
-  IntentTaskBinding,
-  IntentTaskControl,
-} from '../core/intent-orchestrator.js';
 import type { CapabilityClass } from '../core/capability-class.js';
 import { isCapabilityClass } from '../core/capability-class.js';
 import { extractJsonObject } from '../core/llm-json.js';
@@ -13,6 +6,11 @@ import { generateInteractionId } from '../utils/id.js';
 import { validatePlanningAgentPlan } from './planning-agent-plan-validator.js';
 import type { PlanningAgent } from './planning-agent.js';
 import type {
+  IntentExecutionComplexity,
+  IntentExecutionMode,
+  IntentRiskLevel,
+  IntentTaskBinding,
+  IntentTaskControl,
   PlanningAction,
   PlanningAgentPlan,
   PlanningContext,

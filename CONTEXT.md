@@ -6,13 +6,13 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. A planner work unit implements the `PlanningAgent` interface, which understands the user input and proposes a structured `PlanningAgentPlan`. The deterministic `PolicyKernel` validates or rewrites that plan against the current runtime snapshot and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting approved subtasks, claiming an idle executor `WorkUnit`, or calling `ExecutionRuntime` with a `SubtaskExecutionSpec`.
 
-`src/planning/` owns the PlanningAgent interface, planning context construction, plan validation, and the first adapter that reuses existing semantic intent logic behind the planner seam. Session code must not call the old intent orchestrator directly as a fallback.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation. The old `IntentOrchestrator`/`IntentDecisionV2`/`ExecutorProfile` routing layer has been removed; there is no legacy intent-orchestrator fallback.
 
 `src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
 
 `src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions for concrete work units. `SessionExecutionCoordinator` calls its lightweight sweep before dispatch and claim attempts so expired executor leases can be observed and their subtasks can be made recoverable.
 
-`src/core/executor-router.ts`, `src/routing/execution-policy-planner.ts`, and `src/core/executor-routing-coordinator.ts` are no longer the active execution path. Treat them as migration reference for logic that is being folded into planner skills; do not add new primary routing behavior there.
+The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService`; do not reintroduce a parallel routing layer.
 
 Default agent classes and fixed first-pool work units are seeded in `src/executor/agent-class-seeder.ts`: `planner`/`planner-1` and the configured executor agent class/`executor-1`. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
 

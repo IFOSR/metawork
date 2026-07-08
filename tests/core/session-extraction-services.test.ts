@@ -17,7 +17,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
 import { ConversationRuntimeService } from '../../src/execution/conversation-runtime-service.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { ExecutorRouteDecision } from '../../src/core/executor-router.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -41,19 +40,9 @@ function createRuntime(db: Database.Database) {
 }
 
 describe('session extraction services', () => {
-  it('persists interactions and route event results outside MetaclawSession', () => {
+  it('persists interactions outside MetaclawSession', () => {
     const db = createTestDb();
     const service = new SessionPersistenceService(db);
-    const decision: ExecutorRouteDecision = {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      candidates: [],
-      primaryIntent: 'repo_execution',
-      matchedBoundary: ['repo_execution'],
-      rejected: [],
-      reason: 'test route',
-      confidence: 0.9,
-    };
 
     service.recordInteraction({
       taskId: 'task_1',
@@ -62,12 +51,6 @@ describe('session extraction services', () => {
       systemOutput: 'done',
       executorUsed: 'codex-cli',
     });
-    const routeEventId = service.recordRouteEvent({
-      taskId: 'task_1',
-      userInput: 'build it',
-      decision,
-    });
-    service.markRouteEventResult(routeEventId, 'success');
 
     const interaction = db.prepare('SELECT task_id, session_id, user_input, system_output, executor_used FROM interactions').get() as Record<string, string>;
     expect(interaction).toMatchObject({
@@ -77,9 +60,6 @@ describe('session extraction services', () => {
       system_output: 'done',
       executor_used: 'codex-cli',
     });
-    const routeEvent = db.prepare('SELECT id, result FROM executor_route_events').get() as Record<string, string>;
-    expect(routeEvent.id).toBe(routeEventId);
-    expect(routeEvent.result).toBe('success');
   });
 
   it('captures high-confidence preferences, audits auto-capture, and emits notification candidates', () => {

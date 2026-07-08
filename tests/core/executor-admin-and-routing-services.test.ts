@@ -4,12 +4,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { ExecutorAdminService } from '../../src/executor/executor-admin-service.js';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { SessionPresentationService } from '../../src/session/session-presentation-service.js';
-import { PlannerRoutingSkill } from '../../src/planner/planner-routing-skill.js';
-import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
-import { TaskRepo } from '../../src/storage/task-repo.js';
-import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
-import { TaskEngine } from '../../src/task/task-engine.js';
 
 function createDb() {
   const db = new Database(':memory:');
@@ -83,53 +78,5 @@ describe('agent class admin and planner dispatch services', () => {
 
     expect(result.lines.join('\n')).toContain('command=research-bot');
     expect(result.lines.join('\n')).toContain('check=research-bot --version');
-  });
-
-  it('keeps business dispatch in PlannerRoutingSkill and resource arbitration in WorkUnitClaimService', () => {
-    const db = createDb();
-    const agentClassService = new AgentClassService({
-      db,
-      defaultExecutorName: 'codex-cli',
-      availableCommands: new Set(['codex']),
-    });
-    agentClassService.seedDefaults();
-    const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-admin-routing-tests');
-    const task = taskEngine.create({
-      title: 'Write tests',
-      goal: 'Please implement TypeScript unit tests',
-    });
-    const subtaskPlan = new PlannerRoutingSkill().plan({
-      task,
-      userPrompt: task.goal,
-      taskExecutionPlan: {
-        mode: 'reuse-existing',
-        executionTaskId: task.id,
-        contextTaskId: task.id,
-        transitions: [],
-      },
-      intentDecision: null,
-      agentClasses: agentClassService.listAgentClasses(),
-      resources: [],
-      recalledTaskIds: [],
-    }).subtasks[0]!;
-
-    const subtaskRepo = new SubtaskRepo(db);
-    subtaskRepo.upsert({
-      ...subtaskPlan,
-      taskId: task.id,
-      status: 'ready',
-      result: '',
-      error: null,
-    });
-    const claim = new WorkUnitClaimService(new WorkUnitRepo(db)).claim({
-      taskId: task.id,
-      subtask: subtaskRepo.listByTask(task.id)[0]!,
-    });
-
-    expect(subtaskPlan.candidateAgentClasses).toContain('codex-cli');
-    expect(JSON.stringify(subtaskPlan)).not.toContain('ExecutionPolicy');
-    expect(claim?.workUnit.id).toBe('executor-1');
-    expect(claim?.workUnit.agentClassName).toBe('codex-cli');
   });
 });

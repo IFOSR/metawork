@@ -1,6 +1,5 @@
-// Enforces the single-active-top-level-task rule for intent admission and
-// execution dispatch before work reaches the scheduler.
-import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
+// Enforces the single-active-top-level-task rule for execution dispatch before
+// work reaches the scheduler.
 import type { Task } from '../core/types.js';
 
 export interface TaskAdmissionGateResult {
@@ -8,47 +7,13 @@ export interface TaskAdmissionGateResult {
   lines: string[];
 }
 
-interface IntentAdmissionInput {
-  decision: IntentDecisionV2;
-  runningTask: Task | null;
-}
-
 interface ExecutionAdmissionInput {
   taskId: string;
   runningTask: Task | null;
 }
 
-/** Decides whether a new intent or execution request may enter while another top-level task is running. */
+/** Decides whether an execution request may enter while another top-level task is running. */
 export class TaskAdmissionGate {
-  evaluateIntent(input: IntentAdmissionInput): TaskAdmissionGateResult {
-    const { decision, runningTask } = input;
-    if (!runningTask) {
-      return allowAdmission();
-    }
-
-    if (decision.interactionType === 'direct_reply' || decision.interactionType === 'clarification') {
-      return allowAdmission();
-    }
-
-    if (decision.interactionType === 'task_control') {
-      if (decision.task.control === 'status_query' || decision.task.control === 'clear_tasks') {
-        return allowAdmission();
-      }
-
-      if (decision.task.binding === 'reference' && decision.task.taskId === runningTask.id) {
-        return allowAdmission();
-      }
-
-      return rejectAdmission(runningTask, '该任务控制会启动或恢复另一个顶层任务');
-    }
-
-    if (decision.task.binding === 'reference' && decision.task.taskId === runningTask.id) {
-      return allowAdmission();
-    }
-
-    return rejectAdmission(runningTask, '已有任务在执行,暂不接纳新的顶层任务');
-  }
-
   evaluateExecution(input: ExecutionAdmissionInput): TaskAdmissionGateResult {
     const { taskId, runningTask } = input;
     if (!runningTask || runningTask.id === taskId) {

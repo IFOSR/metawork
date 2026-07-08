@@ -70,7 +70,7 @@ flowchart LR
 
 主干逻辑很简单：所有自然语言输入进入同一个 runtime，然后由 planner work unit 暴露的 `PlanningAgent` 接口产出结构化 `PlanningAgentPlan`。`PolicyKernel` 是自然语言规划的唯一授权层：它验证 plan、检查任务状态和冲突、重写不可用 executor 候选，并返回 `KernelDecision`。Runtime 服务再应用这个决策：直接回答、应用任务控制、创建或绑定任务、持久化 kernel 授权过的 subtasks、claim 空闲 executor work units，并把已 claim 的 subtask 交给 `ExecutionRuntime`。
 
-当前 Codex `PlanningAgent` adapter 会通过 `LlmBridge` 调用 Codex CLI，并返回结构化 `PlanningAgentPlan`。它仍复用共享 intent 和 task-binding 类型作为兼容边界，但不再通过 `IntentOrchestrator` 或 `SemanticIntentRouter` 做路由；`MetaclawSession` 也不再把这些服务作为自然语言主路径调用。
+当前 Codex `PlanningAgent` adapter 会通过 `LlmBridge` 调用 Codex CLI，并返回结构化 `PlanningAgentPlan`。旧的 `IntentOrchestrator` / `SemanticIntentRouter` / `ExecutorRouter` 路由子系统已整体删除；它曾定义的 planner 词汇类型现已迁至 `src/planning/planning-types.ts`。
 
 ### 普通问答路径
 
@@ -407,7 +407,6 @@ Executor 扩展契约：
 /executor list
 /executor register wizard
 /executor unregister <name>
-/executor route <任务描述>
 /executor route-feedback
 ```
 
@@ -800,7 +799,7 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 现在拆成 planner 理解、kernel 授权和 runtime 执行三层。显式记忆/偏好快路之后，raw user input 进入 `PlanningAgent`。当前 Codex adapter 会直接通过 `LlmBridge` 产出结构化 `PlanningAgentPlan`，替代旧的 `IntentOrchestrator` round-trip。Legacy intent 类型和 semantic helpers 仍保留在 `src/core/` 中，用于兼容和排序上下文，但 planner 执行不再依赖 `IntentOrchestrator` 或 `SemanticIntentRouter` 作为路由逻辑。`PlanningAgent` 返回以下 action 之一：
+自然语言 dispatch 现在拆成 planner 理解、kernel 授权和 runtime 执行三层。显式记忆/偏好快路之后，raw user input 进入 `PlanningAgent`。当前 Codex adapter 会直接通过 `LlmBridge` 产出结构化 `PlanningAgentPlan`，替代旧的 `IntentOrchestrator` round-trip（现已删除）。`PlanningAgent` 返回以下 action 之一：
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
@@ -936,7 +935,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、可复用 semantic-intent helpers（`IntentOrchestrator`、`RuleHintsProvider`、`SemanticIntentRouter`、`llm-bridge`）、策略基础（`ExecutionStrategyPlanner`、`CapabilityClass`），以及 legacy policy seams（`ExecutionPlanningService`、`ExecutionPolicy`、legacy `ExecutorRouter`、`task-routing`）。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories，不再回流到 `core`。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、`llm-bridge`、`RuleHintsProvider`、策略基础（`ExecutionStrategyPlanner`、`CapabilityClass`、`task-routing`）。旧路由/意图子系统（`IntentOrchestrator`、`SemanticIntentRouter`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionPolicyPlanner`、`src/planner/*`）已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
 
 ## License
 

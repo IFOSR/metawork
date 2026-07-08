@@ -30,13 +30,11 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('inferTaskRouteIntent');
   });
 
-  it('does not bypass or override IntentDecisionV2 with session-level natural-language hard rules', () => {
+  it('does not bypass or override the planning decision with session-level natural-language hard rules', () => {
     const source = readSource('src/session/metaclaw-session.ts');
-    const orchestratorSource = readSource('src/core/intent-orchestrator.ts');
 
     expect(source).not.toContain('shouldBusyFallbackIntentToDurableTask');
     expect(source).not.toContain("decision.interactionType = 'durable_task'");
-    expect(orchestratorSource).not.toContain('resolveFocusHintDecision');
     expect(source).not.toContain('maybeHandleNaturalLanguageTaskResume(');
     expect(source).not.toContain('maybeAutoResumeSatisfiedBlockedTask(');
     expect(source).not.toContain('maybeHandlePersistedLastTaskContinuation(');

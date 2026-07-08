@@ -140,32 +140,6 @@ describe('planner-first executor command acceptance', () => {
     expect(row.runtime_check_command).toBe('research-bot --version');
   });
 
-  it('routes through planner preview commands without writing route events', async () => {
-    const db = createDb();
-    const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-planner-preview');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_planner_preview' });
-
-    session.initialize();
-    await session.submit('/executor profile upsert legal-contract --domains legal,contract --capabilities contract_review,risk_matrix --risk high --success 0.9');
-    await session.submit('/executor route 请审查合同条款并输出风险矩阵');
-    await session.submit('/executor route-feedback');
-
-    const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Updated Executor AgentClass: legal-contract');
-    expect(output).toContain('Planner Route Preview');
-    expect(output).toContain('candidateAgentClasses=legal-contract');
-    expect(output).toContain('No planner task events recorded yet');
-    expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
-  });
-
   it('persists planner subtasks and work unit claims before execution', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);

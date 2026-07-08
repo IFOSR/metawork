@@ -6,16 +6,15 @@ MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, w
 
 Key areas are organized by responsibility:
 
-- `src/core/` is intentionally narrow and contains shared primitives, reusable semantic-intent helpers, strategy primitives, and legacy routing compatibility seams.
-- `src/planning/` owns the `PlanningAgent` interface, planning context construction, plan validation, and the semantic adapter that reuses old intent logic behind the planner boundary.
+- `src/core/` is intentionally narrow and contains shared primitives, the LLM bridge, capability classes, and strategy primitives.
+- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation.
 - `src/kernel/` owns pure `PolicyKernel` authorization for `PlanningAgentPlan` decisions. It validates, rewrites, rejects, or clarifies, but does not write storage or call executors.
 - `src/session/` coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/PolicyKernel wiring, kernel decision application, task admission for deterministic paths, and persistence.
-- `src/planner/` contains planner skills and legacy planner-runtime compatibility reference. It should not be the storage-writing main dispatch authority.
 - `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
 - `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
 - `src/execution/` owns execution runtime, work graph application/recovery, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
 - `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
-- `src/guidance/`, `src/learning/`, `src/intent/`, `src/delivery/`, and `src/routing/` own their named domains, with `src/routing/` now treated as a legacy policy reference layer rather than the main dispatch path.
+- `src/guidance/`, `src/learning/`, `src/intent/`, and `src/delivery/` own their named domains.
 - `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, and events.
 - `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
 - `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.

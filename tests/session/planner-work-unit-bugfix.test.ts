@@ -14,7 +14,6 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config, Subtask, WorkUnit } from '../../src/core/types.js';
 import type { ExecutorAdapter, ExecutorInput } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import type { IntentDecisionV2 } from '../../src/core/intent-orchestrator.js';
 import type { QueuedExecutionRequest } from '../../src/session/session-helpers.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 
@@ -80,12 +79,11 @@ function readyTask(taskEngine: TaskEngine, title = 'planner work unit task') {
   return task;
 }
 
-function request(taskId: string, userPrompt = 'execute task', intentDecision: IntentDecisionV2 | null = null): QueuedExecutionRequest {
+function request(taskId: string, userPrompt = 'execute task'): QueuedExecutionRequest {
   return {
     userPrompt,
     contextTaskId: taskId,
     executionMode: 'fresh',
-    intentDecision,
     includeRecentConversationContext: false,
   };
 }
@@ -119,30 +117,6 @@ async function dispatchExistingTask(
     executionRequest: queuedRequest,
   });
   await harness.session.waitForAsyncWork();
-}
-
-function directReplyIntent(): IntentDecisionV2 {
-  return {
-    interactionType: 'direct_reply',
-    confidence: 0.9,
-    reason: 'answer directly',
-    clarificationQuestion: null,
-    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-    task: { binding: 'none', taskId: null, control: 'none', scope: null },
-    execution: {
-      mode: 'single_executor',
-      complexity: 'simple',
-      selectedExecutor: 'codex-cli',
-      candidateExecutors: ['codex-cli'],
-      requiresVerification: false,
-      canModifyFiles: false,
-      requiresExternalGateway: false,
-      capabilityClass: 'general',
-      primaryIntent: 'general',
-      matchedBoundary: [],
-    },
-    hints: [],
-  };
 }
 
 function directReplyPlan(): PlanningAgentPlan {
@@ -211,7 +185,7 @@ describe('planner/work-unit active path regressions', () => {
     const task = readyTask(harness.taskEngine, 'non-plan task');
 
     await dispatchExistingTask(harness, task.id, {
-      ...request(task.id, 'answer directly', directReplyIntent()),
+      ...request(task.id, 'answer directly'),
       planningPlan: directReplyPlan(),
     });
 

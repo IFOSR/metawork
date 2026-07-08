@@ -65,34 +65,6 @@ describe('agent class and planner route commands', () => {
     expect(afterUnregister.content).toContain('status=unavailable');
   });
 
-  it('does not preview route candidates for unavailable AgentClasses', async () => {
-    const db = createDb();
-    const context = createContext(db);
-
-    await executorCommand.execute([
-      'register',
-      'legal-contract',
-      '--domains',
-      'legal,contract',
-      '--capabilities',
-      'contract_review,risk_matrix',
-      '--primary-use-cases',
-      '审查合同条款',
-      '--success',
-      '0.95',
-    ], context);
-
-    const before = await executorCommand.execute(['route', '请审查合同条款并输出风险矩阵'], context);
-    expect(before.content).toContain('Planner Route Preview');
-    expect(before.content).toContain('candidateAgentClasses=legal-contract');
-
-    await executorCommand.execute(['unregister', 'legal-contract'], context);
-
-    const after = await executorCommand.execute(['route', '请审查合同条款并输出风险矩阵'], context);
-    expect(after.content).toContain('Planner Route Preview');
-    expect(after.content).not.toContain('candidateAgentClasses=legal-contract');
-  });
-
   it('upserts AgentClasses and reports planner task events instead of route events', async () => {
     const db = createDb();
     const context = createContext(db);
@@ -114,10 +86,6 @@ describe('agent class and planner route commands', () => {
     const profiles = await executorCommand.execute(['profiles'], context);
     expect(profiles.content).toContain('legal-contract');
     expect(profiles.content).toContain('legal');
-
-    const route = await executorCommand.execute(['route', '请审查合同条款并输出风险矩阵'], context);
-    expect(route.content).toContain('Planner Route Preview');
-    expect(route.content).toContain('legal-contract');
 
     const feedback = await executorCommand.execute(['route-feedback'], context);
     expect(feedback.content).toContain('No planner task events recorded yet');

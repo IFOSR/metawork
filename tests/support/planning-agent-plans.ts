@@ -1,13 +1,11 @@
 import { vi } from 'vitest';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import type {
+  IntentTaskControl,
   PlanningAgentPlan,
   SubtaskProposal,
   WorkGraphProposal,
 } from '../../src/planning/planning-types.js';
-import type {
-  IntentTaskControl,
-} from '../../src/core/intent-orchestrator.js';
 
 // Test-only builders for PlanningAgentPlan. Full-stack/acceptance tests inject a
 // PlanningAgent whose plan() returns one of these, exercising the real

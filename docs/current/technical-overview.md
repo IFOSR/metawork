@@ -70,7 +70,7 @@ flowchart LR
 
 The main idea is simple: every natural-language input enters one runtime, then a planner work unit exposes the `PlanningAgent` interface and proposes a structured `PlanningAgentPlan`. `PolicyKernel` is the single authorization layer for natural-language planning: it validates the plan, checks task state and conflicts, rewrites unavailable executor candidates, and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting kernel-approved subtasks, claiming idle executor work units, and running claimed subtasks through `ExecutionRuntime`.
 
-The current Codex `PlanningAgent` adapter prompts the Codex CLI through `LlmBridge` and returns a structured `PlanningAgentPlan`. It keeps shared intent and task-binding types for compatibility, but it no longer routes through `IntentOrchestrator` or `SemanticIntentRouter`; `MetaclawSession` does not call those services as the main natural-language path.
+The current Codex `PlanningAgent` adapter prompts the Codex CLI through `LlmBridge` and returns a structured `PlanningAgentPlan`. The legacy `IntentOrchestrator` / `SemanticIntentRouter` / `ExecutorRouter` routing subsystem has been removed entirely; the planner vocabulary types it once defined now live in `src/planning/planning-types.ts`.
 
 ### Direct Reply Path
 
@@ -409,7 +409,6 @@ Executor management commands:
 /executor list
 /executor register wizard
 /executor unregister <name>
-/executor route <task description>
 /executor route-feedback
 ```
 
@@ -765,7 +764,7 @@ This prevents queued work from wasting compute while preserving task safety. Mul
 
 ## Planning Agent, Policy Kernel, And Work Units
 
-Natural-language dispatch is now split into planner understanding, kernel authorization, and runtime execution. After explicit memory/preference fast paths, raw user input enters `PlanningAgent`. The current Codex adapter prompts `LlmBridge` directly to produce a structured `PlanningAgentPlan`, replacing the old `IntentOrchestrator` round-trip. Legacy intent types and semantic helpers remain in `src/core/` for compatibility and ranking context, but planner execution no longer depends on `IntentOrchestrator` or `SemanticIntentRouter` as routing logic. `PlanningAgent` returns one of these proposed actions:
+Natural-language dispatch is now split into planner understanding, kernel authorization, and runtime execution. After explicit memory/preference fast paths, raw user input enters `PlanningAgent`. The current Codex adapter prompts `LlmBridge` directly to produce a structured `PlanningAgentPlan`, replacing the old `IntentOrchestrator` round-trip (now deleted). `PlanningAgent` returns one of these proposed actions:
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner proposes a work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, required agent-class kind, and candidate executor agent classes.
@@ -940,7 +939,7 @@ src/
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), reusable semantic-intent helpers (`IntentOrchestrator`, `RuleHintsProvider`, `SemanticIntentRouter`, `llm-bridge`), strategy primitives (`ExecutionStrategyPlanner`, `CapabilityClass`), and legacy policy seams (`ExecutionPlanningService`, `ExecutionPolicy`, legacy `ExecutorRouter`, `task-routing`). The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories rather than returning to `core`.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), the `llm-bridge`, `RuleHintsProvider`, and strategy primitives (`ExecutionStrategyPlanner`, `CapabilityClass`, `task-routing`). The legacy routing/intent subsystem (`IntentOrchestrator`, `SemanticIntentRouter`, `ExecutorRouter`, `ExecutionPlanningService`, `ExecutionPolicyPlanner`, `src/planner/*`) has been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
 
 ## License
 

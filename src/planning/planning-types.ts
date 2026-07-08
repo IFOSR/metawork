@@ -1,10 +1,4 @@
 import type { AgentClass, AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
-import type {
-  IntentExecutionComplexity,
-  IntentRiskLevel,
-  IntentTaskBinding,
-  IntentTaskControl,
-} from '../core/intent-orchestrator.js';
 import type { RuleHint } from '../core/rule-hints-provider.js';
 import type { TaskSummary } from '../core/llm-bridge.js';
 import type { CapabilityClass } from '../core/capability-class.js';
@@ -15,6 +9,20 @@ export type PlanningAction =
   | 'task_control'
   | 'plan_work_graph'
   | 'no_action';
+
+// Planning vocabulary shared across the PlanningAgent path. These string unions
+// used to live in the retired core/intent-orchestrator module; they now have
+// their home here on the live planning path.
+export type IntentRiskLevel = 'low' | 'medium' | 'high';
+export type IntentTaskBinding = 'new' | 'reference' | 'none';
+export type IntentTaskControl =
+  | 'clear_tasks'
+  | 'status_query'
+  | 'resume_task'
+  | 'recover_blocked'
+  | 'none';
+export type IntentExecutionMode = 'none' | 'single_executor' | 'multi_executor';
+export type IntentExecutionComplexity = 'simple' | 'moderate' | 'complex';
 
 export interface SubtaskProposal {
   id: string;

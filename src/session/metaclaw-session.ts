@@ -38,7 +38,6 @@ import { learningCommand } from '../commands/learning-commands.js';
 import { dashboardCommand, attachCommand, historyCommand, configCommand, helpCommand, exitCommand } from '../commands/global-commands.js';
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
-import type { IntentDecision } from '../core/executor-router.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { TaskSemanticService } from '../task/task-semantic-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
