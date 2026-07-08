@@ -21,8 +21,7 @@ User input
   -> MetaclawSession
   -> explicit memory/preference fast path when applicable
   -> PlanningContextBuilder
-  -> PlanningAgent
-       -> first adapter reuses IntentOrchestrator/SemanticIntentRouter internally
+  -> PlanningAgent (CodexPlanningAgent prompts LlmBridge and returns a structured plan)
   -> PlanningAgentPlan
   -> PolicyKernel
        -> validate schema, task state, confidence, conflicts, executor availability
@@ -52,18 +51,16 @@ The important boundary is that planner understanding, kernel authorization, and 
 - `WorkUnitClaimService` chooses idle work units, manages heartbeat/lease state, and records work-unit events.
 - `ExecutionRuntime` runs a claimed subtask via `SubtaskExecutionSpec`; it does not receive `ExecutionPolicy`, `primaryExecutor`, `candidateExecutors`, or `fallbackChain`.
 
-## What Is No Longer The Main Path
+## Removed Legacy Routing Layer
 
-The following code remains as reusable semantic logic, compatibility, or migration reference, not as the primary natural-language dispatch layer:
+The old routing/intent subsystem that predated this path has been **fully removed** (the `docs/tech-debt/legacy-compat-layers.md` list is now closed). None of the following exist anymore:
 
-- `src/core/intent-orchestrator.ts` when called directly from session code
-- `src/session/session-intent-application-service.ts`
-- `src/core/executor-router.ts`
-- `src/core/executor-routing-coordinator.ts`
-- `src/routing/execution-policy-planner.ts`
-- `ExecutionPolicy` and `fallbackChain` as runtime inputs
+- `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/executor-router.ts`
+- `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`
+- the `src/planner/` skill subtree (`planner-runtime-service`, `intent-recognition-skill`, `planner-routing-skill`)
+- `IntentOrchestrator` / `IntentDecisionV2` / `ExecutorProfile` / `ExecutorRouter`, and `ExecutionPolicy` / `fallbackChain` as runtime inputs
 
-Do not add new primary dispatch behavior there. Reusable semantic understanding should live behind `PlanningAgent`; deterministic authorization should live in `PolicyKernel`; runtime state changes should live in runtime/application services.
+Do not reintroduce a parallel dispatch layer. Reusable semantic understanding lives behind `PlanningAgent`; deterministic authorization lives in `PolicyKernel`; runtime state changes live in runtime/application services.
 
 ## Current Constraints
 
@@ -82,12 +79,10 @@ When changing dispatch behavior, update or run these focused tests before broad 
 
 ```bash
 npm test -- tests/session/metaclaw-session-architecture-boundary.test.ts
-npm test -- tests/core/execution-planning-boundary.test.ts
 npm test -- tests/kernel/policy-kernel.test.ts
 npm test -- tests/planning/planning-agent-plan-validator.test.ts
 npm test -- tests/execution/work-graph-runtime-service.test.ts
 npm test -- tests/session/planner-work-unit-bugfix.test.ts
-npm test -- tests/planner/planner-routing-skill.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/planning-decision-repo.test.ts
 ```

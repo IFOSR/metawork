@@ -143,8 +143,7 @@ MetaClaw 会判断输入应当是直接回答、任务控制、澄清，还是�
 | `src/delivery/` | 验证、产物提取、聚合检查和交付准备。 |
 | `src/integrations/` | Markdown preview 等外部集成辅助。 |
 | `src/commands/` | Slash command router 和命令处理器。 |
-| `src/core/` | 精简共享 primitives、语义意图 helpers、strategy primitives 和 legacy compatibility seams。 |
-| `src/routing/` | legacy routing-policy 参考层，不再是主 dispatch authority。 |
+| `src/core/` | 精简共享 primitives、LLM bridge、capability classes 和 strategy primitives。 |
 
 ## 运行逻辑
 

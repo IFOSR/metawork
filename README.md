@@ -132,7 +132,7 @@ Source modules are organized by runtime responsibility:
 | `src/cli/` | CLI argument parsing such as `--script`, `--gateway`, and connection modes. |
 | `src/tui/` | Ink terminal UI for interactive input, task status, and progress display. |
 | `src/session/` | Main session coordinator for interactive, scripted, Gateway, memory, planning, policy, and persistence flows. |
-| `src/planning/` | `PlanningAgent` interface, context construction, schemas, validation, and semantic adapter. |
+| `src/planning/` | `PlanningAgent` interface (`CodexPlanningAgent`), context construction, plan schemas/vocabulary, and validation. |
 | `src/kernel/` | Pure `PolicyKernel` authorization for planner decisions. |
 | `src/task/` | Task state machine, scheduler, resume planning, ranking, and retrieval. |
 | `src/execution/` | Execution runtime, work graph application, work-unit claiming, orchestration, aggregation, progress, and conversation runtime. |
@@ -143,8 +143,7 @@ Source modules are organized by runtime responsibility:
 | `src/delivery/` | Verification, artifact extraction, aggregation checks, and delivery preparation. |
 | `src/integrations/` | External integration helpers such as Markdown preview. |
 | `src/commands/` | Slash command router and command handlers. |
-| `src/core/` | Narrow shared primitives, semantic-intent helpers, strategy primitives, and legacy compatibility seams. |
-| `src/routing/` | Legacy routing-policy reference layer, no longer the main dispatch authority. |
+| `src/core/` | Narrow shared primitives, the LLM bridge, capability classes, and strategy primitives. |
 
 ## Architecture
 

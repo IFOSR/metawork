@@ -16,7 +16,7 @@ The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/in
 
 Default agent classes and fixed first-pool work units are seeded in `src/executor/agent-class-seeder.ts`: `planner`/`planner-1` and the configured executor agent class/`executor-1`. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
 
-When touching dispatch, update focused tests around the active path first: planner skills, work unit claim service, session execution coordinator, execution runtime, and storage migrations. The current regression anchor is `tests/session/planner-work-unit-bugfix.test.ts`.
+When touching dispatch, update focused tests around the active path first: PlanningAgent/PolicyKernel, work-graph runtime service, work unit claim service, session execution coordinator, execution runtime, and storage migrations. The current regression anchor is `tests/session/planner-work-unit-bugfix.test.ts`.
 
 ## Routing Language
 

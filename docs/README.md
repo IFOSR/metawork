@@ -27,7 +27,7 @@ Files in [plans/](plans/) and older top-level docs record design exploration, im
 ## Operational Notes
 
 - [Docker Pi Executor](docker-pi-executor.md): Docker-based notes for the Pi executor path.
-- [Tech Debt](tech-debt/): known compatibility layers and cleanup targets.
+- [Tech Debt](tech-debt/): the ADR-0014 legacy-compat-layers list is now closed (all bridges removed); kept as a historical record of what was retired.
 
 ## For Agents
 

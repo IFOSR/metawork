@@ -808,11 +808,11 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化 kernel-approved work graph，并恢复已有未完成 subtasks 以便继续 dispatch。`WorkUnitClaimService` 会 sweep 过期 lease，寻找空闲 executor `WorkUnit`，维护 claimed/running/waiting/failed/released 状态，并记录 work-unit events。`ExecutionRuntime` 接收 `SubtaskExecutionSpec`，其中包含已 claim 的 subtask、work unit、agent class runtime config、上下文和验收要求。它不再接收 `ExecutionPolicy`、`primaryExecutor`、`candidateExecutors` 或 `fallbackChain`。
 
-旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator` 和 `ExecutionPolicyPlanner` 仍作为迁移参考或旧测试/admin preview 的兼容 seam 保留。它们不再拥有主执行路径。`repo_execution`、`research_workflow` 等旧 route intent 名称仍作为 agent class 排序的 affinity key 存在，而不是独立 executor-selection 层。
+旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
 ## 复杂任务策略和 Agentic Loop
 
-MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。`PlanningAgent` 可以调用 `PlannerRoutingSkill` 等 planner skills；该 skill 复用 strategy planner 启发式，在两种模式之间选择：
+MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。当 `PlanningAgent`（`CodexPlanningAgent`）产出 `plan_work_graph` 计划时，会在两种模式之间选择：
 
 - `single_executor`：任务足够集中，一个 executor 可以完成。
 - `multi_executor`：任务被拆成多个 subtasks，每个 subtask 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
@@ -896,10 +896,8 @@ metaclaw --script /tmp/metaclaw-flow.txt
 
 ```bash
 npm test -- tests/session/planner-work-unit-bugfix.test.ts
-npm test -- tests/planner/planner-routing-skill.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
-npm test -- tests/core/semantic-intent-router.test.ts
 npm test -- tests/task/scheduler.test.ts
 npm test -- tests/session/task-admission-gate.test.ts
 npm test -- tests/execution/execution-runtime.test.ts
@@ -913,7 +911,7 @@ npm test -- tests/session/scripted-session.test.ts
 src/
 ├── cli/            # CLI 参数解析：--script、--gateway、--connect
 ├── commands/       # Slash command 路由和命令处理
-├── core/           # 共享基础类型、active intake helpers、策略基础和 legacy policy seams
+├── core/           # 共享基础类型、LLM bridge、capability classes、策略基础
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
 ├── execution/      # 执行 runtime、work-unit claim、编排、聚合、进度、workspace、对话 runtime
 ├── executor/       # Executor adapter，以及 AgentClass admin/seeder、prompt、skill package
@@ -925,9 +923,7 @@ src/
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 记忆捕获、召回、召回审查、偏好、上下文 bundle 和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
-├── planner/        # 纯 planner skills 和 legacy planner-runtime 兼容参考
-├── planning/       # PlanningAgent 接口、context builder、plan schema、semantic adapter
-├── routing/        # Legacy ExecutionPolicy planner 和 routing-policy 参考层
+├── planning/       # PlanningAgent 接口（CodexPlanningAgent）、context builder、plan schema/词汇、校验
 ├── session/        # Session 协调、PlanningAgent/PolicyKernel wiring、decision application
 ├── storage/        # SQLite migrations 和 repositories
 ├── task/           # 任务状态机、runtime、调度、恢复规划、排序、语义/embedding 检索

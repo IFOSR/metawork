@@ -773,11 +773,11 @@ Natural-language dispatch is now split into planner understanding, kernel author
 
 Runtime services apply kernel decisions. `KernelDecisionApplier` writes the `planning_decisions` audit row and dispatches to conversation, task-control presentation, or durable task preparation. `WorkGraphRuntimeService` persists only kernel-approved work graphs and recovers existing unfinished subtasks for dispatch. `WorkUnitClaimService` sweeps expired leases, finds an idle executor `WorkUnit`, marks it claimed/running/waiting/failed/released, and records work-unit events. `ExecutionRuntime` receives a `SubtaskExecutionSpec` containing the claimed subtask, work unit, agent class runtime config, context, and acceptance requirements. It no longer receives an `ExecutionPolicy`, `primaryExecutor`, `candidateExecutors`, or `fallbackChain`.
 
-The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, and `ExecutionPolicyPlanner` are retained as migration reference or compatibility seams for older tests and admin previews. They do not own the main execution path. Legacy route intent names such as `repo_execution` and `research_workflow` still exist as affinity keys for ranking agent classes, not as a separate executor-selection layer.
+The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
 ## Complex Task Strategy And Agentic Loop
 
-MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. `PlanningAgent` can use planner skills such as `PlannerRoutingSkill`, which reuses the strategy planner heuristics to decide between:
+MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. When the `PlanningAgent` (`CodexPlanningAgent`) emits a `plan_work_graph` plan, it decides between:
 
 - `single_executor`: one executor is enough.
 - `multi_executor`: split the request into subtasks with executor hints, dependencies, inputs, expected output type, risk level, and acceptance checks.
@@ -900,10 +900,8 @@ Targeted tests:
 
 ```bash
 npm test -- tests/session/planner-work-unit-bugfix.test.ts
-npm test -- tests/planner/planner-routing-skill.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
-npm test -- tests/core/semantic-intent-router.test.ts
 npm test -- tests/task/scheduler.test.ts
 npm test -- tests/session/task-admission-gate.test.ts
 npm test -- tests/execution/execution-runtime.test.ts
@@ -917,7 +915,7 @@ npm test -- tests/session/scripted-session.test.ts
 src/
 ├── cli/            # CLI args: --script, --gateway, --connect
 ├── commands/       # Slash command router and handlers
-├── core/           # Shared primitives, active intake helpers, strategy primitives, legacy policy seams
+├── core/           # Shared primitives, LLM bridge, capability classes, strategy primitives
 ├── delivery/       # Verification, artifact extraction, aggregation checks, and final delivery preparation
 ├── execution/      # Execution runtime, work-unit claims, orchestration, aggregation, progress, workspace, conversation runtime
 ├── executor/       # Executor adapters plus AgentClass admin/seeder services, prompt builders, skill packages
@@ -929,9 +927,7 @@ src/
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Memory capture, recall, recall review, preferences, context bundles, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
-├── planner/        # Pure planner skills and legacy planner-runtime compatibility reference
-├── planning/       # PlanningAgent interface, context builder, plan schema, semantic adapter
-├── routing/        # Legacy ExecutionPolicy planner and routing-policy reference layer
+├── planning/       # PlanningAgent interface (CodexPlanningAgent), context builder, plan schema/vocabulary, validation
 ├── session/        # Session coordination, PlanningAgent/PolicyKernel wiring, decision application
 ├── storage/        # SQLite migrations and repositories
 ├── task/           # Task state machine, runtime, scheduler, resume planning, ranking, semantic/embedding retrieval
