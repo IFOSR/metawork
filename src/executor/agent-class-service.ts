@@ -1,3 +1,4 @@
+// Provides AgentClass persistence helpers and keeps executor work units in sync with executor profiles.
 import type Database from 'better-sqlite3';
 import type { AgentClass, AgentClassKind } from '../core/types.js';
 import { ensureExecutorWorkUnit, seedDefaultAgentClasses, seedDefaultWorkUnits } from './agent-class-seeder.js';
@@ -10,6 +11,7 @@ export interface AgentClassServiceDeps {
   availableCommands?: Set<string>;
 }
 
+/** Lists, seeds, finds, and upserts AgentClass records while provisioning executor work units. */
 export class AgentClassService {
   private readonly agentClassRepo: AgentClassRepo;
   private readonly workUnitRepo: WorkUnitRepo;

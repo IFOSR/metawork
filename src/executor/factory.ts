@@ -1,3 +1,4 @@
+// Provides deprecated compatibility factories for constructing built-in executor adapters by command or name.
 import type { ExecutorAdapter } from './adapter.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { CodexCliAdapter } from './codex-cli.js';

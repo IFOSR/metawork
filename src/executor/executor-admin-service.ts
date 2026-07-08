@@ -1,3 +1,4 @@
+// Drives the interactive registration wizard for custom executor AgentClass profiles.
 import { spawnSync } from 'child_process';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassService } from './agent-class-service.js';
@@ -53,6 +54,7 @@ function defaultFetchText(url: string): Promise<string | null> {
   return Promise.resolve(result.stdout);
 }
 
+/** Manages pending executor registration prompts and persists completed custom executor profiles. */
 export class ExecutorAdminService {
   private wizard: PendingExecutorRegisterWizard | null = null;
   private readonly fetchText: (url: string) => Promise<string | null>;

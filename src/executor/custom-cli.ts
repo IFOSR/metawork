@@ -1,3 +1,4 @@
+// Adapts user-registered custom CLI AgentClass runtimes into the shared executor interface.
 import { spawnSync } from 'child_process';
 import { CommandLineExecutorAdapter } from './command-line-adapter.js';
 
@@ -11,6 +12,7 @@ export interface CustomCliExecutorConfig {
   workspaceRoot?: string;
 }
 
+/** Runs a custom command and argument template defined by an executor AgentClass profile. */
 export class CustomCliExecutorAdapter extends CommandLineExecutorAdapter {
   readonly name: string;
 

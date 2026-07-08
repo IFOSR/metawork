@@ -1,3 +1,4 @@
+// Seeds built-in planner and executor AgentClass profiles plus their initial work units.
 import { spawnSync } from 'child_process';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';

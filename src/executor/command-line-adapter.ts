@@ -1,9 +1,11 @@
+// Implements the common child-process execution, prompt injection, progress streaming, timeout, and abort behavior for CLI executors.
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { ExecutorAdapter, ExecutorInput } from './adapter.js';
 import type { ExecutorResult } from '../core/types.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 import { formatExecutorError, formatExecutorProgress } from './error-utils.js';
 
+/** Base class for command-line executor adapters that run prompts through a child process. */
 export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
   abstract readonly name: string;
   private process: ChildProcess | null = null;

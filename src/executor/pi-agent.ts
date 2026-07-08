@@ -1,3 +1,4 @@
+// Adapts the Pi coding agent with a generated web-search extension for source-backed research tasks.
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -221,6 +222,7 @@ function ensurePiWebExtension(): string {
   return PI_WEB_EXTENSION_PATH;
 }
 
+/** Runs Pi with MetaClaw's generated web tools extension and research-oriented system prompt. */
 export class PiAgentAdapter extends CommandLineExecutorAdapter {
   readonly name = 'pi-agent';
 
