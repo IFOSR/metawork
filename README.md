@@ -91,8 +91,12 @@ single API config entry point — both `codex` (default planner + executor) and
 `entrypoint.sh` substitutes `OPENAI_BASE_URL` into the codex and pi config
 templates at container start, so changing supplier means editing only
 `docker/pi.env`. The default model for all agents is `gpt-5.4` (see
-`docker/codex-config/config.toml` and `docker/pi-config/settings.json`). The host
-needs a built `dist/` (the script builds it if missing).
+`docker/codex-config/config.toml` and `docker/pi-config/settings.json`). The
+container bind-mounts the host `dist/`, so the TUI runs whatever `dist/index.js`
+currently exists; `shell.ps1` rebuilds `dist/` automatically when any
+`src/**/*.ts,tsx` file is newer than `dist/index.js` (on `-Start`,
+`-Rebuild`, and the default TUI launch), so source edits sync in without a
+manual `npm run build`.
 
 ```powershell
 .\docker\shell.ps1 -Start    # build image (if needed) + start the SSH container
