@@ -1,6 +1,6 @@
 version: 1
 executor:
-  command: pi
+  command: codex
   timeout: 900
   max_duration: 3600
 orchestration:

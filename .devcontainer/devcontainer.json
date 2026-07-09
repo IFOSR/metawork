@@ -16,10 +16,11 @@
     "source=${localWorkspaceFolder}/dist,target=/app/dist,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/docker/tui-config.yaml,target=/app/.metaclaw/config.yaml,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/docker/pi-config,target=/pi-config-template,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/docker/codex-config,target=/codex-config-template,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/.tmp/pi-agent-home,target=/root/.pi/agent,type=bind",
     "source=${localWorkspaceFolder}/.tmp/tui-workspace,target=/workspace,type=bind"
   ],
-  "postCreateCommand": "mkdir -p /root/.pi/agent /workspace && cp -f /pi-config-template/models.json /root/.pi/agent/models.json 2>/dev/null; cp -f /pi-config-template/settings.json /root/.pi/agent/settings.json 2>/dev/null; echo 'MetaClaw dev container ready. Run: node /app/dist/index.js'",
+  "postCreateCommand": "mkdir -p /workspace && /entrypoint.sh : && echo 'MetaClaw dev container ready. Run: node /app/dist/index.js'",
   "workspaceFolder": "/workspace",
   "remoteUser": "root"
 }

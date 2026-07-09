@@ -76,6 +76,51 @@ npm link
 metaclaw --help
 ```
 
+## Running interactively via Docker + SSH
+
+On Windows, `docker exec -it` does not give the Ink TUI a real terminal, which
+crashes it with `Raw mode is not supported`. The included SSH workflow runs the
+container as an SSH server, giving you a genuine PTY for the TUI **and** a
+general-purpose shell for browsing/editing `/workspace` output files. VS Code
+Remote-SSH can also open `/workspace` as a full folder.
+
+Prerequisites: Docker Desktop, and `docker/pi.env` with `OPENAI_API_KEY` **and**
+`OPENAI_BASE_URL` set (copy `docker/pi.env.example`). `docker/pi.env` is the
+single API config entry point — both `codex` (default planner + executor) and
+`pi` (available as an executor candidate) read their key and base URL from it.
+`entrypoint.sh` substitutes `OPENAI_BASE_URL` into the codex and pi config
+templates at container start, so changing supplier means editing only
+`docker/pi.env`. The default model for all agents is `gpt-5.4` (see
+`docker/codex-config/config.toml` and `docker/pi-config/settings.json`). The host
+needs a built `dist/` (the script builds it if missing).
+
+```powershell
+.\docker\shell.ps1 -Start    # build image (if needed) + start the SSH container
+.\docker\shell.ps1 -SetupSsh # one-time: set up passwordless key login
+.\docker\shell.ps1           # SSH in and launch the TUI (default)
+.\docker\shell.ps1 -Bash     # SSH in to a plain bash shell (browse files)
+.\docker\shell.ps1 -Stop     # stop the container (keeps it for next time)
+.\docker\shell.ps1 -Remove   # stop and remove the container
+.\docker\shell.ps1 -Rebuild  # rebuild the image, then recreate the container
+```
+
+SSH details: host `localhost`, port `2222`, user `root`, password `metaclaw`
+(local single-machine default). The host key is written to
+`.tmp/ssh_known_hosts` so your global known_hosts is untouched.
+
+**Passwordless login (optional, recommended):** run `.\docker\shell.ps1 -SetupSsh`
+once. It generates a dedicated key under `.tmp/ssh_key` (gitignored), installs
+the public key into the container, and writes an SSH client config defining the
+host alias `metaclaw`. After that, `.\docker\shell.ps1` and `.\docker\shell.ps1
+-Bash` connect with no password prompt. The public key is re-seeded on every
+`-Start`, so it survives `-Rebuild`. You can also connect directly with
+`ssh -F .tmp/ssh_key/config metaclaw`.
+
+To open the workspace in VS Code: install the **Remote - SSH** extension. After
+`-SetupSsh`, connect to host `metaclaw` and open `/workspace`. (Without
+`-SetupSsh`, add a host `localhost:2222` user `root` and use the `metaclaw`
+password.)
+
 ## Getting Started
 
 Start MetaClaw in an interactive terminal:

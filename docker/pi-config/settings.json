@@ -1,6 +1,6 @@
 {
   "defaultProvider": "anyint",
-  "defaultModel": "deepseek-v4-pro",
+  "defaultModel": "gpt-5.4",
   "quietStartup": true,
   "defaultProjectTrust": "always"
 }
