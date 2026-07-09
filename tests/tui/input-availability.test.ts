@@ -758,4 +758,119 @@ describe('App input availability', () => {
     app.unmount();
     app.cleanup();
   });
+
+  // Regression: a real terminal delivers Enter as char='\r' alongside
+  // key.return. The early raw-submit branch used to fire first and submit the
+  // raw "/", yielding "未知命令: /undefined". With a visible suggestion list,
+  // Enter must complete the selected command instead.
+  it('completes a slash command on a real \\r Enter instead of submitting raw "/"', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-enter-completes');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        output: 'done',
+        exitCode: 0,
+        durationMs: 100,
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_enter_completes',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'enter completion test' })),
+      })
+    );
+
+    await inputCapture.handler?.('/', {});
+    await flushUpdates();
+    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Enter 录入');
+
+    await inputCapture.handler?.('\r', { return: true });
+    await flushUpdates();
+
+    // The first suggestion (/task) should be completed into the editor, with a
+    // trailing argument separator — not submitted, and no "/undefined" error.
+    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).not.toContain('未知命令');
+    expect(app.lastFrame()).not.toContain('/undefined');
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    app.unmount();
+    app.cleanup();
+  });
+
+  it('completes a slash command on Tab when a suggestion list is visible', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-tab-completes');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        output: 'done',
+        exitCode: 0,
+        durationMs: 100,
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_tab_completes',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'tab completion test' })),
+      })
+    );
+
+    // Type "/ta" to narrow suggestions to /task and /tasks, then Tab-complete
+    // the highlighted (first) entry.
+    await inputCapture.handler?.('/', {});
+    await inputCapture.handler?.('t', {});
+    await inputCapture.handler?.('a', {});
+    await flushUpdates();
+    expect(app.lastFrame()).toContain('/task');
+
+    await inputCapture.handler?.('\t', { tab: true });
+    await flushUpdates();
+
+    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).not.toContain('未知命令');
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    app.unmount();
+    app.cleanup();
+  });
 });

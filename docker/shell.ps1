@@ -22,6 +22,12 @@
 #
 # After -SetupSsh, `ssh metaclaw` (host alias) and VS Code Remote-SSH connect
 # with no password. The key lives in .tmp\ssh_key (gitignored).
+#
+# Source edits: the TUI runs the host's dist/index.js (bind-mounted, not baked
+# into the image). -Start, -Rebuild, and the default TUI launch all auto-rebuild
+# dist/ when any src/**/*.ts,tsx file is newer than dist/index.js, so source
+# changes sync in without a manual `npm run build` and without rebuilding the
+# image or container. -Bash does not need dist and skips this check.
 [CmdletBinding()]
 param(
     [switch]$Start,
@@ -182,6 +188,42 @@ function Test-Prereqs {
     }
 }
 
+# Is the built bundle out of date relative to the source? The container bind-
+# mounts the host's dist/ directory (see Start-ShellContainer), so the TUI runs
+# whatever dist/index.js currently exists on the host — NOT a copy baked into
+# the image. Rebuilding the image or container does NOT pick up source changes;
+# only `npm run build` does. This returns $true when any src/**/*.{ts,tsx} file
+# is newer than dist/index.js, so callers can rebuild before launching the TUI.
+function Test-DistStale {
+    $distIndex = Join-Path $distDir 'index.js'
+    if (-not (Test-Path $distIndex)) { return $true }
+    $distMtime = (Get-Item $distIndex).LastWriteTime
+    $srcRoot = Join-Path $repoRoot 'src'
+    if (-not (Test-Path $srcRoot)) { return $false }
+    # Newest source file across all of src/. GetFiles recursion is the main
+    # cost here; src/ is small, so this stays well under a second.
+    $newestSrc = Get-ChildItem -Path $srcRoot -Recurse -File -Include '*.ts','*.tsx' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if (-not $newestSrc) { return $false }
+    return $newestSrc.LastWriteTime -gt $distMtime
+}
+
+# Rebuild dist/ if the source has changed since the last build. Idempotent: if
+# dist is already fresh, this is a no-op (just one cheap mtime scan). Called on
+# every TUI launch so source edits sync into the running container without a
+# manual `npm run build` — and without rebuilding the image or container.
+function Ensure-DistFresh {
+    if (-not (Test-DistStale)) { return }
+    Write-Host 'Source is newer than dist/, rebuilding (npm run build)...' -ForegroundColor Yellow
+    Push-Location $repoRoot
+    try { npm run build } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'npm run build failed. Fix the errors above, then rerun.'
+        exit $LASTEXITCODE
+    }
+}
+
 # Build the base image (node + pi + dist) from Dockerfile.test if it's missing.
 function Build-BaseImage {
     if (Test-ImageExists $baseImage) { return }
@@ -199,6 +241,9 @@ function Build-Image {
 }
 
 function Start-ShellContainer {
+    # The container bind-mounts the host dist/, so make sure it reflects the
+    # current source before the container starts (covers -Start / -Rebuild).
+    Ensure-DistFresh
     # Remove any stale container with the same name (silent if none exists).
     if (Test-ContainerExists) {
         Invoke-DockerQuiet rm -f $container | Out-Null
@@ -302,6 +347,9 @@ function Clear-StaleHostKey {
 }
 
 function Enter-Tui {
+    # The container may already be running from an earlier session while the
+    # source changed since; refresh dist/ before launching node /app/dist/index.js.
+    Ensure-DistFresh
     Wait-SshReady
     Clear-StaleHostKey
     Write-Host ("Launching MetaClaw TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
