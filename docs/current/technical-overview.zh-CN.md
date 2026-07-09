@@ -535,6 +535,7 @@ metaclaw
 - Planner 和执行过程会展示核心进度，包括理解用户请求、work graph planning、上下文召回、执行上下文构建、work-unit claim、执行器进度、验收和最终结果。
 - MetaClaw 自身的调度/编排里程碑会标为 `【MetaClaw｜...】`；具体执行器的里程碑会标为 `【Executor: <name>｜...】`，执行器进度行也会带上实际 executor 名称，避免把 MetaClaw 的调度动作和真正处理任务的 runtime 混在一起。
 - 输入框支持正常终端编辑：空格、多行输入、左右移动光标、Backspace 删除光标前字符，以及原始 Delete escape sequence 的向前删除。
+- 斜杠命令自动补全：输入 `/` 会弹出按优先级排序的命令建议；`↑`/`↓` 选择，`Tab` 或 `Enter` 把选中命令补全进输入框（不会提交），方便接着输入参数。没有建议列表时，`↑`/`↓` 退回到输入历史回溯。
 
 或使用项目脚本：
 
@@ -583,6 +584,12 @@ metaclaw
 metaclaw --gateway
 metaclaw --connect
 ```
+
+### 在 Docker 中运行（Windows / 容器化）
+
+在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.4`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
+
+容器以只读卷挂载宿主机的 `dist/`，因此 `docker/shell.ps1` 会在源码比产物新时自动重编 `dist/`（源码改动无需手动 `npm run build`，也无需重建镜像/容器）。完整 `shell.ps1` 命令参考和免密 SSH 配置见 README 的 [通过 Docker + SSH 交互式运行](../../README.md#running-interactively-via-docker--ssh) 章节。
 
 ## 配置
 

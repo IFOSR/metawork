@@ -500,6 +500,7 @@ The interactive TUI is designed to keep the user oriented while work is running:
 - Core progress lines are shown during planning and execution, including request understanding, work graph planning, context recall, context construction, work-unit claim, executor progress, verification, and final result.
 - MetaClaw orchestration milestones are labeled as `【MetaClaw｜...】`; worker milestones are labeled as `【Executor: <name>｜...】` and executor progress lines include the concrete executor name, so users can distinguish scheduler/routing work from the runtime that is actually answering or executing.
 - The input composer supports normal terminal editing: spaces, multiline input with modified Enter/Ctrl+J, left/right cursor movement, Backspace deleting the character before the cursor, and forward delete for raw delete escape sequences.
+- Slash commands autocomplete: typing `/` shows a prioritized suggestion list; `↑`/`↓` selects, `Tab` or `Enter` completes the highlighted command into the composer (without submitting it), so you can keep typing arguments. `↑`/`↓` fall back to input-history recall when no suggestion list is open.
 
 Or use the project helper:
 
@@ -548,6 +549,24 @@ Direct Gateway modes:
 metaclaw --gateway
 metaclaw --connect
 ```
+
+### Running in Docker (Windows / containerized)
+
+On Windows, `docker exec -it` does not give the Ink TUI a real terminal and the
+local install path assumes WSL2. The `docker/` workflow instead runs the
+container as an SSH server, giving a genuine PTY for the TUI plus a shell for
+browsing `/workspace` output files (and VS Code Remote-SSH access). The default
+planner + executor is Codex (`gpt-5.4`); Pi is retained as an executor
+candidate. `docker/pi.env` is the single API config entry point — both
+executors read `OPENAI_API_KEY` and `OPENAI_BASE_URL` from it, and
+`docker/entrypoint.sh` substitutes the base URL into the config templates at
+container start.
+
+The container bind-mounts the host `dist/`, so `docker/shell.ps1` rebuilds
+`dist/` automatically when source files are newer than the bundle (no manual
+`npm run build`, and no image/container rebuild needed for source edits). See
+the README's [Running interactively via Docker + SSH](../../README.md#running-interactively-via-docker--ssh)
+section for the full `shell.ps1` command reference and passwordless SSH setup.
 
 ## Configuration
 
