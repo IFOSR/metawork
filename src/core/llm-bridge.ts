@@ -2,7 +2,6 @@
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import type { MemoryApplicabilityAction, TaskStatus } from './types.js';
-import type { NaturalLanguageRouteAction, TaskStateOwnershipResult, TaskStatusQueryScope } from './task-routing.js';
 import { buildCodexNonInteractiveArgs } from '../executor/codex-args.js';
 
 export interface TaskSummary {
@@ -22,37 +21,14 @@ export interface InteractionSummary {
 }
 
 /**
- * @deprecated Legacy compatibility for the pre-IntentOrchestrator task-binding schema.
- * Natural-language main paths must consume IntentDecisionV2 via IntentOrchestrator.
- */
-export interface IntentResult {
-  type: 'new' | 'reference';
-  taskId: string | null;
-  reason: string;
-}
-
-/**
- * @deprecated Legacy compatibility for parked/blocked resume resolution.
- * Use TaskSemanticService only as an adapter boundary; session must not call this directly.
+ * Parked/blocked resume-intent observation. Consumed only via TaskSemanticService
+ * as an adapter boundary; the session must not call this directly.
  */
 export interface TaskResumeIntentResult {
   action: 'resume' | 'none';
   taskId: string | null;
   reason: string;
   confidence: number;
-}
-
-/**
- * @deprecated Legacy compatibility for route-compatible schemas.
- * Natural-language main paths must consume IntentDecisionV2 via IntentOrchestrator.
- */
-export interface RouteResult {
-  route: NaturalLanguageRouteAction;
-  confidence: number;
-  reason: string;
-  statusScope?: TaskStatusQueryScope | null;
-  taskId?: string | null;
-  clarificationQuestion?: string | null;
 }
 
 export interface TaskPriorityResult {
@@ -141,43 +117,8 @@ export class LlmBridge {
   }
 
   /**
-   * @deprecated Legacy compatibility for the pre-IntentOrchestrator task-binding schema.
-   * Natural-language main paths must use IntentOrchestrator.decide().
-   */
-  async resolveIntent(userInput: string, recentTasks: TaskSummary[]): Promise<IntentResult> {
-    if (recentTasks.length === 0) {
-      return { type: 'new', taskId: null, reason: '无历史任务' };
-    }
-
-    try {
-      const primary = this.normalizeIntentResult(
-        this.parseIntentResult(await this.query(this.buildIntentPrompt(userInput, recentTasks))),
-        recentTasks,
-      );
-
-      if (!this.shouldRetryWithParkedTasks(userInput, recentTasks, primary)) {
-        return primary;
-      }
-
-      const parkedTasks = recentTasks.filter(task => task.status === 'parked');
-      const parkedResult = this.normalizeIntentResult(
-        this.parseIntentResult(await this.query(this.buildParkedIntentPrompt(userInput, parkedTasks))),
-        parkedTasks,
-      );
-
-      if (parkedResult.type === 'reference') {
-        return parkedResult;
-      }
-
-      return primary;
-    } catch {
-      return { type: 'new', taskId: null, reason: 'LLM 调用失败，fallback' };
-    }
-  }
-
-  /**
-   * @deprecated Legacy compatibility for parked/blocked resume resolution.
-   * Use TaskSemanticService only as an adapter boundary; session must not call this directly.
+   * Parked/blocked resume-intent observation. Consumed only via TaskSemanticService
+   * as an adapter boundary; the session must not call this directly.
    */
   async resolveTaskResumeIntent(userInput: string, candidateTasks: TaskSummary[]): Promise<TaskResumeIntentResult> {
     const resumableTasks = candidateTasks.filter(task => task.status === 'parked' || task.status === 'blocked');
@@ -192,44 +133,6 @@ export class LlmBridge {
       );
     } catch {
       return { action: 'none', taskId: null, reason: 'LLM resume intent 调用失败，fallback', confidence: 0 };
-    }
-  }
-
-  /**
-   * @deprecated Legacy compatibility for route-compatible schemas.
-   * Natural-language main paths must use IntentOrchestrator.decide().
-   */
-  async resolveRoute(userInput: string, recentTasks: TaskSummary[]): Promise<RouteResult> {
-    try {
-      const raw = await this.query(this.buildRoutePrompt(userInput, recentTasks));
-      return this.parseRouteResult(raw);
-    } catch {
-      return { route: 'unknown', confidence: 0, reason: 'LLM route 调用失败，fallback' };
-    }
-  }
-
-  /**
-   * @deprecated Legacy compatibility for task-status ownership checks.
-   * Natural-language main paths must use IntentOrchestrator.decide().
-   */
-  async resolveTaskStateOwnership(
-    userInput: string,
-    recentTasks: TaskSummary[],
-  ): Promise<TaskStateOwnershipResult> {
-    try {
-      const raw = await this.query(this.buildTaskStateOwnershipPrompt(userInput, recentTasks));
-      return this.normalizeTaskStateOwnershipResult(
-        this.parseTaskStateOwnershipResult(raw),
-        recentTasks,
-      );
-    } catch {
-      return {
-        owner: 'none',
-        scope: null,
-        taskId: null,
-        confidence: 0,
-        reason: 'LLM task state ownership 调用失败，fallback',
-      };
     }
   }
 
@@ -269,27 +172,6 @@ export class LlmBridge {
     }
   }
 
-  private buildIntentPrompt(userInput: string, tasks: TaskSummary[]): string {
-    const taskList = tasks.map(t =>
-      `  ${t.id}: [${t.status}] ${t.title} / ${t.goal}${t.summary ? ` / 进度: ${t.summary.slice(0, 50)}` : ''}`
-    ).join('\n');
-
-    return [
-      '判断用户输入是一个全新任务，还是在引用之前的某个任务。',
-      '任务状态很重要，尤其要注意 created / ready / running / parked / blocked / done 的区别。',
-      '只有当用户明确提到“挂起的任务”“恢复任务”“继续刚才那个任务”“解除阻塞”这类任务对象时，才优先判断是不是在引用已有任务。',
-      '如果用户只是说“继续”“展开”“细讲”“再说说”，通常是在延续当前对话或刚刚的话题，不要直接绑定旧 parked 任务。',
-      '只返回 JSON，不要其他内容。',
-      '',
-      `用户输入：${userInput}`,
-      '',
-      '最近的任务列表：',
-      taskList,
-      '',
-      '返回格式：{"type":"new"|"reference","taskId":"task_xxx"|null,"reason":"简短原因"}',
-    ].join('\n');
-  }
-
   private buildTaskResumeIntentPrompt(userInput: string, tasks: TaskSummary[]): string {
     const taskList = tasks.map(task =>
       `  ${task.id}: [${task.status}] ${task.title} / ${task.goal}${task.summary ? ` / 进度: ${task.summary.slice(0, 80)}` : ''}`
@@ -310,94 +192,6 @@ export class LlmBridge {
       taskList,
       '',
       '返回格式：{"action":"resume"|"none","taskId":"task_xxx"|null,"confidence":0到1,"reason":"简短原因"}',
-    ].join('\n');
-  }
-
-  private buildParkedIntentPrompt(userInput: string, parkedTasks: TaskSummary[]): string {
-    const taskList = parkedTasks.map(task =>
-      `  ${task.id}: [parked] ${task.title} / ${task.goal}${task.summary ? ` / 进度: ${task.summary.slice(0, 50)}` : ''}`
-    ).join('\n');
-
-    return [
-      '用户这次很可能是在要求“恢复之前挂起的任务”。',
-      '请只在下面这些 parked 任务中判断是否存在被引用的目标。',
-      '如果能明确对应某个 parked 任务，返回 reference。',
-      '如果完全对应不上，再返回 new。',
-      '只返回 JSON，不要其他内容。',
-      '',
-      `用户输入：${userInput}`,
-      '',
-      '当前挂起任务：',
-      taskList,
-      '',
-      '返回格式：{"type":"new"|"reference","taskId":"task_xxx"|null,"reason":"简短原因"}',
-    ].join('\n');
-  }
-
-  private buildRoutePrompt(userInput: string, tasks: TaskSummary[]): string {
-    const taskList = tasks.length === 0
-      ? '  （当前没有可管理任务）'
-      : tasks.map(task =>
-        `  ${task.id}: [${task.status}] ${task.title} / ${task.goal}${task.summary ? ` / 进度: ${task.summary.slice(0, 50)}` : ''}`
-      ).join('\n');
-
-    return [
-      '你是 MetaClaw 自然语言入口的唯一语义路由器。后续模块只消费你的结构化裁决。',
-      '判断这条输入应该走哪条路由。禁止依赖关键词硬规则，必须做语义判断。',
-      '可选 route：conversation、metaclaw_status、task_control、durable_task、ask_clarification。',
-      'conversation: 问候、闲聊、短确认、回忆对话、身份设定等，不应创建任务。',
-      'metaclaw_status: 用户在问 MetaClaw 任务池/调度/队列/运行中/阻塞/挂起/任务卡在哪/是否完成等状态，应由 MetaClaw 根据任务数据库回答。',
-      'task_control: 明确针对已有任务的控制，例如恢复挂起任务、暂停当前任务、解除阻塞、重试刚才那个任务；必须有清晰的任务对象。',
-      '如果输入只是“继续”“展开”“细讲”“再说说”，优先视为 conversation，而不是 task_control。',
-      'durable_task: 有明确目标或交付物，需要持续管理、排队、挂起、阻塞、恢复的工作。',
-      '如果用户明确说“不要改代码、只分析、read-only”，不得路由为需要 repo mutation 的执行工作；可按 durable_task 或 conversation 由下游选择只读执行。',
-      '如果语义低置信、任务对象不清、无法判断是聊天还是恢复任务，返回 ask_clarification，不要默认创建任务或恢复旧任务。',
-      '只有 /task xxx、/resume task_xxx 这种显式命令允许确定性命令路由；自然语言必须由本裁决决定。',
-      '只返回 JSON，不要其他内容。',
-      '',
-      `用户输入：${userInput}`,
-      '',
-      '当前任务概览：',
-      taskList,
-      '',
-      '返回格式：{"route":"conversation"|"metaclaw_status"|"task_control"|"durable_task"|"ask_clarification","confidence":0到1,"statusScope":"running|blocked|dashboard|null","taskId":"task_xxx|null","clarificationQuestion":"需要追问时的问题或 null","reason":"简短原因"}',
-    ].join('\n');
-  }
-
-  private buildTaskStateOwnershipPrompt(userInput: string, tasks: TaskSummary[]): string {
-    const taskList = tasks.length === 0
-      ? '  （当前没有历史任务）'
-      : tasks.map(task =>
-        `  ${task.id}: [${task.status}] ${task.title} / ${task.goal}${task.summary ? ` / 摘要: ${task.summary.slice(0, 80)}` : ''}`
-      ).join('\n');
-
-    return [
-      '判断用户这句话问的是 MetaClaw 的任务池/调度状态，还是要交给 Executor 执行具体工作。',
-      '必须做语义判断，不要只看关键词。',
-      '',
-      'owner=metaclaw：用户在问 MetaClaw 自己维护的任务状态、任务池、调度、队列、阻塞、挂起、运行中、是否完成、为什么没收到结果、任务卡在哪里、当前有什么任务。',
-      '这些状态只能由 MetaClaw 根据任务数据库/调度器回答，不能交给 Executor 猜。',
-      '',
-      'owner=executor：用户要检查、分析、改写、继续生成实际交付内容，或要求查看文件/代码/报告/产物是否正确、完整、能否运行。',
-      '这些需要 Executor 使用工具或围绕交付物内容工作，即使文字里出现“任务、结果、完成、检查”。',
-      '',
-      'owner=none：普通闲聊、偏好设置、记忆、或无法判断为任务状态/执行工作的输入。',
-      '',
-      'scope 只在 owner=metaclaw 时填写：',
-      'running：问当前是否在执行、刚才/这个任务是否完成、为什么没收到结果、卡在哪里。',
-      'blocked：问阻塞任务、被卡住且缺什么条件/材料。',
-      'dashboard：问任务池总览、有哪些任务、队列/挂起/待执行/所有任务状态。',
-      '',
-      '如果用户语义是在问 MetaClaw 的调度事实，优先 owner=metaclaw；不要因为句子里没有固定关键词而返回 executor。',
-      '如果用户明确要“检查某个文件/生成内容/报告/代码是否完整或正确”，返回 owner=executor。',
-      '只返回 JSON，不要其他内容。',
-      '',
-      `用户输入：${userInput}`,
-      '',
-      '最近任务：',
-      taskList,
-      '',
-      '返回格式：{"owner":"metaclaw"|"executor"|"none","scope":"running"|"blocked"|"dashboard"|null,"taskId":"task_xxx"|null,"confidence":0到1,"reason":"简短语义依据"}',
     ].join('\n');
   }
 
@@ -466,21 +260,6 @@ export class LlmBridge {
       '返回格式：[{"preferenceId":"pref_xxx","action":"auto_apply|ask_review|suppress","reason":"为什么这样裁决","score":0.0到1.0}]',
       '如果都完全不适用，可以返回 suppress 项，也可以返回 []。',
     ].join('\n');
-  }
-
-  private parseIntentResult(raw: string): IntentResult {
-    try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (parsed.type === 'reference' || parsed.type === 'new') {
-        return {
-          type: parsed.type,
-          taskId: parsed.taskId ?? null,
-          reason: parsed.reason ?? '',
-        };
-      }
-    } catch {}
-    return { type: 'new', taskId: null, reason: '解析失败，fallback' };
   }
 
   private parseTaskResumeIntentResult(raw: string): TaskResumeIntentResult {
@@ -565,69 +344,6 @@ export class LlmBridge {
       : undefined;
   }
 
-  private parseRouteResult(raw: string): RouteResult {
-    try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (
-        parsed.route === 'conversation'
-        || parsed.route === 'metaclaw_status'
-        || parsed.route === 'task_control'
-        || parsed.route === 'durable_task'
-        || parsed.route === 'ask_clarification'
-      ) {
-        return {
-          route: parsed.route,
-          confidence: typeof parsed.confidence === 'number'
-            ? Math.max(0, Math.min(1, parsed.confidence))
-            : 0.5,
-          reason: typeof parsed.reason === 'string' ? parsed.reason : '',
-          statusScope: this.parseTaskStatusQueryScope(parsed.statusScope),
-          taskId: typeof parsed.taskId === 'string' ? parsed.taskId : null,
-          clarificationQuestion: typeof parsed.clarificationQuestion === 'string' ? parsed.clarificationQuestion : null,
-        };
-      }
-    } catch {}
-
-    return { route: 'unknown', confidence: 0, reason: 'route 解析失败，fallback' };
-  }
-
-  private parseTaskStateOwnershipResult(raw: string): TaskStateOwnershipResult {
-    try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      const owner = parsed.owner === 'metaclaw' || parsed.owner === 'executor' || parsed.owner === 'none'
-        ? parsed.owner
-        : 'none';
-      const scope = this.parseTaskStatusQueryScope(parsed.scope);
-      const confidence = typeof parsed.confidence === 'number'
-        ? Math.max(0, Math.min(1, parsed.confidence))
-        : 0;
-
-      return {
-        owner,
-        scope: owner === 'metaclaw' ? scope : null,
-        taskId: typeof parsed.taskId === 'string' ? parsed.taskId : null,
-        confidence,
-        reason: typeof parsed.reason === 'string' ? parsed.reason : 'LLM 语义判断任务状态归属',
-      };
-    } catch {}
-
-    return {
-      owner: 'none',
-      scope: null,
-      taskId: null,
-      confidence: 0,
-      reason: 'task state ownership 解析失败，fallback',
-    };
-  }
-
-  private parseTaskStatusQueryScope(value: unknown): TaskStatusQueryScope | null {
-    return value === 'blocked' || value === 'running' || value === 'dashboard'
-      ? value
-      : null;
-  }
-
   private parseTaskPriorityResult(raw: string): TaskPriorityResult {
     try {
       const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -650,16 +366,6 @@ export class LlmBridge {
     return { priority: 'normal', reason: 'LLM 不可用，未识别到明确优先级信号' };
   }
 
-  private normalizeIntentResult(result: IntentResult, candidates: TaskSummary[]): IntentResult {
-    if (result.type !== 'reference') {
-      return result;
-    }
-
-    return candidates.some(task => task.id === result.taskId)
-      ? result
-      : { type: 'new', taskId: null, reason: 'LLM 返回了无效任务 ID，fallback' };
-  }
-
   private normalizeTaskResumeIntentResult(
     result: TaskResumeIntentResult,
     candidates: TaskSummary[],
@@ -671,42 +377,6 @@ export class LlmBridge {
     return candidates.some(task => task.id === result.taskId)
       ? result
       : { action: 'none', taskId: null, reason: 'LLM 返回了无效恢复任务 ID，fallback', confidence: 0 };
-  }
-
-  private normalizeTaskStateOwnershipResult(
-    result: TaskStateOwnershipResult,
-    candidates: TaskSummary[],
-  ): TaskStateOwnershipResult {
-    const taskId = result.taskId && candidates.some(task => task.id === result.taskId)
-      ? result.taskId
-      : null;
-
-    if (result.owner !== 'metaclaw') {
-      return { ...result, scope: null, taskId };
-    }
-
-    return {
-      ...result,
-      scope: result.scope ?? 'dashboard',
-      taskId,
-    };
-  }
-
-  private shouldRetryWithParkedTasks(
-    userInput: string,
-    recentTasks: TaskSummary[],
-    primary: IntentResult,
-  ): boolean {
-    const parkedTasks = recentTasks.filter(task => task.status === 'parked');
-    if (parkedTasks.length === 0 || !this.isExplicitParkedResumeRequest(userInput)) {
-      return false;
-    }
-
-    return primary.type !== 'reference' || !parkedTasks.some(task => task.id === primary.taskId);
-  }
-
-  private isExplicitParkedResumeRequest(userInput: string): boolean {
-    return /挂起|恢复|继续之前|继续.*挂起|继续.*任务/.test(userInput);
   }
 }
 
