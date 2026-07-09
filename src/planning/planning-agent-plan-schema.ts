@@ -1,3 +1,13 @@
+// Zod coercion for raw Codex planner JSON into a well-shaped PlanningAgentPlan.
+// Every schema here only coerces — it never rejects (`.catch`/preprocess fall back
+// to a safe default on any shape mismatch); `validatePlanningAgentPlan` remains the
+// sole decision gate that can reject a plan and trigger a repair retry. Context-
+// dependent defaults (random plan id, `context.userInput`, `allowFileModification`)
+// can't live in a static schema, so `applyContextDefaults` applies them separately
+// after parsing. Subtask enums (`requiredAgentClassKind`/`expectedOutput`/`riskLevel`)
+// deliberately use `z.unknown()`: a present-but-invalid value must pass through
+// unchanged so the validator rejects it and the planner retries, instead of being
+// silently defaulted like the top-level enums.
 import { z } from 'zod';
 import type { CapabilityClass } from '../core/capability-class.js';
 import { isCapabilityClass } from '../core/capability-class.js';
