@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -96,8 +97,6 @@ describe('Session skill usage observability', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -111,6 +110,9 @@ describe('Session skill usage observability', () => {
       sessionId: 'sess_skill_usage',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '用 TDD 实现一个小功能' }),
+      ),
     });
 
     await session.submit('用 TDD 实现一个小功能', { awaitAsyncWork: true });

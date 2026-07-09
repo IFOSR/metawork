@@ -2,7 +2,26 @@
 
 ## Project Structure & Module Organization
 
-MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, with the entry point at `src/index.ts`. Key areas are organized by responsibility: `src/core/` is intentionally narrow and contains the routing/intent/execution-policy seam plus shared primitives; `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval; `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export; `src/execution/` owns execution runtime, fallback chain, orchestration, aggregation, progress, workspace, and conversation runtime; `src/executor/` owns executor adapters plus profile/admin/seeder services, prompts, and skill packages; `src/guidance/`, `src/learning/`, `src/intent/`, `src/delivery/`, and `src/routing/` own their named domains; `src/session/` coordinates interactive/script/gateway sessions and persistence; `src/storage/` holds SQLite repositories and migrations; `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations; `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities. Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current routing vocabulary and migration context live in `CONTEXT.md`.
+MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, with the entry point at `src/index.ts`.
+
+Key areas are organized by responsibility:
+
+- `src/core/` is intentionally narrow and contains shared primitives, the LLM bridge, capability classes, and strategy primitives.
+- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation.
+- `src/kernel/` owns pure `PolicyKernel` authorization for `PlanningAgentPlan` decisions. It validates, rewrites, rejects, or clarifies, but does not write storage or call executors.
+- `src/session/` coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/PolicyKernel wiring, kernel decision application, task admission for deterministic paths, and persistence.
+- `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
+- `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
+- `src/execution/` owns execution runtime, work graph application/recovery, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
+- `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
+- `src/guidance/`, `src/learning/`, `src/intent/`, and `src/delivery/` own their named domains.
+- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, and events.
+- `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
+- `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.
+
+Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current PlanningAgent/PolicyKernel/work-unit vocabulary and migration context live in `CONTEXT.md`.
+
+For deeper current architecture context, read `docs/current/technical-overview.md`. Use `docs/README.md` as the docs map before opening older dated planning documents.
 
 ## Build, Test, and Development Commands
 
@@ -22,6 +41,8 @@ Use strict TypeScript and ESM imports. Follow the existing style: two-space inde
 ## Testing Guidelines
 
 Vitest is the test framework, configured for Node with globals enabled. Name tests `*.test.ts` and place them under the matching `tests/<domain>/` folder, for example `tests/core/task-engine.test.ts`. Coverage is configured for `src/core/**` and `src/storage/**`; changes there should include focused regression tests. Run `npm test` and `npm run lint` before submitting.
+
+**`better-sqlite3` is NOT available in the local (Windows) environment, so any test that touches storage/SQLite cannot run locally — all tests MUST be run in Docker.** Do not waste time retrying the suite on the host machine; use `docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`. Note also that path-extraction tests (e.g. inline resource matching) assume POSIX paths and only pass under the Linux Docker environment, not on Windows. `npm run lint` (`tsc --noEmit`) is the only check that runs reliably on the host.
 
 ## Commit & Pull Request Guidelines
 

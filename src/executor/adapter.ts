@@ -1,3 +1,4 @@
+// Defines the shared executor adapter contract, inputs, progress events, and skill governance result types.
 import type { Task, Preference, ExecutorResult, ExecutionContextBundle } from '../core/types.js';
 import type { ParsedSkillUsageEvent } from './skill-usage-event-parser.js';
 

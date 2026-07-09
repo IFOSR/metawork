@@ -687,7 +687,11 @@ export function App(props: AppProps) {
             .filter(index => index >= 0),
         )
       : -1;
-    if (rawSubmitIndex >= 0 && Number.isFinite(rawSubmitIndex)) {
+    // Enter while a slash-command suggestion list is visible completes the
+    // selected command into the editor instead of submitting the raw "/".
+    // Falling through lets the key.return branch handle the completion, so we
+    // only take the early-submit path when there is nothing to complete.
+    if (rawSubmitIndex >= 0 && Number.isFinite(rawSubmitIndex) && !hasCommandSuggestions) {
       const beforeSubmit = char.slice(0, rawSubmitIndex);
       const next = applyEditorInputChunk(editorState, beforeSubmit);
       inputHistoryRef.current = resetInputHistoryBrowsing(inputHistoryRef.current, next);
@@ -696,6 +700,19 @@ export function App(props: AppProps) {
       editorRef.current = next;
       setEditor(next);
       await commitEditor(next);
+      return;
+    }
+
+    if (key.tab && hasCommandSuggestions) {
+      const selected = commandSuggestions[clampSuggestionIndex(suggestionIndexRef.current, commandSuggestions)];
+      if (selected) {
+        const next = applyCommandSuggestion(editorState, selected);
+        inputHistoryRef.current = resetInputHistoryBrowsing(inputHistoryRef.current, next);
+        suggestionIndexRef.current = 0;
+        setSuggestionIndex(0);
+        editorRef.current = next;
+        setEditor(next);
+      }
       return;
     }
 

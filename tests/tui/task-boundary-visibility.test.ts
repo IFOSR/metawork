@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -55,45 +56,6 @@ function createConfig(): Config {
   };
 }
 
-function semanticDirectReply(reason: string) {
-  return JSON.stringify({
-    interactionType: 'direct_reply',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'none', taskId: null, reason },
-    taskControl: null,
-    executorDecision: null,
-  });
-}
-
-function semanticConversationFollowUp(reason: string) {
-  return JSON.stringify({
-    interactionType: 'durable_task',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'new', taskId: null, reason },
-    taskControl: null,
-    executorDecision: {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      confidence: 0.9,
-      primaryIntent: 'repo_execution',
-      matchedBoundary: ['conversation_follow_up'],
-      reason,
-      candidates: [{ executorName: 'codex-cli', score: 0.9, reason, matchedBoundary: ['conversation_follow_up'] }],
-      rejected: [],
-    },
-  });
-}
-
 function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -133,23 +95,7 @@ describe('App task-boundary visibility', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn()
-        .mockResolvedValueOnce(semanticDirectReply('普通讨论'))
-        .mockResolvedValueOnce(semanticConversationFollowUp('按当前对话创建跟进任务')),
-      resolveRoute: vi.fn()
-        .mockResolvedValueOnce({
-          route: 'conversation',
-          reason: '普通讨论',
-        })
-        .mockResolvedValueOnce({
-          route: 'task_control',
-          reason: '因为提到了刚才，误判为旧任务控制',
-        }),
-      resolveIntent: vi.fn().mockImplementation(async () => ({
-        type: 'reference',
-        taskId: parkedTaskId,
-        reason: '误判为恢复旧 parked 任务',
-      })),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -164,6 +110,16 @@ describe('App task-boundary visibility', () => {
         contextRecaller,
         llmBridge,
         executorFactory: () => executor,
+        planningAgent: stubPlanningAgent(
+          directReplyPlan({ reason: '普通讨论' }),
+          workGraphPlan({
+            goal: '把刚才那段回答整理成三点结论',
+            title: '把刚才那段回答整理成三点结论',
+            includeRecentConversationContext: true,
+            matchedBoundary: ['conversation_follow_up'],
+            overrides: { reason: '按当前对话创建跟进任务' },
+          }),
+        ),
       }),
     );
 
@@ -240,23 +196,7 @@ describe('App task-boundary visibility', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn()
-        .mockResolvedValueOnce(semanticDirectReply('普通讨论'))
-        .mockResolvedValueOnce(semanticDirectReply('延续当前对话，不恢复旧任务')),
-      resolveRoute: vi.fn()
-        .mockResolvedValueOnce({
-          route: 'conversation',
-          reason: '普通讨论',
-        })
-        .mockResolvedValueOnce({
-          route: 'task_control',
-          reason: '误判为继续已有任务',
-        }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'reference',
-        taskId: parkedTask.id,
-        reason: '误判为恢复旧 parked 任务',
-      }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
     const app = render(
@@ -271,6 +211,10 @@ describe('App task-boundary visibility', () => {
         contextRecaller,
         llmBridge,
         executorFactory: () => executor,
+        planningAgent: stubPlanningAgent(
+          directReplyPlan({ reason: '普通讨论' }),
+          directReplyPlan({ reason: '延续当前对话，不恢复旧任务' }),
+        ),
       }),
     );
 

@@ -1,3 +1,4 @@
+// Generates and persists embeddings for task memory documents.
 import { createHash } from 'node:crypto';
 import type { EmbeddingProvider } from '../core/embedding-provider.js';
 import type { TaskMemoryKind } from '../core/types.js';
@@ -28,6 +29,7 @@ function buildEmbeddingId(document: TaskMemoryDocument): string {
   return `taskemb_${document.taskId}_${document.memoryKind}_${sourceKey}`;
 }
 
+/** Embeds task memory documents and upserts their vector records with stable content metadata. */
 export class TaskEmbeddingService {
   constructor(
     private provider: EmbeddingProvider,

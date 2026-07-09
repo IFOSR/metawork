@@ -1,6 +1,7 @@
+// Runs multi-executor work through aggregation-driven retry loops until results pass verification or become blocked.
 import { ExecutionAggregator, type ExecutionAggregationResult } from './execution-aggregator.js';
-import type { ExecutionStrategy, ExecutionWorkUnit } from '../core/execution-strategy-planner.js';
-import type { MultiExecutorOrchestrator, WorkUnitResult } from './multi-executor-orchestrator.js';
+import type { ExecutionStrategy, ExecutionSubtask } from '../core/execution-strategy-planner.js';
+import type { MultiExecutorOrchestrator, SubtaskResult } from './multi-executor-orchestrator.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { Task } from '../core/types.js';
 
@@ -18,21 +19,21 @@ export interface AgenticLoopResult {
   status: 'pass' | 'blocked';
   iterations: number;
   aggregation: ExecutionAggregationResult;
-  results: WorkUnitResult[];
+  results: SubtaskResult[];
   blockedReason?: string;
 }
 
-function cloneStrategyWithWorkUnits(
+function cloneStrategyWithSubtasks(
   strategy: Extract<ExecutionStrategy, { mode: 'multi_executor' }>,
-  workUnits: ExecutionWorkUnit[],
+  subtasks: ExecutionSubtask[],
 ): Extract<ExecutionStrategy, { mode: 'multi_executor' }> {
   return {
     ...strategy,
-    workUnits,
+    subtasks,
   };
 }
 
-function appendFeedbackToWorkUnit(unit: ExecutionWorkUnit, feedback: string, iteration: number): ExecutionWorkUnit {
+function appendFeedbackToSubtask(unit: ExecutionSubtask, feedback: string, iteration: number): ExecutionSubtask {
   return {
     ...unit,
     goal: [
@@ -48,12 +49,13 @@ function appendFeedbackToWorkUnit(unit: ExecutionWorkUnit, feedback: string, ite
   };
 }
 
+/** Coordinates repeated multi-executor orchestration passes and feeds aggregation feedback into retry subtasks. */
 export class AgenticLoopController {
   async run(input: AgenticLoopInput): Promise<AgenticLoopResult> {
     const aggregator = input.aggregator ?? new ExecutionAggregator();
     const maxIterations = Math.max(1, input.strategy.aggregation.maxIterations);
     let iteration = 1;
-    let allResults: WorkUnitResult[] = [];
+    let allResults: SubtaskResult[] = [];
     let latestAggregation: ExecutionAggregationResult | null = null;
     let strategy = input.strategy;
 
@@ -69,7 +71,7 @@ export class AgenticLoopController {
 
       if (orchestration.status === 'blocked') {
         latestAggregation = aggregator.aggregate({
-          workUnits: strategy.workUnits,
+          subtasks: strategy.subtasks,
           results: allResults,
           aggregation: strategy.aggregation,
         });
@@ -83,7 +85,7 @@ export class AgenticLoopController {
       }
 
       latestAggregation = aggregator.aggregate({
-        workUnits: input.strategy.workUnits,
+        subtasks: input.strategy.subtasks,
         results: allResults,
         aggregation: input.strategy.aggregation,
       });
@@ -97,7 +99,7 @@ export class AgenticLoopController {
         };
       }
 
-      const retryUnits = this.buildRetryUnits(input.strategy.workUnits, latestAggregation, iteration);
+      const retryUnits = this.buildRetryUnits(input.strategy.subtasks, latestAggregation, iteration);
       if (retryUnits.length === 0 || iteration >= maxIterations) {
         return {
           status: 'blocked',
@@ -108,13 +110,13 @@ export class AgenticLoopController {
         };
       }
 
-      strategy = cloneStrategyWithWorkUnits(input.strategy, retryUnits);
+      strategy = cloneStrategyWithSubtasks(input.strategy, retryUnits);
       iteration += 1;
     }
 
     if (!latestAggregation) {
       latestAggregation = aggregator.aggregate({
-        workUnits: input.strategy.workUnits,
+        subtasks: input.strategy.subtasks,
         results: allResults,
         aggregation: input.strategy.aggregation,
       });
@@ -130,23 +132,23 @@ export class AgenticLoopController {
   }
 
   private buildRetryUnits(
-    workUnits: ExecutionWorkUnit[],
+    subtasks: ExecutionSubtask[],
     aggregation: ExecutionAggregationResult,
     iteration: number,
-  ): ExecutionWorkUnit[] {
-    const byId = new Map(workUnits.map(unit => [unit.id, unit]));
+  ): ExecutionSubtask[] {
+    const byId = new Map(subtasks.map(unit => [unit.id, unit]));
     return aggregation.retryFeedback
       .map(item => {
-        const unit = byId.get(item.workUnitId);
-        return unit ? appendFeedbackToWorkUnit(unit, item.feedback, iteration) : null;
+        const unit = byId.get(item.subtaskId);
+        return unit ? appendFeedbackToSubtask(unit, item.feedback, iteration) : null;
       })
-      .filter((unit): unit is ExecutionWorkUnit => Boolean(unit));
+      .filter((unit): unit is ExecutionSubtask => Boolean(unit));
   }
 
-  private mergeResults(existing: WorkUnitResult[], incoming: WorkUnitResult[]): WorkUnitResult[] {
-    const byId = new Map(existing.map(result => [result.workUnitId, result]));
+  private mergeResults(existing: SubtaskResult[], incoming: SubtaskResult[]): SubtaskResult[] {
+    const byId = new Map(existing.map(result => [result.subtaskId, result]));
     for (const result of incoming) {
-      byId.set(result.workUnitId, result);
+      byId.set(result.subtaskId, result);
     }
     return Array.from(byId.values());
   }

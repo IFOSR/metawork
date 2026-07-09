@@ -13,6 +13,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -40,17 +41,8 @@ function createConfig(): Config {
   };
 }
 
-function createDurableRouteBridge(): LlmBridge {
+function createMinimalBridge(): LlmBridge {
   return {
-    resolveRoute: vi.fn().mockResolvedValue({
-      route: 'durable_task',
-      reason: 'phase e8 task memory card recall',
-    }),
-    resolveIntent: vi.fn().mockResolvedValue({
-      type: 'new',
-      taskId: null,
-      reason: 'new task',
-    }),
     rankInteractions: vi.fn().mockResolvedValue([]),
   } as unknown as LlmBridge;
 }
@@ -109,7 +101,10 @@ describe('Phase E8 TaskMemoryCard recall integration', () => {
       config: createConfig(),
       sessionId: 'sess_phase_e8_task_memory_card_review',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
+      llmBridge: createMinimalBridge(),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '整理 Phoenix 本周周报，补齐经营数据栏目' }),
+      ),
     });
 
     session.initialize();

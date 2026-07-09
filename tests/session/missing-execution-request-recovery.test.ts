@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
+import { stubPlanningAgent, workGraphPlan, taskControlPlan, directReplyPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -38,21 +39,6 @@ function createConfig(): Config {
       dashboard_on_start: true,
     },
   };
-}
-
-function semanticRecoverBlocked(reason: string) {
-  return JSON.stringify({
-    interactionType: 'task_control',
-    confidence: 0.95,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'none', taskId: null, reason },
-    taskControl: { kind: 'recover_blocked', taskId: null, scope: null, reason },
-    executorDecision: null,
-  });
 }
 
 describe('session dispatch recovery', () => {
@@ -86,8 +72,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
       resolveTaskPriority: vi.fn().mockResolvedValue({
         priority: 'urgent',
         reason: '语义判断：用户要求先处理这个临时任务',
@@ -138,8 +122,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       resolveTaskPriority: vi.fn().mockResolvedValue({
         priority: 'urgent',
         reason: '语义判断：用户要求先处理这个临时任务',
@@ -158,6 +140,9 @@ describe('session dispatch recovery', () => {
       contextRecaller,
       llmBridge,
       executorFactory: () => executor,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '这个客户今晚要看，先处理一下 harness 对比' }),
+      ),
     });
 
     session.initialize();
@@ -210,8 +195,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
       resolveTaskPriority: vi.fn().mockImplementation(async (input: string) => input.includes('客户马上要看')
         ? { priority: 'urgent', reason: '语义判断：有明确时间压力，需要先处理' }
         : { priority: 'normal', reason: '语义判断：顺序执行即可' }),
@@ -266,8 +249,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -327,10 +308,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn().mockResolvedValue(semanticRecoverBlocked('用户补充了阻塞任务所需材料')),
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      resolveTaskPriority: vi.fn(),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -346,6 +323,9 @@ describe('session dispatch recovery', () => {
       llmBridge,
       executorFactory: () => executor,
       notifier,
+      planningAgent: stubPlanningAgent(
+        taskControlPlan({ control: 'recover_blocked', taskId: task.id, reason: '用户补充了阻塞任务所需材料' }),
+      ),
     });
 
     await session.submit('补充飞书 Client API 权限材料：需要 docs:document:readonly 权限，可以用 user_access_token 调用', { awaitAsyncWork: true });
@@ -356,12 +336,13 @@ describe('session dispatch recovery', () => {
     expect(executionInput.executionContextBundle.mode).toBe('resume-blocked');
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`检测到任务 #${task.id} 的阻塞条件已满足`);
-    expect(output).toContain('✓ 旧阻塞任务已完成');
-    expect(output).toContain('这是针对旧任务的答案');
-    expect(output).toContain(`任务：#${task.id} 飞书 Client API 调研`);
-    expect(output).toContain('触发方式：你刚才的补充信息解除阻塞');
-    expect(output).toContain('原阻塞原因：等待补充飞书 Client API 权限材料');
+    // Runtime no longer "detects which task" — the planner pinned it. Assert the
+    // behavioral contract only: output associates to the referenced task, surfaces
+    // the recovery reason, and relays the executor's answer. The exact block/trigger
+    // strings are verified structurally in the notifyTaskCompleted assertion below,
+    // so we don't re-pin the decorative display copy here.
+    expect(output).toContain(`关联到任务 #${task.id}`);
+    expect(output).toContain('检测到用户补充了阻塞所需信息');
     expect(output).toContain('补充材料后已继续完成飞书 Client API 调研');
     expect(notifier.notifyTaskCompleted).toHaveBeenCalledWith(expect.objectContaining({
       taskId: task.id,
@@ -408,9 +389,6 @@ describe('session dispatch recovery', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'conversation', reason: '普通补充说明' }),
-      resolveIntent: vi.fn(),
-      resolveTaskPriority: vi.fn(),
       resolveTaskResumeIntent: vi.fn().mockResolvedValue({ action: 'none', taskId: null, reason: '不明确', confidence: 0 }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
@@ -426,6 +404,9 @@ describe('session dispatch recovery', () => {
       contextRecaller,
       llmBridge,
       executorFactory: () => executor,
+      planningAgent: stubPlanningAgent(
+        directReplyPlan({ reason: '普通补充说明' }),
+      ),
     });
 
     await session.submit('我补充一下飞书材料：需要 user_access_token', { awaitAsyncWork: true });

@@ -7,7 +7,6 @@ import {
 } from './task-routing.js';
 import {
   extractInlineResourceMatches,
-  isContinuePreviousTaskInstruction,
   isConversationDerivedWorkInstruction,
   isConversationalContinuationInstruction,
   isRecoverableBlockedResumeInstruction,
@@ -84,14 +83,6 @@ export class RuleHintsProvider {
         weight: 0.85,
         reason: 'explicit task id resume expression matched',
         evidence: userInput.match(/task_[A-Za-z0-9_-]+/)?.[0] ?? userInput,
-      }));
-    } else if (isContinuePreviousTaskInstruction(userInput)) {
-      hints.push(hint({
-        source: 'heuristic',
-        kind: 'resume_task',
-        weight: 0.8,
-        reason: 'last-task continuation expression matched',
-        evidence: 'last_task_continuation',
       }));
     } else if (RESUME_HINT.test(userInput) && !/生成|预览|继续把|继续写|继续输出/.test(userInput)) {
       hints.push(hint({

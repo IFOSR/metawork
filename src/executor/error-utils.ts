@@ -1,3 +1,4 @@
+// Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
 const EXECUTOR_NOISE_PATTERNS = [
   /^OpenAI Codex\b/i,
   /^Claude\b/i,

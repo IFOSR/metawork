@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { taskCommand } from '../../src/commands/task-commands.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -61,8 +62,6 @@ describe('Round 4 task view acceptance', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -76,6 +75,9 @@ describe('Round 4 task view acceptance', () => {
       sessionId: 'sess_round4_task_view',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
+      ),
     });
 
     session.initialize();

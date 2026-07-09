@@ -12,6 +12,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -102,8 +103,6 @@ describe('V2 proposal flow', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '新任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -207,8 +206,6 @@ describe('V2 proposal flow', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '新任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -222,6 +219,9 @@ describe('V2 proposal flow', () => {
       sessionId: 'sess_v2_tristate',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '根据最终优化方案实施 MetaClaw' }),
+      ),
     });
 
     session.initialize();
@@ -302,8 +302,6 @@ describe('V2 proposal flow', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '飞书任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -318,6 +316,9 @@ describe('V2 proposal flow', () => {
       contextRecaller,
       llmBridge,
       executorFactory: () => executor,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '做一个深度调研报告服务，需要飞书云文档和在线预览' }),
+      ),
     });
 
     session.initialize();

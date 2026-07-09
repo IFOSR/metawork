@@ -10,3 +10,4 @@ projects/
 metaclaw-tasks/
 docker/*.env
 !docker/*.env.example
+.claude/

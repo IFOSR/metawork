@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -69,30 +70,6 @@ async function waitUntil(assertion: () => boolean, timeoutMs = 1000): Promise<vo
   }
 }
 
-function semanticDurableTask(reason: string) {
-  return JSON.stringify({
-    interactionType: 'durable_task',
-    confidence: 0.9,
-    shouldAskBeforeActing: false,
-    ambiguity: [],
-    risk: 'low',
-    reason,
-    clarificationQuestion: null,
-    taskBinding: { type: 'new', taskId: null, reason },
-    taskControl: null,
-    executorDecision: {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      confidence: 0.9,
-      primaryIntent: 'general',
-      matchedBoundary: ['general'],
-      reason,
-      candidates: [{ executorName: 'codex-cli', score: 0.9, reason, matchedBoundary: ['general'] }],
-      rejected: [],
-    },
-  });
-}
-
 afterEach(() => {
   inputCapture.handler = undefined;
 });
@@ -119,20 +96,6 @@ describe('App network failure blocking', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn().mockResolvedValue(semanticDurableTask('明确测试任务')),
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确测试任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
-      resolveTaskPriority: vi.fn().mockResolvedValue({
-        priority: 'normal',
-        reason: '默认优先级',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -148,6 +111,7 @@ describe('App network failure blocking', () => {
         contextRecaller,
         llmBridge,
         availableExecutorCommands: new Set(['codex']),
+        planningAgent: stubPlanningAgent(workGraphPlan({ goal: '调研 agent memory 框架' })),
       }),
     );
 
@@ -191,20 +155,6 @@ describe('App network failure blocking', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      query: vi.fn().mockResolvedValue(semanticDurableTask('明确测试任务')),
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确测试任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
-      resolveTaskPriority: vi.fn().mockResolvedValue({
-        priority: 'normal',
-        reason: '默认优先级',
-      }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -220,6 +170,7 @@ describe('App network failure blocking', () => {
         contextRecaller,
         llmBridge,
         availableExecutorCommands: new Set(['codex']),
+        planningAgent: stubPlanningAgent(workGraphPlan({ goal: '生成 HTML 幻灯片' })),
       }),
     );
 

@@ -1,3 +1,4 @@
+// Parses executor-emitted MetaClaw skill usage event lines while redacting secret-like payload data.
 import type { SkillUsageEventType } from '../storage/skill-usage-event-repo.js';
 
 export interface ParsedSkillUsageEvent {

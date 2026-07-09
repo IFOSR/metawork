@@ -1,3 +1,4 @@
+// Converts approved learning candidates into safe executor skill packages with secret and path checks.
 import type { LearningCandidateRecord } from '../storage/learning-candidate-repo.js';
 import { SafetyScanner } from '../learning/safety-scanner.js';
 

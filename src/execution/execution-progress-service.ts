@@ -1,3 +1,4 @@
+// Tracks executor progress events, deduplicates display lines, and persists skill usage evidence.
 import type Database from 'better-sqlite3';
 import type { ExecutorAdapter, ExecutorProgressEvent } from '../executor/adapter.js';
 import { parseSkillUsageEventLine } from '../executor/skill-usage-event-parser.js';
@@ -16,6 +17,7 @@ export interface ExecutionProgressTrackerInput {
   appendOutput: (line: string) => void;
 }
 
+/** Creates per-execution progress trackers that surface executor updates and record structured skill events. */
 export class ExecutionProgressService {
   private readonly lastProgressLineByTask = new Map<string, string>();
 

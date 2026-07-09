@@ -1,3 +1,5 @@
+// Bridges task execution preparation with recall review, scheduler submission,
+// fallback request reconstruction, and final dispatch into the coordinator.
 import type { DispatchContext, SchedulerEngine } from '../task/scheduler.js';
 import type { RecallReviewApplicationService } from '../memory/recall-review-application-service.js';
 import type { SessionExecutionCoordinator } from './session-execution-coordinator.js';
@@ -29,6 +31,7 @@ export interface SessionTaskExecutionApplicationDeps {
   callbacks: SessionTaskExecutionApplicationCallbacks;
 }
 
+/** Prepares task execution requests for scheduling and invokes the coordinator when a task is dispatched. */
 export class SessionTaskExecutionApplicationService {
   private readonly approvedRecallSelections = new Map<string, ExecutionRecallSelection>();
   private readonly taskAdmissionGate = new TaskAdmissionGate();
@@ -46,14 +49,16 @@ export class SessionTaskExecutionApplicationService {
       return;
     }
 
-    const admission = this.taskAdmissionGate.evaluateExecution({
-      taskId,
-      runningTask: this.deps.taskRuntimeService.getCurrentRunningTask(),
-    });
-    if (!admission.allowed) {
-      this.deps.callbacks.appendOutput(...admission.lines);
-      this.deps.callbacks.refreshRuntimeState();
-      return;
+    if (!request.kernelDecisionId) {
+      const admission = this.taskAdmissionGate.evaluateExecution({
+        taskId,
+        runningTask: this.deps.taskRuntimeService.getCurrentRunningTask(),
+      });
+      if (!admission.allowed) {
+        this.deps.callbacks.appendOutput(...admission.lines);
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
     }
 
     const recallApplication = await this.deps.recallReviewApplicationService.apply({

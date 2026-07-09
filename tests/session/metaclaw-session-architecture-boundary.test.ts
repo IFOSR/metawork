@@ -9,10 +9,14 @@ function readSource(path: string): string {
 }
 
 describe('MetaclawSession architecture boundaries', () => {
-  it('routes natural language decisions only through IntentOrchestrator from the session path', () => {
+  it('routes natural language decisions through PlanningAgent and PolicyKernel from the session path', () => {
     const source = readSource('src/session/metaclaw-session.ts');
 
-    expect(source).toContain('getIntentOrchestrator().decide');
+    expect(source).toContain('planningAgent.plan');
+    expect(source).toContain('policyKernel.decide');
+    expect(source).toContain('kernelDecisionApplier.apply');
+    expect(source).not.toContain('getIntentOrchestrator().decide');
+    expect(source).not.toContain('sessionIntentApplicationService.apply');
     expect(source).not.toContain('semantic-intent-router');
     expect(source).not.toContain('new SemanticIntentRouter');
     expect(source).not.toContain('resolveRoute(');
@@ -26,13 +30,11 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('inferTaskRouteIntent');
   });
 
-  it('does not bypass or override IntentDecisionV2 with session-level natural-language hard rules', () => {
+  it('does not bypass or override the planning decision with session-level natural-language hard rules', () => {
     const source = readSource('src/session/metaclaw-session.ts');
-    const orchestratorSource = readSource('src/core/intent-orchestrator.ts');
 
     expect(source).not.toContain('shouldBusyFallbackIntentToDurableTask');
     expect(source).not.toContain("decision.interactionType = 'durable_task'");
-    expect(orchestratorSource).not.toContain('resolveFocusHintDecision');
     expect(source).not.toContain('maybeHandleNaturalLanguageTaskResume(');
     expect(source).not.toContain('maybeAutoResumeSatisfiedBlockedTask(');
     expect(source).not.toContain('maybeHandlePersistedLastTaskContinuation(');
@@ -43,11 +45,12 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('applyFocusAwareIntentOverride');
   });
 
-  it('does not pre-filter IntentOrchestrator recent task candidates through durable regex rules', () => {
+  it('does not pre-filter PlanningAgent recent task candidates through durable regex rules', () => {
     const source = readSource('src/session/metaclaw-session.ts');
+    const planningContextSource = readSource('src/planning/planning-context-builder.ts');
 
     expect(source).not.toContain('const durableTasks = filterDurableTasks(this.taskRuntimeService.listTasks())');
-    expect(source).toContain('const recentTasks = this.buildRecentTaskSummaries(this.taskRuntimeService.listTasks())');
+    expect(planningContextSource).toContain('recentTasks: buildRecentTaskSummaries(this.deps.listTasks())');
   });
 
   it('uses SchedulerBridge for execution completion and blocking state transitions', () => {
@@ -70,7 +73,7 @@ describe('MetaclawSession architecture boundaries', () => {
 
   it('keeps task-routing parsers, task status formatting, and task clearing presentation out of MetaclawSession', () => {
     const source = readSource('src/session/metaclaw-session.ts');
-    const applicationSource = readSource('src/session/session-intent-application-service.ts');
+    const applicationSource = readSource('src/session/kernel-decision-applier.ts');
 
     expect(source).not.toContain('parseTaskClearInstruction');
     expect(source).not.toContain('parseTaskStatusQuery');
@@ -113,12 +116,12 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('decideResumeTarget');
   });
 
-  it('delegates intent decision application and task-control branches outside the session facade', () => {
+  it('delegates kernel decision application and task-control branches outside the session facade', () => {
     const source = readSource('src/session/metaclaw-session.ts');
-    const applicationSource = readSource('src/session/session-intent-application-service.ts');
+    const applicationSource = readSource('src/session/kernel-decision-applier.ts');
 
-    expect(source).toContain('SessionIntentApplicationService');
-    expect(source).toContain('sessionIntentApplicationService.apply');
+    expect(source).toContain('KernelDecisionApplier');
+    expect(source).toContain('kernelDecisionApplier.apply');
     expect(source).not.toContain("decision.interactionType === 'task_control'");
     expect(source).not.toContain("decision.interactionType === 'direct_reply'");
     expect(source).not.toContain('private async applyResumePlanResult');
@@ -127,7 +130,7 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('private normalizeTaskStatusScope');
     expect(source).not.toContain('private normalizeTaskClearScope');
     expect(source).not.toContain('inlineResourceContext.normalizedGoal.slice');
-    expect(applicationSource).toContain("decision.interactionType === 'task_control'");
+    expect(applicationSource).toContain("decision.runtimeAction === 'task_control'");
     expect(applicationSource).toContain('applyResumePlanResult');
     expect(applicationSource).toContain('normalizeTaskStatusScope');
     expect(applicationSource).toContain('normalizeTaskClearScope');
@@ -185,11 +188,11 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('private buildRecoverableFailureHint');
   });
 
-  it('keeps executor administration, profile persistence, and runtime inference outside the session facade', () => {
+  it('keeps executor administration, agent class persistence, and runtime inference outside the session facade', () => {
     const source = readSource('src/session/metaclaw-session.ts');
 
     expect(source).toContain('ExecutorAdminService');
-    expect(source).toContain('ExecutorProfileService');
+    expect(source).toContain('AgentClassService');
     expect(source).not.toContain("from 'child_process'");
     expect(source).not.toContain('spawnSync');
     expect(source).not.toContain('ExecutorProfileRepo');
@@ -201,10 +204,12 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('private fetchText');
   });
 
-  it('keeps executor routing, progress observation, and workspace filesystem effects outside the session facade', () => {
+  it('keeps planner dispatch, progress observation, and workspace filesystem effects outside the session facade', () => {
     const source = readSource('src/session/metaclaw-session.ts');
 
-    expect(source).toContain('ExecutorRoutingCoordinator');
+    expect(source).toContain('PlanningAgent');
+    expect(source).toContain('WorkGraphRuntimeService');
+    expect(source).toContain('WorkUnitClaimService');
     expect(source).toContain('ExecutionProgressService');
     expect(source).toContain('WorkspaceTargetService');
     expect(source).not.toContain("from 'fs'");

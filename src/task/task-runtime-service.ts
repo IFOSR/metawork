@@ -1,3 +1,4 @@
+// Provides the session-facing task runtime API for lifecycle commands, queueing, and schedulable task selection.
 import type { TaskRepo } from '../storage/task-repo.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskEngine } from './task-engine.js';
@@ -79,6 +80,7 @@ const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
   blocked: ['blocked'],
 };
 
+/** Bridges task persistence, state-machine operations, runtime focus, and scheduler-ready task selection. */
 export class TaskRuntimeService {
   private currentTaskId: string | null = null;
   private focusContext: TaskFocusContext | null = null;

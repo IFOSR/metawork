@@ -1,3 +1,4 @@
+// Builds the executor prompt by combining task context, resume state, memory recall, materials, and user instructions.
 import type { ExecutorInput } from './adapter.js';
 import { buildMaterialSummary, splitTaskResources } from '../intent/material-utils.js';
 

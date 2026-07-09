@@ -1,6 +1,7 @@
+// Shared session helpers for execution requests, lightweight intent heuristics,
+// inline resources, editor submission, priority hints, and preference capture.
 import type { TaskRecoveryTrigger } from '../core/types.js';
-import type { IntentDecision } from '../core/executor-router.js';
-import type { IntentDecisionV2 } from '../core/intent-orchestrator.js';
+import type { PlanningAgentPlan } from '../planning/planning-types.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
 export {
   extractInlineResourceMatches,
@@ -12,8 +13,8 @@ export type QueuedExecutionRequest = {
   userPrompt: string;
   contextTaskId: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
-  intentDecision?: IntentDecisionV2 | null;
-  semanticExecutorDecision?: IntentDecision | null;
+  planningPlan?: PlanningAgentPlan | null;
+  kernelDecisionId?: string | null;
   origin?: 'user' | 'system';
   schedulingReason?: string;
   newlyProvidedResources?: string[];
@@ -157,10 +158,6 @@ export function buildSchedulingReason(input: string): string {
 
 export function isResumeReferenceInstruction(input: string): boolean {
   return /挂起|恢复|继续之前|继续刚才|接着刚才|继续完成/.test(input);
-}
-
-export function isContinuePreviousTaskInstruction(input: string): boolean {
-  return /继续之前的任务|继续之前任务|继续上一个任务|继续上次的任务|继续刚才的任务|继续刚才那个任务|接着上次|接着之前的任务|继续上一轮任务|继续上一个任务/.test(input.trim());
 }
 
 export function isConversationalContinuationInstruction(input: string): boolean {

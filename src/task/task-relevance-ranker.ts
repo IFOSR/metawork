@@ -1,3 +1,4 @@
+// Scores historical tasks for relevance to the current task and user input.
 import type { Task } from '../core/types.js';
 
 export type TaskRelevanceRecommendation = 'inject' | 'review' | 'more' | 'reject';
@@ -142,6 +143,7 @@ function buildRecommendation(score: number): TaskRelevanceRecommendation {
   return 'reject';
 }
 
+/** Combines lexical, entity, intent, recency, status, and artifact signals into task relevance scores. */
 export class TaskRelevanceRanker {
   rank(input: TaskRelevanceRankInput): TaskRelevanceScore[] {
     const now = input.now ?? new Date();

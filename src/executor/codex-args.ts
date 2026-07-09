@@ -1,3 +1,4 @@
+// Builds the Codex CLI non-interactive exec arguments used by the Codex executor adapter.
 export function buildCodexNonInteractiveArgs(prompt: string): string[] {
   return [
     'exec',

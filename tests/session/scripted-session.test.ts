@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdirSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -16,6 +15,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -162,8 +162,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
@@ -181,6 +179,9 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_detail',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
+      ),
     });
 
     expect(result.output.join('\n')).toContain('任务视图');
@@ -208,8 +209,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确执行动作' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -226,6 +225,9 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_risky_gate',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '直接把邮件发给客户' }),
+      ),
     });
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
@@ -259,8 +261,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '写入任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -277,6 +277,9 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_artifact',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '写一段测试内容，保存成 markdown 文件' }),
+      ),
     });
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
@@ -310,8 +313,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -328,6 +329,9 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_html_artifact',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '生成一个报名落地页 html 文件' }),
+      ),
     });
 
     expect(result.output.join('\n')).toContain('✓ 任务完成');
@@ -356,8 +360,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -374,6 +376,9 @@ describe('scripted session', () => {
       sessionId: 'sess_scripted_feishu_doc_fallback',
       contextRecaller,
       llmBridge,
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请产出飞书云文档和在线预览' }),
+      ),
     });
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
@@ -414,8 +419,6 @@ describe('scripted session', () => {
       abort: vi.fn(),
     };
     const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
 
@@ -433,6 +436,9 @@ describe('scripted session', () => {
       contextRecaller,
       llmBridge,
       availableExecutorCommands: new Set(['codex']),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览', executor: 'hermes-agent' }),
+      ),
     });
 
     const blockedTask = taskEngine.list().find(task => task.status === 'blocked');

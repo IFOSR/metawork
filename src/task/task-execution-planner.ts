@@ -1,3 +1,4 @@
+// Determines how a task's current status should map to execution, blocking, or follow-up creation.
 import type { Task, TaskStatus } from '../core/types.js';
 
 export type TaskExecutionPlan =

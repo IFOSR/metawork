@@ -1,73 +1,117 @@
-# MetaClaw Routing Context
+# MetaClaw Planning Agent And Work Unit Context
 
-The vocabulary for how MetaClaw decides which executor(s) run a user request. Exists because the old routing layer conflated several concepts (who runs, how verified, how risky) under one `ExecutionPlanV2`, which made quality-aware routing impossible.
+The vocabulary for how MetaClaw turns user intent into kernel-authorized task, subtask, and work-unit runtime actions. Exists because earlier routing layers conflated intent understanding, policy authorization, task state changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
-The active execution path is policy-first. Natural-language input is classified by `src/core/intent-orchestrator.ts` and `src/core/semantic-intent-router.ts` into interaction type plus one `CapabilityClass`. Session code reaches executor selection through `src/core/executor-routing-coordinator.ts`, `src/core/execution-planning-service.ts`, and `src/routing/execution-policy-planner.ts`. `ExecutionPolicyPlanner` owns the primary executor, candidate executors, fallback chain, risk level, verification level, acceptance criteria, and strategy handoff to `src/core/execution-strategy-planner.ts`.
+The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. A planner work unit implements the `PlanningAgent` interface, which understands the user input and proposes a structured `PlanningAgentPlan`. The deterministic `PolicyKernel` validates or rewrites that plan against the current runtime snapshot and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting approved subtasks, claiming an idle executor `WorkUnit`, or calling `ExecutionRuntime` with a `SubtaskExecutionSpec`.
 
-`src/core/executor-router.ts` is a legacy compatibility seam. Keep its exported types, route-event shape, fallback intent helper, and capability/legacy-intent adapter functions stable for older callers, tests, and persisted route records. Do not add new primary routing behavior there unless the task explicitly targets compatibility. `historicalSuccess` remains profile/admin/storage metadata and must not be reintroduced into current scoring.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation. The old `IntentOrchestrator`/`IntentDecisionV2`/`ExecutorProfile` routing layer has been removed; there is no legacy intent-orchestrator fallback.
 
-`src/core/llm-bridge.ts` still contains deprecated route-compatible schemas for old LLM flows; treat it as a process adapter and compatibility parser, not the owner of current routing policy. `src/core/semantic-intent-router.ts` may normalize legacy route intent names, but new behavior should prefer `CapabilityClass` values (`code_edit`, `research`, `messaging`, `memory_ops`, `office_automation`, `conversation`, `general`).
+`src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
 
-Default executor profiles are seeded in `src/executor/executor-registry-seeder.ts`. `codex-cli` is the normal default profile. Pi/Hermes are available when their commands are installed. `deepseek-tui`, `claude-code`, and `openclaw` are retained for explicit/default configuration compatibility, not default seeding.
+`src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions for concrete work units. `SessionExecutionCoordinator` calls its lightweight sweep before dispatch and claim attempts so expired executor leases can be observed and their subtasks can be made recoverable.
 
-When touching routing, update focused tests around the active path first: `tests/core/execution-planning-service.test.ts`, `tests/core/semantic-intent-router.test.ts`, `tests/core/intent-orchestrator.test.ts`, and only then `tests/core/executor-router.test.ts` for legacy compatibility behavior.
+The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService`; do not reintroduce a parallel routing layer.
+
+Default agent classes and fixed first-pool work units are seeded in `src/executor/agent-class-seeder.ts`: `planner`/`planner-1` and the configured executor agent class/`executor-1`. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
+
+When touching dispatch, update focused tests around the active path first: PlanningAgent/PolicyKernel, work-graph runtime service, work unit claim service, session execution coordinator, execution runtime, and storage migrations. The current regression anchor is `tests/session/planner-work-unit-bugfix.test.ts`.
 
 ## Routing Language
 
 **Task**:
-A top-level durable user goal accepted by MetaClaw. A task may contain multiple work units, and those work units may run on different executors as long as their executor sessions are isolated and tracked under the same task.
-_Avoid_: request, user input, executor run, single executor
+A user-opened conversation window with a unique id and its own durable context, including user messages, task state, execution results, and later re-entry. A task may contain multiple subtasks, and tasks and subtasks use the same task state vocabulary.
+_Avoid_: request, prompt, executor run, browser tab
 
-**Single Active Task**:
-The admission rule that MetaClaw accepts only one top-level task for execution at a time. It does not mean one work unit, one executor, or no internal parallelism; while the active task runs, new unrelated top-level tasks are rejected at the intake boundary. This is a **deliberate current-scope decision** (see [`docs/adr/0011-single-active-task-admission-gate.md`](docs/adr/0011-single-active-task-admission-gate.md)): to reduce development load while the routing layer is the priority, multi-task queueing / preemption / auto-resume of a *second* task are intentionally disabled and enforced by `TaskAdmissionGate` (`src/session/task-admission-gate.ts`). It is reversible — relax the gate (don't delete it) when multi-task scheduling is reprioritized.
-_Avoid_: single executor, single work unit, no parallelism, no decomposition
+**Subtask**:
+A decomposed piece of work inside a task, planned so it can be claimed and executed by one work unit at a time. Subtasks share the task state vocabulary rather than having a separate lifecycle language.
+_Avoid_: work unit, executor instance, raw prompt
 
-**ExecutionPolicy**:
-The output of the routing decision. Replaces `ExecutionPlanV2`. Describes not only *who runs* but *how the result is verified*, *whether isolation is required*, and *what happens on failure*.
-_Avoid_: ExecutionPlan, ExecutionPlanV2, plan
+**Task State**:
+The shared lifecycle vocabulary for tasks and subtasks, currently including states such as created, ready, running, parked, blocked, done, archived, and cancelled.
+_Avoid_: executor state, work unit state
+
+**Agent Class**:
+A fixed configuration template for a type of agent, including its harness, model, skills, MCP servers, plugins, runtime command, affinity metadata, and runtime settings. MetaClaw starts with canonical planner and executor classes.
+_Avoid_: executor profile, capability class, instance, worker
+
+**Planner**:
+The agent class responsible for understanding user intent and proposing structured plans. A concrete planner work unit implements the PlanningAgent interface; it proposes but does not authorize or apply runtime state changes.
+_Avoid_: leader, router agent, implementation agent, executor
+
+**PlanningAgent**:
+The small interface exposed by a planner work unit: given a planning context, return a structured PlanningAgentPlan. It is the semantic understanding seam, not a storage or runtime authority.
+_Avoid_: policy kernel, session intent service, executor
+
+**PlanningAgentPlan**:
+A structured proposal from the PlanningAgent describing intent, target, task control, executor candidates, optional work graph proposals, risk, confidence, and clarification needs. A plan is not executable until the PolicyKernel accepts or rewrites it.
+_Avoid_: runtime command, task event, execution policy
+
+**PolicyKernel**:
+The deterministic authorization module that validates or rewrites a PlanningAgentPlan against the current RuntimeSnapshot. It is the only natural-language policy seam allowed to approve task creation, task control, work graph persistence, executor selection, or clarification.
+_Avoid_: planning agent, runtime applier, executor router
+
+**KernelDecision**:
+The PolicyKernel output that the runtime may apply. It records whether the plan was accepted, rewritten, rejected, or converted into clarification, and contains the runtime action to perform.
+_Avoid_: raw plan, route decision, executor output
+
+**RuntimeSnapshot**:
+The immutable view of current session, task, subtask, agent class, and work-unit state used by the PolicyKernel to decide whether a plan is allowed.
+_Avoid_: live repository handle, mutable runtime state, session transcript
+
+**Executor**:
+The agent class responsible for carrying out claimed subtasks and reporting results back to the planner/task context. Executors do not own task planning.
+_Avoid_: planner, leader, router
 
 **Work Unit**:
-The execution granularity inside a task: a single, already-decomposed piece of work with a clear goal and required capability. The router consumes work units and decides dispatch for each; a work unit may also be called a subtask when emphasizing that it belongs to a parent task.
-_Avoid_: top-level task, request, user input (too raw), executor run
+A concrete runtime agent instance that belongs to an agent class and can be either a planner or an executor. A work unit is the runtime slot that starts, idles, claims work, runs, waits, heartbeats, drains, fails, or stops.
+_Avoid_: subtask, task, agent class, capability class
+
+**Work Unit State**:
+The runtime lifecycle vocabulary for work units: starting, idle, claimed, running, waiting, heartbeat_lost, failed, draining, and stopped.
+_Avoid_: task state, subtask state
+
+**Work Graph**:
+The dependency graph of subtasks under one task. It describes what must be done, which subtasks depend on which prior subtasks, and what agent class or execution capability each subtask requires.
+_Avoid_: raw prompt, route decision, executor plan, issue thread
+
+**SubtaskExecutionSpec**:
+The runtime input shape for executing a claimed subtask: subtask, executor work unit, agent class runtime configuration, task context, expected output, and acceptance requirements.
+_Avoid_: ExecutionPolicy, primaryExecutor, candidateExecutors, fallbackChain
+
+**Work Unit Event**:
+A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.
+_Avoid_: TUI output line, transient progress text, task message
+
+**Task Event**:
+A durable event about a task or subtask, such as planned, recovered, dispatched, blocked, succeeded, failed, cancelled, or resumed. Task events are the replayable source of truth for planner recovery; session output is only a UI projection.
+_Avoid_: executor-only log, route event, progress line
 
 **Task Runtime View**:
-The runtime picture MetaClaw maintains for the active task: the parent task, its work units, each work unit's executor session, work unit progress, and executor state. This is task state, not just executor telemetry.
+The runtime picture MetaClaw maintains for a task: the task conversation, subtasks, current work graph, claimed work units, progress, and reports.
 _Avoid_: executor-only status, route event, transcript
 
-**Primary Executor**:
-The single executor that owns the main execution for a request. Every policy has exactly one.
-_Avoid_: selected executor, main agent, dispatcher target
-
-**Complementary Executor**:
-A standby executor selected because it covers a *different capability class* than the primary — e.g. one coding agent (Codex CLI / Claude Code) plus one office/automation agent (OpenClaw / Hermes). Complementarity, not redundancy, is the selection principle. Availability and customer subscription constrain the choice.
-_Avoid_: candidate executor, backup executor, secondary agent, standby (too vague)
-
-**Parallelism Criterion**:
-Whether executors run in parallel or in sequence is decided by *causal dependence*, not by executor type or count. Causally independent work units within the active task may run in parallel, each in an isolated worktree; causally dependent work units run in dependency order under the same parent task.
-_Avoid_: concurrent execution (too vague), parallel agents, single-executor-only task
-
-**Capability Class**:
-A coarse classification of a request's needed competence, defined by *tool/side-effect boundary* (not executor strength). Seven values: `code_edit | research | messaging | memory_ops | office_automation | conversation | general`. A complementary set is built by picking one executor per relevant class. Supersedes the legacy `TaskRouteIntent`, which was the index key of the disused affinity-scoring model and carried wrong granularity (no office/automation class; treated model-level `reasoning` as a routing class).
-_Avoid_: intent (overloaded with the legacy intent router), domain (overloaded with executor profile domains), TaskRouteIntent, reasoning-as-a-class
+**No Action**:
+A valid planner outcome meaning no subtask should be dispatched. The runtime must preserve it as an intentional decision rather than forcing an executor run or marking the task done.
+_Avoid_: failure, clarification, unknown route
 
 **Selection Signal**:
-A hard, quantifiable fact the routing tool layer provides to the LLM when multiple executors satisfy a work unit's required capability. The LLM — not the tool layer — decides how to weigh them. Three signals are defined: recent success rate (last 3 tasks per candidate executor, from `executor_route_events.result`), pending load (queued/running task count per executor), and price. These are the *personal-user / open-source* selection strategy; enterprise routing (efficiency/robustness/quality-tuned) is out of scope and documented only as an advanced option.
-_Avoid_: affinity score, historical success (the dead static value), preference
+A hard, quantifiable fact provided to the planner or routing skill package when multiple work units can satisfy a subtask, such as route-intent affinity, recent success rate, pending load, price, or current availability.
+_Avoid_: static historical success as truth, user preference
 
 **Fallback Chain**:
-The ordered executors tried sequentially when the primary fails or produces low-quality output. Replaces the `race_executors` mode. Only the *next* executor runs after the previous one has *definitively* failed — no parallel racing, no wasted tokens.
-_Avoid_: race, racing, parallel candidates, competing executors
+A future planner recovery pattern for trying another suitable executor after a failed or low-quality claim. It is not the active platform dispatch mechanism in the current implementation; first-version failures release the work unit, record events, and leave replanning to the planner/recovery path.
+_Avoid_: race, racing, parallel candidates, automatic platform reroute
 
 **Verification Level**:
-The strength of post-execution validation: `none | compile | test | review`. When `review`, a `reviewerExecutor` (distinct from the primary) judges the result.
+The strength of post-execution validation: none, compile, test, or review.
 _Avoid_: quality gate, acceptance check, validator
 
 **Worktree Isolation**:
-The mechanism for running parallel executor sessions without mutual file interference. Each parallel work unit or isolated executor session gets a dedicated `git worktree` (an independent working directory on its own branch, sharing the `.git` object store). Within a single worktree, only one executor session runs at a time; the parent task coordinates the isolated work unit results.
-_Avoid_: workspace lock, file locking (too weak because it detects but does not prevent), sandbox (different concept)
+The mechanism for running parallel executor work units without mutual file interference. Each parallel or isolated execution receives a dedicated git worktree. The service boundary exists, but true parallel worktree execution is not the first-version active path.
+_Avoid_: workspace lock, file locking, sandbox
 
-**Estimated Cost Class**:
-A prior, type-based cost band (`cheap | moderate | expensive`) used to decide whether spending tokens on a reviewer is justified. Derived from request type and estimated IO scale — *not* from historical statistics, so it cannot decay into a dead static value like the legacy `historicalSuccess`.
-_Avoid_: token cost, budget, historical success
+**Worktree Lease**:
+The runtime claim that one work unit currently owns a specific worktree for one subtask. A lease has an owner, heartbeat, expiry, and release path so crashed executions can be detected and the worktree can be made available again.
+_Avoid_: permanent workspace ownership, executor identity, static work directory assignment

@@ -12,6 +12,8 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import type { PlanningAgent } from '../../src/planning/planning-agent.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -28,8 +30,36 @@ function createConfig(): Config {
   };
 }
 
-describe('executor router command acceptance', () => {
-  it('guides users through executor registration and persists runtime binding', async () => {
+function createSession(input: {
+  db: Database.Database;
+  taskEngine: TaskEngine;
+  memoryEngine: MemoryEngine;
+  executor: ExecutorAdapter;
+  sessionId: string;
+  llmBridge?: Partial<LlmBridge>;
+  planningAgent?: PlanningAgent;
+}) {
+  return new MetaclawSession({
+    taskEngine: input.taskEngine,
+    memoryEngine: input.memoryEngine,
+    orchestration: new OrchestrationEngine(input.taskEngine),
+    executor: input.executor,
+    db: input.db,
+    config: createConfig(),
+    sessionId: input.sessionId,
+    contextRecaller: new ContextRecaller(input.db),
+    llmBridge: {
+      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'durable task' }),
+      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
+      rankInteractions: vi.fn().mockResolvedValue([]),
+      ...input.llmBridge,
+    } as unknown as LlmBridge,
+    planningAgent: input.planningAgent,
+  });
+}
+
+describe('planner-first executor command acceptance', () => {
+  it('guides users through executor AgentClass registration and persists runtime binding', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-wizard');
@@ -40,23 +70,7 @@ describe('executor router command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_register_wizard',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
-    });
+    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_agent_class_register_wizard' });
 
     session.initialize();
     await session.submit('/executor register wizard');
@@ -70,11 +84,12 @@ describe('executor router command acceptance', () => {
     await session.submit('y');
 
     const row = db.prepare(`
-      SELECT name, domains_json, capabilities_json, runtime_command, runtime_args_json,
+      SELECT name, kind, domains_json, capabilities_json, runtime_command, runtime_args_json,
              runtime_check_command, availability
-      FROM executor_profiles WHERE name = ?
+      FROM agent_classes WHERE name = ?
     `).get('research-bot') as {
       name: string;
+      kind: string;
       domains_json: string;
       capabilities_json: string;
       runtime_command: string;
@@ -85,6 +100,7 @@ describe('executor router command acceptance', () => {
 
     expect(row).toEqual(expect.objectContaining({
       name: 'research-bot',
+      kind: 'executor',
       runtime_command: 'research-bot',
       runtime_check_command: 'research-bot --version',
       availability: 'available',
@@ -94,12 +110,12 @@ describe('executor router command acceptance', () => {
     expect(JSON.parse(row.capabilities_json)).toEqual(['research', 'report_generation']);
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Executor 注册向导已启动');
-    expect(output).toContain('已注册 Executor：research-bot');
-    expect(output).toContain('调度前会执行安装检测');
+    expect(output).toContain('Executor AgentClass registration wizard started');
+    expect(output).toContain('Registered Executor AgentClass: research-bot');
+    expect(output).toContain('This executor class can now back executor work units');
   });
 
-  it('supports one-line executor registration with quoted runtime args', async () => {
+  it('supports one-line AgentClass registration with quoted runtime args', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-oneline');
@@ -110,28 +126,12 @@ describe('executor router command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_register_oneline',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
-    });
+    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_agent_class_register_oneline' });
 
     session.initialize();
     await session.submit('/executor register research-bot --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation');
 
-    const row = db.prepare('SELECT runtime_args_json, runtime_check_command FROM executor_profiles WHERE name = ?').get('research-bot') as {
+    const row = db.prepare('SELECT runtime_args_json, runtime_check_command FROM agent_classes WHERE name = ?').get('research-bot') as {
       runtime_args_json: string;
       runtime_check_command: string;
     };
@@ -140,151 +140,72 @@ describe('executor router command acceptance', () => {
     expect(row.runtime_check_command).toBe('research-bot --version');
   });
 
-  it('routes through session commands and records feedback', async () => {
+  it('persists planner subtasks and work unit claims before execution', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-router');
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-planner-exec');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        output: 'code task done',
+        exitCode: 0,
+        durationMs: 50,
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const session = createSession({
+      db,
+      taskEngine,
+      memoryEngine,
+      executor,
+      sessionId: 'sess_planner_exec',
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
+      ),
+    });
+
+    session.initialize();
+    await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
+
+    const agentClasses = db.prepare('SELECT name FROM agent_classes ORDER BY name ASC').all() as Array<{ name: string }>;
+    expect(agentClasses.map(row => row.name)).toEqual(expect.arrayContaining(['codex-cli', 'planner']));
+
+    const subtasks = db.prepare('SELECT status, expected_output FROM subtasks ORDER BY created_at ASC').all() as Array<{
+      status: string;
+      expected_output: string;
+    }>;
+    expect(subtasks).toEqual([expect.objectContaining({ status: 'done', expected_output: 'patch' })]);
+
+    const workUnitEvents = db.prepare('SELECT event_type FROM work_unit_events ORDER BY created_at ASC').all() as Array<{ event_type: string }>;
+    expect(workUnitEvents.map(row => row.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'released']));
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the fixed executor work unit instead of racing or choosing peer executors', async () => {
+    const db = createDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-fixed-executor');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const defaultExecutor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        output: 'default executor completed research',
+        exitCode: 0,
+        durationMs: 50,
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const piExecutor: ExecutorAdapter = {
+      name: 'pi-agent',
       execute: vi.fn(),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_router',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
-    });
-
-    session.initialize();
-    await session.submit('/executor profile upsert legal-contract --domains legal,contract --capabilities contract_review,risk_matrix --risk high --success 0.9');
-    await session.submit('/executor route 请审查合同条款并输出风险矩阵');
-    await session.submit('/executor route-feedback');
-
-    const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('已更新 Executor Profile：legal-contract');
-    expect(output).toContain('Route Decision：legal-contract');
-    expect(output).toContain('Executor Route Feedback');
-  });
-
-  it('auto-registers local executors and records route decisions before task execution', async () => {
-    const db = createDb();
-    const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-route-exec');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: '代码任务已完成',
-        exitCode: 0,
-        durationMs: 50,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'coding task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_router_exec',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
-    });
-
-    session.initialize();
-    await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
-
-    const profiles = db.prepare('SELECT name FROM executor_profiles ORDER BY name ASC').all() as Array<{ name: string }>;
-    expect(profiles.map(row => row.name)).toEqual(expect.arrayContaining(['codex-cli']));
-
-    const route = db.prepare('SELECT selected_executor, action, user_input FROM executor_route_events ORDER BY created_at DESC LIMIT 1').get() as {
-      selected_executor: string;
-      action: string;
-      user_input: string;
-    };
-    expect(route).toEqual(expect.objectContaining({
-      selected_executor: 'codex-cli',
-      user_input: '请实现一个 TypeScript 单元测试并修复代码',
-    }));
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('dispatches research tasks to the primary executor without racing peers', async () => {
-    const db = createDb();
-    const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-route-pi');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-    const defaultExecutor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: '默认执行器不应执行',
-        exitCode: 0,
-        durationMs: 50,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    let resolvePi!: (value: {
-      success: true;
-      output: string;
-      exitCode: number;
-      durationMs: number;
-    }) => void;
-    const piResult = new Promise<{
-      success: true;
-      output: string;
-      exitCode: number;
-      durationMs: number;
-    }>(resolve => {
-      resolvePi = resolve;
-    });
-    const piExecutor: ExecutorAdapter = {
-      name: 'pi-agent',
-      execute: vi.fn().mockImplementation(() => piResult),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const hermesExecutor: ExecutorAdapter = {
-      name: 'hermes-agent',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: 'Hermes Agent 不应执行',
-        exitCode: 0,
-        durationMs: 500,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'research automation task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -292,143 +213,35 @@ describe('executor router command acceptance', () => {
       executor: defaultExecutor,
       db,
       config: createConfig(),
-      sessionId: 'sess_executor_router_pi',
+      sessionId: 'sess_fixed_executor',
       contextRecaller: new ContextRecaller(db),
-      llmBridge,
-      executorFactory: (name) => {
-        if (name === 'pi-agent') return piExecutor;
-        if (name === 'hermes-agent') return hermesExecutor;
-        return null;
-      },
-      availableExecutorCommands: new Set(['codex', 'pi', 'hermes']),
-    });
-
-    session.initialize();
-    const submitPromise = session.submit('请调研这个方案并进行自动化分析，输出报告', { awaitAsyncWork: true });
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(session.getSnapshot().runtimeState.runningExecutorName).toBe('pi-agent');
-
-    resolvePi({
-      success: true,
-      output: 'Pi Agent 已完成研究自动化任务',
-      exitCode: 0,
-      durationMs: 50,
-    });
-    await submitPromise;
-    const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('pi-agent (auto_dispatch');
-    expect(output).toContain('single_executor');
-    expect(output).toContain('memory_ops');
-    expect(output).not.toContain('pi-agent + hermes-agent');
-    expect(output).not.toContain('hermes-agent');
-
-    const route = db.prepare('SELECT selected_executor, action, result FROM executor_route_events ORDER BY created_at DESC LIMIT 1').get() as {
-      selected_executor: string;
-      action: string;
-      result: string | null;
-    };
-    expect(route).toEqual(expect.objectContaining({
-      selected_executor: 'pi-agent',
-      action: 'auto_dispatch',
-      result: 'success',
-    }));
-    expect(defaultExecutor.execute).not.toHaveBeenCalled();
-    expect(piExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(hermesExecutor.execute).not.toHaveBeenCalled();
-    expect(hermesExecutor.abort).not.toHaveBeenCalled();
-
-    const interaction = db.prepare('SELECT executor_used, system_output FROM interactions ORDER BY created_at DESC LIMIT 1').get() as {
-      executor_used: string;
-      system_output: string;
-    };
-    expect(interaction.executor_used).toBe('pi-agent');
-    expect(interaction.system_output).toContain('Pi Agent');
-    expect(session.getSnapshot().runtimeState.runningExecutorName).toBeNull();
-  });
-
-  it('falls back to Codex CLI before blocking a failed non-Codex executor task', async () => {
-    const db = createDb();
-    const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-route-codex-fallback');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-    const defaultExecutor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: 'Codex CLI 兜底完成调研报告',
-        exitCode: 0,
-        durationMs: 80,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const piExecutor: ExecutorAdapter = {
-      name: 'pi-agent',
-      execute: vi.fn().mockResolvedValue({
-        success: false,
-        output: '',
-        error: 'executor idle timeout',
-        exitCode: 1,
-        durationMs: 900_000,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'research automation task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
-      executor: defaultExecutor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_router_codex_fallback',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
-      executorFactory: (name) => {
-        if (name === 'pi-agent') return piExecutor;
-        return null;
-      },
+      llmBridge: {
+        resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'research automation task' }),
+        resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
+        rankInteractions: vi.fn().mockResolvedValue([]),
+      } as unknown as LlmBridge,
+      executorFactory: name => name === 'pi-agent' ? piExecutor : null,
       availableExecutorCommands: new Set(['codex', 'pi']),
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli' }),
+      ),
     });
 
     session.initialize();
-    await session.submit('请调研 pi agent 并输出 Markdown 报告', { awaitAsyncWork: true });
+    await session.submit('请调研这个方案并进行自动化分析，输出报告', { awaitAsyncWork: true });
 
-    const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('→ pi-agent failed: executor idle timeout');
-    expect(output).toContain('Codex CLI 兜底完成调研报告');
-    expect(piExecutor.execute).toHaveBeenCalledTimes(1);
     expect(defaultExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(taskRepo.findByStatus('blocked')).toHaveLength(0);
-    expect(taskRepo.findByStatus('done')).toHaveLength(1);
-
-    const route = db.prepare('SELECT selected_executor, result FROM executor_route_events ORDER BY created_at DESC LIMIT 1').get() as {
-      selected_executor: string;
-      result: string | null;
-    };
-    expect(route).toEqual(expect.objectContaining({
-      selected_executor: 'pi-agent',
-      result: 'fallback_success',
-    }));
-
-    const interaction = db.prepare('SELECT executor_used, system_output FROM interactions ORDER BY created_at DESC LIMIT 1').get() as {
-      executor_used: string;
-      system_output: string;
-    };
-    expect(interaction.executor_used).toBe('codex-cli');
-    expect(interaction.system_output).toContain('Codex CLI 兜底完成');
+    expect(piExecutor.execute).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT agent_class_name, state FROM work_units WHERE id = ?').get('executor-1')).toEqual({
+      agent_class_name: 'codex-cli',
+      state: 'idle',
+    });
   });
 
-  it('does not fallback recursively when Codex CLI fails', async () => {
+  it('blocks failed executor subtasks for planner recovery instead of platform fallback', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
-    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-route-codex-no-loop');
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-no-platform-fallback');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
@@ -442,31 +255,25 @@ describe('executor router command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'coding task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
-    const session = new MetaclawSession({
+    const session = createSession({
+      db,
       taskEngine,
       memoryEngine,
-      orchestration: new OrchestrationEngine(taskEngine),
       executor,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_executor_router_codex_no_loop',
-      contextRecaller: new ContextRecaller(db),
-      llmBridge,
+      sessionId: 'sess_no_platform_fallback',
+      planningAgent: stubPlanningAgent(
+        workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
+      ),
     });
 
     session.initialize();
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).not.toContain('改派给 codex-cli 兜底执行同一任务');
-    expect(output).toContain('✗ 执行失败: executor idle timeout');
+    expect(output).toContain('✗ 执行失败');
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
+    expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
   });
 });

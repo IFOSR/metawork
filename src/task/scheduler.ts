@@ -1,3 +1,4 @@
+// Schedules durable tasks, manages dispatch lifecycle, and preempts work when higher-priority tasks arrive.
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { RuntimeState, Task } from '../core/types.js';
 import type { TaskEngine } from './task-engine.js';
@@ -22,6 +23,7 @@ export interface DispatchContext<TExecutionRequest = unknown> {
   missingExecutionRequest?: boolean;
 }
 
+/** Coordinates task queue selection, executor dispatch tracking, and preemption decisions. */
 export class SchedulerEngine<TExecutionRequest = unknown> {
   private lastEvent: string | null = null;
   private activeDispatches = new Set<Promise<void>>();
@@ -61,6 +63,12 @@ export class SchedulerEngine<TExecutionRequest = unknown> {
 
   markDispatchStarted(taskId: string, executionId: string): void {
     this.activeDispatchIds.set(taskId, executionId);
+  }
+
+  clearDispatch(taskId: string, reason: string): void {
+    this.activeDispatchIds.delete(taskId);
+    this.queuedExecution.delete(taskId);
+    this.lastEvent = `task #${taskId} dispatch cleared: ${reason}`;
   }
 
   async markDispatchFinished(taskId: string, result: TaskDispatchResult): Promise<void> {

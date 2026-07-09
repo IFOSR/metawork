@@ -6,6 +6,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { SessionPersistenceService } from '../../src/session/session-persistence-service.js';
 import { MemoryCaptureService } from '../../src/memory/memory-capture-service.js';
 import { TaskResumePlanner } from '../../src/task/task-resume-planner.js';
+import { taskControlPlan } from '../support/planning-agent-plans.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { ObservationRepo } from '../../src/storage/observation-repo.js';
@@ -14,10 +15,8 @@ import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
-import { TaskSemanticService } from '../../src/task/task-semantic-service.js';
 import { ConversationRuntimeService } from '../../src/execution/conversation-runtime-service.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { ExecutorRouteDecision } from '../../src/core/executor-router.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -37,27 +36,13 @@ function createRuntime(db: Database.Database) {
     abort: vi.fn(),
   };
   const taskRuntimeService = new TaskRuntimeService({ taskEngine, taskRepo, orchestration });
-  const taskSemanticService = new TaskSemanticService({
-    llmBridge: {},
-    timeoutMs: () => 50,
-  });
-  return { taskRepo, taskEngine, taskRuntimeService, taskSemanticService };
+  return { taskRepo, taskEngine, taskRuntimeService };
 }
 
 describe('session extraction services', () => {
-  it('persists interactions and route event results outside MetaclawSession', () => {
+  it('persists interactions outside MetaclawSession', () => {
     const db = createTestDb();
     const service = new SessionPersistenceService(db);
-    const decision: ExecutorRouteDecision = {
-      selectedExecutor: 'codex-cli',
-      action: 'auto_dispatch',
-      candidates: [],
-      primaryIntent: 'repo_execution',
-      matchedBoundary: ['repo_execution'],
-      rejected: [],
-      reason: 'test route',
-      confidence: 0.9,
-    };
 
     service.recordInteraction({
       taskId: 'task_1',
@@ -66,12 +51,6 @@ describe('session extraction services', () => {
       systemOutput: 'done',
       executorUsed: 'codex-cli',
     });
-    const routeEventId = service.recordRouteEvent({
-      taskId: 'task_1',
-      userInput: 'build it',
-      decision,
-    });
-    service.markRouteEventResult(routeEventId, 'success');
 
     const interaction = db.prepare('SELECT task_id, session_id, user_input, system_output, executor_used FROM interactions').get() as Record<string, string>;
     expect(interaction).toMatchObject({
@@ -81,9 +60,6 @@ describe('session extraction services', () => {
       system_output: 'done',
       executor_used: 'codex-cli',
     });
-    const routeEvent = db.prepare('SELECT id, result FROM executor_route_events').get() as Record<string, string>;
-    expect(routeEvent.id).toBe(routeEventId);
-    expect(routeEvent.result).toBe('success');
   });
 
   it('captures high-confidence preferences, audits auto-capture, and emits notification candidates', () => {
@@ -111,11 +87,10 @@ describe('session extraction services', () => {
     expect(notifier.notifyMemoryCandidate).toHaveBeenCalledTimes(1);
   });
 
-  it('plans resume, blocked recovery, and follow-up decisions without session branching', async () => {
+  it('resumes a planner-pinned parked task and forks a referenced done task without session branching', () => {
     const db = createTestDb();
-    const { taskEngine, taskRuntimeService, taskSemanticService } = createRuntime(db);
-    const sessionStateRepo = { get: vi.fn() };
-    const planner = new TaskResumePlanner({ taskRuntimeService, taskSemanticService, sessionStateRepo });
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
 
     const parked = taskEngine.create({ title: 'parked', goal: 'parked' });
     taskEngine.transition(parked.id, 'ready');
@@ -126,10 +101,34 @@ describe('session extraction services', () => {
       nextStep: 'continue',
       pauseReason: 'pause',
     });
-    sessionStateRepo.get.mockReturnValue({ lastFocusedTaskId: parked.id, lastCompletedTaskId: null });
-    const resume = await planner.planLastTaskContinuation('继续刚才的任务');
+    // The planner already selected the parked task by taskId; runtime only
+    // executes the deterministic resume (no keyword/session-pointer guessing).
+    const resume = planner.planReferencedTask({
+      userInput: `继续任务 ${parked.id}`,
+      referencedTask: taskRuntimeService.findTask(parked.id)!,
+      plan: taskControlPlan({ control: 'resume_task', taskId: parked.id, reason: 'resume parked' }),
+    });
     expect(resume.action).toBe('execute_existing');
     expect(resume.action === 'execute_existing' ? resume.executionMode : null).toBe('resume-parked');
+
+    const doneTask = taskEngine.create({ title: 'done', goal: 'done' });
+    taskEngine.transition(doneTask.id, 'ready');
+    taskEngine.transition(doneTask.id, 'running');
+    const done = taskEngine.transition(doneTask.id, 'done');
+    expect(planner.planReferencedTask({
+      userInput: '基于它继续做',
+      referencedTask: done,
+      plan: taskControlPlan({ control: 'resume_task', taskId: done.id, reason: 'reference' }),
+    }).action).toBe('fork_follow_up');
+  });
+
+  it.each([
+    { control: 'recover_blocked' as const, reason: 'explicit blocked resume' },
+    { control: 'resume_task' as const, reason: 'resume the blocked task' },
+  ])('unblocks a planner-pinned blocked task on $control with material extraction', ({ control, reason }) => {
+    const db = createTestDb();
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
 
     const blocked = taskEngine.create({ title: 'blocked', goal: 'blocked' });
     taskEngine.transition(blocked.id, 'ready');
@@ -140,66 +139,66 @@ describe('session extraction services', () => {
       description: '等待材料',
       status: 'waiting',
     });
-    const recovery = planner.planBlockedRecovery('材料已补充，可以继续');
-    expect(recovery.action).toBe('unblock_and_execute');
-
     const blockedSnapshot = taskRuntimeService.findTask(blocked.id);
     expect(blockedSnapshot?.status).toBe('blocked');
-    const referencedBlockedRecovery = planner.planReferencedTask({
-      userInput: `执行阻塞任务 ${blocked.id}`,
-      referencedTask: blockedSnapshot!,
-      intentDecision: {
-        interactionType: 'task_control',
-        confidence: 1,
-        reason: 'explicit blocked resume',
-        clarificationQuestion: null,
-        risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-        task: { binding: 'reference', taskId: blocked.id, control: 'recover_blocked', scope: null },
-        execution: {
-          mode: 'none',
-          complexity: 'simple',
-          selectedExecutor: null,
-          candidateExecutors: [],
-          requiresVerification: false,
-          canModifyFiles: false,
-          requiresExternalGateway: false,
-          capabilityClass: 'conversation',
-        },
-        hints: [],
-      },
-    });
-    expect(referencedBlockedRecovery.action).toBe('unblock_and_execute');
-    expect(referencedBlockedRecovery.action === 'unblock_and_execute'
-      ? referencedBlockedRecovery.observeResumeIntent
-      : null).toBe(true);
 
-    const doneTask = taskEngine.create({ title: 'done', goal: 'done' });
-    taskEngine.transition(doneTask.id, 'ready');
-    taskEngine.transition(doneTask.id, 'running');
-    const done = taskEngine.transition(doneTask.id, 'done');
-    expect(planner.planReferencedTask({
-      userInput: '基于它继续做',
-      referencedTask: done,
-      intentDecision: {
-        interactionType: 'task_control',
-        confidence: 1,
-        reason: 'reference',
-        clarificationQuestion: null,
-        risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-        task: { binding: 'reference', taskId: done.id, control: 'resume_task', scope: null },
-        execution: {
-          mode: 'none',
-          complexity: 'simple',
-          selectedExecutor: null,
-          candidateExecutors: [],
-          requiresVerification: false,
-          canModifyFiles: false,
-          requiresExternalGateway: false,
-          capabilityClass: 'conversation',
-        },
-        hints: [],
-      },
-    }).action).toBe('fork_follow_up');
+    const recovery = planner.planReferencedTask({
+      userInput: `材料已补充，可以继续 ${blocked.id}`,
+      referencedTask: blockedSnapshot!,
+      plan: taskControlPlan({ control, taskId: blocked.id, reason }),
+    });
+    expect(recovery.action).toBe('unblock_and_execute');
+    expect(recovery.action === 'unblock_and_execute'
+      ? recovery.observeResumeIntent
+      : null).toBe(true);
+  });
+
+  it('reports a running planner-pinned task as already executing instead of re-queueing it', () => {
+    const db = createTestDb();
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
+
+    const task = taskEngine.create({ title: 'running', goal: 'running' });
+    taskEngine.transition(task.id, 'ready');
+    const running = taskEngine.transition(task.id, 'running');
+
+    const result = planner.planReferencedTask({
+      userInput: `恢复任务 ${task.id}`,
+      referencedTask: running,
+      plan: taskControlPlan({ control: 'resume_task', taskId: task.id, reason: 'resume running' }),
+    });
+
+    expect(result.action).toBe('message');
+    expect(result.action === 'message' ? result.lines.join('\n') : '').toContain('已在执行中');
+  });
+
+  it('surfaces an error for a blocked task with no waiting dependency instead of force-unblocking it', () => {
+    const db = createTestDb();
+    const { taskEngine, taskRuntimeService } = createRuntime(db);
+    const planner = new TaskResumePlanner({ taskRuntimeService });
+
+    const task = taskEngine.create({ title: 'blocked-no-dep', goal: 'blocked-no-dep' });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    // Blocked but with no *waiting* dependency to clear (already-resolved dep):
+    // a resume has nothing to unblock, so it must not silently push the task on.
+    taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: 'resolved out-of-band',
+      status: 'resolved',
+    });
+    const blocked = taskRuntimeService.findTask(task.id)!;
+    expect(blocked.status).toBe('blocked');
+
+    const result = planner.planReferencedTask({
+      userInput: `网络好了，继续 ${task.id}`,
+      referencedTask: blocked,
+      plan: taskControlPlan({ control: 'recover_blocked', taskId: task.id, reason: 'resume blocked' }),
+    });
+
+    expect(result.action).toBe('message');
+    expect(result.action === 'message' ? result.lines.join('\n') : '').toContain('错误');
   });
 
   it('runs normal conversation through a core runtime service and persists successful turns', async () => {
