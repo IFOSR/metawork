@@ -1,21 +1,12 @@
 import type { AgentClass } from '../core/types.js';
-import type { CapabilityClass } from '../core/capability-class.js';
-import { isCapabilityClass } from '../core/capability-class.js';
 import { extractJsonObject } from '../core/llm-json.js';
 import { generateInteractionId } from '../utils/id.js';
+import { applyContextDefaults, PLANNER_SOURCE, PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import { validatePlanningAgentPlan } from './planning-agent-plan-validator.js';
 import type { PlanningAgent } from './planning-agent.js';
 import type {
-  IntentExecutionComplexity,
-  IntentExecutionMode,
-  IntentRiskLevel,
-  IntentTaskBinding,
-  IntentTaskControl,
-  PlanningAction,
   PlanningAgentPlan,
   PlanningContext,
-  SubtaskProposal,
-  WorkGraphProposal,
 } from './planning-types.js';
 
 export interface CodexPlanningAgentDeps {
@@ -24,27 +15,7 @@ export interface CodexPlanningAgentDeps {
   };
 }
 
-const PLANNER_SOURCE = 'codex-planner';
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-const ACTIONS = new Set<PlanningAction>([
-  'direct_reply',
-  'clarification',
-  'task_control',
-  'plan_work_graph',
-  'no_action',
-]);
-const TASK_BINDINGS = new Set<IntentTaskBinding>(['new', 'reference', 'none']);
-const TASK_CONTROLS = new Set<IntentTaskControl>([
-  'clear_tasks',
-  'status_query',
-  'resume_task',
-  'recover_blocked',
-  'none',
-]);
-const EXECUTION_MODES = new Set<IntentExecutionMode>(['none', 'single_executor', 'multi_executor']);
-const COMPLEXITIES = new Set<IntentExecutionComplexity>(['simple', 'moderate', 'complex']);
-const RISK_LEVELS = new Set<IntentRiskLevel>(['low', 'medium', 'high']);
 
 /**
  * Real planner adapter: prompts Codex CLI (via LlmBridge) for a PlanningAgentPlan
@@ -74,7 +45,12 @@ export class CodexPlanningAgent implements PlanningAgent {
 
       let candidate: PlanningAgentPlan;
       try {
-        candidate = this.coerceToPlan(extractJsonObject(raw), context);
+        const parsed = PlanningAgentPlanSchema.safeParse(extractJsonObject(raw));
+        if (!parsed.success) {
+          lastErrors = parsed.error.issues.map(issue => issue.message);
+          continue;
+        }
+        candidate = applyContextDefaults(parsed.data, context);
       } catch {
         lastErrors = ['planner output was not a parseable JSON object'];
         continue;
@@ -90,119 +66,6 @@ export class CodexPlanningAgent implements PlanningAgent {
     return this.conservativeFallbackPlan(
       `Codex planner 输出未通过校验，保守降级为普通对话：${lastErrors.join('; ')}`,
     );
-  }
-
-  private coerceToPlan(raw: unknown, context: PlanningContext): PlanningAgentPlan {
-    if (!raw || typeof raw !== 'object') {
-      throw new Error('planner output was not a JSON object');
-    }
-    const value = raw as Record<string, unknown>;
-    const action = ACTIONS.has(value.action as PlanningAction) ? (value.action as PlanningAction) : 'clarification';
-    const task = (value.task && typeof value.task === 'object' ? value.task : {}) as Record<string, unknown>;
-    const execution = (value.execution && typeof value.execution === 'object' ? value.execution : {}) as Record<string, unknown>;
-    const risk = (value.risk && typeof value.risk === 'object' ? value.risk : {}) as Record<string, unknown>;
-    const response = (value.response && typeof value.response === 'object' ? value.response : {}) as Record<string, unknown>;
-
-    const capabilityClass = isCapabilityClass(value.capabilityClass)
-      ? value.capabilityClass
-      : this.coerceCapabilityClass(execution.capabilityClass, action);
-
-    return {
-      id: asString(value.id) || `plan_${generateInteractionId()}`,
-      schemaVersion: 1,
-      action,
-      confidence: clampConfidence(value.confidence),
-      reason: asString(value.reason) || 'codex planner decision',
-      clarificationQuestion: asString(value.clarificationQuestion) || null,
-      response: {
-        directReply: asString(response.directReply) || null,
-      },
-      task: {
-        binding: TASK_BINDINGS.has(task.binding as IntentTaskBinding) ? (task.binding as IntentTaskBinding) : 'none',
-        taskId: asString(task.taskId) || null,
-        control: TASK_CONTROLS.has(task.control as IntentTaskControl) ? (task.control as IntentTaskControl) : 'none',
-        scope: asString(task.scope) || null,
-        title: asString(task.title) || (action === 'plan_work_graph' ? context.userInput.slice(0, 50) : null),
-        goal: asString(task.goal) || (action === 'plan_work_graph' ? context.userInput : null),
-        includeRecentConversationContext: task.includeRecentConversationContext === true,
-      },
-      execution: {
-        mode: EXECUTION_MODES.has(execution.mode as IntentExecutionMode)
-          ? (execution.mode as IntentExecutionMode)
-          : action === 'plan_work_graph' ? 'single_executor' : 'none',
-        complexity: COMPLEXITIES.has(execution.complexity as IntentExecutionComplexity)
-          ? (execution.complexity as IntentExecutionComplexity)
-          : 'simple',
-        selectedExecutor: asString(execution.selectedExecutor) || null,
-        candidateExecutors: asStringArray(execution.candidateExecutors),
-        requiresVerification: execution.requiresVerification === true,
-        canModifyFiles: execution.canModifyFiles === true && context.allowFileModification,
-        requiresExternalGateway: execution.requiresExternalGateway === true,
-        capabilityClass,
-        matchedBoundary: asStringArray(execution.matchedBoundary),
-      },
-      risk: {
-        level: RISK_LEVELS.has(risk.level as IntentRiskLevel) ? (risk.level as IntentRiskLevel) : 'low',
-        requiresConfirmation: risk.requiresConfirmation === true,
-        reasons: asStringArray(risk.reasons),
-      },
-      workGraph: action === 'plan_work_graph'
-        ? this.coerceWorkGraph(value.workGraph, context, capabilityClass)
-        : null,
-      source: PLANNER_SOURCE,
-    };
-  }
-
-  private coerceWorkGraph(
-    raw: unknown,
-    context: PlanningContext,
-    capabilityClass: CapabilityClass,
-  ): WorkGraphProposal {
-    const value = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    const rawSubtasks = Array.isArray(value.subtasks) ? value.subtasks : [];
-    const subtasks = rawSubtasks
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-      .map((item, index) => this.coerceSubtask(item, index, context, capabilityClass));
-    return {
-      reason: asString(value.reason) || 'codex planner proposed work graph',
-      subtasks,
-    };
-  }
-
-  private coerceSubtask(
-    raw: Record<string, unknown>,
-    index: number,
-    context: PlanningContext,
-    capabilityClass: CapabilityClass,
-  ): SubtaskProposal {
-    const candidateAgentClasses = asStringArray(raw.candidateAgentClasses);
-    const hint = asString(raw.agentClassHint) || null;
-    // For enum fields the validator can reject, only substitute a default when
-    // the field is genuinely absent. A present-but-invalid value is preserved so
-    // validatePlanningAgentPlan rejects it and the planner triggers a repair
-    // retry, rather than silently rewriting a wrong agent/output/risk intent.
-    return {
-      id: asString(raw.id) || `subtask_${index + 1}`,
-      title: asString(raw.title) || context.userInput.slice(0, 50) || 'Execute task',
-      goal: asString(raw.goal) || context.userInput,
-      dependsOn: asStringArray(raw.dependsOn),
-      requiredAgentClassKind: enumOrRaw<SubtaskProposal['requiredAgentClassKind']>(raw.requiredAgentClassKind, 'executor'),
-      agentClassHint: hint,
-      candidateAgentClasses,
-      expectedOutput: enumOrRaw<SubtaskProposal['expectedOutput']>(
-        raw.expectedOutput,
-        capabilityClass === 'code_edit' ? 'patch' : 'summary',
-      ),
-      acceptance: asStringArray(raw.acceptance),
-      riskLevel: enumOrRaw<SubtaskProposal['riskLevel']>(raw.riskLevel, 'low'),
-    };
-  }
-
-  private coerceCapabilityClass(value: unknown, action: PlanningAction): CapabilityClass {
-    if (isCapabilityClass(value)) {
-      return value;
-    }
-    return action === 'plan_work_graph' ? 'general' : 'conversation';
   }
 
   private conservativeFallbackPlan(reason: string): PlanningAgentPlan {
@@ -368,28 +231,6 @@ const PLAN_SCHEMA_EXAMPLE = {
     ],
   },
 };
-
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-// Substitute `fallback` only when the field is genuinely absent. A present but
-// invalid value is passed through unchanged so validatePlanningAgentPlan can
-// reject it (triggering a repair retry) instead of being silently defaulted.
-function enumOrRaw<T>(raw: unknown, fallback: T): T {
-  return raw === undefined || raw === null || raw === '' ? fallback : (raw as T);
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string');
-}
-
-function clampConfidence(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric)) return 0;
-  return Math.max(0, Math.min(1, numeric));
-}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout | null = null;

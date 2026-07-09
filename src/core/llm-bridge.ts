@@ -1,7 +1,9 @@
 // Process-based LLM adapter plus legacy semantic prompt schemas used by older routing paths.
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
+import { z } from 'zod';
 import type { MemoryApplicabilityAction, TaskStatus } from './types.js';
+import { extractJsonObject } from './llm-json.js';
 import { buildCodexNonInteractiveArgs } from '../executor/codex-args.js';
 
 export interface TaskSummary {
@@ -264,27 +266,25 @@ export class LlmBridge {
 
   private parseTaskResumeIntentResult(raw: string): TaskResumeIntentResult {
     try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      const confidence = typeof parsed.confidence === 'number'
-        ? Math.max(0, Math.min(1, parsed.confidence))
-        : 0;
-      if (parsed.action === 'resume') {
+      const parsed = ResumeIntentSchema.safeParse(extractJsonObject(raw));
+      if (!parsed.success) {
+        return { action: 'none', taskId: null, reason: 'resume intent 解析失败，fallback', confidence: 0 };
+      }
+
+      if (parsed.data.action === 'resume') {
         return {
           action: 'resume',
-          taskId: typeof parsed.taskId === 'string' ? parsed.taskId : null,
-          reason: typeof parsed.reason === 'string' ? parsed.reason : 'LLM 语义判断恢复已有任务',
-          confidence,
+          taskId: parsed.data.taskId ?? null,
+          reason: parsed.data.reason ?? 'LLM 语义判断恢复已有任务',
+          confidence: parsed.data.confidence,
         };
       }
-      if (parsed.action === 'none') {
-        return {
-          action: 'none',
-          taskId: null,
-          reason: typeof parsed.reason === 'string' ? parsed.reason : 'LLM 语义判断不是恢复任务',
-          confidence,
-        };
-      }
+      return {
+        action: 'none',
+        taskId: null,
+        reason: parsed.data.reason ?? 'LLM 语义判断不是恢复任务',
+        confidence: parsed.data.confidence,
+      };
     } catch {}
 
     return { action: 'none', taskId: null, reason: 'resume intent 解析失败，fallback', confidence: 0 };
@@ -292,45 +292,19 @@ export class LlmBridge {
 
   private parseRankResult(raw: string): string[] {
     try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed)) return parsed.filter(id => typeof id === 'string');
+      return RankSchema.parse(extractJsonObject(raw));
     } catch {}
     return [];
   }
 
   private parsePreferenceRecallResult(raw: string, validIds: Set<string>): PreferenceRecallDecision[] {
     try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-
-      return parsed
+      return PreferenceRecallArraySchema
+        .parse(extractJsonObject(raw))
         .map((item): PreferenceRecallDecision | null => {
-          const preferenceId = typeof item?.preferenceId === 'string'
-            ? item.preferenceId
-            : typeof item?.id === 'string'
-              ? item.id
-              : null;
-          if (!preferenceId || !validIds.has(preferenceId)) {
-            return null;
-          }
-
-          const rawScore = typeof item?.score === 'number' ? item.score : undefined;
-          const score = rawScore === undefined
-            ? undefined
-            : Math.max(0, Math.min(1, rawScore));
-
-          return {
-            preferenceId,
-            reason: typeof item?.reason === 'string' && item.reason.trim()
-              ? item.reason.trim()
-              : 'executor 判定当前偏好适用',
-            score,
-            action: this.parsePreferenceRecallAction(item?.action),
-          };
+          const parsed = PreferenceRecallItemSchema.safeParse(item);
+          if (!parsed.success || !validIds.has(parsed.data.preferenceId)) return null;
+          return parsed.data;
         })
         .filter((item): item is PreferenceRecallDecision => Boolean(item));
     } catch {}
@@ -338,22 +312,10 @@ export class LlmBridge {
     return [];
   }
 
-  private parsePreferenceRecallAction(value: unknown): MemoryApplicabilityAction | undefined {
-    return value === 'auto_apply' || value === 'ask_review' || value === 'suppress'
-      ? value
-      : undefined;
-  }
-
   private parseTaskPriorityResult(raw: string): TaskPriorityResult {
     try {
-      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (parsed.priority === 'normal' || parsed.priority === 'high' || parsed.priority === 'urgent') {
-        return {
-          priority: parsed.priority,
-          reason: typeof parsed.reason === 'string' ? parsed.reason : 'LLM 语义优先级判断',
-        };
-      }
+      const parsed = PrioritySchema.safeParse(extractJsonObject(raw));
+      if (parsed.success) return parsed.data;
     } catch {}
 
     return { priority: 'normal', reason: 'priority 解析失败，fallback normal' };
@@ -379,6 +341,78 @@ export class LlmBridge {
       : { action: 'none', taskId: null, reason: 'LLM 返回了无效恢复任务 ID，fallback', confidence: 0 };
   }
 }
+
+const ClampedConfidence = z.preprocess((value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(1, numeric));
+}, z.number());
+
+const ClampedScore = z.preprocess((value) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return undefined;
+  return Math.max(0, Math.min(1, numeric));
+}, z.number().optional());
+
+const OptionalString = z.preprocess(
+  value => typeof value === 'string' ? value : undefined,
+  z.string().optional(),
+);
+
+const NullableString = z.preprocess(
+  value => typeof value === 'string' ? value : null,
+  z.string().nullable().optional(),
+);
+
+const PrioritySchema = z.object({
+  priority: z.enum(['normal', 'high', 'urgent']),
+  reason: z.preprocess(
+    value => typeof value === 'string' ? value : 'LLM 语义优先级判断',
+    z.string(),
+  ),
+});
+
+const RankSchema = z.preprocess(
+  value => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [],
+  z.array(z.string()),
+);
+
+const ResumeIntentSchema = z.object({
+  action: z.enum(['resume', 'none']),
+  taskId: NullableString,
+  reason: OptionalString,
+  confidence: ClampedConfidence,
+});
+
+const PreferenceRecallReasonSchema = z.preprocess(
+  value => typeof value === 'string' && value.trim() ? value.trim() : 'executor 判定当前偏好适用',
+  z.string(),
+);
+
+const PreferenceRecallActionSchema = z.preprocess(
+  value => value === 'auto_apply' || value === 'ask_review' || value === 'suppress' ? value : undefined,
+  z.enum(['auto_apply', 'ask_review', 'suppress']).optional(),
+);
+
+const PreferenceRecallItemSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object') return value;
+  const item = value as Record<string, unknown>;
+  return {
+    ...item,
+    preferenceId: typeof item.preferenceId === 'string' ? item.preferenceId : item.id,
+  };
+}, z.object({
+  preferenceId: z.string(),
+  reason: PreferenceRecallReasonSchema,
+  score: ClampedScore,
+  action: PreferenceRecallActionSchema as z.ZodType<MemoryApplicabilityAction | undefined>,
+}));
+
+const PreferenceRecallArraySchema = z.preprocess(
+  value => Array.isArray(value) ? value : [],
+  z.array(z.unknown()),
+);
 
 function summarizeProcessText(value: string): string {
   return value

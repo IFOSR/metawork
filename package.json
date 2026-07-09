@@ -25,7 +25,8 @@
     "js-yaml": "^4.1.0",
     "nanoid": "^5.0.0",
     "pino": "^9.0.0",
-    "react": "^18.3.0"
+    "react": "^18.3.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

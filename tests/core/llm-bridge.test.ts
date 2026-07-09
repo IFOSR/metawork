@@ -38,6 +38,26 @@ describe('LlmBridge', () => {
       });
     });
 
+    it('parses resume defaults without falling back when optional fields are missing', () => {
+      const bridge = new LlmBridge('claude');
+      const result = (bridge as any).parseTaskResumeIntentResult('{"action":"resume","confidence":"0.91"}');
+
+      expect(result.action).toBe('resume');
+      expect(result.taskId).toBeNull();
+      expect(result.confidence).toBe(0.91);
+      expect(result.reason).toBeTruthy();
+      expect(result.reason).not.toContain('fallback');
+    });
+
+    it('clamps resume confidence values', () => {
+      const bridge = new LlmBridge('claude');
+      const result = (bridge as any).parseTaskResumeIntentResult('{"action":"none","confidence":1.5}');
+
+      expect(result.action).toBe('none');
+      expect(result.taskId).toBeNull();
+      expect(result.confidence).toBe(1);
+    });
+
     it('falls back to none when no parked or blocked candidates exist', async () => {
       const bridge = new LlmBridge('claude');
       const querySpy = vi.spyOn(bridge, 'query');
@@ -72,6 +92,14 @@ describe('LlmBridge', () => {
         reason: '用户语义上要求先处理临时任务',
       });
     });
+
+    it('falls back the whole priority result for invalid priority values', () => {
+      const bridge = new LlmBridge('claude');
+      const result = (bridge as any).parseTaskPriorityResult('{"priority":"later","reason":"keep me"}');
+
+      expect(result.priority).toBe('normal');
+      expect(result.reason).toContain('fallback normal');
+    });
   });
 
   describe('rankInteractions', () => {
@@ -90,6 +118,12 @@ describe('LlmBridge', () => {
       const bridge = new LlmBridge('claude');
       const ids = (bridge as any).parseRankResult('["int_1", "int_3"]');
       expect(ids).toEqual(['int_1', 'int_3']);
+    });
+
+    it('filters mixed rank arrays instead of dropping the whole result', () => {
+      const bridge = new LlmBridge('claude');
+      const ids = (bridge as any).parseRankResult('["int_1", 7, "int_2", null]');
+      expect(ids).toEqual(['int_1', 'int_2']);
     });
 
     it('解析失败时返回空数组', () => {
@@ -140,6 +174,22 @@ describe('LlmBridge', () => {
           score: 0.8,
         },
       ]);
+    });
+
+    it('keeps valid preference items when aliases and invalid actions are present', () => {
+      const bridge = new LlmBridge('claude');
+      const result = (bridge as any).parsePreferenceRecallResult(
+        '[{"id":"pref_1","reason":"ok","score":"1.5","action":"maybe"},{"preferenceId":"missing","reason":"no"}]',
+        new Set(['pref_1']),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        preferenceId: 'pref_1',
+        reason: 'ok',
+        score: 1,
+      });
+      expect(result[0]!.action).toBeUndefined();
     });
 
     it('returns empty decisions when executor says no preference applies', async () => {

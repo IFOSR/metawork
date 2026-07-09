@@ -132,6 +132,7 @@ describe('CodexPlanningAgent', () => {
 
   it.each([
     { label: 'invalid expectedOutput', bad: { expectedOutput: 'nonsense' } },
+    { label: 'non-string expectedOutput', bad: { expectedOutput: 1 } },
     { label: 'invalid requiredAgentClassKind', bad: { requiredAgentClassKind: 'wizard' } },
     { label: 'invalid riskLevel', bad: { riskLevel: 'nuclear' } },
   ])('does not silently default a present-but-invalid enum ($label) — it rejects and repairs', async ({ bad }) => {
@@ -157,6 +158,115 @@ describe('CodexPlanningAgent', () => {
     // The invalid enum must NOT be silently coerced to a default on attempt 1;
     // it must fail validation and trigger the repair retry.
     expect(query).toHaveBeenCalledTimes(2);
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('defaults invalid top-level action without triggering repair when the resulting plan is valid', async () => {
+    const invalidActionJson = JSON.stringify({
+      action: 'nonsense',
+      confidence: 0.7,
+      reason: 'x',
+      clarificationQuestion: 'What should MetaClaw do?',
+      task: {},
+      execution: {},
+      risk: {},
+    });
+    const query = vi.fn().mockResolvedValue(invalidActionJson);
+    const agent = new CodexPlanningAgent({ llmBridge: { query } });
+
+    const result = await agent.plan(context());
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.action).toBe('clarification');
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('defaults missing code_edit subtask expectedOutput to patch', async () => {
+    const missingExpectedOutputJson = JSON.stringify({
+      action: 'plan_work_graph',
+      confidence: 0.9,
+      reason: 'x',
+      capabilityClass: 'code_edit',
+      task: { binding: 'new' },
+      execution: { mode: 'single_executor' },
+      risk: { level: 'low' },
+      workGraph: {
+        reason: 'one',
+        subtasks: [{
+          id: 'a', title: 't', goal: 'g', dependsOn: [],
+          requiredAgentClassKind: 'executor', candidateAgentClasses: ['codex-cli'],
+          acceptance: ['ok'], riskLevel: 'low',
+        }],
+      },
+    });
+    const query = vi.fn().mockResolvedValue(missingExpectedOutputJson);
+    const agent = new CodexPlanningAgent({ llmBridge: { query } });
+
+    const result = await agent.plan(context());
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.workGraph?.subtasks[0]!.expectedOutput).toBe('patch');
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('resolves capabilityClass from execution when the top-level field is absent', async () => {
+    // No top-level capabilityClass — the resolver must fall back to
+    // execution.capabilityClass before the action-based default.
+    const executionCapabilityJson = JSON.stringify({
+      action: 'plan_work_graph',
+      confidence: 0.9,
+      reason: 'x',
+      task: { binding: 'new' },
+      execution: { mode: 'single_executor', capabilityClass: 'code_edit' },
+      risk: { level: 'low' },
+      workGraph: {
+        reason: 'one',
+        subtasks: [{
+          id: 'a', title: 't', goal: 'g', dependsOn: [],
+          requiredAgentClassKind: 'executor', candidateAgentClasses: ['codex-cli'],
+          acceptance: ['ok'], riskLevel: 'low',
+        }],
+      },
+    });
+    const query = vi.fn().mockResolvedValue(executionCapabilityJson);
+    const agent = new CodexPlanningAgent({ llmBridge: { query } });
+
+    const result = await agent.plan(context());
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.execution.capabilityClass).toBe('code_edit');
+    // code_edit must flow through to the subtask expectedOutput cross-field default.
+    expect(result.workGraph?.subtasks[0]!.expectedOutput).toBe('patch');
+    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('silently defaults a present-but-invalid top-level capabilityClass without triggering repair', async () => {
+    // Unlike subtask enums, an invalid top-level capabilityClass must be
+    // coerced to the action-based default (general) rather than rejected.
+    const invalidCapabilityJson = JSON.stringify({
+      action: 'plan_work_graph',
+      confidence: 0.9,
+      reason: 'x',
+      capabilityClass: 'weird',
+      task: { binding: 'new' },
+      execution: { mode: 'single_executor' },
+      risk: { level: 'low' },
+      workGraph: {
+        reason: 'one',
+        subtasks: [{
+          id: 'a', title: 't', goal: 'g', dependsOn: [],
+          requiredAgentClassKind: 'executor', candidateAgentClasses: ['codex-cli'],
+          expectedOutput: 'summary', acceptance: ['ok'], riskLevel: 'low',
+        }],
+      },
+    });
+    const query = vi.fn().mockResolvedValue(invalidCapabilityJson);
+    const agent = new CodexPlanningAgent({ llmBridge: { query } });
+
+    const result = await agent.plan(context());
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.execution.capabilityClass).toBe('general');
     expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
   });
 
