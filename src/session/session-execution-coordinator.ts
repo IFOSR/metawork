@@ -22,7 +22,7 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkUnitClaim, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
-import type { AcceptanceCriterion } from '../core/execution-strategy-planner.js';
+import type { AcceptanceCriterion } from '../execution/execution-aggregator.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
 import type { PlanningAction } from '../planning/planning-types.js';
 

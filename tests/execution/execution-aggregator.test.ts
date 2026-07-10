@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ExecutionAggregator } from '../../src/execution/execution-aggregator.js';
-import type { AggregationPlan, ExecutionSubtask } from '../../src/core/execution-strategy-planner.js';
-import type { SubtaskResult } from '../../src/execution/multi-executor-orchestrator.js';
+import {
+  ExecutionAggregator,
+  type AggregationPlan,
+  type ExecutionSubtask,
+  type SubtaskResult,
+} from '../../src/execution/execution-aggregator.js';
 
 function createUnit(overrides: Partial<ExecutionSubtask>): ExecutionSubtask {
   return {

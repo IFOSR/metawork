@@ -11,8 +11,11 @@ import {
   VerificationAndDeliveryService,
   extractConciseExecutorSummary,
 } from '../../src/delivery/verification-and-delivery-service.js';
-import type { AggregationPlan, ExecutionSubtask } from '../../src/core/execution-strategy-planner.js';
-import type { SubtaskResult } from '../../src/execution/multi-executor-orchestrator.js';
+import type {
+  AggregationPlan,
+  ExecutionSubtask,
+  SubtaskResult,
+} from '../../src/execution/execution-aggregator.js';
 
 function createAggregationSubtask(overrides: Partial<ExecutionSubtask>): ExecutionSubtask {
   return {

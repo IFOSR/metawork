@@ -801,18 +801,9 @@ MetaClaw can represent complex requests as a work graph instead of a single undi
 - `single_executor`: one executor is enough.
 - `multi_executor`: split the request into subtasks with executor hints, dependencies, inputs, expected output type, risk level, and acceptance checks.
 
-The planner uses complexity signals such as explicit multi-agent wording, multiple capability domains, staged dependencies, high-risk validation, multiple resources, and relevant historical tasks. In the active session path, these strategy units become persisted `Subtask` nodes only after `PolicyKernel` accepts or rewrites the plan. The dispatcher then claims and executes ready subtasks serially in dependency order.
+The planner proposes the work graph directly. In the active session path, proposed nodes become persisted `Subtask` records only after `PolicyKernel` accepts or rewrites the plan. `WorkGraphRuntimeService` recovers the approved graph, and the dispatcher claims and executes ready subtasks serially in dependency order.
 
-For multi-executor strategies, the Agentic Loop core is:
-
-1. Run subtasks through `MultiExecutorOrchestrator`.
-2. Aggregate results with `ExecutionAggregator`.
-3. Check required evidence: user request coverage, patch test evidence, research sources, artifact paths, review verdicts, missing subtasks, and cross-unit conflicts.
-4. If verification passes, produce the final aggregated result.
-5. If verification has concerns, append targeted feedback to failed subtasks and retry until the strategy passes or reaches `maxIterations`.
-6. If it still fails, return `blocked` with the reason instead of silently shipping an unverified result.
-
-This is the acceptance layer for agentic work: executor output is not treated as final just because a worker returned text. The core modules are implemented and tested. The active session path currently uses persisted subtasks plus serial work-unit dispatch; deeper automatic retry, reviewer, and fallback behavior is intentionally staged behind planner replanning.
+The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 
 ## Executors Vs Skills
 
@@ -954,7 +945,7 @@ src/
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), the `llm-bridge`, `RuleHintsProvider`, and strategy primitives (`ExecutionStrategyPlanner`, `CapabilityClass`, `task-routing`). The legacy routing/intent subsystem (`IntentOrchestrator`, `SemanticIntentRouter`, `ExecutorRouter`, `ExecutionPlanningService`, `ExecutionPolicyPlanner`, `src/planner/*`) has been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), the `llm-bridge`, `RuleHintsProvider`, `CapabilityClass`, and `task-routing`. The legacy routing/intent subsystem (`IntentOrchestrator`, `SemanticIntentRouter`, `ExecutorRouter`, `ExecutionPlanningService`, `ExecutionPolicyPlanner`, `ExecutionStrategyPlanner`, `src/planner/*`) has been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
 
 ## License
 

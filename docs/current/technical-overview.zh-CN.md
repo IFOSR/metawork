@@ -824,18 +824,9 @@ MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一
 - `single_executor`：任务足够集中，一个 executor 可以完成。
 - `multi_executor`：任务被拆成多个 subtasks，每个 subtask 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
 
-触发复杂策略的信号包括：用户明确要求多 agent 或多视角、任务横跨多个能力域、存在先后阶段依赖、涉及高风险验证、包含多个资源或命中多个相关历史任务。在 active session path 中，这些 strategy units 只有在 `PolicyKernel` accept 或 rewrite 后才会变成持久化 `Subtask` 节点；dispatcher 再按依赖顺序 claim 并执行 ready subtasks。
+planner 直接提出 work graph。在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会变成持久化 `Subtask` 节点。`WorkGraphRuntimeService` 恢复已批准的工作图，dispatcher 再按依赖顺序串行 claim 并执行 ready subtasks。
 
-Agentic Loop 核心流程：
-
-1. `MultiExecutorOrchestrator` 执行 subtasks，可串行也可并行。
-2. `ExecutionAggregator` 汇总各 executor 结果。
-3. 检查验收证据：是否满足用户原始需求，patch 是否有测试证据，调研是否有来源，artifact 是否有路径，review 是否有 pass/concerns，是否缺少 subtask，多个结果之间是否冲突。
-4. 如果验收通过，输出最终聚合结果。
-5. 如果验收有 concerns，把针对性反馈追加回失败的 subtasks 并重试。
-6. 如果达到最大迭代仍未通过，返回 `blocked` 和原因，而不是把未验收的结果交付给用户。
-
-这就是 MetaClaw 对 agentic work 的验收层：executor 返回文本不等于任务完成。核心模块已经实现并有针对性测试覆盖。当前 active session path 使用持久化 subtasks 和串行 work-unit dispatch；更深入的自动重试、reviewer 和 fallback 行为会在 planner replanning 后续阶段逐步接入。
+已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
 ## 记忆和召回审查
 
@@ -938,7 +929,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、`llm-bridge`、`RuleHintsProvider`、策略基础（`ExecutionStrategyPlanner`、`CapabilityClass`、`task-routing`）。旧路由/意图子系统（`IntentOrchestrator`、`SemanticIntentRouter`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionPolicyPlanner`、`src/planner/*`）已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、`llm-bridge`、`RuleHintsProvider`、`CapabilityClass` 和 `task-routing`。旧路由/意图子系统（`IntentOrchestrator`、`SemanticIntentRouter`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionPolicyPlanner`、`ExecutionStrategyPlanner`、`src/planner/*`）已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
 
 ## License
 

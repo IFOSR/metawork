@@ -10,7 +10,7 @@ import { OpenClawAdapter } from '../executor/openclaw.js';
 import { PiAgentAdapter } from '../executor/pi-agent.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { AgentClass, Config, ExecutionContextBundleV2, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
-import type { SubtaskResult } from './multi-executor-orchestrator.js';
+import type { SubtaskResult } from './execution-aggregator.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.

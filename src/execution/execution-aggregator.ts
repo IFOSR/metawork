@@ -1,6 +1,47 @@
 // Aggregates subtask executor outputs, verifies expected evidence, and prepares retry feedback.
-import type { AggregationPlan, ExecutionSubtask } from '../core/execution-strategy-planner.js';
-import type { SubtaskResult } from './multi-executor-orchestrator.js';
+
+export interface ExecutionSubtask {
+  id: string;
+  title: string;
+  goal: string;
+  executorHint: string;
+  dependsOn: string[];
+  inputs: {
+    taskId: string;
+    resources: string[];
+    recalledTaskIds: string[];
+  };
+  expectedOutput: 'analysis' | 'patch' | 'artifact' | 'review' | 'summary';
+  acceptance: string[];
+  riskLevel: 'low' | 'medium' | 'high';
+}
+
+export interface AcceptanceCriterion {
+  id: string;
+  description: string;
+  requiredEvidence: string[];
+  severity: 'must' | 'should';
+  appliesToSubtaskIds: string[];
+}
+
+export interface AggregationPlan {
+  mode: 'summarize' | 'verify_and_summarize';
+  acceptance: string[];
+  criteria: AcceptanceCriterion[];
+  conflictPolicy: 'flag_conflicts' | 'prefer_primary_executor';
+  maxIterations: number;
+}
+
+export interface SubtaskResult {
+  subtaskId: string;
+  executorName: string;
+  status: 'success' | 'failed' | 'timeout' | 'cancelled';
+  output: string;
+  artifacts: string[];
+  error?: string;
+  startedAt: string;
+  finishedAt: string;
+}
 
 export interface ExecutionAggregationInput {
   subtasks: ExecutionSubtask[];
