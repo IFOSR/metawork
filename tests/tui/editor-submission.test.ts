@@ -89,6 +89,23 @@ describe('prepareEditorSubmission', () => {
     }, [], 'codex-cli', true)).toBe('running codex-cli');
   });
 
+  it('shows the active executor for direct replies that are not durable tasks', () => {
+    expect(getComposerStatus({
+      output: [],
+      currentTaskId: null,
+      currentTask: null,
+      runtimeState: {
+        runningTaskId: null,
+        runningExecutorName: 'codex-cli',
+        readyTaskIds: [],
+        parkedTaskIds: [],
+        blockedTaskIds: [],
+        lastEvent: '普通对话由 codex-cli 生成回答',
+      },
+      latestGuidance: null,
+    }, [], 'codex-cli', false)).toBe('running codex-cli');
+  });
+
   it('recalls submitted input history while preserving the current draft', () => {
     let history = createInputHistoryState();
     history = recordInputHistory(history, '第一条任务', { text: '', cursor: 0 });

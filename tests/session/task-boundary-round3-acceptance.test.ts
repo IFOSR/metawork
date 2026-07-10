@@ -45,7 +45,80 @@ function createConfig(): Config {
   };
 }
 
+function createDeferredExecutorResult() {
+  let resolve!: (value: {
+    success: boolean;
+    output: string;
+    exitCode: number;
+    durationMs: number;
+  }) => void;
+  const promise = new Promise<{
+    success: boolean;
+    output: string;
+    exitCode: number;
+    durationMs: number;
+  }>(res => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe('Round 3 task boundary acceptance', () => {
+  it('marks direct replies as active executor work while the executor is still answering', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-direct-reply-runtime-state');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const deferred = createDeferredExecutorResult();
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockImplementation(() => deferred.promise),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn(),
+    } as unknown as LlmBridge;
+
+    const session = new MetaclawSession({
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      executor,
+      db,
+      config: createConfig(),
+      sessionId: 'sess_direct_reply_runtime_state',
+      contextRecaller,
+      llmBridge,
+      planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通问答' })),
+      availableExecutorCommands: new Set(['codex']),
+    });
+
+    session.initialize();
+    const submitPromise = session.submit('怎么还没有给我结果呀', { awaitAsyncWork: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(taskRepo.findAll()).toHaveLength(0);
+    expect(session.getSnapshot().runtimeState).toEqual(expect.objectContaining({
+      runningTaskId: null,
+      runningExecutorName: 'codex-cli',
+      lastEvent: '普通对话由 codex-cli 生成回答',
+    }));
+
+    deferred.resolve({
+      success: true,
+      output: '最终回答',
+      exitCode: 0,
+      durationMs: 100,
+    });
+    await submitPromise;
+
+    expect(session.getSnapshot().runtimeState.runningExecutorName).toBeNull();
+    expect(session.getSnapshot().output.join('\n')).toContain('最终回答');
+  });
+
   it('turns conversation-derived follow-up work into a new task with inherited conversation context', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);

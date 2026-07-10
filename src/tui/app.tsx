@@ -266,6 +266,10 @@ function getComposerStatus(
     return `running ${snapshot.runtimeState.runningExecutorName ?? defaultExecutorName}`;
   }
 
+  if (snapshot.runtimeState.runningExecutorName) {
+    return `running ${snapshot.runtimeState.runningExecutorName}`;
+  }
+
   if (isSubmitting) {
     return 'processing';
   }
@@ -797,7 +801,7 @@ export function App(props: AppProps) {
 
   const renderLines = buildRenderLines(committedOutput);
   const composerStatus = getComposerStatus(snapshot, committedOutput, props.executor.name, isSubmitting);
-  const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
+  const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId || snapshot.runtimeState.runningExecutorName ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
   const latestEvent = `最近事件 ${snapshot.runtimeState.lastEvent ?? '0'}`;
   const waitingHintVisible = shouldShowWaitingHint(snapshot, committedOutput, showWaitingIndicator);
   const commandSuggestions = getCommandSuggestions(editor);

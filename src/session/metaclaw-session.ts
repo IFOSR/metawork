@@ -1001,14 +1001,36 @@ export class MetaclawSession {
   }
 
   private async runConversationInput(userInput: string): Promise<void> {
-    const result = await this.conversationRuntimeService.run({
-      sessionId: this.deps.sessionId,
-      userInput,
-    });
-    if (result.focus) {
-      this.setFocusContext(result.focus);
+    this.setConversationRuntimeState(this.deps.executor.name);
+    try {
+      const result = await this.conversationRuntimeService.run({
+        sessionId: this.deps.sessionId,
+        userInput,
+      });
+      if (result.focus) {
+        this.setFocusContext(result.focus);
+      }
+      this.appendOutput(...result.lines);
+    } finally {
+      this.setConversationRuntimeState(null);
     }
-    this.appendOutput(...result.lines);
+  }
+
+  private setConversationRuntimeState(executorName: string | null): void {
+    const schedulerState = this.scheduler.getRuntimeState();
+    if (schedulerState.runningTaskId) {
+      this.refreshRuntimeState();
+      return;
+    }
+
+    this.runtimeState = {
+      ...schedulerState,
+      runningExecutorName: executorName,
+      lastEvent: executorName
+        ? `普通对话由 ${executorName} 生成回答`
+        : schedulerState.lastEvent,
+    };
+    this.notify();
   }
 
   private dispatchTask(taskId: string, context?: DispatchContext<QueuedExecutionRequest>): Promise<void> {
