@@ -1,6 +1,6 @@
 # zod schema 写法优化清单（第一类：语法地道化）
 
-> 状态：**待做**。基线 `QC` 分支（zod 引入后，见 `docs/plans/2026-07-09-zod-output-normalization-zh.md`）。
+> 状态：**已完成（2026-07-10）**。基线 `QC` 分支（zod 引入后，见 `docs/plans/2026-07-09-zod-output-normalization-zh.md`）。
 >
 > 背景：`2026-07-09` 那轮重构把手写 parse/coerce 换成 zod schema，为了 **1:1 复刻旧行为** 用了不少 `z.preprocess(...)` 绕法。事后复盘发现其中一部分是"重新发明了 zod 原生能力"——可以换成更地道、更短的写法，**行为完全等价**。本文只登记这一类（安全、纯语法）。真正需要动校验架构的"根本优化"（枚举清单在 schema 与 validator 里重复两套）不在此列,见文末。
 
@@ -10,7 +10,7 @@
 - **不改任何 fallback 语义**：现成回归测试已把行为锁死
   （`tests/core/llm-bridge.test.ts`、`tests/planning/codex-planning-agent.test.ts`）。
 - **验收**：`npm run lint` 干净 + Docker 全量测试保持绿
-  （`docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`，当前 738 passed）。
+  （`docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`；完成后为 738 passed、4 skipped、1 todo）。
   每处改完都应无需改测试即通过——这正是"等价"的证明。
 
 ## 清单
@@ -35,12 +35,12 @@ const PreferenceRecallActionSchema =
 
 - 语义等价：`'maybe'` → enum 失败 → `.catch(undefined)`；字段缺省 → `.optional()`。
 - 收益：去掉一层 preprocess，"非法值→兜底"用 `.catch()` 表达本职意图，更直白。
-- 注意：改完后 `PreferenceRecallItemSchema` 里那个 `as z.ZodType<MemoryApplicabilityAction | undefined>` 强转大概率可以去掉（enum 推断已是该联合类型），改时顺手确认 `tsc` 是否还需要它。
+- 实施结果：`PreferenceRecallItemSchema` 中的 `as z.ZodType<MemoryApplicabilityAction | undefined>` 强转已移除，Zod 可以正确推断该联合类型。
 - 锁定测试：`tests/core/llm-bridge.test.ts` "keeps valid preference items when aliases and invalid actions are present"（`action:'maybe'` → undefined 但该项保留）。
 
 ### 2. `StringOrEmptySchema`：`preprocess` 重新发明了 `.catch('')` —— 铺得最广，收益最大
 
-出现在 **两个文件**：`src/core/llm-bridge.ts` 与 `src/planning/planning-agent-plan-schema.ts`（后者 schema.ts:35-38）。planning-agent-plan-schema 里被 `id`/`reason`/`title`/`goal`/subtask 各字段引用十余次。
+实际只出现在 `src/planning/planning-agent-plan-schema.ts`，被 `id`/`reason`/`title`/`goal`/subtask 各字段引用十余次。`src/core/llm-bridge.ts` 中的是语义不同的 `OptionalString`，不在本项范围内。
 
 当前：
 
@@ -85,7 +85,7 @@ return PreferenceRecallArraySchema.parse(extractJsonObject(raw))
 ```ts
 const PreferenceRecallArraySchema = z.preprocess(
   value => Array.isArray(value) ? value : [],
-  z.array(PreferenceRecallItemSchema.catch(null)),   // 坏项→null，不拖垮整组
+  z.array(PreferenceRecallItemSchema.nullable().catch(null)), // 坏项→null，不拖垮整组
 );
 // parser 体：
 return PreferenceRecallArraySchema.parse(extractJsonObject(raw))
@@ -94,7 +94,7 @@ return PreferenceRecallArraySchema.parse(extractJsonObject(raw))
 
 - 职责更清：schema 负责"解析容错"，parser 只留 `validIds` 这个**运行时数据**才需要的过滤。
 - 语义等价：坏项照样丢，好项照样留，白名单照样过滤。
-- 注意：确认 zod v4 里 `PreferenceRecallItemSchema.catch(null)` 的类型推断（元素类型变成 `Item | null`），`.filter` 的类型守卫要相应收窄。
+- Zod v4 要求 `.catch()` 的兜底值属于 schema 输出类型，因此必须先用 `.nullable()` 把 `null` 纳入输出；直接写 `PreferenceRecallItemSchema.catch(null)` 无法通过类型检查。元素类型会推断为 `Item | null`，由 `.filter` 的类型守卫收窄。
 - 锁定测试：同 #1 那条用例（一个合法项保留、一个 `validIds` 不含的项丢弃）。
 
 ## 不在本清单内（本质复杂度，别动）

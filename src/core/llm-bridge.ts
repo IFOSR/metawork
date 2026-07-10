@@ -301,12 +301,9 @@ export class LlmBridge {
     try {
       return PreferenceRecallArraySchema
         .parse(extractJsonObject(raw))
-        .map((item): PreferenceRecallDecision | null => {
-          const parsed = PreferenceRecallItemSchema.safeParse(item);
-          if (!parsed.success || !validIds.has(parsed.data.preferenceId)) return null;
-          return parsed.data;
-        })
-        .filter((item): item is PreferenceRecallDecision => Boolean(item));
+        .filter((item): item is PreferenceRecallDecision => (
+          item !== null && validIds.has(item.preferenceId)
+        ));
     } catch {}
 
     return [];
@@ -390,10 +387,10 @@ const PreferenceRecallReasonSchema = z.preprocess(
   z.string(),
 );
 
-const PreferenceRecallActionSchema = z.preprocess(
-  value => value === 'auto_apply' || value === 'ask_review' || value === 'suppress' ? value : undefined,
-  z.enum(['auto_apply', 'ask_review', 'suppress']).optional(),
-);
+const PreferenceRecallActionSchema = z
+  .enum(['auto_apply', 'ask_review', 'suppress'])
+  .optional()
+  .catch(undefined);
 
 const PreferenceRecallItemSchema = z.preprocess((value) => {
   if (!value || typeof value !== 'object') return value;
@@ -406,12 +403,12 @@ const PreferenceRecallItemSchema = z.preprocess((value) => {
   preferenceId: z.string(),
   reason: PreferenceRecallReasonSchema,
   score: ClampedScore,
-  action: PreferenceRecallActionSchema as z.ZodType<MemoryApplicabilityAction | undefined>,
+  action: PreferenceRecallActionSchema,
 }));
 
 const PreferenceRecallArraySchema = z.preprocess(
   value => Array.isArray(value) ? value : [],
-  z.array(z.unknown()),
+  z.array(PreferenceRecallItemSchema.nullable().catch(null)),
 );
 
 function summarizeProcessText(value: string): string {

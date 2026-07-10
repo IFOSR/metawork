@@ -42,10 +42,7 @@ const EXECUTION_MODE_VALUES = ['none', 'single_executor', 'multi_executor'] as c
 const COMPLEXITY_VALUES = ['simple', 'moderate', 'complex'] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
 
-const StringOrEmptySchema = z.preprocess(
-  value => typeof value === 'string' ? value : '',
-  z.string(),
-);
+const StringOrEmptySchema = z.string().catch('');
 
 const StringOrNullSchema = z.preprocess(
   value => typeof value === 'string' && value ? value : null,
