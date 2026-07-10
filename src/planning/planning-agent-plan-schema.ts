@@ -138,19 +138,19 @@ const WorkGraphCandidateSchema = z.preprocess(
 export const PlanningAgentPlanSchema = z.preprocess(
   value => isRecord(value) ? value : {},
   z.object({
-    id: StringOrEmptySchema,
-    schemaVersion: z.literal(1).catch(1),
-    action: z.enum(ACTION_VALUES).catch('clarification'),
-    confidence: ClampedConfidenceSchema,
-    reason: StringOrEmptySchema,
-    clarificationQuestion: StringOrNullSchema,
-    capabilityClass: z.unknown().optional(),
-    response: ResponseCandidateSchema,
-    task: TaskCandidateSchema,
-    execution: ExecutionCandidateSchema,
-    risk: RiskCandidateSchema,
-    workGraph: WorkGraphCandidateSchema,
-    source: z.literal(PLANNER_SOURCE).catch(PLANNER_SOURCE),
+    id: StringOrEmptySchema,                    // 计划唯一ID，缺失时由 applyContextDefaults 生成
+    schemaVersion: z.literal(1).catch(1),       //  schema 版本号，当前固定为 1
+    action: z.enum(ACTION_VALUES).catch('clarification'), // 规划动作：直接回复/澄清/任务控制/规划工作图/无动作
+    confidence: ClampedConfidenceSchema,        // 规划置信度 0~1，越界或非法值 clamp 到 [0,1]
+    reason: StringOrEmptySchema,                // 选择该 action 的原因
+    clarificationQuestion: StringOrNullSchema,  // action=clarification 时的追问内容
+    capabilityClass: z.unknown().optional(),    // 能力分类（顶层），非法值透传给 validatePlanningAgentPlan
+    response: ResponseCandidateSchema,          // 直接回复内容 { directReply: string | null }
+    task: TaskCandidateSchema,                  // 任务绑定/控制信息（binding、taskId、control 等）
+    execution: ExecutionCandidateSchema,        // 执行配置（mode、complexity、selectedExecutor 等）
+    risk: RiskCandidateSchema,                  // 风险评估（level、requiresConfirmation、reasons）
+    workGraph: WorkGraphCandidateSchema,        // 工作图（reason + subtasks[]），action=plan_work_graph 时必填
+    source: z.literal(PLANNER_SOURCE).catch(PLANNER_SOURCE), // 规划来源标识，固定为 'codex-planner'
   }),
 );
 
