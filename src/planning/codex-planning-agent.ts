@@ -50,7 +50,7 @@ export class CodexPlanningAgent implements PlanningAgent {
         raw = result.output;
         toolCalls.push(...result.toolCalls);
       } catch (error) {
-        if (auditRun) this.deps.audit?.finish({
+        if (auditRun) this.finishAudit({
           id: auditRun.id,
           status: 'failed',
           attemptCount: attempt + 1,
@@ -70,7 +70,7 @@ export class CodexPlanningAgent implements PlanningAgent {
         const candidate = applyContextDefaults(parsed.data, effectiveContext);
         const validation = validatePlanningAgentPlan(candidate);
         if (validation.valid) {
-          if (auditRun) this.deps.audit?.finish({
+          if (auditRun) this.finishAudit({
             id: auditRun.id,
             status: 'completed',
             attemptCount: attempt + 1,
@@ -85,7 +85,7 @@ export class CodexPlanningAgent implements PlanningAgent {
       }
     }
 
-    if (auditRun) this.deps.audit?.finish({
+    if (auditRun) this.finishAudit({
       id: auditRun.id,
       status: 'failed',
       attemptCount: 2,
@@ -94,6 +94,16 @@ export class CodexPlanningAgent implements PlanningAgent {
       toolCalls,
     });
     return this.safeClarification(`Planner output failed validation: ${lastErrors.join('; ')}`);
+  }
+
+  private finishAudit(
+    input: Parameters<NonNullable<CodexPlanningAgentDeps['audit']>['finish']>[0],
+  ): void {
+    try {
+      this.deps.audit?.finish(input);
+    } catch {
+      // Audit persistence is best effort and must not replace the planning result.
+    }
   }
 
   private safeClarification(reason: string): PlanningAgentPlan {

@@ -103,6 +103,45 @@ describe('CodexPlanningAgent', () => {
     expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
   });
 
+  it('returns the validated plan when audit finalization fails', async () => {
+    const audit = {
+      start: vi.fn(() => ({ id: 'planner_run_test' })),
+      finish: vi.fn(() => { throw new Error('database is locked'); }),
+    };
+    const agent = new CodexPlanningAgent({
+      runner: runner(async () => VALID_PLAN),
+      audit,
+    });
+
+    const result = await agent.plan(context());
+
+    expect(result.action).toBe('plan_work_graph');
+    expect(audit.finish).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'planner_run_test',
+      status: 'completed',
+    }));
+  });
+
+  it.each([
+    { label: 'transport failure', run: async () => { throw new Error('spawn failed'); } },
+    { label: 'invalid output after repair', run: async () => 'not json' },
+  ])('returns the fail-closed clarification when audit finalization fails after $label', async ({ run }) => {
+    const audit = {
+      start: vi.fn(() => ({ id: 'planner_run_test' })),
+      finish: vi.fn(() => { throw new Error('database is locked'); }),
+    };
+    const agent = new CodexPlanningAgent({ runner: runner(run), audit });
+
+    const result = await agent.plan(context());
+
+    expect(result.action).toBe('clarification');
+    expect(result.confidence).toBe(0);
+    expect(audit.finish).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'planner_run_test',
+      status: 'failed',
+    }));
+  });
+
   it('applies the host file-modification authorization boundary', async () => {
     const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
     const result = await agent.plan(context({
