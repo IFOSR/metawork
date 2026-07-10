@@ -81,7 +81,6 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
     avoidUseCases: [],
     intentAffinity: {},
     riskLevel: 'medium',
-    availability: 'available',
     historicalSuccess: 0.8,
     harness: 'cli',
     model: null,

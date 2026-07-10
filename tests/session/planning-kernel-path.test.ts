@@ -27,7 +27,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -41,6 +41,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       title: '普通功能',
       goal: '实现一个普通功能',
       includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'test priority' },
     },
     execution: {
       mode: 'single_executor',

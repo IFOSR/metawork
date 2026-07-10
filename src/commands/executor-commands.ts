@@ -1,5 +1,4 @@
-import type { AgentClass, AgentClassAvailability, AgentClassRiskLevel } from '../core/types.js';
-import { ensureExecutorWorkUnit, seedDefaultAgentClasses, seedDefaultWorkUnits } from '../executor/agent-class-seeder.js';
+import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -25,7 +24,6 @@ function buildAgentClassFromArgs(
   name: string,
   args: string[],
   existing?: AgentClass | null,
-  availability: AgentClassAvailability = 'available',
 ): AgentClass {
   const risk = (parseScalarArg(args, '--risk') ?? existing?.riskLevel ?? 'medium') as AgentClassRiskLevel;
   return {
@@ -45,7 +43,6 @@ function buildAgentClassFromArgs(
       : existing?.avoidUseCases ?? [],
     intentAffinity: existing?.intentAffinity ?? {},
     riskLevel: risk,
-    availability,
     historicalSuccess: Number.parseFloat(parseScalarArg(args, '--success') ?? String(existing?.historicalSuccess ?? 0.5)),
     harness: existing?.harness ?? 'cli',
     model: existing?.model ?? null,
@@ -66,7 +63,7 @@ function formatAgentClass(agentClass: AgentClass): string {
   const runtime = agentClass.runtimeCommand
     ? `runtime=${agentClass.runtimeCommand} ${(agentClass.runtimeArgs ?? []).join(' ')}`.trim()
     : 'runtime=-';
-  return `  ${agentClass.name} kind=${agentClass.kind} status=${agentClass.availability} domains=${agentClass.domains.join(',') || '-'} capabilities=${agentClass.capabilities.join(',') || '-'} intents=${intents || '-'} risk=${agentClass.riskLevel} success=${agentClass.historicalSuccess} ${runtime}`;
+  return `  ${agentClass.name} kind=${agentClass.kind} domains=${agentClass.domains.join(',') || '-'} capabilities=${agentClass.capabilities.join(',') || '-'} intents=${intents || '-'} risk=${agentClass.riskLevel} success=${agentClass.historicalSuccess} ${runtime}`;
 }
 
 export const executorCommand: CommandHandler = {
@@ -77,11 +74,6 @@ export const executorCommand: CommandHandler = {
     const action = args[0] ?? 'list';
     const agentClassRepo = new AgentClassRepo(context.db);
     const workUnitRepo = new WorkUnitRepo(context.db);
-    seedDefaultAgentClasses(agentClassRepo, {
-      defaultExecutorName: context.executor.name,
-    });
-    seedDefaultWorkUnits(workUnitRepo, { executorAgentClassName: context.executor.name });
-
     if (action === 'register' || (action === 'profile' && args[1] === 'upsert')) {
       const name = action === 'register' ? args[1] : args[2];
       const optionArgs = action === 'register' ? args.slice(2) : args.slice(3);
@@ -103,8 +95,7 @@ export const executorCommand: CommandHandler = {
           data: { executorRegisterWizard: true },
         };
       }
-      agentClassRepo.upsert(buildAgentClassFromArgs(name, optionArgs, agentClassRepo.findByName(name), 'available'));
-      ensureExecutorWorkUnit(workUnitRepo, name);
+      agentClassRepo.upsert(buildAgentClassFromArgs(name, optionArgs, agentClassRepo.findByName(name)));
       return {
         type: 'text',
         content: action === 'register'
@@ -122,7 +113,10 @@ export const executorCommand: CommandHandler = {
       if (!existing) {
         return { type: 'text', content: `Executor AgentClass is not registered: ${name}` };
       }
-      agentClassRepo.upsert({ ...existing, availability: 'unavailable' });
+      if (workUnitRepo.findAll().some(unit => unit.agentClassName === name)) {
+        return { type: 'text', content: `Cannot unregister AgentClass with WorkUnits: ${name}` };
+      }
+      agentClassRepo.delete(name);
       return { type: 'text', content: `Unregistered Executor AgentClass: ${name}` };
     }
 

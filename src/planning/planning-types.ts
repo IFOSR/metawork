@@ -1,6 +1,4 @@
-import type { AgentClass, AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
-import type { RuleHint } from '../core/rule-hints-provider.js';
-import type { TaskSummary } from '../core/llm-bridge.js';
+import type { AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
 import type { CapabilityClass } from '../core/capability-class.js';
 
 export type PlanningAction =
@@ -23,6 +21,7 @@ export type IntentTaskControl =
   | 'none';
 export type IntentExecutionMode = 'none' | 'single_executor' | 'multi_executor';
 export type IntentExecutionComplexity = 'simple' | 'moderate' | 'complex';
+export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
 
 export interface SubtaskProposal {
   id: string;
@@ -44,7 +43,7 @@ export interface WorkGraphProposal {
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
   action: PlanningAction;
   confidence: number;
   reason: string;
@@ -60,6 +59,10 @@ export interface PlanningAgentPlan {
     title: string | null;
     goal: string | null;
     includeRecentConversationContext: boolean;
+    priority: {
+      level: TaskSemanticPriority;
+      reason: string;
+    } | null;
   };
   execution: {
     mode: 'none' | 'single_executor' | 'multi_executor';
@@ -83,15 +86,14 @@ export interface PlanningAgentPlan {
 
 export interface PlanningContext {
   userInput: string;
-  recentTasks: TaskSummary[];
-  agentClasses: AgentClass[];
-  defaultExecutorName: string;
-  currentFocus: {
-    kind: 'conversation' | 'task';
-    taskId: string | null;
-  } | null;
-  hints: RuleHint[];
-  allowDurableTask: boolean;
-  allowFileModification: boolean;
+  request: {
+    sessionId: string;
+    source: string;
+  };
+  permissions: {
+    allowDurableTask: boolean;
+    allowFileModification: boolean;
+    allowExternalGateway: boolean;
+  };
   timeoutMs: number;
 }

@@ -9,4 +9,13 @@ export class CodexCliAdapter extends CommandLineExecutorAdapter {
   protected buildSpawnArgs(prompt: string): string[] {
     return buildCodexNonInteractiveArgs(prompt);
   }
+
+  protected buildSpawnEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      ...(process.env.METACLAW_EXECUTOR_CODEX_HOME
+        ? { CODEX_HOME: process.env.METACLAW_EXECUTOR_CODEX_HOME }
+        : {}),
+    };
+  }
 }

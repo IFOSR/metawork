@@ -189,7 +189,7 @@ describe('scripted session', () => {
     expect(result.output.join('\n')).toContain('Phoenix 周报结论');
   });
 
-  it('continues risky external actions without waiting for confirmation in scripted sessions', async () => {
+  it('blocks risky external actions pending a planner-observed confirmation in scripted sessions', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -226,14 +226,17 @@ describe('scripted session', () => {
       contextRecaller,
       llmBridge,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '直接把邮件发给客户' }),
+        workGraphPlan({
+          goal: '直接把邮件发给客户',
+          overrides: {
+            risk: { level: 'high', requiresConfirmation: true, reasons: ['external send'] },
+          },
+        }),
       ),
     });
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(result.output.join('\n')).toContain('⚠️ 检测到高风险外部动作');
-    expect(result.output.join('\n')).toContain('当前通道不等待用户确认');
-    expect(result.output.join('\n')).toContain('已发送给客户');
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(result.output.join('\n')).toContain('risk confirmation required');
   });
 
   it('records file artifacts returned by the executor for workspace write tasks', async () => {

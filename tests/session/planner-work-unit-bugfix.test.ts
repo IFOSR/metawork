@@ -122,7 +122,7 @@ async function dispatchExistingTask(
 function directReplyPlan(): PlanningAgentPlan {
   return {
     id: 'plan_direct_reply',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -136,6 +136,7 @@ function directReplyPlan(): PlanningAgentPlan {
       title: null,
       goal: null,
       includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'test priority' },
     },
     execution: {
       mode: 'none',
@@ -268,7 +269,7 @@ describe('planner/work-unit active path regressions', () => {
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(harness.taskRepo.findById(task.id)?.status).toBe('cancelled');
-    expect(harness.workUnitRepo.findById('executor-1')?.state).toBe('idle');
+    expect(harness.workUnitRepo.findAll().find(unit => unit.agentClassKind === 'executor')?.state).toBe('idle');
     expect(harness.subtaskRepo.findById(`${task.id}_subtask_second`)?.status).toBe('ready');
   });
 
@@ -293,9 +294,9 @@ describe('planner/work-unit active path regressions', () => {
     await dispatchExistingTask(harness, task.id);
 
     expect(harness.taskRepo.findById(task.id)?.status).toBe('parked');
-    expect(harness.workUnitRepo.findById('executor-1')?.state).toBe('idle');
+    expect(harness.workUnitRepo.findAll().find(unit => unit.agentClassKind === 'executor')?.state).toBe('failed');
     const workUnitEvents = harness.db.prepare('SELECT event_type FROM work_unit_events ORDER BY created_at ASC').all() as Array<{ event_type: string }>;
-    expect(workUnitEvents.map(event => event.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'failed', 'released']));
+    expect(workUnitEvents.map(event => event.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'failed']));
     const taskEvents = harness.db.prepare('SELECT event_type FROM task_events WHERE task_id = ?').all(task.id) as Array<{ event_type: string }>;
     expect(taskEvents.map(event => event.event_type)).toContain('subtask_exception');
   });
@@ -335,7 +336,7 @@ describe('planner/work-unit active path regressions', () => {
     expect(output).toContain('## A second by dependency\n\noutput for goal A');
   });
 
-  it('sweeps expired work units, preserves claim metadata, and avoids permanent running locks', async () => {
+  it('sweeps expired work units and provisions replacement capacity', async () => {
     const executor = createExecutor(async () => ({ success: true, output: 'should not execute', exitCode: 0, durationMs: 10 }));
     const harness = createHarness({ executor, sessionId: 'sess_sweep_expired' });
     const task = readyTask(harness.taskEngine, 'expired work unit');
@@ -357,13 +358,13 @@ describe('planner/work-unit active path regressions', () => {
 
     await dispatchExistingTask(harness, task.id);
 
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(harness.workUnitRepo.findById('executor-1')).toMatchObject({
       state: 'heartbeat_lost',
       claimedTaskId: task.id,
       claimedSubtaskId: subtaskId,
     });
-    expect(harness.taskRepo.findById(task.id)?.status).toBe('blocked');
+    expect(harness.taskRepo.findById(task.id)?.status).toBe('done');
     const taskEvents = harness.db.prepare('SELECT event_type FROM task_events WHERE task_id = ?').all(task.id) as Array<{ event_type: string }>;
     expect(taskEvents.map(event => event.event_type)).toContain('work_unit_heartbeat_lost');
   });

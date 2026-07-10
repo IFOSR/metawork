@@ -10,7 +10,7 @@
 // silently defaulted like the top-level enums.
 import { z } from 'zod';
 import type { CapabilityClass } from '../core/capability-class.js';
-import { isCapabilityClass } from '../core/capability-class.js';
+import { CAPABILITY_CLASSES, isCapabilityClass } from '../core/capability-class.js';
 import { generateInteractionId } from '../utils/id.js';
 import type {
   IntentExecutionMode,
@@ -41,6 +41,9 @@ const TASK_CONTROL_VALUES = [
 const EXECUTION_MODE_VALUES = ['none', 'single_executor', 'multi_executor'] as const;
 const COMPLEXITY_VALUES = ['simple', 'moderate', 'complex'] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
+const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
+const AGENT_CLASS_KIND_VALUES = ['planner', 'executor'] as const;
+const EXPECTED_OUTPUT_VALUES = ['analysis', 'patch', 'artifact', 'review', 'summary'] as const;
 
 const StringOrEmptySchema = z.string().catch('');
 
@@ -55,6 +58,14 @@ const StringArraySchema = z.preprocess(
 );
 
 const BooleanTrueSchema = z.preprocess(value => value === true, z.boolean());
+
+const TaskPrioritySchema = z.preprocess(
+  value => isRecord(value) ? value : null,
+  z.object({
+    level: z.enum(TASK_PRIORITY_VALUES),
+    reason: z.string(),
+  }).nullable(),
+);
 
 const ClampedConfidenceSchema = z.preprocess((value) => {
   const numeric = typeof value === 'number' ? value : Number(value);
@@ -79,6 +90,7 @@ const TaskCandidateSchema = z.preprocess(
     title: StringOrEmptySchema,
     goal: StringOrEmptySchema,
     includeRecentConversationContext: BooleanTrueSchema,
+    priority: TaskPrioritySchema,
   }),
 );
 
@@ -139,7 +151,7 @@ export const PlanningAgentPlanSchema = z.preprocess(
   value => isRecord(value) ? value : {},
   z.object({
     id: StringOrEmptySchema,                    // 计划唯一ID，缺失时由 applyContextDefaults 生成
-    schemaVersion: z.literal(1).catch(1),       //  schema 版本号，当前固定为 1
+    schemaVersion: z.literal(2),                // schema v2 adds task priority
     action: z.enum(ACTION_VALUES).catch('clarification'), // 规划动作：直接回复/澄清/任务控制/规划工作图/无动作
     confidence: ClampedConfidenceSchema,        // 规划置信度 0~1，越界或非法值 clamp 到 [0,1]
     reason: StringOrEmptySchema,                // 选择该 action 的原因
@@ -156,6 +168,62 @@ export const PlanningAgentPlanSchema = z.preprocess(
 
 export type PlanningAgentPlanCandidate = z.infer<typeof PlanningAgentPlanSchema>;
 
+/** Canonical structured-output contract used to generate Codex --output-schema. */
+export const PlanningAgentPlanOutputSchema = z.object({
+  id: z.string(),
+  schemaVersion: z.literal(2),
+  action: z.enum(ACTION_VALUES),
+  confidence: z.number().min(0).max(1),
+  reason: z.string(),
+  clarificationQuestion: z.string().nullable(),
+  response: z.object({ directReply: z.string().nullable() }),
+  task: z.object({
+    binding: z.enum(TASK_BINDING_VALUES),
+    taskId: z.string().nullable(),
+    control: z.enum(TASK_CONTROL_VALUES),
+    scope: z.string().nullable(),
+    title: z.string().nullable(),
+    goal: z.string().nullable(),
+    includeRecentConversationContext: z.boolean(),
+    priority: z.object({
+      level: z.enum(TASK_PRIORITY_VALUES),
+      reason: z.string(),
+    }).nullable(),
+  }),
+  execution: z.object({
+    mode: z.enum(EXECUTION_MODE_VALUES),
+    complexity: z.enum(COMPLEXITY_VALUES),
+    selectedExecutor: z.string().nullable(),
+    candidateExecutors: z.array(z.string()),
+    requiresVerification: z.boolean(),
+    canModifyFiles: z.boolean(),
+    requiresExternalGateway: z.boolean(),
+    capabilityClass: z.enum(CAPABILITY_CLASSES),
+    matchedBoundary: z.array(z.string()),
+  }),
+  risk: z.object({
+    level: z.enum(RISK_LEVEL_VALUES),
+    requiresConfirmation: z.boolean(),
+    reasons: z.array(z.string()),
+  }),
+  workGraph: z.object({
+    reason: z.string(),
+    subtasks: z.array(z.object({
+      id: z.string(),
+      title: z.string(),
+      goal: z.string(),
+      dependsOn: z.array(z.string()),
+      requiredAgentClassKind: z.enum(AGENT_CLASS_KIND_VALUES),
+      agentClassHint: z.string().nullable(),
+      candidateAgentClasses: z.array(z.string()),
+      expectedOutput: z.enum(EXPECTED_OUTPUT_VALUES),
+      acceptance: z.array(z.string()),
+      riskLevel: z.enum(RISK_LEVEL_VALUES),
+    })),
+  }).nullable(),
+  source: z.literal(PLANNER_SOURCE),
+});
+
 export function applyContextDefaults(
   plan: PlanningAgentPlanCandidate,
   context: PlanningContext,
@@ -163,7 +231,7 @@ export function applyContextDefaults(
   const capabilityClass = coerceCapabilityClass(plan.capabilityClass, plan.execution.capabilityClass, plan.action);
   return {
     id: plan.id || `plan_${generateInteractionId()}`,
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: plan.action,
     confidence: plan.confidence,
     reason: plan.reason || 'codex planner decision',
@@ -179,6 +247,7 @@ export function applyContextDefaults(
       title: plan.task.title || (plan.action === 'plan_work_graph' ? context.userInput.slice(0, 50) : null),
       goal: plan.task.goal || (plan.action === 'plan_work_graph' ? context.userInput : null),
       includeRecentConversationContext: plan.task.includeRecentConversationContext,
+      priority: plan.task.priority,
     },
     execution: {
       mode: coerceExecutionMode(plan.execution.mode, plan.action),
@@ -186,8 +255,8 @@ export function applyContextDefaults(
       selectedExecutor: plan.execution.selectedExecutor,
       candidateExecutors: plan.execution.candidateExecutors,
       requiresVerification: plan.execution.requiresVerification,
-      canModifyFiles: plan.execution.canModifyFiles && context.allowFileModification,
-      requiresExternalGateway: plan.execution.requiresExternalGateway,
+      canModifyFiles: plan.execution.canModifyFiles && context.permissions.allowFileModification,
+      requiresExternalGateway: plan.execution.requiresExternalGateway && context.permissions.allowExternalGateway,
       capabilityClass,
       matchedBoundary: plan.execution.matchedBoundary,
     },

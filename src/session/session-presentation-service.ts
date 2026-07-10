@@ -2,7 +2,7 @@
 // messages so orchestration code can work with domain facts instead of strings.
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
-import type { TaskClearScope, TaskStatusQueryScope } from '../core/task-routing.js';
+import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
 
 export interface GuidanceState {
   scene: string;

@@ -19,6 +19,7 @@ Key recent ADRs:
 - [ADR-0012: Persistent Planner Subtask Runtime](adr/0012-persistent-planner-subtask-runtime.md)
 - [ADR-0013: Planner-First Work-Unit Dispatch](adr/0013-planner-first-work-unit-dispatch.md)
 - [ADR-0014: PlanningAgent / PolicyKernel Boundary](adr/0014-planning-agent-policy-kernel-boundary.md)
+- [ADR-0015: Planner-Owned Semantics And Tool-Mediated Context](adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
 
 ## Historical Plans
 

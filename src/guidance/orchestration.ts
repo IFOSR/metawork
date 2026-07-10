@@ -7,7 +7,6 @@ import type {
 } from '../core/types.js';
 import type { TaskEngine } from '../task/task-engine.js';
 import dayjs from 'dayjs';
-import { filterDurableTasks } from '../core/task-routing.js';
 import { GuidancePolicyEngine } from './guidance-policy-engine.js';
 import { TaskSignalService } from './task-signal-service.js';
 
@@ -35,13 +34,13 @@ export class OrchestrationEngine {
    * 生成任务盘面
    */
   getDashboard(): Dashboard {
-    const tasks = filterDurableTasks(this.taskEngine['taskRepo'].findActive());
+    const tasks = this.taskEngine['taskRepo'].findActive();
 
     const summary = {
       active: tasks.filter(t => ['created', 'ready', 'running', 'parked'].includes(t.status)).length,
       blocked: tasks.filter(t => t.status === 'blocked').length,
       parked: tasks.filter(t => t.status === 'parked').length,
-      done: filterDurableTasks(this.taskEngine['taskRepo'].findByStatus('done')).length,
+      done: this.taskEngine['taskRepo'].findByStatus('done').length,
     };
 
     const readyTasks = tasks.filter(t => t.status === 'ready');
@@ -71,10 +70,10 @@ export class OrchestrationEngine {
    */
   getPrioritizedTasks(): Array<{ task: Task; score: PriorityScore; reasons: string[] }> {
     const repo = this.taskEngine['taskRepo'];
-    const tasks = filterDurableTasks([
+    const tasks = [
       ...repo.findByStatus('ready'),
       ...repo.findByStatus('created'),
-    ]);
+    ];
 
     const scored = tasks.map(task => {
       const { score, reasons } = this.evaluateTask(task);
@@ -95,7 +94,7 @@ export class OrchestrationEngine {
    * 获取所有 BLOCKED 任务及卡点原因
    */
   getBlockedTasks(): Array<Task & { blockReason: string }> {
-    const tasks = filterDurableTasks(this.taskEngine['taskRepo'].findByStatus('blocked'));
+    const tasks = this.taskEngine['taskRepo'].findByStatus('blocked');
     return tasks.map(t => ({
       ...t,
       blockReason: t.dependencies.find(d => d.status === 'waiting')?.description || '未知原因',
@@ -135,7 +134,7 @@ export class OrchestrationEngine {
   }
 
   generateProposals(trigger = 'system'): GuidanceProposal[] {
-    const tasks = filterDurableTasks(this.taskEngine['taskRepo'].findActive());
+    const tasks = this.taskEngine['taskRepo'].findActive();
     const taskLookup = new Map(tasks.map(task => [task.id, task] as const));
     const readyTaskIds = this.getPrioritizedTasks().map(({ task }) => task.id);
 

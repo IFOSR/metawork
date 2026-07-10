@@ -18,10 +18,6 @@ import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { LlmBridge } from '../core/llm-bridge.js';
 import { SchedulerEngine } from '../task/scheduler.js';
 import type { DispatchContext } from '../task/scheduler.js';
-import {
-  filterDurableTasks,
-} from '../core/task-routing.js';
-import { buildRecentTaskSummaries } from '../core/task-summary.js';
 import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
 import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
@@ -39,7 +35,6 @@ import { dashboardCommand, attachCommand, historyCommand, configCommand, helpCom
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
-import { TaskSemanticService } from '../task/task-semantic-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
@@ -51,13 +46,7 @@ import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
 import { SessionExecutionCoordinator } from './session-execution-coordinator.js';
 import { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
-import {
-  buildSchedulingReason,
-  isRiskyExternalActionInstruction,
-  parseExplicitRemember,
-  parsePriorityHint,
-  type QueuedExecutionRequest,
-} from './session-helpers.js';
+import { type QueuedExecutionRequest } from './session-helpers.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -69,6 +58,7 @@ import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
 import { KernelDecisionApplier } from './kernel-decision-applier.js';
 import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
+import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -103,8 +93,7 @@ interface FocusContext {
   taskId: string | null;
 }
 
-const BUSY_LLM_TIMEOUT_MS = 250;
-const DEFAULT_LLM_TIMEOUT_MS = 5_000;
+const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
 
 /** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
 export class MetaclawSession {
@@ -135,7 +124,6 @@ export class MetaclawSession {
   private readonly notifier: NotificationService;
   private readonly inputController: InputController;
   private readonly taskRuntimeService: TaskRuntimeService;
-  private readonly taskSemanticService: TaskSemanticService;
   private readonly executionRuntime: ExecutionRuntime;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
@@ -168,10 +156,6 @@ export class MetaclawSession {
       taskRepo: deps.taskEngine.getTaskRepo(),
       orchestration: deps.orchestration,
     });
-    this.taskSemanticService = new TaskSemanticService({
-      llmBridge: deps.llmBridge,
-      timeoutMs: () => this.getLlmTimeoutMs(),
-    });
     this.agentClassService = new AgentClassService({
       db: deps.db,
       defaultExecutorName: deps.executor.name,
@@ -194,8 +178,16 @@ export class MetaclawSession {
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
-    this.workGraphRuntimeService = new WorkGraphRuntimeService(this.subtaskRepo, this.taskEventRepo);
-    this.workUnitClaimService = new WorkUnitClaimService(new WorkUnitRepo(deps.db));
+    this.workGraphRuntimeService = new WorkGraphRuntimeService(
+      this.subtaskRepo,
+      this.taskEventRepo,
+      deps.executor.name,
+    );
+    this.workUnitClaimService = new WorkUnitClaimService(
+      new WorkUnitRepo(deps.db),
+      60_000,
+      name => this.executionRuntime.isExecutorAvailable(name),
+    );
     this.workspaceTargetService = new WorkspaceTargetService();
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
@@ -228,14 +220,12 @@ export class MetaclawSession {
       taskRuntimeService: this.taskRuntimeService,
     });
     this.planningContextBuilder = new PlanningContextBuilder({
-      listTasks: () => this.taskRuntimeService.listTasks(),
-      listAgentClasses: () => this.listRuntimeVisibleAgentClasses(),
-      defaultExecutorName: deps.executor.name,
-      getFocusContext: () => this.getFocusContext(),
-      getTimeoutMs: () => this.getLlmTimeoutMs(),
+      sessionId: deps.sessionId,
+      requestSource: 'session',
+      getTimeoutMs: () => this.getPlannerTimeoutMs(),
     });
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
-      llmBridge: deps.llmBridge,
+      audit: new PlannerRunRepo(deps.db),
     });
     this.policyKernel = new PolicyKernel();
     this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);
@@ -245,7 +235,7 @@ export class MetaclawSession {
       deps.orchestration,
       deps.executor,
       async (taskId: string, context?: DispatchContext<QueuedExecutionRequest>) => this.dispatchTask(taskId, context),
-      async (tasks: Task[]) => this.classifyMissingSemanticPriorities(tasks),
+      undefined,
       this.taskRuntimeService,
     );
     this.inputController = new InputController({
@@ -308,7 +298,6 @@ export class MetaclawSession {
       sessionId: deps.sessionId,
       planningDecisionRepo: this.planningDecisionRepo,
       taskRuntimeService: this.taskRuntimeService,
-      taskSemanticService: this.taskSemanticService,
       taskResumePlanner: this.taskResumePlanner,
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
@@ -323,10 +312,14 @@ export class MetaclawSession {
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
-        buildRecentTaskSummaries,
         buildRecoveryTrigger: (task, input) => this.buildRecoveryTrigger(task, input),
       },
     });
+
+    // AgentClass records are startup catalog data. Constructing a session must
+    // make the catalog readable even for non-UI hosts that do not call the
+    // optional dashboard-oriented initialize() lifecycle hook.
+    this.seedAgentRuntime();
   }
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
@@ -580,7 +573,7 @@ export class MetaclawSession {
   }
 
   private findTimerRecheckableBlockedTasks(): Task[] {
-    return filterDurableTasks(this.taskRuntimeService.listTasks())
+    return this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'blocked')
       .filter(task => this.isTimerRecheckableBlockedTask(task))
       .sort((left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime());
@@ -644,9 +637,9 @@ export class MetaclawSession {
       return false;
     }
 
-    const blockedTasks = filterDurableTasks(this.taskRuntimeService.listTasks())
+    const blockedTasks = this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'blocked');
-    const parkedTasks = filterDurableTasks(this.taskRuntimeService.listTasks())
+    const parkedTasks = this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'parked');
     if (blockedTasks.length === 0 && parkedTasks.length === 0) {
       return false;
@@ -724,18 +717,12 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
-  private async handlePlanningKernelDecision(
-    userInput: string,
-    options: { suppressSafetyGuardHints?: boolean } = {},
-  ): Promise<boolean> {
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
     this.appendOutput(
       '【MetaClaw｜理解用户请求】',
       '→ MetaClaw：正在分析目标、上下文与可执行边界',
     );
-    const context = this.planningContextBuilder.build({
-      userInput,
-      suppressSafetyGuardHints: options.suppressSafetyGuardHints,
-    });
+    const context = this.planningContextBuilder.build({ userInput });
     const plan = await this.planningAgent.plan(context);
     const decision = this.policyKernel.decide(plan, {
       tasks: this.taskRuntimeService.listTasks(),
@@ -752,12 +739,7 @@ export class MetaclawSession {
   }
 
   private listRuntimeVisibleAgentClasses(): AgentClass[] {
-    return this.agentClassService.listAgentClasses().map(agentClass => {
-      if (agentClass.kind === 'executor' && agentClass.name === this.deps.executor.name) {
-        return { ...agentClass, availability: 'available' as const };
-      }
-      return agentClass;
-    });
+    return this.agentClassService.listAgentClasses();
   }
 
   private appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void {
@@ -819,7 +801,7 @@ export class MetaclawSession {
 
   private buildTaskQueueSnapshotEntries() {
     return this.presentation.buildTaskQueueSnapshotEntries({
-      tasks: filterDurableTasks(this.taskRuntimeService.listTasks()),
+      tasks: this.taskRuntimeService.listTasks(),
       runningTaskId: this.runtimeState.runningTaskId,
       evaluateTask: task => this.deps.orchestration.evaluateTask(task),
     });
@@ -904,41 +886,8 @@ export class MetaclawSession {
     return result.handled;
   }
 
-  private async handleNaturalLanguageInput(
-    userInput: string,
-    options: { skipRiskConfirmation?: boolean } = {},
-  ): Promise<void> {
-    const explicitRemember = parseExplicitRemember(userInput);
-    if (explicitRemember) {
-      const pref = this.deps.memoryEngine.addManual({
-        content: explicitRemember,
-        scope: 'global',
-        type: 'domain',
-      });
-      this.appendOutput(`已记住偏好 #${pref.id}: ${pref.content}`);
-      return;
-    }
-
-    const highConfidencePreferenceCapture = this.memoryCaptureService.captureHighConfidencePreferences(
-      userInput,
-      `session:${this.deps.sessionId}`,
-    );
-    if (highConfidencePreferenceCapture.lines.length > 0) {
-      this.appendOutput(...highConfidencePreferenceCapture.lines);
-      return;
-    }
-
-    const riskAlreadyWarned = !options.skipRiskConfirmation && isRiskyExternalActionInstruction(userInput);
-    if (riskAlreadyWarned) {
-      this.appendOutput(
-        '⚠️ 检测到高风险外部动作。',
-        '→ 当前通道不等待用户确认，已按原请求继续执行；执行器仍需遵守系统安全边界。',
-      );
-    }
-
-    if (await this.handlePlanningKernelDecision(userInput, {
-      suppressSafetyGuardHints: riskAlreadyWarned,
-    })) {
+  private async handleNaturalLanguageInput(userInput: string): Promise<void> {
+    if (await this.handlePlanningKernelDecision(userInput)) {
       return;
     }
 
@@ -948,56 +897,11 @@ export class MetaclawSession {
     );
   }
 
-  private async applySemanticPriority(taskId: string, userInput: string): Promise<void> {
-    const task = this.taskRuntimeService.findTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    const priority = await this.taskSemanticService.classifyPriority(
-      userInput,
-      { priority: parsePriorityHint(userInput), reason: '规则识别语义优先级' },
-    );
-
-    this.taskRuntimeService.updateTask(taskId, {
-      prioritySignals: {
-        ...task.prioritySignals,
-        semanticPriority: priority.priority,
-        semanticPriorityReason: priority.reason,
-      },
-    });
-  }
-
-  private async classifyMissingSemanticPriorities(tasks: Task[]): Promise<void> {
-    for (const task of tasks) {
-      const current = this.taskRuntimeService.findTask(task.id);
-      if (!current || current.prioritySignals.semanticPriority) {
-        continue;
-      }
-
-      await this.applySemanticPriority(current.id, current.goal || current.title);
-    }
-  }
-
-  private getLlmTimeoutMs(): number {
-    return this.runtimeState.runningTaskId ? BUSY_LLM_TIMEOUT_MS : DEFAULT_LLM_TIMEOUT_MS;
-  }
-
-  private async awaitWithTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-    let timer: NodeJS.Timeout | null = null;
-
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<T>(resolve => {
-          timer = setTimeout(() => resolve(fallback), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    }
+  private getPlannerTimeoutMs(): number {
+    const configured = Number(process.env.METACLAW_PLANNER_TIMEOUT_MS);
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_PLANNER_TIMEOUT_MS;
   }
 
   private async runConversationInput(userInput: string): Promise<void> {
@@ -1061,10 +965,6 @@ export class MetaclawSession {
       const task = candidates[0];
       this.appendStartupResumeLine(task.id);
       if (task.status === 'parked') {
-        await this.taskSemanticService.observeResumeIntent(
-          '启动后继续未完成任务',
-          buildRecentTaskSummaries([task]),
-        );
         this.resumeParkedTaskIfStillParked(task.id);
       }
       await this.prepareTaskExecution(task.id, {
@@ -1100,7 +1000,7 @@ export class MetaclawSession {
       byId.set(task.id, task);
     }
 
-    for (const task of filterDurableTasks(this.taskRuntimeService.listTasks())) {
+    for (const task of this.taskRuntimeService.listTasks()) {
       if (['created', 'ready'].includes(task.status) && !byId.has(task.id)) {
         byId.set(task.id, task);
       }

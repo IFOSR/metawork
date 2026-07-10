@@ -14,7 +14,7 @@ function createDb(): Database.Database {
 function directReplyPlan(): PlanningAgentPlan {
   return {
     id: 'plan_direct',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'direct_reply',
     confidence: 0.95,
     reason: 'chat',
@@ -28,6 +28,7 @@ function directReplyPlan(): PlanningAgentPlan {
       title: null,
       goal: null,
       includeRecentConversationContext: false,
+      priority: null,
     },
     execution: {
       mode: 'none',

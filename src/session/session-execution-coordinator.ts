@@ -219,7 +219,7 @@ export class SessionExecutionCoordinator {
           break;
         }
 
-        const claim = this.deps.workUnitClaimService.claim({ taskId, subtask: readySubtask });
+        const claim = await this.deps.workUnitClaimService.claim({ taskId, subtask: readySubtask });
         if (!claim) {
           await this.deps.scheduler.markDispatchBlocked(taskId, 'no idle executor work unit can claim the ready subtask');
           await finishExecution([

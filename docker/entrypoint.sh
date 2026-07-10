@@ -65,7 +65,7 @@ render() {
 }
 
 PI_AGENT_DIR="${HOME}/.pi/agent"
-PI_TEMPLATE_DIR="/pi-config-template"
+PI_TEMPLATE_DIR="/opt/metaclaw/pi-config"
 
 if [ -d "$PI_TEMPLATE_DIR" ]; then
   mkdir -p "$PI_AGENT_DIR"
@@ -76,14 +76,20 @@ if [ -d "$PI_TEMPLATE_DIR" ]; then
   done
 fi
 
-CODEX_HOME_DIR="${HOME}/.codex"
-CODEX_TEMPLATE_DIR="/codex-config-template"
+PLANNER_CODEX_HOME="${METACLAW_PLANNER_CODEX_HOME:-/var/lib/metaclaw/codex/planner}"
+EXECUTOR_CODEX_HOME="${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/executor}"
+CODEX_TEMPLATE_DIR="/opt/metaclaw/codex-config"
 
-if [ -d "$CODEX_TEMPLATE_DIR" ]; then
-  mkdir -p "$CODEX_HOME_DIR"
-  if [ -f "$CODEX_TEMPLATE_DIR/config.toml" ]; then
-    render "$CODEX_TEMPLATE_DIR/config.toml" > "$CODEX_HOME_DIR/config.toml"
-  fi
+mkdir -p "$PLANNER_CODEX_HOME" "$EXECUTOR_CODEX_HOME"
+render "$CODEX_TEMPLATE_DIR/planner/config.toml" > "$PLANNER_CODEX_HOME/config.toml"
+render "$CODEX_TEMPLATE_DIR/executor/config.toml" > "$EXECUTOR_CODEX_HOME/config.toml"
+rm -rf "$PLANNER_CODEX_HOME/skills"
+cp -R "$CODEX_TEMPLATE_DIR/planner/skills" "$PLANNER_CODEX_HOME/skills"
+
+METACLAW_HOME_DIR="${METACLAW_HOME:-/data/metaclaw}"
+mkdir -p "$METACLAW_HOME_DIR"
+if [ ! -f "$METACLAW_HOME_DIR/config.yaml" ]; then
+  cp /opt/metaclaw/default-config.yaml "$METACLAW_HOME_DIR/config.yaml"
 fi
 
 # No command to exec (e.g. devcontainer postCreateCommand passes `:` or nothing)?

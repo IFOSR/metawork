@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { executorCommand } from '../../src/commands/executor-commands.js';
+import { AgentClassService } from '../../src/executor/agent-class-service.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
+  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
   return db;
 }
 
@@ -53,7 +55,6 @@ describe('agent class and planner route commands', () => {
 
     const afterRegister = await executorCommand.execute(['list'], context);
     expect(afterRegister.content).toContain('research-bot');
-    expect(afterRegister.content).toContain('status=available');
     expect(afterRegister.content).toContain('capabilities=research,report_generation');
     expect(afterRegister.content).toContain('runtime=research-bot run --prompt {prompt}');
 
@@ -61,8 +62,7 @@ describe('agent class and planner route commands', () => {
     expect(unregister.content).toBe('Unregistered Executor AgentClass: research-bot');
 
     const afterUnregister = await executorCommand.execute(['list'], context);
-    expect(afterUnregister.content).toContain('research-bot');
-    expect(afterUnregister.content).toContain('status=unavailable');
+    expect(afterUnregister.content).not.toContain('research-bot');
   });
 
   it('upserts AgentClasses and reports planner task events instead of route events', async () => {

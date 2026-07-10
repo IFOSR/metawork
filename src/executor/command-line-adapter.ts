@@ -15,6 +15,10 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
 
   protected abstract buildSpawnArgs(prompt: string): string[];
 
+  protected buildSpawnEnv(): NodeJS.ProcessEnv {
+    return process.env;
+  }
+
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     const contextPrompt = this.buildContextPrompt(input);
     const startTime = Date.now();
@@ -25,6 +29,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
       this.process = spawn(this.config.command, this.buildSpawnArgs(contextPrompt), {
         cwd: this.config.workspaceRoot ?? process.cwd(),
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: this.buildSpawnEnv(),
       });
 
       let stdout = '';

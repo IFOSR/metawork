@@ -104,9 +104,8 @@ export class WorkUnitRepo {
       WHERE agent_class_kind = ? AND state = 'idle'
       ORDER BY updated_at ASC
     `).all(kind) as WorkUnitRow[];
-    const candidates = candidateAgentClasses.length > 0 ? new Set(candidateAgentClasses) : null;
-    const row = candidates
-      ? rows.find(item => candidates.has(item.agent_class_name))
+    const row = candidateAgentClasses.length > 0
+      ? candidateAgentClasses.map(name => rows.find(item => item.agent_class_name === name)).find(Boolean)
       : rows[0];
     return row ? rowToWorkUnit(row) : null;
   }

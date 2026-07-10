@@ -7,12 +7,12 @@
 # long-running SSH server you connect to with `ssh` (or VS Code Remote-SSH).
 #
 # This only adds openssh-server — node, pi, and dist come from the base image
-# (Dockerfile.test). Build the base first if it's missing; shell.ps1 handles
+# (Dockerfile.runtime). Build the base first if it's missing; shell.ps1 handles
 # that ordering.
 #
 #   docker build -f docker/Dockerfile.ssh -t metaclaw-tui-ssh .
 #
-FROM metaclaw-tui:latest
+FROM metaclaw-runtime:latest
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-server \

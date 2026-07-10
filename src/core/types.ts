@@ -53,7 +53,6 @@ export interface Task {
 }
 
 export type AgentClassKind = 'planner' | 'executor';
-export type AgentClassAvailability = 'available' | 'unavailable';
 export type AgentClassRiskLevel = 'low' | 'medium' | 'high';
 
 export interface AgentClass {
@@ -69,7 +68,6 @@ export interface AgentClass {
   avoidUseCases: string[];
   intentAffinity: Record<string, number>;
   riskLevel: AgentClassRiskLevel;
-  availability: AgentClassAvailability;
   historicalSuccess: number;
   harness: string | null;
   model: string | null;

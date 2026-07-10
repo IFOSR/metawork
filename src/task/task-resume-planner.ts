@@ -1,8 +1,7 @@
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import type { TaskRuntimeService } from './task-runtime-service.js';
 import type { Task } from '../core/types.js';
-import { evaluateBlockedTask } from './blocked-task-reconciler.js';
-import { isResumeReferenceInstruction } from '../session/session-helpers.js';
+import { extractInlineResourceMatches } from '../session/session-helpers.js';
+import type { TaskRuntimeService } from './task-runtime-service.js';
 import type { TaskExecutionPlan } from './task-execution-planner.js';
 
 export type ResumePlanResult =
@@ -13,7 +12,6 @@ export type ResumePlanResult =
       task: Task;
       plan: Extract<TaskExecutionPlan, { mode: 'reuse-existing' }>;
       lines: string[];
-      observeResumeIntent?: boolean;
       schedulingReason: string;
       executionMode: 'fresh' | 'resume-parked';
     }
@@ -26,7 +24,6 @@ export type ResumePlanResult =
       triggerReason: string;
       newlyProvidedResources?: string[];
       triggerKind?: 'explicit-task-command' | 'natural-language-resume' | 'user-query-unblocked';
-      observeResumeIntent?: boolean;
     }
   | {
       action: 'fork_follow_up';
@@ -36,15 +33,7 @@ export type ResumePlanResult =
       schedulingReason: string;
     };
 
-/**
- * Resumes/references a task the PlanningAgent already pinned by taskId.
- *
- * Boundary: this planner does NOT decide WHICH task to resume — that is the
- * PlanningAgent's job. It only executes the deterministic recovery for a known
- * referencedTask based on its status (blocked -> unblock, parked -> resume,
- * running -> no-op, done -> fork follow-up). No natural-language target
- * selection, no session-state pointer guessing, no candidate-list matching.
- */
+/** Applies a PlanningAgent decision to one already-selected task without doing semantic matching. */
 export class TaskResumePlanner {
   constructor(
     private readonly deps: {
@@ -58,113 +47,66 @@ export class TaskResumePlanner {
     referencedTask: Task;
     plan: PlanningAgentPlan;
   }): ResumePlanResult {
-    const { userInput, referencedTask, plan: agentPlan } = input;
-    const explicitlyRequestedResume = agentPlan.task.binding === 'reference'
-      && agentPlan.task.taskId === referencedTask.id
-      && (agentPlan.task.control === 'resume_task' || agentPlan.task.control === 'recover_blocked');
-
+    const { userInput, referencedTask, plan } = input;
+    const requestedResume = plan.task.binding === 'reference'
+      && plan.task.taskId === referencedTask.id
+      && (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked');
     const executionPlan = this.deps.taskRuntimeService.buildExecutionPlan(referencedTask, userInput);
-    if (executionPlan.mode === 'blocked') {
-      return this.planBlockedRecovery(referencedTask, userInput, executionPlan, explicitlyRequestedResume);
-    }
 
+    if (executionPlan.mode === 'blocked') {
+      return this.planBlockedRecovery(referencedTask, userInput, executionPlan, plan, requestedResume);
+    }
     if (executionPlan.mode === 'fork-follow-up') {
       return {
         action: 'fork_follow_up',
         sourceTask: referencedTask,
         plan: executionPlan,
-        lines: [
-          `→ 关联到任务 #${referencedTask.id}`,
-          '→ 已完成任务不可直接重跑',
-        ],
-        schedulingReason: '跟进任务恢复',
+        lines: [`→ Referenced completed task #${referencedTask.id}`, '→ Creating a follow-up task'],
+        schedulingReason: plan.task.priority?.reason ?? 'PlanningAgent created follow-up task',
       };
     }
-
-    if (referencedTask.status === 'running' && isResumeReferenceInstruction(userInput)) {
-      return {
-        action: 'message',
-        lines: [`→ 任务 #${executionPlan.executionTaskId} 已在执行中，无需再次排队`],
-      };
+    if (referencedTask.status === 'running' && requestedResume) {
+      return { action: 'message', lines: [`→ 任务 #${executionPlan.executionTaskId} 已在执行中，无需再次排队`] };
     }
-
     return {
       action: 'execute_existing',
       task: referencedTask,
       plan: executionPlan,
       lines: [referencedTask.status === 'parked'
-        ? `→ 命中已有挂起任务 #${executionPlan.executionTaskId}`
-        : `→ 关联到任务 #${executionPlan.executionTaskId}`],
-      observeResumeIntent: referencedTask.status === 'parked',
-      schedulingReason: referencedTask.status === 'parked' ? '恢复已挂起任务' : '用户提交',
+        ? `→ Resuming parked task #${executionPlan.executionTaskId}`
+        : `→ Referenced task #${executionPlan.executionTaskId}`],
+      schedulingReason: plan.task.priority?.reason ?? 'PlanningAgent selected task',
       executionMode: referencedTask.status === 'parked' ? 'resume-parked' : 'fresh',
     };
   }
 
-  /**
-   * Recover a known blocked task the planner explicitly asked to resume.
-   * Extracts any inline materials the user provided (evaluateBlockedTask) but
-   * never picks a different task. If the block can't be resolved from input,
-   * surface the block reason as a message instead of silently unblocking.
-   */
   private planBlockedRecovery(
-    referencedTask: Task,
+    task: Task,
     userInput: string,
     executionPlan: Extract<TaskExecutionPlan, { mode: 'blocked' }>,
-    explicitlyRequestedResume: boolean,
+    plan: PlanningAgentPlan,
+    requestedResume: boolean,
   ): ResumePlanResult {
-    const blockedReason = this.getWaitingBlockReason(referencedTask);
-    if (!explicitlyRequestedResume) {
+    const blockedReason = task.dependencies.find(dependency => dependency.status === 'waiting')?.description ?? null;
+    if (!requestedResume || !blockedReason) {
       return { action: 'message', lines: [`错误：${executionPlan.error}`] };
     }
-
-    if (!blockedReason) {
-      // The task is 'blocked' but carries no waiting dependency to clear, so
-      // there is nothing a resume can resolve (e.g. it was blocked for a
-      // non-dependency reason, or its deps were already marked resolved).
-      // Surface the block error instead of silently force-unblocking it.
-      return { action: 'message', lines: [`错误：${executionPlan.error}`] };
-    }
-
-    const recovery = evaluateBlockedTask(referencedTask, userInput, this.deps.cwd ?? process.cwd());
-    if (!recovery) {
-      // No recoverable signal in input: unblock directly per the planner's
-      // explicit request (e.g. "网络恢复了，继续这个任务").
-      return {
-        action: 'unblock_and_execute',
-        task: referencedTask,
-        blockedReason,
-        lines: [
-          `→ 关联到任务 #${referencedTask.id}`,
-          `→ 任务 #${referencedTask.id} 已解除阻塞，继续执行`,
-        ],
-        schedulingReason: '用户显式请求恢复阻塞任务',
-        triggerReason: '用户显式引用旧阻塞任务并说明可继续',
-        triggerKind: 'explicit-task-command',
-        observeResumeIntent: true,
-      };
-    }
-
+    const resources = extractInlineResourceMatches(userInput, this.deps.cwd ?? process.cwd())
+      .map(match => match.resolvedPath);
     return {
       action: 'unblock_and_execute',
-      task: referencedTask,
+      task,
       blockedReason,
-      newlyProvidedResources: recovery.newlyProvidedResources,
+      newlyProvidedResources: resources,
       lines: [
-        `→ 关联到任务 #${referencedTask.id}`,
-        `→ 原因：${recovery.reason}`,
-        recovery.newlyProvidedResources.length > 0
-          ? `→ 已自动关联 ${recovery.newlyProvidedResources.length} 份补充材料`
-          : `→ 任务 #${referencedTask.id} 已解除阻塞，继续执行`,
+        `→ 任务 #${task.id} 已解除阻塞`,
+        resources.length > 0
+          ? `→ Attached ${resources.length} explicit resource(s)`
+          : `→ Planner authorized recovery of task #${task.id}`,
       ],
-      schedulingReason: `阻塞条件已满足：${recovery.reason}`,
-      triggerReason: recovery.reason,
-      triggerKind: 'user-query-unblocked',
-      observeResumeIntent: true,
+      schedulingReason: plan.task.priority?.reason ?? 'PlanningAgent recovered blocked task',
+      triggerReason: plan.reason,
+      triggerKind: 'natural-language-resume',
     };
-  }
-
-  private getWaitingBlockReason(task: Task): string | null {
-    return task.dependencies.find(dependency => dependency.status === 'waiting')?.description ?? null;
   }
 }

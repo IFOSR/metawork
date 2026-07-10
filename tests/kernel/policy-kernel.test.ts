@@ -26,7 +26,7 @@ function task(id: string, status: Task['status'] = 'ready'): Task {
   };
 }
 
-function agentClass(name: string, availability: AgentClass['availability']): AgentClass {
+function agentClass(name: string): AgentClass {
   return {
     name,
     kind: 'executor',
@@ -40,7 +40,6 @@ function agentClass(name: string, availability: AgentClass['availability']): Age
     avoidUseCases: [],
     intentAffinity: {},
     riskLevel: 'medium',
-    availability,
     historicalSuccess: 0.5,
     harness: null,
     model: null,
@@ -55,9 +54,9 @@ function agentClass(name: string, availability: AgentClass['availability']): Age
 }
 
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
-  return {
+  const base: PlanningAgentPlan = {
     id: 'plan_1',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'execute',
@@ -71,6 +70,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       title: 'task',
       goal: 'do task',
       includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'test scheduling priority' },
     },
     execution: {
       mode: 'single_executor',
@@ -100,7 +100,23 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       }],
     },
     source: 'test',
+  };
+  const action = overrides.action ?? base.action;
+  const requiresPriority = action === 'plan_work_graph'
+    || (action === 'task_control'
+      && ['resume_task', 'recover_blocked'].includes(overrides.task?.control ?? base.task.control));
+  return {
+    ...base,
     ...overrides,
+    task: {
+      ...base.task,
+      ...overrides.task,
+      priority: overrides.task?.priority !== undefined
+        ? overrides.task.priority
+        : requiresPriority
+          ? base.task.priority
+          : null,
+    },
   };
 }
 
@@ -110,10 +126,18 @@ function controlPlan(
   taskOverrides: Partial<PlanningAgentPlan['task']> = {},
   overrides: Partial<PlanningAgentPlan> = {},
 ): PlanningAgentPlan {
+  const scope = control === 'status_query'
+    ? 'dashboard'
+    : control === 'clear_tasks'
+      ? 'all'
+      : null;
+  const priority = control === 'resume_task' || control === 'recover_blocked'
+    ? { level: 'normal' as const, reason: 'test scheduling priority' }
+    : null;
   return plan({
     action: 'task_control',
     workGraph: null,
-    task: { ...plan().task, binding: 'none', taskId: null, control, ...taskOverrides },
+    task: { ...plan().task, binding: 'none', taskId: null, control, scope, priority, ...taskOverrides },
     ...overrides,
   });
 }
@@ -123,40 +147,51 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     tasks: [],
     runningTask: null,
     agentClasses: [
-      agentClass('unavailable-executor', 'unavailable'),
-      agentClass('available-executor', 'available'),
+      agentClass('unavailable-executor'),
+      agentClass('available-executor'),
     ],
     currentFocus: null,
     ...overrides,
   };
 }
 
-describe('PolicyKernel executor availability', () => {
-  it('rewrites unavailable selected executors to available candidates', () => {
+describe('PolicyKernel executor catalog validation', () => {
+  it('treats catalog membership separately from runtime health', () => {
     const decision = new PolicyKernel().decide(plan(), snapshot());
 
-    expect(decision.outcome).toBe('rewrite');
+    expect(decision.outcome).toBe('accept');
     expect(decision.runtimeAction).toBe('plan_work_graph');
-    expect(decision.plan.execution.selectedExecutor).toBe('available-executor');
-    expect(decision.plan.workGraph?.subtasks[0]?.candidateAgentClasses).toEqual(['available-executor']);
+    expect(decision.plan.execution.selectedExecutor).toBe('unavailable-executor');
+    expect(decision.plan.workGraph?.subtasks[0]?.candidateAgentClasses).toEqual([
+      'unavailable-executor',
+      'available-executor',
+    ]);
   });
 
-  it('rejects work graphs with no available executor candidates', () => {
-    const decision = new PolicyKernel().decide(plan(), snapshot({
-      agentClasses: [agentClass('unavailable-executor', 'unavailable')],
-    }));
+  it('rejects work graphs with no registered executor candidates', () => {
+    const unknown = plan({
+      execution: {
+        ...plan().execution,
+        selectedExecutor: 'ghost-executor',
+        candidateExecutors: ['ghost-executor'],
+      },
+      workGraph: {
+        reason: 'unknown',
+        subtasks: [{
+          ...plan().workGraph!.subtasks[0]!,
+          agentClassHint: 'ghost-executor',
+          candidateAgentClasses: ['ghost-executor'],
+        }],
+      },
+    });
+    const decision = new PolicyKernel().decide(unknown, snapshot());
 
     expect(decision.outcome).toBe('reject');
     expect(decision.runtimeAction).toBe('reject');
     expect(decision.reason).toContain('no available executor');
   });
 
-  // KNOWN LIMITATION (#5): the `.every(candidates.length > 0)` guard rejects a
-  // whole multi-subtask graph if ANY single subtask loses all its executors,
-  // and the selectedExecutor fallback only inspects subtasks[0]. The adapter
-  // only emits single-subtask graphs today, so this is latent; this test pins
-  // the current behavior so the future partial-dispatch fix has to update it.
-  it('rejects a multi-subtask graph when only the first subtask loses its executors (#5, latent)', () => {
+  it('rejects a multi-subtask graph when any subtask has no registered candidates', () => {
     const multi = plan({
       workGraph: {
         reason: 'multi',
@@ -167,8 +202,8 @@ describe('PolicyKernel executor availability', () => {
             goal: 'a',
             dependsOn: [],
             requiredAgentClassKind: 'executor',
-            agentClassHint: 'unavailable-executor',
-            candidateAgentClasses: ['unavailable-executor'],
+            agentClassHint: 'ghost-executor',
+            candidateAgentClasses: ['ghost-executor'],
             expectedOutput: 'summary',
             acceptance: [],
             riskLevel: 'low',
@@ -194,8 +229,6 @@ describe('PolicyKernel executor availability', () => {
     expect(decision.outcome).toBe('reject');
     expect(decision.reason).toContain('no available executor');
   });
-
-  it.todo('should dispatch the satisfiable subtasks when only some lose their executors (#5)');
 });
 
 describe('PolicyKernel confidence gate', () => {
@@ -235,6 +268,30 @@ describe('PolicyKernel confidence gate', () => {
     expect(decision.plan.execution.selectedExecutor).toBeNull();
     expect(decision.plan.execution.candidateExecutors).toEqual([]);
     expect(decision.plan.clarificationQuestion).toBeTruthy();
+  });
+});
+
+describe('PolicyKernel risk confirmation gate', () => {
+  it('turns a confirmation-requiring state change into a clarification', () => {
+    const decision = new PolicyKernel().decide(plan({
+      risk: { level: 'high', requiresConfirmation: true, reasons: ['external send'] },
+    }), snapshot());
+
+    expect(decision.outcome).toBe('clarify');
+    expect(decision.runtimeAction).toBe('clarification');
+    expect(decision.reason).toContain('risk confirmation required');
+    expect(decision.plan.workGraph).toBeNull();
+    expect(decision.plan.task.priority).toBeNull();
+  });
+
+  it('rejects an unknown clear scope before any task can be cleared', () => {
+    const decision = new PolicyKernel().decide(
+      controlPlan('clear_tasks', { scope: 'unknown' }),
+      snapshot({ tasks: [task('task_1')] }),
+    );
+
+    expect(decision.outcome).toBe('reject');
+    expect(decision.reason).toContain('clear_tasks requires scope');
   });
 });
 

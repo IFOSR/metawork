@@ -290,7 +290,7 @@ describe('Round 1 memory acceptance', () => {
     expect(session.getSnapshot().output.join('\n')).not.toContain('已编辑并确认偏好');
   });
 
-  it('auto-captures a single high-confidence low-risk user preference statement', async () => {
+  it('does not auto-capture a natural-language preference before planning', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -332,10 +332,8 @@ describe('Round 1 memory acceptance', () => {
 
     const candidates = memoryEngine.getCandidates();
     expect(candidates).toHaveLength(0);
-    expect(memoryEngine.list({ status: 'confirmed' }).map(preference => preference.content)).toContain(
-      '凡是长篇调研、人物研究、竞品分析，默认输出 Markdown 文件，并在聊天中只给摘要和文件路径',
-    );
-    expect(session.getSnapshot().output.join('\n')).toContain('已自动记录偏好');
+    expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
+    expect(session.getSnapshot().output.join('\n')).not.toContain('已自动记录偏好');
     expect(notifier.notifyMemoryCandidate).not.toHaveBeenCalled();
   });
 
@@ -388,7 +386,7 @@ describe('Round 1 memory acceptance', () => {
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
   });
 
-  it('auto-captures explicit low-risk long-term preferences without confirmation', async () => {
+  it('requires an explicit memory command for low-risk long-term preferences', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -425,20 +423,18 @@ describe('Round 1 memory acceptance', () => {
     await session.submit('以后凡是复杂方案，默认先给结论，再列执行细节');
 
     const confirmed = memoryEngine.list({ status: 'confirmed' });
-    expect(confirmed).toHaveLength(1);
-    expect(confirmed[0].content).toBe('凡是复杂方案，默认先给结论，再列执行细节');
+    expect(confirmed).toHaveLength(0);
     expect(memoryEngine.getCandidates()).toHaveLength(0);
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('已自动记录偏好');
+    expect(output).not.toContain('已自动记录偏好');
     expect(output).not.toContain('要把它记为长期偏好吗');
 
-    await session.submit('/memory auto-captured');
-    expect(session.getSnapshot().output.join('\n')).toContain('自动写入记忆');
-    expect(session.getSnapshot().output.join('\n')).toContain(confirmed[0].id);
+    await session.submit('/memory add 凡是复杂方案，默认先给结论，再列执行细节');
+    expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(1);
   });
 
-  it('does not silently auto-capture high-risk memory candidates', async () => {
+  it('does not create a high-risk memory candidate from natural language', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -475,9 +471,9 @@ describe('Round 1 memory acceptance', () => {
     await session.submit('以后凡是报告都要自动发给客户');
 
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
-    expect(memoryEngine.getCandidates()).toHaveLength(1);
+    expect(memoryEngine.getCandidates()).toHaveLength(0);
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('高风险偏好不会静默写入');
+    expect(output).not.toContain('高风险偏好不会静默写入');
   });
 });

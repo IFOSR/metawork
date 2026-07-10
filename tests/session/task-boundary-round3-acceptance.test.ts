@@ -700,7 +700,7 @@ describe('Round 3 task boundary acceptance', () => {
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(executionInput.task.id).toBe(parkedTask.id);
     expect(executionInput.executionContextBundle.mode).toBe('resume-parked');
-    expect(session.getSnapshot().output.join('\n')).toContain(`命中已有挂起任务 #${parkedTask.id}`);
+    expect(session.getSnapshot().output.join('\n')).toContain(`Resuming parked task #${parkedTask.id}`);
   });
 
   it('unblocks and resumes an explicitly requested blocked task instead of creating a new task', async () => {

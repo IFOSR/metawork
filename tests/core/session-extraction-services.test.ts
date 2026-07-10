@@ -149,8 +149,8 @@ describe('session extraction services', () => {
     });
     expect(recovery.action).toBe('unblock_and_execute');
     expect(recovery.action === 'unblock_and_execute'
-      ? recovery.observeResumeIntent
-      : null).toBe(true);
+      ? recovery.triggerReason
+      : null).toBe(reason);
   });
 
   it('reports a running planner-pinned task as already executing instead of re-queueing it', () => {

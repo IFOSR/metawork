@@ -43,7 +43,7 @@ function createConfig(): Config {
 function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -57,6 +57,7 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
       title: '普通功能',
       goal: '实现一个普通功能',
       includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'test work graph priority' },
     },
     execution: {
       mode: 'single_executor',
@@ -250,6 +251,7 @@ describe('MetaclawSession planning-agent routing', () => {
           title: '修改仓库代码',
           goal: '修改仓库代码实现一个功能',
           includeRecentConversationContext: false,
+          priority: { level: 'normal', reason: 'test work graph priority' },
         },
         execution: {
           mode: 'single_executor',

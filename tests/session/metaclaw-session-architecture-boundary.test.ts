@@ -45,12 +45,15 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('applyFocusAwareIntentOverride');
   });
 
-  it('does not pre-filter PlanningAgent recent task candidates through durable regex rules', () => {
+  it('uses a minimal PlanningContext without task history or rule hints', () => {
     const source = readSource('src/session/metaclaw-session.ts');
     const planningContextSource = readSource('src/planning/planning-context-builder.ts');
 
     expect(source).not.toContain('const durableTasks = filterDurableTasks(this.taskRuntimeService.listTasks())');
-    expect(planningContextSource).toContain('recentTasks: buildRecentTaskSummaries(this.deps.listTasks())');
+    expect(planningContextSource).not.toContain('recentTasks');
+    expect(planningContextSource).not.toContain('ruleHints');
+    expect(planningContextSource).not.toContain('agentClasses');
+    expect(planningContextSource).toContain('userInput');
   });
 
   it('uses SchedulerBridge for execution completion and blocking state transitions', () => {

@@ -68,9 +68,9 @@ flowchart LR
   Claim <--> Store
 ```
 
-主干逻辑很简单：所有自然语言输入进入同一个 runtime，然后由 planner work unit 暴露的 `PlanningAgent` 接口产出结构化 `PlanningAgentPlan`。`PolicyKernel` 是自然语言规划的唯一授权层：它验证 plan、检查任务状态和冲突、重写不可用 executor 候选，并返回 `KernelDecision`。Runtime 服务再应用这个决策：直接回答、应用任务控制、创建或绑定任务、持久化 kernel 授权过的 subtasks、claim 空闲 executor work units，并把已 claim 的 subtask 交给 `ExecutionRuntime`。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出 v2 `PlanningAgentPlan`。启动 context 只含输入、可信 session/source、授权边界和超时；任务、会话、runtime 和 executor 事实通过只读 stdio MCP 按需查询。`PolicyKernel` 负责确定性授权，Runtime 再 claim 健康容量或探测并创建 executor WorkUnit。
 
-当前 Codex `PlanningAgent` adapter 会通过 `LlmBridge` 调用 Codex CLI，并返回结构化 `PlanningAgentPlan`。旧的 `IntentOrchestrator` / `SemanticIntentRouter` / `ExecutorRouter` 路由子系统已整体删除；它曾定义的 planner 词汇类型现已迁至 `src/planning/planning-types.ts`。
+Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
 ### 普通问答路径
 
@@ -154,7 +154,7 @@ conversation / task 的边界很重要：
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
 | Hermes Agent | `hermes` | 调研、多工具编排、记忆/网关/助手工作流 | 安装并登录 Hermes |
 
-默认运行时命令是 `codex`，内部表示为 `codex-cli` executor agent class 加一个空闲 executor work unit。当前自然语言 dispatch 路径是 `PlanningAgent -> PolicyKernel -> Runtime`：MetaClaw 识别 durable task intent，提出 subtask work graph，授权或重写可用 executor `AgentClass` 候选，然后由 `WorkUnitClaimService` claim 一个空闲 executor `WorkUnit`，再交给 `ExecutionRuntime` 运行 adapter。Pi Agent 和 Hermes Agent 在对应 agent class 可用时可以作为调研类工作的候选或被选用。DeepSeek TUI、Claude Code 和 OpenClaw 仍然可用于显式本地配置，但除非被选为默认 executor，否则不会进入默认注册表。
+默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。
 
 ## 前提条件
 
@@ -365,7 +365,6 @@ Executor 扩展契约：
 - `name`：稳定的 Executor 名称，例如 `research-bot` 或 `finance-research-agent`。
 - `domains`：适用领域，例如 `research`、`finance`、`software`。
 - `capabilities`：能力标签，例如 `research`、`report_generation`、`multi_tool`、`coding`、`tests`。
-- `availability`：`available` 或 `unavailable`；安装检测失败时 MetaClaw 会更新该状态。
 
 建议的路由字段：
 
@@ -589,7 +588,7 @@ metaclaw --connect
 
 在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.4`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
 
-容器以只读卷挂载宿主机的 `dist/`，因此 `docker/shell.ps1` 会在源码比产物新时自动重编 `dist/`（源码改动无需手动 `npm run build`，也无需重建镜像/容器）。完整 `shell.ps1` 命令参考和免密 SSH 配置见 README 的 [通过 Docker + SSH 交互式运行](../../README.md#running-interactively-via-docker--ssh) 章节。
+完整运行镜像内置 CLI、Planner MCP、v2 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
 
 ## 配置
 
@@ -806,12 +805,12 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 现在拆成 planner 理解、kernel 授权和 runtime 执行三层。显式记忆/偏好快路之后，raw user input 进入 `PlanningAgent`。当前 Codex adapter 会直接通过 `LlmBridge` 产出结构化 `PlanningAgentPlan`，替代旧的 `IntentOrchestrator` round-trip（现已删除）。`PlanningAgent` 返回以下 action 之一：
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出 v2 `PlanningAgentPlan`。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`PolicyKernel` 随后验证 schema、confidence、task status、单活跃任务冲突、blocked/recovery 证据和 executor availability。它返回 `accept`、`rewrite`、`reject` 或 `clarify` 以及一个 `KernelDecision`。Kernel 必须保持纯粹：不写 repository、不 claim work unit、不调用 executor，也不发送 UI/delivery 消息。
+`PolicyKernel` 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
 
 Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化 kernel-approved work graph，并恢复已有未完成 subtasks 以便继续 dispatch。`WorkUnitClaimService` 会 sweep 过期 lease，寻找空闲 executor `WorkUnit`，维护 claimed/running/waiting/failed/released 状态，并记录 work-unit events。`ExecutionRuntime` 接收 `SubtaskExecutionSpec`，其中包含已 claim 的 subtask、work unit、agent class runtime config、上下文和验收要求。它不再接收 `ExecutionPolicy`、`primaryExecutor`、`candidateExecutors` 或 `fallbackChain`。
 
@@ -929,7 +928,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、`llm-bridge`、`RuleHintsProvider`、`CapabilityClass` 和 `task-routing`。旧路由/意图子系统（`IntentOrchestrator`、`SemanticIntentRouter`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionPolicyPlanner`、`ExecutionStrategyPlanner`、`src/planner/*`）已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄：保留共享基础类型、通用记忆/排序 `llm-bridge` 和 `CapabilityClass`。关键词 RuleHints、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
 
 ## License
 

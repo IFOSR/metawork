@@ -85,7 +85,7 @@ describe('planner-first executor command acceptance', () => {
 
     const row = db.prepare(`
       SELECT name, kind, domains_json, capabilities_json, runtime_command, runtime_args_json,
-             runtime_check_command, availability
+             runtime_check_command
       FROM agent_classes WHERE name = ?
     `).get('research-bot') as {
       name: string;
@@ -95,7 +95,6 @@ describe('planner-first executor command acceptance', () => {
       runtime_command: string;
       runtime_args_json: string;
       runtime_check_command: string;
-      availability: string;
     };
 
     expect(row).toEqual(expect.objectContaining({
@@ -103,7 +102,6 @@ describe('planner-first executor command acceptance', () => {
       kind: 'executor',
       runtime_command: 'research-bot',
       runtime_check_command: 'research-bot --version',
-      availability: 'available',
     }));
     expect(JSON.parse(row.runtime_args_json)).toEqual(['run', '--prompt', '{prompt}']);
     expect(JSON.parse(row.domains_json)).toEqual(['research', 'reporting']);
@@ -184,7 +182,7 @@ describe('planner-first executor command acceptance', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the fixed executor work unit instead of racing or choosing peer executors', async () => {
+  it('provisions the planner-selected executor class on demand without choosing peers', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-fixed-executor');
@@ -232,7 +230,11 @@ describe('planner-first executor command acceptance', () => {
 
     expect(defaultExecutor.execute).toHaveBeenCalledTimes(1);
     expect(piExecutor.execute).not.toHaveBeenCalled();
-    expect(db.prepare('SELECT agent_class_name, state FROM work_units WHERE id = ?').get('executor-1')).toEqual({
+    expect(db.prepare(`
+      SELECT agent_class_name, state FROM work_units
+      WHERE agent_class_kind = 'executor'
+      ORDER BY created_at DESC LIMIT 1
+    `).get()).toEqual({
       agent_class_name: 'codex-cli',
       state: 'idle',
     });

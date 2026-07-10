@@ -619,6 +619,39 @@ const MIGRATIONS: Migration[] = [
         ON planning_decisions(task_id, created_at);
     `,
   },
+  {
+    version: 17,
+    up: `
+      CREATE TABLE IF NOT EXISTS planner_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        request_source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        error_summary TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS planner_tool_calls (
+        id TEXT PRIMARY KEY,
+        planner_run_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        tool_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        arguments_summary_json TEXT NOT NULL DEFAULT '{}',
+        result_summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (planner_run_id) REFERENCES planner_runs(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_planner_runs_session
+        ON planner_runs(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_planner_tool_calls_run
+        ON planner_tool_calls(planner_run_id, sequence);
+    `,
+  },
 ];
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {

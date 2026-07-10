@@ -148,6 +148,15 @@ export class ExecutorRegistry {
   resolveRequired(name: string): ExecutorAdapter {
     return this.resolve(name) ?? this.deps.defaultExecutor;
   }
+
+  async isAvailable(name: string): Promise<boolean> {
+    const adapter = this.resolve(name);
+    if (!adapter) {
+      return false;
+    }
+    const available = await adapter.isAvailable();
+    return available !== false;
+  }
 }
 
 export function createDefaultExecutor(config: {
@@ -189,6 +198,10 @@ export class ExecutionRuntime {
     private readonly registry: ExecutorRegistry,
     private readonly defaultExecutor: ExecutorAdapter,
   ) {}
+
+  isExecutorAvailable(name: string): Promise<boolean> {
+    return this.registry.isAvailable(name);
+  }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
     const executor = this.registry.resolveRequired(input.spec.agentClass.name);

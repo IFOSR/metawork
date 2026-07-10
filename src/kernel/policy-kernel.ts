@@ -41,6 +41,10 @@ export class PolicyKernel {
       return this.reject(plan, `invalid PlanningAgentPlan: ${validation.errors.join('; ')}`);
     }
 
+    if (isStateChangingPlan(plan) && plan.risk.requiresConfirmation) {
+      return this.clarify(plan, `risk confirmation required: ${plan.risk.reasons.join('; ') || plan.risk.level}`);
+    }
+
     if (STATE_CHANGE_ACTIONS.includes(plan.action) && plan.confidence < 0.45) {
       return {
         id: `kd_${generateInteractionId()}`,
@@ -129,7 +133,7 @@ export class PolicyKernel {
       return this.reject(plan, `单活跃任务限制: 当前活跃顶层任务 #${snapshot.runningTask.id}`);
     }
 
-    const rewrite = this.rewriteUnavailableExecutors(plan, snapshot.agentClasses);
+    const rewrite = this.rewriteUnknownExecutors(plan, snapshot.agentClasses);
     if (!rewrite.plan.workGraph?.subtasks.every(subtask => subtask.candidateAgentClasses.length > 0)) {
       return this.reject(rewrite.plan, 'no available executor agent class can satisfy the work graph');
     }
@@ -148,13 +152,13 @@ export class PolicyKernel {
     return this.accept(plan, 'work graph authorized');
   }
 
-  private rewriteUnavailableExecutors(plan: PlanningAgentPlan, agentClasses: AgentClass[]): {
+  private rewriteUnknownExecutors(plan: PlanningAgentPlan, agentClasses: AgentClass[]): {
     plan: PlanningAgentPlan;
     rewritten: boolean;
     reason: string;
   } {
     const availableExecutorNames = new Set(agentClasses
-      .filter(agentClass => agentClass.kind === 'executor' && agentClass.availability === 'available')
+      .filter(agentClass => agentClass.kind === 'executor')
       .map(agentClass => agentClass.name));
     let rewritten = false;
     const subtasks = (plan.workGraph?.subtasks ?? []).map(subtask => {
@@ -190,7 +194,7 @@ export class PolicyKernel {
           : null,
       },
       rewritten,
-      reason: 'rewrote unavailable executor candidates',
+      reason: 'rewrote unknown executor candidates',
     };
   }
 
@@ -237,6 +241,11 @@ function actionToRuntimeAction(action: PlanningAction): KernelRuntimeAction {
   return action;
 }
 
+function isStateChangingPlan(plan: PlanningAgentPlan): boolean {
+  if (plan.action === 'plan_work_graph') return true;
+  return plan.action === 'task_control' && plan.task.control !== 'status_query';
+}
+
 /**
  * Reshape a plan into a clarification: strip the work graph and neutralize
  * execution routing so the persisted decision cannot be mistaken for an
@@ -247,6 +256,10 @@ function toClarificationPlan(plan: PlanningAgentPlan, clarificationQuestion: str
     ...plan,
     action: 'clarification',
     clarificationQuestion,
+    task: {
+      ...plan.task,
+      priority: null,
+    },
     workGraph: null,
     execution: {
       ...plan.execution,

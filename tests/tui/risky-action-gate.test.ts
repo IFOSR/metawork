@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -74,7 +75,7 @@ afterEach(() => {
 });
 
 describe('App risky action gate', () => {
-  it('warns but does not wait for confirmation before executing a risky external action prompt', async () => {
+  it('blocks a risky state-changing plan until the planner observes confirmation', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -110,21 +111,26 @@ describe('App risky action gate', () => {
         sessionId: 'sess_risky_gate',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(workGraphPlan({
+          goal: '直接把邮件发给客户',
+          overrides: {
+            risk: { level: 'high', requiresConfirmation: true, reasons: ['external send'] },
+          },
+        })),
       }),
     );
 
     await submitLine('直接把邮件发给客户');
 
     await flushUpdates();
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(app.lastFrame()).toContain('⚠️ 检测到高风险外部动作');
-    expect(app.lastFrame()).not.toContain('确认执行');
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(app.lastFrame()).toContain('risk confirmation required');
 
     app.unmount();
     app.cleanup();
   });
 
-  it('treats later confirmation text as a normal input because no confirmation is pending', async () => {
+  it('lets the planner produce a new safe plan after explicit confirmation', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -160,13 +166,22 @@ describe('App risky action gate', () => {
         sessionId: 'sess_risky_confirm',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          workGraphPlan({
+            goal: '直接把邮件发给客户',
+            overrides: {
+              risk: { level: 'high', requiresConfirmation: true, reasons: ['external send'] },
+            },
+          }),
+          workGraphPlan({ goal: '用户已确认发送邮件' }),
+        ),
       }),
     );
 
     await submitLine('直接把邮件发给客户');
     await submitLine('确认执行');
 
-    expect(executor.execute).toHaveBeenCalledTimes(2);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(app.lastFrame()).toContain('已发送给客户');
 
     app.unmount();

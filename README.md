@@ -38,13 +38,14 @@ MetaClaw treats agent work as work:
 - Durable work gets explicit task state and resume context.
 - Planning is separated from authorization through `PlanningAgent` and `PolicyKernel`.
 - Subtasks are persisted as a task-owned work graph.
-- Idle executor work units claim ready subtasks instead of receiving raw user input directly.
+- Runtime claims a healthy idle executor work unit or probes and creates one on demand; executors never receive raw user input directly.
 - Results are verified, recorded, and delivered with artifacts.
 
 ## Features
 
 - **Durable task state**: created, ready, running, parked, blocked, done, archived, and cancelled tasks survive interruptions.
-- **Planner-first dispatch**: natural-language input flows through `PlanningAgent`, `PolicyKernel`, and runtime services before any executor is called.
+- **Planner-owned semantics**: natural-language input flows through an isolated Codex `PlanningAgent`, then `PolicyKernel`, before any state change or executor call.
+- **Tool-mediated context**: bounded read-only Planner MCP tools expose task, current-session, runtime, and executor facts only when the Planner needs them.
 - **Work graphs and work units**: complex requests can become persisted subtasks with dependencies, acceptance criteria, executor candidates, and claimable runtime slots.
 - **Local executor adapters**: Codex CLI is the default executor; Pi Agent, Hermes Agent, and custom CLI executors can be registered for specialized work.
 - **Memory with boundaries**: confirmed preferences, task history, and context bundles are recalled only when clearly applicable.
@@ -88,15 +89,13 @@ Prerequisites: Docker Desktop, and `docker/pi.env` with `OPENAI_API_KEY` **and**
 `OPENAI_BASE_URL` set (copy `docker/pi.env.example`). `docker/pi.env` is the
 single API config entry point — both `codex` (default planner + executor) and
 `pi` (available as an executor candidate) read their key and base URL from it.
-`entrypoint.sh` substitutes `OPENAI_BASE_URL` into the codex and pi config
-templates at container start, so changing supplier means editing only
-`docker/pi.env`. The default model for all agents is `gpt-5.4` (see
-`docker/codex-config/config.toml` and `docker/pi-config/settings.json`). The
-container bind-mounts the host `dist/`, so the TUI runs whatever `dist/index.js`
-currently exists; `shell.ps1` rebuilds `dist/` automatically when any
-`src/**/*.ts,tsx` file is newer than `dist/index.js` (on `-Start`,
-`-Rebuild`, and the default TUI launch), so source edits sync in without a
-manual `npm run build`.
+`entrypoint.sh` substitutes `OPENAI_BASE_URL` into the Codex and Pi templates
+at container start. Planner and executor use separate `CODEX_HOME` directories;
+only API credentials are shared. The image contains `dist/index.js`,
+`dist/planner-mcp.js`, the generated PlanningAgentPlan v2 schema, the Planner
+Skill, and both Codex configurations. Host `dist`, Codex/PI configuration, and
+the entrypoint are not bind-mounted. After source changes, use `-Rebuild`;
+only dedicated `/workspace` and `/data` volumes persist at runtime.
 
 ```powershell
 .\docker\shell.ps1 -Start    # build image (if needed) + start the SSH container
@@ -236,7 +235,7 @@ flowchart LR
   Kernel -. audit .-> Store
 ```
 
-The important boundary is that natural-language planning does not directly execute work. `PlanningAgent` proposes intent, target task, executor candidates, and optional work graph nodes. `PolicyKernel` validates and authorizes that proposal against state, conflicts, confidence, and executor availability. Runtime services then apply the accepted decision by answering directly, controlling an existing task, or creating/binding durable task state and dispatching ready subtasks.
+The important boundary is that natural-language planning does not directly execute work. The isolated Codex `PlanningAgent` owns semantic interpretation and uses bounded read-only MCP tools when task/session/runtime facts are needed. `PolicyKernel` validates and authorizes the v2 proposal against state, conflicts, confidence, catalog membership, and confirmation requirements. Runtime then applies the decision and obtains live executor health only from `WorkUnit` claim/probe state.
 
 The current production path deliberately keeps one active top-level task admitted at a time. Multiple subtasks can exist inside that task, and ready subtasks are claimed by executor work units as dependencies are satisfied. This keeps local execution predictable while the planner, policy, and work-unit lifecycle continue to harden.
 
@@ -245,7 +244,7 @@ The current production path deliberately keeps one active top-level task admitte
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Build in watch mode with tsup. |
-| `npm run build` | Bundle `src/index.ts` to `dist/index.js`. |
+| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v2 JSON Schema. |
 | `npm run start` | Run the built CLI from `dist/`. |
 | `npm test` | Run the Vitest suite once. |
 | `npm run test:watch` | Run Vitest in watch mode. |

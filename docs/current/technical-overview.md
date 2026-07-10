@@ -36,7 +36,7 @@ flowchart LR
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan<br/>intent, target, candidates,<br/>work graph proposal]
-  Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>executor availability]
+  Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>confirmation and catalog]
   Kernel --> Decision{KernelDecision}
   Decision -->|direct_reply| Conversation[ConversationRuntimeService<br/>answer without durable task]
   Decision -->|clarification| Clarify[Clarification<br/>ask for missing input]
@@ -49,7 +49,7 @@ flowchart LR
   ExecCoord --> Memory[MemoryContextService<br/>resume pack, preferences, materials]
   Memory --> GraphRuntime[WorkGraphRuntimeService<br/>apply approved work graph]
   GraphRuntime --> Graph[Work Graph<br/>persisted Subtasks]
-  Graph --> Claim[WorkUnitClaimService<br/>claim idle executor WorkUnit]
+  Graph --> Claim[WorkUnitClaimService<br/>claim or probe executor WorkUnit]
   Claim --> Spec[SubtaskExecutionSpec<br/>subtask, work unit, agent class]
   Spec --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
   Executors --> Verify[Verification and delivery<br/>tests, evidence, artifacts]
@@ -68,9 +68,9 @@ flowchart LR
   Claim <--> Store
 ```
 
-The main idea is simple: every natural-language input enters one runtime, then a planner work unit exposes the `PlanningAgent` interface and proposes a structured `PlanningAgentPlan`. `PolicyKernel` is the single authorization layer for natural-language planning: it validates the plan, checks task state and conflicts, rewrites unavailable executor candidates, and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting kernel-approved subtasks, claiming idle executor work units, and running claimed subtasks through `ExecutionRuntime`.
+Every natural-language input enters one runtime, then an isolated Codex planner exposes `PlanningAgent` and proposes a v2 `PlanningAgentPlan`. Its startup context is minimal and it reads bounded task/session/runtime/executor facts through a read-only stdio MCP only when needed. `PolicyKernel` validates state, conflicts, executor catalog membership, and confirmation requirements. Runtime applies the decision, claims healthy capacity or probes a new executor WorkUnit, and runs claimed subtasks through `ExecutionRuntime`.
 
-The current Codex `PlanningAgent` adapter prompts the Codex CLI through `LlmBridge` and returns a structured `PlanningAgentPlan`. The legacy `IntentOrchestrator` / `SemanticIntentRouter` / `ExecutorRouter` routing subsystem has been removed entirely; the planner vocabulary types it once defined now live in `src/planning/planning-types.ts`.
+The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
 ### Direct Reply Path
 
@@ -156,7 +156,7 @@ MetaClaw supports these executor adapters:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
 | Hermes Agent | `hermes` | Research tasks, multi-tool orchestration, memory/gateway/assistant workflows | Install and authenticate Hermes |
 
-The default runtime command is `codex`, represented internally as the `codex-cli` executor agent class plus an idle executor work unit. The active natural-language dispatch path is `PlanningAgent -> PolicyKernel -> Runtime`: MetaClaw recognizes the durable task intent, proposes a work graph of subtasks, authorizes or rewrites available executor `AgentClass` candidates, and lets `WorkUnitClaimService` claim an idle executor `WorkUnit` before `ExecutionRuntime` runs the adapter. Pi Agent and Hermes Agent can be selected or used as candidates for research-style work when their agent classes are available. DeepSeek TUI, Claude Code, and OpenClaw remain available for explicit local configuration, but they are not seeded into the default registry unless selected as the default executor.
+The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi Agent and Hermes Agent can be selected for research-style work when registered in the catalog.
 
 ## Prerequisites
 
@@ -358,7 +358,7 @@ One-line registration is also supported:
   --capabilities research,report_generation
 ```
 
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaClaw appends the prompt as the final argument. Before dispatching to a custom executor, MetaClaw runs the configured check command. If the check fails, the agent class is marked `unavailable`; unavailable agent classes are excluded from planner candidates, and a task with no claimable executor work unit is blocked with a recovery hint instead of being silently rerouted.
+`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaClaw appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
 
 Executor extension contract:
 
@@ -367,7 +367,6 @@ Required routing fields:
 - `name`: stable executor name, such as `research-bot` or `finance-research-agent`.
 - `domains`: where the executor fits, such as `research`, `finance`, or `software`.
 - `capabilities`: what the executor can do, such as `research`, `report_generation`, `multi_tool`, `coding`, or `tests`.
-- `availability`: `available` or `unavailable`; MetaClaw updates this when install checks fail.
 
 Recommended routing fields:
 
@@ -556,15 +555,16 @@ On Windows, `docker exec -it` does not give the Ink TUI a real terminal and the
 local install path assumes WSL2. The `docker/` workflow instead runs the
 container as an SSH server, giving a genuine PTY for the TUI plus a shell for
 browsing `/workspace` output files (and VS Code Remote-SSH access). The default
-planner + executor is Codex (`gpt-5.4`); Pi is retained as an executor
+planner + executor is Codex with separate Planner/Executor homes; Pi is retained as an executor
 candidate. `docker/pi.env` is the single API config entry point — both
 executors read `OPENAI_API_KEY` and `OPENAI_BASE_URL` from it, and
 `docker/entrypoint.sh` substitutes the base URL into the config templates at
 container start.
 
-The container bind-mounts the host `dist/`, so `docker/shell.ps1` rebuilds
-`dist/` automatically when source files are newer than the bundle (no manual
-`npm run build`, and no image/container rebuild needed for source edits). See
+The hermetic runtime image contains the CLI, Planner MCP, generated v2 schema,
+Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
+Codex/PI configs, and entrypoint are not mounted. Source changes require
+`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. See
 the README's [Running interactively via Docker + SSH](../../README.md#running-interactively-via-docker--ssh)
 section for the full `shell.ps1` command reference and passwordless SSH setup.
 
@@ -783,14 +783,14 @@ This prevents queued work from wasting compute while preserving task safety. Mul
 
 ## Planning Agent, Policy Kernel, And Work Units
 
-Natural-language dispatch is now split into planner understanding, kernel authorization, and runtime execution. After explicit memory/preference fast paths, raw user input enters `PlanningAgent`. The current Codex adapter prompts `LlmBridge` directly to produce a structured `PlanningAgentPlan`, replacing the old `IntentOrchestrator` round-trip (now deleted). `PlanningAgent` returns one of these proposed actions:
+Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a v2 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner proposes a work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, required agent-class kind, and candidate executor agent classes.
 
-`PolicyKernel` then validates schema shape, confidence, task status, single-active-task conflicts, blocked/recovery evidence, and executor availability. It returns `accept`, `rewrite`, `reject`, or `clarify` plus a `KernelDecision`. The kernel is deliberately pure: it does not write repositories, claim work units, call executors, or send UI/delivery messages.
+`PolicyKernel` validates schema shape, priority requirements, confidence, task status, single-active-task conflicts, explicit recovery targets, executor catalog membership, task-control scopes, and confirmation requirements. It returns `accept`, `rewrite`, `reject`, or `clarify`. The kernel remains pure.
 
-Runtime services apply kernel decisions. `KernelDecisionApplier` writes the `planning_decisions` audit row and dispatches to conversation, task-control presentation, or durable task preparation. `WorkGraphRuntimeService` persists only kernel-approved work graphs and recovers existing unfinished subtasks for dispatch. `WorkUnitClaimService` sweeps expired leases, finds an idle executor `WorkUnit`, marks it claimed/running/waiting/failed/released, and records work-unit events. `ExecutionRuntime` receives a `SubtaskExecutionSpec` containing the claimed subtask, work unit, agent class runtime config, context, and acceptance requirements. It no longer receives an `ExecutionPolicy`, `primaryExecutor`, `candidateExecutors`, or `fallbackChain`.
+Runtime services apply kernel decisions. `KernelDecisionApplier` writes `planning_decisions`; Planner runs and bounded redacted tool summaries are audited in `planner_runs` and `planner_tool_calls`. `WorkGraphRuntimeService` persists only kernel-approved graphs. `WorkUnitClaimService` claims healthy idle capacity or probes new instances in approved candidate order, recording starting/success/failure/claim events. `ExecutionRuntime` receives the claimed `SubtaskExecutionSpec`.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -945,7 +945,7 @@ src/
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives (`types.ts`, `embedding-provider.ts`), the `llm-bridge`, `RuleHintsProvider`, `CapabilityClass`, and `task-routing`. The legacy routing/intent subsystem (`IntentOrchestrator`, `SemanticIntentRouter`, `ExecutorRouter`, `ExecutionPlanningService`, `ExecutionPolicyPlanner`, `ExecutionStrategyPlanner`, `src/planner/*`) has been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives, the generic memory/ranking `llm-bridge`, and `CapabilityClass`. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
 
 ## License
 

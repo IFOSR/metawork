@@ -1,5 +1,5 @@
 import type { CommandHandler, CommandContext, CommandResult } from './router.js';
-import { filterDurableTasks, MANAGEABLE_TASK_STATUSES, type TaskClearScope } from '../core/task-routing.js';
+import { MANAGEABLE_TASK_STATUSES, type TaskClearScope } from '../task/task-control-types.js';
 import { buildMaterialSummary, extractMaterialTextSnippets, isWebLink, splitTaskResources } from '../intent/material-utils.js';
 import type { Task, TaskStatus } from '../core/types.js';
 import { TaskSearchIndexRepo } from '../storage/task-search-index-repo.js';
@@ -39,7 +39,7 @@ export function cancelTasksByScope(
 ): { cancelled: Task[]; runningCancelled: boolean } {
   const repo = context.taskEngine['taskRepo'];
   const statuses = CLEAR_SCOPE_STATUSES[scope];
-  const candidates = filterDurableTasks(repo.findAll())
+  const candidates = repo.findAll()
     .filter(task => statuses.includes(task.status));
   const runningCancelled = candidates.some(task => task.status === 'running');
 
@@ -193,17 +193,17 @@ export const tasksCommand: CommandHandler = {
     }
 
     if (filter === 'active') {
-      tasks = filterDurableTasks(repo.findActive());
+      tasks = repo.findActive();
     } else if (filter === 'ready') {
-      tasks = filterDurableTasks(repo.findByStatus('ready'));
+      tasks = repo.findByStatus('ready');
     } else if (filter === 'parked') {
-      tasks = filterDurableTasks(repo.findByStatus('parked'));
+      tasks = repo.findByStatus('parked');
     } else if (filter === 'blocked') {
-      tasks = filterDurableTasks(repo.findByStatus('blocked'));
+      tasks = repo.findByStatus('blocked');
     } else if (filter === 'done') {
-      tasks = filterDurableTasks(repo.findByStatus('done'));
+      tasks = repo.findByStatus('done');
     } else {
-      tasks = filterDurableTasks(repo.findAll());
+      tasks = repo.findAll();
     }
 
     if (tasks.length === 0) {
@@ -216,11 +216,11 @@ export const tasksCommand: CommandHandler = {
     }
 
     const groups = [
-      { title: '当前执行', tasks: filterDurableTasks(repo.findByStatus('running')) },
-      { title: '待执行', tasks: filterDurableTasks(repo.findByStatus('ready')) },
-      { title: '已挂起', tasks: filterDurableTasks(repo.findByStatus('parked')) },
-      { title: '已阻塞', tasks: filterDurableTasks(repo.findByStatus('blocked')) },
-      { title: '已完成', tasks: filterDurableTasks(repo.findByStatus('done')) },
+      { title: '当前执行', tasks: repo.findByStatus('running') },
+      { title: '待执行', tasks: repo.findByStatus('ready') },
+      { title: '已挂起', tasks: repo.findByStatus('parked') },
+      { title: '已阻塞', tasks: repo.findByStatus('blocked') },
+      { title: '已完成', tasks: repo.findByStatus('done') },
     ].filter(group => group.tasks.length > 0);
 
     const lines = ['任务清单：', ''];

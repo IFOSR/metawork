@@ -1,0 +1,30 @@
+model = "gpt-5.6-luna"
+model_provider = "anyint"
+web_search = "disabled"
+sandbox_mode = "read-only"
+
+[features]
+apps = false
+multi_agent = false
+unified_exec = false
+shell_tool = false
+tool_suggest = false
+goals = false
+guardian_approval = false
+
+[model_providers.anyint]
+name = "AnyInt"
+base_url = "__OPENAI_BASE_URL__"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.metaclaw_planner]
+command = "node"
+args = ["/app/dist/planner-mcp.js"]
+env_vars = ["METACLAW_HOME", "METACLAW_DB_PATH", "METACLAW_PLANNER_SESSION_ID"]
+startup_timeout_sec = 10
+tool_timeout_sec = 15
+enabled = true
+required = true
+enabled_tools = ["search_tasks", "get_task_context", "get_current_session_context", "get_runtime_state", "list_executor_classes"]
+default_tools_approval_mode = "approve"

@@ -4,17 +4,17 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. A planner work unit implements the `PlanningAgent` interface, which understands the user input and proposes a structured `PlanningAgentPlan`. The deterministic `PolicyKernel` validates or rewrites that plan against the current runtime snapshot and returns a `KernelDecision`. Runtime services then apply that decision by answering directly, applying task control, creating or binding a task, persisting approved subtasks, claiming an idle executor `WorkUnit`, or calling `ExecutionRuntime` with a `SubtaskExecutionSpec`.
+The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. The isolated Codex `PlanningAgent` owns all natural-language semantics and proposes a v2 `PlanningAgentPlan`. Its startup context is minimal; bounded read-only stdio MCP tools provide task, current-session, runtime, and executor facts on demand. The deterministic `PolicyKernel` validates or rewrites that plan and returns a `KernelDecision`. Runtime applies it, claims healthy capacity or probes a new executor `WorkUnit`, and calls `ExecutionRuntime` with a `SubtaskExecutionSpec`.
 
-`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation. The old `IntentOrchestrator`/`IntentDecisionV2`/`ExecutorProfile` routing layer has been removed; there is no legacy intent-orchestrator fallback.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal context construction, v2 plan types/schema, and validation. Planner timeout, MCP failure, or invalid output after repair fails closed to clarification; there is no legacy intent or keyword fallback.
 
 `src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
 
-`src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions for concrete work units. `SessionExecutionCoordinator` calls its lightweight sweep before dispatch and claim attempts so expired executor leases can be observed and their subtasks can be made recoverable.
+`src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns starting/probe, ordered candidate fallback, claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions. Static `AgentClass` data never represents live health; the legacy database `availability` column is ignored.
 
 The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService`; do not reintroduce a parallel routing layer.
 
-Default agent classes and fixed first-pool work units are seeded in `src/executor/agent-class-seeder.ts`: `planner`/`planner-1` and the configured executor agent class/`executor-1`. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
+Startup inserts missing `planner` and configured executor AgentClasses without overwriting database records. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
 
 When touching dispatch, update focused tests around the active path first: PlanningAgent/PolicyKernel, work-graph runtime service, work unit claim service, session execution coordinator, execution runtime, and storage migrations. The current regression anchor is `tests/session/planner-work-unit-bugfix.test.ts`.
 
@@ -97,12 +97,12 @@ A valid planner outcome meaning no subtask should be dispatched. The runtime mus
 _Avoid_: failure, clarification, unknown route
 
 **Selection Signal**:
-A hard, quantifiable fact provided to the planner or routing skill package when multiple work units can satisfy a subtask, such as route-intent affinity, recent success rate, pending load, price, or current availability.
+A hard, quantifiable fact read by the Planner through tools when multiple agent classes can satisfy a subtask, such as static capability metadata or current WorkUnit capacity. Natural-language keyword weights and legacy AgentClass availability are not selection signals.
 _Avoid_: static historical success as truth, user preference
 
 **Fallback Chain**:
-A future planner recovery pattern for trying another suitable executor after a failed or low-quality claim. It is not the active platform dispatch mechanism in the current implementation; first-version failures release the work unit, record events, and leave replanning to the planner/recovery path.
-_Avoid_: race, racing, parallel candidates, automatic platform reroute
+The ordered list of AgentClass candidates already approved in a plan. Runtime may probe each candidate in order when capacity is absent; failed probes become failed WorkUnits. If all probes fail, Runtime blocks the task without calling Planner again.
+_Avoid_: race, parallel candidates, unplanned platform reroute
 
 **Verification Level**:
 The strength of post-execution validation: none, compile, test, or review.

@@ -41,7 +41,7 @@ function task(id = 'task_1'): Task {
 function plan(taskId: string): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'execute',
@@ -55,6 +55,7 @@ function plan(taskId: string): PlanningAgentPlan {
       title: 'Task',
       goal: 'Do work',
       includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'test priority' },
     },
     execution: {
       mode: 'single_executor',

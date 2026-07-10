@@ -9,6 +9,7 @@ export interface PlanningAgentPlanValidationResult {
 const AGENT_CLASS_KINDS = new Set<AgentClassKind>(['planner', 'executor']);
 const EXPECTED_OUTPUTS = new Set<Subtask['expectedOutput']>(['analysis', 'patch', 'artifact', 'review', 'summary']);
 const RISK_LEVELS = new Set<AgentClassRiskLevel>(['low', 'medium', 'high']);
+const TASK_PRIORITIES = new Set(['normal', 'high', 'urgent']);
 
 const ACTIONS: PlanningAction[] = [
   'direct_reply',
@@ -25,7 +26,7 @@ export function validatePlanningAgentPlan(value: unknown): PlanningAgentPlanVali
   }
 
   const plan = value as Partial<PlanningAgentPlan>;
-  if (plan.schemaVersion !== 1) errors.push('schemaVersion must be 1');
+  if (plan.schemaVersion !== 2) errors.push('schemaVersion must be 2');
   if (!plan.id || typeof plan.id !== 'string') errors.push('id must be a string');
   if (!plan.action || !ACTIONS.includes(plan.action)) errors.push('action is invalid');
   if (typeof plan.confidence !== 'number' || plan.confidence < 0 || plan.confidence > 1) {
@@ -41,6 +42,8 @@ export function validatePlanningAgentPlan(value: unknown): PlanningAgentPlanVali
   if (plan.action === 'task_control' && plan.task?.control === 'none') {
     errors.push('task_control requires a control kind');
   }
+  validateTaskControlScope(plan, errors);
+  validateTaskPriority(plan, errors);
   if (plan.action === 'plan_work_graph') {
     if (!plan.workGraph) {
       errors.push('plan_work_graph requires workGraph');
@@ -50,6 +53,32 @@ export function validatePlanningAgentPlan(value: unknown): PlanningAgentPlanVali
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+function validateTaskControlScope(plan: Partial<PlanningAgentPlan>, errors: string[]): void {
+  if (plan.action !== 'task_control' || !plan.task) return;
+  if (plan.task.control === 'status_query' && !['dashboard', 'blocked', 'running'].includes(plan.task.scope ?? '')) {
+    errors.push('status_query requires scope dashboard, blocked, or running');
+  }
+  if (plan.task.control === 'clear_tasks' && !['all', 'parked', 'blocked'].includes(plan.task.scope ?? '')) {
+    errors.push('clear_tasks requires scope all, parked, or blocked');
+  }
+}
+
+function validateTaskPriority(plan: Partial<PlanningAgentPlan>, errors: string[]): void {
+  const schedulable = plan.action === 'plan_work_graph'
+    || (plan.action === 'task_control'
+      && (plan.task?.control === 'resume_task' || plan.task?.control === 'recover_blocked'));
+  const priority = plan.task?.priority;
+  if (!schedulable) {
+    if (priority !== null && priority !== undefined) {
+      errors.push('task.priority must be null for non-schedulable actions');
+    }
+    return;
+  }
+  if (!priority || !TASK_PRIORITIES.has(priority.level) || !priority.reason.trim()) {
+    errors.push('schedulable actions require task.priority with valid level and non-empty reason');
+  }
 }
 
 function validateWorkGraph(subtasks: unknown, errors: string[]): void {
