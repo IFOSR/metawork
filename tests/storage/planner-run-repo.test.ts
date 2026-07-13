@@ -15,6 +15,11 @@ describe('PlannerRunRepo', () => {
       status: 'completed',
       attemptCount: 2,
       durationMs: 321,
+      errorSummary: [
+        'api_key=planner-secret',
+        'Authorization: Bearer bearer-secret',
+        'proxy=https://user:proxy-secret@proxy.test',
+      ].join(' '),
       toolCalls: [{
         sequence: 1,
         toolName: 'metaclaw_planner.search_tasks',
@@ -29,7 +34,7 @@ describe('PlannerRunRepo', () => {
     });
 
     expect(db.prepare(`
-      SELECT session_id, request_source, status, attempt_count, duration_ms
+      SELECT session_id, request_source, status, attempt_count, duration_ms, error_summary
       FROM planner_runs WHERE id = ?
     `).get(run.id)).toEqual({
       session_id: 'sess_audit',
@@ -37,7 +42,13 @@ describe('PlannerRunRepo', () => {
       status: 'completed',
       attempt_count: 2,
       duration_ms: 321,
+      error_summary: expect.stringContaining('[REDACTED]'),
     });
+    const storedRun = db.prepare('SELECT error_summary FROM planner_runs WHERE id = ?')
+      .get(run.id) as { error_summary: string };
+    expect(storedRun.error_summary).not.toContain('planner-secret');
+    expect(storedRun.error_summary).not.toContain('bearer-secret');
+    expect(storedRun.error_summary).not.toContain('proxy-secret');
     const tool = db.prepare(`
       SELECT tool_name, status, arguments_summary_json, result_summary_json
       FROM planner_tool_calls WHERE planner_run_id = ?

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { PlannerToolCallTrace } from '../planning/planner-codex-runner.js';
 import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export interface PlannerRunAuditStart {
   id: string;
@@ -45,7 +46,7 @@ export class PlannerRunRepo {
         input.status,
         input.attemptCount,
         input.durationMs,
-        input.errorSummary ? truncate(input.errorSummary, 500) : null,
+        input.errorSummary ? truncate(redactSensitiveText(input.errorSummary), 500) : null,
         completedAt,
         input.id,
       );

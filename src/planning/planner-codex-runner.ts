@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type { PlanningContext } from './planning-types.js';
 
 export interface PlannerToolCallTrace {
@@ -64,7 +65,9 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
       proc.on('error', reject);
       proc.on('close', (code) => {
         if (code !== 0) {
-          reject(new Error(`Codex planner exited with ${code ?? 'unknown'}: ${truncate(stderr, 500)}`));
+          reject(new Error(
+            `Codex planner exited with ${code ?? 'unknown'}: ${truncate(redactSensitiveText(stderr), 500)}`,
+          ));
           return;
         }
         try {

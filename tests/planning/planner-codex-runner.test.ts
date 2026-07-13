@@ -100,6 +100,23 @@ describe('CodexPlannerRunner', () => {
     );
   });
 
+  it('redacts sensitive stderr before exposing a runner failure', async () => {
+    const proc = fakeProcess();
+    const runner = new CodexPlannerRunner({ spawn: vi.fn(() => proc as never) as never });
+    const promise = runner.run('prompt', context());
+
+    proc.stderr.emit('data', Buffer.from(
+      'api_key=planner-secret Authorization: Bearer bearer-secret proxy=https://user:proxy-secret@proxy.test',
+    ));
+    proc.emit('close', 1);
+
+    const error = await promise.catch(reason => reason as Error);
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).not.toContain('planner-secret');
+    expect(error.message).not.toContain('bearer-secret');
+    expect(error.message).not.toContain('proxy-secret');
+  });
+
   it('fails closed when JSONL has no final agent output', () => {
     expect(() => parseCodexJsonl(JSON.stringify({ type: 'thread.started' })))
       .toThrow('did not contain a final agent message');
