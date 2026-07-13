@@ -98,6 +98,27 @@ describe('CodexPlannerRunner', () => {
     })]);
   });
 
+  it('summarizes tool values without exceeding the limit or splitting surrogate pairs', () => {
+    const result = parseCodexJsonl([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'mcp_tool_call',
+          tool: 'metaclaw_planner.search_tasks',
+          arguments: { query: `${'a'.repeat(159)}😀tail` },
+        },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"schemaVersion":2}' },
+      }),
+    ].join('\n'));
+
+    const query = String(result.toolCalls[0]?.argumentsSummary.query);
+    expect(query).toBe(`${'a'.repeat(159)}…`);
+    expect(query).toHaveLength(160);
+  });
+
   it('isolates Planner CODEX_HOME and binds the trusted session into MCP environment', async () => {
     const proc = fakeProcess();
     const spawn = vi.fn(() => proc as never);

@@ -28,7 +28,39 @@ describe('PlannerDataReader', () => {
 
     expect(result.count).toBe(20);
     expect(result.tasks).toHaveLength(20);
-    expect(String(result.tasks[0]?.summary).length).toBeLessThanOrEqual(321);
+    expect(String(result.tasks[0]?.summary).length).toBeLessThanOrEqual(320);
+  });
+
+  it('truncates model-generated priority reasons in planner task reads', () => {
+    const { taskEngine, taskRepo, reader } = createHarness();
+    const task = taskEngine.create({ title: 'urgent research', goal: 'finish report' });
+    taskRepo.update(task.id, {
+      prioritySignals: {
+        ...task.prioritySignals,
+        semanticPriority: 'urgent',
+        semanticPriorityReason: 'x'.repeat(600),
+      },
+    });
+
+    const searchPriority = reader.searchTasks({ query: 'urgent research' }).tasks[0]?.priority;
+    const context = reader.getTaskContext(task.id);
+    const contextPriority = context.found ? context.task.priority : null;
+
+    expect(searchPriority).toMatchObject({ semanticPriority: 'urgent' });
+    expect(contextPriority).toMatchObject({ semanticPriority: 'urgent' });
+    expect(String((searchPriority as Record<string, unknown>).semanticPriorityReason)).toHaveLength(320);
+    expect(String((contextPriority as Record<string, unknown>).semanticPriorityReason)).toHaveLength(320);
+  });
+
+  it('keeps truncated planner text within its limit without splitting surrogate pairs', () => {
+    const { taskEngine, taskRepo, reader } = createHarness();
+    const task = taskEngine.create({ title: 'unicode research', goal: 'finish report' });
+    taskRepo.update(task.id, { summary: `${'a'.repeat(319)}😀tail` });
+
+    const summary = String(reader.searchTasks({ query: 'unicode research' }).tasks[0]?.summary);
+
+    expect(summary).toBe(`${'a'.repeat(319)}…`);
+    expect(summary).toHaveLength(320);
   });
 
   it('returns bounded recovery context for one explicit task id', () => {
@@ -93,7 +125,13 @@ describe('PlannerDataReader', () => {
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
       ) VALUES ('global', ?, NULL, 'sess_current', ?)
     `).run(task.id, '2026-07-10T00:00:00.000Z');
-    new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+    const agentClassService = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    agentClassService.seedDefaults();
+    agentClassService.upsert({
+      ...agentClassService.findByName('codex-cli')!,
+      runtimeCommand: 'C:\\private\\codex.exe',
+      runtimeArgs: ['--token', 'sensitive-runtime-token'],
+    });
     const now = '2026-07-10T00:00:00.000Z';
     new WorkUnitRepo(db).upsert({
       id: 'executor-live',
@@ -115,8 +153,16 @@ describe('PlannerDataReader', () => {
     });
     const catalog = reader.listExecutorClasses();
     expect(catalog.executorClasses).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'codex-cli', runtimeCapacity: { idle: 1 } }),
+      expect.objectContaining({
+        name: 'codex-cli',
+        runtimeConfigured: true,
+        runtimeCapacity: { idle: 1 },
+      }),
     ]));
+    const codexClass = catalog.executorClasses.find(item => item.name === 'codex-cli');
+    expect(codexClass).not.toHaveProperty('runtimeCommand');
+    expect(codexClass).not.toHaveProperty('runtimeArgs');
+    expect(JSON.stringify(catalog)).not.toContain('sensitive-runtime-token');
     expect(JSON.stringify(catalog)).not.toContain('availability');
   });
 

@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { truncateText } from '../utils/truncate-text.js';
 import type { PlanningContext } from './planning-types.js';
 
 export interface PlannerToolCallTrace {
@@ -66,7 +67,7 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
       proc.on('close', (code) => {
         if (code !== 0) {
           reject(new Error(
-            `Codex planner exited with ${code ?? 'unknown'}: ${truncate(redactSensitiveText(stderr), 500)}`,
+            `Codex planner exited with ${code ?? 'unknown'}: ${truncateText(redactSensitiveText(stderr), 500)}`,
           ));
           return;
         }
@@ -171,21 +172,17 @@ function extractText(value: Record<string, unknown>): string {
 function summarizeValue(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
     if (Array.isArray(value)) return { count: value.length };
-    return value === undefined ? {} : { value: truncate(String(value), 160) };
+    return value === undefined ? {} : { value: truncateText(String(value), 160) };
   }
   const summary: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(value).slice(0, 12)) {
     if (/secret|token|key|content|conversation|prompt/i.test(key)) continue;
-    if (typeof raw === 'string') summary[key] = truncate(raw, 160);
+    if (typeof raw === 'string') summary[key] = truncateText(raw, 160);
     else if (typeof raw === 'number' || typeof raw === 'boolean' || raw === null) summary[key] = raw;
     else if (Array.isArray(raw)) summary[key] = { count: raw.length };
     else if (isRecord(raw)) summary[key] = { keys: Object.keys(raw).slice(0, 8) };
   }
   return summary;
-}
-
-function truncate(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join } from 'path';
+import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
 const DEFAULT_RESULTS = 10;
@@ -39,10 +40,10 @@ export class PlannerDataReader {
       count: rows.length,
       tasks: rows.map(row => ({
         id: row.id,
-        title: truncate(String(row.title ?? ''), 160),
+        title: truncateText(String(row.title ?? ''), 160),
         status: row.status,
-        summary: truncate(String(row.summary ?? ''), 320),
-        priority: safeJson(row.priority_json, {}),
+        summary: truncateText(String(row.summary ?? ''), 320),
+        priority: sanitizePriority(row.priority_json),
         updatedAt: row.updated_at,
       })),
     };
@@ -64,20 +65,20 @@ export class PlannerDataReader {
       found: true,
       task: {
         id: row.id,
-        title: truncate(String(row.title ?? ''), 200),
-        goal: truncate(String(row.goal ?? ''), 800),
+        title: truncateText(String(row.title ?? ''), 200),
+        goal: truncateText(String(row.goal ?? ''), 800),
         status: row.status,
-        summary: truncate(String(row.summary ?? ''), 800),
-        priority: safeJson(row.priority_json, {}),
+        summary: truncateText(String(row.summary ?? ''), 800),
+        priority: sanitizePriority(row.priority_json),
         latestSnapshot: latest ? sanitizeSnapshot(latest) : null,
         blockers: dependencies
           .filter(item => item.status === 'waiting')
           .slice(0, MAX_RESULTS)
-          .map(item => ({ taskId: item.taskId, description: truncate(String(item.description ?? ''), 320) })),
-        resources: safeJson<unknown[]>(row.resources_json, []).slice(0, MAX_RESULTS).map(value => truncate(String(value), 240)),
-        artifacts: safeJson<unknown[]>(row.artifacts_json, []).slice(0, MAX_RESULTS).map(value => truncate(String(value), 240)),
-        lastSchedulingReason: truncate(String(row.last_scheduling_reason ?? ''), 320),
-        lastInterruptionReason: truncate(String(row.last_interruption_reason ?? ''), 320),
+          .map(item => ({ taskId: item.taskId, description: truncateText(String(item.description ?? ''), 320) })),
+        resources: safeJson<unknown[]>(row.resources_json, []).slice(0, MAX_RESULTS).map(value => truncateText(String(value), 240)),
+        artifacts: safeJson<unknown[]>(row.artifacts_json, []).slice(0, MAX_RESULTS).map(value => truncateText(String(value), 240)),
+        lastSchedulingReason: truncateText(String(row.last_scheduling_reason ?? ''), 320),
+        lastInterruptionReason: truncateText(String(row.last_interruption_reason ?? ''), 320),
         interruptionCount: row.interruption_count,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -101,8 +102,8 @@ export class PlannerDataReader {
       sessionId: this.sessionId,
       interactions: interactions.reverse().map(row => ({
         taskId: row.task_id,
-        userInput: truncate(String(row.user_input ?? ''), 500),
-        systemOutput: truncate(String(row.system_output ?? ''), 500),
+        userInput: truncateText(String(row.user_input ?? ''), 500),
+        systemOutput: truncateText(String(row.system_output ?? ''), 500),
         executorUsed: row.executor_used,
         createdAt: row.created_at,
       })),
@@ -118,7 +119,7 @@ export class PlannerDataReader {
           targetTaskId: task.taskId,
           outcome: row.outcome,
           riskRequiresConfirmation: risk.requiresConfirmation === true,
-          reason: truncate(String(row.reason ?? ''), 320),
+          reason: truncateText(String(row.reason ?? ''), 320),
           createdAt: row.created_at,
         };
       }),
@@ -142,7 +143,7 @@ export class PlannerDataReader {
       taskCounts: Object.fromEntries(taskCounts.map(row => [String(row.status), Number(row.count)])),
       activeTasks: activeTasks.map(row => ({
         id: row.id,
-        title: truncate(String(row.title ?? ''), 160),
+        title: truncateText(String(row.title ?? ''), 160),
         status: row.status,
         updatedAt: row.updated_at,
       })),
@@ -154,7 +155,8 @@ export class PlannerDataReader {
       SELECT name, domains_json, capabilities_json, input_types_json, output_types_json,
              strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
              risk_level, harness, model, skills_json, mcp_servers_json, plugins_json,
-             runtime_command, runtime_args_json, runtime_check_command
+             runtime_command IS NOT NULL AND runtime_command <> '' AS runtime_configured,
+             runtime_check_command IS NOT NULL AS runtime_check_configured
       FROM agent_classes WHERE kind = 'executor' ORDER BY name ASC
     `).all() as Array<Record<string, unknown>>;
     const units = this.db.prepare(`
@@ -186,9 +188,8 @@ export class PlannerDataReader {
         skills: safeJson(row.skills_json, []),
         mcpServers: safeJson(row.mcp_servers_json, []),
         plugins: safeJson(row.plugins_json, []),
-        runtimeCommand: row.runtime_command,
-        runtimeArgs: safeJson(row.runtime_args_json, []),
-        runtimeCheckConfigured: Boolean(row.runtime_check_command),
+        runtimeConfigured: Boolean(row.runtime_configured),
+        runtimeCheckConfigured: Boolean(row.runtime_check_configured),
         runtimeCapacity: capacity.get(String(row.name)) ?? {},
       })),
     };
@@ -250,16 +251,22 @@ function safeJson<T>(value: unknown, fallback: T): T {
 
 function sanitizeSnapshot(snapshot: Record<string, unknown>) {
   return {
-    done: Array.isArray(snapshot.done) ? snapshot.done.slice(0, MAX_RESULTS).map(value => truncate(String(value), 240)) : [],
-    pending: Array.isArray(snapshot.pending) ? snapshot.pending.slice(0, MAX_RESULTS).map(value => truncate(String(value), 240)) : [],
-    nextStep: truncate(String(snapshot.nextStep ?? ''), 500),
-    pauseReason: truncate(String(snapshot.pauseReason ?? ''), 500),
+    done: Array.isArray(snapshot.done) ? snapshot.done.slice(0, MAX_RESULTS).map(value => truncateText(String(value), 240)) : [],
+    pending: Array.isArray(snapshot.pending) ? snapshot.pending.slice(0, MAX_RESULTS).map(value => truncateText(String(value), 240)) : [],
+    nextStep: truncateText(String(snapshot.nextStep ?? ''), 500),
+    pauseReason: truncateText(String(snapshot.pauseReason ?? ''), 500),
     createdAt: snapshot.createdAt,
   };
 }
 
-function truncate(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+function sanitizePriority(value: unknown): Record<string, unknown> {
+  const parsed = safeJson<unknown>(value, {});
+  const priority = isRecord(parsed) ? parsed : {};
+  if (typeof priority.semanticPriorityReason !== 'string') return priority;
+  return {
+    ...priority,
+    semanticPriorityReason: truncateText(priority.semanticPriorityReason, 320),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
