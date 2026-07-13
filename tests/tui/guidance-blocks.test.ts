@@ -262,7 +262,7 @@ describe('App guidance blocks', () => {
       }),
     );
 
-    await typeAndSubmit(`/task ${blockedTask.id} unblock /tmp/evidence-v3.pdf`);
+    await typeAndSubmit(`/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`);
 
     await waitFor(() => {
       expect(app.lastFrame()).toContain('当前建议');
@@ -332,7 +332,7 @@ describe('App guidance blocks', () => {
       }),
     );
 
-    await typeAndSubmit(`/task ${parkedTask.id} resume`);
+    await typeAndSubmit(`/task resume ${parkedTask.id}`);
 
     await waitFor(() => {
       expect(app.lastFrame()).toContain('当前建议');

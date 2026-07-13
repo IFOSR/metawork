@@ -408,7 +408,7 @@ Executor management commands:
 /executor list
 /executor register wizard
 /executor unregister <name>
-/executor route-feedback
+/executor feedback
 ```
 
 ### Codex CLI
@@ -715,31 +715,33 @@ MetaClaw will:
 Useful commands:
 
 ```bash
-/tasks
-/tasks active
-/tasks ready
-/tasks parked
-/tasks blocked
-/tasks done
+/task list
+/task list active
+/task list ready
+/task list parked
+/task list blocked
+/task list done
 
-/task <id>
-/task <id> pause
-/task <id> resume
-/task <id> block waiting for customer data
-/task <id> unblock
-/task <id> unblock /tmp/evidence-v3.pdf
-/task <id> cancel
-/task <id> done
+/task show <id>
+/task pause <id>
+/task resume <id>
+/task block <id> waiting for customer data
+/task unblock <id>
+/task unblock <id> /tmp/evidence-v3.pdf
+/task cancel <id>
+/task complete <id>
 /task index rebuild
 /task index search <query>
 
-/dashboard
-/attach [taskId] <file paths...>
-/history
+/task dashboard
+/task attach <taskId> <file paths...>
+/task history
 /config
 /help
 /exit
 ```
+
+The main TUI obtains completion state from the same `CommandCatalog` used by `/help`, validation, and execution. `Up`/`Down` selects a candidate, `Tab` completes only the token at the cursor, and `Enter` submits only a complete valid command. Directory nodes, missing arguments, and invalid dynamic references remain in the editor. Flat legacy entrypoints and aliases are not registered.
 
 ## Task Search And Hybrid Retrieval
 
@@ -886,7 +888,7 @@ Commands:
 ```bash
 cat > /tmp/metaclaw-flow.txt <<'EOF'
 Compare the risk points across three contracts and produce a concise table.
-/tasks done
+/task list done
 EOF
 
 metaclaw --script /tmp/metaclaw-flow.txt

@@ -18,7 +18,7 @@
 ### 手动场景
 
 - `manual/01-task-view-splits-files-and-links.md`
-  - 验证 `/task <id>` 不再把不同类型材料混在一行里
+  - 验证 `/task show <id>` 不再把不同类型材料混在一行里
 
 ## 本轮通过标准
 

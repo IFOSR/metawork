@@ -155,6 +155,37 @@ function createRuntime(options: {
 }
 
 describe('ExecutionRuntime', () => {
+  it('tracks and aborts the actual routed executor for a task, then clears the execution token', async () => {
+    let resolve!: (result: ExecutorResult) => void;
+    const pending = new Promise<ExecutorResult>(done => { resolve = done; });
+    const routed = createExecutor('pi-agent', pending);
+    const defaultExecutor = createExecutor('codex-cli', createResult('default should not run'));
+    const runtime = createRuntime({ defaultExecutor, executors: { 'pi-agent': routed } });
+
+    const run = runtime.run({
+      taskId: 'task_runtime',
+      executionId: 'exec_active',
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('pi-agent'),
+        agentClass: createAgentClass('pi-agent'),
+        acceptance: [],
+        expectedOutput: 'summary',
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
+    });
+    await Promise.resolve();
+
+    expect(runtime.abortTask('task_runtime')).toBe(1);
+    expect(routed.abort).toHaveBeenCalledTimes(1);
+    expect(defaultExecutor.abort).not.toHaveBeenCalled();
+
+    resolve(createResult('late result'));
+    await run;
+    expect(runtime.abortTask('task_runtime')).toBe(0);
+  });
+
   it('executes a claimed subtask on the claimed work unit agent class', async () => {
     const deepseek = createExecutor('deepseek-tui', createResult('deepseek ok'));
     const runtime = createRuntime({ executors: { 'deepseek-tui': deepseek } });

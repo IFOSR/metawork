@@ -121,10 +121,10 @@ describe('App task view recovery hints', () => {
       }),
     );
 
-    await typeAndSubmit(`/task ${blockedTask.id}`);
+    await typeAndSubmit(`/task show ${blockedTask.id}`);
 
     expect(app.lastFrame()).toContain('恢复操作');
-    expect(app.lastFrame()).toContain(`/task ${blockedTask.id} unblock`);
+    expect(app.lastFrame()).toContain(`/task unblock ${blockedTask.id}`);
     expect(app.lastFrame()).toContain('/tmp/evidence-a.pdf');
 
     app.unmount();
@@ -177,7 +177,7 @@ describe('App task view recovery hints', () => {
       }),
     );
 
-    await typeAndSubmit(`/task ${blockedTask.id}`);
+    await typeAndSubmit(`/task show ${blockedTask.id}`);
 
     expect(app.lastFrame()).toContain('本地文件材料');
     expect(app.lastFrame()).toContain('网页链接材料');

@@ -19,7 +19,7 @@
 ### 手动场景
 
 - `manual/01-create-task-with-inline-links.md`
-  - 验证无需 `/attach` 也能把网页链接挂到任务材料中
+  - 验证无需执行 `/task attach` 也能把网页链接挂到任务材料中
 
 ## 本轮通过标准
 

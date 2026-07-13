@@ -67,8 +67,8 @@ describe('Round 5 material loop acceptance', () => {
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
-        '/attach {{last_task_id}} fixture-a.md fixture-b.md',
-        '/task {{last_task_id}}',
+        '/task attach {{last_task_id}} fixture-a.md fixture-b.md',
+        '/task show {{last_task_id}}',
       ],
       taskEngine,
       memoryEngine,

@@ -1,6 +1,6 @@
 # Round 7: Inline Materials On Task Creation
 
-目标：让用户在一条自然语言里同时“创建任务 + 指定本地材料路径”，无需先建任务再 `/attach`。
+目标：让用户在一条自然语言里同时“创建任务 + 指定本地材料路径”，无需先建任务再执行 `/task attach`。
 
 本轮验收重点：
 
@@ -19,7 +19,7 @@
 ### 手动场景
 
 - `manual/01-create-task-with-inline-files.md`
-  - 验证用户粘贴本地路径时无需额外 `/attach`
+  - 验证用户粘贴本地路径时无需额外执行 `/task attach`
 
 ## 本轮通过标准
 

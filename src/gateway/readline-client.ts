@@ -53,7 +53,7 @@ export async function runGatewayReadlineClient(socketPath: string): Promise<void
 
   readline.on('line', line => {
     const text = line.trim();
-    if (text === '/exit' || text === '/quit') {
+    if (text === '/exit') {
       send({ type: 'close' });
       return;
     }

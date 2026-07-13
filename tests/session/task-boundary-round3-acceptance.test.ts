@@ -635,7 +635,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(runningTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(doneTask.id)?.status).toBe('done');
-    expect(executor.abort).toHaveBeenCalledTimes(1);
+    expect(executor.abort).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
   });
 

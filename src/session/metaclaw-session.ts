@@ -25,13 +25,8 @@ import { SessionPersistenceService } from './session-persistence-service.js';
 import { MemoryCaptureService } from '../memory/memory-capture-service.js';
 import { ConversationRuntimeService } from '../execution/conversation-runtime-service.js';
 import { TaskResumePlanner } from '../task/task-resume-planner.js';
-import { CommandRouter } from '../commands/router.js';
-import { tasksCommand, taskCommand } from '../commands/task-commands.js';
-import { memoryCommand } from '../commands/memory-commands.js';
-import { profileCommand } from '../commands/profile-commands.js';
-import { executorCommand } from '../commands/executor-commands.js';
-import { learningCommand } from '../commands/learning-commands.js';
-import { dashboardCommand, attachCommand, historyCommand, configCommand, helpCommand, exitCommand } from '../commands/global-commands.js';
+import { createDefaultCommandCatalog } from '../commands/command-tree.js';
+import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
@@ -118,7 +113,7 @@ export class MetaclawSession {
   private blockedRecheckInFlight = false;
   private backgroundWork = new Set<Promise<void>>();
   private readonly memoryContextService: MemoryContextService;
-  private readonly router: CommandRouter;
+  private readonly commandCatalog: CommandCatalog;
   private readonly scheduler: SchedulerEngine<QueuedExecutionRequest>;
   private readonly sessionStateRepo: SessionStateRepo;
   private readonly notifier: NotificationService;
@@ -229,7 +224,7 @@ export class MetaclawSession {
     });
     this.policyKernel = new PolicyKernel();
     this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);
-    this.router = createDefaultCommandRouter();
+    this.commandCatalog = createDefaultCommandCatalog();
     this.scheduler = new SchedulerEngine<QueuedExecutionRequest>(
       deps.taskEngine,
       deps.orchestration,
@@ -237,6 +232,7 @@ export class MetaclawSession {
       async (taskId: string, context?: DispatchContext<QueuedExecutionRequest>) => this.dispatchTask(taskId, context),
       undefined,
       this.taskRuntimeService,
+      this.executionRuntime,
     );
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
@@ -302,6 +298,7 @@ export class MetaclawSession {
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
       executor: deps.executor,
+      activeExecutions: this.executionRuntime,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
@@ -352,6 +349,10 @@ export class MetaclawSession {
           }
         : null,
     };
+  }
+
+  completeCommand(text: string, cursor = text.length): CommandCompletion {
+    return this.commandCatalog.complete({ text, cursor, context: this.getCommandContext() });
   }
 
   private reconcileLatestGuidance(): void {
@@ -409,7 +410,7 @@ export class MetaclawSession {
       for (const task of recoveredRunningTasks) {
         this.output.push(
           `→ 检测到上次异常退出，任务 #${task.id} 已转为挂起`,
-          `→ 可执行 /task ${task.id} resume 继续，或直接说“继续刚才那个任务”`,
+          `→ 可执行 /task resume ${task.id} 继续，或直接说“继续刚才那个任务”`,
         );
       }
     }
@@ -816,24 +817,10 @@ export class MetaclawSession {
   }
 
   private async handleCommand(userInput: string): Promise<boolean> {
-    const result = await this.router.execute(userInput, {
-      taskEngine: this.deps.taskEngine,
-      memoryEngine: this.deps.memoryEngine,
-      orchestration: this.deps.orchestration,
-      executor: this.deps.executor,
-      currentTaskId: this.getCurrentTaskId(),
-      db: this.deps.db,
-      config: this.deps.config,
-    });
-
+    const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
     this.appendOutput(result.content);
 
-    const commandData = result.data as
-      | {
-          executorRegisterWizard?: boolean;
-        }
-      | undefined;
-    if (commandData?.executorRegisterWizard) {
+    if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
       this.appendOutput(...this.executorAdminService.startWizard());
     }
 
@@ -842,35 +829,26 @@ export class MetaclawSession {
       return true;
     }
 
-    const schedulerData = result.data as
-      | {
-          schedulerAction?: 'resume';
-          taskId?: string;
-          mode?: QueuedExecutionRequest['executionMode'];
-          newlyProvidedResources?: string[];
-          blockedReason?: string;
-        }
-      | undefined;
-
-    if (schedulerData?.schedulerAction === 'resume' && schedulerData.taskId && schedulerData.mode) {
-      const resumedTask = this.taskRuntimeService.findTask(schedulerData.taskId);
+    if (result.type === 'directive' && result.directive.kind === 'resume-task') {
+      const directive = result.directive;
+      const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
         this.setCurrentTaskId(resumedTask.id);
         await this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
-          executionMode: schedulerData.mode,
-          schedulingReason: schedulerData.mode === 'resume-blocked' ? '阻塞已解除' : '恢复已挂起任务',
-          newlyProvidedResources: schedulerData.newlyProvidedResources,
-          recoveryTrigger: schedulerData.mode === 'resume-blocked'
+          executionMode: directive.mode,
+          schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+          newlyProvidedResources: directive.newlyProvidedResources,
+          recoveryTrigger: directive.mode === 'resume-blocked'
             ? this.buildRecoveryTrigger(resumedTask, {
                 kind: 'explicit-task-command',
-                blockedReason: schedulerData.blockedReason,
-                triggerReason: schedulerData.newlyProvidedResources?.length
+                blockedReason: directive.blockedReason,
+                triggerReason: directive.newlyProvidedResources?.length
                   ? '显式解除阻塞并补充材料'
                   : '显式解除阻塞',
                 sourceInput: userInput,
-                newlyProvidedResources: schedulerData.newlyProvidedResources,
+                newlyProvidedResources: directive.newlyProvidedResources,
               })
             : undefined,
         });
@@ -878,6 +856,19 @@ export class MetaclawSession {
     }
 
     return false;
+  }
+
+  private getCommandContext(): CommandContext {
+    return {
+      taskEngine: this.deps.taskEngine,
+      memoryEngine: this.deps.memoryEngine,
+      orchestration: this.deps.orchestration,
+      executor: this.deps.executor,
+      activeExecutions: this.executionRuntime,
+      currentTaskId: this.getCurrentTaskId(),
+      db: this.deps.db,
+      config: this.deps.config,
+    };
   }
 
   private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
@@ -1038,21 +1029,4 @@ export class MetaclawSession {
         : `→ 启动后恢复待执行任务 #${task.id}`,
     );
   }
-}
-
-export function createDefaultCommandRouter(): CommandRouter {
-  const router = new CommandRouter();
-  router.register(tasksCommand);
-  router.register(taskCommand);
-  router.register(memoryCommand);
-  router.register(profileCommand);
-  router.register(executorCommand);
-  router.register(learningCommand);
-  router.register(dashboardCommand);
-  router.register(attachCommand);
-  router.register(historyCommand);
-  router.register(configCommand);
-  router.register(helpCommand);
-  router.register(exitCommand);
-  return router;
 }

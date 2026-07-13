@@ -11,6 +11,7 @@ import { PiAgentAdapter } from '../executor/pi-agent.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { AgentClass, Config, ExecutionContextBundleV2, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskResult } from './execution-aggregator.js';
+import type { ActiveExecutionControl } from './active-execution-control.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -193,10 +194,13 @@ export interface SubtaskExecutionSpec {
 }
 
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
-export class ExecutionRuntime {
+export class ExecutionRuntime implements ActiveExecutionControl {
+  private readonly activeByTask = new Map<string, Map<string, { workUnitId: string; executor: ExecutorAdapter }>>();
+  private executionTokenSequence = 0;
+
   constructor(
     private readonly registry: ExecutorRegistry,
-    private readonly defaultExecutor: ExecutorAdapter,
+    _defaultExecutor: ExecutorAdapter,
   ) {}
 
   isExecutorAvailable(name: string): Promise<boolean> {
@@ -205,23 +209,62 @@ export class ExecutionRuntime {
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
     const executor = this.registry.resolveRequired(input.spec.agentClass.name);
-    const result = await this.executeOnce(
-      executor,
-      input.executorInput,
-      input.onProgress,
-    );
-    return this.toExecutionResult({
-      input,
-      executor,
-      result,
-      subtaskResults: [],
-      runtime: {
-        attemptedExecutors: [executor.name],
-        fallbackExecutors: [],
-        fallbackReason: null,
-        fallbackLines: [],
-      },
-    });
+    const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
+    this.registerActive(input.taskId, executionToken, input.spec.workUnit.id, executor);
+    try {
+      const result = await this.executeOnce(
+        executor,
+        input.executorInput,
+        input.onProgress,
+      );
+      return this.toExecutionResult({
+        input,
+        executor,
+        result,
+        subtaskResults: [],
+        runtime: {
+          attemptedExecutors: [executor.name],
+          fallbackExecutors: [],
+          fallbackReason: null,
+          fallbackLines: [],
+        },
+      });
+    } finally {
+      this.clearActive(input.taskId, executionToken);
+    }
+  }
+
+  abortTask(taskId: string): number {
+    const active = this.activeByTask.get(taskId);
+    if (!active || active.size === 0) {
+      return 0;
+    }
+
+    const executors = Array.from(new Set(Array.from(active.values()).map(entry => entry.executor)));
+    for (const executor of executors) {
+      executor.abort();
+    }
+    return active.size;
+  }
+
+  private registerActive(
+    taskId: string,
+    executionToken: string,
+    workUnitId: string,
+    executor: ExecutorAdapter,
+  ): void {
+    const active = this.activeByTask.get(taskId) ?? new Map();
+    active.set(executionToken, { workUnitId, executor });
+    this.activeByTask.set(taskId, active);
+  }
+
+  private clearActive(taskId: string, executionToken: string): void {
+    const active = this.activeByTask.get(taskId);
+    if (!active) return;
+    active.delete(executionToken);
+    if (active.size === 0) {
+      this.activeByTask.delete(taskId);
+    }
   }
 
   private toExecutionResult(input: {

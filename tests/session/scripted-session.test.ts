@@ -49,13 +49,13 @@ describe('scripted session', () => {
 # comment
 
 帮我整理合同风险
-  /tasks done
+  /task list done
 
 `;
 
     expect(parseScriptInputs(script)).toEqual([
       '帮我整理合同风险',
-      '/tasks done',
+      '/task list done',
     ]);
   });
 
@@ -110,8 +110,8 @@ describe('scripted session', () => {
 
     const result = await runScriptedSession({
       inputs: [
-        `/task ${blockedTask.id} unblock /tmp/evidence-v3.pdf`,
-        '/tasks done',
+        `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
+        '/task list done',
       ],
       taskEngine,
       memoryEngine,
@@ -168,7 +168,7 @@ describe('scripted session', () => {
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
-        '/task {{last_task_id}}',
+        '/task show {{last_task_id}}',
       ],
       taskEngine,
       memoryEngine,

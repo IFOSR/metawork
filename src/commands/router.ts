@@ -4,12 +4,14 @@ import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
+import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 
 export interface CommandContext {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
   executor: ExecutorAdapter;
+  activeExecutions?: ActiveExecutionControl;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;

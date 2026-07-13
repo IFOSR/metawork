@@ -6,6 +6,7 @@ import type { TaskResumePlanner, ResumePlanResult } from '../task/task-resume-pl
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { KernelDecision } from '../kernel/policy-kernel.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
@@ -47,6 +48,7 @@ export interface KernelDecisionApplierDeps {
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
   executor: ExecutorAdapter;
+  activeExecutions: ActiveExecutionControl;
   presentation: SessionPresentationService;
   callbacks: KernelDecisionApplierCallbacks;
 }
@@ -185,8 +187,8 @@ export class KernelDecisionApplier {
     if (plan.task.control === 'clear_tasks') {
       const scope = this.normalizeTaskClearScope(plan.task.scope);
       const result = this.deps.taskRuntimeService.clearTasks(scope);
-      if (result.runningCancelled) {
-        this.deps.executor.abort();
+      for (const task of result.cancelled.filter(candidate => candidate.status === 'running')) {
+        this.deps.activeExecutions.abortTask(task.id);
       }
       if (result.cancelled.some(task => task.id === this.deps.callbacks.getCurrentTaskId())) {
         this.deps.callbacks.setCurrentTaskId(null);

@@ -362,7 +362,7 @@ describe('Round 2 guidance acceptance', () => {
 
     session.initialize();
 
-    await session.submit(`/task ${task.id} resume`, { awaitAsyncWork: true });
+    await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().latestGuidance).toBeNull();

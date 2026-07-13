@@ -68,15 +68,15 @@ function formatAgentClass(agentClass: AgentClass): string {
 
 export const executorCommand: CommandHandler = {
   name: 'executor',
-  aliases: ['executors'],
-  description: 'AgentClass/WorkUnit management: /executor [list|register|unregister|route-feedback]',
+  aliases: [],
+  description: 'AgentClass/WorkUnit management implementation for the command catalog.',
   async execute(args, context) {
     const action = args[0] ?? 'list';
     const agentClassRepo = new AgentClassRepo(context.db);
     const workUnitRepo = new WorkUnitRepo(context.db);
-    if (action === 'register' || (action === 'profile' && args[1] === 'upsert')) {
-      const name = action === 'register' ? args[1] : args[2];
-      const optionArgs = action === 'register' ? args.slice(2) : args.slice(3);
+    if (action === 'register') {
+      const name = args[1];
+      const optionArgs = args.slice(2);
       if (!name) {
         return {
           type: 'text',
@@ -120,7 +120,7 @@ export const executorCommand: CommandHandler = {
       return { type: 'text', content: `Unregistered Executor AgentClass: ${name}` };
     }
 
-    if (action === 'list' || action === 'profiles') {
+    if (action === 'list') {
       const agentClasses = agentClassRepo.findAll();
       if (agentClasses.length === 0) {
         return { type: 'text', content: 'No AgentClass records are registered.' };
@@ -141,7 +141,7 @@ export const executorCommand: CommandHandler = {
       };
     }
 
-    if (action === 'route-feedback') {
+    if (action === 'feedback') {
       const events = new TaskEventRepo(context.db).listRecent();
       if (events.length === 0) {
         return { type: 'text', content: 'No planner task events recorded yet.' };

@@ -143,17 +143,19 @@ MetaClaw decides whether the input should be a direct reply, task control action
 Useful commands:
 
 ```bash
-/tasks
-/tasks active
-/task <id>
-/task <id> resume
-/task <id> block waiting for source files
+/task list
+/task list active
+/task show <id>
+/task resume <id>
+/task block <id> waiting for source files
 /task index search contract risk matrix
-/dashboard
-/memory
+/task dashboard
+/memory list
 /config
 /help
 ```
+
+Slash commands use one hierarchical catalog for help, validation, execution, and the main TUI completion UI. Use `Up`/`Down` to select a candidate, `Tab` to complete one path segment or argument, and `Enter` only when the command is complete and valid. Old flat entrypoints and aliases are intentionally unsupported. The four visible placeholders are tracked in [`docs/tech-debt/pending-command-implementations.md`](docs/tech-debt/pending-command-implementations.md).
 
 ## Repository Structure
 

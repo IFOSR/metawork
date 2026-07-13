@@ -126,7 +126,7 @@ describe('App unblock scheduling', () => {
       })
     );
 
-    const command = `/task ${blockedTask.id} unblock`;
+    const command = `/task unblock ${blockedTask.id}`;
     for (const char of command) {
       await inputCapture.handler?.(char, {});
       await flushUpdates();
@@ -193,7 +193,7 @@ describe('App unblock scheduling', () => {
       })
     );
 
-    const command = `/task ${blockedTask.id} unblock /tmp/evidence-v3.pdf`;
+    const command = `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`;
     for (const char of command) {
       await inputCapture.handler?.(char, {});
       await flushUpdates();

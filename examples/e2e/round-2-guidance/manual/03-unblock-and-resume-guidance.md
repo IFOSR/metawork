@@ -21,7 +21,7 @@
 让任务进入 blocked 状态后，执行：
 
 ```text
-/task <task_id> unblock /tmp/evidence-v3.pdf
+/task unblock <task_id> /tmp/evidence-v3.pdf
 ```
 
 ## 预期 TUI 展示

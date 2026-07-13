@@ -92,7 +92,7 @@ export function GatewayClientApp(props: GatewayClientAppProps) {
       editorRef.current = nextEditor;
       setEditor(nextEditor);
 
-      if (userInput === '/exit' || userInput === '/quit') {
+      if (userInput === '/exit') {
         send({ type: 'close' });
         return;
       }

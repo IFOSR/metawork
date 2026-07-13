@@ -17,11 +17,11 @@ const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
 };
 
 function parseClearScope(value: string | undefined): TaskClearScope | null {
-  if (!value || value === 'all' || value === 'active' || value === 'unfinished') {
+  if (!value || value === 'all') {
     return 'all';
   }
 
-  if (value === 'parked' || value === 'paused') {
+  if (value === 'parked') {
     return 'parked';
   }
 
@@ -47,8 +47,9 @@ export function cancelTasksByScope(
     context.taskEngine.cancel(task.id, reason);
   }
 
-  if (runningCancelled) {
-    context.executor.abort();
+  for (const task of candidates.filter(candidate => candidate.status === 'running')) {
+    if (context.activeExecutions) context.activeExecutions.abortTask(task.id);
+    else context.executor.abort();
   }
 
   return { cancelled: candidates, runningCancelled };
@@ -151,16 +152,16 @@ function buildRecoveryAction(task: {
   if (task.status === 'blocked') {
     const hasLinks = (task.resources ?? []).some(resource => isWebLink(resource));
     if (task.materialSummary?.status === 'ready') {
-      return `现有材料已具备可读内容，可直接执行 /task ${task.id} unblock；如仍不够，再补充材料：/task ${task.id} unblock [材料路径]`;
+      return `现有材料已具备可读内容，可直接执行 /task unblock ${task.id}；如仍不够，再补充材料：/task unblock ${task.id} [材料路径]`;
     }
     if (hasLinks) {
-      return `若现有链接信息已足够，直接执行 /task ${task.id} unblock；如需补材料：/task ${task.id} unblock [材料路径]`;
+      return `若现有链接信息已足够，直接执行 /task unblock ${task.id}；如需补材料：/task unblock ${task.id} [材料路径]`;
     }
-    return `/task ${task.id} unblock [材料路径]`;
+    return `/task unblock ${task.id} [材料路径]`;
   }
 
   if (task.status === 'parked') {
-    return `/task ${task.id} resume`;
+    return `/task resume ${task.id}`;
   }
 
   if (task.status === 'done') {
@@ -173,7 +174,7 @@ function buildRecoveryAction(task: {
 export const tasksCommand: CommandHandler = {
   name: 'tasks',
   aliases: [],
-  description: '查看任务列表；/tasks clear [all|parked|blocked] 清空未完成任务',
+  description: '命令目录内部的任务列表与批量清理实现。',
   async execute(args, context) {
     const filter = args[0];
     const repo = context.taskEngine['taskRepo'];
@@ -182,7 +183,7 @@ export const tasksCommand: CommandHandler = {
     if (filter === 'clear') {
       const scope = parseClearScope(args[1]);
       if (!scope) {
-        return { type: 'text', content: '用法: /tasks clear [all|parked|blocked]' };
+        return { type: 'text', content: '用法: /task clear [all|parked|blocked]' };
       }
 
       const result = cancelTasksByScope(context, scope);
@@ -344,6 +345,7 @@ export const taskCommand: CommandHandler = {
     }
 
     try {
+      const wasRunning = task.status === 'running';
       switch (action) {
         case 'pause':
           context.taskEngine.park(taskId, '用户手动暂停', {
@@ -352,6 +354,7 @@ export const taskCommand: CommandHandler = {
             nextStep: '恢复后继续',
             pauseReason: '用户手动暂停',
           });
+          if (wasRunning) context.activeExecutions?.abortTask(taskId);
           return { type: 'text', content: `任务 #${taskId} 已暂停` };
 
         case 'resume': {
@@ -375,6 +378,7 @@ export const taskCommand: CommandHandler = {
             description: reason,
             status: 'waiting',
           });
+          if (wasRunning) context.activeExecutions?.abortTask(taskId);
           return { type: 'text', content: `任务 #${taskId} 已标记为阻塞: ${reason}` };
         }
 
@@ -407,10 +411,12 @@ export const taskCommand: CommandHandler = {
 
         case 'cancel':
           context.taskEngine.cancel(taskId);
+          if (wasRunning) context.activeExecutions?.abortTask(taskId);
           return { type: 'text', content: `任务 #${taskId} 已取消` };
 
         case 'done':
           context.taskEngine.transition(taskId, 'done');
+          if (wasRunning) context.activeExecutions?.abortTask(taskId);
           return { type: 'text', content: `任务 #${taskId} 已完成` };
 
         default:

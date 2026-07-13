@@ -13,14 +13,14 @@
 2. 完成后执行：
 
 ```text
-/tasks
-/tasks done
+/task list
+/task list done
 ```
 
 3. 从 `已完成` 里复制任务 ID，查看详情：
 
 ```text
-/task <task_id>
+/task show <task_id>
 ```
 
 4. 然后围绕同一主题再提一个后续问题：
@@ -31,13 +31,13 @@
 
 ## 预期
 
-- `/tasks` 应分组展示任务
-- `/tasks done` 只展示已完成任务
-- `/task <task_id>` 能看到目标、状态、摘要、资源
+- `/task list` 应分组展示任务
+- `/task list done` 只展示已完成任务
+- `/task show <task_id>` 能看到目标、状态、摘要、资源
 - 如果系统判定这是 follow-up，而不是直接重跑原任务，应创建新的跟进任务
 
 ## 建议观察点
 
 - 任务标题是否容易区分
 - 后续问题是被归并到旧任务，还是新建跟进任务
-- `/tasks` 中两个相关任务的状态是否清晰
+- `/task list` 中两个相关任务的状态是否清晰

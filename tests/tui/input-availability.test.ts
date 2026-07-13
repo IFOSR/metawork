@@ -368,21 +368,20 @@ describe('App input availability', () => {
 
     await inputCapture.handler?.('/', {});
     await flushUpdates();
-    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Enter 录入');
+    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Tab 补全，Enter 执行');
     expect(app.lastFrame()).toContain('/task');
 
     await inputCapture.handler?.('t', {});
     await inputCapture.handler?.('a', {});
     await flushUpdates();
     expect(app.lastFrame()).toContain('/task');
-    expect(app.lastFrame()).toContain('/tasks');
     expect(app.lastFrame()).not.toContain('/memory');
 
-    await inputCapture.handler?.('', { downArrow: true });
+    await inputCapture.handler?.('', { tab: true });
     await flushUpdates();
-    await inputCapture.handler?.('', { return: true });
-    await flushUpdates();
-    expect(app.lastFrame()).toContain('> /tasks ');
+    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).toContain('dashboard');
+    expect(app.lastFrame()).toContain('list');
 
     app.unmount();
     app.cleanup();
@@ -761,9 +760,9 @@ describe('App input availability', () => {
 
   // Regression: a real terminal delivers Enter as char='\r' alongside
   // key.return. The early raw-submit branch used to fire first and submit the
-  // raw "/", yielding "未知命令: /undefined". With a visible suggestion list,
-  // Enter must complete the selected command instead.
-  it('completes a slash command on a real \\r Enter instead of submitting raw "/"', async () => {
+  // raw "/", yielding "未知命令: /undefined". Enter must not autocomplete or
+  // submit an incomplete command; the editor remains available for Tab completion.
+  it('keeps an incomplete slash command on a real \\r Enter', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-enter-completes');
@@ -802,14 +801,13 @@ describe('App input availability', () => {
 
     await inputCapture.handler?.('/', {});
     await flushUpdates();
-    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Enter 录入');
+    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Tab 补全，Enter 执行');
 
     await inputCapture.handler?.('\r', { return: true });
     await flushUpdates();
 
-    // The first suggestion (/task) should be completed into the editor, with a
-    // trailing argument separator — not submitted, and no "/undefined" error.
-    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).toContain('> /');
+    expect(app.lastFrame()).not.toContain('> /task ');
     expect(app.lastFrame()).not.toContain('未知命令');
     expect(app.lastFrame()).not.toContain('/undefined');
     expect(executor.execute).not.toHaveBeenCalled();
@@ -855,7 +853,7 @@ describe('App input availability', () => {
       })
     );
 
-    // Type "/ta" to narrow suggestions to /task and /tasks, then Tab-complete
+    // Type "/ta" to narrow suggestions to /task and /task list, then Tab-complete
     // the highlighted (first) entry.
     await inputCapture.handler?.('/', {});
     await inputCapture.handler?.('t', {});

@@ -8,7 +8,6 @@ import {
   createInputHistoryState,
   formatRenderLine,
   getLineColor,
-  getCommandSuggestions,
   applyCommandSuggestion,
   applyEditorInput,
   applyEditorInputChunk,
@@ -120,23 +119,15 @@ describe('prepareEditorSubmission', () => {
     expect(history.entries[99]).toBe('任务 100');
   });
 
-  it('filters slash command suggestions by command or alias prefix', () => {
-    expect(getCommandSuggestions({ text: '/', cursor: 1 }).map(item => item.command))
-      .toEqual(expect.arrayContaining(['/task', '/tasks', '/memory', '/help']));
-
-    expect(getCommandSuggestions({ text: '/ta', cursor: 3 }).map(item => item.command))
-      .toEqual(['/task', '/tasks']);
-
-    expect(getCommandSuggestions({ text: '/q', cursor: 2 }).map(item => item.command))
-      .toEqual(['/exit']);
-
-    expect(getCommandSuggestions({ text: '/task ', cursor: 6 })).toEqual([]);
-  });
-
-  it('applies a selected slash command into the editor without submitting it', () => {
-    const [suggestion] = getCommandSuggestions({ text: '/ta', cursor: 3 });
-    expect(applyCommandSuggestion({ text: '/ta', cursor: 3 }, suggestion!))
-      .toEqual({ text: '/task ', cursor: 6 });
+  it('applies a catalog replacement range while preserving the suffix', () => {
+    const suggestion = {
+      value: 'task',
+      label: '/task',
+      description: '???????',
+      replacement: { start: 0, end: 3, text: '/task' },
+    };
+    expect(applyCommandSuggestion({ text: '/ta suffix', cursor: 3 }, suggestion))
+      .toEqual({ text: '/task suffix', cursor: 5 });
   });
 
   it('edits text at the cursor while preserving spaces and supporting backward and forward deletion', () => {

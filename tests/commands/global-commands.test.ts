@@ -44,8 +44,7 @@ describe('exitCommand', () => {
 
   it('名称为 exit，别名包含 quit 和 q', () => {
     expect(exitCommand.name).toBe('exit');
-    expect(exitCommand.aliases).toContain('quit');
-    expect(exitCommand.aliases).toContain('q');
+    expect(exitCommand.aliases).toEqual([]);
   });
 
   it('supports attaching multiple files to the current task', async () => {
@@ -104,6 +103,6 @@ describe('exitCommand', () => {
     expect(updatedTask.resources).toEqual(['evidence-a.pdf', 'evidence-b.pdf']);
     expect(result.content).toContain(`任务 #${task.id}`);
     expect(result.content).toContain('仍为 BLOCKED');
-    expect(result.content).toContain(`/task ${task.id} unblock`);
+    expect(result.content).toContain(`/task unblock ${task.id}`);
   });
 });

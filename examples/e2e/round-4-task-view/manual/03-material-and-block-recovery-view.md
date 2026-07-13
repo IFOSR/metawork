@@ -7,8 +7,8 @@
 ## Steps
 
 1. 创建一个任务并让它进入 `BLOCKED`
-2. 通过 `/attach` 或 `/task <id> unblock <material>` 补材料
-3. 再次运行 `/task <id>`
+2. 通过 `/task attach <id> <material>` 或 `/task unblock <id> <material>` 补材料
+3. 再次运行 `/task show <id>`
 
 ## Expected
 
@@ -19,6 +19,6 @@
 
 ## Fail Examples
 
-- 补过材料但 `/task <id>` 看不出来
+- 补过材料但 `/task show <id>` 看不出来
 - 阻塞原因只在老 transcript 里，任务详情看不到
 - 恢复后的下一步没有体现

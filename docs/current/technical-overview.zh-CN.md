@@ -406,7 +406,7 @@ Executor 扩展契约：
 /executor list
 /executor register wizard
 /executor unregister <name>
-/executor route-feedback
+/executor feedback
 ```
 
 ### Codex CLI
@@ -737,31 +737,33 @@ MetaClaw 会：
 常用命令：
 
 ```bash
-/tasks
-/tasks active
-/tasks ready
-/tasks parked
-/tasks blocked
-/tasks done
+/task list
+/task list active
+/task list ready
+/task list parked
+/task list blocked
+/task list done
 
-/task <id>
-/task <id> pause
-/task <id> resume
-/task <id> block waiting for customer data
-/task <id> unblock
-/task <id> unblock /tmp/evidence-v3.pdf
-/task <id> cancel
-/task <id> done
+/task show <id>
+/task pause <id>
+/task resume <id>
+/task block <id> waiting for customer data
+/task unblock <id>
+/task unblock <id> /tmp/evidence-v3.pdf
+/task cancel <id>
+/task complete <id>
 /task index rebuild
 /task index search <query>
 
-/dashboard
-/attach [taskId] <file paths...>
-/history
+/task dashboard
+/task attach <taskId> <file paths...>
+/task history
 /config
 /help
 /exit
 ```
+
+主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
 ## 任务检索和混合召回
 
@@ -879,7 +881,7 @@ npm run smoke:metaclaw
 ```bash
 cat > /tmp/metaclaw-flow.txt <<'EOF'
 Compare the risk points across three contracts and produce a concise table.
-/tasks done
+/task list done
 EOF
 
 metaclaw --script /tmp/metaclaw-flow.txt
