@@ -27,7 +27,7 @@ Files in [plans/](plans/) and older top-level docs record design exploration, im
 
 ## Operational Notes
 
-- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the unified API endpoint (`docker/pi.env`) — see the README section. The default planner + executor is Codex (`gpt-5.4`); Pi is retained as an executor candidate.
+- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the unified API endpoint (`docker/pi.env`) — see the README section. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
 - [Tech Debt](tech-debt/): the ADR-0014 legacy-compat-layers list is now closed (all bridges removed); kept as a historical record of what was retired.
 
 ## For Agents

@@ -586,7 +586,7 @@ metaclaw --connect
 
 ### 在 Docker 中运行（Windows / 容器化）
 
-在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.4`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
+在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.6-luna`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
 
 完整运行镜像内置 CLI、Planner MCP、v2 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
 
