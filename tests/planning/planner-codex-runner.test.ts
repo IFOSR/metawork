@@ -43,6 +43,14 @@ describe('CodexPlannerRunner', () => {
   it('parses final output and sanitized MCP tool events from Codex JSONL', () => {
     const result = parseCodexJsonl([
       JSON.stringify({
+        type: 'item.started',
+        item: {
+          type: 'mcp_tool_call',
+          tool: 'metaclaw_planner.search_tasks',
+          arguments: { query: 'prior task' },
+        },
+      }),
+      JSON.stringify({
         type: 'item.completed',
         item: {
           type: 'mcp_tool_call',
@@ -66,6 +74,28 @@ describe('CodexPlannerRunner', () => {
       argumentsSummary: { query: 'prior task' },
       resultSummary: { count: 2 },
     }]);
+  });
+
+  it('marks a completed MCP tool event with an error as failed', () => {
+    const result = parseCodexJsonl([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'mcp_tool_call',
+          tool: 'metaclaw_planner.get_runtime_state',
+          error: { message: 'database unavailable' },
+        },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"schemaVersion":2}' },
+      }),
+    ].join('\n'));
+
+    expect(result.toolCalls).toEqual([expect.objectContaining({
+      toolName: 'metaclaw_planner.get_runtime_state',
+      status: 'failed',
+    })]);
   });
 
   it('isolates Planner CODEX_HOME and binds the trusted session into MCP environment', async () => {

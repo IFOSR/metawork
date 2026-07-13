@@ -111,16 +111,21 @@ export function parseCodexJsonl(stdout: string): Omit<PlannerRunResult, 'duratio
 
   for (const event of events) {
     const item = isRecord(event.item) ? event.item : event;
+    const eventType = String(event.type ?? '');
     const itemType = String(item.type ?? event.type ?? '');
     if (itemType === 'agent_message' || itemType === 'message') {
       const text = extractText(item);
       if (text) output = text;
     }
-    if (itemType.includes('mcp') && itemType.includes('tool')) {
+    if (
+      (eventType === 'item.completed' || eventType === 'item.failed')
+      && itemType.includes('mcp')
+      && itemType.includes('tool')
+    ) {
       toolCalls.push({
         sequence: toolCalls.length + 1,
         toolName: String(item.tool_name ?? item.tool ?? item.name ?? item.server ?? 'unknown'),
-        status: String(item.status ?? event.type).includes('fail') ? 'failed' : 'completed',
+        status: isFailedToolEvent(event, item) ? 'failed' : 'completed',
         argumentsSummary: summarizeValue(item.arguments ?? item.input),
         resultSummary: summarizeValue(item.result ?? item.output),
       });
@@ -141,6 +146,14 @@ export function parseCodexJsonl(stdout: string): Omit<PlannerRunResult, 'duratio
     );
   }
   return { output, toolCalls };
+}
+
+function isFailedToolEvent(event: Record<string, unknown>, item: Record<string, unknown>): boolean {
+  const status = `${String(item.status ?? '')} ${String(event.type ?? '')}`.toLowerCase();
+  const error = item.error;
+  return status.includes('fail')
+    || status.includes('error')
+    || (error !== undefined && error !== null && error !== false && error !== '');
 }
 
 function extractText(value: Record<string, unknown>): string {
