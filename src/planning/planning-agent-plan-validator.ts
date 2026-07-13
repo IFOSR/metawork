@@ -63,6 +63,12 @@ function validateTaskControlScope(plan: Partial<PlanningAgentPlan>, errors: stri
   if (plan.task.control === 'clear_tasks' && !['all', 'parked', 'blocked'].includes(plan.task.scope ?? '')) {
     errors.push('clear_tasks requires scope all, parked, or blocked');
   }
+  if (
+    (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked')
+    && plan.task.scope !== null
+  ) {
+    errors.push(`${plan.task.control} requires scope null`);
+  }
 }
 
 function validateTaskPriority(plan: Partial<PlanningAgentPlan>, errors: string[]): void {

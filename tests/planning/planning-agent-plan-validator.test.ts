@@ -123,6 +123,31 @@ describe('validatePlanningAgentPlan', () => {
     });
   });
 
+  it.each([
+    'resume_task' as const,
+    'recover_blocked' as const,
+  ])('requires null scope for %s', (control) => {
+    const task = {
+      ...plan().task,
+      binding: 'reference' as const,
+      taskId: 'task_1',
+      control,
+      priority: { level: 'normal' as const, reason: 'resume selected task' },
+    };
+
+    expect(validatePlanningAgentPlan(plan({
+      action: 'task_control',
+      task: { ...task, scope: 'dashboard' },
+    }))).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([`${control} requires scope null`]),
+    });
+    expect(validatePlanningAgentPlan(plan({
+      action: 'task_control',
+      task: { ...task, scope: null },
+    }))).toEqual({ valid: true, errors: [] });
+  });
+
   it('requires null priority and a valid scope for non-scheduling task controls', () => {
     const invalid = plan({
       action: 'task_control',

@@ -64,7 +64,7 @@ const TaskPrioritySchema = z.preprocess(
   z.object({
     level: z.enum(TASK_PRIORITY_VALUES),
     reason: z.string(),
-  }).nullable(),
+  }).nullable().catch(null),
 );
 
 const ClampedConfidenceSchema = z.preprocess((value) => {
@@ -219,7 +219,7 @@ export const PlanningAgentPlanOutputSchema = z.object({
       expectedOutput: z.enum(EXPECTED_OUTPUT_VALUES),
       acceptance: z.array(z.string()),
       riskLevel: z.enum(RISK_LEVEL_VALUES),
-    })),
+    })).min(1),
   }).nullable(),
   source: z.literal(PLANNER_SOURCE),
 });
