@@ -10,6 +10,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { PolicyKernel } from '../../src/kernel/policy-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
@@ -172,6 +173,52 @@ describe('natural-language planning/kernel path', () => {
     expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
     expect(audits[0]!.outcome).toBe('accept');
     expect(audits[0]!.taskId).toBeNull();
+  });
+
+  it('short-circuits the kernel decide() round-trip for a direct reply while still auditing', async () => {
+    // A direct_reply is a read-only answer the planner already produced and
+    // validated; the session authorizes it directly instead of running the full
+    // authorization round-trip. Behavior (audit + delivery) must be unchanged.
+    const decideSpy = vi.spyOn(PolicyKernel.prototype, 'decide');
+    const harness = createSession('sess_shortcircuit', plan({
+      action: 'direct_reply',
+      reason: '普通对话',
+      response: { directReply: '今天是星期四。' },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+      execution: {
+        mode: 'none',
+        complexity: 'simple',
+        selectedExecutor: null,
+        candidateExecutors: [],
+        requiresVerification: false,
+        canModifyFiles: false,
+        requiresExternalGateway: false,
+        capabilityClass: 'conversation',
+        matchedBoundary: [],
+      },
+      workGraph: null,
+    }));
+
+    await harness.session.submit('今天星期几', { awaitAsyncWork: true });
+
+    expect(decideSpy).not.toHaveBeenCalled();
+    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('今天是星期四。');
+    const audits = harness.planningDecisionRepo.listBySession('sess_shortcircuit');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
+    expect(audits[0]!.outcome).toBe('accept');
+
+    decideSpy.mockRestore();
   });
 
   it('clarifies a low-confidence state-changing turn without creating or dispatching a task', async () => {

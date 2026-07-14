@@ -717,12 +717,19 @@ export class MetaclawSession {
     );
     const context = this.planningContextBuilder.build({ userInput });
     const plan = await this.planningAgent.plan(context);
-    const decision = this.policyKernel.decide(plan, {
-      tasks: this.taskRuntimeService.listTasks(),
-      runningTask: this.taskRuntimeService.getCurrentRunningTask(),
-      agentClasses: this.listRuntimeVisibleAgentClasses(),
-      currentFocus: this.getFocusContext(),
-    });
+    // A direct_reply is a read-only answer the planner already produced and
+    // validated. The kernel applies no authorization to it (it would only
+    // re-validate and rubber-stamp accept), so we short-circuit the full
+    // decide() round-trip and build the accept decision directly. The applier
+    // still records the planning decision, so the audit trail is unchanged.
+    const decision = plan.action === 'direct_reply'
+      ? this.policyKernel.authorizeDirectReply(plan)
+      : this.policyKernel.decide(plan, {
+        tasks: this.taskRuntimeService.listTasks(),
+        runningTask: this.taskRuntimeService.getCurrentRunningTask(),
+        agentClasses: this.listRuntimeVisibleAgentClasses(),
+        currentFocus: this.getFocusContext(),
+      });
 
     return this.kernelDecisionApplier.apply({
       userInput,

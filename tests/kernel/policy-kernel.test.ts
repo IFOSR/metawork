@@ -314,6 +314,41 @@ describe('PolicyKernel non-executing actions', () => {
   });
 });
 
+describe('PolicyKernel direct_reply short-circuit', () => {
+  // The session skips the full decide() round-trip for direct_reply and calls
+  // authorizeDirectReply(plan) directly. These lock in that the short-circuit
+  // produces the same accept decision decide() would, without needing a runtime
+  // snapshot — proving no state-changing authorization is applied to a reply.
+  const replyPlan = plan({
+    action: 'direct_reply',
+    workGraph: null,
+    response: { directReply: '今天是星期四。' },
+    task: { ...plan().task, binding: 'none', control: 'none', priority: null },
+  });
+
+  it('authorizes a direct_reply into an accept decision without a snapshot', () => {
+    const decision = new PolicyKernel().authorizeDirectReply(replyPlan);
+
+    expect(decision.outcome).toBe('accept');
+    expect(decision.runtimeAction).toBe('direct_reply');
+    expect(decision.rejected).toBe(false);
+    expect(decision.reason).toBe('direct reply authorized');
+    expect(decision.plan).toBe(replyPlan);
+  });
+
+  it('matches the accept decision the full decide() path produces', () => {
+    const kernel = new PolicyKernel();
+    const shortCircuit = kernel.authorizeDirectReply(replyPlan);
+    const roundTrip = kernel.decide(replyPlan, snapshot());
+
+    expect(shortCircuit.outcome).toBe(roundTrip.outcome);
+    expect(shortCircuit.runtimeAction).toBe(roundTrip.runtimeAction);
+    expect(shortCircuit.reason).toBe(roundTrip.reason);
+    expect(shortCircuit.rejected).toBe(roundTrip.rejected);
+    expect(shortCircuit.plan).toBe(roundTrip.plan);
+  });
+});
+
 describe('PolicyKernel task-state policy', () => {
   it.each<TaskStatus>(['done', 'archived', 'cancelled'])(
     'rejects resuming a %s task into a fresh work graph', (status) => {

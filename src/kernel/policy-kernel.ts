@@ -60,7 +60,7 @@ export class PolicyKernel {
       };
     }
 
-    if (plan.action === 'direct_reply') return this.accept(plan, 'direct reply authorized');
+    if (plan.action === 'direct_reply') return this.authorizeDirectReply(plan);
     if (plan.action === 'clarification') {
       return {
         id: `kd_${generateInteractionId()}`,
@@ -76,6 +76,19 @@ export class PolicyKernel {
     if (plan.action === 'plan_work_graph') return this.decideWorkGraph(plan, snapshot);
 
     return this.reject(plan, `unsupported PlanningAgent action: ${plan.action}`);
+  }
+
+  /**
+   * Authorizes a direct_reply plan without a runtime-state round-trip. A
+   * direct_reply is a read-only conversational answer the planner already
+   * produced and validated; the kernel applies no state-changing authorization
+   * to it (no single-active-task check, no executor rewrite, no risk/confidence
+   * gate). Exposed so the session can short-circuit the full `decide` path for
+   * reply turns while keeping KernelDecision construction owned by the kernel.
+   * Callers MUST pass a planner-validated plan with `action === 'direct_reply'`.
+   */
+  authorizeDirectReply(plan: PlanningAgentPlan): KernelDecision {
+    return this.accept(plan, 'direct reply authorized');
   }
 
   private decideTaskControl(plan: PlanningAgentPlan, snapshot: RuntimeSnapshot): KernelDecision {
