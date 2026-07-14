@@ -66,6 +66,7 @@ export interface MetaclawSessionDeps {
   llmBridge: LlmBridge;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
+  defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
 }
@@ -158,6 +159,7 @@ export class MetaclawSession {
       db: deps.db,
       config: deps.config,
       defaultExecutor: deps.executor,
+      defaultExecutorFactory: deps.defaultExecutorFactory,
       executorFactory: deps.executorFactory,
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);

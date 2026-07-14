@@ -141,6 +141,7 @@ function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
 
 function createRuntime(options: {
   defaultExecutor?: ExecutorAdapter;
+  defaultExecutorFactory?: () => ExecutorAdapter;
   executors?: Record<string, ExecutorAdapter>;
   db?: Database.Database;
 } = {}): ExecutionRuntime {
@@ -149,12 +150,65 @@ function createRuntime(options: {
     db: options.db ?? createDb(),
     config: createConfig(),
     defaultExecutor,
+    defaultExecutorFactory: options.defaultExecutorFactory,
     executorFactory: name => options.executors?.[name] ?? null,
   });
   return new ExecutionRuntime(registry, defaultExecutor);
 }
 
 describe('ExecutionRuntime', () => {
+  it('creates an isolated default executor per run so aborting one task cannot stop another', async () => {
+    let resolveFirst!: (result: ExecutorResult) => void;
+    let resolveSecond!: (result: ExecutorResult) => void;
+    const firstPending = new Promise<ExecutorResult>(done => { resolveFirst = done; });
+    const secondPending = new Promise<ExecutorResult>(done => { resolveSecond = done; });
+    const first = createExecutor('codex-cli', firstPending);
+    const second = createExecutor('codex-cli', secondPending);
+    const defaultExecutor = createExecutor('codex-cli', createResult('availability only'));
+    const factory = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    const runtime = createRuntime({ defaultExecutor, defaultExecutorFactory: factory });
+
+    const runFirst = runtime.run({
+      taskId: 'task_first',
+      executionId: 'exec_first',
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('codex-cli'),
+        agentClass: createAgentClass('codex-cli'),
+        acceptance: [],
+        expectedOutput: 'summary',
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
+    });
+    const runSecond = runtime.run({
+      taskId: 'task_second',
+      executionId: 'exec_second',
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('codex-cli'),
+        agentClass: createAgentClass('codex-cli'),
+        acceptance: [],
+        expectedOutput: 'summary',
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
+    });
+    await Promise.resolve();
+
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(runtime.abortTask('task_first')).toBe(1);
+    expect(first.abort).toHaveBeenCalledTimes(1);
+    expect(second.abort).not.toHaveBeenCalled();
+    expect(defaultExecutor.abort).not.toHaveBeenCalled();
+
+    resolveFirst(createResult('first late result'));
+    resolveSecond(createResult('second result'));
+    await Promise.all([runFirst, runSecond]);
+  });
+
   it('tracks and aborts the actual routed executor for a task, then clears the execution token', async () => {
     let resolve!: (result: ExecutorResult) => void;
     const pending = new Promise<ExecutorResult>(done => { resolve = done; });

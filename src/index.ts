@@ -139,12 +139,13 @@ async function main() {
   const orchestration = new OrchestrationEngine(taskEngine);
 
   // 7. 初始化执行器
-  const executor = createDefaultExecutor({
+  const defaultExecutorFactory = () => createDefaultExecutor({
     command: config.executor.command,
     timeout: config.executor.timeout,
     maxDuration: config.executor.max_duration,
     workspaceRoot: process.cwd(),
   });
+  const executor = defaultExecutorFactory();
 
   // 8. 检查执行器可用性
   if (!(await executor.isAvailable())) {
@@ -163,6 +164,7 @@ async function main() {
       memoryEngine,
       orchestration,
       executor,
+      defaultExecutorFactory,
       db,
       config,
       sessionId,
@@ -198,6 +200,7 @@ async function main() {
       memoryEngine,
       orchestration,
       executor,
+      defaultExecutorFactory,
       db,
       config,
       sessionId,
@@ -243,7 +246,7 @@ async function main() {
   }
 
   // 9. 启动 TUI
-  renderApp({ taskEngine, memoryEngine, orchestration, executor, db, config, sessionId, contextRecaller, llmBridge, notifier });
+  renderApp({ taskEngine, memoryEngine, orchestration, executor, defaultExecutorFactory, db, config, sessionId, contextRecaller, llmBridge, notifier });
 }
 
 main().catch((error) => {

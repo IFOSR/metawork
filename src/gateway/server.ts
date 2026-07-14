@@ -78,17 +78,19 @@ export class MetaclawGatewayServer {
 
   private async handleConnection(socket: Socket): Promise<void> {
     const sessionId = `sess_gateway_${nanoid(10)}`;
-    const executor = createDefaultExecutor({
+    const defaultExecutorFactory = () => createDefaultExecutor({
       command: this.deps.config.executor.command,
       timeout: this.deps.config.executor.timeout,
       maxDuration: this.deps.config.executor.max_duration,
       workspaceRoot: this.deps.workspaceRoot,
     });
+    const executor = defaultExecutorFactory();
     const session = new MetaclawSession({
       taskEngine: this.deps.taskEngine,
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
       executor,
+      defaultExecutorFactory,
       db: this.deps.db,
       config: this.deps.config,
       sessionId,

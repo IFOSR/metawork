@@ -816,6 +816,58 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
+  it('executes a valid slash command on Enter even when the editor cursor is in the middle', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-middle-cursor-submit');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_middle_cursor_submit',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'unused' })),
+      })
+    );
+
+    const task = taskEngine.create({ title: 'middle cursor task', goal: 'verify full command submission' });
+    const resource = 'evidence.md';
+    const command = `/task attach ${task.id} ${resource}`;
+    for (const char of command) {
+      await inputCapture.handler?.(char, {});
+      await flushUpdates();
+    }
+    for (let index = 0; index < resource.length + 1; index += 1) {
+      await inputCapture.handler?.('', { leftArrow: true });
+      await flushUpdates();
+    }
+
+    await inputCapture.handler?.('', { return: true });
+    await flushUpdates();
+
+    expect(taskRepo.findById(task.id)?.resources).toContain(resource);
+
+    app.unmount();
+    app.cleanup();
+  });
+
   it('completes a slash command on Tab when a suggestion list is visible', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);

@@ -44,6 +44,7 @@ export interface ExecutorRegistryDeps {
   db: Database.Database;
   config: Config;
   defaultExecutor: ExecutorAdapter;
+  defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   adapterRegistry?: ExecutorAdapterRegistry;
 }
@@ -113,7 +114,7 @@ export class ExecutorRegistry {
 
   resolve(name: string): ExecutorAdapter | null {
     if (name === this.deps.defaultExecutor.name) {
-      return this.deps.defaultExecutor;
+      return this.deps.defaultExecutorFactory?.() ?? this.deps.defaultExecutor;
     }
 
     const injected = this.deps.executorFactory?.(name);

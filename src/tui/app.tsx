@@ -612,7 +612,7 @@ export function App(props: AppProps) {
     const commitEditor = async (editorToCommit: EditorState) => {
       if (!editorToCommit.text.trim()) return;
       if (editorToCommit.text.startsWith('/')) {
-        const completion = sessionRef.current!.completeCommand(editorToCommit.text, editorToCommit.cursor);
+        const completion = sessionRef.current!.completeCommand(editorToCommit.text, editorToCommit.text.length);
         if (completion.state !== 'executable') return;
       }
 
