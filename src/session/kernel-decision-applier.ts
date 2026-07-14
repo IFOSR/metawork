@@ -22,7 +22,7 @@ interface FocusContext {
 export interface KernelDecisionApplierCallbacks {
   appendOutput(...lines: string[]): void;
   appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void;
-  runConversationInput(userInput: string): Promise<void>;
+  deliverDirectReply(userInput: string, reply: string): void;
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): Promise<void>;
   refreshRuntimeState(): void;
   setCurrentTaskId(taskId: string | null): void;
@@ -78,7 +78,16 @@ export class KernelDecisionApplier {
     }
 
     if (decision.runtimeAction === 'direct_reply') {
-      await this.deps.callbacks.runConversationInput(userInput);
+      const reply = decision.plan.response.directReply?.trim();
+      if (reply) {
+        this.deps.callbacks.deliverDirectReply(userInput, reply);
+      } else {
+        // Fail closed: the validator already requires a non-empty directReply for
+        // direct_reply plans, so an empty reply here means a malformed plan slipped
+        // through. Never silently fall back to a writable executor for a reply turn.
+        this.deps.callbacks.appendOutput('→ MetaClaw：未能生成有效回答，请重试或更明确地说明需求。');
+        this.deps.callbacks.refreshRuntimeState();
+      }
       return true;
     }
 
@@ -147,8 +156,7 @@ export class KernelDecisionApplier {
         '→ MetaClaw：已识别普通对话',
         '→ MetaClaw：执行策略：直接回答，不创建任务',
         decision.plan.reason === '延续当前对话，不恢复旧任务' ? `→ ${decision.plan.reason}` : '',
-        `【Executor: ${this.deps.executor.name}｜回答】`,
-        `→ Executor: ${this.deps.executor.name} 处理本次回答`,
+        '→ MetaClaw：由 PlanningAgent 直接作答',
         '-> PlanningAgent: recognized conversation turn',
         `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
       ].filter(Boolean);

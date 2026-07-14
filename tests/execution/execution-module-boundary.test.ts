@@ -16,7 +16,6 @@ describe('execution module architecture boundaries', () => {
   it('keeps execution runtime implementation in src/execution and out of core', () => {
     const runtimeFiles = [
       'execution-runtime',
-      'conversation-runtime-service',
     ];
 
     for (const file of runtimeFiles) {

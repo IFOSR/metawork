@@ -38,7 +38,7 @@ flowchart LR
   Planning --> Plan[PlanningAgentPlan<br/>意图、目标、候选、<br/>work graph proposal]
   Plan --> Kernel[PolicyKernel<br/>schema、状态、冲突、<br/>executor 可用性]
   Kernel --> Decision{KernelDecision}
-  Decision -->|direct_reply| Conversation[ConversationRuntimeService<br/>不创建持久任务]
+  Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
   Decision -->|task_control| Control[Task control runtime<br/>状态、恢复、清理、解除阻塞]
   Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>创建或绑定任务]
@@ -81,15 +81,13 @@ flowchart LR
   Plan --> Kernel[PolicyKernel]
   Kernel --> Decision[KernelDecision<br/>direct_reply]
   Decision --> Runtime[KernelDecisionApplier]
-  Runtime --> Conversation[ConversationRuntimeService]
-  Conversation --> Recall[ContextRecaller<br/>最近会话上下文优先]
-  Recall --> Executor[默认 executor<br/>通常是 codex-cli]
-  Executor --> Answer[最终回答]
+  Runtime --> Deliver[deliverDirectReply<br/>交付 plan.response.directReply]
+  Deliver --> Answer[最终回答]
   Answer --> Persist[记录交互<br/>和 planning_decision]
   Answer --> UI[TUI 或飞书]
 ```
 
-这条路径仍然是语义驱动。用户说“继续”或“你刚才回答了一半”，MetaClaw 会优先从最近会话上下文理解主题，而不是靠硬编码关键词，也不会让无关旧任务覆盖当前问题。
+这条路径仍然是语义驱动。用户说“继续”或“你刚才回答了一半”时，由 PlanningAgent（只读沙箱）自己通过只读工具查看最近会话上下文与运行时事实来理解主题，并把最终用户可见答案写入 `response.directReply`。runtime 原样交付这段文本，不再为一次回复调用第二次 executor。
 
 ### 持久任务路径
 

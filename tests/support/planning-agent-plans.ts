@@ -20,7 +20,7 @@ function basePlan(): PlanningAgentPlan {
     confidence: 0.9,
     reason: 'test plan',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '这是一条测试直接回答' },
     task: {
       binding: 'none',
       taskId: null,

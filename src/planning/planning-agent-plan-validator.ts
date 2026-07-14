@@ -39,6 +39,9 @@ export function validatePlanningAgentPlan(value: unknown): PlanningAgentPlanVali
   if (plan.action === 'clarification' && !plan.clarificationQuestion) {
     errors.push('clarification requires clarificationQuestion');
   }
+  if (plan.action === 'direct_reply' && !plan.response?.directReply?.trim()) {
+    errors.push('direct_reply requires a non-empty response.directReply');
+  }
   if (plan.action === 'task_control' && plan.task?.control === 'none') {
     errors.push('task_control requires a control kind');
   }

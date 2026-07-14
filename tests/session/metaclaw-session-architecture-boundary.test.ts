@@ -242,10 +242,11 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('handlePendingRecallReview');
   });
 
-  it('delegates normal conversation execution outside the session facade', () => {
+  it('delivers a direct reply without a second executor call for conversation', () => {
     const source = readSource('src/session/metaclaw-session.ts');
 
-    expect(source).toContain('ConversationRuntimeService');
+    expect(source).toContain('deliverDirectReply');
+    expect(source).not.toContain('ConversationRuntimeService');
     expect(source).not.toContain('private async handleConversationInput');
     expect(source).not.toContain('private buildConversationTask');
     expect(source).not.toContain('deps.executor.execute({');

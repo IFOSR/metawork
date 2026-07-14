@@ -23,7 +23,6 @@ import { MemoryContextService } from '../memory/memory-context-service.js';
 import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
 import { SessionPersistenceService } from './session-persistence-service.js';
 import { MemoryCaptureService } from '../memory/memory-capture-service.js';
-import { ConversationRuntimeService } from '../execution/conversation-runtime-service.js';
 import { TaskResumePlanner } from '../task/task-resume-planner.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
@@ -122,7 +121,6 @@ export class MetaclawSession {
   private readonly executionRuntime: ExecutionRuntime;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
-  private readonly conversationRuntimeService: ConversationRuntimeService;
   private readonly memoryCaptureService: MemoryCaptureService;
   private readonly recallReviewApplicationService: RecallReviewApplicationService;
   private readonly taskResumePlanner: TaskResumePlanner;
@@ -192,12 +190,6 @@ export class MetaclawSession {
         deps.memoryEngine,
         deps.contextRecaller,
       ),
-    });
-    this.conversationRuntimeService = new ConversationRuntimeService({
-      executor: deps.executor,
-      memoryContextService: this.memoryContextService,
-      persistenceService: this.persistenceService,
-      appendOutput: (...lines) => this.appendOutput(...lines),
     });
     this.memoryCaptureService = new MemoryCaptureService({
       db: deps.db,
@@ -303,7 +295,7 @@ export class MetaclawSession {
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         appendPlanningClarification: (userInput, plan, decision) => this.appendPlanningClarification(userInput, plan, decision),
-        runConversationInput: userInput => this.runConversationInput(userInput),
+        deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
@@ -895,15 +887,19 @@ export class MetaclawSession {
       : DEFAULT_PLANNER_TIMEOUT_MS;
   }
 
-  private async runConversationInput(userInput: string): Promise<void> {
-    const result = await this.conversationRuntimeService.run({
+  // Delivers the PlanningAgent's own answer for a direct_reply turn. The planner
+  // runs read-only and already produced the user-visible reply, so we surface it
+  // directly and record the interaction — no second (writable) executor call.
+  private deliverDirectReply(userInput: string, reply: string): void {
+    this.appendOutput(reply);
+    this.persistenceService.recordInteraction({
+      taskId: null,
       sessionId: this.deps.sessionId,
       userInput,
+      systemOutput: reply,
+      executorUsed: 'planning-agent',
     });
-    if (result.focus) {
-      this.setFocusContext(result.focus);
-    }
-    this.appendOutput(...result.lines);
+    this.setFocusContext({ kind: 'conversation', taskId: null });
   }
 
   private dispatchTask(taskId: string, context?: DispatchContext<QueuedExecutionRequest>): Promise<void> {

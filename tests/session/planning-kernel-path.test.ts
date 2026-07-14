@@ -137,6 +137,7 @@ describe('natural-language planning/kernel path', () => {
     const harness = createSession('sess_direct', plan({
       action: 'direct_reply',
       reason: '普通对话',
+      response: { directReply: '你好，我是 MetaClaw。' },
       task: {
         binding: 'none',
         taskId: null,
@@ -145,6 +146,7 @@ describe('natural-language planning/kernel path', () => {
         title: null,
         goal: null,
         includeRecentConversationContext: false,
+        priority: null,
       },
       execution: {
         mode: 'none',
@@ -163,6 +165,8 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('你好呀', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
+    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('你好，我是 MetaClaw。');
     const audits = harness.planningDecisionRepo.listBySession('sess_direct');
     expect(audits).toHaveLength(1);
     expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');

@@ -125,8 +125,11 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('未来随着基座模型的能力越来越强，是否还需要 harness', { awaitAsyncWork: true });
     await session.submit('把刚才那段分析整理成三点结论', { awaitAsyncWork: true });
 
-    expect(executor.execute).toHaveBeenCalledTimes(2);
-    const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    // Turn 1 is a direct_reply (planner answers, no executor). Turn 2 is the
+    // executable follow-up, so exactly one executor dispatch happens — for the
+    // new follow-up task, not the old parked one.
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(secondCall.task.id).not.toBe(parkedTaskId);
     expect(secondCall.task.title).toContain('把刚才那段分析整理成三点结论');
     expect(secondCall.conversationHistory.some((turn: { userInput: string }) => turn.userInput.includes('未来随着基座模型'))).toBe(true);

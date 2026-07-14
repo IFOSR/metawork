@@ -38,7 +38,7 @@ flowchart LR
   Planning --> Plan[PlanningAgentPlan<br/>intent, target, candidates,<br/>work graph proposal]
   Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>confirmation and catalog]
   Kernel --> Decision{KernelDecision}
-  Decision -->|direct_reply| Conversation[ConversationRuntimeService<br/>answer without durable task]
+  Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>deliver plan.response.directReply, no executor]
   Decision -->|clarification| Clarify[Clarification<br/>ask for missing input]
   Decision -->|task_control| Control[Task control runtime<br/>status, resume, clear, recover]
   Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>create or bind task]
@@ -81,15 +81,13 @@ flowchart LR
   Plan --> Kernel[PolicyKernel]
   Kernel --> Decision[KernelDecision<br/>direct_reply]
   Decision --> Runtime[KernelDecisionApplier]
-  Runtime --> Conversation[ConversationRuntimeService]
-  Conversation --> Recall[ContextRecaller<br/>recent session context first]
-  Recall --> Executor[Default executor<br/>usually codex-cli]
-  Executor --> Answer[Final answer]
+  Runtime --> Deliver[deliverDirectReply<br/>surface plan.response.directReply]
+  Deliver --> Answer[Final answer]
   Answer --> Persist[Record interaction<br/>and planning_decision]
   Answer --> UI[TUI or Feishu]
 ```
 
-This path is still semantic. "Continue" or "you stopped halfway" is resolved from recent conversation context first, not from a hard keyword rule and not from unrelated old tasks.
+This path is still semantic. The PlanningAgent (read-only sandbox) resolves "continue" or "you stopped halfway" itself — inspecting recent session context and runtime facts through its read-only tools — and writes the final user-visible answer into `response.directReply`. The runtime surfaces that text as-is; it does not run an executor a second time for a reply turn.
 
 ### Durable Task Path
 

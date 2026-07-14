@@ -61,7 +61,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
     confidence: 0.9,
     reason: 'execute',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '你好，我在。' },
     task: {
       binding: 'new',
       taskId: null,

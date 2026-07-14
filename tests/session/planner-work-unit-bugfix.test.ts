@@ -127,7 +127,7 @@ function directReplyPlan(): PlanningAgentPlan {
     confidence: 0.9,
     reason: 'answer directly',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '直接回答，不派发。' },
     task: {
       binding: 'none',
       taskId: null,
@@ -136,7 +136,7 @@ function directReplyPlan(): PlanningAgentPlan {
       title: null,
       goal: null,
       includeRecentConversationContext: false,
-      priority: { level: 'normal', reason: 'test priority' },
+      priority: null,
     },
     execution: {
       mode: 'none',

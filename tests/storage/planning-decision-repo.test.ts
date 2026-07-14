@@ -19,7 +19,7 @@ function directReplyPlan(): PlanningAgentPlan {
     confidence: 0.95,
     reason: 'chat',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '你好，我在。' },
     task: {
       binding: 'none',
       taskId: null,

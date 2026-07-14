@@ -120,19 +120,13 @@ describe('App conversation routing', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.execute).not.toHaveBeenCalled();
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
     expect(app.lastFrame()).toContain('→ MetaClaw：已识别普通对话');
     expect(app.lastFrame()).toContain('→ MetaClaw：执行策略：直接回答，不创建任务');
-    expect(app.lastFrame()).toContain('【MetaClaw｜召回会话上下文】');
-    expect(app.lastFrame()).toContain('→ MetaClaw：正在召回与本次问答相关的最近对话');
-    expect(app.lastFrame()).toContain('→ MetaClaw：没有召回到相关会话上下文，将按全新问题回答');
-    expect(app.lastFrame()).toContain('【Executor: codex-cli｜回答】');
-    expect(app.lastFrame()).toContain('→ Executor: codex-cli 处理本次回答');
-    expect(app.lastFrame()).toContain('【Executor: codex-cli｜回答生成】');
-    expect(app.lastFrame()).toContain('→ Executor: codex-cli 正在基于当前问题生成回答');
-    expect(app.lastFrame()).toContain('你好，我在。');
+    expect(app.lastFrame()).toContain('→ MetaClaw：由 PlanningAgent 直接作答');
+    expect(app.lastFrame()).toContain('这是一条测试直接回答');
 
     app.unmount();
     app.cleanup();
@@ -197,7 +191,7 @@ describe('App conversation routing', () => {
     }
 
     expect(app.lastFrame()).toContain('当前输入');
-    expect(app.lastFrame()).toMatch(/第一轮回复[\s\S]*当前输入[\s\S]*> 状态是 running 吗/);
+    expect(app.lastFrame()).toMatch(/这是一条测试直接回答[\s\S]*当前输入[\s\S]*> 状态是 running 吗/);
 
     app.unmount();
     app.cleanup();

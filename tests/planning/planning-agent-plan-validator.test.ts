@@ -40,7 +40,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
     confidence: 0.9,
     reason: 'chat',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '你好，我在。' },
     task: {
       binding: 'none',
       taskId: null,
@@ -72,6 +72,17 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
 describe('validatePlanningAgentPlan', () => {
   it('accepts a valid direct reply plan', () => {
     expect(validatePlanningAgentPlan(plan())).toEqual({ valid: true, errors: [] });
+  });
+
+  it.each([
+    { label: 'null', response: { directReply: null } },
+    { label: 'empty', response: { directReply: '' } },
+    { label: 'whitespace', response: { directReply: '   ' } },
+  ])('rejects a direct_reply plan with $label directReply', ({ response }) => {
+    expect(validatePlanningAgentPlan(plan({ response }))).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(['direct_reply requires a non-empty response.directReply']),
+    });
   });
 
   it('rejects invalid JSON-shaped values and missing work graph fields', () => {
