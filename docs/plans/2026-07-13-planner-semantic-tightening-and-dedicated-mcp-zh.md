@@ -1,6 +1,21 @@
 # Planner 语义职责收紧与专用 MCP 改造
 
-日期：2026-07-13
+## 计划状态
+
+- **当前状态**：已完成
+- **计划日期**：2026-07-13
+- **完成日期**：2026-07-13
+- **核心实现提交**：`c4cf143`（`refactor: centralize semantic planning in codex planner`）
+- **审核与收尾提交**：`558adf7`、`e8d1acd`、`8cfff1c`、`ee28d15`、`2a6ff41`
+
+### 完成情况
+
+- 已将自然语言语义判断统一收口到 Codex `PlanningAgent`，并升级、收紧 `PlanningAgentPlan` v2 Schema 与 validator 契约。
+- 已提供隔离的 Planner Codex runner、最小启动上下文和只读专用 stdio MCP；任务、会话、运行时与 Executor 信息均改为按需、有界查询。
+- 已移除生产路径中的自然语言关键词路由和旧规则兜底，由 `PolicyKernel` 负责确定性授权，Runtime 负责 WorkUnit 创建、探测、claim 与候选回退。
+- 已落地 Planner run/tool-call 审计、敏感信息脱敏、审计失败不影响主规划结果、终态工具事件准确记录，以及 MCP 数据边界与 Unicode 安全截断。
+- 已完成 AgentClass/WorkUnit 运行时职责分离、容器内 Planner/Executor 配置隔离、构建产物与 Planner Schema 镜像化。
+- 最终收尾验证通过：`npm run lint`、`npm run build`，以及 Docker 全量测试（168 个测试文件通过、723 个测试通过、4 个跳过）。
 
 ## 总结
 

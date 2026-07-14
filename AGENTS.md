@@ -44,6 +44,10 @@ Vitest is the test framework, configured for Node with globals enabled. Name tes
 
 **`better-sqlite3` is NOT available in the local (Windows) environment, so any test that touches storage/SQLite cannot run locally — all tests MUST be run in Docker.** Do not waste time retrying the suite on the host machine; use `docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`. Note also that path-extraction tests (e.g. inline resource matching) assume POSIX paths and only pass under the Linux Docker environment, not on Windows. `npm run lint` (`tsc --noEmit`) is the only check that runs reliably on the host.
 
+## Plan Documentation Guidelines
+
+Material implementation plans must be written to `docs/plans/`; do not leave the only copy in a chat or handoff. At the beginning of each plan, record its current status and plan date. When the plan is completed, update that same opening section with the completion date, the behaviors or features actually delivered, validation performed, and the implementation or closing commit(s). Do not report a plan as complete until its plan document has been updated.
+
 ## Commit & Pull Request Guidelines
 
 Recent history uses Conventional Commit prefixes, for example `feat: converge metaclaw session architecture` and `docs: clarify install verification flow`. Use concise imperative subjects with prefixes such as `feat:`, `fix:`, `docs:`, `test:`, or `refactor:`. Pull requests should describe the user-visible change, list validation commands run, link related plans/issues, and include screenshots or terminal output when TUI, CLI, or gateway behavior changes.
