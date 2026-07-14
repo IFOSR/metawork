@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Container entrypoint that:
-#  1. Writes the API key + base URL from the container env into /etc/environment
-#     so SSH login shells inherit them (sshd drops --env-file vars by default —
+#  1. Writes API settings and MetaClaw runtime paths from the container env
+#     into /etc/environment so SSH login shells inherit them (sshd drops
+#     --env-file vars by default —
 #     only AcceptEnv whitelisted names cross over, so codex/pi spawned from a
 #     TUI started over SSH saw "Missing environment variable: OPENAI_API_KEY").
 #     /etc/environment is read by pam_env.so for every SSH session, login or not.
@@ -21,41 +22,10 @@ if [ -z "${OPENAI_BASE_URL:-}" ]; then
   exit 1
 fi
 
-# Persist the vars SSH login shells need. /etc/environment is KEY=value lines;
-# pam_env.so (enabled in /etc/pam.d/sshd) loads them into every session. We
-# rewrite the two MetaClaw-relevant lines each start (idempotent); other lines
-# in the file are preserved. Values with spaces/special chars are single-quoted
-# per pam_env syntax.
-write_env_file() {
-  local tmp
-  tmp=$(mktemp)
-  # Drop any prior lines for the keys we manage, then append fresh values.
-  grep -vE "^(OPENAI_API_KEY|OPENAI_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|DEEPSEEK_API_KEY|GOOGLE_GENERATIVE_AI_API_KEY|OPENROUTER_API_KEY|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)=" /etc/environment 2>/dev/null || true > "$tmp"
-  for kv in \
-    "OPENAI_API_KEY=${OPENAI_API_KEY:-}" \
-    "OPENAI_BASE_URL=${OPENAI_BASE_URL:-}" \
-    "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" \
-    "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}" \
-    "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}" \
-    "GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY:-}" \
-    "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}" \
-    "PI_SKIP_VERSION_CHECK=${PI_SKIP_VERSION_CHECK:-1}" \
-    "PI_TELEMETRY=${PI_TELEMETRY:-0}" \
-  ; do
-    local key="${kv%%=*}"
-    local val="${kv#*=}"
-    if [ -n "$val" ]; then
-      # Quote values containing spaces or shell-special chars.
-      case "$val" in
-        *[[:space:]\"\'#\$]*) printf "%s='%s'\n" "$key" "$val" ;;
-        *) printf "%s=%s\n" "$key" "$val" ;;
-      esac
-    fi
-  done >> "$tmp"
-  cat "$tmp" > /etc/environment
-  rm -f "$tmp"
-}
-write_env_file
+# Persist the vars SSH login shells need. pam_env.so (enabled in
+# /etc/pam.d/sshd) loads /etc/environment into every session.
+source /opt/metaclaw/persist-ssh-environment.sh
+persist_ssh_environment /etc/environment
 
 render() {
   # Replace the placeholder with the env-supplied base URL. `|` is the sed
