@@ -151,7 +151,11 @@ interface ResolvedPath {
   path: string[];
 }
 
-type CandidateCache = Map<CommandArgumentSpec, Map<string, CommandCandidate[]>>;
+// Reference candidates are full sets independent of prefix (providers ignore the
+// prefix argument and only return the full candidate list; prefix filtering is
+// done by the caller). Cache once per argument so changing the prefix mid-input
+// does not re-run the provider (which typically hits the DB via findAll()).
+type CandidateCache = Map<CommandArgumentSpec, CommandCandidate[]>;
 
 const SUGGESTION_LIMIT = 6;
 
@@ -879,12 +883,10 @@ export class CommandCatalog {
     candidateCache: CandidateCache,
   ): CommandCandidate[] {
     if (!argument.candidates) return [];
-    const byPrefix = candidateCache.get(argument) ?? new Map<string, CommandCandidate[]>();
-    candidateCache.set(argument, byPrefix);
-    const cached = byPrefix.get(prefix);
+    const cached = candidateCache.get(argument);
     if (cached) return cached;
     const candidates = argument.candidates(context, prefix);
-    byPrefix.set(prefix, candidates);
+    candidateCache.set(argument, candidates);
     return candidates;
   }
 

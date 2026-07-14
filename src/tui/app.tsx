@@ -673,8 +673,8 @@ export function App(props: AppProps) {
         setSuggestionIndex(0);
         editorRef.current = next;
         setEditor(next);
-        return;
       }
+      return;
     }
 
     if (key.return) {
