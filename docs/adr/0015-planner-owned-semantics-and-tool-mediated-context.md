@@ -36,4 +36,10 @@ The runtime image contains compiled application and Planner MCP entry points, th
 
 There is one semantic owner and one authorization seam. New tasks do not consume unrelated history, while continuation/status requests can obtain evidence on demand. Static executor capabilities survive restarts without pretending to be runtime health. Runtime fallback is limited to the ordered AgentClass candidates already approved by the plan, except deterministic system resume paths that use the configured default AgentClass.
 
-The first version intentionally does not add preference, long-term-memory, cross-session, or file-body Planner tools; parallel execution; preemption; AgentClass versioning; or Planner replanning after probe exhaustion.
+The first version intentionally does not add preference, long-term-memory, cross-session, or write-capable Planner tools; parallel execution; preemption; AgentClass versioning; or Planner replanning after probe exhaustion.
+
+## Amendment: read-only file access for the Planner
+
+The Planner may now read repository file bodies. It is given a shell (`shell_tool`/`unified_exec` enabled) so it can `grep`/`cat`/`ls` source files and answer code questions directly — for a `direct_reply`, it inspects the files itself instead of proposing executable work. This supersedes the original decision to withhold file-body Planner tools.
+
+Write protection is enforced at the OS layer, not by withholding the shell: the Planner Codex runs with `sandbox_mode = "read-only"` (reinforced by the runner's `--sandbox read-only` flag), so reads succeed and every write is denied. On Linux this sandbox uses bubblewrap, which requires unprivileged user namespaces; the runtime container is therefore created with `--security-opt seccomp=unconfined` (granted once at `docker run`, reused across stop/start — see `docker/shell.ps1`). Without it bwrap cannot create a namespace and the shell tool fails closed (no reads, no writes). The Planner remains read-only; nothing about this grants it the ability to change state.

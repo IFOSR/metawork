@@ -70,7 +70,7 @@ flowchart LR
 
 Every natural-language input enters one runtime, then an isolated Codex planner exposes `PlanningAgent` and proposes a v2 `PlanningAgentPlan`. Its startup context is minimal and it reads bounded task/session/runtime/executor facts through a read-only stdio MCP only when needed. `PolicyKernel` validates state, conflicts, executor catalog membership, and confirmation requirements. Runtime applies the decision, claims healthy capacity or probes a new executor WorkUnit, and runs claimed subtasks through `ExecutionRuntime`.
 
-The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
 ### Direct Reply Path
 

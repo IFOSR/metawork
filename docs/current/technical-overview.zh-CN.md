@@ -805,7 +805,7 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出 v2 `PlanningAgentPlan`。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出 v2 `PlanningAgentPlan`。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。

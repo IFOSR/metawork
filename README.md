@@ -111,6 +111,16 @@ SSH details: host `localhost`, port `2222`, user `root`, password `metaclaw`
 (local single-machine default). The host key is written to
 `.tmp/ssh_known_hosts` so your global known_hosts is untouched.
 
+**Planner read-only shell (`--security-opt seccomp=unconfined`):** the container
+is created with a relaxed seccomp filter so the read-only PlanningAgent can run a
+sandboxed shell (bubblewrap) to read repository files while all writes stay
+denied. This is granted **once**, at `docker run` (`-Start`); `-Stop`/`-Start`
+reuse the same container with no re-grant. `-Rebuild` (or `-Remove` then
+`-Start`) creates a fresh container and re-applies it. For production deploys,
+grant the same flag once when creating the runtime container. Without it the
+planner's shell fails closed and it cannot read files (it still works via its
+read-only MCP task/runtime tools).
+
 **Passwordless login (optional, recommended):** run `.\docker\shell.ps1 -SetupSsh`
 once. It generates a dedicated key under `.tmp/ssh_key` (gitignored), installs
 the public key into the container, and writes an SSH client config defining the

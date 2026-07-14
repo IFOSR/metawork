@@ -1,3 +1,13 @@
+# Planner Codex config. The planner is a read-only agent: it may inspect the
+# repository and runtime state to answer, but must never modify anything.
+# shell_tool/unified_exec are ENABLED so the planner can grep/read source files
+# directly; write protection comes from the OS-level read-only sandbox, not from
+# withholding the shell. sandbox_mode="read-only" (reinforced by the runner's
+# `--sandbox read-only` flag) lets reads through and denies every write. On Linux
+# this sandbox uses bubblewrap, which requires unprivileged user namespaces — the
+# runtime container must be started with `--security-opt seccomp=unconfined`
+# (see docker/shell.ps1). Without it bwrap cannot create a namespace and the
+# shell tool fails closed (no reads, no writes).
 model = "gpt-5.6-luna"
 model_provider = "anyint"
 web_search = "disabled"
@@ -6,8 +16,8 @@ sandbox_mode = "read-only"
 [features]
 apps = false
 multi_agent = false
-unified_exec = false
-shell_tool = false
+unified_exec = true
+shell_tool = true
 tool_suggest = false
 goals = false
 guardian_approval = false

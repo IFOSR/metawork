@@ -203,7 +203,18 @@ function Start-ShellContainer {
     Write-Host ("Starting persistent SSH container '" + $container + "' ...") -ForegroundColor Cyan
     # Main process: reseed the pi config template into the writable pi-agent-home
     # (first run), then exec sshd -D so the container stays up as an SSH server.
+    #
+    # --security-opt seccomp=unconfined is granted ONCE here, at container
+    # creation. The read-only planner Codex sandboxes shell execution with
+    # bubblewrap, which needs unprivileged user namespaces; Docker's default
+    # seccomp profile blocks the `unshare` syscall bwrap uses, so without this
+    # the planner's shell tool fails closed ("No permissions to create a new
+    # namespace") and it cannot read repository files. This only loosens THIS
+    # container's syscall filter and is a create-time flag: subsequent
+    # `docker start` (stop/resume) reuse it with no extra grant. Rebuilding the
+    # image and creating a fresh container re-applies it here.
     docker run -d --name $container `
+      --security-opt seccomp=unconfined `
       -p "${sshPort}:22" `
       --entrypoint /bin/bash `
       -v "${workspaceVolume}:/workspace" `
