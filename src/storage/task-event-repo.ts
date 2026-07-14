@@ -47,6 +47,16 @@ export class TaskEventRepo {
     return rows.map(rowToEvent);
   }
 
+  listRecentByTask(taskId: string, limit = 20): TaskEvent[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM task_events
+      WHERE task_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(taskId, limit) as TaskEventRow[];
+    return rows.map(rowToEvent);
+  }
+
   listRecent(limit = 20): TaskEvent[] {
     const rows = this.db.prepare('SELECT * FROM task_events ORDER BY created_at DESC LIMIT ?').all(limit) as TaskEventRow[];
     return rows.map(rowToEvent);

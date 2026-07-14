@@ -121,17 +121,15 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
-    expect(harness.taskRepo.findAll()).toHaveLength(1);
+    const [createdTask] = harness.taskRepo.findAll();
+    expect(createdTask).toBeDefined();
     expect(harness.executor.execute).toHaveBeenCalledTimes(1);
 
     const audits = harness.planningDecisionRepo.listBySession('sess_durable');
     expect(audits).toHaveLength(1);
     expect(audits[0]!.decision.runtimeAction).toBe('plan_work_graph');
     expect(['accept', 'rewrite']).toContain(audits[0]!.outcome);
-    // The decision is audited before createAndPrepareTask runs, so a fresh
-    // durable task (binding 'new') is recorded with no taskId — it is bound to
-    // the created task only afterwards.
-    expect(audits[0]!.taskId).toBeNull();
+    expect(audits[0]!.taskId).toBe(createdTask!.id);
   });
 
   it('handles a direct reply without creating a task and audits it', async () => {

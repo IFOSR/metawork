@@ -61,20 +61,4 @@ describe('canonical task control commands', () => {
     expect(harness.abortTask).toHaveBeenCalledWith(running.id);
   });
 
-  it('returns unavailable for the four visible placeholders without writes or aborts', async () => {
-    const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'placeholder');
-    const before = harness.taskRepo.findAll();
-
-    const results = await Promise.all([
-      harness.catalog.execute('/executor show codex-cli', harness.context),
-      harness.catalog.execute('/executor route 整理合同风险', harness.context),
-      harness.catalog.execute(`/task history ${task.id}`, harness.context),
-      harness.catalog.execute(`/executor feedback ${task.id}`, harness.context),
-    ]);
-
-    expect(results.every(result => result.type === 'unavailable')).toBe(true);
-    expect(harness.taskRepo.findAll()).toEqual(before);
-    expect(harness.abortTask).not.toHaveBeenCalled();
-  });
 });

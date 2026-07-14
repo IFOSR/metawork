@@ -25,6 +25,7 @@ import { SessionPersistenceService } from './session-persistence-service.js';
 import { MemoryCaptureService } from '../memory/memory-capture-service.js';
 import { TaskResumePlanner } from '../task/task-resume-planner.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
+import { CommandReadServices } from '../commands/command-read-services.js';
 import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -120,6 +121,7 @@ export class MetaclawSession {
   private readonly inputController: InputController;
   private readonly taskRuntimeService: TaskRuntimeService;
   private readonly executionRuntime: ExecutionRuntime;
+  private readonly commandReadServices: CommandReadServices;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
   private readonly memoryCaptureService: MemoryCaptureService;
@@ -163,6 +165,7 @@ export class MetaclawSession {
       executorFactory: deps.executorFactory,
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);
+    this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
@@ -866,6 +869,7 @@ export class MetaclawSession {
       orchestration: this.deps.orchestration,
       executor: this.deps.executor,
       activeExecutions: this.executionRuntime,
+      readServices: this.commandReadServices,
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
       config: this.deps.config,

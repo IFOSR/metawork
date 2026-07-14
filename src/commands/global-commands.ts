@@ -84,28 +84,6 @@ export const attachCommand: CommandHandler = {
   },
 };
 
-export const historyCommand: CommandHandler = {
-  name: 'history',
-  aliases: [],
-  description: '查看最近交互历史',
-  async execute(args, context) {
-    const rows = context.db.prepare(
-      'SELECT task_id, user_input, created_at FROM interactions ORDER BY created_at DESC LIMIT 10'
-    ).all() as Array<{ task_id: string | null; user_input: string; created_at: string }>;
-
-    if (rows.length === 0) {
-      return { type: 'text', content: '暂无交互历史' };
-    }
-
-    const lines = rows.map((row) => {
-      const taskPrefix = row.task_id ? `#${row.task_id}` : '#conversation';
-      return `${row.created_at} ${taskPrefix} ${row.user_input}`;
-    });
-
-    return { type: 'text', content: `最近交互：\n${lines.join('\n')}` };
-  },
-};
-
 export const configCommand: CommandHandler = {
   name: 'config',
   aliases: [],

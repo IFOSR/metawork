@@ -115,13 +115,15 @@ export class WorkUnitClaimService {
   private release(workUnitId: string): void {
     const existing = this.workUnitRepo.findById(workUnitId);
     if (!existing || existing.state === 'failed' || existing.state === 'heartbeat_lost') return;
+    const claimedTaskId = existing.claimedTaskId;
+    const claimedSubtaskId = existing.claimedSubtaskId;
     this.workUnitRepo.updateState(workUnitId, 'idle', {
       claimedTaskId: null,
       claimedSubtaskId: null,
       heartbeatAt: new Date().toISOString(),
       leaseExpiresAt: null,
     });
-    this.recordEvent(workUnitId, null, null, 'released', 'idle');
+    this.recordEvent(workUnitId, claimedTaskId, claimedSubtaskId, 'released', 'idle');
   }
 
   private recordEvent(

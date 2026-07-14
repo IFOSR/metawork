@@ -51,7 +51,7 @@ describe('agent class and planner route commands', () => {
     expect(afterUnregister.content).not.toContain('research-bot');
   });
 
-  it('registers AgentClasses and reports planner task events instead of route events', async () => {
+  it('registers AgentClasses without retaining the legacy no-argument feedback command', async () => {
     const db = createDb();
     const context = createContext(db);
     const catalog = createDefaultCommandCatalog();
@@ -67,7 +67,7 @@ describe('agent class and planner route commands', () => {
     expect(profiles.content).toContain('legal');
 
     const feedback = await catalog.execute('/executor feedback', context);
-    expect(feedback.content).toContain('No planner task events recorded yet');
+    expect(feedback.content).toContain('taskId');
     expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
   });
 });

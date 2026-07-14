@@ -91,6 +91,11 @@ describe('WorkUnitClaimService', () => {
       'running',
       'released',
     ]);
+    expect(repo.listEvents('executor-1').at(-1)).toMatchObject({
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      eventType: 'released',
+    });
   });
 
   it('marks expired claimed work units as heartbeat_lost', () => {

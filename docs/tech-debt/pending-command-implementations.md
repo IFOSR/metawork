@@ -6,16 +6,14 @@
 
 ## 1. 已进入命令树的可见占位
 
-以下四种输入可以被统一命令目录解析、校验并提交，但当前统一返回 `unavailable`：
+当前没有可见占位命令。原有登记已按以下方式处理：
 
-| 命令 | 预期效果 | 后续验收条件 |
-| --- | --- | --- |
-| `/executor show <executorName>` | 展示指定 Executor/AgentClass 的配置、能力、可用性和当前工作负载。 | 输出来自真实注册与运行数据；未知名称有明确错误；无写入副作用。 |
-| `/executor route <taskDescription...>` | 解释给定任务描述会匹配哪些 Executor，以及选择原因。 | 复用正式路由策略；不创建任务、不派发执行；输出候选、约束和理由。 |
-| `/task history <taskId>` | 展示指定任务的交互、状态变化和执行历史。 | 只返回该任务的真实持久化历史；未知 ID 明确报错；无参数版本继续展示全局最近交互。 |
-| `/executor feedback <taskId>` | 展示指定任务的 Planner/Executor 路由反馈。 | 按 taskId 过滤真实事件；无参数版本继续展示最近 Planner 任务事件。 |
+- `/executor show <executorName>` 已实现为 AgentClass 静态配置、runtime binding 和活跃 WorkUnit 查询，不执行健康探测。
+- `/task history <taskId>` 已实现为指定任务最近 20 条持久化交互与任务事件查询；旧的无参数全局历史入口已删除。
+- `/executor feedback <taskId>` 已实现为指定任务的 Planner、PolicyKernel、WorkUnit 和 Executor 事实查询；旧的无参数最近事件入口已删除。
+- `/executor route <taskDescription...>` 已从命令树删除，不保留 alias、占位或迁移映射。
 
-占位命令不得写数据库、修改任务状态、调度任务或调用 Executor。实现完成后，必须补充真实副作用/无副作用测试并从本节移除。
+Command 的职责限定为执行确定操作，或查询已经存在的确定事实。针对假设任务描述进行模糊规划或路由预演不属于 Command 职责，应由正式 PlanningAgent 流程或未来独立交互形态承担。
 
 ## 2. 尚未进入命令树的未来能力
 

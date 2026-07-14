@@ -64,6 +64,23 @@ export class PlanningDecisionRepo {
     `).all(sessionId) as PlanningDecisionRow[];
     return rows.map(rowToRecord);
   }
+
+  listByTask(taskId: string): PlanningDecisionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM planning_decisions
+      WHERE task_id = ?
+      ORDER BY created_at ASC
+    `).all(taskId) as PlanningDecisionRow[];
+    return rows.map(rowToRecord);
+  }
+
+  bindTask(id: string, taskId: string): void {
+    this.db.prepare(`
+      UPDATE planning_decisions
+      SET task_id = ?
+      WHERE id = ? AND task_id IS NULL
+    `).run(taskId, id);
+  }
 }
 
 function rowToRecord(row: PlanningDecisionRow): PlanningDecisionRecord {

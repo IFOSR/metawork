@@ -1,6 +1,5 @@
 import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import type { CommandHandler } from './router.js';
 
@@ -138,19 +137,6 @@ export const executorCommand: CommandHandler = {
           'Commands: /executor register <name> --command <cmd> --args "exec --prompt {prompt}" --check "<cmd> --version" [--domains a,b] [--capabilities a,b]',
           'Commands: /executor unregister <name>',
         ].join('\n'),
-      };
-    }
-
-    if (action === 'feedback') {
-      const events = new TaskEventRepo(context.db).listRecent();
-      if (events.length === 0) {
-        return { type: 'text', content: 'No planner task events recorded yet.' };
-      }
-      return {
-        type: 'text',
-        content: `Planner Task Events:\n${events.map(event =>
-          `  #${event.id} ${event.eventType} task=${event.taskId} subtask=${event.subtaskId ?? '-'} ${event.message}`
-        ).join('\n')}`,
       };
     }
 

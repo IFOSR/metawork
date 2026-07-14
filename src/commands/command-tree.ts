@@ -23,7 +23,7 @@ import { memoryCommand } from './memory-commands.js';
 import { executorCommand } from './executor-commands.js';
 import { learningCommand } from './learning-commands.js';
 import { profileCommand } from './profile-commands.js';
-import { attachCommand, configCommand, dashboardCommand, exitCommand, historyCommand } from './global-commands.js';
+import { attachCommand, configCommand, dashboardCommand, exitCommand } from './global-commands.js';
 
 interface ActionInput {
   name: string;
@@ -33,7 +33,6 @@ interface ActionInput {
   examples?: string[];
   arguments?: CommandArgumentSpec[];
   options?: CommandOptionSpec[];
-  unavailable?: boolean;
   builtin?: 'help';
   run?: CommandAction['execute'];
 }
@@ -48,7 +47,6 @@ function action(input: ActionInput): CommandAction {
     examples: input.examples ?? [],
     arguments: input.arguments,
     options: input.options,
-    unavailable: input.unavailable,
     builtin: input.builtin,
     execute: input.run,
   };
@@ -264,14 +262,12 @@ function taskNodes(): CommandNode[] {
       run: (args, context) => invokeLegacy(attachCommand, [stringArg(args, 'taskId'), ...stringListArg(args, 'resources')], context),
     }),
     action({
-      name: 'history', summary: '查看最近交互历史', effect: '无 taskId 时读取全局最近交互；按任务过滤暂未实现。',
-      usage: '/task history [<taskId>]', arguments: [{ ...taskReference('要过滤的任务'), optional: true }],
-      run: (args, context) => {
-        const taskId = optionalStringArg(args, 'taskId');
-        return taskId
-          ? Promise.resolve({ type: 'unavailable', commandPath: '/task history <taskId>', content: '命令已登记但尚未实现：/task history <taskId>。参见 docs/tech-debt/pending-command-implementations.md。' })
-          : invokeLegacy(historyCommand, [], context);
-      },
+      name: 'history', summary: '查看任务历史', effect: '读取指定任务最近 20 条真实交互、状态变化和执行事件。',
+      usage: '/task history <taskId>', arguments: [taskReference('要查看历史的任务')],
+      run: (args, context) => Promise.resolve({
+        type: 'text',
+        content: context.readServices.taskHistory(stringArg(args, 'taskId')),
+      }),
     }),
     {
       kind: 'group', name: 'index', summary: '任务检索索引', children: [
@@ -316,20 +312,27 @@ function executorNodes(): CommandNode[] {
 
   return [
     action({ name: 'list', summary: '列出 Executor', effect: '读取 AgentClass 与 WorkUnit 注册信息。', usage: '/executor list', run: (_, c) => invokeLegacy(executorCommand, ['list'], c) }),
-    action({ name: 'show', summary: '查看 Executor 详情', effect: '展示单个 Executor 的画像和运行信息。', usage: '/executor show <executorName>', arguments: [executorRef()], unavailable: true }),
+    action({
+      name: 'show', summary: '查看 Executor 类型详情', effect: '展示 AgentClass 静态配置、runtime binding 和当前工作的 WorkUnit。',
+      usage: '/executor show <executorName>', arguments: [executorRef()],
+      run: (args, context) => Promise.resolve({
+        type: 'text',
+        content: context.readServices.executorDetails(stringArg(args, 'executorName')),
+      }),
+    }),
     {
       kind: 'group', name: 'register', summary: '注册 Executor', fallbackAction: registerAction, children: [
         action({ name: 'wizard', summary: '启动注册向导', effect: '启动交互式 Executor 注册向导。', usage: '/executor register wizard', run: (_, c) => invokeLegacy(executorCommand, ['register', 'wizard'], c) }),
       ],
     },
     action({ name: 'unregister', summary: '反注册 Executor', effect: '删除未被 WorkUnit 使用的 AgentClass。', usage: '/executor unregister <executorName>', arguments: [executorRef()], run: (a, c) => invokeLegacy(executorCommand, ['unregister', stringArg(a, 'executorName')], c) }),
-    action({ name: 'route', summary: '预览 Executor 路由', effect: '预览任务描述将选择的 Executor。', usage: '/executor route <taskDescription...>', arguments: [rest('taskDescription', '任务描述')], unavailable: true }),
     action({
-      name: 'feedback', summary: '查看 Executor 路由反馈', effect: '无 taskId 时读取最近规划事件；按任务过滤暂未实现。',
-      usage: '/executor feedback [<taskId>]', arguments: [{ ...taskReference('要过滤的任务'), optional: true }],
-      run: (args, context) => optionalStringArg(args, 'taskId')
-        ? Promise.resolve({ type: 'unavailable', commandPath: '/executor feedback <taskId>', content: '命令已登记但尚未实现：/executor feedback <taskId>。参见 docs/tech-debt/pending-command-implementations.md。' })
-        : invokeLegacy(executorCommand, ['feedback'], context),
+      name: 'feedback', summary: '查看任务的 Executor 路由反馈', effect: '按任务展示 Planner 提议、Kernel 决策、WorkUnit 过程和 Executor 结果。',
+      usage: '/executor feedback <taskId>', arguments: [taskReference('要查看反馈的任务')],
+      run: (args, context) => Promise.resolve({
+        type: 'text',
+        content: context.readServices.executorFeedback(stringArg(args, 'taskId')),
+      }),
     }),
   ];
 }

@@ -80,4 +80,23 @@ describe('PlanningDecisionRepo', () => {
       }),
     ]);
   });
+
+  it('binds a newly created task and lists decisions by task', () => {
+    const repo = new PlanningDecisionRepo(createDb());
+    const plan = directReplyPlan();
+    const decision = new PolicyKernel().decide(plan, {
+      tasks: [], runningTask: null, agentClasses: [], currentFocus: null,
+    });
+    repo.insert({
+      id: decision.id, sessionId: 'session_2', requestId: plan.id, taskId: null,
+      userInput: 'create work', plan, decision, outcome: decision.outcome,
+      reason: decision.reason, createdAt: '2026-07-14T00:00:00.000Z',
+    });
+
+    repo.bindTask(decision.id, 'task-created-later');
+
+    expect(repo.listByTask('task-created-later')).toEqual([
+      expect.objectContaining({ id: decision.id, taskId: 'task-created-later' }),
+    ]);
+  });
 });

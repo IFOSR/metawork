@@ -57,6 +57,12 @@ interface AdapterFactoryConfig {
 
 export type AdapterFactory = (config: AdapterFactoryConfig) => ExecutorAdapter;
 
+export interface ExecutorRegistrationInspection {
+  configured: boolean;
+  bindingSource: 'default' | 'injected' | 'built-in' | 'custom-cli' | 'unbound';
+  adapterName: string | null;
+}
+
 function withLongResearchTimeoutDefaults<T extends AdapterFactoryConfig>(config: T): T {
   return {
     ...config,
@@ -86,6 +92,10 @@ export class ExecutorAdapterRegistry {
   create(name: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
     const factory = this.factories.get(name);
     return factory ? factory(config) : null;
+  }
+
+  has(name: string): boolean {
+    return this.factories.has(name);
   }
 
   createByCommand(command: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
@@ -151,6 +161,28 @@ export class ExecutorRegistry {
     return this.resolve(name) ?? this.deps.defaultExecutor;
   }
 
+  inspect(name: string): ExecutorRegistrationInspection {
+    if (name === this.deps.defaultExecutor.name) {
+      return { configured: true, bindingSource: 'default', adapterName: name };
+    }
+
+    const injected = this.deps.executorFactory?.(name);
+    if (injected) {
+      return { configured: true, bindingSource: 'injected', adapterName: injected.name };
+    }
+
+    if (this.adapterRegistry.has(name)) {
+      return { configured: true, bindingSource: 'built-in', adapterName: name };
+    }
+
+    const customAgentClass = new AgentClassRepo(this.deps.db).findByName(name);
+    if (customAgentClass?.runtimeCommand) {
+      return { configured: true, bindingSource: 'custom-cli', adapterName: name };
+    }
+
+    return { configured: false, bindingSource: 'unbound', adapterName: null };
+  }
+
   async isAvailable(name: string): Promise<boolean> {
     const adapter = this.resolve(name);
     if (!adapter) {
@@ -206,6 +238,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
 
   isExecutorAvailable(name: string): Promise<boolean> {
     return this.registry.isAvailable(name);
+  }
+
+  inspectExecutorRegistration(name: string): ExecutorRegistrationInspection {
+    return this.registry.inspect(name);
   }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {

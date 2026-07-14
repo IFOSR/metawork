@@ -402,9 +402,10 @@ Executor 扩展契约：
 
 ```bash
 /executor list
+/executor show <name>
 /executor register wizard
 /executor unregister <name>
-/executor feedback
+/executor feedback <taskId>
 ```
 
 ### Codex CLI
@@ -755,7 +756,7 @@ MetaClaw 会：
 
 /task dashboard
 /task attach <taskId> <file paths...>
-/task history
+/task history <taskId>
 /config
 /help
 /exit

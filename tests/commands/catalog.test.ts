@@ -164,7 +164,6 @@ describe('CommandCatalog', () => {
 /executor register <executorName>
 /executor register wizard
 /executor unregister
-/executor route
 /executor feedback
 /memory list
 /memory search

@@ -5,6 +5,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
+import type { CommandReadServices } from './command-read-services.js';
 
 export interface CommandContext {
   taskEngine: TaskEngine;
@@ -12,6 +13,7 @@ export interface CommandContext {
   orchestration: OrchestrationEngine;
   executor: ExecutorAdapter;
   activeExecutions: ActiveExecutionControl;
+  readServices: CommandReadServices;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;
@@ -40,11 +42,6 @@ export type CommandResult =
       content: string;
       directive: CommandDirective;
       payload?: unknown;
-    }
-  | {
-      type: 'unavailable';
-      content: string;
-      commandPath: string;
     }
   | {
       type: 'exit';
@@ -118,7 +115,6 @@ export interface CommandAction extends CommandNodeBase {
   examples: string[];
   arguments?: CommandArgumentSpec[];
   options?: CommandOptionSpec[];
-  unavailable?: boolean;
   builtin?: 'help';
   execute?: (
     args: ResolvedCommandArgs,
@@ -489,13 +485,6 @@ export class CommandCatalog {
     }
 
     const commandPath = `/${resolved.path.join(' ')}`;
-    if (resolved.action.unavailable) {
-      return {
-        type: 'unavailable',
-        commandPath,
-        content: `命令已登记但尚未实现：${commandPath}。参见 docs/tech-debt/pending-command-implementations.md。`,
-      };
-    }
     if (resolved.action.builtin === 'help') {
       return {
         type: 'text',

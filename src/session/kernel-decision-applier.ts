@@ -230,6 +230,7 @@ export class KernelDecisionApplier {
       goal: plan.task.goal ?? inlineResourceContext.normalizedGoal,
       resources: inlineResourceContext.resources,
     });
+    this.deps.planningDecisionRepo.bindTask(decision.id, task.id);
     this.applyPlanPriority(task.id, plan);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
