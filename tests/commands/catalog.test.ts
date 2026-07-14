@@ -100,6 +100,40 @@ describe('CommandCatalog', () => {
     expect(middle.suggestions[0]?.replacement).toEqual({ start: 6, end: 8, text: 'list' });
   });
 
+  it('offers a nearest command node as a Tab replacement without making the typo executable', () => {
+    const catalog = createCatalog();
+    const rootTypo = catalog.complete({ text: '/taks', cursor: 5, context });
+    expect(rootTypo.state).not.toBe('executable');
+    expect(rootTypo.suggestions[0]?.replacement).toEqual({ start: 0, end: 5, text: '/task' });
+
+    const nestedTypo = catalog.complete({ text: '/task lsit ', cursor: 11, context });
+    expect(nestedTypo.state).toBe('invalid');
+    expect(nestedTypo.suggestions[0]?.replacement).toEqual({ start: 6, end: 10, text: 'list' });
+  });
+
+  it('loads a dynamic reference provider once when validation and suggestions use the same prefix', () => {
+    const candidates = vi.fn(() => [{ value: 'item-1', label: 'item-1', description: 'first item' }]);
+    const catalog = new CommandCatalog([{
+      kind: 'action',
+      name: 'pick',
+      summary: 'pick item',
+      effect: 'pick item',
+      usages: ['/pick <itemId>'],
+      examples: ['/pick item-1'],
+      arguments: [{
+        name: 'itemId',
+        kind: 'reference',
+        description: 'item',
+        candidates,
+      }],
+      execute: vi.fn(),
+    }]);
+
+    const completion = catalog.complete({ text: '/pick item-1', cursor: 12, context });
+    expect(completion.state).toBe('executable');
+    expect(candidates).toHaveBeenCalledTimes(1);
+  });
+
   it('distinguishes directories, incomplete actions and executable actions', () => {
     const catalog = createCatalog();
     expect(catalog.complete({ text: '/task', cursor: 5, context }).state).toBe('incomplete');

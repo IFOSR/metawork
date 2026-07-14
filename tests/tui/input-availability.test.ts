@@ -905,11 +905,13 @@ describe('App input availability', () => {
       })
     );
 
-    // Type "/ta" to narrow suggestions to /task and /task list, then Tab-complete
-    // the highlighted (first) entry.
+    // A typo remains non-executable, but its nearest valid command is offered as
+    // a Tab replacement.
     await inputCapture.handler?.('/', {});
     await inputCapture.handler?.('t', {});
     await inputCapture.handler?.('a', {});
+    await inputCapture.handler?.('k', {});
+    await inputCapture.handler?.('s', {});
     await flushUpdates();
     expect(app.lastFrame()).toContain('/task');
 

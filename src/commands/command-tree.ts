@@ -166,9 +166,6 @@ function dynamicReference(
       label: item.label,
       description: item.description,
     })),
-    validate: (value, context) => values(context).some(item => item.id === value)
-      ? null
-      : `${description}不存在: ${value}`,
   };
 }
 

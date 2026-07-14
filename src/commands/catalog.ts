@@ -151,6 +151,8 @@ interface ResolvedPath {
   path: string[];
 }
 
+type CandidateCache = Map<CommandArgumentSpec, Map<string, CommandCandidate[]>>;
+
 const SUGGESTION_LIMIT = 6;
 
 function decodeToken(source: string): { value: string; closed: boolean } {
@@ -395,41 +397,49 @@ export class CommandCatalog {
       : { start: cursor, end: cursor };
     const rawPrefix = activeToken ? decodeToken(text.slice(activeToken.start, cursor)).value : '';
     const prefix = replacement.start === 0 ? rawPrefix.replace(/^\//, '') : rawPrefix;
-    const before = tokens
-      .filter(token => token.end <= replacement.start)
+    const beforeTokens = tokens.filter(token => token.end <= replacement.start);
+    const before = beforeTokens
       .map((token, index) => index === 0 ? token.value.replace(/^\//, '') : token.value);
+    const candidateCache: CandidateCache = new Map();
 
     const resolved = this.resolvePath(before);
     if (resolved.error) {
-      return { state: 'invalid', suggestions: [], hint: null, error: resolved.error };
+      const invalidToken = beforeTokens[resolved.path.length];
+      const nearest = resolved.nearest && invalidToken
+        ? this.nodeSuggestion(
+            resolved.nearest,
+            resolved.group ? resolved.group.children : this.roots,
+            {
+              start: invalidToken.start,
+              end: invalidToken.end,
+            },
+          )
+        : null;
+      return { state: 'invalid', suggestions: nearest ? [nearest] : [], hint: null, error: resolved.error };
     }
 
     if (!resolved.action) {
       const nodes = resolved.group ? resolved.group.children : this.roots;
       const nodeSuggestions = nodes
         .filter(node => node.name.toLowerCase().startsWith(prefix.toLowerCase()))
-        .map(node => ({
-          value: node.name,
-          label: `${node.kind === 'group' ? '/' : ''}${node.name}`,
-          description: node.summary,
-          replacement: {
-            ...replacement,
-            text: replacement.start === 0 ? `/${node.name}` : node.name,
-          },
-        }));
+        .map(node => this.nodeSuggestion(node.name, nodes, replacement));
+      if (nodeSuggestions.length === 0 && prefix) {
+        const nearest = nearestNode(prefix, nodes);
+        if (nearest) nodeSuggestions.push(this.nodeSuggestion(nearest, nodes, replacement));
+      }
       const fallbackArgument = resolved.group?.fallbackAction?.arguments?.[0];
       const fallbackSuggestions = fallbackArgument
-        ? this.suggestArgument(fallbackArgument, prefix, replacement, context, false).suggestions
+        ? this.suggestArgument(fallbackArgument, prefix, replacement, context, false, candidateCache).suggestions
         : [];
       const suggestions = [...nodeSuggestions, ...fallbackSuggestions]
         .filter((candidate, index, all) => all.findIndex(item => item.value === candidate.value) === index)
         .slice(0, SUGGESTION_LIMIT);
       const exactNode = nodes.find(node => node.name === prefix);
       const exactActionState = exactNode?.kind === 'action'
-        ? this.parseAction(exactNode, [], context, true).state
+        ? this.parseAction(exactNode, [], context, true, candidateCache).state
         : 'incomplete';
       const fallbackState = resolved.group?.fallbackAction && prefix
-        ? this.parseAction(resolved.group.fallbackAction, [prefix], context, true).state
+        ? this.parseAction(resolved.group.fallbackAction, [prefix], context, true, candidateCache).state
         : 'incomplete';
       return {
         state: exactActionState === 'executable' || fallbackState === 'executable' ? 'executable' : 'incomplete',
@@ -443,7 +453,7 @@ export class CommandCatalog {
     if (resolved.action.builtin === 'help') {
       return this.completeHelpPath(actionTokens, prefix, replacement);
     }
-    return this.completeAction(resolved.action, actionTokens, prefix, replacement, context);
+    return this.completeAction(resolved.action, actionTokens, prefix, replacement, context, candidateCache);
   }
 
   async execute(input: string, context: CommandContext): Promise<CommandResult> {
@@ -468,6 +478,7 @@ export class CommandCatalog {
       values.slice(resolved.actionTokenIndex + 1),
       context,
       false,
+      new Map(),
     );
     if (parsed.state !== 'executable') {
       return { type: 'text', content: parsed.error ?? parsed.hint ?? `命令不完整: /${values.join(' ')}` };
@@ -544,6 +555,7 @@ export class CommandCatalog {
     tokens: string[],
     context: CommandContext,
     allowIncomplete: boolean,
+    candidateCache: CandidateCache,
   ): ParseActionResult {
     const options: Record<string, string | string[] | boolean | undefined> = {};
     const positionalTokens: string[] = [];
@@ -567,7 +579,7 @@ export class CommandCatalog {
         }
         const value = tokens[index + 1];
         if (!value) return allowIncomplete ? this.incomplete(`请输入 ${option.name} 的值。`) : this.invalid(`选项缺少值: ${option.name}`);
-        const valueError = this.validateValue(option.value, value, context);
+        const valueError = this.validateValue(option.value, value, context, candidateCache);
         if (valueError) return this.invalid(valueError);
         if (option.repeatable) {
           const existing = options[key];
@@ -599,7 +611,7 @@ export class CommandCatalog {
           return allowIncomplete ? this.incomplete(`请输入${argument.description}。`) : this.invalid(`缺少参数: ${argument.name}`);
         }
         for (const value of remaining) {
-          const valueError = this.validateValue(argument, value, context);
+          const valueError = this.validateValue(argument, value, context, candidateCache);
           if (valueError) return this.invalid(valueError);
         }
         positionals[argument.name] = remaining;
@@ -615,7 +627,7 @@ export class CommandCatalog {
         }
         return allowIncomplete ? this.incomplete(`请输入${argument.description}。`) : this.invalid(`缺少参数: ${argument.name}`);
       }
-      const valueError = this.validateValue(argument, value, context);
+      const valueError = this.validateValue(argument, value, context, candidateCache);
       if (valueError) return this.invalid(valueError);
       positionals[argument.name] = value;
       tokenIndex += 1;
@@ -639,6 +651,7 @@ export class CommandCatalog {
     prefix: string,
     replacement: { start: number; end: number },
     context: CommandContext,
+    candidateCache: CandidateCache,
   ): CommandCompletion {
     const optionSpecs = action.options ?? [];
     const usedOptions = new Set<string>();
@@ -670,12 +683,13 @@ export class CommandCatalog {
     }
 
     if (expectedOptionValue?.value) {
-      const result = this.suggestArgument(expectedOptionValue.value, prefix, replacement, context, false);
+      const result = this.suggestArgument(expectedOptionValue.value, prefix, replacement, context, false, candidateCache);
       const parsed = this.parseAction(
         action,
         prefix ? [...completedTokens, prefix] : completedTokens,
         context,
         true,
+        candidateCache,
       );
       result.state = parsed.state;
       result.error = parsed.error;
@@ -716,15 +730,16 @@ export class CommandCatalog {
         prefix ? [...completedTokens, prefix] : completedTokens,
         context,
         true,
+        candidateCache,
       );
-      const result = this.suggestArgument(expected, prefix, replacement, context, expected.optional ?? false);
+      const result = this.suggestArgument(expected, prefix, replacement, context, expected.optional ?? false, candidateCache);
       result.state = parsedWithActive.state;
       result.error = parsedWithActive.error;
       if (parsedWithActive.hint && result.suggestions.length === 0) result.hint = parsedWithActive.hint;
       return result;
     }
 
-    const parsed = this.parseAction(action, prefix ? [...completedTokens, prefix] : completedTokens, context, true);
+    const parsed = this.parseAction(action, prefix ? [...completedTokens, prefix] : completedTokens, context, true, candidateCache);
     const optionSuggestions = prefix === ''
       ? optionSpecs
         .filter(option => option.repeatable || !usedOptions.has(option.name))
@@ -792,6 +807,7 @@ export class CommandCatalog {
     replacement: { start: number; end: number },
     context: CommandContext,
     executableWhenEmpty: boolean,
+    candidateCache: CandidateCache,
   ): CommandCompletion {
     if (argument.kind === 'command-path') {
       const path = prefix ? [prefix] : [];
@@ -809,7 +825,7 @@ export class CommandCatalog {
 
     const candidates = argument.kind === 'enum'
       ? (argument.values ?? []).map(value => ({ value: value.value, label: value.value, description: value.description }))
-      : argument.candidates?.(context, prefix) ?? [];
+      : this.referenceCandidates(argument, context, prefix, candidateCache);
     const filtered = candidates
       .filter(candidate => candidate.value.toLowerCase().startsWith(prefix.toLowerCase())
         || candidate.label.toLowerCase().startsWith(prefix.toLowerCase()))
@@ -837,11 +853,56 @@ export class CommandCatalog {
       .map(node => ({ value: node.name, label: node.name, description: node.summary }));
   }
 
-  private validateValue(argument: CommandArgumentSpec, value: string, context: CommandContext): string | null {
+  private validateValue(
+    argument: CommandArgumentSpec,
+    value: string,
+    context: CommandContext,
+    candidateCache: CandidateCache,
+  ): string | null {
     if (argument.kind === 'enum' && !(argument.values ?? []).some(candidate => candidate.value === value)) {
       return `参数 ${argument.name} 的值无效: ${value}`;
     }
-    return argument.validate?.(value, context) ?? null;
+    if (argument.validate) return argument.validate(value, context);
+    if (
+      argument.kind === 'reference'
+      && !this.referenceCandidates(argument, context, value, candidateCache).some(candidate => candidate.value === value)
+    ) {
+      return `${argument.description}不存在: ${value}`;
+    }
+    return null;
+  }
+
+  private referenceCandidates(
+    argument: CommandArgumentSpec,
+    context: CommandContext,
+    prefix: string,
+    candidateCache: CandidateCache,
+  ): CommandCandidate[] {
+    if (!argument.candidates) return [];
+    const byPrefix = candidateCache.get(argument) ?? new Map<string, CommandCandidate[]>();
+    candidateCache.set(argument, byPrefix);
+    const cached = byPrefix.get(prefix);
+    if (cached) return cached;
+    const candidates = argument.candidates(context, prefix);
+    byPrefix.set(prefix, candidates);
+    return candidates;
+  }
+
+  private nodeSuggestion(
+    name: string,
+    nodes: CommandNode[],
+    replacement: { start: number; end: number },
+  ): CommandSuggestion {
+    const node = nodes.find(candidate => candidate.name === name)!;
+    return {
+      value: node.name,
+      label: `${node.kind === 'group' ? '/' : ''}${node.name}`,
+      description: node.summary,
+      replacement: {
+        ...replacement,
+        text: replacement.start === 0 ? `/${node.name}` : node.name,
+      },
+    };
   }
 
   private incomplete(hint: string): ParseActionResult {

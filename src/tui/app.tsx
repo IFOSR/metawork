@@ -516,10 +516,17 @@ export function App(props: AppProps) {
   const [committedOutput, setCommittedOutput] = useState<string[]>([]);
   const [showWaitingIndicator, setShowWaitingIndicator] = useState(false);
   const sessionRef = useRef<MetaclawSession | null>(null);
+  const commandCompletionRef = useRef<{
+    text: string;
+    cursor: number;
+    completion: CommandCompletion;
+  } | null>(null);
 
   if (!sessionRef.current) {
     sessionRef.current = new MetaclawSession(props);
   }
+  const commandCompletion = sessionRef.current.completeCommand(editor.text, editor.cursor);
+  commandCompletionRef.current = { text: editor.text, cursor: editor.cursor, completion: commandCompletion };
 
   useEffect(() => {
     const session = sessionRef.current!;
@@ -604,9 +611,13 @@ export function App(props: AppProps) {
 
   useInput(async (char, key) => {
     const editorState = editorRef.current;
-    const commandCompletion = sessionRef.current!.completeCommand(editorState.text, editorState.cursor);
-    const commandSuggestions = getCommandSuggestions(editorState, commandCompletion);
-    const hasCommandSuggestions = commandSuggestions.length > 0;
+    const readCommandSuggestions = () => {
+      const cached = commandCompletionRef.current;
+      const completion = cached?.text === editorState.text && cached.cursor === editorState.cursor
+        ? cached.completion
+        : sessionRef.current!.completeCommand(editorState.text, editorState.cursor);
+      return getCommandSuggestions(editorState, completion);
+    };
     lastInputAtRef.current = Date.now();
 
     const commitEditor = async (editorToCommit: EditorState) => {
@@ -652,7 +663,8 @@ export function App(props: AppProps) {
       return;
     }
 
-    if (key.tab && hasCommandSuggestions) {
+    if (key.tab) {
+      const commandSuggestions = readCommandSuggestions();
       const selected = commandSuggestions[clampSuggestionIndex(suggestionIndexRef.current, commandSuggestions)];
       if (selected) {
         const next = applyCommandSuggestion(editorState, selected);
@@ -661,8 +673,8 @@ export function App(props: AppProps) {
         setSuggestionIndex(0);
         editorRef.current = next;
         setEditor(next);
+        return;
       }
-      return;
     }
 
     if (key.return) {
@@ -681,6 +693,8 @@ export function App(props: AppProps) {
     }
 
     if (key.upArrow) {
+      const commandSuggestions = readCommandSuggestions();
+      const hasCommandSuggestions = commandSuggestions.length > 0;
       if (hasCommandSuggestions) {
         const nextIndex = suggestionIndexRef.current <= 0
           ? commandSuggestions.length - 1
@@ -700,6 +714,8 @@ export function App(props: AppProps) {
     }
 
     if (key.downArrow) {
+      const commandSuggestions = readCommandSuggestions();
+      const hasCommandSuggestions = commandSuggestions.length > 0;
       if (hasCommandSuggestions) {
         const nextIndex = suggestionIndexRef.current >= commandSuggestions.length - 1
           ? 0
@@ -736,7 +752,6 @@ export function App(props: AppProps) {
   const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
   const latestEvent = `最近事件 ${snapshot.runtimeState.lastEvent ?? '0'}`;
   const waitingHintVisible = shouldShowWaitingHint(snapshot, committedOutput, showWaitingIndicator);
-  const commandCompletion = sessionRef.current!.completeCommand(editor.text, editor.cursor);
   const commandSuggestions = getCommandSuggestions(editor, commandCompletion);
   const activeSuggestionIndex = clampSuggestionIndex(suggestionIndex, commandSuggestions);
 
