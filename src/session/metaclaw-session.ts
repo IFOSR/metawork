@@ -902,16 +902,45 @@ export class MetaclawSession {
   // Delivers the PlanningAgent's own answer for a direct_reply turn. The planner
   // runs read-only and already produced the user-visible reply, so we surface it
   // directly and record the interaction — no second (writable) executor call.
+  // While the reply is being delivered we surface the planner as the active
+  // executor in runtimeState (mirrors the conversation-runtime status main kept
+  // for TUI/Feishu), then restore the scheduler-backed state afterwards.
   private deliverDirectReply(userInput: string, reply: string): void {
-    this.appendOutput(reply);
-    this.persistenceService.recordInteraction({
-      taskId: null,
-      sessionId: this.deps.sessionId,
-      userInput,
-      systemOutput: reply,
-      executorUsed: 'planning-agent',
-    });
-    this.setFocusContext({ kind: 'conversation', taskId: null });
+    this.setDirectReplyRuntimeState('planning-agent');
+    try {
+      this.appendOutput(reply);
+      this.persistenceService.recordInteraction({
+        taskId: null,
+        sessionId: this.deps.sessionId,
+        userInput,
+        systemOutput: reply,
+        executorUsed: 'planning-agent',
+      });
+      this.setFocusContext({ kind: 'conversation', taskId: null });
+    } finally {
+      this.setDirectReplyRuntimeState(null);
+    }
+  }
+
+  // Sets/clears the runtime state for a direct-reply turn. When a durable task
+  // is running we leave its state untouched (refresh only); otherwise we pin the
+  // replying executor name and a descriptive lastEvent so the TUI status bar and
+  // Feishu can show who is answering. Clearing passes null to restore.
+  private setDirectReplyRuntimeState(executorName: string | null): void {
+    const schedulerState = this.scheduler.getRuntimeState();
+    if (schedulerState.runningTaskId) {
+      this.refreshRuntimeState();
+      return;
+    }
+
+    this.runtimeState = {
+      ...schedulerState,
+      runningExecutorName: executorName,
+      lastEvent: executorName
+        ? `普通对话由 ${executorName} 生成回答`
+        : schedulerState.lastEvent,
+    };
+    this.notify();
   }
 
   private dispatchTask(taskId: string, context?: DispatchContext<QueuedExecutionRequest>): Promise<void> {

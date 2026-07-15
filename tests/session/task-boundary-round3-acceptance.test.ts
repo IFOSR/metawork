@@ -46,6 +46,74 @@ function createConfig(): Config {
 }
 
 describe('Round 3 task boundary acceptance', () => {
+  it('pins planning-agent as the active executor while delivering a direct reply, then restores state', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-direct-reply-runtime-state');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn(),
+    } as unknown as LlmBridge;
+
+    const session = new MetaclawSession({
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      executor,
+      db,
+      config: createConfig(),
+      sessionId: 'sess_direct_reply_runtime_state',
+      contextRecaller,
+      llmBridge,
+      planningAgent: stubPlanningAgent(directReplyPlan({
+        reason: '普通问答',
+        response: { directReply: '最终回答' },
+      })),
+      availableExecutorCommands: new Set(['codex']),
+    });
+
+    session.initialize();
+
+    // QC's direct_reply is produced synchronously by the planner, so the
+    // "executor still answering" window is only observable via a snapshot
+    // subscriber: when the reply line is appended, runtimeState must already
+    // pin planning-agent as the active executor.
+    let observedDuringReply: { runningExecutorName: string | null; lastEvent: string | null } | null = null;
+    const unsubscribe = session.subscribe(snapshot => {
+      if (snapshot.output.includes('最终回答') && !observedDuringReply) {
+        observedDuringReply = {
+          runningExecutorName: snapshot.runtimeState.runningExecutorName,
+          lastEvent: snapshot.runtimeState.lastEvent,
+        };
+      }
+    });
+
+    await session.submit('怎么还没有给我结果呀', { awaitAsyncWork: true });
+    unsubscribe();
+
+    // No durable task is created, and the writable executor is never invoked.
+    expect(taskRepo.findAll()).toHaveLength(0);
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    // While the reply was being delivered, the planner was surfaced as active.
+    expect(observedDuringReply).toEqual(expect.objectContaining({
+      runningExecutorName: 'planning-agent',
+      lastEvent: '普通对话由 planning-agent 生成回答',
+    }));
+
+    // After the turn, the pinned executor name is restored to null.
+    expect(session.getSnapshot().runtimeState.runningExecutorName).toBeNull();
+    expect(session.getSnapshot().output.join('\n')).toContain('最终回答');
+  });
+
   it('turns conversation-derived follow-up work into a new task with inherited conversation context', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);

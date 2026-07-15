@@ -1854,7 +1854,7 @@ function sanitizeFeishuFinalReply(reply: string, outputLines: string[]): string 
     return reply;
   }
 
-  return extractLatestTaskSummary(outputLines) || '';
+  return extractLatestTaskSummary(outputLines) || reply;
 }
 
 function containsFeishuInternalReplyNoise(reply: string): boolean {

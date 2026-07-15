@@ -1326,6 +1326,90 @@ describe('Feishu app helpers', () => {
     expect(sentTexts.at(-1)).toBe('这是补全后的最终答案，飞书必须展示这一段。');
   });
 
+  it('keeps direct-reply final answers that start with Markdown links to local docs', async () => {
+    vi.useFakeTimers();
+    const listeners = new Set<(snapshot: { output: string[] }) => void>();
+    const output = ['before'];
+    const notify = () => {
+      for (const listener of listeners) {
+        listener({ output: [...output] });
+      }
+    };
+    const append = (...lines: string[]) => {
+      output.push(...lines);
+      notify();
+    };
+    const finalAnswer = [
+      '- [README.zh-CN.md](/home/ylfego/Program/metaclaw/README.zh-CN.md)：当前对外能力与使用方式',
+      '- [ROUTING.md](/home/ylfego/Program/metaclaw/ROUTING.md)：智能路由层设计',
+      '',
+      '**MetaClaw 一句话定位**',
+      'MetaClaw 是一个本地优先的 AI Task OS。',
+      '',
+      '**核心能力展示**',
+      '用户自然语言 → 语义入口判断 → ExecutionPolicy 路由 → Executor 执行 → 交付。',
+    ].join('\n');
+    const session = {
+      getSnapshot: vi.fn(() => ({ output: [...output] })),
+      subscribe: vi.fn((callback: (snapshot: { output: string[] }) => void) => {
+        listeners.add(callback);
+        callback({ output: [...output] });
+        return () => {
+          listeners.delete(callback);
+        };
+      }),
+      submit: vi.fn().mockImplementation(async () => {
+        append(
+          '> 怎么还没有给我结果呀',
+          '【MetaClaw｜理解用户请求】',
+          '→ MetaClaw：已识别普通对话',
+          '→ MetaClaw：执行策略：直接回答，不创建任务',
+          '【Executor: codex-cli｜回答】',
+          '→ Executor: codex-cli 处理本次回答',
+          '【MetaClaw｜召回会话上下文】',
+          '→ MetaClaw：正在召回与本次问答相关的最近对话',
+          '→ MetaClaw：已召回 1 条相关会话上下文',
+          '→ MetaClaw：会把召回上下文注入给 Executor，保持连续问答衔接',
+          '【Executor: codex-cli｜回答生成】',
+          '→ Executor: codex-cli 正在基于当前问题和会话上下文生成回答',
+          finalAnswer,
+        );
+        return { exitRequested: false };
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    try {
+      const handled = handleFeishuMessageEvent({
+        message: {
+          message_id: 'om_message_direct_markdown_links',
+          chat_id: 'oc_chat',
+          message_type: 'text',
+          content: '{"text":"怎么还没有给我结果呀"}',
+        },
+      }, {
+        session,
+        client,
+        seenMessageIds: new Set<string>(),
+      });
+
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(301);
+      await handled;
+
+      const sentTexts = client.sendMarkdownCardToChat.mock.calls.map(([, text]) => text);
+      expect(sentTexts.join('\n')).toContain('**处理步骤**');
+      expect(sentTexts.at(-1)).toBe(finalAnswer);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('streams task failure to Feishu when session subscription is available', async () => {
     let output = ['before'];
     let listener: ((snapshot: { output: string[] }) => void) | null = null;
