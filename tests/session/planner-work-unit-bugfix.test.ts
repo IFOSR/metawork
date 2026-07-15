@@ -301,7 +301,7 @@ describe('planner/work-unit active path regressions', () => {
     expect(taskEvents.map(event => event.event_type)).toContain('subtask_exception');
   });
 
-  it('aggregates multi-subtask output using execution order titles, not created_at order', async () => {
+  it('shows each multi-subtask final result once without repeating bodies in task completion', async () => {
     const executor = createExecutor(async (input) => ({
       success: true,
       output: `output for ${input.userPrompt}`,
@@ -331,9 +331,10 @@ describe('planner/work-unit active path regressions', () => {
     await dispatchExistingTask(harness, task.id);
 
     const output = harness.session.getSnapshot().output.join('\n');
-    expect(output.indexOf('## B first by dependency')).toBeLessThan(output.indexOf('## A second by dependency'));
-    expect(output).toContain('## B first by dependency\n\noutput for goal B');
-    expect(output).toContain('## A second by dependency\n\noutput for goal A');
+    expect(output).toContain(`【Executor: codex-cli｜最终结果｜#${task.id} / #${firstExecutedId}】\noutput for goal B`);
+    expect(output).toContain(`【Executor: codex-cli｜最终结果｜#${task.id} / #${secondExecutedId}】\noutput for goal A`);
+    expect(output.match(/output for goal B/g)).toHaveLength(1);
+    expect(output.match(/output for goal A/g)).toHaveLength(1);
   });
 
   it('sweeps expired work units and provisions replacement capacity', async () => {

@@ -67,6 +67,18 @@ export class SessionPresentationService {
     this.queueLimit = options.queueLimit ?? 5;
   }
 
+  formatExecutorFinalResult(input: {
+    executorName: string;
+    taskId: string;
+    subtaskId: string;
+    output: string;
+  }): string {
+    return [
+      `【Executor: ${input.executorName}｜最终结果｜#${input.taskId} / #${input.subtaskId}】`,
+      input.output,
+    ].join('\n');
+  }
+
   buildGuidanceState(
     scene: string,
     suggestion: GuidanceSuggestion,

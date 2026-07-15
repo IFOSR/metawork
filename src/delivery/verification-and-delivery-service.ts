@@ -414,11 +414,15 @@ export class VerificationAndDeliveryService {
     summary: string;
     nextStep: string;
   }): string[] {
+    const completionSummary = input.summary
+      && input.output.includes(input.summary)
+      ? '任务已完成，详见上方 Executor 最终结果'
+      : input.summary;
     const lines = [
       `✓ 任务完成 (${(input.durationMs / 1000).toFixed(1)}s)`,
       '',
       '┌─ 任务结果 ───────────────────────────────────────┐',
-      `│ 摘要: ${input.summary || '无'}`,
+      `│ 摘要: ${completionSummary || '无'}`,
       `│ 下一步: ${input.nextStep}`,
       '└──────────────────────────────────────────────────┘',
     ];
@@ -429,8 +433,6 @@ export class VerificationAndDeliveryService {
         `→ 文件输出目录: ${input.workspaceContext.targetPaths[0]}`,
         '→ 已省略文件正文输出，请直接查看生成文件',
       );
-    } else {
-      lines.push('', input.output);
     }
 
     if (input.artifactPaths.length > 0) {

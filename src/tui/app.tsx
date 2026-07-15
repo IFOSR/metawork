@@ -97,6 +97,10 @@ function classifyOutputLine(line: string, inResultBlock: boolean): RenderLine {
     return { kind: 'user', text: line, indent: 0 };
   }
 
+  if (/^【Executor: .+｜最终结果｜#/.test(line)) {
+    return { kind: 'agent', text: line, indent: 0 };
+  }
+
   if (line.startsWith('✓ ')) {
     return { kind: 'result', text: line, indent: 0 };
   }
@@ -523,6 +527,7 @@ export function App(props: AppProps) {
   const [snapshot, setSnapshot] = useState<SessionSnapshot>(EMPTY_SNAPSHOT);
   const [committedOutput, setCommittedOutput] = useState<string[]>([]);
   const [showWaitingIndicator, setShowWaitingIndicator] = useState(false);
+  const [executionAnimationFrame, setExecutionAnimationFrame] = useState(0);
   const sessionRef = useRef<MetaclawSession | null>(null);
   const commandCompletionRef = useRef<{
     text: string;
@@ -612,6 +617,20 @@ export function App(props: AppProps) {
       const shouldShow = Date.now() - lastOutputAtRef.current >= 80;
       setShowWaitingIndicator(previous => (previous === shouldShow ? previous : shouldShow));
     }, 50);
+    timer.unref?.();
+
+    return () => clearInterval(timer);
+  }, [snapshot.runtimeState.runningTaskId]);
+
+  useEffect(() => {
+    if (!snapshot.runtimeState.runningTaskId) {
+      setExecutionAnimationFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setExecutionAnimationFrame(previous => (previous + 1) % 3);
+    }, 350);
     timer.unref?.();
 
     return () => clearInterval(timer);
@@ -774,7 +793,11 @@ export function App(props: AppProps) {
           )}
         </Static>
         {waitingHintVisible && (
-          <Text color={META_TEXT_COLOR}>  · 正在等待执行器返回...</Text>
+          <Text color={META_TEXT_COLOR}>
+            {'  · Executor: '}
+            {snapshot.runtimeState.runningExecutorName ?? props.executor.name}
+            {' 执行中'}{'.'.repeat(executionAnimationFrame + 1)}
+          </Text>
         )}
       </Box>
       {snapshot.latestGuidance && (

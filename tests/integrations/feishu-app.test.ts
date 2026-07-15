@@ -2905,6 +2905,17 @@ describe('Feishu app helpers', () => {
     expect(formatFeishuReply(outputLines)).toBe('最终答案第一行\n\n最终答案第二行');
   });
 
+  it('prefers all new Executor final-result blocks and ignores internal process output', () => {
+    expect(formatFeishuReply([
+      '> 处理两个部分',
+      '内部工具调用',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_a】\n第一部分\n完整结果',
+      'tokens used 88',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_b】\n第二部分',
+      '✓ 任务完成 (2.4s)',
+    ])).toBe('第一部分\n完整结果\n\n第二部分');
+  });
+
   it('formats direct-reply conversation progress for Feishu', () => {
     expect(formatFeishuProgressReply([
       '> 这跟刚才那个结论有什么关系？',

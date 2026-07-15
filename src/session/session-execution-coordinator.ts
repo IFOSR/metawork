@@ -163,7 +163,6 @@ export class SessionExecutionCoordinator {
       progressTracker = this.deps.executionProgressService.createTracker({
         taskId,
         executionId,
-        appendOutput: line => this.deps.callbacks.appendOutput(line),
       });
       this.recoverExpiredWorkUnits();
 
@@ -179,7 +178,6 @@ export class SessionExecutionCoordinator {
         await finishExecution([
           `-> PolicyKernel: no executor dispatch for ${request.planningPlan.action} (${request.planningPlan.reason})`,
         ], { scheduleNext: false });
-        progressTracker.clear();
         return;
       }
 
@@ -202,7 +200,6 @@ export class SessionExecutionCoordinator {
           const stoppedSubtask = activeSubtask as Subtask | null;
           this.recordTaskEvent(taskId, stoppedSubtask?.id ?? null, 'dispatch_stopped', `task status is ${loopTask?.status ?? 'missing'}`, {});
           this.deps.scheduler.clearDispatch(taskId, `task status is ${loopTask?.status ?? 'missing'}`);
-          progressTracker.clear();
           return;
         }
 
@@ -211,7 +208,6 @@ export class SessionExecutionCoordinator {
           const noReadyOutcome = await this.handleNoReadySubtask({
             taskId,
             executionId,
-            progressTracker,
             finishExecution,
             hasExecution: finalExecution !== null,
           });
@@ -226,7 +222,6 @@ export class SessionExecutionCoordinator {
             `Subtask waiting for executor work unit: ${readySubtask.title}`,
             this.deps.presentation.buildRecoverableFailureHint(taskId, 'no idle executor work unit'),
           ], { scheduleNext: false });
-          progressTracker.clear();
           return;
         }
         activeClaim = claim;
@@ -244,8 +239,6 @@ export class SessionExecutionCoordinator {
         this.deps.callbacks.appendOutput(
           `[Planner: dispatch] ${readySubtask.id}`,
           `-> Work Unit ${claim.workUnit.id} (${agentClass.name}) started`,
-          `【Executor: ${agentClass.name}｜执行】`,
-          `→ Executor: ${agentClass.name} 开始执行任务 #${taskId}`,
         );
 
         const execution = await this.deps.executionRuntime.run({
@@ -279,7 +272,6 @@ export class SessionExecutionCoordinator {
           activeClaim = null;
           activeSubtask = null;
           this.deps.scheduler.clearDispatch(taskId, `task status is ${postRunTask?.status ?? 'missing'}`);
-          progressTracker.clear();
           return;
         }
 
@@ -293,6 +285,12 @@ export class SessionExecutionCoordinator {
             title: readySubtask.title,
             output: execution.output,
           });
+          this.deps.callbacks.appendOutput(this.deps.presentation.formatExecutorFinalResult({
+            executorName: execution.executorName,
+            taskId,
+            subtaskId: readySubtask.id,
+            output: execution.output,
+          }));
           claim.release();
           activeClaim = null;
           activeSubtask = null;
@@ -314,13 +312,11 @@ export class SessionExecutionCoordinator {
             `✗ 执行失败: ${errorMessage}`,
             this.deps.presentation.buildRecoverableFailureHint(taskId, errorMessage),
           ], { scheduleNext: false });
-          progressTracker.clear();
           return;
         }
 
         this.deps.taskRuntimeService.transitionTask(taskId, 'parked');
         await finishExecution([`✗ 执行失败: ${errorMessage}`]);
-        progressTracker.clear();
         return;
       }
 
@@ -332,7 +328,6 @@ export class SessionExecutionCoordinator {
           reason: 'planner found no executable subtasks',
         });
         await finishExecution(['-> Planner: no executable ready subtask'], { scheduleNext: false });
-        progressTracker.clear();
         return;
       }
 
@@ -386,17 +381,14 @@ export class SessionExecutionCoordinator {
             `✗ 执行异常: ${errorMessage}`,
             this.deps.presentation.buildRecoverableFailureHint(taskId, errorMessage),
           ], { scheduleNext: false });
-          progressTracker?.clear();
           return;
         }
 
         this.deps.taskRuntimeService.transitionTask(taskId, 'parked');
         await finishExecution([`✗ 执行异常: ${errorMessage}`]);
-        progressTracker?.clear();
         return;
       }
 
-      progressTracker?.clear();
       this.deps.callbacks.clearRunningExecutorName(taskId);
       this.deps.callbacks.refreshRuntimeState();
     }
@@ -434,7 +426,6 @@ export class SessionExecutionCoordinator {
         `✗ 验收未通过: ${blockReason}`,
         this.deps.presentation.buildVerificationFailureHint(input.taskId),
       ], { scheduleNext: false });
-      input.progressTracker.clear();
       return;
     }
 
@@ -512,7 +503,6 @@ export class SessionExecutionCoordinator {
     if (nextProposal) {
       this.deps.callbacks.queueProposal('completion suggestion', nextProposal);
     }
-    input.progressTracker.clear();
   }
 
   private findNextReadySubtask(taskId: string): Subtask | null {
@@ -526,7 +516,6 @@ export class SessionExecutionCoordinator {
   private async handleNoReadySubtask(input: {
     taskId: string;
     executionId: string;
-    progressTracker: ExecutionProgressTracker;
     finishExecution(lines: string[], options?: { scheduleNext?: boolean }): Promise<void>;
     hasExecution: boolean;
   }): Promise<'continue' | 'stop'> {
@@ -543,7 +532,6 @@ export class SessionExecutionCoordinator {
         reason: 'all persisted subtasks are already done',
       });
       await input.finishExecution(['-> Planner: all persisted subtasks are already done'], { scheduleNext: false });
-      input.progressTracker.clear();
       return 'stop';
     }
 
@@ -561,7 +549,6 @@ export class SessionExecutionCoordinator {
       `Subtask dispatch blocked: ${reason}`,
       this.deps.presentation.buildRecoverableFailureHint(input.taskId, reason),
     ], { scheduleNext: false });
-    input.progressTracker.clear();
     return 'stop';
   }
 

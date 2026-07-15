@@ -36,7 +36,7 @@ function createConfig(): Config {
 }
 
 describe('Session skill usage observability', () => {
-  it('records executor reported SkillUsageEvents and shows throttled user-visible progress', async () => {
+  it('records executor SkillUsageEvents without exposing them in user-visible output', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -123,9 +123,10 @@ describe('Session skill usage observability', () => {
     expect(events[0].executorName).toBe('codex-cli');
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('🛠️ Executor: codex-cli｜#');
-    expect(output).toContain('Skill test-driven-development: 开始按 TDD 执行');
-    expect(output.match(/RED 测试已创建/g)).toHaveLength(1);
-    expect(output).toContain('Skill test-driven-development: TDD 流程完成');
+    expect(output).toContain('【Executor: codex-cli｜最终结果｜#');
+    expect(output).not.toContain('🛠️ Executor: codex-cli｜#');
+    expect(output).not.toContain('Skill test-driven-development: 开始按 TDD 执行');
+    expect(output).not.toContain('RED 测试已创建');
+    expect(output).not.toContain('Skill test-driven-development: TDD 流程完成');
   });
 });

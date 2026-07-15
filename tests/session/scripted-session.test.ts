@@ -290,7 +290,7 @@ describe('scripted session', () => {
     expect((doneTask as any)?.artifacts[0]).toBe(resolve(process.cwd(), 'metaclaw-tasks', doneTask!.id, 'artifact-note.md'));
   });
 
-  it('shows artifact summaries instead of raw html output for file-generation tasks', async () => {
+  it('shows file-task Executor final output once and does not repeat it in completion', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -339,8 +339,9 @@ describe('scripted session', () => {
 
     expect(result.output.join('\n')).toContain('✓ 任务完成');
     expect(result.output.join('\n')).toContain('已记录 1 个任务产物');
-    expect(result.output.join('\n')).not.toContain('<!DOCTYPE html>');
-    expect(result.output.join('\n')).not.toContain('<html><body>');
+    expect(result.output.join('\n')).toContain('【Executor: codex-cli｜最终结果｜#');
+    expect(result.output.join('\n').match(/<!DOCTYPE html>/g)).toHaveLength(1);
+    expect(result.output.join('\n').match(/<html><body>/g)).toHaveLength(1);
   });
 
   it('writes a fallback Markdown artifact for Feishu document delivery when executor only returns text', async () => {

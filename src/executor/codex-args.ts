@@ -1,11 +1,22 @@
-// Builds the Codex CLI non-interactive exec arguments used by the Codex executor adapter.
-export function buildCodexNonInteractiveArgs(prompt: string): string[] {
+// Builds the Codex CLI non-interactive exec arguments used by Codex integrations.
+export interface CodexNonInteractiveArgsOptions {
+  ephemeral?: boolean;
+  outputLastMessagePath?: string;
+}
+
+export function buildCodexNonInteractiveArgs(
+  prompt: string,
+  options: CodexNonInteractiveArgsOptions = {},
+): string[] {
   return [
     'exec',
     '--dangerously-bypass-approvals-and-sandbox',
     '--dangerously-bypass-hook-trust',
     '--skip-git-repo-check',
-    '--ephemeral',
+    ...((options.ephemeral ?? true) ? ['--ephemeral'] : []),
+    ...(options.outputLastMessagePath
+      ? ['--output-last-message', options.outputLastMessagePath]
+      : []),
     '--color',
     'never',
     prompt,

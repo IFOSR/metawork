@@ -1,9 +1,16 @@
-// Implements the common child-process execution, prompt injection, progress streaming, timeout, and abort behavior for CLI executors.
+// Implements common child-process execution, progress parsing, timeout, and abort behavior for CLI executors.
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { ExecutorAdapter, ExecutorInput } from './adapter.js';
 import type { ExecutorResult } from '../core/types.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 import { formatExecutorError, formatExecutorProgress } from './error-utils.js';
+
+export interface CommandLineExecution {
+  args: string[];
+  captureStdout: boolean;
+  readFinalOutput(stdout: string): string;
+  cleanup(): void;
+}
 
 /** Base class for command-line executor adapters that run prompts through a child process. */
 export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
@@ -15,6 +22,15 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
 
   protected abstract buildSpawnArgs(prompt: string): string[];
 
+  protected prepareExecution(prompt: string): CommandLineExecution {
+    return {
+      args: this.buildSpawnArgs(prompt),
+      captureStdout: true,
+      readFinalOutput: (stdout) => stdout.trim(),
+      cleanup: () => undefined,
+    };
+  }
+
   protected buildSpawnEnv(): NodeJS.ProcessEnv {
     return process.env;
   }
@@ -22,16 +38,24 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     const contextPrompt = this.buildContextPrompt(input);
     const startTime = Date.now();
+    let execution: CommandLineExecution;
+
+    try {
+      execution = this.prepareExecution(contextPrompt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        output: '',
+        error: formatExecutorError(message) ?? message,
+        exitCode: 1,
+        durationMs: Date.now() - startTime,
+      };
+    }
 
     return new Promise((resolve) => {
       this.abortRequested = false;
       input.onProgress?.({ kind: 'status', text: `已启动 ${this.name} 执行器` });
-      this.process = spawn(this.config.command, this.buildSpawnArgs(contextPrompt), {
-        cwd: this.config.workspaceRoot ?? process.cwd(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: this.buildSpawnEnv(),
-      });
-
       let stdout = '';
       let stderr = '';
       let stdoutBuffer = '';
@@ -39,13 +63,48 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
       let idleTimer: NodeJS.Timeout | null = null;
       let forceKillTimer: NodeJS.Timeout | null = null;
       let timeoutReason: 'idle' | null = null;
-
-      const idleTimeoutMs = Math.max(this.config.timeout, 1) * 1000;
+      let completed = false;
 
       const clearTimers = () => {
         if (idleTimer) clearTimeout(idleTimer);
         if (forceKillTimer) clearTimeout(forceKillTimer);
       };
+
+      const complete = (result: ExecutorResult) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimers();
+        try {
+          execution.cleanup();
+        } catch {
+          // Cleanup is best effort and must not replace the execution result.
+        }
+        this.process = null;
+        this.abortRequested = false;
+        resolve(result);
+      };
+
+      try {
+        this.process = spawn(this.config.command, execution.args, {
+          cwd: this.config.workspaceRoot ?? process.cwd(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: this.buildSpawnEnv(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        complete({
+          success: false,
+          output: '',
+          error: formatExecutorError(message) ?? message,
+          exitCode: 1,
+          durationMs: Date.now() - startTime,
+        });
+        return;
+      }
+
+      const idleTimeoutMs = Math.max(this.config.timeout, 1) * 1000;
 
       const terminateForIdleTimeout = () => {
         if (!this.process || this.abortRequested || timeoutReason) {
@@ -67,7 +126,9 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
 
       this.process.stdout?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
-        stdout += text;
+        if (execution.captureStdout) {
+          stdout += text;
+        }
         resetIdleTimer();
         stdoutBuffer = this.emitProgressLines(stdoutBuffer + text, input);
       });
@@ -79,41 +140,47 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
       });
 
       this.process.on('close', (code) => {
-        clearTimers();
         this.flushProgressBuffer(stdoutBuffer, input);
         this.flushProgressBuffer(stderrBuffer, input);
         const interrupted = this.abortRequested;
-        const success = !interrupted && !timeoutReason && code === 0;
-        const error = success
+        let success = !interrupted && !timeoutReason && code === 0;
+        let output = '';
+        let error = success
           ? undefined
           : interrupted
             ? 'execution interrupted'
             : timeoutReason === 'idle'
               ? 'executor idle timeout'
               : formatExecutorError(stderr);
-        resolve({
+
+        if (success) {
+          try {
+            output = execution.readFinalOutput(stdout);
+          } catch (readError) {
+            success = false;
+            const message = readError instanceof Error ? readError.message : String(readError);
+            error = formatExecutorError(message) ?? message;
+          }
+        }
+
+        complete({
           success,
-          output: stdout.trim(),
+          output,
           error,
           exitCode: code ?? 1,
           durationMs: Date.now() - startTime,
           interrupted,
         });
-        this.process = null;
-        this.abortRequested = false;
       });
 
       this.process.on('error', (err) => {
-        clearTimers();
-        resolve({
+        complete({
           success: false,
           output: '',
           error: formatExecutorError(err.message) ?? err.message,
           exitCode: 1,
           durationMs: Date.now() - startTime,
         });
-        this.process = null;
-        this.abortRequested = false;
       });
     });
   }

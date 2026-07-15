@@ -263,6 +263,36 @@ describe('VerificationAndDeliveryService', () => {
     expect(result.completionLines.join('\n')).toContain('→ 已记录 2 个任务产物');
   });
 
+  it.each([
+    {
+      name: 'non-file delivery',
+      workspaceContext: undefined,
+      artifactPaths: [] as string[],
+    },
+    {
+      name: 'file delivery',
+      workspaceContext: {
+        allowFilesystem: true as const,
+        workingDirectory: '/tmp/workspace',
+        targetPaths: ['/tmp/workspace'],
+      },
+      artifactPaths: ['/tmp/workspace/result.md'],
+    },
+  ])('does not repeat Executor body in $name completion blocks', ({ workspaceContext, artifactPaths }) => {
+    const body = 'distinct executor answer body';
+    const lines = new VerificationAndDeliveryService().formatCompletion({
+      output: body,
+      durationMs: 1200,
+      workspaceContext,
+      artifactPaths,
+      summary: body,
+      nextStep: 'none',
+    });
+
+    expect(lines.join('\n')).not.toContain(body);
+    expect(lines.join('\n')).toContain('详见上方 Executor 最终结果');
+  });
+
   it('does not use an empty quoted file path as a concise summary', () => {
     const summary = extractConciseExecutorSummary(
       '已创建文件：``\n保存路径：/tmp/metaclaw-output/smoke-result.md',

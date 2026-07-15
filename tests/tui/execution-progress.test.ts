@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe('App execution progress', () => {
-  it('shows execution preparation and executor progress lines while a task is running', async () => {
+  it('hides executor progress and shows the final result exactly once', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -128,13 +128,14 @@ describe('App execution progress', () => {
     expect(app.lastFrame()).toContain('→ MetaClaw：已召回 ');
     expect(app.lastFrame()).toContain('→ MetaClaw：正在构建任务 #');
     expect(app.lastFrame()).toContain('→ MetaClaw：执行上下文已准备完成');
-    expect(app.lastFrame()).toContain('【Executor: codex-cli｜执行】');
-    expect(app.lastFrame()).toContain('→ Executor: codex-cli 开始执行任务 #');
     expect(app.lastFrame()).toContain('当前任务 #');
     expect(app.lastFrame()).toContain('[DONE] 整理 Phoenix 项目周报');
-    expect(app.lastFrame()).toContain('· Executor: codex-cli');
-    expect(app.lastFrame()).toContain('已启动 codex-cli 执行器');
-    expect(app.lastFrame()).toContain('正在检索市场份额数据');
+    expect(app.lastFrame()).not.toContain('【Executor: codex-cli｜执行】');
+    expect(app.lastFrame()).not.toContain('→ Executor: codex-cli 开始执行任务 #');
+    expect(app.lastFrame()).not.toContain('已启动 codex-cli 执行器');
+    expect(app.lastFrame()).not.toContain('正在检索市场份额数据');
+    expect(app.lastFrame()).toContain('【Executor: codex-cli｜最终结果｜#');
+    expect(app.lastFrame()?.match(/【Executor: codex-cli｜最终结果｜#/g)).toHaveLength(1);
     expect(app.lastFrame()).toContain('  · 已注入');
     expect(app.lastFrame()).toContain('confidence=');
     expect(app.lastFrame()).toContain('命中原因');
@@ -143,7 +144,7 @@ describe('App execution progress', () => {
     app.cleanup();
   });
 
-  it('shows a waiting executor hint while a task is running but no fresh progress arrived yet', async () => {
+  it('animates executor activity without committing it to session output and clears it at completion', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -154,7 +155,7 @@ describe('App execution progress', () => {
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async () => {
-        await new Promise(resolve => setTimeout(resolve, 240));
+        await new Promise(resolve => setTimeout(resolve, 900));
         return {
           success: true,
           output: '调研完成',
@@ -189,15 +190,24 @@ describe('App execution progress', () => {
       await flushUpdates();
     }
     const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
-    await new Promise(resolve => setTimeout(resolve, 140));
+    await new Promise(resolve => setTimeout(resolve, 400));
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('正在等待执行器返回');
+    const firstAnimationFrame = app.lastFrame() ?? '';
+    expect(firstAnimationFrame).toMatch(/Executor: codex-cli 执行中\.{1,3}/);
     expect(app.lastFrame()).toContain('当前任务 #');
     expect(app.lastFrame()).toContain('[RUNNING] 整理 Phoenix 项目周报');
 
-    await submitPromise;
+    await new Promise(resolve => setTimeout(resolve, 400));
     await flushUpdates();
+    expect(app.lastFrame()).toMatch(/Executor: codex-cli 执行中\.{1,3}/);
+    expect(app.lastFrame()).not.toBe(firstAnimationFrame);
+
+    await submitPromise;
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await flushUpdates();
+
+    expect(app.lastFrame()).not.toContain('Executor: codex-cli 执行中');
 
     app.unmount();
     app.cleanup();

@@ -1630,6 +1630,11 @@ function appendPendingFeishuResourcesToText(
 }
 
 export function formatFeishuReply(outputLines: string[]): string {
+  const executorFinalResults = extractExecutorFinalResults(outputLines);
+  if (executorFinalResults) {
+    return executorFinalResults;
+  }
+
   const appendedResultOutput = extractAppendedTaskResultOutput(outputLines);
   if (appendedResultOutput && !containsInternalExecutorContext(appendedResultOutput)) {
     return appendedResultOutput;
@@ -1650,6 +1655,23 @@ export function formatFeishuReply(outputLines: string[]): string {
     .filter((line): line is string => Boolean(line))
     .join('\n')
     .trim();
+}
+
+function extractExecutorFinalResults(outputLines: string[]): string | null {
+  let latestUserTurnIndex = -1;
+  for (let index = outputLines.length - 1; index >= 0; index -= 1) {
+    if (outputLines[index]?.startsWith('> ')) {
+      latestUserTurnIndex = index;
+      break;
+    }
+  }
+  const scopedLines = outputLines.slice(latestUserTurnIndex + 1);
+  const results = scopedLines.flatMap((line) => {
+    const match = line.match(/^【Executor: [^｜]+｜最终结果｜#[^ ]+ \/ #[^】]+】\r?\n([\s\S]+)$/);
+    const body = match?.[1]?.trim();
+    return body ? [body] : [];
+  });
+  return results.length > 0 ? results.join('\n\n') : null;
 }
 
 function extractFeishuReplyTargetTaskId(outputLines: string[]): string | null {
