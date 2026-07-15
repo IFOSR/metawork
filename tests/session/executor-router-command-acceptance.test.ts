@@ -38,6 +38,8 @@ function createSession(input: {
   sessionId: string;
   llmBridge?: Partial<LlmBridge>;
   planningAgent?: PlanningAgent;
+  executorFactory?: (name: string) => ExecutorAdapter | null;
+  availableExecutorCommands?: Set<string>;
 }) {
   return new MetaclawSession({
     taskEngine: input.taskEngine,
@@ -55,6 +57,8 @@ function createSession(input: {
       ...input.llmBridge,
     } as unknown as LlmBridge,
     planningAgent: input.planningAgent,
+    executorFactory: input.executorFactory,
+    availableExecutorCommands: input.availableExecutorCommands,
   });
 }
 
@@ -85,7 +89,7 @@ describe('planner-first executor command acceptance', () => {
 
     const row = db.prepare(`
       SELECT name, kind, domains_json, capabilities_json, runtime_command, runtime_args_json,
-             runtime_check_command, availability
+             runtime_check_command
       FROM agent_classes WHERE name = ?
     `).get('research-bot') as {
       name: string;
@@ -95,7 +99,6 @@ describe('planner-first executor command acceptance', () => {
       runtime_command: string;
       runtime_args_json: string;
       runtime_check_command: string;
-      availability: string;
     };
 
     expect(row).toEqual(expect.objectContaining({
@@ -103,7 +106,6 @@ describe('planner-first executor command acceptance', () => {
       kind: 'executor',
       runtime_command: 'research-bot',
       runtime_check_command: 'research-bot --version',
-      availability: 'available',
     }));
     expect(JSON.parse(row.runtime_args_json)).toEqual(['run', '--prompt', '{prompt}']);
     expect(JSON.parse(row.domains_json)).toEqual(['research', 'reporting']);
@@ -184,7 +186,7 @@ describe('planner-first executor command acceptance', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the fixed executor work unit instead of racing or choosing peer executors', async () => {
+  it('provisions the planner-selected executor class on demand without choosing peers', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-fixed-executor');
@@ -232,10 +234,58 @@ describe('planner-first executor command acceptance', () => {
 
     expect(defaultExecutor.execute).toHaveBeenCalledTimes(1);
     expect(piExecutor.execute).not.toHaveBeenCalled();
-    expect(db.prepare('SELECT agent_class_name, state FROM work_units WHERE id = ?').get('executor-1')).toEqual({
+    expect(db.prepare(`
+      SELECT agent_class_name, state FROM work_units
+      WHERE agent_class_kind = 'executor'
+      ORDER BY created_at DESC LIMIT 1
+    `).get()).toEqual({
       agent_class_name: 'codex-cli',
       state: 'idle',
     });
+  });
+
+  it('announces the executor that actually claims the subtask after candidate fallback', async () => {
+    const db = createDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-actual-executor-output');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const codexExecutor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockResolvedValue({ success: true, output: 'fallback completed', exitCode: 0, durationMs: 50 }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const unavailablePi: ExecutorAdapter = {
+      name: 'pi-agent',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(false),
+      abort: vi.fn(),
+    };
+    const planned = workGraphPlan({ goal: '执行带候选回退的任务' });
+    planned.execution.selectedExecutor = 'pi-agent';
+    planned.execution.candidateExecutors = ['pi-agent', 'codex-cli'];
+    planned.workGraph!.subtasks[0]!.agentClassHint = 'pi-agent';
+    planned.workGraph!.subtasks[0]!.candidateAgentClasses = ['pi-agent', 'codex-cli'];
+
+    const session = createSession({
+      db,
+      taskEngine,
+      memoryEngine,
+      executor: codexExecutor,
+      sessionId: 'sess_actual_executor_output',
+      planningAgent: stubPlanningAgent(planned),
+      executorFactory: name => name === 'pi-agent' ? unavailablePi : null,
+      availableExecutorCommands: new Set(['codex', 'pi']),
+    });
+    session.initialize();
+    await session.submit('/executor register pi-agent --command pi --args "run --prompt {prompt}" --check "pi --version" --domains general --capabilities report_generation');
+    await session.submit('执行带候选回退的任务', { awaitAsyncWork: true });
+
+    const output = session.getSnapshot().output.join('\n');
+    expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
+    expect(output).not.toContain('【Executor: pi-agent｜派发准备】');
+    expect(codexExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(unavailablePi.execute).not.toHaveBeenCalled();
   });
 
   it('blocks failed executor subtasks for planner recovery instead of platform fallback', async () => {

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { AgentClass, AgentClassAvailability, AgentClassKind, AgentClassRiskLevel } from '../core/types.js';
+import type { AgentClass, AgentClassKind, AgentClassRiskLevel } from '../core/types.js';
 
 interface AgentClassRow {
   name: string;
@@ -14,7 +14,6 @@ interface AgentClassRow {
   avoid_use_cases_json: string;
   intent_affinity_json: string;
   risk_level: AgentClassRiskLevel;
-  availability: AgentClassAvailability;
   historical_success: number;
   harness: string | null;
   model: string | null;
@@ -51,7 +50,6 @@ function rowToAgentClass(row: AgentClassRow): AgentClass {
     avoidUseCases: parseList(row.avoid_use_cases_json),
     intentAffinity: parseAffinity(row.intent_affinity_json),
     riskLevel: row.risk_level,
-    availability: row.availability,
     historicalSuccess: row.historical_success,
     harness: row.harness,
     model: row.model,
@@ -76,10 +74,10 @@ export class AgentClassRepo {
       INSERT INTO agent_classes (
         name, kind, domains_json, capabilities_json, input_types_json, output_types_json,
         strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
-        intent_affinity_json, risk_level, availability, historical_success, harness, model,
+        intent_affinity_json, risk_level, historical_success, harness, model,
         skills_json, mcp_servers_json, plugins_json, runtime_command, runtime_args_json,
         runtime_check_command, project_url, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         kind = excluded.kind,
         domains_json = excluded.domains_json,
@@ -92,7 +90,6 @@ export class AgentClassRepo {
         avoid_use_cases_json = excluded.avoid_use_cases_json,
         intent_affinity_json = excluded.intent_affinity_json,
         risk_level = excluded.risk_level,
-        availability = excluded.availability,
         historical_success = excluded.historical_success,
         harness = excluded.harness,
         model = excluded.model,
@@ -117,7 +114,6 @@ export class AgentClassRepo {
       JSON.stringify(agentClass.avoidUseCases),
       JSON.stringify(agentClass.intentAffinity),
       agentClass.riskLevel,
-      agentClass.availability,
       agentClass.historicalSuccess,
       agentClass.harness,
       agentClass.model,
@@ -146,5 +142,9 @@ export class AgentClassRepo {
   findByName(name: string): AgentClass | null {
     const row = this.db.prepare('SELECT * FROM agent_classes WHERE name = ?').get(name) as AgentClassRow | undefined;
     return row ? rowToAgentClass(row) : null;
+  }
+
+  delete(name: string): boolean {
+    return this.db.prepare('DELETE FROM agent_classes WHERE name = ?').run(name).changes > 0;
   }
 }

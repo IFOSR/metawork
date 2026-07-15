@@ -198,7 +198,6 @@ export class ExecutorAdminService {
       avoidUseCases: existing?.avoidUseCases ?? [],
       intentAffinity: existing?.intentAffinity ?? {},
       riskLevel: existing?.riskLevel ?? 'medium',
-      availability: 'available',
       historicalSuccess: existing?.historicalSuccess ?? 0.5,
       harness: existing?.harness ?? 'cli',
       model: existing?.model ?? null,

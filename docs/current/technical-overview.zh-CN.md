@@ -38,7 +38,7 @@ flowchart LR
   Planning --> Plan[PlanningAgentPlan<br/>意图、目标、候选、<br/>work graph proposal]
   Plan --> Kernel[PolicyKernel<br/>schema、状态、冲突、<br/>executor 可用性]
   Kernel --> Decision{KernelDecision}
-  Decision -->|direct_reply| Conversation[ConversationRuntimeService<br/>不创建持久任务]
+  Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
   Decision -->|task_control| Control[Task control runtime<br/>状态、恢复、清理、解除阻塞]
   Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>创建或绑定任务]
@@ -68,9 +68,9 @@ flowchart LR
   Claim <--> Store
 ```
 
-主干逻辑很简单：所有自然语言输入进入同一个 runtime，然后由 planner work unit 暴露的 `PlanningAgent` 接口产出结构化 `PlanningAgentPlan`。`PolicyKernel` 是自然语言规划的唯一授权层：它验证 plan、检查任务状态和冲突、重写不可用 executor 候选，并返回 `KernelDecision`。Runtime 服务再应用这个决策：直接回答、应用任务控制、创建或绑定任务、持久化 kernel 授权过的 subtasks、claim 空闲 executor work units，并把已 claim 的 subtask 交给 `ExecutionRuntime`。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出 v2 `PlanningAgentPlan`。启动 context 只含输入、可信 session/source、授权边界和超时；任务、会话、runtime 和 executor 事实通过只读 stdio MCP 按需查询。`PolicyKernel` 负责确定性授权，Runtime 再 claim 健康容量或探测并创建 executor WorkUnit。
 
-当前 Codex `PlanningAgent` adapter 会通过 `LlmBridge` 调用 Codex CLI，并返回结构化 `PlanningAgentPlan`。旧的 `IntentOrchestrator` / `SemanticIntentRouter` / `ExecutorRouter` 路由子系统已整体删除；它曾定义的 planner 词汇类型现已迁至 `src/planning/planning-types.ts`。
+Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
 ### 普通问答路径
 
@@ -81,15 +81,13 @@ flowchart LR
   Plan --> Kernel[PolicyKernel]
   Kernel --> Decision[KernelDecision<br/>direct_reply]
   Decision --> Runtime[KernelDecisionApplier]
-  Runtime --> Conversation[ConversationRuntimeService]
-  Conversation --> Recall[ContextRecaller<br/>最近会话上下文优先]
-  Recall --> Executor[默认 executor<br/>通常是 codex-cli]
-  Executor --> Answer[最终回答]
+  Runtime --> Deliver[deliverDirectReply<br/>交付 plan.response.directReply]
+  Deliver --> Answer[最终回答]
   Answer --> Persist[记录交互<br/>和 planning_decision]
   Answer --> UI[TUI 或飞书]
 ```
 
-这条路径仍然是语义驱动。用户说“继续”或“你刚才回答了一半”，MetaClaw 会优先从最近会话上下文理解主题，而不是靠硬编码关键词，也不会让无关旧任务覆盖当前问题。
+这条路径仍然是语义驱动。用户说“继续”或“你刚才回答了一半”时，由 PlanningAgent（只读沙箱）自己通过只读工具查看最近会话上下文与运行时事实来理解主题，并把最终用户可见答案写入 `response.directReply`。runtime 原样交付这段文本，不再为一次回复调用第二次 executor。
 
 ### 持久任务路径
 
@@ -136,11 +134,11 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。普通问答仍会走语义上下文召回。用户说“继续”或“刚才回答了一半”时，MetaClaw 会把最近会话上下文作为最强证据，再考虑更旧的相似历史。
+- Conversation：即时回答，不创建持久任务。每次调用 PlanningAgent 前，MetaClaw 会注入有数量上限的已确认全局长期记忆和当前 session 的对话历史。direct reply 会持久化为 interaction，并在后续轮次自动进入召回上下文。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 先展示 planning 和 policy 里程碑，再召回最近对话上下文，然后把回答交给选中的 executor。飞书和 TUI 会区分 `MetaClaw` 里程碑和具体 `Executor: <name>` 里程碑，让用户知道当前是 planning agent、policy kernel、调度器、work-unit dispatcher 还是执行器在工作。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
+当前 direct reply 路径是显式的：MetaClaw 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
 
 [MetaClaw Task OS 架构与策略升级方案](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、PlanningAgent work graph proposal、PolicyKernel authorization、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
@@ -154,7 +152,7 @@ conversation / task 的边界很重要：
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
 | Hermes Agent | `hermes` | 调研、多工具编排、记忆/网关/助手工作流 | 安装并登录 Hermes |
 
-默认运行时命令是 `codex`，内部表示为 `codex-cli` executor agent class 加一个空闲 executor work unit。当前自然语言 dispatch 路径是 `PlanningAgent -> PolicyKernel -> Runtime`：MetaClaw 识别 durable task intent，提出 subtask work graph，授权或重写可用 executor `AgentClass` 候选，然后由 `WorkUnitClaimService` claim 一个空闲 executor `WorkUnit`，再交给 `ExecutionRuntime` 运行 adapter。Pi Agent 和 Hermes Agent 在对应 agent class 可用时可以作为调研类工作的候选或被选用。DeepSeek TUI、Claude Code 和 OpenClaw 仍然可用于显式本地配置，但除非被选为默认 executor，否则不会进入默认注册表。
+默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。
 
 ## 前提条件
 
@@ -365,7 +363,6 @@ Executor 扩展契约：
 - `name`：稳定的 Executor 名称，例如 `research-bot` 或 `finance-research-agent`。
 - `domains`：适用领域，例如 `research`、`finance`、`software`。
 - `capabilities`：能力标签，例如 `research`、`report_generation`、`multi_tool`、`coding`、`tests`。
-- `availability`：`available` 或 `unavailable`；安装检测失败时 MetaClaw 会更新该状态。
 
 建议的路由字段：
 
@@ -405,9 +402,10 @@ Executor 扩展契约：
 
 ```bash
 /executor list
+/executor show <name>
 /executor register wizard
 /executor unregister <name>
-/executor route-feedback
+/executor feedback <taskId>
 ```
 
 ### Codex CLI
@@ -587,9 +585,9 @@ metaclaw --connect
 
 ### 在 Docker 中运行（Windows / 容器化）
 
-在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.4`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
+在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.6-luna`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
 
-容器以只读卷挂载宿主机的 `dist/`，因此 `docker/shell.ps1` 会在源码比产物新时自动重编 `dist/`（源码改动无需手动 `npm run build`，也无需重建镜像/容器）。完整 `shell.ps1` 命令参考和免密 SSH 配置见 README 的 [通过 Docker + SSH 交互式运行](../../README.md#running-interactively-via-docker--ssh) 章节。
+完整运行镜像内置 CLI、Planner MCP、v2 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
 
 ## 配置
 
@@ -738,31 +736,33 @@ MetaClaw 会：
 常用命令：
 
 ```bash
-/tasks
-/tasks active
-/tasks ready
-/tasks parked
-/tasks blocked
-/tasks done
+/task list
+/task list active
+/task list ready
+/task list parked
+/task list blocked
+/task list done
 
-/task <id>
-/task <id> pause
-/task <id> resume
-/task <id> block waiting for customer data
-/task <id> unblock
-/task <id> unblock /tmp/evidence-v3.pdf
-/task <id> cancel
-/task <id> done
+/task show <id>
+/task pause <id>
+/task resume <id>
+/task block <id> waiting for customer data
+/task unblock <id>
+/task unblock <id> /tmp/evidence-v3.pdf
+/task cancel <id>
+/task complete <id>
 /task index rebuild
 /task index search <query>
 
-/dashboard
-/attach [taskId] <file paths...>
-/history
+/task dashboard
+/task attach <taskId> <file paths...>
+/task history <taskId>
 /config
 /help
 /exit
 ```
+
+主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
 ## 任务检索和混合召回
 
@@ -806,12 +806,12 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 现在拆成 planner 理解、kernel 授权和 runtime 执行三层。显式记忆/偏好快路之后，raw user input 进入 `PlanningAgent`。当前 Codex adapter 会直接通过 `LlmBridge` 产出结构化 `PlanningAgentPlan`，替代旧的 `IntentOrchestrator` round-trip（现已删除）。`PlanningAgent` 返回以下 action 之一：
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出 v2 `PlanningAgentPlan`。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`PolicyKernel` 随后验证 schema、confidence、task status、单活跃任务冲突、blocked/recovery 证据和 executor availability。它返回 `accept`、`rewrite`、`reject` 或 `clarify` 以及一个 `KernelDecision`。Kernel 必须保持纯粹：不写 repository、不 claim work unit、不调用 executor，也不发送 UI/delivery 消息。
+`PolicyKernel` 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
 
 Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化 kernel-approved work graph，并恢复已有未完成 subtasks 以便继续 dispatch。`WorkUnitClaimService` 会 sweep 过期 lease，寻找空闲 executor `WorkUnit`，维护 claimed/running/waiting/failed/released 状态，并记录 work-unit events。`ExecutionRuntime` 接收 `SubtaskExecutionSpec`，其中包含已 claim 的 subtask、work unit、agent class runtime config、上下文和验收要求。它不再接收 `ExecutionPolicy`、`primaryExecutor`、`candidateExecutors` 或 `fallbackChain`。
 
@@ -824,18 +824,9 @@ MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一
 - `single_executor`：任务足够集中，一个 executor 可以完成。
 - `multi_executor`：任务被拆成多个 subtasks，每个 subtask 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
 
-触发复杂策略的信号包括：用户明确要求多 agent 或多视角、任务横跨多个能力域、存在先后阶段依赖、涉及高风险验证、包含多个资源或命中多个相关历史任务。在 active session path 中，这些 strategy units 只有在 `PolicyKernel` accept 或 rewrite 后才会变成持久化 `Subtask` 节点；dispatcher 再按依赖顺序 claim 并执行 ready subtasks。
+planner 直接提出 work graph。在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会变成持久化 `Subtask` 节点。`WorkGraphRuntimeService` 恢复已批准的工作图，dispatcher 再按依赖顺序串行 claim 并执行 ready subtasks。
 
-Agentic Loop 核心流程：
-
-1. `MultiExecutorOrchestrator` 执行 subtasks，可串行也可并行。
-2. `ExecutionAggregator` 汇总各 executor 结果。
-3. 检查验收证据：是否满足用户原始需求，patch 是否有测试证据，调研是否有来源，artifact 是否有路径，review 是否有 pass/concerns，是否缺少 subtask，多个结果之间是否冲突。
-4. 如果验收通过，输出最终聚合结果。
-5. 如果验收有 concerns，把针对性反馈追加回失败的 subtasks 并重试。
-6. 如果达到最大迭代仍未通过，返回 `blocked` 和原因，而不是把未验收的结果交付给用户。
-
-这就是 MetaClaw 对 agentic work 的验收层：executor 返回文本不等于任务完成。核心模块已经实现并有针对性测试覆盖。当前 active session path 使用持久化 subtasks 和串行 work-unit dispatch；更深入的自动重试、reviewer 和 fallback 行为会在 planner replanning 后续阶段逐步接入。
+已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
 ## 记忆和召回审查
 
@@ -889,7 +880,7 @@ npm run smoke:metaclaw
 ```bash
 cat > /tmp/metaclaw-flow.txt <<'EOF'
 Compare the risk points across three contracts and produce a concise table.
-/tasks done
+/task list done
 EOF
 
 metaclaw --script /tmp/metaclaw-flow.txt
@@ -938,7 +929,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 现在刻意保持很窄：保留共享基础类型（`types.ts`、`embedding-provider.ts`）、`llm-bridge`、`RuleHintsProvider`、策略基础（`ExecutionStrategyPlanner`、`CapabilityClass`、`task-routing`）。旧路由/意图子系统（`IntentOrchestrator`、`SemanticIntentRouter`、`ExecutorRouter`、`ExecutionPlanningService`、`ExecutionPolicyPlanner`、`src/planner/*`）已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄：保留共享基础类型、通用记忆/排序 `llm-bridge` 和 `CapabilityClass`。关键词 RuleHints、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
 
 ## License
 

@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { taskControlPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -126,6 +127,12 @@ describe('App parked task intent resolution', () => {
         contextRecaller,
         llmBridge,
         availableExecutorCommands: new Set(['codex']),
+        planningAgent: {
+          plan: vi.fn().mockImplementation(async () => taskControlPlan({
+            control: 'resume_task',
+            taskId: parkedTaskId,
+          })),
+        },
       }),
     );
 
@@ -156,7 +163,7 @@ describe('App parked task intent resolution', () => {
     await flushUpdates();
     await waitForExecutorCall(executor.execute as ReturnType<typeof vi.fn>);
 
-    expect(querySpy).toHaveBeenCalled();
+    expect(querySpy).not.toHaveBeenCalled();
     expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls.some(call =>
       call[0].task.id === parkedTask.id
       && call[0].executionContextBundle.mode === 'resume-parked'

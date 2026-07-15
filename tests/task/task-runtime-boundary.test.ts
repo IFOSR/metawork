@@ -69,7 +69,6 @@ describe('Task runtime architecture boundaries', () => {
 
   it('keeps TaskRuntimeService out of LLM and executor routing decisions', () => {
     const source = readSource('src/task/task-runtime-service.ts');
-    const semanticSource = readSource('src/task/task-semantic-service.ts');
 
     expect(source).not.toContain("from './llm-bridge.js'");
     expect(source).not.toContain('llmBridge');
@@ -78,9 +77,6 @@ describe('Task runtime architecture boundaries', () => {
     expect(source).not.toContain('IntentOrchestrator');
     expect(source).not.toContain('ExecutorRouter');
     expect(source).not.toContain('createExecutor');
-    expect(semanticSource).toContain("from '../core/llm-bridge.js'");
-    expect(semanticSource).toContain('resolveTaskPriority');
-    expect(semanticSource).toContain('resolveTaskResumeIntent');
   });
 
   it('keeps clear-task presentation labels outside TaskRuntimeService', () => {

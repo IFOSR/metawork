@@ -103,7 +103,7 @@ describe('session dispatch recovery', () => {
     expect(session.getSnapshot().output.join('\n')).toContain('挂起任务已自动恢复执行');
   });
 
-  it('stores semantic task priority from the LLM when creating a new task', async () => {
+  it('stores semantic task priority supplied by the PlanningAgent plan', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-semantic-priority');
@@ -141,7 +141,10 @@ describe('session dispatch recovery', () => {
       llmBridge,
       executorFactory: () => executor,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '这个客户今晚要看，先处理一下 harness 对比' }),
+        workGraphPlan({
+          goal: '这个客户今晚要看，先处理一下 harness 对比',
+          priority: { level: 'urgent', reason: '语义判断：用户要求先处理这个临时任务' },
+        }),
       ),
     });
 
@@ -153,7 +156,7 @@ describe('session dispatch recovery', () => {
     expect(task?.prioritySignals.semanticPriorityReason).toBe('语义判断：用户要求先处理这个临时任务');
   });
 
-  it('semantically reclassifies existing parked tasks before auto-resume ordering', async () => {
+  it('does not semantically reclassify persisted tasks before deterministic auto-resume', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-parked-semantic-backfill');
@@ -217,12 +220,11 @@ describe('session dispatch recovery', () => {
     await (session as any).scheduler.scheduleNext();
     await session.waitForAsyncWork();
 
-    const urgentTask = parkedTasks[2];
-    expect(llmBridge.resolveTaskPriority).toHaveBeenCalledTimes(4);
-    expect(executionOrder[0]).toBe(urgentTask.id);
-    expect(taskRepo.findById(urgentTask.id)?.prioritySignals.semanticPriority).toBe('urgent');
+    expect(llmBridge.resolveTaskPriority).not.toHaveBeenCalled();
+    expect(executionOrder[0]).toBe(parkedTasks[0].id);
+    expect(taskRepo.findById(parkedTasks[2].id)?.prioritySignals.semanticPriority).toBeUndefined();
     expect(session.getSnapshot().output.join('\n')).toContain('恢复已挂起任务');
-    expect(session.getSnapshot().output.join('\n')).toContain(`完成 ${urgentTask.title}`);
+    expect(session.getSnapshot().output.join('\n')).toContain(`完成 ${parkedTasks[0].title}`);
   });
 
   it('rebuilds a missing execution request instead of leaving a task fake-running', async () => {
@@ -341,8 +343,8 @@ describe('session dispatch recovery', () => {
     // the recovery reason, and relays the executor's answer. The exact block/trigger
     // strings are verified structurally in the notifyTaskCompleted assertion below,
     // so we don't re-pin the decorative display copy here.
-    expect(output).toContain(`关联到任务 #${task.id}`);
-    expect(output).toContain('检测到用户补充了阻塞所需信息');
+    expect(output).toContain(`任务 #${task.id} 已解除阻塞`);
+    expect(output).toContain(`Planner authorized recovery of task #${task.id}`);
     expect(output).toContain('补充材料后已继续完成飞书 Client API 调研');
     expect(notifier.notifyTaskCompleted).toHaveBeenCalledWith(expect.objectContaining({
       taskId: task.id,
@@ -350,9 +352,9 @@ describe('session dispatch recovery', () => {
       executionMode: 'resume-blocked',
       origin: 'user',
       recoveryTrigger: expect.objectContaining({
-        kind: 'user-query-unblocked',
+        kind: 'natural-language-resume',
         blockedReason: '等待补充飞书 Client API 权限材料',
-        triggerReason: '检测到用户补充了阻塞所需信息',
+        triggerReason: '用户补充了阻塞任务所需材料',
       }),
     }));
   });

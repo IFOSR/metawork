@@ -31,11 +31,11 @@ metaclaw --script examples/trial-scenarios/scripts/00-command-smoke.txt
 
 - `scripts/00-command-smoke.txt`
   - 不依赖外部执行器成功返回
-  - 用于验证 `/help`、`/tasks`、`/dashboard`、`/config`
+  - 用于验证 `/help`、`/task list`、`/task dashboard`、`/config`
 
 - `scripts/01-byd-catl-research.txt`
   - 真实行业调研问题
-  - 用于验证新建任务、执行器派发、完成后进入 `/tasks done`
+  - 用于验证新建任务、执行器派发、完成后进入 `/task list done`
 
 - `scripts/02-memory-observation.txt`
   - 真实沟通类任务
@@ -50,7 +50,7 @@ metaclaw --script examples/trial-scenarios/scripts/00-command-smoke.txt
   - 验证阻塞、解除阻塞、附带新材料恢复
 
 - `manual/03-task-list-and-follow-up.md`
-  - 验证 `/tasks` 分组、`/task <id>` 详情、已完成任务后的 follow-up
+  - 验证 `/task list` 分组、`/task show <id>` 详情、已完成任务后的 follow-up
 
 ## 推荐补充试用
 
@@ -67,7 +67,7 @@ metaclaw --script examples/trial-scenarios/scripts/00-command-smoke.txt
 
 ## 素材文件
 
-`assets/` 下放了可直接引用的真实业务风格材料，方便在手动场景中做 `/attach` 或 `/task <id> unblock <资源路径>`：
+`assets/` 下放了可直接引用的真实业务风格材料，方便在手动场景中做 `/task attach <id> <资源路径>` 或 `/task unblock <id> <资源路径>`：
 
 - `assets/byd-catl-brief.md`
 - `assets/foshan-plastics-brief.md`
@@ -85,5 +85,5 @@ metaclaw --script examples/trial-scenarios/scripts/00-command-smoke.txt
 
 - 真实调研类案例依赖默认执行器 `codex`
 - 如果当前环境网络受限，命令类脚本可以正常验证，但真实研究任务可能会因外网连接失败而挂起
-- 手动场景里凡是需要 `<task_id>` 的地方，都先执行 `/tasks` 复制任务 ID
+- 手动场景里凡是需要 `<task_id>` 的地方，都先执行 `/task list` 复制任务 ID
 - 写入目录类案例建议直接使用 `/tmp` 或当前项目下的 `projects/` 目录，便于观察任务产物回流

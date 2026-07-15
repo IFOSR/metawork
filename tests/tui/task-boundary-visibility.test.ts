@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 describe('App task-boundary visibility', () => {
-  it('explains when a conversation-derived follow-up becomes a new task', async () => {
+  it('creates a conversation-derived follow-up without exposing the planner boundary reason', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -148,14 +148,15 @@ describe('App task-boundary visibility', () => {
     await typeAndSubmit('未来随着基座模型的能力越来越强，是否还需要 harness');
     await typeAndSubmit('把刚才那段回答整理成三点结论');
 
-    expect(app.lastFrame()).toContain('按当前对话创建跟进任务');
+    expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
+    expect(app.lastFrame()).not.toContain('按当前对话创建跟进任务');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTaskId}`);
 
     app.unmount();
     app.cleanup();
   });
 
-  it('explains when a short continuation stays in conversation mode', async () => {
+  it('keeps a short continuation in conversation mode without exposing the planner reason', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -221,7 +222,8 @@ describe('App task-boundary visibility', () => {
     await typeAndSubmit('未来随着基座模型的能力越来越强，是否还需要 harness');
     await typeAndSubmit('可以，继续');
 
-    expect(app.lastFrame()).toContain('延续当前对话，不恢复旧任务');
+    expect(app.lastFrame()).toContain('这是一条测试直接回答');
+    expect(app.lastFrame()).not.toContain('延续当前对话，不恢复旧任务');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTask.id}`);
 
     app.unmount();

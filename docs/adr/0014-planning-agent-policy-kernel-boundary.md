@@ -29,11 +29,13 @@ This replaces the previous planner-first execution-dispatch framing, where sessi
 
 The current implementation is interface-first rather than a real Codex CLI planning adapter. Existing semantic routing logic may be reused only inside the `PlanningAgent` implementation; session code must not keep a fallback path that bypasses the kernel. The kernel returns a decision instead of writing storage directly.
 
+The one sanctioned exception is a `direct_reply` plan: it is a read-only answer the planner has already produced and validated, and the kernel applies no state-changing authorization to it (no single-active-task check, executor rewrite, or risk/confidence gate — `decide()` would only re-validate and rubber-stamp `accept`). For a reply turn the session therefore calls `PolicyKernel.authorizeDirectReply(plan)` directly, skipping the `decide()` round-trip. `KernelDecision` construction still belongs to the kernel, the `KernelDecisionApplier` still records the `planning_decisions` audit row, and delivery is unchanged — so this is a shortcut through the authorization *round-trip*, not a bypass of the seam or the audit trail. No other action may skip the kernel.
+
 Explicit memory/preference capture fast paths remain outside this policy kernel in v1. This avoids expanding the memory policy while this change is only trying to restore the task planning and dispatch boundary.
 
 ## Consequences
 
-The natural-language path has one policy seam: `PlanningAgent -> PolicyKernel -> KernelDecisionApplier`. This makes it easier to test whether task creation, task control, direct reply, clarification, and work graph execution all pass through the same authorization point.
+The natural-language path has one policy seam: `PlanningAgent -> PolicyKernel -> KernelDecisionApplier`. This makes it easier to test whether task creation, task control, direct reply, clarification, and work graph execution all pass through the same authorization point. `direct_reply` reaches the applier through `authorizeDirectReply` rather than `decide` (see Decision), but still through the kernel and the same audit row — every action's decision is still kernel-constructed and audited.
 
 Planner output is a proposal, not an executable command. Work graphs become durable `Subtask` records only after the kernel accepts or rewrites the plan.
 

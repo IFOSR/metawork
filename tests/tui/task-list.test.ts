@@ -134,7 +134,7 @@ describe('tasksCommand', () => {
     expect(parkedResult.content).not.toContain(readyTask.id);
   });
 
-  it('hides historical non-task chatter from the default task list', async () => {
+  it('treats every persisted task as durable in the default task list', async () => {
     const realTask = taskEngine.create({ title: '行业调研任务', goal: '输出调研结论' });
     taskEngine.transition(realTask.id, 'ready');
     taskEngine.transition(realTask.id, 'running');
@@ -148,8 +148,8 @@ describe('tasksCommand', () => {
     const result = await tasksCommand.execute([], context);
 
     expect(result.content).toContain(realTask.id);
-    expect(result.content).not.toContain(chatterTask.id);
-    expect(result.content).not.toContain('[DONE] hi');
+    expect(result.content).toContain(chatterTask.id);
+    expect(result.content).toContain('[DONE] hi');
   });
 
   it('clears only parked tasks when requested', async () => {

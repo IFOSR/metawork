@@ -3,8 +3,8 @@
 ## 步骤
 
 1. 创建一个新任务
-2. 执行 `/attach file-a.md file-b.md`
-3. 执行 `/task <id>`
+2. 执行 `/task attach <taskId> file-a.md file-b.md`
+3. 执行 `/task show <id>`
 
 ## 预期
 

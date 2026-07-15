@@ -1,15 +1,9 @@
-import type { AgentClass, Task } from '../core/types.js';
-import { RuleHintsProvider } from '../core/rule-hints-provider.js';
-import { buildRecentTaskSummaries } from '../core/task-summary.js';
 import type { PlanningContext } from './planning-types.js';
 
 export interface PlanningContextBuilderDeps {
-  listTasks(): Task[];
-  listAgentClasses(): AgentClass[];
-  defaultExecutorName: string;
-  getFocusContext(): PlanningContext['currentFocus'];
+  sessionId: string;
+  requestSource: string;
   getTimeoutMs(): number;
-  cwd?: string;
 }
 
 export class PlanningContextBuilder {
@@ -17,20 +11,23 @@ export class PlanningContextBuilder {
 
   build(input: {
     userInput: string;
-    suppressSafetyGuardHints?: boolean;
+    initialContext?: PlanningContext['initialContext'];
   }): PlanningContext {
-    const hints = new RuleHintsProvider(this.deps.cwd ?? process.cwd()).collect(input.userInput);
     return {
       userInput: input.userInput,
-      recentTasks: buildRecentTaskSummaries(this.deps.listTasks()),
-      agentClasses: this.deps.listAgentClasses(),
-      defaultExecutorName: this.deps.defaultExecutorName,
-      currentFocus: this.deps.getFocusContext(),
-      hints: input.suppressSafetyGuardHints
-        ? hints.filter(hint => hint.source !== 'safety_guard')
-        : hints,
-      allowDurableTask: true,
-      allowFileModification: true,
+      initialContext: input.initialContext ?? {
+        longTermMemories: [],
+        conversationHistory: [],
+      },
+      request: {
+        sessionId: this.deps.sessionId,
+        source: this.deps.requestSource,
+      },
+      permissions: {
+        allowDurableTask: true,
+        allowFileModification: true,
+        allowExternalGateway: true,
+      },
       timeoutMs: this.deps.getTimeoutMs(),
     };
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CodexCliAdapter } from '../../src/executor/codex-cli.js';
+import { buildCodexNonInteractiveArgs } from '../../src/executor/codex-args.js';
 
 describe('CodexCliAdapter', () => {
   describe('buildContextPrompt', () => {
@@ -178,16 +179,16 @@ describe('CodexCliAdapter', () => {
     });
   });
 
-  describe('spawn args', () => {
-    it('uses codex exec non-interactively with full autonomy by default', () => {
-      const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
-      const args = (adapter as any).buildSpawnArgs('test prompt');
+  describe('shared Codex arguments', () => {
+    it('keeps ephemeral mode for generic LLM calls by default', () => {
+      const args = buildCodexNonInteractiveArgs('test prompt');
 
       expect(args[0]).toBe('exec');
       expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(args).toContain('--dangerously-bypass-hook-trust');
       expect(args).toContain('--skip-git-repo-check');
       expect(args).toContain('--ephemeral');
+      expect(args).not.toContain('--output-last-message');
       expect(args).toContain('--color');
       expect(args).toContain('never');
       expect(args).toContain('test prompt');

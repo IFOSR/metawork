@@ -11,3 +11,5 @@ metaclaw-tasks/
 docker/*.env
 !docker/*.env.example
 .claude/
+docs/competitive-analysis/
+.agents/skills/research-metaclaw-competitors/

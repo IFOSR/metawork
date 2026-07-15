@@ -104,15 +104,15 @@ describe('blocked task user journey', () => {
     expect(blockedTask.dependencies[0]?.description).toBe('执行器网络连接失败，请检查网络或代理配置');
     let output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 已转为阻塞`);
-    expect(output).toContain(`/task ${blockedTask.id} unblock`);
+    expect(output).toContain(`/task unblock ${blockedTask.id}`);
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain('当前有 1 个阻塞任务');
     expect(output).toContain(`#${blockedTask.id} [BLOCKED] ${blockedTask.title}`);
-    expect(output).toContain(`建议动作：/task ${blockedTask.id} unblock，或直接补充材料/说明后让我继续`);
+    expect(output).toContain(`建议动作：/task unblock ${blockedTask.id}，或直接补充材料/说明后让我继续`);
 
-    await session.submit(`/task ${blockedTask.id} unblock`, { awaitAsyncWork: true });
+    await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('done');
     expect(executor.execute).toHaveBeenCalledTimes(2);

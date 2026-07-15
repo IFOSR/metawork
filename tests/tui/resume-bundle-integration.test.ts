@@ -13,6 +13,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -128,6 +129,9 @@ describe('App resume bundle integration', () => {
         sessionId: 'sess_resume',
         contextRecaller,
         llmBridge,
+        planningAgent: stubPlanningAgent(
+          taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
+        ),
       })
     );
 

@@ -18,28 +18,18 @@ import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { LlmBridge } from '../core/llm-bridge.js';
 import { SchedulerEngine } from '../task/scheduler.js';
 import type { DispatchContext } from '../task/scheduler.js';
-import {
-  filterDurableTasks,
-} from '../core/task-routing.js';
-import { buildRecentTaskSummaries } from '../core/task-summary.js';
 import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
 import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
 import { SessionPersistenceService } from './session-persistence-service.js';
 import { MemoryCaptureService } from '../memory/memory-capture-service.js';
-import { ConversationRuntimeService } from '../execution/conversation-runtime-service.js';
 import { TaskResumePlanner } from '../task/task-resume-planner.js';
-import { CommandRouter } from '../commands/router.js';
-import { tasksCommand, taskCommand } from '../commands/task-commands.js';
-import { memoryCommand } from '../commands/memory-commands.js';
-import { profileCommand } from '../commands/profile-commands.js';
-import { executorCommand } from '../commands/executor-commands.js';
-import { learningCommand } from '../commands/learning-commands.js';
-import { dashboardCommand, attachCommand, historyCommand, configCommand, helpCommand, exitCommand } from '../commands/global-commands.js';
+import { createDefaultCommandCatalog } from '../commands/command-tree.js';
+import { CommandReadServices } from '../commands/command-read-services.js';
+import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
-import { TaskSemanticService } from '../task/task-semantic-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
@@ -51,13 +41,7 @@ import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
 import { SessionExecutionCoordinator } from './session-execution-coordinator.js';
 import { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
-import {
-  buildSchedulingReason,
-  isRiskyExternalActionInstruction,
-  parseExplicitRemember,
-  parsePriorityHint,
-  type QueuedExecutionRequest,
-} from './session-helpers.js';
+import { type QueuedExecutionRequest } from './session-helpers.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -69,6 +53,7 @@ import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
 import { KernelDecisionApplier } from './kernel-decision-applier.js';
 import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
+import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -82,6 +67,7 @@ export interface MetaclawSessionDeps {
   llmBridge: LlmBridge;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
+  defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
 }
@@ -103,8 +89,7 @@ interface FocusContext {
   taskId: string | null;
 }
 
-const BUSY_LLM_TIMEOUT_MS = 250;
-const DEFAULT_LLM_TIMEOUT_MS = 5_000;
+const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
 
 /** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
 export class MetaclawSession {
@@ -129,17 +114,16 @@ export class MetaclawSession {
   private blockedRecheckInFlight = false;
   private backgroundWork = new Set<Promise<void>>();
   private readonly memoryContextService: MemoryContextService;
-  private readonly router: CommandRouter;
+  private readonly commandCatalog: CommandCatalog;
   private readonly scheduler: SchedulerEngine<QueuedExecutionRequest>;
   private readonly sessionStateRepo: SessionStateRepo;
   private readonly notifier: NotificationService;
   private readonly inputController: InputController;
   private readonly taskRuntimeService: TaskRuntimeService;
-  private readonly taskSemanticService: TaskSemanticService;
   private readonly executionRuntime: ExecutionRuntime;
+  private readonly commandReadServices: CommandReadServices;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
-  private readonly conversationRuntimeService: ConversationRuntimeService;
   private readonly memoryCaptureService: MemoryCaptureService;
   private readonly recallReviewApplicationService: RecallReviewApplicationService;
   private readonly taskResumePlanner: TaskResumePlanner;
@@ -168,10 +152,6 @@ export class MetaclawSession {
       taskRepo: deps.taskEngine.getTaskRepo(),
       orchestration: deps.orchestration,
     });
-    this.taskSemanticService = new TaskSemanticService({
-      llmBridge: deps.llmBridge,
-      timeoutMs: () => this.getLlmTimeoutMs(),
-    });
     this.agentClassService = new AgentClassService({
       db: deps.db,
       defaultExecutorName: deps.executor.name,
@@ -181,9 +161,11 @@ export class MetaclawSession {
       db: deps.db,
       config: deps.config,
       defaultExecutor: deps.executor,
+      defaultExecutorFactory: deps.defaultExecutorFactory,
       executorFactory: deps.executorFactory,
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);
+    this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
@@ -194,8 +176,16 @@ export class MetaclawSession {
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
-    this.workGraphRuntimeService = new WorkGraphRuntimeService(this.subtaskRepo, this.taskEventRepo);
-    this.workUnitClaimService = new WorkUnitClaimService(new WorkUnitRepo(deps.db));
+    this.workGraphRuntimeService = new WorkGraphRuntimeService(
+      this.subtaskRepo,
+      this.taskEventRepo,
+      deps.executor.name,
+    );
+    this.workUnitClaimService = new WorkUnitClaimService(
+      new WorkUnitRepo(deps.db),
+      60_000,
+      name => this.executionRuntime.isExecutorAvailable(name),
+    );
     this.workspaceTargetService = new WorkspaceTargetService();
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
@@ -205,12 +195,6 @@ export class MetaclawSession {
         deps.memoryEngine,
         deps.contextRecaller,
       ),
-    });
-    this.conversationRuntimeService = new ConversationRuntimeService({
-      executor: deps.executor,
-      memoryContextService: this.memoryContextService,
-      persistenceService: this.persistenceService,
-      appendOutput: (...lines) => this.appendOutput(...lines),
     });
     this.memoryCaptureService = new MemoryCaptureService({
       db: deps.db,
@@ -228,25 +212,24 @@ export class MetaclawSession {
       taskRuntimeService: this.taskRuntimeService,
     });
     this.planningContextBuilder = new PlanningContextBuilder({
-      listTasks: () => this.taskRuntimeService.listTasks(),
-      listAgentClasses: () => this.listRuntimeVisibleAgentClasses(),
-      defaultExecutorName: deps.executor.name,
-      getFocusContext: () => this.getFocusContext(),
-      getTimeoutMs: () => this.getLlmTimeoutMs(),
+      sessionId: deps.sessionId,
+      requestSource: 'session',
+      getTimeoutMs: () => this.getPlannerTimeoutMs(),
     });
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
-      llmBridge: deps.llmBridge,
+      audit: new PlannerRunRepo(deps.db),
     });
     this.policyKernel = new PolicyKernel();
     this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);
-    this.router = createDefaultCommandRouter();
+    this.commandCatalog = createDefaultCommandCatalog();
     this.scheduler = new SchedulerEngine<QueuedExecutionRequest>(
       deps.taskEngine,
       deps.orchestration,
       deps.executor,
       async (taskId: string, context?: DispatchContext<QueuedExecutionRequest>) => this.dispatchTask(taskId, context),
-      async (tasks: Task[]) => this.classifyMissingSemanticPriorities(tasks),
+      undefined,
       this.taskRuntimeService,
+      this.executionRuntime,
     );
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
@@ -308,25 +291,29 @@ export class MetaclawSession {
       sessionId: deps.sessionId,
       planningDecisionRepo: this.planningDecisionRepo,
       taskRuntimeService: this.taskRuntimeService,
-      taskSemanticService: this.taskSemanticService,
       taskResumePlanner: this.taskResumePlanner,
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
       executor: deps.executor,
+      activeExecutions: this.executionRuntime,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        appendPlanningClarification: (userInput, plan, decision) => this.appendPlanningClarification(userInput, plan, decision),
-        runConversationInput: userInput => this.runConversationInput(userInput),
+        appendPlanningClarification: plan => this.appendPlanningClarification(plan),
+        deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
-        buildRecentTaskSummaries,
         buildRecoveryTrigger: (task, input) => this.buildRecoveryTrigger(task, input),
       },
     });
+
+    // AgentClass records are startup catalog data. Constructing a session must
+    // make the catalog readable even for non-UI hosts that do not call the
+    // optional dashboard-oriented initialize() lifecycle hook.
+    this.seedAgentRuntime();
   }
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
@@ -359,6 +346,10 @@ export class MetaclawSession {
           }
         : null,
     };
+  }
+
+  completeCommand(text: string, cursor = text.length): CommandCompletion {
+    return this.commandCatalog.complete({ text, cursor, context: this.getCommandContext() });
   }
 
   private reconcileLatestGuidance(): void {
@@ -416,7 +407,7 @@ export class MetaclawSession {
       for (const task of recoveredRunningTasks) {
         this.output.push(
           `→ 检测到上次异常退出，任务 #${task.id} 已转为挂起`,
-          `→ 可执行 /task ${task.id} resume 继续，或直接说“继续刚才那个任务”`,
+          `→ 可执行 /task resume ${task.id} 继续，或直接说“继续刚才那个任务”`,
         );
       }
     }
@@ -580,7 +571,7 @@ export class MetaclawSession {
   }
 
   private findTimerRecheckableBlockedTasks(): Task[] {
-    return filterDurableTasks(this.taskRuntimeService.listTasks())
+    return this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'blocked')
       .filter(task => this.isTimerRecheckableBlockedTask(task))
       .sort((left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime());
@@ -644,9 +635,9 @@ export class MetaclawSession {
       return false;
     }
 
-    const blockedTasks = filterDurableTasks(this.taskRuntimeService.listTasks())
+    const blockedTasks = this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'blocked');
-    const parkedTasks = filterDurableTasks(this.taskRuntimeService.listTasks())
+    const parkedTasks = this.taskRuntimeService.listTasks()
       .filter(task => task.status === 'parked');
     if (blockedTasks.length === 0 && parkedTasks.length === 0) {
       return false;
@@ -724,25 +715,28 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
-  private async handlePlanningKernelDecision(
-    userInput: string,
-    options: { suppressSafetyGuardHints?: boolean } = {},
-  ): Promise<boolean> {
-    this.appendOutput(
-      '【MetaClaw｜理解用户请求】',
-      '→ MetaClaw：正在分析目标、上下文与可执行边界',
-    );
-    const context = this.planningContextBuilder.build({
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    this.appendOutput('【MetaClaw｜理解用户请求】');
+    const initialContext = await this.memoryContextService.preparePlanningInitialContext({
+      sessionId: this.deps.sessionId,
       userInput,
-      suppressSafetyGuardHints: options.suppressSafetyGuardHints,
+      topK: this.deps.config.orchestration.top_k_preferences,
     });
+    const context = this.planningContextBuilder.build({ userInput, initialContext });
     const plan = await this.planningAgent.plan(context);
-    const decision = this.policyKernel.decide(plan, {
-      tasks: this.taskRuntimeService.listTasks(),
-      runningTask: this.taskRuntimeService.getCurrentRunningTask(),
-      agentClasses: this.listRuntimeVisibleAgentClasses(),
-      currentFocus: this.getFocusContext(),
-    });
+    // A direct_reply is a read-only answer the planner already produced and
+    // validated. The kernel applies no authorization to it (it would only
+    // re-validate and rubber-stamp accept), so we short-circuit the full
+    // decide() round-trip and build the accept decision directly. The applier
+    // still records the planning decision, so the audit trail is unchanged.
+    const decision = plan.action === 'direct_reply'
+      ? this.policyKernel.authorizeDirectReply(plan)
+      : this.policyKernel.decide(plan, {
+        tasks: this.taskRuntimeService.listTasks(),
+        runningTask: this.taskRuntimeService.getCurrentRunningTask(),
+        agentClasses: this.listRuntimeVisibleAgentClasses(),
+        currentFocus: this.getFocusContext(),
+      });
 
     return this.kernelDecisionApplier.apply({
       userInput,
@@ -752,19 +746,11 @@ export class MetaclawSession {
   }
 
   private listRuntimeVisibleAgentClasses(): AgentClass[] {
-    return this.agentClassService.listAgentClasses().map(agentClass => {
-      if (agentClass.kind === 'executor' && agentClass.name === this.deps.executor.name) {
-        return { ...agentClass, availability: 'available' as const };
-      }
-      return agentClass;
-    });
+    return this.agentClassService.listAgentClasses();
   }
 
-  private appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void {
+  private appendPlanningClarification(plan: PlanningAgentPlan): void {
     this.appendOutput(
-      '→ 统一意图裁决置信度不足，未创建任务、未恢复旧任务、未派发执行器。',
-      `→ 输入：${userInput}`,
-      `→ 判断：${decision.reason || plan.reason || '无可靠语义裁决'} (confidence=${plan.confidence.toFixed(2)})`,
       plan.clarificationQuestion
         || '我不确定你是想继续聊天、创建新任务，还是恢复某个已有任务。请明确说明下一步动作。',
     );
@@ -819,7 +805,7 @@ export class MetaclawSession {
 
   private buildTaskQueueSnapshotEntries() {
     return this.presentation.buildTaskQueueSnapshotEntries({
-      tasks: filterDurableTasks(this.taskRuntimeService.listTasks()),
+      tasks: this.taskRuntimeService.listTasks(),
       runningTaskId: this.runtimeState.runningTaskId,
       evaluateTask: task => this.deps.orchestration.evaluateTask(task),
     });
@@ -834,24 +820,10 @@ export class MetaclawSession {
   }
 
   private async handleCommand(userInput: string): Promise<boolean> {
-    const result = await this.router.execute(userInput, {
-      taskEngine: this.deps.taskEngine,
-      memoryEngine: this.deps.memoryEngine,
-      orchestration: this.deps.orchestration,
-      executor: this.deps.executor,
-      currentTaskId: this.getCurrentTaskId(),
-      db: this.deps.db,
-      config: this.deps.config,
-    });
-
+    const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
     this.appendOutput(result.content);
 
-    const commandData = result.data as
-      | {
-          executorRegisterWizard?: boolean;
-        }
-      | undefined;
-    if (commandData?.executorRegisterWizard) {
+    if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
       this.appendOutput(...this.executorAdminService.startWizard());
     }
 
@@ -860,35 +832,26 @@ export class MetaclawSession {
       return true;
     }
 
-    const schedulerData = result.data as
-      | {
-          schedulerAction?: 'resume';
-          taskId?: string;
-          mode?: QueuedExecutionRequest['executionMode'];
-          newlyProvidedResources?: string[];
-          blockedReason?: string;
-        }
-      | undefined;
-
-    if (schedulerData?.schedulerAction === 'resume' && schedulerData.taskId && schedulerData.mode) {
-      const resumedTask = this.taskRuntimeService.findTask(schedulerData.taskId);
+    if (result.type === 'directive' && result.directive.kind === 'resume-task') {
+      const directive = result.directive;
+      const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
         this.setCurrentTaskId(resumedTask.id);
         await this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
-          executionMode: schedulerData.mode,
-          schedulingReason: schedulerData.mode === 'resume-blocked' ? '阻塞已解除' : '恢复已挂起任务',
-          newlyProvidedResources: schedulerData.newlyProvidedResources,
-          recoveryTrigger: schedulerData.mode === 'resume-blocked'
+          executionMode: directive.mode,
+          schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+          newlyProvidedResources: directive.newlyProvidedResources,
+          recoveryTrigger: directive.mode === 'resume-blocked'
             ? this.buildRecoveryTrigger(resumedTask, {
                 kind: 'explicit-task-command',
-                blockedReason: schedulerData.blockedReason,
-                triggerReason: schedulerData.newlyProvidedResources?.length
+                blockedReason: directive.blockedReason,
+                triggerReason: directive.newlyProvidedResources?.length
                   ? '显式解除阻塞并补充材料'
                   : '显式解除阻塞',
                 sourceInput: userInput,
-                newlyProvidedResources: schedulerData.newlyProvidedResources,
+                newlyProvidedResources: directive.newlyProvidedResources,
               })
             : undefined,
         });
@@ -898,47 +861,28 @@ export class MetaclawSession {
     return false;
   }
 
+  private getCommandContext(): CommandContext {
+    return {
+      taskEngine: this.deps.taskEngine,
+      memoryEngine: this.deps.memoryEngine,
+      orchestration: this.deps.orchestration,
+      executor: this.deps.executor,
+      activeExecutions: this.executionRuntime,
+      readServices: this.commandReadServices,
+      currentTaskId: this.getCurrentTaskId(),
+      db: this.deps.db,
+      config: this.deps.config,
+    };
+  }
+
   private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
     const result = await this.executorAdminService.handlePendingWizardInput(userInput);
     this.appendOutput(...result.lines);
     return result.handled;
   }
 
-  private async handleNaturalLanguageInput(
-    userInput: string,
-    options: { skipRiskConfirmation?: boolean } = {},
-  ): Promise<void> {
-    const explicitRemember = parseExplicitRemember(userInput);
-    if (explicitRemember) {
-      const pref = this.deps.memoryEngine.addManual({
-        content: explicitRemember,
-        scope: 'global',
-        type: 'domain',
-      });
-      this.appendOutput(`已记住偏好 #${pref.id}: ${pref.content}`);
-      return;
-    }
-
-    const highConfidencePreferenceCapture = this.memoryCaptureService.captureHighConfidencePreferences(
-      userInput,
-      `session:${this.deps.sessionId}`,
-    );
-    if (highConfidencePreferenceCapture.lines.length > 0) {
-      this.appendOutput(...highConfidencePreferenceCapture.lines);
-      return;
-    }
-
-    const riskAlreadyWarned = !options.skipRiskConfirmation && isRiskyExternalActionInstruction(userInput);
-    if (riskAlreadyWarned) {
-      this.appendOutput(
-        '⚠️ 检测到高风险外部动作。',
-        '→ 当前通道不等待用户确认，已按原请求继续执行；执行器仍需遵守系统安全边界。',
-      );
-    }
-
-    if (await this.handlePlanningKernelDecision(userInput, {
-      suppressSafetyGuardHints: riskAlreadyWarned,
-    })) {
+  private async handleNaturalLanguageInput(userInput: string): Promise<void> {
+    if (await this.handlePlanningKernelDecision(userInput)) {
       return;
     }
 
@@ -948,75 +892,41 @@ export class MetaclawSession {
     );
   }
 
-  private async applySemanticPriority(taskId: string, userInput: string): Promise<void> {
-    const task = this.taskRuntimeService.findTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    const priority = await this.taskSemanticService.classifyPriority(
-      userInput,
-      { priority: parsePriorityHint(userInput), reason: '规则识别语义优先级' },
-    );
-
-    this.taskRuntimeService.updateTask(taskId, {
-      prioritySignals: {
-        ...task.prioritySignals,
-        semanticPriority: priority.priority,
-        semanticPriorityReason: priority.reason,
-      },
-    });
+  private getPlannerTimeoutMs(): number {
+    const configured = Number(process.env.METACLAW_PLANNER_TIMEOUT_MS);
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_PLANNER_TIMEOUT_MS;
   }
 
-  private async classifyMissingSemanticPriorities(tasks: Task[]): Promise<void> {
-    for (const task of tasks) {
-      const current = this.taskRuntimeService.findTask(task.id);
-      if (!current || current.prioritySignals.semanticPriority) {
-        continue;
-      }
-
-      await this.applySemanticPriority(current.id, current.goal || current.title);
-    }
-  }
-
-  private getLlmTimeoutMs(): number {
-    return this.runtimeState.runningTaskId ? BUSY_LLM_TIMEOUT_MS : DEFAULT_LLM_TIMEOUT_MS;
-  }
-
-  private async awaitWithTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-    let timer: NodeJS.Timeout | null = null;
-
+  // Delivers the PlanningAgent's own answer for a direct_reply turn. The planner
+  // runs read-only and already produced the user-visible reply, so we surface it
+  // directly and record the interaction — no second (writable) executor call.
+  // While the reply is being delivered we surface the planner as the active
+  // executor in runtimeState (mirrors the conversation-runtime status main kept
+  // for TUI/Feishu), then restore the scheduler-backed state afterwards.
+  private deliverDirectReply(userInput: string, reply: string): void {
+    this.setDirectReplyRuntimeState('planning-agent');
     try {
-      return await Promise.race([
-        promise,
-        new Promise<T>(resolve => {
-          timer = setTimeout(() => resolve(fallback), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  private async runConversationInput(userInput: string): Promise<void> {
-    this.setConversationRuntimeState(this.deps.executor.name);
-    try {
-      const result = await this.conversationRuntimeService.run({
+      this.appendOutput(reply);
+      this.persistenceService.recordInteraction({
+        taskId: null,
         sessionId: this.deps.sessionId,
         userInput,
+        systemOutput: reply,
+        executorUsed: 'planning-agent',
       });
-      if (result.focus) {
-        this.setFocusContext(result.focus);
-      }
-      this.appendOutput(...result.lines);
+      this.setFocusContext({ kind: 'conversation', taskId: null });
     } finally {
-      this.setConversationRuntimeState(null);
+      this.setDirectReplyRuntimeState(null);
     }
   }
 
-  private setConversationRuntimeState(executorName: string | null): void {
+  // Sets/clears the runtime state for a direct-reply turn. When a durable task
+  // is running we leave its state untouched (refresh only); otherwise we pin the
+  // replying executor name and a descriptive lastEvent so the TUI status bar and
+  // Feishu can show who is answering. Clearing passes null to restore.
+  private setDirectReplyRuntimeState(executorName: string | null): void {
     const schedulerState = this.scheduler.getRuntimeState();
     if (schedulerState.runningTaskId) {
       this.refreshRuntimeState();
@@ -1083,10 +993,6 @@ export class MetaclawSession {
       const task = candidates[0];
       this.appendStartupResumeLine(task.id);
       if (task.status === 'parked') {
-        await this.taskSemanticService.observeResumeIntent(
-          '启动后继续未完成任务',
-          buildRecentTaskSummaries([task]),
-        );
         this.resumeParkedTaskIfStillParked(task.id);
       }
       await this.prepareTaskExecution(task.id, {
@@ -1122,7 +1028,7 @@ export class MetaclawSession {
       byId.set(task.id, task);
     }
 
-    for (const task of filterDurableTasks(this.taskRuntimeService.listTasks())) {
+    for (const task of this.taskRuntimeService.listTasks()) {
       if (['created', 'ready'].includes(task.status) && !byId.has(task.id)) {
         byId.set(task.id, task);
       }
@@ -1160,21 +1066,4 @@ export class MetaclawSession {
         : `→ 启动后恢复待执行任务 #${task.id}`,
     );
   }
-}
-
-export function createDefaultCommandRouter(): CommandRouter {
-  const router = new CommandRouter();
-  router.register(tasksCommand);
-  router.register(taskCommand);
-  router.register(memoryCommand);
-  router.register(profileCommand);
-  router.register(executorCommand);
-  router.register(learningCommand);
-  router.register(dashboardCommand);
-  router.register(attachCommand);
-  router.register(historyCommand);
-  router.register(configCommand);
-  router.register(helpCommand);
-  router.register(exitCommand);
-  return router;
 }

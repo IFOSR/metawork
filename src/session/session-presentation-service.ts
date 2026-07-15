@@ -2,7 +2,7 @@
 // messages so orchestration code can work with domain facts instead of strings.
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
-import type { TaskClearScope, TaskStatusQueryScope } from '../core/task-routing.js';
+import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
 
 export interface GuidanceState {
   scene: string;
@@ -65,6 +65,48 @@ export class SessionPresentationService {
 
   constructor(options: { queueLimit?: number } = {}) {
     this.queueLimit = options.queueLimit ?? 5;
+  }
+
+  formatExecutorFinalResult(input: {
+    executorName: string;
+    taskId: string;
+    subtaskId: string;
+    output: string;
+  }): string {
+    return [
+      `【Executor: ${input.executorName}｜最终结果｜#${input.taskId} / #${input.subtaskId}】`,
+      input.output,
+    ].join('\n');
+  }
+
+  formatExecutorDispatch(executorName: string): string[] {
+    return [
+      `【Executor: ${executorName}｜派发准备】`,
+      `→ Executor: ${executorName} 将处理该任务`,
+    ];
+  }
+
+  formatKernelRejection(reason: string): string {
+    const missingTask = /^task not found: (.+)$/.exec(reason);
+    if (missingTask) {
+      return `未找到任务 #${missingTask[1]}，请检查任务编号或先查看任务状态。`;
+    }
+
+    const activeTask = /单活跃任务限制: 当前活跃顶层任务 #(.+)$/.exec(reason);
+    if (activeTask) {
+      return `当前已有任务 #${activeTask[1]} 正在运行，请等待完成，或先暂停/取消当前任务。`;
+    }
+
+    const completedTask = /^completed task (.+) cannot be resumed without a follow-up plan$/.exec(reason);
+    if (completedTask) {
+      return `任务 #${completedTask[1]} 已结束，无法直接恢复；请创建跟进任务。`;
+    }
+
+    if (reason.includes('no available executor agent class')) {
+      return '当前没有可用的 Executor，请检查配置或注册可执行的 Executor 后重试。';
+    }
+
+    return '当前请求未通过执行校验，请调整请求后重试。';
   }
 
   buildGuidanceState(
@@ -252,7 +294,7 @@ export class SessionPresentationService {
         ...input.blockedTasks.map(task => [
           `  #${task.id} [BLOCKED] ${task.title}`,
           `    → 阻塞原因：${task.blockReason}`,
-          `    → 建议动作：/task ${task.id} unblock，或直接补充材料/说明后让我继续`,
+          `    → 建议动作：/task unblock ${task.id}，或直接补充材料/说明后让我继续`,
         ].join('\n')),
       ].join('\n');
     }
@@ -471,35 +513,35 @@ export class SessionPresentationService {
   }
 
   buildVerificationFailureHint(taskId: string): string {
-    return `→ 任务 #${taskId} 已转为阻塞；请补充缺失的测试证据、产物或验收材料后执行 /task ${taskId} unblock，或直接说“继续完成刚才的任务”`;
+    return `→ 任务 #${taskId} 已转为阻塞；请补充缺失的测试证据、产物或验收材料后执行 /task unblock ${taskId}，或直接说“继续完成刚才的任务”`;
   }
 
   buildRecoverableFailureHint(taskId: string, errorMessage: string): string {
     if (isPermissionFailure(errorMessage)) {
-      return `→ 任务 #${taskId} 已转为阻塞，请先确认相关目录权限或系统授权；确认后执行 /task ${taskId} unblock，或直接说“已授权，继续刚才那个任务”`;
+      return `→ 任务 #${taskId} 已转为阻塞，请先确认相关目录权限或系统授权；确认后执行 /task unblock ${taskId}，或直接说“已授权，继续刚才那个任务”`;
     }
 
     if (/执行器空闲超时|executor idle timeout/i.test(errorMessage)) {
-      return `→ 任务 #${taskId} 已转为阻塞；执行器长时间没有输出或状态变化，可能卡住。请检查执行器是否仍在正常推进，必要时补充信息后执行 /task ${taskId} unblock 继续`;
+      return `→ 任务 #${taskId} 已转为阻塞；执行器长时间没有输出或状态变化，可能卡住。请检查执行器是否仍在正常推进，必要时补充信息后执行 /task unblock ${taskId} 继续`;
     }
 
-    return `→ 任务 #${taskId} 已转为阻塞，排除问题后执行 /task ${taskId} unblock 继续`;
+    return `→ 任务 #${taskId} 已转为阻塞，排除问题后执行 /task unblock ${taskId} 继续`;
   }
 
   private describeBlockedTaskMissingCondition(reason: string, taskId: string): string {
     if (/材料|文件|链接|文档|资料|补充|缺少|等待/i.test(reason)) {
-      return `补充材料/文件/链接后，我会自动恢复；也可执行 /task ${taskId} unblock [材料路径]`;
+      return `补充材料/文件/链接后，我会自动恢复；也可执行 /task unblock ${taskId} [材料路径]`;
     }
 
     if (/授权|权限|permission|authorized|access/i.test(reason)) {
-      return `确认权限/授权后，直接说“已授权，继续任务 ${taskId}”或执行 /task ${taskId} unblock`;
+      return `确认权限/授权后，直接说“已授权，继续任务 ${taskId}”或执行 /task unblock ${taskId}`;
     }
 
     if (isRecoverableExecutorFailure(reason)) {
       return '等待执行器或网络恢复；定时检查会自动重试';
     }
 
-    return `确认阻塞条件已解除后执行 /task ${taskId} unblock`;
+    return `确认阻塞条件已解除后执行 /task unblock ${taskId}`;
   }
 
   private buildResumeGuidanceReasons(task: Task): string[] {

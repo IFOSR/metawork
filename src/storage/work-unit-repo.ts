@@ -98,15 +98,23 @@ export class WorkUnitRepo {
     return rows.map(rowToWorkUnit);
   }
 
+  listByAgentClass(agentClassName: string): WorkUnit[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM work_units
+      WHERE agent_class_name = ?
+      ORDER BY updated_at DESC, id ASC
+    `).all(agentClassName) as WorkUnitRow[];
+    return rows.map(rowToWorkUnit);
+  }
+
   findIdleByKind(kind: AgentClassKind, candidateAgentClasses: string[] = []): WorkUnit | null {
     const rows = this.db.prepare(`
       SELECT * FROM work_units
       WHERE agent_class_kind = ? AND state = 'idle'
       ORDER BY updated_at ASC
     `).all(kind) as WorkUnitRow[];
-    const candidates = candidateAgentClasses.length > 0 ? new Set(candidateAgentClasses) : null;
-    const row = candidates
-      ? rows.find(item => candidates.has(item.agent_class_name))
+    const row = candidateAgentClasses.length > 0
+      ? candidateAgentClasses.map(name => rows.find(item => item.agent_class_name === name)).find(Boolean)
       : rows[0];
     return row ? rowToWorkUnit(row) : null;
   }
@@ -172,6 +180,15 @@ export class WorkUnitRepo {
     const rows = this.db.prepare(
       'SELECT * FROM work_unit_events WHERE work_unit_id = ? ORDER BY created_at ASC'
     ).all(workUnitId) as WorkUnitEventRow[];
+    return rows.map(rowToEvent);
+  }
+
+  listEventsByTask(taskId: string): WorkUnitEvent[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM work_unit_events
+      WHERE task_id = ?
+      ORDER BY created_at ASC
+    `).all(taskId) as WorkUnitEventRow[];
     return rows.map(rowToEvent);
   }
 

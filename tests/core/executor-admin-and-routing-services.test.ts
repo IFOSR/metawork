@@ -48,13 +48,8 @@ describe('agent class admin and planner dispatch services', () => {
       runtimeCheckCommand: 'research-bot --version',
       domains: ['research', 'reporting'],
       capabilities: ['research', 'report_generation'],
-      availability: 'available',
     });
-    expect(new WorkUnitRepo(db).findById('executor-research-bot-1')).toMatchObject({
-      agentClassName: 'research-bot',
-      agentClassKind: 'executor',
-      state: 'idle',
-    });
+    expect(new WorkUnitRepo(db).findAll().filter(unit => unit.agentClassName === 'research-bot')).toEqual([]);
   });
 
   it('infers package runtime from project URL inside the admin service', async () => {

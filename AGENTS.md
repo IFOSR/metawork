@@ -6,8 +6,8 @@ MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, w
 
 Key areas are organized by responsibility:
 
-- `src/core/` is intentionally narrow and contains shared primitives, the LLM bridge, capability classes, and strategy primitives.
-- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), planning context construction, plan types/vocabulary, and plan validation.
+- `src/core/` is intentionally narrow and contains shared primitives, the generic memory/ranking LLM bridge, and capability classes.
+- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), the dedicated Codex planner runner, the read-only Planner MCP server, minimal planning context construction, plan types/vocabulary, and plan validation.
 - `src/kernel/` owns pure `PolicyKernel` authorization for `PlanningAgentPlan` decisions. It validates, rewrites, rejects, or clarifies, but does not write storage or call executors.
 - `src/session/` coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/PolicyKernel wiring, kernel decision application, task admission for deterministic paths, and persistence.
 - `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
@@ -15,7 +15,7 @@ Key areas are organized by responsibility:
 - `src/execution/` owns execution runtime, work graph application/recovery, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
 - `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
 - `src/guidance/`, `src/learning/`, `src/intent/`, and `src/delivery/` own their named domains.
-- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, and events.
+- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, planner run/tool-call audits, and events.
 - `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
 - `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.
 
@@ -43,6 +43,10 @@ Use strict TypeScript and ESM imports. Follow the existing style: two-space inde
 Vitest is the test framework, configured for Node with globals enabled. Name tests `*.test.ts` and place them under the matching `tests/<domain>/` folder, for example `tests/core/task-engine.test.ts`. Coverage is configured for `src/core/**` and `src/storage/**`; changes there should include focused regression tests. Run `npm test` and `npm run lint` before submitting.
 
 **`better-sqlite3` is NOT available in the local (Windows) environment, so any test that touches storage/SQLite cannot run locally — all tests MUST be run in Docker.** Do not waste time retrying the suite on the host machine; use `docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`. Note also that path-extraction tests (e.g. inline resource matching) assume POSIX paths and only pass under the Linux Docker environment, not on Windows. `npm run lint` (`tsc --noEmit`) is the only check that runs reliably on the host.
+
+## Plan Documentation Guidelines
+
+Material implementation plans must be written to `docs/plans/`; do not leave the only copy in a chat or handoff. At the beginning of each plan, record its current status and plan date. When the plan is completed, update that same opening section with the completion date, the behaviors or features actually delivered, validation performed, and the implementation or closing commit(s). Do not report a plan as complete until its plan document has been updated.
 
 ## Commit & Pull Request Guidelines
 

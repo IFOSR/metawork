@@ -45,12 +45,15 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('applyFocusAwareIntentOverride');
   });
 
-  it('does not pre-filter PlanningAgent recent task candidates through durable regex rules', () => {
+  it('uses a minimal PlanningContext without task history or rule hints', () => {
     const source = readSource('src/session/metaclaw-session.ts');
     const planningContextSource = readSource('src/planning/planning-context-builder.ts');
 
     expect(source).not.toContain('const durableTasks = filterDurableTasks(this.taskRuntimeService.listTasks())');
-    expect(planningContextSource).toContain('recentTasks: buildRecentTaskSummaries(this.deps.listTasks())');
+    expect(planningContextSource).not.toContain('recentTasks');
+    expect(planningContextSource).not.toContain('ruleHints');
+    expect(planningContextSource).not.toContain('agentClasses');
+    expect(planningContextSource).toContain('userInput');
   });
 
   it('uses SchedulerBridge for execution completion and blocking state transitions', () => {
@@ -239,10 +242,11 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('handlePendingRecallReview');
   });
 
-  it('delegates normal conversation execution outside the session facade', () => {
+  it('delivers a direct reply without a second executor call for conversation', () => {
     const source = readSource('src/session/metaclaw-session.ts');
 
-    expect(source).toContain('ConversationRuntimeService');
+    expect(source).toContain('deliverDirectReply');
+    expect(source).not.toContain('ConversationRuntimeService');
     expect(source).not.toContain('private async handleConversationInput');
     expect(source).not.toContain('private buildConversationTask');
     expect(source).not.toContain('deps.executor.execute({');

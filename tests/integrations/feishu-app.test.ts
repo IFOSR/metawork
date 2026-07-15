@@ -887,6 +887,47 @@ describe('Feishu app helpers', () => {
     );
   });
 
+  it('keeps Executor final-result blocks when scoping a reply to the created task', async () => {
+    const session = {
+      getSnapshot: vi.fn()
+        .mockReturnValueOnce({ output: ['before'] })
+        .mockReturnValueOnce({
+          output: [
+            'before',
+            '> 创建报告',
+            '任务 #task_final_result 已创建：创建报告',
+            '【Executor: codex-cli｜最终结果｜#task_final_result / #subtask_report】\n完整报告正文',
+            '✓ 任务完成 (1.2s)',
+            '┌─ 任务结果 ─────────────────────────┐',
+            '摘要：任务已完成，详见上方 Executor 最终结果',
+            '└────────────────────────────────────┘',
+          ],
+        }),
+      submit: vi.fn().mockResolvedValue({ exitRequested: false }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFeishuMessageEvent({
+      message: {
+        message_id: 'om_final_result',
+        chat_id: 'oc_chat',
+        message_type: 'text',
+        content: '{"text":"创建报告"}',
+      },
+    }, {
+      session,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith('oc_chat', '完整报告正文');
+  });
+
   it('handles /sethome without submitting a task', async () => {
     const session = {
       getSnapshot: vi.fn().mockReturnValue({ output: [] }),
@@ -1269,11 +1310,7 @@ describe('Feishu app helpers', () => {
       '【MetaClaw｜理解用户请求】',
       '→ MetaClaw：已识别普通对话',
       '→ MetaClaw：执行策略：直接回答，不创建任务',
-      '【MetaClaw｜召回会话上下文】',
-      '→ MetaClaw：正在召回与本次问答相关的最近对话',
-      '→ MetaClaw：已召回 2 条相关会话上下文',
-      '【Executor: codex-cli｜回答生成】',
-      '→ Executor: codex-cli 正在基于当前问题和会话上下文生成回答',
+      '→ MetaClaw：由 PlanningAgent 直接作答',
     );
     notify();
     resolveSubmit();
@@ -2993,34 +3030,54 @@ describe('Feishu app helpers', () => {
     expect(formatFeishuReply(outputLines)).toBe('最终答案第一行\n\n最终答案第二行');
   });
 
-  it('formats direct-reply conversation recall progress for Feishu', () => {
+  it('prefers all new Executor final-result blocks and ignores internal process output', () => {
+    expect(formatFeishuReply([
+      '> 处理两个部分',
+      '内部工具调用',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_a】\n第一部分\n完整结果',
+      'tokens used 88',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_b】\n第二部分',
+      '✓ 任务完成 (2.4s)',
+    ])).toBe('第一部分\n完整结果\n\n第二部分');
+  });
+
+  it('renders the simplified shared session projection without internal planning diagnostics', () => {
+    const outputLines = [
+      '> 汇总一下当前进展',
+      '【MetaClaw｜理解用户请求】',
+      '【MetaClaw｜提取最近历史记录上下文】',
+      '【MetaClaw｜构建执行上下文】',
+      '【MetaClaw｜执行上下文准备完成】',
+      '【Executor: codex-cli｜派发准备】',
+      '→ Executor: codex-cli 将处理该任务',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_a】\n最终答案',
+      '✓ 任务完成 (2.4s)',
+    ];
+
+    const progress = formatFeishuProgressReply(outputLines);
+    expect(progress).toContain('【MetaClaw｜理解用户请求】');
+    expect(progress).toContain('【Executor: codex-cli｜派发准备】');
+    expect(progress).toContain('→ Executor: codex-cli 将处理该任务');
+    expect(progress).not.toContain('PlanningAgent:');
+    expect(progress).not.toContain('PolicyKernel:');
+    expect(progress).not.toContain('Runtime:');
+    expect(formatFeishuReply(outputLines)).toBe('最终答案');
+  });
+
+  it('formats direct-reply conversation progress for Feishu', () => {
     expect(formatFeishuProgressReply([
       '> 这跟刚才那个结论有什么关系？',
       '【MetaClaw｜理解用户请求】',
       '→ MetaClaw：已识别普通对话',
       '→ MetaClaw：执行策略：直接回答，不创建任务',
-      '【Executor: codex-cli｜回答】',
-      '→ Executor: codex-cli 处理本次回答',
-      '【MetaClaw｜召回会话上下文】',
-      '→ MetaClaw：正在召回与本次问答相关的最近对话',
-      '→ MetaClaw：已召回 2 条相关会话上下文',
-      '→ MetaClaw：会把召回上下文注入给 Executor，保持连续问答衔接',
-      '【Executor: codex-cli｜回答生成】',
-      '→ Executor: codex-cli 正在基于当前问题和会话上下文生成回答',
+      '→ MetaClaw：由 PlanningAgent 直接作答',
       '最终回答',
     ])).toBe([
       '**处理步骤**',
       '【MetaClaw｜理解用户请求】',
       '→ MetaClaw：已识别普通对话',
       '→ MetaClaw：执行策略：直接回答，不创建任务',
-      '【Executor: codex-cli｜回答】',
-      '→ Executor: codex-cli 处理本次回答',
-      '【MetaClaw｜召回会话上下文】',
-      '→ MetaClaw：正在召回与本次问答相关的最近对话',
-      '→ MetaClaw：已召回 2 条相关会话上下文',
-      '→ MetaClaw：会把召回上下文注入给 Executor，保持连续问答衔接',
-      '【Executor: codex-cli｜回答生成】',
-      '→ Executor: codex-cli 正在基于当前问题和会话上下文生成回答',
+      '→ MetaClaw：由 PlanningAgent 直接作答',
     ].join('\n'));
   });
 

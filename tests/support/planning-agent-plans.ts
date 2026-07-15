@@ -15,12 +15,12 @@ import type {
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '这是一条测试直接回答' },
     task: {
       binding: 'none',
       taskId: null,
@@ -29,6 +29,7 @@ function basePlan(): PlanningAgentPlan {
       title: null,
       goal: null,
       includeRecentConversationContext: false,
+      priority: null,
     },
     execution: {
       mode: 'none',
@@ -90,6 +91,7 @@ export function workGraphPlan(input: {
   matchedBoundary?: string[];
   includeRecentConversationContext?: boolean;
   expectedOutput?: SubtaskProposal['expectedOutput'];
+  priority?: PlanningAgentPlan['task']['priority'];
   overrides?: Partial<PlanningAgentPlan>;
 } ): PlanningAgentPlan {
   const executor = input.executor ?? 'codex-cli';
@@ -108,6 +110,7 @@ export function workGraphPlan(input: {
       title: input.title ?? input.goal.slice(0, 50),
       goal: input.goal,
       includeRecentConversationContext: input.includeRecentConversationContext ?? false,
+      priority: input.priority ?? { level: 'normal', reason: 'test default priority' },
     },
     execution: {
       ...basePlan().execution,
@@ -146,6 +149,9 @@ export function taskControlPlan(input: {
       taskId: input.taskId ?? null,
       control: input.control,
       scope: input.scope ?? null,
+      priority: input.control === 'resume_task' || input.control === 'recover_blocked'
+        ? { level: 'normal', reason: 'test resume priority' }
+        : null,
     },
     ...input.overrides,
   };

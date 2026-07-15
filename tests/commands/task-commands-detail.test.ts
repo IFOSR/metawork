@@ -185,7 +185,7 @@ describe('taskCommand detail view', () => {
     expect(result.content).toContain('上次做到');
     expect(result.content).toContain('已完成行业格局整理');
     expect(result.content).toContain('恢复操作');
-    expect(result.content).toContain(`/task ${task.id} resume`);
+    expect(result.content).toContain(`/task resume ${task.id}`);
   });
 
   it('splits local files and web links in task detail and shows a clearer blocked recovery hint when links already exist', async () => {

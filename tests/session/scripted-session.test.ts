@@ -49,13 +49,13 @@ describe('scripted session', () => {
 # comment
 
 帮我整理合同风险
-  /tasks done
+  /task list done
 
 `;
 
     expect(parseScriptInputs(script)).toEqual([
       '帮我整理合同风险',
-      '/tasks done',
+      '/task list done',
     ]);
   });
 
@@ -110,8 +110,8 @@ describe('scripted session', () => {
 
     const result = await runScriptedSession({
       inputs: [
-        `/task ${blockedTask.id} unblock /tmp/evidence-v3.pdf`,
-        '/tasks done',
+        `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
+        '/task list done',
       ],
       taskEngine,
       memoryEngine,
@@ -168,7 +168,7 @@ describe('scripted session', () => {
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
-        '/task {{last_task_id}}',
+        '/task show {{last_task_id}}',
       ],
       taskEngine,
       memoryEngine,
@@ -184,12 +184,21 @@ describe('scripted session', () => {
       ),
     });
 
-    expect(result.output.join('\n')).toContain('任务视图');
-    expect(result.output.join('\n')).toContain('最新结果摘要');
-    expect(result.output.join('\n')).toContain('Phoenix 周报结论');
+    const output = result.output.join('\n');
+    expect(output).toContain('任务视图');
+    expect(output).toContain('最新结果摘要');
+    expect(output).toContain('Phoenix 周报结论');
+    expect(output).toContain('【MetaClaw｜理解用户请求】');
+    expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
+    expect(output).not.toContain('已识别可执行任务');
+    expect(output).not.toContain('PlanningAgent:');
+    expect(output).not.toContain('PolicyKernel:');
+    expect(output).not.toContain('Runtime:');
+    expect(output).not.toContain('[Planner: dispatch]');
+    expect(output).not.toContain('Work Unit ');
   });
 
-  it('continues risky external actions without waiting for confirmation in scripted sessions', async () => {
+  it('blocks risky external actions pending a planner-observed confirmation in scripted sessions', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -226,14 +235,18 @@ describe('scripted session', () => {
       contextRecaller,
       llmBridge,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '直接把邮件发给客户' }),
+        workGraphPlan({
+          goal: '直接把邮件发给客户',
+          overrides: {
+            risk: { level: 'high', requiresConfirmation: true, reasons: ['external send'] },
+          },
+        }),
       ),
     });
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(result.output.join('\n')).toContain('⚠️ 检测到高风险外部动作');
-    expect(result.output.join('\n')).toContain('当前通道不等待用户确认');
-    expect(result.output.join('\n')).toContain('已发送给客户');
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(result.output.join('\n')).toContain('该操作存在较高风险，请明确确认是否继续执行。');
+    expect(result.output.join('\n')).not.toContain('risk confirmation required');
   });
 
   it('records file artifacts returned by the executor for workspace write tasks', async () => {
@@ -287,7 +300,7 @@ describe('scripted session', () => {
     expect((doneTask as any)?.artifacts[0]).toBe(resolve(process.cwd(), 'metaclaw-tasks', doneTask!.id, 'artifact-note.md'));
   });
 
-  it('shows artifact summaries instead of raw html output for file-generation tasks', async () => {
+  it('shows file-task Executor final output once and does not repeat it in completion', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -336,8 +349,9 @@ describe('scripted session', () => {
 
     expect(result.output.join('\n')).toContain('✓ 任务完成');
     expect(result.output.join('\n')).toContain('已记录 1 个任务产物');
-    expect(result.output.join('\n')).not.toContain('<!DOCTYPE html>');
-    expect(result.output.join('\n')).not.toContain('<html><body>');
+    expect(result.output.join('\n')).toContain('【Executor: codex-cli｜最终结果｜#');
+    expect(result.output.join('\n').match(/<!DOCTYPE html>/g)).toHaveLength(1);
+    expect(result.output.join('\n').match(/<html><body>/g)).toHaveLength(1);
   });
 
   it('writes a fallback Markdown artifact for Feishu document delivery when executor only returns text', async () => {

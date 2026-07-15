@@ -23,11 +23,9 @@
 # After -SetupSsh, `ssh metaclaw` (host alias) and VS Code Remote-SSH connect
 # with no password. The key lives in .tmp\ssh_key (gitignored).
 #
-# Source edits: the TUI runs the host's dist/index.js (bind-mounted, not baked
-# into the image). -Start, -Rebuild, and the default TUI launch all auto-rebuild
-# dist/ when any src/**/*.ts,tsx file is newer than dist/index.js, so source
-# changes sync in without a manual `npm run build` and without rebuilding the
-# image or container. -Bash does not need dist and skips this check.
+# Source edits require `-Rebuild`: runtime code, Codex homes, skills, and the
+# entrypoint are baked into the image. Only workspace outputs and MetaClaw data
+# use named volumes; host build/config directories are never bind-mounted.
 [CmdletBinding()]
 param(
     [switch]$Start,
@@ -44,10 +42,9 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $repoRoot    = Split-Path -Parent $PSScriptRoot
-# The SSH layer (Dockerfile.ssh) sits on top of the base metaclaw-tui image
-# (built from Dockerfile.test). Build-BaseImage handles the base; Build-Image
-# handles the SSH layer.
-$baseImage   = 'metaclaw-tui'
+# The SSH layer sits on the hermetic runtime image. Build-BaseImage compiles the
+# runtime from source; Build-Image only adds the SSH server.
+$baseImage   = 'metaclaw-runtime'
 $imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
@@ -55,13 +52,8 @@ $sshPort     = 2222
 $sshUser     = 'root'
 $sshPassword = 'metaclaw'   # only used to print a reminder; ssh prompts for it
 $envFile      = Join-Path $repoRoot 'docker\pi.env'
-$tuiConfig    = Join-Path $repoRoot 'docker\tui-config.yaml'
-$piConfigDir  = Join-Path $repoRoot 'docker\pi-config'
-$codexCfgDir  = Join-Path $repoRoot 'docker\codex-config'
-$distDir      = Join-Path $repoRoot 'dist'
-$workspace   = Join-Path $repoRoot '.tmp\tui-workspace'
-$piAgentHome = Join-Path $repoRoot '.tmp\pi-agent-home'
-$entrypoint  = Join-Path $repoRoot 'docker\entrypoint.sh'
+$workspaceVolume = 'metaclaw-shell-workspace'
+$dataVolume = 'metaclaw-shell-data'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the
@@ -180,97 +172,60 @@ function Test-Prereqs {
         Write-Error ("Missing " + $envFile + ". Fill OPENAI_API_KEY in docker\pi.env.")
         exit 1
     }
-    if (-not (Test-Path (Join-Path $distDir 'index.js'))) {
-        Write-Host 'dist\index.js not found, building (npm run build)...' -ForegroundColor Yellow
-        Push-Location $repoRoot
-        try { npm run build } finally { Pop-Location }
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
 }
 
-# Is the built bundle out of date relative to the source? The container bind-
-# mounts the host's dist/ directory (see Start-ShellContainer), so the TUI runs
-# whatever dist/index.js currently exists on the host — NOT a copy baked into
-# the image. Rebuilding the image or container does NOT pick up source changes;
-# only `npm run build` does. This returns $true when any src/**/*.{ts,tsx} file
-# is newer than dist/index.js, so callers can rebuild before launching the TUI.
-function Test-DistStale {
-    $distIndex = Join-Path $distDir 'index.js'
-    if (-not (Test-Path $distIndex)) { return $true }
-    $distMtime = (Get-Item $distIndex).LastWriteTime
-    $srcRoot = Join-Path $repoRoot 'src'
-    if (-not (Test-Path $srcRoot)) { return $false }
-    # Newest source file across all of src/. GetFiles recursion is the main
-    # cost here; src/ is small, so this stays well under a second.
-    $newestSrc = Get-ChildItem -Path $srcRoot -Recurse -File -Include '*.ts','*.tsx' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if (-not $newestSrc) { return $false }
-    return $newestSrc.LastWriteTime -gt $distMtime
-}
-
-# Rebuild dist/ if the source has changed since the last build. Idempotent: if
-# dist is already fresh, this is a no-op (just one cheap mtime scan). Called on
-# every TUI launch so source edits sync into the running container without a
-# manual `npm run build` — and without rebuilding the image or container.
-function Ensure-DistFresh {
-    if (-not (Test-DistStale)) { return }
-    Write-Host 'Source is newer than dist/, rebuilding (npm run build)...' -ForegroundColor Yellow
-    Push-Location $repoRoot
-    try { npm run build } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error 'npm run build failed. Fix the errors above, then rerun.'
-        exit $LASTEXITCODE
-    }
-}
-
-# Build the base image (node + pi + dist) from Dockerfile.test if it's missing.
+# Build the hermetic runtime image when it is missing.
 function Build-BaseImage {
-    if (Test-ImageExists $baseImage) { return }
-    Write-Host ("Base image " + $baseImage + " not found, building from Dockerfile.test ...") -ForegroundColor Yellow
-    docker build -f (Join-Path $repoRoot 'Dockerfile.test') -t $baseImage $repoRoot
+    param([switch]$Force)
+    if (-not $Force -and (Test-ImageExists $baseImage)) { return }
+    Write-Host ("Base image " + $baseImage + " not found, building hermetic runtime image ...") -ForegroundColor Yellow
+    docker build -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # Build the SSH layer on top of the base image.
 function Build-Image {
-    Build-BaseImage
+    param([switch]$Force)
+    Build-BaseImage -Force:$Force
     Write-Host ("Building image " + $imageTag + " (SSH layer) ...") -ForegroundColor Yellow
     docker build -f (Join-Path $repoRoot 'docker\Dockerfile.ssh') -t $imageTag $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function Start-ShellContainer {
-    # The container bind-mounts the host dist/, so make sure it reflects the
-    # current source before the container starts (covers -Start / -Rebuild).
-    Ensure-DistFresh
     # Remove any stale container with the same name (silent if none exists).
     if (Test-ContainerExists) {
         Invoke-DockerQuiet rm -f $container | Out-Null
     }
 
-    New-Item -ItemType Directory -Force -Path $workspace, $piAgentHome, (Split-Path -Parent $knownHosts) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $knownHosts) | Out-Null
 
     Write-Host ("Starting persistent SSH container '" + $container + "' ...") -ForegroundColor Cyan
     # Main process: reseed the pi config template into the writable pi-agent-home
     # (first run), then exec sshd -D so the container stays up as an SSH server.
+    #
+    # --security-opt seccomp=unconfined is granted ONCE here, at container
+    # creation. The read-only planner Codex sandboxes shell execution with
+    # bubblewrap, which needs unprivileged user namespaces; Docker's default
+    # seccomp profile blocks the `unshare` syscall bwrap uses, so without this
+    # the planner's shell tool fails closed ("No permissions to create a new
+    # namespace") and it cannot read repository files. This only loosens THIS
+    # container's syscall filter and is a create-time flag: subsequent
+    # `docker start` (stop/resume) reuse it with no extra grant. Rebuilding the
+    # image and creating a fresh container re-applies it here.
     docker run -d --name $container `
+      --security-opt seccomp=unconfined `
       -p "${sshPort}:22" `
       --entrypoint /bin/bash `
-      -v "${distDir}:/app/dist:ro" `
-      -v "${tuiConfig}:/app/.metaclaw/config.yaml:ro" `
-      -v "${piConfigDir}:/pi-config-template:ro" `
-      -v "${codexCfgDir}:/codex-config-template:ro" `
-      -v "${piAgentHome}:/root/.pi/agent" `
-      -v "${entrypoint}:/entrypoint.sh:ro" `
-      -v "${workspace}:/workspace" `
+      -v "${workspaceVolume}:/workspace" `
+      -v "${dataVolume}:/data" `
       -w /workspace `
       --env-file $envFile `
-      -e METACLAW_HOME=/app/.metaclaw `
+      -e METACLAW_HOME=/data/metaclaw `
       -e PI_SKIP_VERSION_CHECK=1 `
       -e PI_TELEMETRY=0 `
       $imageTag `
-      -c "exec /entrypoint.sh /usr/sbin/sshd -D"
+      -c "exec /opt/metaclaw/entrypoint.sh /usr/sbin/sshd -D"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to start container."
@@ -347,9 +302,6 @@ function Clear-StaleHostKey {
 }
 
 function Enter-Tui {
-    # The container may already be running from an earlier session while the
-    # source changed since; refresh dist/ before launching node /app/dist/index.js.
-    Ensure-DistFresh
     Wait-SshReady
     Clear-StaleHostKey
     Write-Host ("Launching MetaClaw TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
@@ -371,7 +323,7 @@ function Enter-Bash {
 # --- main dispatch ---
 Test-Prereqs
 
-if ($Rebuild) { Build-Image; Start-ShellContainer; return }
+if ($Rebuild) { Build-Image -Force; Start-ShellContainer; return }
 
 if ($Remove) {
     if (Test-ContainerExists) { Invoke-DockerQuiet rm -f $container | Out-Null }

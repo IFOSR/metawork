@@ -368,21 +368,86 @@ describe('App input availability', () => {
 
     await inputCapture.handler?.('/', {});
     await flushUpdates();
-    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Enter 录入');
+    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Tab 补全，Enter 执行');
     expect(app.lastFrame()).toContain('/task');
 
     await inputCapture.handler?.('t', {});
     await inputCapture.handler?.('a', {});
     await flushUpdates();
     expect(app.lastFrame()).toContain('/task');
-    expect(app.lastFrame()).toContain('/tasks');
     expect(app.lastFrame()).not.toContain('/memory');
 
-    await inputCapture.handler?.('', { downArrow: true });
+    await inputCapture.handler?.('', { tab: true });
     await flushUpdates();
-    await inputCapture.handler?.('', { return: true });
+    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).toContain('dashboard');
+    expect(app.lastFrame()).toContain('list');
+
+    app.unmount();
+    app.cleanup();
+  });
+
+  it('renders nested command groups without a slash and applies the same text with Tab', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-command-group-suggestions');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_command_group_suggestions',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'nested command suggestion test' })),
+      })
+    );
+    const typeText = async (text: string) => {
+      for (const char of text) {
+        await inputCapture.handler?.(char, {});
+        await flushUpdates();
+      }
+    };
+
+    await typeText('/exe');
+    expect(app.lastFrame()).toContain('/executor —');
+
+    await inputCapture.handler?.('', { tab: true });
     await flushUpdates();
-    expect(app.lastFrame()).toContain('> /tasks ');
+    expect(app.lastFrame()).toContain('> /executor ');
+
+    await typeText('reg');
+    expect(app.lastFrame()).toContain('register —');
+    expect(app.lastFrame()).not.toContain('/register —');
+
+    await inputCapture.handler?.('', { tab: true });
+    await flushUpdates();
+    expect(app.lastFrame()).toContain('> /executor register ');
+    expect(app.lastFrame()).toContain('wizard —');
+    expect(app.lastFrame()).not.toContain('/wizard —');
+
+    for (let index = 0; index < '/executor register '.length; index += 1) {
+      await inputCapture.handler?.('', { backspace: true });
+      await flushUpdates();
+    }
+    await typeText('/learning ');
+    expect(app.lastFrame()).toContain('patch —');
+    expect(app.lastFrame()).not.toContain('/patch —');
 
     app.unmount();
     app.cleanup();
@@ -452,7 +517,9 @@ describe('App input availability', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('单活跃任务限制');
+    expect(app.lastFrame()).toContain('当前已有任务 #');
+    expect(app.lastFrame()).toContain('正在运行，请等待完成，或先暂停/取消当前任务。');
+    expect(app.lastFrame()).not.toContain('单活跃任务限制');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     firstDeferred.resolve({
@@ -515,13 +582,14 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('status: processing');
     expect(app.lastFrame()).toContain('> 生成一个状态报告');
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
-    expect(app.lastFrame()).toContain('→ MetaClaw：正在分析目标、上下文与可执行边界');
+    expect(app.lastFrame()).not.toContain('正在分析目标、上下文与可执行边界');
+    expect(app.lastFrame()).toContain('status: processing');
 
     resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('→ MetaClaw：已识别可执行任务');
-    expect(app.lastFrame()).toContain('→ MetaClaw：执行策略：创建可追踪任务并派发给 codex-cli');
+    expect(app.lastFrame()).not.toContain('已识别可执行任务');
+    expect(app.lastFrame()).not.toContain('执行策略：');
     expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
     expect(app.lastFrame()).toContain('→ Executor: codex-cli 将处理该任务');
     expect(app.lastFrame()).toContain('status: running codex-cli');
@@ -596,8 +664,8 @@ describe('App input availability', () => {
 
     await typeAndSubmit('紧急优先处理这个任务');
 
-    expect(app.lastFrame()).toContain('单活跃任务限制');
-    expect(app.lastFrame()).toContain(`#${runningTaskId}`);
+    expect(app.lastFrame()).toContain(`当前已有任务 #${runningTaskId} 正在运行，请等待完成，或先暂停/取消当前任务。`);
+    expect(app.lastFrame()).not.toContain('单活跃任务限制');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     firstDeferred.resolve({
@@ -635,10 +703,7 @@ describe('App input availability', () => {
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
     // Second turn: the planner cannot confidently decide and stays conservative
-    // (clarification) instead of queueing keyword-fallback work. (The old
-    // '统一意图裁决置信度不足' clarification narrative is preserved; the former
-    // IntentOrchestrator-internal 'intent orchestrator timeout' string no longer
-    // exists — the planner now owns its own timeout/fallback.)
+    // (clarification) instead of queueing keyword-fallback work.
     const planningAgent = {
       plan: vi.fn()
         .mockResolvedValueOnce(workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }))
@@ -675,7 +740,8 @@ describe('App input availability', () => {
     await new Promise(resolve => setTimeout(resolve, 600));
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('统一意图裁决置信度不足');
+    expect(app.lastFrame()).toContain('我不确定你想继续聊天、创建新任务，还是恢复某个已有任务。');
+    expect(app.lastFrame()).not.toContain('统一意图裁决置信度不足');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     await secondSubmit;
@@ -761,9 +827,9 @@ describe('App input availability', () => {
 
   // Regression: a real terminal delivers Enter as char='\r' alongside
   // key.return. The early raw-submit branch used to fire first and submit the
-  // raw "/", yielding "未知命令: /undefined". With a visible suggestion list,
-  // Enter must complete the selected command instead.
-  it('completes a slash command on a real \\r Enter instead of submitting raw "/"', async () => {
+  // raw "/", yielding "未知命令: /undefined". Enter must not autocomplete or
+  // submit an incomplete command; the editor remains available for Tab completion.
+  it('keeps an incomplete slash command on a real \\r Enter', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-enter-completes');
@@ -802,17 +868,68 @@ describe('App input availability', () => {
 
     await inputCapture.handler?.('/', {});
     await flushUpdates();
-    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Enter 录入');
+    expect(app.lastFrame()).toContain('命令建议 ↑/↓ 选择，Tab 补全，Enter 执行');
 
     await inputCapture.handler?.('\r', { return: true });
     await flushUpdates();
 
-    // The first suggestion (/task) should be completed into the editor, with a
-    // trailing argument separator — not submitted, and no "/undefined" error.
-    expect(app.lastFrame()).toContain('> /task ');
+    expect(app.lastFrame()).toContain('> /');
+    expect(app.lastFrame()).not.toContain('> /task ');
     expect(app.lastFrame()).not.toContain('未知命令');
     expect(app.lastFrame()).not.toContain('/undefined');
     expect(executor.execute).not.toHaveBeenCalled();
+
+    app.unmount();
+    app.cleanup();
+  });
+
+  it('executes a valid slash command on Enter even when the editor cursor is in the middle', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-middle-cursor-submit');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_middle_cursor_submit',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'unused' })),
+      })
+    );
+
+    const task = taskEngine.create({ title: 'middle cursor task', goal: 'verify full command submission' });
+    const resource = 'evidence.md';
+    const command = `/task attach ${task.id} ${resource}`;
+    for (const char of command) {
+      await inputCapture.handler?.(char, {});
+      await flushUpdates();
+    }
+    for (let index = 0; index < resource.length + 1; index += 1) {
+      await inputCapture.handler?.('', { leftArrow: true });
+      await flushUpdates();
+    }
+
+    await inputCapture.handler?.('', { return: true });
+    await flushUpdates();
+
+    expect(taskRepo.findById(task.id)?.resources).toContain(resource);
 
     app.unmount();
     app.cleanup();
@@ -855,11 +972,13 @@ describe('App input availability', () => {
       })
     );
 
-    // Type "/ta" to narrow suggestions to /task and /tasks, then Tab-complete
-    // the highlighted (first) entry.
+    // A typo remains non-executable, but its nearest valid command is offered as
+    // a Tab replacement.
     await inputCapture.handler?.('/', {});
     await inputCapture.handler?.('t', {});
     await inputCapture.handler?.('a', {});
+    await inputCapture.handler?.('k', {});
+    await inputCapture.handler?.('s', {});
     await flushUpdates();
     expect(app.lastFrame()).toContain('/task');
 

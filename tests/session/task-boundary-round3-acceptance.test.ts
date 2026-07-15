@@ -45,36 +45,17 @@ function createConfig(): Config {
   };
 }
 
-function createDeferredExecutorResult() {
-  let resolve!: (value: {
-    success: boolean;
-    output: string;
-    exitCode: number;
-    durationMs: number;
-  }) => void;
-  const promise = new Promise<{
-    success: boolean;
-    output: string;
-    exitCode: number;
-    durationMs: number;
-  }>(res => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 describe('Round 3 task boundary acceptance', () => {
-  it('marks direct replies as active executor work while the executor is still answering', async () => {
+  it('pins planning-agent as the active executor while delivering a direct reply, then restores state', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-direct-reply-runtime-state');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const deferred = createDeferredExecutorResult();
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockImplementation(() => deferred.promise),
+      execute: vi.fn(),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -92,29 +73,43 @@ describe('Round 3 task boundary acceptance', () => {
       sessionId: 'sess_direct_reply_runtime_state',
       contextRecaller,
       llmBridge,
-      planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通问答' })),
+      planningAgent: stubPlanningAgent(directReplyPlan({
+        reason: '普通问答',
+        response: { directReply: '最终回答' },
+      })),
       availableExecutorCommands: new Set(['codex']),
     });
 
     session.initialize();
-    const submitPromise = session.submit('怎么还没有给我结果呀', { awaitAsyncWork: true });
-    await new Promise(resolve => setTimeout(resolve, 0));
 
+    // QC's direct_reply is produced synchronously by the planner, so the
+    // "executor still answering" window is only observable via a snapshot
+    // subscriber: when the reply line is appended, runtimeState must already
+    // pin planning-agent as the active executor.
+    let observedDuringReply: { runningExecutorName: string | null; lastEvent: string | null } | null = null;
+    const unsubscribe = session.subscribe(snapshot => {
+      if (snapshot.output.includes('最终回答') && !observedDuringReply) {
+        observedDuringReply = {
+          runningExecutorName: snapshot.runtimeState.runningExecutorName,
+          lastEvent: snapshot.runtimeState.lastEvent,
+        };
+      }
+    });
+
+    await session.submit('怎么还没有给我结果呀', { awaitAsyncWork: true });
+    unsubscribe();
+
+    // No durable task is created, and the writable executor is never invoked.
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(session.getSnapshot().runtimeState).toEqual(expect.objectContaining({
-      runningTaskId: null,
-      runningExecutorName: 'codex-cli',
-      lastEvent: '普通对话由 codex-cli 生成回答',
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    // While the reply was being delivered, the planner was surfaced as active.
+    expect(observedDuringReply).toEqual(expect.objectContaining({
+      runningExecutorName: 'planning-agent',
+      lastEvent: '普通对话由 planning-agent 生成回答',
     }));
 
-    deferred.resolve({
-      success: true,
-      output: '最终回答',
-      exitCode: 0,
-      durationMs: 100,
-    });
-    await submitPromise;
-
+    // After the turn, the pinned executor name is restored to null.
     expect(session.getSnapshot().runtimeState.runningExecutorName).toBeNull();
     expect(session.getSnapshot().output.join('\n')).toContain('最终回答');
   });
@@ -198,8 +193,11 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('未来随着基座模型的能力越来越强，是否还需要 harness', { awaitAsyncWork: true });
     await session.submit('把刚才那段分析整理成三点结论', { awaitAsyncWork: true });
 
-    expect(executor.execute).toHaveBeenCalledTimes(2);
-    const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    // Turn 1 is a direct_reply (planner answers, no executor). Turn 2 is the
+    // executable follow-up, so exactly one executor dispatch happens — for the
+    // new follow-up task, not the old parked one.
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(secondCall.task.id).not.toBe(parkedTaskId);
     expect(secondCall.task.title).toContain('把刚才那段分析整理成三点结论');
     expect(secondCall.conversationHistory.some((turn: { userInput: string }) => turn.userInput.includes('未来随着基座模型'))).toBe(true);
@@ -207,7 +205,8 @@ describe('Round 3 task boundary acceptance', () => {
 
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).not.toContain(`关联到任务 #${parkedTaskId}`);
-    expect(snapshot).toContain('任务 #');
+    expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
+    expect(snapshot).not.toContain('按当前对话创建跟进任务');
   });
 
   it('handles natural language clearing of blocked tasks without creating a new task', async () => {
@@ -585,7 +584,7 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('检查这个任务生成的 Markdown 文档内容是否完整', { awaitAsyncWork: true });
 
     const snapshot = session.getSnapshot().output.join('\n');
-    expect(snapshot).toContain('任务 #');
+    expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
     expect(snapshot).toContain('检查完成：文档内容完整。');
     expect(taskRepo.findAll()).toHaveLength(1);
     expect(executor.execute).toHaveBeenCalledTimes(1);
@@ -708,7 +707,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(runningTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(doneTask.id)?.status).toBe('done');
-    expect(executor.abort).toHaveBeenCalledTimes(1);
+    expect(executor.abort).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
@@ -773,7 +772,7 @@ describe('Round 3 task boundary acceptance', () => {
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(executionInput.task.id).toBe(parkedTask.id);
     expect(executionInput.executionContextBundle.mode).toBe('resume-parked');
-    expect(session.getSnapshot().output.join('\n')).toContain(`命中已有挂起任务 #${parkedTask.id}`);
+    expect(session.getSnapshot().output.join('\n')).toContain(`Resuming parked task #${parkedTask.id}`);
   });
 
   it('unblocks and resumes an explicitly requested blocked task instead of creating a new task', async () => {

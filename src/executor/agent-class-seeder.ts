@@ -1,5 +1,4 @@
-// Seeds built-in planner and executor AgentClass profiles plus their initial work units.
-import { spawnSync } from 'child_process';
+// Seeds built-in AgentClass profiles without treating command probes as static metadata.
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -7,14 +6,6 @@ import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
 export interface AgentClassSeedInput {
   defaultExecutorName: string;
   availableCommands?: Set<string>;
-}
-
-function commandExists(command: string): boolean {
-  try {
-    return spawnSync('which', [command]).status === 0;
-  } catch {
-    return false;
-  }
 }
 
 function executorClass(defaultExecutorName: string): AgentClass {
@@ -31,7 +22,6 @@ function executorClass(defaultExecutorName: string): AgentClass {
     avoidUseCases: ['task planning ownership', 'long-thread lifecycle management'],
     intentAffinity: { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
     riskLevel: 'medium',
-    availability: 'available',
     historicalSuccess: 0.85,
     harness: 'cli',
     model: null,
@@ -59,12 +49,11 @@ function plannerClass(): AgentClass {
     avoidUseCases: ['direct code implementation', 'artifact mutation'],
     intentAffinity: {},
     riskLevel: 'medium',
-    availability: 'available',
     historicalSuccess: 0.8,
     harness: 'in_process',
     model: null,
-    skills: ['intent-recognition-skill', 'planner-routing-skill'],
-    mcpServers: [],
+    skills: ['metaclaw-planner'],
+    mcpServers: ['metaclaw_planner'],
     plugins: [],
     runtimeCommand: null,
     runtimeArgs: [],
@@ -77,17 +66,10 @@ export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
   input: AgentClassSeedInput,
 ): void {
-  const executor = executorClass(input.defaultExecutorName);
-  const command = input.defaultExecutorName === 'codex-cli' ? 'codex' : input.defaultExecutorName;
-  const available = input.availableCommands
-    ? input.availableCommands.has(command)
-    : commandExists(command);
-
-  agentClassRepo.upsert(plannerClass());
-  agentClassRepo.upsert({
-    ...executor,
-    availability: available ? 'available' : 'unavailable',
-  });
+  if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
+  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
+    agentClassRepo.upsert(executorClass(input.defaultExecutorName));
+  }
 }
 
 export function seedDefaultWorkUnits(
@@ -109,41 +91,4 @@ export function seedDefaultWorkUnits(
       updatedAt: now,
     });
   }
-  if (!workUnitRepo.findById('executor-1')) {
-    workUnitRepo.upsert({
-      id: 'executor-1',
-      agentClassName: input.executorAgentClassName,
-      agentClassKind: 'executor',
-      state: 'idle',
-      claimedTaskId: null,
-      claimedSubtaskId: null,
-      heartbeatAt: now,
-      leaseExpiresAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-}
-
-export function ensureExecutorWorkUnit(
-  workUnitRepo: Pick<WorkUnitRepo, 'upsert' | 'findById'>,
-  agentClassName: string,
-): void {
-  const id = `executor-${agentClassName}-1`;
-  if (workUnitRepo.findById(id)) {
-    return;
-  }
-  const now = new Date().toISOString();
-  workUnitRepo.upsert({
-    id,
-    agentClassName,
-    agentClassKind: 'executor',
-    state: 'idle',
-    claimedTaskId: null,
-    claimedSubtaskId: null,
-    heartbeatAt: now,
-    leaseExpiresAt: null,
-    createdAt: now,
-    updatedAt: now,
-  });
 }

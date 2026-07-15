@@ -41,6 +41,14 @@ export class PolicyKernel {
       return this.reject(plan, `invalid PlanningAgentPlan: ${validation.errors.join('; ')}`);
     }
 
+    if (isStateChangingPlan(plan) && plan.risk.requiresConfirmation) {
+      return this.clarify(
+        plan,
+        `risk confirmation required: ${plan.risk.reasons.join('; ') || plan.risk.level}`,
+        '该操作存在较高风险，请明确确认是否继续执行。',
+      );
+    }
+
     if (STATE_CHANGE_ACTIONS.includes(plan.action) && plan.confidence < 0.45) {
       return {
         id: `kd_${generateInteractionId()}`,
@@ -56,7 +64,7 @@ export class PolicyKernel {
       };
     }
 
-    if (plan.action === 'direct_reply') return this.accept(plan, 'direct reply authorized');
+    if (plan.action === 'direct_reply') return this.authorizeDirectReply(plan);
     if (plan.action === 'clarification') {
       return {
         id: `kd_${generateInteractionId()}`,
@@ -72,6 +80,19 @@ export class PolicyKernel {
     if (plan.action === 'plan_work_graph') return this.decideWorkGraph(plan, snapshot);
 
     return this.reject(plan, `unsupported PlanningAgent action: ${plan.action}`);
+  }
+
+  /**
+   * Authorizes a direct_reply plan without a runtime-state round-trip. A
+   * direct_reply is a read-only conversational answer the planner already
+   * produced and validated; the kernel applies no state-changing authorization
+   * to it (no single-active-task check, no executor rewrite, no risk/confidence
+   * gate). Exposed so the session can short-circuit the full `decide` path for
+   * reply turns while keeping KernelDecision construction owned by the kernel.
+   * Callers MUST pass a planner-validated plan with `action === 'direct_reply'`.
+   */
+  authorizeDirectReply(plan: PlanningAgentPlan): KernelDecision {
+    return this.accept(plan, 'direct reply authorized');
   }
 
   private decideTaskControl(plan: PlanningAgentPlan, snapshot: RuntimeSnapshot): KernelDecision {
@@ -129,7 +150,7 @@ export class PolicyKernel {
       return this.reject(plan, `单活跃任务限制: 当前活跃顶层任务 #${snapshot.runningTask.id}`);
     }
 
-    const rewrite = this.rewriteUnavailableExecutors(plan, snapshot.agentClasses);
+    const rewrite = this.rewriteUnknownExecutors(plan, snapshot.agentClasses);
     if (!rewrite.plan.workGraph?.subtasks.every(subtask => subtask.candidateAgentClasses.length > 0)) {
       return this.reject(rewrite.plan, 'no available executor agent class can satisfy the work graph');
     }
@@ -148,13 +169,13 @@ export class PolicyKernel {
     return this.accept(plan, 'work graph authorized');
   }
 
-  private rewriteUnavailableExecutors(plan: PlanningAgentPlan, agentClasses: AgentClass[]): {
+  private rewriteUnknownExecutors(plan: PlanningAgentPlan, agentClasses: AgentClass[]): {
     plan: PlanningAgentPlan;
     rewritten: boolean;
     reason: string;
   } {
     const availableExecutorNames = new Set(agentClasses
-      .filter(agentClass => agentClass.kind === 'executor' && agentClass.availability === 'available')
+      .filter(agentClass => agentClass.kind === 'executor')
       .map(agentClass => agentClass.name));
     let rewritten = false;
     const subtasks = (plan.workGraph?.subtasks ?? []).map(subtask => {
@@ -190,7 +211,7 @@ export class PolicyKernel {
           : null,
       },
       rewritten,
-      reason: 'rewrote unavailable executor candidates',
+      reason: 'rewrote unknown executor candidates',
     };
   }
 
@@ -216,7 +237,7 @@ export class PolicyKernel {
     };
   }
 
-  private clarify(plan: PlanningAgentPlan, reason: string): KernelDecision {
+  private clarify(plan: PlanningAgentPlan, reason: string, fallbackQuestion?: string): KernelDecision {
     return {
       id: `kd_${generateInteractionId()}`,
       outcome: 'clarify',
@@ -225,6 +246,7 @@ export class PolicyKernel {
       plan: toClarificationPlan(
         plan,
         plan.clarificationQuestion
+          ?? fallbackQuestion
           ?? 'Please clarify which existing task you want to resume or unblock.',
       ),
       rejected: false,
@@ -237,6 +259,11 @@ function actionToRuntimeAction(action: PlanningAction): KernelRuntimeAction {
   return action;
 }
 
+function isStateChangingPlan(plan: PlanningAgentPlan): boolean {
+  if (plan.action === 'plan_work_graph') return true;
+  return plan.action === 'task_control' && plan.task.control !== 'status_query';
+}
+
 /**
  * Reshape a plan into a clarification: strip the work graph and neutralize
  * execution routing so the persisted decision cannot be mistaken for an
@@ -247,6 +274,10 @@ function toClarificationPlan(plan: PlanningAgentPlan, clarificationQuestion: str
     ...plan,
     action: 'clarification',
     clarificationQuestion,
+    task: {
+      ...plan.task,
+      priority: null,
+    },
     workGraph: null,
     execution: {
       ...plan.execution,

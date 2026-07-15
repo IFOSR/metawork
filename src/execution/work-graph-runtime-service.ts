@@ -18,6 +18,7 @@ export class WorkGraphRuntimeService {
   constructor(
     private readonly subtaskRepo: SubtaskRepo,
     taskEventRepo: TaskEventRepo,
+    private readonly defaultExecutorName = 'codex-cli',
   ) {
     this.taskEvents = new TaskEventRecorder(taskEventRepo);
   }
@@ -33,7 +34,8 @@ export class WorkGraphRuntimeService {
       return this.recoverExisting(input.task.id, existing, approvedPlan);
     }
 
-    const workGraph = approvedPlan?.workGraph ?? fallbackWorkGraph(input.task, input.userPrompt, approvedPlan);
+    const workGraph = approvedPlan?.workGraph
+      ?? fallbackWorkGraph(input.task, input.userPrompt, approvedPlan, this.defaultExecutorName);
     const subtasks = this.persistWorkGraph(input.task.id, workGraph);
     return { workGraph, subtasks, recovered: false };
   }
@@ -119,11 +121,22 @@ export class WorkGraphRuntimeService {
  * fallback subtask instead of a fully generic one, so planned executor
  * candidates / expected output are not silently discarded.
  */
-function fallbackWorkGraph(task: Task, userPrompt: string, approvedPlan: PlanningAgentPlan | null): WorkGraphProposal {
+function fallbackWorkGraph(
+  task: Task,
+  userPrompt: string,
+  approvedPlan: PlanningAgentPlan | null,
+  defaultExecutorName: string,
+): WorkGraphProposal {
   const execution = approvedPlan?.execution ?? null;
-  const candidateAgentClasses = execution
+  const plannedCandidates = execution
     ? uniqueStrings([execution.selectedExecutor, ...execution.candidateExecutors])
     : [];
+  // Resume/recovery and deterministic system dispatches intentionally carry
+  // no semantic executor choice. The runtime may use its configured default
+  // AgentClass for that mechanical fallback.
+  const candidateAgentClasses = plannedCandidates.length > 0
+    ? plannedCandidates
+    : [defaultExecutorName];
   const expectedOutput: Subtask['expectedOutput'] = execution?.capabilityClass === 'code_edit' ? 'patch' : 'summary';
   return {
     reason: 'runtime fallback for scheduled task without an approved work graph proposal',

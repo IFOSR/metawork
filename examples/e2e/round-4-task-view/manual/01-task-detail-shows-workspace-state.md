@@ -2,14 +2,14 @@
 
 ## Goal
 
-验证 `/task <id>` 能像任务视图一样展示当前工作区状态。
+验证 `/task show <id>` 能像任务视图一样展示当前工作区状态。
 
 ## Steps
 
 1. 创建一个 durable task
 2. 等任务执行完成或进入 parked / blocked
-3. 运行 `/tasks` 获取任务 id
-4. 运行 `/task <id>`
+3. 运行 `/task list` 获取任务 id
+4. 运行 `/task show <id>`
 
 ## Expected
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { helpCommand } from '../../src/commands/global-commands.js';
+import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 
 describe('global commands', () => {
-  it('includes /history and /config in help output', async () => {
-    const result = await helpCommand.execute([], {} as any);
+  it('includes /task history and /config in help output', async () => {
+    const result = await createDefaultCommandCatalog().execute('/help', {} as any);
 
-    expect(result.content).toContain('/history');
+    expect(result.content).toContain('/task history');
     expect(result.content).toContain('/config');
   });
 });

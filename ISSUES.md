@@ -24,14 +24,13 @@ docker run --rm metaclaw-test bash -lc "npx vitest run"
 
 ## P3 — LlmBridge 内联 per-executor 参数分支(抽象高度)
 
-[`src/core/llm-bridge.ts:116`](src/core/llm-bridge.ts#L116) `buildCommandArgs` 用 `if (this.command === 'pi')` 硬编码 pi 专属 flags,与 codex 分支、默认分支并列。每加一个推理执行器都要改 LlmBridge。
+[`src/core/llm-bridge.ts:83`](src/core/llm-bridge.ts#L83) `buildCommandArgs` 用 `if (this.command === 'pi')` 硬编码 pi 专属 flags,与 codex 分支(`:79`)、默认分支并列。每加一个推理执行器都要改 LlmBridge。
 **处理方向**:下沉到 adapter 层(参照 `buildCodexNonInteractiveArgs`),而非塞进 LLM 桥。
 
 ## P3 — `unique()` 重复实现
 
 `unique()` 在多处各写一遍且 `filter(Boolean)` 行为略有差异(旧路由层的两处已随删除消失,剩余仍在):
 - [`src/execution/execution-runtime.ts`](src/execution/execution-runtime.ts)
-- [`src/core/execution-strategy-planner.ts`](src/core/execution-strategy-planner.ts)
 - `src/execution/work-graph-runtime-service.ts`
 
 **处理方向**:抽到 `src/utils/` 单一实现并替换调用方。

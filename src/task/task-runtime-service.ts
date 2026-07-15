@@ -2,7 +2,7 @@
 import type { TaskRepo } from '../storage/task-repo.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskEngine } from './task-engine.js';
-import { filterDurableTasks, type TaskClearScope } from '../core/task-routing.js';
+import type { TaskClearScope } from './task-control-types.js';
 import type { Dependency, RuntimeState, Task, TaskSnapshot, TaskStatus } from '../core/types.js';
 import { planTaskExecution, type TaskExecutionPlan } from './task-execution-planner.js';
 
@@ -162,7 +162,7 @@ export class TaskRuntimeService {
 
   clearTasks(scope: TaskClearScope, reason = `user cleared ${scope} tasks`): TaskClearResult {
     const statuses = CLEAR_SCOPE_STATUSES[scope];
-    const candidates = filterDurableTasks(this.listTasks())
+    const candidates = this.listTasks()
       .filter(task => statuses.includes(task.status));
     const runningCancelled = candidates.some(task => task.status === 'running');
 

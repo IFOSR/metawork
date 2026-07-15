@@ -21,7 +21,7 @@
 - `round-4-task-view/`
   - 任务视图、结果摘要、恢复提示验收包
 - `round-5-material-loop/`
-  - `/attach` 与阻塞补材料验收包
+  - `/task attach` 与阻塞补材料验收包
 - `round-6-material-content/`
   - 文本材料注入执行上下文验收包
 - `round-7-inline-materials/`

@@ -10,10 +10,8 @@ const taskDomainFiles = [
   'task-execution-planner',
   'task-resume-planner',
   'task-relevance-ranker',
-  'task-semantic-service',
   'task-embedding-service',
   'hybrid-task-retriever',
-  'blocked-task-reconciler',
   'scheduler',
 ];
 

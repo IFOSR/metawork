@@ -1,4 +1,4 @@
-// Tracks executor progress events, deduplicates display lines, and persists skill usage evidence.
+// Tracks executor progress events as verifier evidence without exposing process logs to users.
 import type Database from 'better-sqlite3';
 import type { ExecutorAdapter, ExecutorProgressEvent } from '../executor/adapter.js';
 import { parseSkillUsageEventLine } from '../executor/skill-usage-event-parser.js';
@@ -8,19 +8,15 @@ import { generateInteractionId } from '../utils/id.js';
 export interface ExecutionProgressTracker {
   readonly evidenceText: string[];
   onProgress(event: ExecutorProgressEvent, executor: ExecutorAdapter): void;
-  clear(): void;
 }
 
 export interface ExecutionProgressTrackerInput {
   taskId: string;
   executionId: string;
-  appendOutput: (line: string) => void;
 }
 
-/** Creates per-execution progress trackers that surface executor updates and record structured skill events. */
+/** Creates per-execution trackers that retain only structured, redacted skill evidence. */
 export class ExecutionProgressService {
-  private readonly lastProgressLineByTask = new Map<string, string>();
-
   constructor(private readonly db: Database.Database) {}
 
   createTracker(input: ExecutionProgressTrackerInput): ExecutionProgressTracker {
@@ -30,38 +26,27 @@ export class ExecutionProgressService {
       evidenceText,
       onProgress: (event, executor) => {
         const parsedSkillEvent = event.skillEvent ?? parseSkillUsageEventLine(event.text);
-        const progressText = parsedSkillEvent
-          ? `Skill ${parsedSkillEvent.skillName}: ${parsedSkillEvent.message}`
-          : event.text;
-        const progressLine = `${parsedSkillEvent ? '🛠️' : '·'} Executor: ${executor.name}｜#${input.taskId}｜${progressText}`;
-        if (parsedSkillEvent) {
-          evidenceText.push([
-            `skill_event=${parsedSkillEvent.eventType}`,
-            `skill=${parsedSkillEvent.skillName}`,
-            `message=${parsedSkillEvent.message}`,
-            `payload=${JSON.stringify(parsedSkillEvent.payload)}`,
-          ].join(' '));
-          skillUsageEventRepo.insert({
-            id: `sue_${generateInteractionId()}`,
-            taskId: input.taskId,
-            executionId: input.executionId,
-            executorName: executor.name,
-            skillName: parsedSkillEvent.skillName,
-            skillVersion: parsedSkillEvent.skillVersion,
-            eventType: parsedSkillEvent.eventType,
-            message: parsedSkillEvent.message,
-            payload: parsedSkillEvent.payload,
-            createdAt: new Date().toISOString(),
-          });
-        }
-        if (this.lastProgressLineByTask.get(input.taskId) === progressLine) {
+        if (!parsedSkillEvent) {
           return;
         }
-        this.lastProgressLineByTask.set(input.taskId, progressLine);
-        input.appendOutput(progressLine);
-      },
-      clear: () => {
-        this.lastProgressLineByTask.delete(input.taskId);
+        evidenceText.push([
+          `skill_event=${parsedSkillEvent.eventType}`,
+          `skill=${parsedSkillEvent.skillName}`,
+          `message=${parsedSkillEvent.message}`,
+          `payload=${JSON.stringify(parsedSkillEvent.payload)}`,
+        ].join(' '));
+        skillUsageEventRepo.insert({
+          id: `sue_${generateInteractionId()}`,
+          taskId: input.taskId,
+          executionId: input.executionId,
+          executorName: executor.name,
+          skillName: parsedSkillEvent.skillName,
+          skillVersion: parsedSkillEvent.skillVersion,
+          eventType: parsedSkillEvent.eventType,
+          message: parsedSkillEvent.message,
+          payload: parsedSkillEvent.payload,
+          createdAt: new Date().toISOString(),
+        });
       },
     };
   }

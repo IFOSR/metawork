@@ -16,14 +16,24 @@ describe('execution module architecture boundaries', () => {
   it('keeps execution runtime implementation in src/execution and out of core', () => {
     const runtimeFiles = [
       'execution-runtime',
-      'agentic-loop-controller',
-      'multi-executor-orchestrator',
-      'conversation-runtime-service',
     ];
 
     for (const file of runtimeFiles) {
       expect(coreFileExists(`src/execution/${file}.ts`)).toBe(true);
       expect(coreFileExists(`src/core/${file}.ts`)).toBe(false);
+    }
+  });
+
+  it('does not retain retired strategy and orchestration implementations', () => {
+    const retiredFiles = [
+      'src/core/execution-strategy-planner.ts',
+      'src/core/execution-policy.ts',
+      'src/execution/agentic-loop-controller.ts',
+      'src/execution/multi-executor-orchestrator.ts',
+    ];
+
+    for (const file of retiredFiles) {
+      expect(coreFileExists(file)).toBe(false);
     }
   });
 

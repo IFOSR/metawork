@@ -2,10 +2,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { render, Box, Static, Text, useInput } from 'ink';
 import type { MetaclawSessionDeps, SessionSnapshot } from '../session/metaclaw-session.js';
-import { createDefaultCommandRouter, MetaclawSession } from '../session/metaclaw-session.js';
+import { MetaclawSession } from '../session/metaclaw-session.js';
 import { prepareEditorSubmission } from '../session/session-helpers.js';
 import { startFeishuRuntimeBridge } from '../gateway/feishu-runtime.js';
-import type { CommandHandler } from '../commands/router.js';
+import type { CommandCompletion, CommandSuggestion } from '../commands/catalog.js';
 
 interface AppProps extends MetaclawSessionDeps {}
 
@@ -26,12 +26,6 @@ interface InputHistoryState {
   entries: string[];
   cursor: number | null;
   draft: EditorState;
-}
-
-interface CommandSuggestion {
-  command: string;
-  aliases: string[];
-  description: string;
 }
 
 interface EditorInputKey {
@@ -55,18 +49,6 @@ const COMPOSER_PANEL_BORDER_COLOR = 'whiteBright';
 const PROMPT_COLOR = 'greenBright';
 const SUGGESTION_BORDER_COLOR = 'cyanBright';
 const SUGGESTION_SELECTED_COLOR = 'black';
-const SUGGESTION_LIMIT = 6;
-const COMMAND_SUGGESTION_PRIORITY = new Map([
-  ['/task', 0],
-  ['/tasks', 1],
-  ['/memory', 2],
-  ['/executor', 3],
-  ['/dashboard', 4],
-  ['/help', 5],
-]);
-
-const COMMAND_SUGGESTIONS: CommandSuggestion[] = createCommandSuggestions(createDefaultCommandRouter().listHandlers());
-
 const EMPTY_SNAPSHOT: SessionSnapshot = {
   output: [],
   currentTaskId: null,
@@ -113,6 +95,10 @@ function classifyOutputLine(line: string, inResultBlock: boolean): RenderLine {
 
   if (line.startsWith('> ')) {
     return { kind: 'user', text: line, indent: 0 };
+  }
+
+  if (/^【Executor: .+｜最终结果｜#/.test(line)) {
+    return { kind: 'agent', text: line, indent: 0 };
   }
 
   if (line.startsWith('✓ ')) {
@@ -376,48 +362,11 @@ function resetInputHistoryBrowsing(state: InputHistoryState, editor: EditorState
   };
 }
 
-function createCommandSuggestions(handlers: CommandHandler[]): CommandSuggestion[] {
-  return handlers
-    .map(handler => ({
-      command: `/${handler.name}`,
-      aliases: handler.aliases.map(alias => `/${alias}`),
-      description: handler.description,
-    }))
-    .sort((left, right) => {
-      const leftPriority = COMMAND_SUGGESTION_PRIORITY.get(left.command) ?? 100;
-      const rightPriority = COMMAND_SUGGESTION_PRIORITY.get(right.command) ?? 100;
-      if (leftPriority !== rightPriority) {
-        return leftPriority - rightPriority;
-      }
-      return left.command.localeCompare(right.command);
-    });
-}
-
-function getSlashCommandQuery(editor: EditorState): string | null {
-  if (!editor.text.startsWith('/')) {
-    return null;
-  }
-
-  const beforeCursor = editor.text.slice(0, editor.cursor);
-  if (/\s/.test(beforeCursor)) {
-    return null;
-  }
-
-  return beforeCursor.slice(1).toLowerCase();
-}
-
-function getCommandSuggestions(editor: EditorState): CommandSuggestion[] {
-  const query = getSlashCommandQuery(editor);
-  if (query === null) {
-    return [];
-  }
-
-  return COMMAND_SUGGESTIONS
-    .filter(suggestion =>
-      suggestion.command.slice(1).toLowerCase().startsWith(query)
-      || suggestion.aliases.some(alias => alias.slice(1).toLowerCase().startsWith(query))
-    )
-    .slice(0, SUGGESTION_LIMIT);
+function getCommandSuggestions(
+  _editor: EditorState,
+  completion?: CommandCompletion | null,
+): CommandSuggestion[] {
+  return completion?.suggestions ?? [];
 }
 
 function clampSuggestionIndex(index: number, suggestions: CommandSuggestion[]): number {
@@ -428,9 +377,12 @@ function clampSuggestionIndex(index: number, suggestions: CommandSuggestion[]): 
 }
 
 function applyCommandSuggestion(editor: EditorState, suggestion: CommandSuggestion): EditorState {
-  const suffix = editor.text.slice(editor.cursor);
-  const text = `${suggestion.command} ${suffix.replace(/^\s*/, '')}`;
-  const cursor = suggestion.command.length + 1;
+  const before = editor.text.slice(0, suggestion.replacement.start);
+  const after = editor.text.slice(suggestion.replacement.end);
+  const needsSpace = after.length === 0;
+  const inserted = `${suggestion.replacement.text}${needsSpace ? ' ' : ''}`;
+  const text = `${before}${inserted}${after}`;
+  const cursor = before.length + inserted.length;
   return { text, cursor };
 }
 
@@ -571,11 +523,19 @@ export function App(props: AppProps) {
   const [snapshot, setSnapshot] = useState<SessionSnapshot>(EMPTY_SNAPSHOT);
   const [committedOutput, setCommittedOutput] = useState<string[]>([]);
   const [showWaitingIndicator, setShowWaitingIndicator] = useState(false);
+  const [executionAnimationFrame, setExecutionAnimationFrame] = useState(0);
   const sessionRef = useRef<MetaclawSession | null>(null);
+  const commandCompletionRef = useRef<{
+    text: string;
+    cursor: number;
+    completion: CommandCompletion;
+  } | null>(null);
 
   if (!sessionRef.current) {
     sessionRef.current = new MetaclawSession(props);
   }
+  const commandCompletion = sessionRef.current.completeCommand(editor.text, editor.cursor);
+  commandCompletionRef.current = { text: editor.text, cursor: editor.cursor, completion: commandCompletion };
 
   useEffect(() => {
     const session = sessionRef.current!;
@@ -658,14 +618,37 @@ export function App(props: AppProps) {
     return () => clearInterval(timer);
   }, [snapshot.runtimeState.runningTaskId]);
 
+  useEffect(() => {
+    if (!snapshot.runtimeState.runningTaskId) {
+      setExecutionAnimationFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setExecutionAnimationFrame(previous => (previous + 1) % 3);
+    }, 350);
+    timer.unref?.();
+
+    return () => clearInterval(timer);
+  }, [snapshot.runtimeState.runningTaskId]);
+
   useInput(async (char, key) => {
     const editorState = editorRef.current;
-    const commandSuggestions = getCommandSuggestions(editorState);
-    const hasCommandSuggestions = commandSuggestions.length > 0;
+    const readCommandSuggestions = () => {
+      const cached = commandCompletionRef.current;
+      const completion = cached?.text === editorState.text && cached.cursor === editorState.cursor
+        ? cached.completion
+        : sessionRef.current!.completeCommand(editorState.text, editorState.cursor);
+      return getCommandSuggestions(editorState, completion);
+    };
     lastInputAtRef.current = Date.now();
 
     const commitEditor = async (editorToCommit: EditorState) => {
       if (!editorToCommit.text.trim()) return;
+      if (editorToCommit.text.startsWith('/')) {
+        const completion = sessionRef.current!.completeCommand(editorToCommit.text, editorToCommit.text.length);
+        if (completion.state !== 'executable') return;
+      }
 
       const { userInput, nextEditor } = prepareEditorSubmission(editorToCommit);
       inputHistoryRef.current = recordInputHistory(inputHistoryRef.current, userInput, nextEditor);
@@ -691,11 +674,7 @@ export function App(props: AppProps) {
             .filter(index => index >= 0),
         )
       : -1;
-    // Enter while a slash-command suggestion list is visible completes the
-    // selected command into the editor instead of submitting the raw "/".
-    // Falling through lets the key.return branch handle the completion, so we
-    // only take the early-submit path when there is nothing to complete.
-    if (rawSubmitIndex >= 0 && Number.isFinite(rawSubmitIndex) && !hasCommandSuggestions) {
+    if (rawSubmitIndex >= 0 && Number.isFinite(rawSubmitIndex)) {
       const beforeSubmit = char.slice(0, rawSubmitIndex);
       const next = applyEditorInputChunk(editorState, beforeSubmit);
       inputHistoryRef.current = resetInputHistoryBrowsing(inputHistoryRef.current, next);
@@ -707,7 +686,8 @@ export function App(props: AppProps) {
       return;
     }
 
-    if (key.tab && hasCommandSuggestions) {
+    if (key.tab) {
+      const commandSuggestions = readCommandSuggestions();
       const selected = commandSuggestions[clampSuggestionIndex(suggestionIndexRef.current, commandSuggestions)];
       if (selected) {
         const next = applyCommandSuggestion(editorState, selected);
@@ -731,24 +711,13 @@ export function App(props: AppProps) {
         return;
       }
 
-      if (hasCommandSuggestions) {
-        const selected = commandSuggestions[clampSuggestionIndex(suggestionIndexRef.current, commandSuggestions)];
-        if (selected) {
-          const next = applyCommandSuggestion(editorState, selected);
-          inputHistoryRef.current = resetInputHistoryBrowsing(inputHistoryRef.current, next);
-          suggestionIndexRef.current = 0;
-          setSuggestionIndex(0);
-          editorRef.current = next;
-          setEditor(next);
-        }
-        return;
-      }
-
       await commitEditor(editorState);
       return;
     }
 
     if (key.upArrow) {
+      const commandSuggestions = readCommandSuggestions();
+      const hasCommandSuggestions = commandSuggestions.length > 0;
       if (hasCommandSuggestions) {
         const nextIndex = suggestionIndexRef.current <= 0
           ? commandSuggestions.length - 1
@@ -768,6 +737,8 @@ export function App(props: AppProps) {
     }
 
     if (key.downArrow) {
+      const commandSuggestions = readCommandSuggestions();
+      const hasCommandSuggestions = commandSuggestions.length > 0;
       if (hasCommandSuggestions) {
         const nextIndex = suggestionIndexRef.current >= commandSuggestions.length - 1
           ? 0
@@ -804,7 +775,7 @@ export function App(props: AppProps) {
   const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId || snapshot.runtimeState.runningExecutorName ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
   const latestEvent = `最近事件 ${snapshot.runtimeState.lastEvent ?? '0'}`;
   const waitingHintVisible = shouldShowWaitingHint(snapshot, committedOutput, showWaitingIndicator);
-  const commandSuggestions = getCommandSuggestions(editor);
+  const commandSuggestions = getCommandSuggestions(editor, commandCompletion);
   const activeSuggestionIndex = clampSuggestionIndex(suggestionIndex, commandSuggestions);
 
   return (
@@ -818,7 +789,11 @@ export function App(props: AppProps) {
           )}
         </Static>
         {waitingHintVisible && (
-          <Text color={META_TEXT_COLOR}>  · 正在等待执行器返回...</Text>
+          <Text color={META_TEXT_COLOR}>
+            {'  · Executor: '}
+            {snapshot.runtimeState.runningExecutorName ?? props.executor.name}
+            {' 执行中'}{'.'.repeat(executionAnimationFrame + 1)}
+          </Text>
         )}
       </Box>
       {snapshot.latestGuidance && (
@@ -845,21 +820,26 @@ export function App(props: AppProps) {
         <Text color={META_TEXT_COLOR}>status: {composerStatus}</Text>
         {commandSuggestions.length > 0 && (
           <Box flexDirection="column" borderStyle="round" borderColor={SUGGESTION_BORDER_COLOR} paddingX={1} marginBottom={1}>
-            <Text color={PANEL_HEADER_COLOR} bold>命令建议 ↑/↓ 选择，Enter 录入</Text>
+            <Text color={PANEL_HEADER_COLOR} bold>命令建议 ↑/↓ 选择，Tab 补全，Enter 执行</Text>
             {commandSuggestions.map((suggestion, index) => {
               const selected = index === activeSuggestionIndex;
-              const aliasText = suggestion.aliases.length > 0 ? ` (${suggestion.aliases.join(', ')})` : '';
               return (
                 <Text
-                  key={suggestion.command}
+                  key={`${suggestion.replacement.start}-${suggestion.value}`}
                   color={selected ? SUGGESTION_SELECTED_COLOR : META_TEXT_COLOR}
                   backgroundColor={selected ? SUGGESTION_BORDER_COLOR : undefined}
                 >
-                  {selected ? '› ' : '  '}{suggestion.command}{aliasText} — {suggestion.description}
+                  {selected ? '› ' : '  '}{suggestion.label} — {suggestion.description}
                 </Text>
               );
             })}
           </Box>
+        )}
+        {commandCompletion.hint && commandSuggestions.length === 0 && (
+          <Text color={META_TEXT_COLOR}>{commandCompletion.hint}</Text>
+        )}
+        {commandCompletion.error && (
+          <Text color="yellowBright">{commandCompletion.error}</Text>
         )}
         <Box>
           <Text color={PROMPT_COLOR} bold>&gt; </Text>
@@ -895,10 +875,7 @@ export {
 };
 
 export {
-  parseExplicitRemember,
   prepareEditorSubmission,
-  parsePriorityHint,
-  buildSchedulingReason,
   planTaskExecution,
 } from '../session/session-helpers.js';
 

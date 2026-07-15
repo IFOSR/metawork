@@ -4,6 +4,7 @@ import type { RuntimeState, Task } from '../core/types.js';
 import type { TaskEngine } from './task-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import { TaskRuntimeService, type SchedulableTask, type TaskDispatchResult } from './task-runtime-service.js';
+import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 
 export interface SubmitResult {
   action: 'started' | 'queued' | 'preempted';
@@ -41,6 +42,7 @@ export class SchedulerEngine<TExecutionRequest = unknown> {
       taskRepo: taskEngine.getTaskRepo(),
       orchestration,
     }),
+    private activeExecutions?: ActiveExecutionControl,
   ) {}
 
   async scheduleNext(): Promise<string | null> {
@@ -147,7 +149,9 @@ export class SchedulerEngine<TExecutionRequest = unknown> {
 
     if (currentTask) {
       this.taskRuntimeService.preemptCurrentTask(reason);
-      this.executor.abort();
+      if (this.activeExecutions) this.activeExecutions.abortTask(currentTask.id);
+      else this.executor.abort();
+      this.clearDispatch(currentTask.id, `preempted: ${reason}`);
     }
 
     await this.startTask(taskId, reason, this.buildDispatchContext(taskId));

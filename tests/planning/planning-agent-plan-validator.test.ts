@@ -21,7 +21,13 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
 function workGraphPlan(workGraph: WorkGraphProposal): PlanningAgentPlan {
   return plan({
     action: 'plan_work_graph',
-    task: { ...plan().task, binding: 'new', title: 't', goal: 'g' },
+    task: {
+      ...plan().task,
+      binding: 'new',
+      title: 't',
+      goal: 'g',
+      priority: { level: 'normal', reason: 'test work graph priority' },
+    },
     workGraph,
   });
 }
@@ -29,12 +35,12 @@ function workGraphPlan(workGraph: WorkGraphProposal): PlanningAgentPlan {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 1,
+    schemaVersion: 2,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'chat',
     clarificationQuestion: null,
-    response: { directReply: null },
+    response: { directReply: '你好，我在。' },
     task: {
       binding: 'none',
       taskId: null,
@@ -43,6 +49,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       title: null,
       goal: null,
       includeRecentConversationContext: false,
+      priority: null,
     },
     execution: {
       mode: 'none',
@@ -67,6 +74,17 @@ describe('validatePlanningAgentPlan', () => {
     expect(validatePlanningAgentPlan(plan())).toEqual({ valid: true, errors: [] });
   });
 
+  it.each([
+    { label: 'null', response: { directReply: null } },
+    { label: 'empty', response: { directReply: '' } },
+    { label: 'whitespace', response: { directReply: '   ' } },
+  ])('rejects a direct_reply plan with $label directReply', ({ response }) => {
+    expect(validatePlanningAgentPlan(plan({ response }))).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(['direct_reply requires a non-empty response.directReply']),
+    });
+  });
+
   it('rejects invalid JSON-shaped values and missing work graph fields', () => {
     expect(validatePlanningAgentPlan('not-json')).toMatchObject({ valid: false });
     expect(validatePlanningAgentPlan(plan({ action: 'plan_work_graph' }))).toMatchObject({
@@ -85,6 +103,79 @@ describe('validatePlanningAgentPlan', () => {
     }))).toMatchObject({
       valid: false,
       errors: expect.arrayContaining(['task_control requires a control kind']),
+    });
+  });
+
+  it('rejects v1 plans without a compatibility read path', () => {
+    expect(validatePlanningAgentPlan({ ...plan(), schemaVersion: 1 })).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(['schemaVersion must be 2']),
+    });
+  });
+
+  it.each([
+    { action: 'plan_work_graph' as const, control: 'none' as const },
+    { action: 'task_control' as const, control: 'resume_task' as const },
+    { action: 'task_control' as const, control: 'recover_blocked' as const },
+  ])('requires priority for $action/$control', ({ action, control }) => {
+    const planned = action === 'plan_work_graph'
+      ? workGraphPlan({ reason: 'r', subtasks: [subtask()] })
+      : plan({
+          action,
+          task: { ...plan().task, binding: 'reference', taskId: 'task_1', control },
+        });
+    planned.task.priority = null;
+
+    expect(validatePlanningAgentPlan(planned)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        'schedulable actions require task.priority with valid level and non-empty reason',
+      ]),
+    });
+  });
+
+  it.each([
+    'resume_task' as const,
+    'recover_blocked' as const,
+  ])('requires null scope for %s', (control) => {
+    const task = {
+      ...plan().task,
+      binding: 'reference' as const,
+      taskId: 'task_1',
+      control,
+      priority: { level: 'normal' as const, reason: 'resume selected task' },
+    };
+
+    expect(validatePlanningAgentPlan(plan({
+      action: 'task_control',
+      task: { ...task, scope: 'dashboard' },
+    }))).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([`${control} requires scope null`]),
+    });
+    expect(validatePlanningAgentPlan(plan({
+      action: 'task_control',
+      task: { ...task, scope: null },
+    }))).toEqual({ valid: true, errors: [] });
+  });
+
+  it('requires null priority and a valid scope for non-scheduling task controls', () => {
+    const invalid = plan({
+      action: 'task_control',
+      task: {
+        ...plan().task,
+        control: 'clear_tasks',
+        scope: 'unknown',
+        priority: { level: 'urgent', reason: 'should not be accepted' },
+      },
+    });
+
+    expect(validatePlanningAgentPlan(invalid)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        'clear_tasks requires scope all, parked, or blocked',
+        'task.priority must be null for non-schedulable actions',
+      ]),
     });
   });
 

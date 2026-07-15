@@ -1,17 +1,16 @@
 // Applies PolicyKernel decisions to the live session by recording planning
 // outcomes and translating accepted plans into task control or execution work.
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
-import type { TaskSummary } from '../core/llm-bridge.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { TaskResumePlanner, ResumePlanResult } from '../task/task-resume-planner.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
-import type { TaskSemanticService } from '../task/task-semantic-service.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
-import { filterDurableTasks, type TaskClearScope, type TaskStatusQueryScope } from '../core/task-routing.js';
+import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { KernelDecision } from '../kernel/policy-kernel.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import { buildSchedulingReason, parsePriorityHint, type QueuedExecutionRequest } from './session-helpers.js';
+import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
 
@@ -22,14 +21,13 @@ interface FocusContext {
 
 export interface KernelDecisionApplierCallbacks {
   appendOutput(...lines: string[]): void;
-  appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void;
-  runConversationInput(userInput: string): Promise<void>;
+  appendPlanningClarification(plan: PlanningAgentPlan): void;
+  deliverDirectReply(userInput: string, reply: string): void;
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): Promise<void>;
   refreshRuntimeState(): void;
   setCurrentTaskId(taskId: string | null): void;
   getCurrentTaskId(): string | null;
   setFocusContext(focus: FocusContext | null): void;
-  buildRecentTaskSummaries(tasks: Task[]): TaskSummary[];
   buildRecoveryTrigger(
     task: Task,
     input: {
@@ -46,11 +44,11 @@ export interface KernelDecisionApplierDeps {
   sessionId: string;
   planningDecisionRepo: PlanningDecisionRepo;
   taskRuntimeService: TaskRuntimeService;
-  taskSemanticService: TaskSemanticService;
   taskResumePlanner: TaskResumePlanner;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
   executor: ExecutorAdapter;
+  activeExecutions: ActiveExecutionControl;
   presentation: SessionPresentationService;
   callbacks: KernelDecisionApplierCallbacks;
 }
@@ -66,21 +64,29 @@ export class KernelDecisionApplier {
   }): Promise<boolean> {
     const { userInput, plan, decision } = input;
     this.recordPlanningDecision(userInput, plan, decision);
-    this.deps.callbacks.appendOutput(...this.formatKernelProgress(decision));
 
     if (decision.runtimeAction === 'reject') {
-      this.deps.callbacks.appendOutput(`PolicyKernel rejected request: ${decision.reason}`);
+      this.deps.callbacks.appendOutput(this.deps.presentation.formatKernelRejection(decision.reason));
       this.deps.callbacks.refreshRuntimeState();
       return true;
     }
 
     if (decision.runtimeAction === 'clarification') {
-      this.deps.callbacks.appendPlanningClarification(userInput, decision.plan, decision);
+      this.deps.callbacks.appendPlanningClarification(decision.plan);
       return true;
     }
 
     if (decision.runtimeAction === 'direct_reply') {
-      await this.deps.callbacks.runConversationInput(userInput);
+      const reply = decision.plan.response.directReply?.trim();
+      if (reply) {
+        this.deps.callbacks.deliverDirectReply(userInput, reply);
+      } else {
+        // Fail closed: the validator already requires a non-empty directReply for
+        // direct_reply plans, so an empty reply here means a malformed plan slipped
+        // through. Never silently fall back to a writable executor for a reply turn.
+        this.deps.callbacks.appendOutput('→ MetaClaw：未能生成有效回答，请重试或更明确地说明需求。');
+        this.deps.callbacks.refreshRuntimeState();
+      }
       return true;
     }
 
@@ -122,46 +128,6 @@ export class KernelDecisionApplier {
     });
   }
 
-  private formatKernelProgress(decision: KernelDecision): string[] {
-    if (decision.runtimeAction === 'plan_work_graph') {
-      const selectedExecutor = decision.plan.execution.selectedExecutor ?? decision.plan.execution.candidateExecutors[0] ?? this.deps.executor.name;
-      return [
-        '→ MetaClaw：已识别可执行任务',
-        decision.plan.reason === '按当前对话创建跟进任务' ? `→ ${decision.plan.reason}` : '',
-        `→ MetaClaw：执行策略：创建可追踪任务并派发给 ${selectedExecutor}`,
-        `【Executor: ${selectedExecutor}｜派发准备】`,
-        `→ Executor: ${selectedExecutor} 将处理该任务`,
-        '-> PlanningAgent: proposed executable work graph',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-        `-> Runtime: will dispatch executor candidate ${selectedExecutor}`,
-      ].filter(Boolean);
-    }
-
-    if (decision.runtimeAction === 'task_control') {
-      return [
-        '-> PlanningAgent: recognized task control request',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-      ];
-    }
-
-    if (decision.runtimeAction === 'direct_reply') {
-      return [
-        '→ MetaClaw：已识别普通对话',
-        '→ MetaClaw：执行策略：直接回答，不创建任务',
-        decision.plan.reason === '延续当前对话，不恢复旧任务' ? `→ ${decision.plan.reason}` : '',
-        `【Executor: ${this.deps.executor.name}｜回答】`,
-        `→ Executor: ${this.deps.executor.name} 处理本次回答`,
-        '-> PlanningAgent: recognized conversation turn',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-      ].filter(Boolean);
-    }
-
-    return [
-      `-> PlanningAgent: ${decision.plan.action}`,
-      `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-    ];
-  }
-
   private async applyTaskControlDecision(userInput: string, plan: PlanningAgentPlan, kernelDecisionId: string): Promise<boolean> {
     if (plan.task.binding === 'reference' && plan.task.taskId) {
       const referencedTask = this.deps.taskRuntimeService.findTask(plan.task.taskId);
@@ -179,8 +145,8 @@ export class KernelDecisionApplier {
         scope,
         blockedTasks: this.deps.orchestration.getBlockedTasks(),
         runningTask: this.deps.taskRuntimeService.listTasksByStatus('running')[0] ?? null,
-        activeTasks: filterDurableTasks(this.deps.taskRuntimeService.listActiveTasks()),
-        latestDone: filterDurableTasks(this.deps.taskRuntimeService.listTasksByStatus('done'))[0] ?? null,
+        activeTasks: this.deps.taskRuntimeService.listActiveTasks(),
+        latestDone: this.deps.taskRuntimeService.listTasksByStatus('done')[0] ?? null,
         dashboard: this.deps.orchestration.getDashboard(),
       }));
       this.deps.callbacks.refreshRuntimeState();
@@ -189,8 +155,8 @@ export class KernelDecisionApplier {
     if (plan.task.control === 'clear_tasks') {
       const scope = this.normalizeTaskClearScope(plan.task.scope);
       const result = this.deps.taskRuntimeService.clearTasks(scope);
-      if (result.runningCancelled) {
-        this.deps.executor.abort();
+      for (const task of result.cancelled.filter(candidate => candidate.status === 'running')) {
+        this.deps.activeExecutions.abortTask(task.id);
       }
       if (result.cancelled.some(task => task.id === this.deps.callbacks.getCurrentTaskId())) {
         this.deps.callbacks.setCurrentTaskId(null);
@@ -224,19 +190,16 @@ export class KernelDecisionApplier {
       goal: plan.task.goal ?? inlineResourceContext.normalizedGoal,
       resources: inlineResourceContext.resources,
     });
-    await this.applySemanticPriority(task.id, userInput);
+    this.deps.planningDecisionRepo.bindTask(decision.id, task.id);
+    this.applyPlanPriority(task.id, plan);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
-    this.deps.callbacks.appendOutput(`任务 #${task.id} 已创建：${task.title}`);
-    if (inlineResourceContext.resources.length > 0) {
-      this.deps.callbacks.appendOutput(`→ 已自动关联 ${inlineResourceContext.resources.length} 份材料`);
-    }
 
     await this.deps.callbacks.prepareTaskExecution(task.id, {
       userPrompt: userInput,
       contextTaskId: task.id,
       executionMode: 'fresh',
-      schedulingReason: buildSchedulingReason(userInput),
+      schedulingReason: plan.task.priority?.reason ?? 'PlanningAgent scheduled task',
       includeRecentConversationContext: plan.task.includeRecentConversationContext,
       planningPlan: {
         ...plan,
@@ -279,7 +242,7 @@ export class KernelDecisionApplier {
     }
     if (result.action === 'fork_follow_up') {
       const followUpTask = this.deps.taskRuntimeService.createTask(result.plan.newTaskInput);
-      await this.applySemanticPriority(followUpTask.id, userInput);
+      if (plan) this.applyPlanPriority(followUpTask.id, plan);
       this.deps.callbacks.setCurrentTaskId(followUpTask.id);
       this.deps.callbacks.setFocusContext({ kind: 'task', taskId: followUpTask.id });
       this.deps.callbacks.appendOutput(...result.lines, `-> Created follow-up task #${followUpTask.id}`);
@@ -300,12 +263,6 @@ export class KernelDecisionApplier {
       this.deps.taskRuntimeService.unblockTask(result.task.id);
       this.deps.callbacks.setCurrentTaskId(result.task.id);
       this.deps.callbacks.setFocusContext({ kind: 'task', taskId: result.task.id });
-      if (result.observeResumeIntent) {
-        await this.deps.taskSemanticService.observeResumeIntent(
-          userInput,
-          this.deps.callbacks.buildRecentTaskSummaries([result.task]),
-        );
-      }
       this.deps.callbacks.appendOutput(...result.lines);
       await this.deps.callbacks.prepareTaskExecution(result.task.id, {
         userPrompt: userInput,
@@ -328,15 +285,9 @@ export class KernelDecisionApplier {
 
     this.deps.callbacks.setCurrentTaskId(result.plan.executionTaskId);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: result.plan.executionTaskId });
-    if (result.observeResumeIntent) {
-      await this.deps.taskSemanticService.observeResumeIntent(
-        userInput,
-        this.deps.callbacks.buildRecentTaskSummaries([result.task]),
-      );
-      this.resumeParkedTaskIfStillParked(result.task.id);
-    }
+    if (result.task.status === 'parked') this.resumeParkedTaskIfStillParked(result.task.id);
     this.deps.callbacks.appendOutput(...result.lines);
-    await this.applySemanticPriority(result.plan.executionTaskId, userInput);
+    if (plan) this.applyPlanPriority(result.plan.executionTaskId, plan);
     await this.deps.callbacks.prepareTaskExecution(result.plan.executionTaskId, {
       userPrompt: userInput,
       contextTaskId: result.plan.contextTaskId,
@@ -348,21 +299,15 @@ export class KernelDecisionApplier {
     return true;
   }
 
-  private async applySemanticPriority(taskId: string, userInput: string): Promise<void> {
+  private applyPlanPriority(taskId: string, plan: PlanningAgentPlan): void {
     const task = this.deps.taskRuntimeService.findTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    const priority = await this.deps.taskSemanticService.classifyPriority(
-      userInput,
-      { priority: parsePriorityHint(userInput), reason: 'semantic priority from PlanningAgent input' },
-    );
+    const priority = plan.task.priority;
+    if (!task || !priority) return;
 
     this.deps.taskRuntimeService.updateTask(taskId, {
       prioritySignals: {
         ...task.prioritySignals,
-        semanticPriority: priority.priority,
+        semanticPriority: priority.level,
         semanticPriorityReason: priority.reason,
       },
     });
@@ -376,15 +321,13 @@ export class KernelDecisionApplier {
   }
 
   private normalizeTaskStatusScope(scope: string | null): TaskStatusQueryScope {
-    return scope === 'blocked' || scope === 'running' || scope === 'dashboard'
-      ? scope
-      : 'dashboard';
+    if (scope === 'blocked' || scope === 'running' || scope === 'dashboard') return scope;
+    throw new Error(`Invalid status scope: ${String(scope)}`);
   }
 
   private normalizeTaskClearScope(scope: string | null): TaskClearScope {
-    return scope === 'parked' || scope === 'blocked' || scope === 'all'
-      ? scope
-      : 'all';
+    if (scope === 'parked' || scope === 'blocked' || scope === 'all') return scope;
+    throw new Error(`Invalid clear scope: ${String(scope)}`);
   }
 }
 

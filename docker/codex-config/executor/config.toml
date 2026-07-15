@@ -1,0 +1,17 @@
+model = "gpt-5.6-luna"
+model_provider = "anyint"
+web_search = "disabled"
+
+[features]
+apps = false
+multi_agent = false
+unified_exec = false
+tool_suggest = false
+goals = false
+guardian_approval = false
+
+[model_providers.anyint]
+name = "AnyInt"
+base_url = "__OPENAI_BASE_URL__"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"

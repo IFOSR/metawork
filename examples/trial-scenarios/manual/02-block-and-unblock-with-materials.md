@@ -21,13 +21,13 @@ examples/trial-scenarios/assets/customer-evidence-v3.md
 2. 等任务创建后，执行：
 
 ```text
-/tasks
+/task list
 ```
 
 3. 复制该任务的 `<task_id>`，然后阻塞它：
 
 ```text
-/task <task_id> block 等待客户补充付款记录和聊天证据
+/task block <task_id> 等待客户补充付款记录和聊天证据
 ```
 
 4. 再提交一个新的普通任务，确认系统还能继续工作：
@@ -39,14 +39,14 @@ examples/trial-scenarios/assets/customer-evidence-v3.md
 5. 等拿到新材料后，解除阻塞并附带资源路径：
 
 ```text
-/task <task_id> unblock examples/trial-scenarios/assets/customer-evidence-v3.md
+/task unblock <task_id> examples/trial-scenarios/assets/customer-evidence-v3.md
 ```
 
 6. 再执行：
 
 ```text
-/task <task_id>
-/tasks
+/task show <task_id>
+/task list
 ```
 
 ## 预期

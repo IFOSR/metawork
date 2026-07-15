@@ -10,7 +10,8 @@ import { OpenClawAdapter } from '../executor/openclaw.js';
 import { PiAgentAdapter } from '../executor/pi-agent.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { AgentClass, Config, ExecutionContextBundleV2, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
-import type { SubtaskResult } from './multi-executor-orchestrator.js';
+import type { SubtaskResult } from './execution-aggregator.js';
+import type { ActiveExecutionControl } from './active-execution-control.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -43,6 +44,7 @@ export interface ExecutorRegistryDeps {
   db: Database.Database;
   config: Config;
   defaultExecutor: ExecutorAdapter;
+  defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   adapterRegistry?: ExecutorAdapterRegistry;
 }
@@ -54,6 +56,12 @@ interface AdapterFactoryConfig {
 }
 
 export type AdapterFactory = (config: AdapterFactoryConfig) => ExecutorAdapter;
+
+export interface ExecutorRegistrationInspection {
+  configured: boolean;
+  bindingSource: 'default' | 'injected' | 'built-in' | 'custom-cli' | 'unbound';
+  adapterName: string | null;
+}
 
 function withLongResearchTimeoutDefaults<T extends AdapterFactoryConfig>(config: T): T {
   return {
@@ -86,6 +94,10 @@ export class ExecutorAdapterRegistry {
     return factory ? factory(config) : null;
   }
 
+  has(name: string): boolean {
+    return this.factories.has(name);
+  }
+
   createByCommand(command: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
     const name = this.commandAliases.get(command);
     return name ? this.create(name, config) : null;
@@ -112,7 +124,7 @@ export class ExecutorRegistry {
 
   resolve(name: string): ExecutorAdapter | null {
     if (name === this.deps.defaultExecutor.name) {
-      return this.deps.defaultExecutor;
+      return this.deps.defaultExecutorFactory?.() ?? this.deps.defaultExecutor;
     }
 
     const injected = this.deps.executorFactory?.(name);
@@ -147,6 +159,37 @@ export class ExecutorRegistry {
 
   resolveRequired(name: string): ExecutorAdapter {
     return this.resolve(name) ?? this.deps.defaultExecutor;
+  }
+
+  inspect(name: string): ExecutorRegistrationInspection {
+    if (name === this.deps.defaultExecutor.name) {
+      return { configured: true, bindingSource: 'default', adapterName: name };
+    }
+
+    const injected = this.deps.executorFactory?.(name);
+    if (injected) {
+      return { configured: true, bindingSource: 'injected', adapterName: injected.name };
+    }
+
+    if (this.adapterRegistry.has(name)) {
+      return { configured: true, bindingSource: 'built-in', adapterName: name };
+    }
+
+    const customAgentClass = new AgentClassRepo(this.deps.db).findByName(name);
+    if (customAgentClass?.runtimeCommand) {
+      return { configured: true, bindingSource: 'custom-cli', adapterName: name };
+    }
+
+    return { configured: false, bindingSource: 'unbound', adapterName: null };
+  }
+
+  async isAvailable(name: string): Promise<boolean> {
+    const adapter = this.resolve(name);
+    if (!adapter) {
+      return false;
+    }
+    const available = await adapter.isAvailable();
+    return available !== false;
   }
 }
 
@@ -184,31 +227,81 @@ export interface SubtaskExecutionSpec {
 }
 
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
-export class ExecutionRuntime {
+export class ExecutionRuntime implements ActiveExecutionControl {
+  private readonly activeByTask = new Map<string, Map<string, { workUnitId: string; executor: ExecutorAdapter }>>();
+  private executionTokenSequence = 0;
+
   constructor(
     private readonly registry: ExecutorRegistry,
-    private readonly defaultExecutor: ExecutorAdapter,
+    _defaultExecutor: ExecutorAdapter,
   ) {}
+
+  isExecutorAvailable(name: string): Promise<boolean> {
+    return this.registry.isAvailable(name);
+  }
+
+  inspectExecutorRegistration(name: string): ExecutorRegistrationInspection {
+    return this.registry.inspect(name);
+  }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
     const executor = this.registry.resolveRequired(input.spec.agentClass.name);
-    const result = await this.executeOnce(
-      executor,
-      input.executorInput,
-      input.onProgress,
-    );
-    return this.toExecutionResult({
-      input,
-      executor,
-      result,
-      subtaskResults: [],
-      runtime: {
-        attemptedExecutors: [executor.name],
-        fallbackExecutors: [],
-        fallbackReason: null,
-        fallbackLines: [],
-      },
-    });
+    const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
+    this.registerActive(input.taskId, executionToken, input.spec.workUnit.id, executor);
+    try {
+      const result = await this.executeOnce(
+        executor,
+        input.executorInput,
+        input.onProgress,
+      );
+      return this.toExecutionResult({
+        input,
+        executor,
+        result,
+        subtaskResults: [],
+        runtime: {
+          attemptedExecutors: [executor.name],
+          fallbackExecutors: [],
+          fallbackReason: null,
+          fallbackLines: [],
+        },
+      });
+    } finally {
+      this.clearActive(input.taskId, executionToken);
+    }
+  }
+
+  abortTask(taskId: string): number {
+    const active = this.activeByTask.get(taskId);
+    if (!active || active.size === 0) {
+      return 0;
+    }
+
+    const executors = Array.from(new Set(Array.from(active.values()).map(entry => entry.executor)));
+    for (const executor of executors) {
+      executor.abort();
+    }
+    return active.size;
+  }
+
+  private registerActive(
+    taskId: string,
+    executionToken: string,
+    workUnitId: string,
+    executor: ExecutorAdapter,
+  ): void {
+    const active = this.activeByTask.get(taskId) ?? new Map();
+    active.set(executionToken, { workUnitId, executor });
+    this.activeByTask.set(taskId, active);
+  }
+
+  private clearActive(taskId: string, executionToken: string): void {
+    const active = this.activeByTask.get(taskId);
+    if (!active) return;
+    active.delete(executionToken);
+    if (active.size === 0) {
+      this.activeByTask.delete(taskId);
+    }
   }
 
   private toExecutionResult(input: {
