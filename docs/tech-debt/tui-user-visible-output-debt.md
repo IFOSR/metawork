@@ -359,6 +359,9 @@ docker run --rm metaclaw-test npx vitest run tests/tui/conversation-routing.test
 
 ## TUI-OUTPUT-003：二级命令 group 被错误显示为带斜杠的一级命令
 
+- 状态：已完成（2026-07-15）
+- 完成记录：已按 [TUI-OUTPUT-003 实施计划](../plans/2026-07-15-tui-output-003-command-suggestion-slashes.md) 将斜杠层级规则统一收口到 `CommandCatalog`。根级 group/action 带 `/`，nested group/action 不带 `/`；TUI 直接渲染 Catalog label，与 Tab replacement 保持一致。Docker 全量回归通过。
+
 ### 用户观察
 
 在 TUI command 建议菜单中，同一级候选的斜杠格式不一致：

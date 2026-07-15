@@ -100,6 +100,71 @@ describe('CommandCatalog', () => {
     expect(middle.suggestions[0]?.replacement).toEqual({ start: 6, end: 8, text: 'list' });
   });
 
+  it('uses a slash only for root command-node suggestions', () => {
+    const catalog = createDefaultCommandCatalog();
+
+    const root = catalog.complete({ text: '/', cursor: 1, context });
+    expect(root.suggestions.find(item => item.value === 'executor')).toMatchObject({
+      label: '/executor',
+      replacement: { start: 0, end: 1, text: '/executor' },
+    });
+    expect(root.suggestions.find(item => item.value === 'config')).toMatchObject({
+      label: '/config',
+      replacement: { start: 0, end: 1, text: '/config' },
+    });
+
+    const executor = catalog.complete({ text: '/executor ', cursor: 10, context });
+    expect(executor.suggestions.find(item => item.value === 'register')).toMatchObject({
+      label: 'register',
+      replacement: { start: 10, end: 10, text: 'register' },
+    });
+    expect(executor.suggestions.find(item => item.value === 'show')).toMatchObject({
+      label: 'show',
+      replacement: { start: 10, end: 10, text: 'show' },
+    });
+
+    const learning = catalog.complete({ text: '/learning ', cursor: 10, context });
+    expect(learning.suggestions.find(item => item.value === 'patch')).toMatchObject({
+      label: 'patch',
+      replacement: { start: 10, end: 10, text: 'patch' },
+    });
+
+    const register = catalog.complete({ text: '/executor register ', cursor: 19, context });
+    expect(register.suggestions.find(item => item.value === 'wizard')).toMatchObject({
+      label: 'wizard',
+      replacement: { start: 19, end: 19, text: 'wizard' },
+    });
+
+    const patch = catalog.complete({ text: '/learning patch ', cursor: 16, context });
+    expect(patch.suggestions.find(item => item.value === 'approve')).toMatchObject({
+      label: 'approve',
+      replacement: { start: 16, end: 16, text: 'approve' },
+    });
+
+    for (const completion of [root, executor, learning, register, patch]) {
+      for (const suggestion of completion.suggestions) {
+        if (suggestion.value === suggestion.label.replace(/^\//, '')) {
+          expect(suggestion.label).toBe(suggestion.replacement.text);
+        }
+      }
+    }
+  });
+
+  it('keeps typo replacements at their command-tree level and rejects nested groups as roots', async () => {
+    const catalog = createDefaultCommandCatalog();
+
+    expect(catalog.complete({ text: '/excutor', cursor: 8, context }).suggestions[0]).toMatchObject({
+      label: '/executor',
+      replacement: { start: 0, end: 8, text: '/executor' },
+    });
+    expect(catalog.complete({ text: '/executor regisetr', cursor: 18, context }).suggestions[0]).toMatchObject({
+      label: 'register',
+      replacement: { start: 10, end: 18, text: 'register' },
+    });
+    expect((await catalog.execute('/register', context)).content).toContain('未知命令节点: register');
+    expect((await catalog.execute('/patch', context)).content).toContain('未知命令节点: patch');
+  });
+
   it('offers a nearest command node as a Tab replacement without making the typo executable', () => {
     const catalog = createCatalog();
     const rootTypo = catalog.complete({ text: '/taks', cursor: 5, context });

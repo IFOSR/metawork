@@ -7,7 +7,6 @@ import {
   buildRenderLines,
   createInputHistoryState,
   formatRenderLine,
-  formatCommandSuggestionLabel,
   getLineColor,
   applyCommandSuggestion,
   applyEditorInput,
@@ -129,21 +128,6 @@ describe('prepareEditorSubmission', () => {
     };
     expect(applyCommandSuggestion({ text: '/ta suffix', cursor: 3 }, suggestion))
       .toEqual({ text: '/task suffix', cursor: 5 });
-  });
-
-  it('shows the slash for a root command suggestion without changing nested suggestions', () => {
-    expect(formatCommandSuggestionLabel({
-      value: 'config', label: 'config', description: '查看配置',
-      replacement: { start: 0, end: 1, text: '/config' },
-    })).toBe('/config');
-    expect(formatCommandSuggestionLabel({
-      value: 'task', label: '/task', description: '任务查看与控制',
-      replacement: { start: 0, end: 1, text: '/task' },
-    })).toBe('/task');
-    expect(formatCommandSuggestionLabel({
-      value: 'show', label: 'show', description: '查看任务',
-      replacement: { start: 6, end: 8, text: 'show' },
-    })).toBe('show');
   });
 
   it('edits text at the cursor while preserving spaces and supporting backward and forward deletion', () => {

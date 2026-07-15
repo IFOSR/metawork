@@ -387,6 +387,72 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
+  it('renders nested command groups without a slash and applies the same text with Tab', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-command-group-suggestions');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const llmBridge = {
+      rankInteractions: vi.fn().mockResolvedValue([]),
+    } as unknown as LlmBridge;
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        executor,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_command_group_suggestions',
+        contextRecaller,
+        llmBridge,
+        planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'nested command suggestion test' })),
+      })
+    );
+    const typeText = async (text: string) => {
+      for (const char of text) {
+        await inputCapture.handler?.(char, {});
+        await flushUpdates();
+      }
+    };
+
+    await typeText('/exe');
+    expect(app.lastFrame()).toContain('/executor —');
+
+    await inputCapture.handler?.('', { tab: true });
+    await flushUpdates();
+    expect(app.lastFrame()).toContain('> /executor ');
+
+    await typeText('reg');
+    expect(app.lastFrame()).toContain('register —');
+    expect(app.lastFrame()).not.toContain('/register —');
+
+    await inputCapture.handler?.('', { tab: true });
+    await flushUpdates();
+    expect(app.lastFrame()).toContain('> /executor register ');
+    expect(app.lastFrame()).toContain('wizard —');
+    expect(app.lastFrame()).not.toContain('/wizard —');
+
+    for (let index = 0; index < '/executor register '.length; index += 1) {
+      await inputCapture.handler?.('', { backspace: true });
+      await flushUpdates();
+    }
+    await typeText('/learning ');
+    expect(app.lastFrame()).toContain('patch —');
+    expect(app.lastFrame()).not.toContain('/patch —');
+
+    app.unmount();
+    app.cleanup();
+  });
+
   it('keeps the prompt usable and rejects a new top-level task while another task is running', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);

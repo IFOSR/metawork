@@ -365,14 +365,6 @@ function getCommandSuggestions(
   return completion?.suggestions ?? [];
 }
 
-function formatCommandSuggestionLabel(suggestion: CommandSuggestion): string {
-  const isRootCommand = suggestion.replacement.start === 0
-    && suggestion.replacement.text.startsWith('/');
-  return isRootCommand && !suggestion.label.startsWith('/')
-    ? `/${suggestion.label}`
-    : suggestion.label;
-}
-
 function clampSuggestionIndex(index: number, suggestions: CommandSuggestion[]): number {
   if (suggestions.length === 0) {
     return 0;
@@ -833,7 +825,7 @@ export function App(props: AppProps) {
                   color={selected ? SUGGESTION_SELECTED_COLOR : META_TEXT_COLOR}
                   backgroundColor={selected ? SUGGESTION_BORDER_COLOR : undefined}
                 >
-                  {selected ? '› ' : '  '}{formatCommandSuggestionLabel(suggestion)} — {suggestion.description}
+                  {selected ? '› ' : '  '}{suggestion.label} — {suggestion.description}
                 </Text>
               );
             })}
@@ -865,7 +857,6 @@ export {
   RUNTIME_SUMMARY_COLOR,
   STATUS_PANEL_BORDER_COLOR,
   getCommandSuggestions,
-  formatCommandSuggestionLabel,
   applyCommandSuggestion,
   applyEditorInput,
   applyEditorInputChunk,

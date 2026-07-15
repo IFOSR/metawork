@@ -885,13 +885,14 @@ export class CommandCatalog {
     replacement: { start: number; end: number },
   ): CommandSuggestion {
     const node = nodes.find(candidate => candidate.name === name)!;
+    const text = replacement.start === 0 ? `/${node.name}` : node.name;
     return {
       value: node.name,
-      label: `${node.kind === 'group' ? '/' : ''}${node.name}`,
+      label: text,
       description: node.summary,
       replacement: {
         ...replacement,
-        text: replacement.start === 0 ? `/${node.name}` : node.name,
+        text,
       },
     };
   }
