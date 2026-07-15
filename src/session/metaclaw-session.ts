@@ -717,7 +717,12 @@ export class MetaclawSession {
 
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
     this.appendOutput('【MetaClaw｜理解用户请求】');
-    const context = this.planningContextBuilder.build({ userInput });
+    const initialContext = await this.memoryContextService.preparePlanningInitialContext({
+      sessionId: this.deps.sessionId,
+      userInput,
+      topK: this.deps.config.orchestration.top_k_preferences,
+    });
+    const context = this.planningContextBuilder.build({ userInput, initialContext });
     const plan = await this.planningAgent.plan(context);
     // A direct_reply is a read-only answer the planner already produced and
     // validated. The kernel applies no authorization to it (it would only

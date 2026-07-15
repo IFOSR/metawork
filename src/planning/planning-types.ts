@@ -86,6 +86,21 @@ export interface PlanningAgentPlan {
 
 export interface PlanningContext {
   userInput: string;
+  initialContext: {
+    longTermMemories: Array<{
+      id: string;
+      type: string;
+      scope: string;
+      subject: string | null;
+      content: string;
+    }>;
+    conversationHistory: Array<{
+      userInput: string;
+      systemOutput: string;
+      createdAt: string;
+      source: string;
+    }>;
+  };
   request: {
     sessionId: string;
     source: string;

@@ -134,11 +134,11 @@ Feishu progress is intentionally split into MetaClaw milestones and concrete exe
 
 The conversation/task boundary matters:
 
-- Conversation: answer now, do not create durable state. Conversation turns still use semantic context recall. When a user says "continue" or "you stopped halfway", MetaClaw treats the recent session context as the strongest evidence before considering older similar history.
+- Conversation: answer now, do not create durable state. Before each PlanningAgent turn, MetaClaw injects bounded confirmed global memory and current-session conversation history. Direct replies are persisted as interactions and automatically appear in the recalled context of later turns.
 - Task control: inspect or change existing task state. Good for "what is running?", "resume that task", or "clear blocked tasks".
 - Durable task: create or continue work that needs execution, persistence, artifacts, recovery, scheduling, or later retrieval.
 
-The current direct-reply path is explicit: MetaClaw first shows planning and policy milestones, then recalls recent conversation context, then sends the answer to the selected executor. Feishu and TUI output separate `MetaClaw` milestones from concrete `Executor: <name>` milestones so users can see whether the planning agent, policy kernel, scheduler, work-unit dispatcher, or executor is doing the work. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
+The current direct-reply path is explicit: MetaClaw assembles bounded long-term memory and recent conversation history before planning, the PlanningAgent produces `response.directReply`, and runtime delivers that answer without claiming an executor work unit. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
 
 The Task OS upgrade described in [MetaClaw Task OS Architecture And Strategy Upgrade](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, PlanningAgent work graph proposals, PolicyKernel authorization, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 

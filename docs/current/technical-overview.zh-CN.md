@@ -134,11 +134,11 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。普通问答仍会走语义上下文召回。用户说“继续”或“刚才回答了一半”时，MetaClaw 会把最近会话上下文作为最强证据，再考虑更旧的相似历史。
+- Conversation：即时回答，不创建持久任务。每次调用 PlanningAgent 前，MetaClaw 会注入有数量上限的已确认全局长期记忆和当前 session 的对话历史。direct reply 会持久化为 interaction，并在后续轮次自动进入召回上下文。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 先展示 planning 和 policy 里程碑，再召回最近对话上下文，然后把回答交给选中的 executor。飞书和 TUI 会区分 `MetaClaw` 里程碑和具体 `Executor: <name>` 里程碑，让用户知道当前是 planning agent、policy kernel、调度器、work-unit dispatcher 还是执行器在工作。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
+当前 direct reply 路径是显式的：MetaClaw 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
 
 [MetaClaw Task OS 架构与策略升级方案](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、PlanningAgent work graph proposal、PolicyKernel authorization、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 

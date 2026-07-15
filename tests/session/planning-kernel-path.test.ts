@@ -14,7 +14,7 @@ import { PolicyKernel } from '../../src/kernel/policy-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
+import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
 
 function createConfig(): Config {
   return {
@@ -76,7 +76,10 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   };
 }
 
-function createSession(sessionId: string, planningPlan: PlanningAgentPlan) {
+function createSession(
+  sessionId: string,
+  planningPlan: PlanningAgentPlan | ((context: PlanningContext) => PlanningAgentPlan | Promise<PlanningAgentPlan>),
+) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
@@ -104,11 +107,15 @@ function createSession(sessionId: string, planningPlan: PlanningAgentPlan) {
     sessionId,
     contextRecaller: new ContextRecaller(db),
     llmBridge,
-    planningAgent: { plan: vi.fn().mockResolvedValue(planningPlan) },
+    planningAgent: {
+      plan: typeof planningPlan === 'function'
+        ? vi.fn().mockImplementation(planningPlan)
+        : vi.fn().mockResolvedValue(planningPlan),
+    },
     availableExecutorCommands: new Set(['codex']),
   });
   session.initialize({ resumeStartupTasks: false });
-  return { db, session, taskRepo, executor, planningDecisionRepo: new PlanningDecisionRepo(db), sessionId };
+  return { db, session, taskRepo, memoryEngine, executor, planningDecisionRepo: new PlanningDecisionRepo(db), sessionId };
 }
 
 // Behavior-first coverage of the PlanningAgent -> PolicyKernel -> Runtime seam.
@@ -116,6 +123,129 @@ function createSession(sessionId: string, planningPlan: PlanningAgentPlan) {
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
+  it('uses confirmed global memory in a direct reply', async () => {
+    const harness = createSession('sess_direct_memory', context => plan({
+      action: 'direct_reply',
+      reason: '回答用户的名字',
+      response: {
+        directReply: JSON.stringify(context).includes('我的名字是咸蛋超人')
+          ? '你的名字是咸蛋超人。'
+          : '我不知道你的名字。',
+      },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+      execution: {
+        mode: 'none',
+        complexity: 'simple',
+        selectedExecutor: null,
+        candidateExecutors: [],
+        requiresVerification: false,
+        canModifyFiles: false,
+        requiresExternalGateway: false,
+        capabilityClass: 'conversation',
+        matchedBoundary: [],
+      },
+      workGraph: null,
+    }));
+    harness.memoryEngine.addManual({
+      content: '我的名字是咸蛋超人',
+      scope: 'global',
+      type: 'identity',
+    });
+
+    await harness.session.submit('我的名字是什么？', { awaitAsyncWork: true });
+
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('你的名字是咸蛋超人。');
+  });
+
+  it('does not expose an unconfirmed global memory to a direct reply', async () => {
+    const harness = createSession('sess_direct_pending_memory', context => plan({
+      action: 'direct_reply',
+      reason: '回答是否存在未确认记忆',
+      response: {
+        directReply: JSON.stringify(context).includes('未确认的秘密')
+          ? '泄露了未确认记忆。'
+          : '没有使用未确认记忆。',
+      },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      execution: {
+        mode: 'none', complexity: 'simple', selectedExecutor: null, candidateExecutors: [],
+        requiresVerification: false, canModifyFiles: false, requiresExternalGateway: false,
+        capabilityClass: 'conversation', matchedBoundary: [],
+      },
+      workGraph: null,
+    }));
+    const pending = harness.memoryEngine.addManual({
+      content: '未确认的秘密',
+      scope: 'global',
+      type: 'identity',
+    });
+    harness.memoryEngine.update(pending.id, { status: 'pending' });
+
+    await harness.session.submit('你知道什么？', { awaitAsyncWork: true });
+
+    const output = harness.session.getSnapshot().output.join('\n');
+    expect(output).toContain('没有使用未确认记忆。');
+    expect(output).not.toContain('泄露了未确认记忆。');
+  });
+
+  it('recalls persisted conversation history in the next direct reply', async () => {
+    let turn = 0;
+    const harness = createSession('sess_direct_history', context => {
+      turn += 1;
+      const recalledFirstReply = JSON.stringify(context).includes('暗号是青鸟');
+      return plan({
+        action: 'direct_reply',
+        reason: '延续当前对话',
+        response: {
+          directReply: turn === 1
+            ? '好的，暗号是青鸟。'
+            : recalledFirstReply
+              ? '你刚才的暗号是青鸟。'
+              : '我没有找到刚才的暗号。',
+        },
+        task: {
+          binding: 'none',
+          taskId: null,
+          control: 'none',
+          scope: null,
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+        execution: {
+          mode: 'none',
+          complexity: 'simple',
+          selectedExecutor: null,
+          candidateExecutors: [],
+          requiresVerification: false,
+          canModifyFiles: false,
+          requiresExternalGateway: false,
+          capabilityClass: 'conversation',
+          matchedBoundary: [],
+        },
+        workGraph: null,
+      });
+    });
+
+    await harness.session.submit('请记住，暗号是青鸟。', { awaitAsyncWork: true });
+    await harness.session.submit('我刚才说的暗号是什么？', { awaitAsyncWork: true });
+
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('你刚才的暗号是青鸟。');
+  });
+
   it('authorizes a durable task, dispatches the executor, and audits the decision', async () => {
     const harness = createSession('sess_durable', plan());
 

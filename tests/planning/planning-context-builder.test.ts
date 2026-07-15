@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
 
 describe('PlanningContextBuilder', () => {
-  it('builds only the minimum startup context', () => {
+  it('builds bounded startup context without unrelated runtime facts', () => {
     const context = new PlanningContextBuilder({
       sessionId: 'sess_minimal',
       requestSource: 'interactive',
@@ -11,6 +11,10 @@ describe('PlanningContextBuilder', () => {
 
     expect(context).toEqual({
       userInput: 'continue',
+      initialContext: {
+        longTermMemories: [],
+        conversationHistory: [],
+      },
       request: { sessionId: 'sess_minimal', source: 'interactive' },
       permissions: {
         allowDurableTask: true,

@@ -16,7 +16,7 @@ All natural-language semantic interpretation belongs to the Codex `PlanningAgent
 
 The Planner runs through a dedicated Codex runner with an isolated `CODEX_HOME`, the `metaclaw-planner` core Skill, structured output, JSONL event parsing, an ephemeral read-only sandbox, and a dedicated read-only stdio MCP. Planner and executor Codex configuration and Skills are not shared. Planner failure, timeout, invalid output after one repair, or MCP unavailability fails closed to clarification; no keyword routing fallback is allowed.
 
-Planner startup context contains only user input, trusted session/source identity, authorization boundaries, and timeout. Optional facts are tools, not passive prompt injection. The MCP exposes bounded read-only task search, explicit task context, current-session context, runtime state, and executor catalog/capacity. The host binds the current session; the model cannot request another session. Tool and run audits store only bounded, redacted summaries.
+Planner startup context contains user input, trusted session/source identity, authorization boundaries, timeout, bounded confirmed global memory, and bounded current-session conversation history. The memory and history block is assembled once before each `PlanningAgent.plan()` call; later direct replies are persisted as interactions and become input to subsequent turns. Other optional facts remain tools rather than passive prompt injection. The MCP exposes bounded read-only task search, explicit task context, current-session context, runtime state, and executor catalog/capacity. The host binds the current session; the model cannot request another session. Tool and run audits store only bounded, redacted summaries.
 
 `PolicyKernel` remains deterministic authorization. A state-changing plan with `risk.requiresConfirmation=true` is converted to clarification. A later confirmation or cancellation is a new Planner turn that may inspect recent planning decisions. Invalid status and clear scopes are rejected; unknown clear scope never means `all`. A `direct_reply` plan — a read-only answer the planner already validated — is the one action that skips the `decide()` round-trip: the session calls `PolicyKernel.authorizeDirectReply(plan)`, which the kernel maps to the same `accept` decision `decide()` would return, since no state-changing authorization applies to a reply. The decision is still kernel-constructed and still audited via `planning_decisions`; this is a shortcut through the authorization round-trip, not a bypass of the seam. See ADR-0014.
 
@@ -36,7 +36,11 @@ The runtime image contains compiled application and Planner MCP entry points, th
 
 There is one semantic owner and one authorization seam. New tasks do not consume unrelated history, while continuation/status requests can obtain evidence on demand. Static executor capabilities survive restarts without pretending to be runtime health. Runtime fallback is limited to the ordered AgentClass candidates already approved by the plan, except deterministic system resume paths that use the configured default AgentClass.
 
-The first version intentionally does not add preference, long-term-memory, cross-session, or write-capable Planner tools; parallel execution; preemption; AgentClass versioning; or Planner replanning after probe exhaustion.
+The first version intentionally does not add preference, long-term-memory, cross-session, or write-capable Planner tools. Confirmed global memory and current-session conversation history are instead provided through the bounded startup context; cross-session semantic search remains unavailable. Parallel execution, preemption, AgentClass versioning, and Planner replanning after probe exhaustion also remain out of scope.
+
+## Amendment: bounded initial memory context
+
+As of 2026-07-15, the Planner receives confirmed global memory up to `top_k_preferences` plus bounded current-session conversation history at the start of each planning turn. This closes the `direct_reply` gap where explicit `/memory add` records were persisted but invisible to the agent producing the answer. The block is read-only data, current user input and authorization rules retain precedence, and task execution keeps its existing independent memory review and injection path.
 
 ## Amendment: read-only file access for the Planner
 

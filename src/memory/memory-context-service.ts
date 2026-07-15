@@ -40,6 +40,22 @@ export interface MemoryContextServiceResult {
   resolvedPreferences: ResolvedPreference[];
 }
 
+export interface PlanningInitialContextResult {
+  longTermMemories: Array<{
+    id: string;
+    type: string;
+    scope: string;
+    subject: string | null;
+    content: string;
+  }>;
+  conversationHistory: Array<{
+    userInput: string;
+    systemOutput: string;
+    createdAt: string;
+    source: string;
+  }>;
+}
+
 export interface RecallReviewContextInput {
   taskId: string;
   userPrompt: string;
@@ -65,6 +81,39 @@ export interface MemoryContextServiceDeps {
 
 export class MemoryContextService {
   constructor(private readonly deps: MemoryContextServiceDeps) {}
+
+  async preparePlanningInitialContext(input: {
+    sessionId: string;
+    userInput: string;
+    topK: number;
+  }): Promise<PlanningInitialContextResult> {
+    const longTermMemories = this.deps.memoryEngine
+      .list({ status: 'confirmed' })
+      .filter(preference => preference.scope === 'global')
+      .slice(0, input.topK)
+      .map(preference => ({
+        id: preference.id,
+        type: preference.type,
+        scope: preference.scope,
+        subject: preference.subject,
+        content: preference.content,
+      }));
+    const conversationHistory = await this.deps.contextRecaller.recallAsync({
+      taskId: '',
+      sessionId: input.sessionId,
+      userInput: input.userInput,
+    });
+
+    return {
+      longTermMemories,
+      conversationHistory: conversationHistory.map(turn => ({
+        userInput: turn.userInput,
+        systemOutput: turn.systemOutput,
+        createdAt: turn.createdAt,
+        source: turn.source,
+      })),
+    };
+  }
 
   recallConversationContext(input: { sessionId: string; userInput: string; taskId?: string }): Promise<ConversationTurn[]> {
     return this.deps.contextRecaller.recallAsync({

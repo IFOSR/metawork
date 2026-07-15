@@ -6,6 +6,10 @@ import type { PlanningContext } from '../../src/planning/planning-types.js';
 function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
   return {
     userInput: '实现一个功能',
+    initialContext: {
+      longTermMemories: [],
+      conversationHistory: [],
+    },
     request: { sessionId: 'session_test', source: 'test' },
     permissions: {
       allowDurableTask: true,
@@ -64,6 +68,37 @@ const VALID_PLAN = JSON.stringify({
 });
 
 describe('CodexPlanningAgent', () => {
+  it('includes initial long-term memory and conversation history in the startup prompt', async () => {
+    let receivedPrompt = '';
+    const agent = new CodexPlanningAgent({
+      runner: runner(async prompt => {
+        receivedPrompt = prompt;
+        return VALID_PLAN;
+      }),
+    });
+
+    await agent.plan(context({
+      initialContext: {
+        longTermMemories: [{
+          id: 'pref_name',
+          type: 'identity',
+          scope: 'global',
+          subject: null,
+          content: '我的名字是咸蛋超人',
+        }],
+        conversationHistory: [{
+          userInput: '暗号是什么？',
+          systemOutput: '暗号是青鸟。',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          source: 'session',
+        }],
+      },
+    }));
+
+    expect(receivedPrompt).toContain('我的名字是咸蛋超人');
+    expect(receivedPrompt).toContain('暗号是青鸟。');
+  });
+
   it('parses a v2 tool-grounded work graph and priority', async () => {
     const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
     const result = await agent.plan(context());
