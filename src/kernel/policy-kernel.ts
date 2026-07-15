@@ -42,7 +42,11 @@ export class PolicyKernel {
     }
 
     if (isStateChangingPlan(plan) && plan.risk.requiresConfirmation) {
-      return this.clarify(plan, `risk confirmation required: ${plan.risk.reasons.join('; ') || plan.risk.level}`);
+      return this.clarify(
+        plan,
+        `risk confirmation required: ${plan.risk.reasons.join('; ') || plan.risk.level}`,
+        '该操作存在较高风险，请明确确认是否继续执行。',
+      );
     }
 
     if (STATE_CHANGE_ACTIONS.includes(plan.action) && plan.confidence < 0.45) {
@@ -233,7 +237,7 @@ export class PolicyKernel {
     };
   }
 
-  private clarify(plan: PlanningAgentPlan, reason: string): KernelDecision {
+  private clarify(plan: PlanningAgentPlan, reason: string, fallbackQuestion?: string): KernelDecision {
     return {
       id: `kd_${generateInteractionId()}`,
       outcome: 'clarify',
@@ -242,6 +246,7 @@ export class PolicyKernel {
       plan: toClarificationPlan(
         plan,
         plan.clarificationQuestion
+          ?? fallbackQuestion
           ?? 'Please clarify which existing task you want to resume or unblock.',
       ),
       rejected: false,

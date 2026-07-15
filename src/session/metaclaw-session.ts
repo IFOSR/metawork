@@ -299,7 +299,7 @@ export class MetaclawSession {
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        appendPlanningClarification: (userInput, plan, decision) => this.appendPlanningClarification(userInput, plan, decision),
+        appendPlanningClarification: plan => this.appendPlanningClarification(plan),
         deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
@@ -716,10 +716,7 @@ export class MetaclawSession {
   }
 
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
-    this.appendOutput(
-      '【MetaClaw｜理解用户请求】',
-      '→ MetaClaw：正在分析目标、上下文与可执行边界',
-    );
+    this.appendOutput('【MetaClaw｜理解用户请求】');
     const context = this.planningContextBuilder.build({ userInput });
     const plan = await this.planningAgent.plan(context);
     // A direct_reply is a read-only answer the planner already produced and
@@ -747,11 +744,8 @@ export class MetaclawSession {
     return this.agentClassService.listAgentClasses();
   }
 
-  private appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void {
+  private appendPlanningClarification(plan: PlanningAgentPlan): void {
     this.appendOutput(
-      '→ 统一意图裁决置信度不足，未创建任务、未恢复旧任务、未派发执行器。',
-      `→ 输入：${userInput}`,
-      `→ 判断：${decision.reason || plan.reason || '无可靠语义裁决'} (confidence=${plan.confidence.toFixed(2)})`,
       plan.clarificationQuestion
         || '我不确定你是想继续聊天、创建新任务，还是恢复某个已有任务。请明确说明下一步动作。',
     );

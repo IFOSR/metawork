@@ -2957,6 +2957,29 @@ describe('Feishu app helpers', () => {
     ])).toBe('第一部分\n完整结果\n\n第二部分');
   });
 
+  it('renders the simplified shared session projection without internal planning diagnostics', () => {
+    const outputLines = [
+      '> 汇总一下当前进展',
+      '【MetaClaw｜理解用户请求】',
+      '【MetaClaw｜提取最近历史记录上下文】',
+      '【MetaClaw｜构建执行上下文】',
+      '【MetaClaw｜执行上下文准备完成】',
+      '【Executor: codex-cli｜派发准备】',
+      '→ Executor: codex-cli 将处理该任务',
+      '【Executor: codex-cli｜最终结果｜#task_protocol / #subtask_a】\n最终答案',
+      '✓ 任务完成 (2.4s)',
+    ];
+
+    const progress = formatFeishuProgressReply(outputLines);
+    expect(progress).toContain('【MetaClaw｜理解用户请求】');
+    expect(progress).toContain('【Executor: codex-cli｜派发准备】');
+    expect(progress).toContain('→ Executor: codex-cli 将处理该任务');
+    expect(progress).not.toContain('PlanningAgent:');
+    expect(progress).not.toContain('PolicyKernel:');
+    expect(progress).not.toContain('Runtime:');
+    expect(formatFeishuReply(outputLines)).toBe('最终答案');
+  });
+
   it('formats direct-reply conversation progress for Feishu', () => {
     expect(formatFeishuProgressReply([
       '> 这跟刚才那个结论有什么关系？',

@@ -109,9 +109,7 @@ export class SessionExecutionCoordinator {
 
     this.deps.callbacks.appendOutput(
       '【MetaClaw｜提取最近历史记录上下文】',
-      `→ MetaClaw：正在回忆任务 #${taskId} 的上下文...`,
       '【MetaClaw｜构建执行上下文】',
-      `→ MetaClaw：正在构建任务 #${taskId} 的执行上下文...`,
     );
     const memoryContext = await this.deps.memoryContextService.prepareExecutionContext({
       taskId,
@@ -128,19 +126,7 @@ export class SessionExecutionCoordinator {
     for (const resolvedPreference of executionContextBundle.memoryContext.resolvedPreferences) {
       this.deps.memoryEngine.recordUsage(resolvedPreference.id, taskId);
     }
-    if (executionContextBundle.memoryContext.resolvedPreferences.length > 0) {
-      this.deps.callbacks.appendOutput(
-        `→ 已注入 ${executionContextBundle.memoryContext.resolvedPreferences.length} 条偏好`,
-        ...executionContextBundle.memoryContext.resolvedPreferences.map(preference =>
-          `  - [${preference.scope}] ${preference.content} (confidence=${preference.confidence}, 命中原因：${preference.reason})`
-        ),
-      );
-    }
-    this.deps.callbacks.appendOutput(
-      `→ MetaClaw：已召回 ${conversationHistory.length} 条相关上下文`,
-      '→ MetaClaw：执行上下文已准备完成',
-      '【MetaClaw｜执行上下文准备完成】',
-    );
+    this.deps.callbacks.appendOutput('【MetaClaw｜执行上下文准备完成】');
 
     let progressTracker: ExecutionProgressTracker | null = null;
     let activeClaim: WorkUnitClaim | null = null;
@@ -175,9 +161,7 @@ export class SessionExecutionCoordinator {
       // one still reaches dispatch, skip execution instead of false-succeeding.
       if (request.planningPlan && !EXECUTABLE_PLAN_ACTIONS.has(request.planningPlan.action)) {
         this.deps.scheduler.clearDispatch(taskId, request.planningPlan.reason);
-        await finishExecution([
-          `-> PolicyKernel: no executor dispatch for ${request.planningPlan.action} (${request.planningPlan.reason})`,
-        ], { scheduleNext: false });
+        await finishExecution([], { scheduleNext: false });
         return;
       }
 
@@ -186,12 +170,8 @@ export class SessionExecutionCoordinator {
         userPrompt,
         approvedPlan: request.planningPlan ?? null,
       });
-      this.deps.callbacks.appendOutput(
-        `-> PolicyKernel: authorized ${workGraphResult.subtasks.length} subtask(s)`,
-        `-> Runtime: ${workGraphResult.workGraph.reason}`,
-      );
-
       const executionOutputs: Array<{ subtaskId: string; title: string; output: string }> = [];
+      const announcedExecutorNames = new Set<string>();
       let finalExecution: Awaited<ReturnType<ExecutionRuntime['run']>> | null = null;
       for (;;) {
         this.recoverExpiredWorkUnits();
@@ -228,6 +208,10 @@ export class SessionExecutionCoordinator {
         activeSubtask = readySubtask;
 
         const agentClass = this.findAgentClassForClaim(agentClasses, claim.workUnit.agentClassName);
+        if (!announcedExecutorNames.has(agentClass.name)) {
+          this.deps.callbacks.appendOutput(...this.deps.presentation.formatExecutorDispatch(agentClass.name));
+          announcedExecutorNames.add(agentClass.name);
+        }
         this.deps.subtaskRepo.updateStatus(readySubtask.id, 'running');
         this.recordTaskEvent(taskId, readySubtask.id, 'subtask_claimed', readySubtask.title, {
           workUnitId: claim.workUnit.id,
@@ -236,10 +220,6 @@ export class SessionExecutionCoordinator {
         claim.markRunning();
         this.deps.callbacks.setRunningExecutorName(taskId, agentClass.name);
         this.deps.callbacks.refreshRuntimeState();
-        this.deps.callbacks.appendOutput(
-          `[Planner: dispatch] ${readySubtask.id}`,
-          `-> Work Unit ${claim.workUnit.id} (${agentClass.name}) started`,
-        );
 
         const execution = await this.deps.executionRuntime.run({
           taskId,

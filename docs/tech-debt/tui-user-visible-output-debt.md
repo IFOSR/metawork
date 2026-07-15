@@ -151,6 +151,10 @@ Codex CLI 人类可读 stdout/stderr
 
 ## TUI-OUTPUT-002：MetaClaw 将规划与授权决策过程展示给用户
 
+- 状态：已完成（2026-07-15）
+- 2026-07-15 实机补充：TUI-OUTPUT-001 已验证通过，Executor 过程输出已消失；本项现在可独立聚焦 MetaClaw、PlanningAgent、PolicyKernel、Runtime 与 Work Unit 的用户可见投影。
+- 完成记录：已按 [TUI-OUTPUT-002 实施计划](../plans/2026-07-15-tui-output-002-metaclaw-output-simplification.md) 从共享 session 输出移除内部规划、授权、召回细节与 Work Unit 过程；保留蓝色阶段标题、实际 Executor 选择、Executor 最终结果、绿色完成汇报和可操作的 clarification/reject 提示。Docker 全量回归通过。
+
 ### 用户观察
 
 用户输入简单问候“你好”后，TUI 当前显示：
@@ -186,6 +190,64 @@ Codex CLI 人类可读 stdout/stderr
 - PolicyKernel 的 outcome、reason 和授权细节。
 
 本项首先以 `direct_reply` 普通对话为明确场景。任务创建、任务控制、澄清和拒绝分支也使用相同的内部进度格式化入口，后续设计需要统一区分必要的用户提示与内部诊断，不能简单删除所有错误或澄清信息。
+
+### 2026-07-15 实机截图补充：任务执行场景
+
+在真实 Docker SSH TUI 中，TUI-OUTPUT-001 修复后的输出已经形成清晰的三层结果：
+
+1. 蓝色 Executor 最终结果是正确输出，应完整保留；
+2. 绿色 MetaClaw 任务完成汇报、摘要、下一步和产物路径是正确输出，应保留；
+3. Executor 最终结果之前仍存在大量白色内部决策与调度文本，需要由 TUI-OUTPUT-002 收敛。
+
+#### 应保留的执行前状态
+
+执行前只保留蓝色阶段标题，例如：
+
+```text
+【MetaClaw｜理解用户请求】
+【Executor: codex-cli｜派发准备】
+【MetaClaw｜提取最近历史记录上下文】
+【MetaClaw｜构建执行上下文】
+【MetaClaw｜执行上下文准备完成】
+```
+
+Executor 选择是唯一允许保留的白色说明。它需要让用户知道 MetaClaw 实际选择了哪个执行器：
+
+```text
+→ Executor: codex-cli 将处理该任务
+```
+
+该说明应继续由 Executor 派发准备块承载，不需要同时显示 PlanningAgent、PolicyKernel 或 Runtime 的选择依据。
+
+#### 应隐藏的白色内部输出
+
+除上述 Executor 选择说明外，截图红框中的其他白色文本都不应进入用户可见会话，包括但不限于：
+
+- MetaClaw 的意图分类结果和执行策略，例如“已识别可执行任务”“创建可追踪任务并派发给 codex-cli”；
+- PlanningAgent 的 plan 类型或结果，例如 `proposed executable work graph`；
+- PolicyKernel 的授权结果、数量和原因，例如 `accept (work graph authorized)`、`authorized 1 subtask(s)`；
+- Runtime 的候选路由、复杂度判断和派发说明；
+- 任务创建诊断行；
+- 上下文召回数量、构建进度和执行准备说明；
+- `[Planner: dispatch] ...` 调度行；
+- `Work Unit ... started` 生命周期行。
+
+目标投影示例：
+
+```text
+【MetaClaw｜理解用户请求】
+【Executor: codex-cli｜派发准备】
+→ Executor: codex-cli 将处理该任务
+【MetaClaw｜提取最近历史记录上下文】
+【MetaClaw｜构建执行上下文】
+【MetaClaw｜执行上下文准备完成】
+【Executor: codex-cli｜最终结果｜#task_x / #subtask_y】
+<Executor 最终回答>
+✓ 任务完成 (...)
+<MetaClaw 最终汇报与产物信息>
+```
+
+本次补充只确认截图红框内的决策与调度文本边界。截图中未框选的“不确定记忆”和“任务队列前五”面板是否继续展示，不在这次补充中作新决定。
 
 ### 最小复现与已有测试约束
 

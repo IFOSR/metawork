@@ -184,9 +184,18 @@ describe('scripted session', () => {
       ),
     });
 
-    expect(result.output.join('\n')).toContain('任务视图');
-    expect(result.output.join('\n')).toContain('最新结果摘要');
-    expect(result.output.join('\n')).toContain('Phoenix 周报结论');
+    const output = result.output.join('\n');
+    expect(output).toContain('任务视图');
+    expect(output).toContain('最新结果摘要');
+    expect(output).toContain('Phoenix 周报结论');
+    expect(output).toContain('【MetaClaw｜理解用户请求】');
+    expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
+    expect(output).not.toContain('已识别可执行任务');
+    expect(output).not.toContain('PlanningAgent:');
+    expect(output).not.toContain('PolicyKernel:');
+    expect(output).not.toContain('Runtime:');
+    expect(output).not.toContain('[Planner: dispatch]');
+    expect(output).not.toContain('Work Unit ');
   });
 
   it('blocks risky external actions pending a planner-observed confirmation in scripted sessions', async () => {
@@ -236,7 +245,8 @@ describe('scripted session', () => {
     });
 
     expect(executor.execute).not.toHaveBeenCalled();
-    expect(result.output.join('\n')).toContain('risk confirmation required');
+    expect(result.output.join('\n')).toContain('该操作存在较高风险，请明确确认是否继续执行。');
+    expect(result.output.join('\n')).not.toContain('risk confirmation required');
   });
 
   it('records file artifacts returned by the executor for workspace write tasks', async () => {

@@ -21,7 +21,7 @@ interface FocusContext {
 
 export interface KernelDecisionApplierCallbacks {
   appendOutput(...lines: string[]): void;
-  appendPlanningClarification(userInput: string, plan: PlanningAgentPlan, decision: KernelDecision): void;
+  appendPlanningClarification(plan: PlanningAgentPlan): void;
   deliverDirectReply(userInput: string, reply: string): void;
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): Promise<void>;
   refreshRuntimeState(): void;
@@ -64,16 +64,15 @@ export class KernelDecisionApplier {
   }): Promise<boolean> {
     const { userInput, plan, decision } = input;
     this.recordPlanningDecision(userInput, plan, decision);
-    this.deps.callbacks.appendOutput(...this.formatKernelProgress(decision));
 
     if (decision.runtimeAction === 'reject') {
-      this.deps.callbacks.appendOutput(`PolicyKernel rejected request: ${decision.reason}`);
+      this.deps.callbacks.appendOutput(this.deps.presentation.formatKernelRejection(decision.reason));
       this.deps.callbacks.refreshRuntimeState();
       return true;
     }
 
     if (decision.runtimeAction === 'clarification') {
-      this.deps.callbacks.appendPlanningClarification(userInput, decision.plan, decision);
+      this.deps.callbacks.appendPlanningClarification(decision.plan);
       return true;
     }
 
@@ -127,45 +126,6 @@ export class KernelDecisionApplier {
       reason: decision.reason,
       createdAt: new Date().toISOString(),
     });
-  }
-
-  private formatKernelProgress(decision: KernelDecision): string[] {
-    if (decision.runtimeAction === 'plan_work_graph') {
-      const selectedExecutor = decision.plan.execution.selectedExecutor ?? decision.plan.execution.candidateExecutors[0] ?? this.deps.executor.name;
-      return [
-        '→ MetaClaw：已识别可执行任务',
-        decision.plan.reason === '按当前对话创建跟进任务' ? `→ ${decision.plan.reason}` : '',
-        `→ MetaClaw：执行策略：创建可追踪任务并派发给 ${selectedExecutor}`,
-        `【Executor: ${selectedExecutor}｜派发准备】`,
-        `→ Executor: ${selectedExecutor} 将处理该任务`,
-        '-> PlanningAgent: proposed executable work graph',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-        `-> Runtime: will dispatch executor candidate ${selectedExecutor}`,
-      ].filter(Boolean);
-    }
-
-    if (decision.runtimeAction === 'task_control') {
-      return [
-        '-> PlanningAgent: recognized task control request',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-      ];
-    }
-
-    if (decision.runtimeAction === 'direct_reply') {
-      return [
-        '→ MetaClaw：已识别普通对话',
-        '→ MetaClaw：执行策略：直接回答，不创建任务',
-        decision.plan.reason === '延续当前对话，不恢复旧任务' ? `→ ${decision.plan.reason}` : '',
-        '→ MetaClaw：由 PlanningAgent 直接作答',
-        '-> PlanningAgent: recognized conversation turn',
-        `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-      ].filter(Boolean);
-    }
-
-    return [
-      `-> PlanningAgent: ${decision.plan.action}`,
-      `-> PolicyKernel: ${decision.outcome} (${decision.reason})`,
-    ];
   }
 
   private async applyTaskControlDecision(userInput: string, plan: PlanningAgentPlan, kernelDecisionId: string): Promise<boolean> {
@@ -234,10 +194,6 @@ export class KernelDecisionApplier {
     this.applyPlanPriority(task.id, plan);
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
-    this.deps.callbacks.appendOutput(`任务 #${task.id} 已创建：${task.title}`);
-    if (inlineResourceContext.resources.length > 0) {
-      this.deps.callbacks.appendOutput(`→ 已自动关联 ${inlineResourceContext.resources.length} 份材料`);
-    }
 
     await this.deps.callbacks.prepareTaskExecution(task.id, {
       userPrompt: userInput,

@@ -123,10 +123,12 @@ describe('App conversation routing', () => {
     expect(executor.execute).not.toHaveBeenCalled();
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
-    expect(app.lastFrame()).toContain('→ MetaClaw：已识别普通对话');
-    expect(app.lastFrame()).toContain('→ MetaClaw：执行策略：直接回答，不创建任务');
-    expect(app.lastFrame()).toContain('→ MetaClaw：由 PlanningAgent 直接作答');
     expect(app.lastFrame()).toContain('这是一条测试直接回答');
+    expect(app.lastFrame()).not.toContain('正在分析目标、上下文与可执行边界');
+    expect(app.lastFrame()).not.toContain('已识别普通对话');
+    expect(app.lastFrame()).not.toContain('执行策略：直接回答，不创建任务');
+    expect(app.lastFrame()).not.toContain('PlanningAgent:');
+    expect(app.lastFrame()).not.toContain('PolicyKernel:');
 
     app.unmount();
     app.cleanup();

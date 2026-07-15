@@ -124,9 +124,12 @@ describe('V2 proposal flow', () => {
     const afterProposalAccept = session.getSnapshot().output.join('\n');
     expect(afterProposalAccept).not.toContain('记忆召回确认');
     expect(afterProposalAccept).not.toContain('请输入 [y]');
-    expect(afterProposalAccept).toContain('→ 已注入 1 条偏好');
+    expect(afterProposalAccept).not.toContain('→ 已注入 1 条偏好');
     expect(afterProposalAccept).toContain('Phoenix 周报统一保留风险栏目和经营数据栏目');
     expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .executionContextBundle.memoryContext.resolvedPreferences)
+      .toEqual([expect.objectContaining({ content: 'Phoenix 周报统一保留风险栏目和经营数据栏目' })]);
     expect(afterProposalAccept).toContain('Phoenix 周报已补齐经营数据并完成输出');
   });
 

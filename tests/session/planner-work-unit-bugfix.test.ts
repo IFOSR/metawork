@@ -335,6 +335,8 @@ describe('planner/work-unit active path regressions', () => {
     expect(output).toContain(`【Executor: codex-cli｜最终结果｜#${task.id} / #${secondExecutedId}】\noutput for goal A`);
     expect(output.match(/output for goal B/g)).toHaveLength(1);
     expect(output.match(/output for goal A/g)).toHaveLength(1);
+    expect(output.match(/【Executor: codex-cli｜派发准备】/g)).toHaveLength(1);
+    expect(output.match(/→ Executor: codex-cli 将处理该任务/g)).toHaveLength(1);
   });
 
   it('sweeps expired work units and provisions replacement capacity', async () => {

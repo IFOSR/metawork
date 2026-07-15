@@ -451,7 +451,9 @@ describe('App input availability', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('单活跃任务限制');
+    expect(app.lastFrame()).toContain('当前已有任务 #');
+    expect(app.lastFrame()).toContain('正在运行，请等待完成，或先暂停/取消当前任务。');
+    expect(app.lastFrame()).not.toContain('单活跃任务限制');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     firstDeferred.resolve({
@@ -514,13 +516,14 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('status: processing');
     expect(app.lastFrame()).toContain('> 生成一个状态报告');
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
-    expect(app.lastFrame()).toContain('→ MetaClaw：正在分析目标、上下文与可执行边界');
+    expect(app.lastFrame()).not.toContain('正在分析目标、上下文与可执行边界');
+    expect(app.lastFrame()).toContain('status: processing');
 
     resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('→ MetaClaw：已识别可执行任务');
-    expect(app.lastFrame()).toContain('→ MetaClaw：执行策略：创建可追踪任务并派发给 codex-cli');
+    expect(app.lastFrame()).not.toContain('已识别可执行任务');
+    expect(app.lastFrame()).not.toContain('执行策略：');
     expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
     expect(app.lastFrame()).toContain('→ Executor: codex-cli 将处理该任务');
     expect(app.lastFrame()).toContain('status: running codex-cli');
@@ -595,8 +598,8 @@ describe('App input availability', () => {
 
     await typeAndSubmit('紧急优先处理这个任务');
 
-    expect(app.lastFrame()).toContain('单活跃任务限制');
-    expect(app.lastFrame()).toContain(`#${runningTaskId}`);
+    expect(app.lastFrame()).toContain(`当前已有任务 #${runningTaskId} 正在运行，请等待完成，或先暂停/取消当前任务。`);
+    expect(app.lastFrame()).not.toContain('单活跃任务限制');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     firstDeferred.resolve({
@@ -634,10 +637,7 @@ describe('App input availability', () => {
       rankInteractions: vi.fn().mockResolvedValue([]),
     } as unknown as LlmBridge;
     // Second turn: the planner cannot confidently decide and stays conservative
-    // (clarification) instead of queueing keyword-fallback work. (The old
-    // '统一意图裁决置信度不足' clarification narrative is preserved; the former
-    // IntentOrchestrator-internal 'intent orchestrator timeout' string no longer
-    // exists — the planner now owns its own timeout/fallback.)
+    // (clarification) instead of queueing keyword-fallback work.
     const planningAgent = {
       plan: vi.fn()
         .mockResolvedValueOnce(workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }))
@@ -674,7 +674,8 @@ describe('App input availability', () => {
     await new Promise(resolve => setTimeout(resolve, 600));
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('统一意图裁决置信度不足');
+    expect(app.lastFrame()).toContain('我不确定你想继续聊天、创建新任务，还是恢复某个已有任务。');
+    expect(app.lastFrame()).not.toContain('统一意图裁决置信度不足');
     expect(taskEngine['taskRepo'].findByStatus('ready')).toHaveLength(0);
 
     await secondSubmit;

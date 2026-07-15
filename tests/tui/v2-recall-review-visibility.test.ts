@@ -177,7 +177,9 @@ describe('App V2 recall handling visibility', () => {
 
     await waitFor(() => {
       expect(app.lastFrame()).not.toContain('记忆召回确认');
-      expect(app.lastFrame()).toContain('已注入 1 条偏好');
+      expect(app.lastFrame()).not.toContain('已注入 1 条偏好');
+      expect(app.lastFrame()).toContain('已自动采用记忆');
+      expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
       expect(executor.execute).toHaveBeenCalledTimes(1);
     });
 

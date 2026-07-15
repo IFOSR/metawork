@@ -124,7 +124,8 @@ describe('App risky action gate', () => {
 
     await flushUpdates();
     expect(executor.execute).not.toHaveBeenCalled();
-    expect(app.lastFrame()).toContain('risk confirmation required');
+    expect(app.lastFrame()).toContain('该操作存在较高风险，请明确确认是否继续执行。');
+    expect(app.lastFrame()).not.toContain('risk confirmation required');
 
     app.unmount();
     app.cleanup();

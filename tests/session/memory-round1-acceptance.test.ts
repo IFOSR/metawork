@@ -104,10 +104,14 @@ describe('Round 1 memory acceptance', () => {
     expect(output).not.toContain('记忆召回确认');
     expect(output).toContain('已自动采用记忆');
     expect(output).toContain('已确认偏好');
-    expect(output).toContain('→ 已注入 1 条偏好');
-    expect(output).toContain('[contact] 用正式语气');
-    expect(output).toContain('confidence=');
+    expect(output).not.toContain('→ 已注入 1 条偏好');
+    expect(output).not.toContain('[contact] 用正式语气');
+    expect(output).not.toContain('confidence=');
     expect(output).toContain('命中主体：张总');
+    const finalExecution = (executor.execute as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(finalExecution.executionContextBundle.memoryContext.resolvedPreferences).toEqual([
+      expect.objectContaining({ scope: 'contact', content: '用正式语气' }),
+    ]);
   });
 
   it('applies explicit input, then project/contact, then global memory in a project task', async () => {
@@ -185,7 +189,7 @@ describe('Round 1 memory acceptance', () => {
 
     const finalOutput = session.getSnapshot().output.join('\n');
     expect(finalOutput).toContain('今天明确要求先保留表格格式');
-    expect(finalOutput).toContain('[project] Phoenix 项目材料统一使用 Phoenix 术语');
+    expect(finalOutput).not.toContain('[project] Phoenix 项目材料统一使用 Phoenix 术语');
     expect(finalOutput).not.toContain('[contact] 给张总的邮件使用正式语气');
     expect(finalOutput).not.toContain('[global] 输出尽量简洁');
   });

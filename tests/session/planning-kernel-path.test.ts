@@ -230,9 +230,33 @@ describe('natural-language planning/kernel path', () => {
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
     expect(harness.executor.execute).not.toHaveBeenCalled();
+    const output = harness.session.getSnapshot().output.join('\n');
+    expect(output).toContain('请明确是聊天还是创建任务。');
+    expect(output).not.toContain('统一意图裁决置信度不足');
+    expect(output).not.toContain('→ 输入：');
+    expect(output).not.toContain('→ 判断：');
+    expect(output).not.toContain('confidence=');
     const audits = harness.planningDecisionRepo.listBySession('sess_clarify');
     expect(audits).toHaveLength(1);
     expect(audits[0]!.outcome).toBe('clarify');
     expect(audits[0]!.decision.runtimeAction).toBe('clarification');
+  });
+
+  it('maps executor rejection to a user-safe action while preserving the audit reason', async () => {
+    const rejectedPlan = plan();
+    rejectedPlan.execution.selectedExecutor = 'ghost-executor';
+    rejectedPlan.execution.candidateExecutors = ['ghost-executor'];
+    rejectedPlan.workGraph!.subtasks[0]!.agentClassHint = 'ghost-executor';
+    rejectedPlan.workGraph!.subtasks[0]!.candidateAgentClasses = ['ghost-executor'];
+    const harness = createSession('sess_reject_executor', rejectedPlan);
+
+    await harness.session.submit('交给不存在的执行器', { awaitAsyncWork: true });
+
+    const output = harness.session.getSnapshot().output.join('\n');
+    expect(output).toContain('当前没有可用的 Executor，请检查配置或注册可执行的 Executor 后重试。');
+    expect(output).not.toContain('PolicyKernel rejected request');
+    expect(output).not.toContain('no available executor agent class');
+    const [audit] = harness.planningDecisionRepo.listBySession('sess_reject_executor');
+    expect(audit?.reason).toContain('no available executor agent class');
   });
 });

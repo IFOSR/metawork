@@ -79,6 +79,36 @@ export class SessionPresentationService {
     ].join('\n');
   }
 
+  formatExecutorDispatch(executorName: string): string[] {
+    return [
+      `【Executor: ${executorName}｜派发准备】`,
+      `→ Executor: ${executorName} 将处理该任务`,
+    ];
+  }
+
+  formatKernelRejection(reason: string): string {
+    const missingTask = /^task not found: (.+)$/.exec(reason);
+    if (missingTask) {
+      return `未找到任务 #${missingTask[1]}，请检查任务编号或先查看任务状态。`;
+    }
+
+    const activeTask = /单活跃任务限制: 当前活跃顶层任务 #(.+)$/.exec(reason);
+    if (activeTask) {
+      return `当前已有任务 #${activeTask[1]} 正在运行，请等待完成，或先暂停/取消当前任务。`;
+    }
+
+    const completedTask = /^completed task (.+) cannot be resumed without a follow-up plan$/.exec(reason);
+    if (completedTask) {
+      return `任务 #${completedTask[1]} 已结束，无法直接恢复；请创建跟进任务。`;
+    }
+
+    if (reason.includes('no available executor agent class')) {
+      return '当前没有可用的 Executor，请检查配置或注册可执行的 Executor 后重试。';
+    }
+
+    return '当前请求未通过执行校验，请调整请求后重试。';
+  }
+
   buildGuidanceState(
     scene: string,
     suggestion: GuidanceSuggestion,

@@ -120,13 +120,11 @@ export class SessionTaskExecutionApplicationService {
         `→ 高优任务到达，抢占当前任务 #${result.preemptedTaskId}`,
         `→ 原因：${request.schedulingReason || '用户显式要求优先处理'}`,
         `→ 任务 #${result.preemptedTaskId} 已挂起，开始执行 #${taskId}`,
-        `→ 执行准备：先由 ${this.deps.defaultExecutorName} 解析意图与构建上下文，随后按路由派发到具体 Executor`,
       );
       this.deps.callbacks.appendTaskQueueSnapshot('高优任务抢占，队列已重排');
       return;
     }
 
-    this.deps.callbacks.appendOutput(`→ 执行准备：先由 ${this.deps.defaultExecutorName} 解析意图与构建上下文，随后按路由派发到具体 Executor`);
     this.deps.callbacks.appendTaskQueueSnapshot('任务开始执行');
   }
 
