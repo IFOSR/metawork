@@ -887,6 +887,47 @@ describe('Feishu app helpers', () => {
     );
   });
 
+  it('keeps Executor final-result blocks when scoping a reply to the created task', async () => {
+    const session = {
+      getSnapshot: vi.fn()
+        .mockReturnValueOnce({ output: ['before'] })
+        .mockReturnValueOnce({
+          output: [
+            'before',
+            '> 创建报告',
+            '任务 #task_final_result 已创建：创建报告',
+            '【Executor: codex-cli｜最终结果｜#task_final_result / #subtask_report】\n完整报告正文',
+            '✓ 任务完成 (1.2s)',
+            '┌─ 任务结果 ─────────────────────────┐',
+            '摘要：任务已完成，详见上方 Executor 最终结果',
+            '└────────────────────────────────────┘',
+          ],
+        }),
+      submit: vi.fn().mockResolvedValue({ exitRequested: false }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFeishuMessageEvent({
+      message: {
+        message_id: 'om_final_result',
+        chat_id: 'oc_chat',
+        message_type: 'text',
+        content: '{"text":"创建报告"}',
+      },
+    }, {
+      session,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith('oc_chat', '完整报告正文');
+  });
+
   it('handles /sethome without submitting a task', async () => {
     const session = {
       getSnapshot: vi.fn().mockReturnValue({ output: [] }),

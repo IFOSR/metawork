@@ -1657,6 +1657,17 @@ export function formatFeishuReply(outputLines: string[]): string {
     .trim();
 }
 
+function parseExecutorFinalResultBlock(line: string): { taskId: string; body: string | null } | null {
+  const match = line.match(/^【Executor: [^｜]+｜最终结果｜#([^ ]+) \/ #[^】]+】(?:\r?\n([\s\S]+))?$/);
+  if (!match?.[1]) {
+    return null;
+  }
+  return {
+    taskId: match[1],
+    body: match[2]?.trim() || null,
+  };
+}
+
 function extractExecutorFinalResults(outputLines: string[]): string | null {
   let latestUserTurnIndex = -1;
   for (let index = outputLines.length - 1; index >= 0; index -= 1) {
@@ -1667,8 +1678,7 @@ function extractExecutorFinalResults(outputLines: string[]): string | null {
   }
   const scopedLines = outputLines.slice(latestUserTurnIndex + 1);
   const results = scopedLines.flatMap((line) => {
-    const match = line.match(/^【Executor: [^｜]+｜最终结果｜#[^ ]+ \/ #[^】]+】\r?\n([\s\S]+)$/);
-    const body = match?.[1]?.trim();
+    const body = parseExecutorFinalResultBlock(line)?.body;
     return body ? [body] : [];
   });
   return results.length > 0 ? results.join('\n\n') : null;
@@ -1720,6 +1730,16 @@ function filterFeishuOutputLinesForTask(outputLines: string[], taskId: string): 
     if (referencedMatch) {
       requestScopeActive = referencedMatch[1] === taskId;
       if (requestScopeActive) {
+        filtered.push(rawLine);
+      }
+      continue;
+    }
+
+    const executorFinalResult = parseExecutorFinalResultBlock(line);
+    if (executorFinalResult) {
+      currentCompletionTaskId = executorFinalResult.taskId;
+      includeCurrentCompletion = currentCompletionTaskId === taskId;
+      if (includeCurrentCompletion) {
         filtered.push(rawLine);
       }
       continue;
