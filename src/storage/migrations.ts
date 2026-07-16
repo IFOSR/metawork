@@ -652,6 +652,18 @@ const MIGRATIONS: Migration[] = [
         ON planner_tool_calls(planner_run_id, sequence);
     `,
   },
+  {
+    version: 18,
+    up: `
+      CREATE TABLE IF NOT EXISTS kernel_executor_status (
+        agent_class_name TEXT PRIMARY KEY,
+        class_health TEXT NOT NULL DEFAULT 'unverified',
+        recent_attempts_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+      );
+    `,
+  },
 ];
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {

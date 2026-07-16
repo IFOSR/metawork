@@ -84,6 +84,22 @@ _Avoid_: ExecutionPolicy, primaryExecutor, candidateExecutors, fallbackChain
 A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.
 _Avoid_: TUI output line, transient progress text, task message
 
+**Kernel Executor Status Projection**:
+The Kernel-owned, persisted, one-row-per-AgentClass current control-plane view of class health and recent execution outcomes, synchronously derived from Runtime work-unit facts and execution outcomes. AgentClass instances are independently started, so a busy Work Unit does not change this projection; it is not a Work Unit or an execution log.
+_Avoid_: AgentClass availability, Work Unit state, executor call log
+
+**AgentClass Health**:
+The Kernel's classification of whether an AgentClass itself is usable: unverified, healthy, error, or disabled. A failed executor instance does not change class health unless its cause proves a class-level fault or meets the configured systemic-failure rule.
+_Avoid_: Work Unit status, last execution result, capacity
+
+**Recent Execution Outcome**:
+The latest recorded result and classified reason for an AgentClass execution attempt. It informs Planner choice without by itself making the AgentClass unhealthy.
+_Avoid_: AgentClass Health, executor availability
+
+**Recent Execution Attempts**:
+The bounded, Planner-safe history of the three latest execution outcomes for one AgentClass. It contains outcome time and classified reason, not prompts, raw logs, tool traces, or credentials.
+_Avoid_: execution transcript, executor call log
+
 **Task Event**:
 A durable event about a task or subtask, such as planned, recovered, dispatched, blocked, succeeded, failed, cancelled, or resumed. Task events are the replayable source of truth for planner recovery; session output is only a UI projection.
 _Avoid_: executor-only log, route event, progress line

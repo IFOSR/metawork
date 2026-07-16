@@ -1,4 +1,5 @@
 import type { PlanningContext } from './planning-types.js';
+import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 
 export interface PlanningContextBuilderDeps {
   sessionId: string;
@@ -28,6 +29,7 @@ export class PlanningContextBuilder {
         allowFileModification: true,
         allowExternalGateway: true,
       },
+      executorCatalog: getPlannerExecutorCatalog(),
       timeoutMs: this.deps.getTimeoutMs(),
     };
   }

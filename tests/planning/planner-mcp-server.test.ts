@@ -4,7 +4,6 @@ import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 
 function createHarness(sessionId = 'sess_current') {
@@ -116,7 +115,7 @@ describe('PlannerDataReader', () => {
     expect(JSON.stringify(result)).not.toContain('secret other session');
   });
 
-  it('summarizes runtime focus and executor WorkUnit capacity without legacy availability', () => {
+  it('returns dynamic executor status without static catalog or runtime configuration', () => {
     const { db, taskEngine, reader } = createHarness();
     const task = taskEngine.create({ title: 'active task', goal: 'work' });
     taskEngine.transition(task.id, 'ready');
@@ -133,37 +132,26 @@ describe('PlannerDataReader', () => {
       runtimeArgs: ['--token', 'sensitive-runtime-token'],
     });
     const now = '2026-07-10T00:00:00.000Z';
-    new WorkUnitRepo(db).upsert({
-      id: 'executor-live',
-      agentClassName: 'codex-cli',
-      agentClassKind: 'executor',
-      state: 'idle',
-      claimedTaskId: null,
-      claimedSubtaskId: null,
-      heartbeatAt: now,
-      leaseExpiresAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    db.prepare(`
+      INSERT INTO kernel_executor_status (agent_class_name, class_health, recent_attempts_json, updated_at)
+      VALUES ('codex-cli', 'healthy', ?, ?)
+    `).run(JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]), now);
 
     expect(reader.getRuntimeState()).toMatchObject({
       focus: { taskId: task.id },
       taskCounts: { ready: 1 },
       activeTasks: [expect.objectContaining({ id: task.id, status: 'ready' })],
     });
-    const catalog = reader.listExecutorClasses();
-    expect(catalog.executorClasses).toEqual(expect.arrayContaining([
+    const status = reader.listExecutorStatus();
+    expect(status.executorStatuses).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: 'codex-cli',
-        runtimeConfigured: true,
-        runtimeCapacity: { idle: 1 },
+        agentClassName: 'codex-cli',
+        classHealth: 'healthy',
+        recentAttempts: [expect.objectContaining({ failureKind: 'network' })],
       }),
     ]));
-    const codexClass = catalog.executorClasses.find(item => item.name === 'codex-cli');
-    expect(codexClass).not.toHaveProperty('runtimeCommand');
-    expect(codexClass).not.toHaveProperty('runtimeArgs');
-    expect(JSON.stringify(catalog)).not.toContain('sensitive-runtime-token');
-    expect(JSON.stringify(catalog)).not.toContain('availability');
+    expect(JSON.stringify(status)).not.toContain('sensitive-runtime-token');
+    expect(JSON.stringify(status)).not.toContain('runtimeCommand');
   });
 
   it('performs all planner reads with SQLite query-only mode enabled', () => {
@@ -173,7 +161,7 @@ describe('PlannerDataReader', () => {
 
     reader.searchTasks({});
     reader.getRuntimeState();
-    reader.listExecutorClasses();
+    reader.listExecutorStatus();
 
     const after = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);
     expect(after).toBe(before);

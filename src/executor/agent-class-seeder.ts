@@ -9,18 +9,29 @@ export interface AgentClassSeedInput {
 }
 
 function executorClass(defaultExecutorName: string): AgentClass {
+  const isPi = defaultExecutorName === 'pi-agent';
   return {
     name: defaultExecutorName,
     kind: 'executor',
-    domains: ['software', 'repo', 'terminal', 'code_review'],
-    capabilities: ['coding', 'tests', 'debugging', 'refactor', 'code_review', 'noninteractive_execution'],
+    domains: isPi ? ['research', 'web'] : ['software', 'repo', 'terminal', 'code_review'],
+    capabilities: isPi
+      ? ['current-web-research', 'source-verification', 'citation-handoff']
+      : ['workspace-engineering', 'coding', 'tests', 'debugging', 'refactor', 'code_review', 'noninteractive_execution'],
     inputTypes: ['text', 'files'],
     outputTypes: ['code', 'patch', 'markdown', 'review'],
-    strengths: ['local repository editing', 'test execution', 'bug fixing', 'code review'],
-    weaknesses: ['broad business workflow orchestration'],
-    primaryUseCases: ['implementation', 'bugfix', 'test execution', 'code review'],
-    avoidUseCases: ['task planning ownership', 'long-thread lifecycle management'],
-    intentAffinity: { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
+    strengths: isPi
+      ? ['current public-web research', 'source verification', 'citation handoff']
+      : ['local repository editing', 'test execution', 'bug fixing', 'code review'],
+    weaknesses: isPi ? ['repository engineering delivery'] : ['broad business workflow orchestration'],
+    primaryUseCases: isPi
+      ? ['current public-web research', 'source-backed reports']
+      : ['implementation', 'bugfix', 'test execution', 'code review'],
+    avoidUseCases: isPi
+      ? ['local repository modification and testing']
+      : ['current public-web research requiring source-backed delivery'],
+    intentAffinity: isPi
+      ? { repo_execution: 0.1, technical_reasoning: 0.35, research_workflow: 1, general: 0.25 }
+      : { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
     riskLevel: 'medium',
     historicalSuccess: 0.85,
     harness: 'cli',
@@ -67,8 +78,10 @@ export function seedDefaultAgentClasses(
   input: AgentClassSeedInput,
 ): void {
   if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
-  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
-    agentClassRepo.upsert(executorClass(input.defaultExecutorName));
+  for (const name of new Set(['codex-cli', 'pi-agent', input.defaultExecutorName])) {
+    if (!agentClassRepo.findByName(name)) {
+      agentClassRepo.upsert(executorClass(name));
+    }
   }
 }
 

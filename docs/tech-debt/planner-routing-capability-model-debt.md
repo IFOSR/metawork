@@ -83,7 +83,7 @@ const piAgent: PlannerExecutorProfile = {
 };
 ```
 
-Planner 只读取该投影；不得看到凭据、具体命令、环境变量、完整 Skill 内容、实时 WorkUnit 状态或 capacity。PolicyKernel 使用同次快照和同一注册表，不重新从数据库或 MCP 获得另一份能力事实。
+Planner 的启动上下文只读取该静态投影；不得看到凭据、具体命令、环境变量、完整 Skill 内容、实时 WorkUnit 状态或 capacity。近期执行结果与 AgentClass 健康状态不属于静态能力事实，按 ADR-0017 通过独立的 Kernel Executor Status Projection 查询提供受限摘要。PolicyKernel 使用同次静态快照和同一注册表，不重新从数据库或 MCP 获得另一份能力事实。
 
 ## 覆盖与拆分规则
 
@@ -117,6 +117,7 @@ subtask.requiredCapabilities ⊆ candidate.routingCapabilities
 - [ ] 为 `codex-cli` 与 `pi-agent` 声明 canonical profile，并校验 profile、Adapter binding 和工具/probe 证据一致。
 - [ ] 导出稳定排序的 Planner-safe snapshot；Planner 和 Kernel 消费同一次快照。
 - [ ] 删除 Planner MCP 的静态能力查询入口。
+- [ ] 按 ADR-0017 提供独立的 Planner-safe Kernel Executor Status Projection 查询，不将其混入静态能力目录。
 - [ ] 将 v3 `requiredCapabilities`、Planner repair 与 PolicyKernel 覆盖校验接入注册表。
 - [ ] 证明单 Executor 连续工程任务只调用一次；只有能力并集无单一覆盖者时才出现 `pi-agent → codex-cli` 交接。
 - [ ] 证明未注册 capability、候选不覆盖 capability、或 profile/Adapter 不一致时 fail closed。

@@ -150,47 +150,21 @@ export class PlannerDataReader {
     };
   }
 
-  listExecutorClasses() {
-    const classes = this.db.prepare(`
-      SELECT name, domains_json, capabilities_json, input_types_json, output_types_json,
-             strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
-             risk_level, harness, model, skills_json, mcp_servers_json, plugins_json,
-             runtime_command IS NOT NULL AND runtime_command <> '' AS runtime_configured,
-             runtime_check_command IS NOT NULL AS runtime_check_configured
-      FROM agent_classes WHERE kind = 'executor' ORDER BY name ASC
+  listExecutorStatus() {
+    const rows = this.db.prepare(`
+      SELECT a.name, s.class_health, s.recent_attempts_json, s.updated_at
+      FROM agent_classes a
+      LEFT JOIN kernel_executor_status s ON s.agent_class_name = a.name
+      WHERE a.kind = 'executor'
+      ORDER BY a.name ASC
     `).all() as Array<Record<string, unknown>>;
-    const units = this.db.prepare(`
-      SELECT agent_class_name, state, COUNT(*) AS count
-      FROM work_units WHERE agent_class_kind = 'executor'
-      GROUP BY agent_class_name, state
-    `).all() as Array<Record<string, unknown>>;
-    const capacity = new Map<string, Record<string, number>>();
-    for (const row of units) {
-      const states = capacity.get(String(row.agent_class_name)) ?? {};
-      states[String(row.state)] = Number(row.count);
-      capacity.set(String(row.agent_class_name), states);
-    }
     return {
-      count: classes.length,
-      executorClasses: classes.map(row => ({
-        name: row.name,
-        domains: safeJson(row.domains_json, []),
-        capabilities: safeJson(row.capabilities_json, []),
-        inputTypes: safeJson(row.input_types_json, []),
-        outputTypes: safeJson(row.output_types_json, []),
-        strengths: safeJson(row.strengths_json, []),
-        weaknesses: safeJson(row.weaknesses_json, []),
-        primaryUseCases: safeJson(row.primary_use_cases_json, []),
-        avoidUseCases: safeJson(row.avoid_use_cases_json, []),
-        riskLevel: row.risk_level,
-        harness: row.harness,
-        model: row.model,
-        skills: safeJson(row.skills_json, []),
-        mcpServers: safeJson(row.mcp_servers_json, []),
-        plugins: safeJson(row.plugins_json, []),
-        runtimeConfigured: Boolean(row.runtime_configured),
-        runtimeCheckConfigured: Boolean(row.runtime_check_configured),
-        runtimeCapacity: capacity.get(String(row.name)) ?? {},
+      count: rows.length,
+      executorStatuses: rows.map(row => ({
+        agentClassName: String(row.name),
+        classHealth: typeof row.class_health === 'string' ? row.class_health : 'unverified',
+        recentAttempts: safeJson(row.recent_attempts_json, []).slice(0, 3),
+        updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
       })),
     };
   }
@@ -218,10 +192,10 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     description: 'Read current task focus and active task state without changing runtime state.',
     inputSchema: {},
   }, async () => toolResult(reader.getRuntimeState()));
-  server.registerTool('list_executor_classes', {
-    description: 'List static executor AgentClass capabilities plus aggregated live WorkUnit capacity.',
+  server.registerTool('list_executor_status', {
+    description: 'List bounded Kernel executor class health and three recent safe execution outcomes. Static routing capabilities are already in Planner startup context.',
     inputSchema: {},
-  }, async () => toolResult(reader.listExecutorClasses()));
+  }, async () => toolResult(reader.listExecutorStatus()));
   return server;
 }
 

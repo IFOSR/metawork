@@ -21,6 +21,13 @@ describe('PlanningContextBuilder', () => {
         allowFileModification: true,
         allowExternalGateway: true,
       },
+      executorCatalog: {
+        version: 1,
+        executors: expect.arrayContaining([
+          expect.objectContaining({ name: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
+          expect.objectContaining({ name: 'pi-agent', routingCapabilities: ['current-web-research'] }),
+        ]),
+      },
       timeoutMs: 5_000,
     });
     expect(context).not.toHaveProperty('recentTasks');

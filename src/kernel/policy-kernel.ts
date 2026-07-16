@@ -1,4 +1,6 @@
 import type { AgentClass, Task } from '../core/types.js';
+import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
+import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan, PlanningAction, SubtaskProposal } from '../planning/planning-types.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -17,6 +19,8 @@ export interface RuntimeSnapshot {
   tasks: Task[];
   runningTask: Task | null;
   agentClasses: AgentClass[];
+  executorCatalog?: PlannerExecutorCatalog;
+  executorStatuses?: KernelExecutorStatusProjection[];
   currentFocus: {
     kind: 'conversation' | 'task';
     taskId: string | null;
@@ -150,7 +154,11 @@ export class PolicyKernel {
       return this.reject(plan, `单活跃任务限制: 当前活跃顶层任务 #${snapshot.runningTask.id}`);
     }
 
-    const rewrite = this.rewriteUnknownExecutors(plan, snapshot.agentClasses);
+    const rewrite = this.rewriteUnknownExecutors(
+      plan,
+      snapshot.agentClasses,
+      snapshot.executorStatuses ?? [],
+    );
     if (!rewrite.plan.workGraph?.subtasks.every(subtask => subtask.candidateAgentClasses.length > 0)) {
       return this.reject(rewrite.plan, 'no available executor agent class can satisfy the work graph');
     }
@@ -169,7 +177,11 @@ export class PolicyKernel {
     return this.accept(plan, 'work graph authorized');
   }
 
-  private rewriteUnknownExecutors(plan: PlanningAgentPlan, agentClasses: AgentClass[]): {
+  private rewriteUnknownExecutors(
+    plan: PlanningAgentPlan,
+    agentClasses: AgentClass[],
+    statuses: KernelExecutorStatusProjection[],
+  ): {
     plan: PlanningAgentPlan;
     rewritten: boolean;
     reason: string;
@@ -177,9 +189,14 @@ export class PolicyKernel {
     const availableExecutorNames = new Set(agentClasses
       .filter(agentClass => agentClass.kind === 'executor')
       .map(agentClass => agentClass.name));
+    const unavailableExecutorNames = new Set(statuses
+      .filter(status => status.classHealth === 'disabled' || status.classHealth === 'error')
+      .map(status => status.agentClassName));
     let rewritten = false;
     const subtasks = (plan.workGraph?.subtasks ?? []).map(subtask => {
-      const filteredCandidates = subtask.candidateAgentClasses.filter(name => availableExecutorNames.has(name));
+      const filteredCandidates = subtask.candidateAgentClasses.filter(name =>
+        availableExecutorNames.has(name)
+        && !unavailableExecutorNames.has(name));
       const agentClassHint = subtask.agentClassHint && availableExecutorNames.has(subtask.agentClassHint)
         ? subtask.agentClassHint
         : filteredCandidates[0] ?? null;

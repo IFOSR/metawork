@@ -1,5 +1,6 @@
 import type { AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
 import type { CapabilityClass } from '../core/capability-class.js';
+import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 
 export type PlanningAction =
   | 'direct_reply'
@@ -110,5 +111,6 @@ export interface PlanningContext {
     allowFileModification: boolean;
     allowExternalGateway: boolean;
   };
+  executorCatalog?: PlannerExecutorCatalog;
   timeoutMs: number;
 }
