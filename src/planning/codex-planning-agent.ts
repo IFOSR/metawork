@@ -158,7 +158,7 @@ export class CodexPlanningAgent implements PlanningAgent {
       '- action: direct_reply | clarification | task_control | plan_work_graph | no_action。',
       '- direct_reply 必须在 response.directReply 填写最终用户可见答案；runtime 不再二次执行，空 directReply 会被拒绝。',
       '- resume_task/recover_blocked 必须选择明确 taskId、binding=reference，并先查询事实。',
-      '- plan_work_graph 必须包含非空、无环的 subtasks；候选执行器必须来自工具查询。',
+      '- plan_work_graph 必须包含非空、无环的 subtasks；候选执行器必须来自已注入的静态执行器目录，并在需要时参考执行器状态查询。',
       '- plan_work_graph、resume_task、recover_blocked 必须设置 task.priority={level,reason}。',
       '- 其他动作的 task.priority 必须是 null。',
       '- status_query scope 只能是 dashboard/blocked/running；clear_tasks scope 只能是 all/parked/blocked。',
