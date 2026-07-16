@@ -40,7 +40,7 @@ The module must not read storage or runtime state. Capability coverage will be a
 
 ### Keep Runtime serial for now
 
-Derived layers are validation facts, not a parallel execution promise. Ready subtasks remain serial and use stable subtask ID ordering. Workspace partitions, leases, cross-task contention, worktree isolation, and eventual parallelism are deferred to `planner-workspace-partition-and-concurrency-debt.md`.
+Derived layers are validation facts, not a parallel execution promise. Ready subtasks remain serial and use stable subtask ID ordering. Workspace partitions, leases, cross-task contention, worktree isolation, and eventual parallelism are staged in the [Planner, Kernel, and concurrency convergence roadmap](../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md).
 
 ### Version built-in definitions
 

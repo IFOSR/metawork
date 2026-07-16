@@ -177,7 +177,7 @@ apply(decision) → 写状态 / claim / run / 投递 / 安排下一次 timer
 ## 6. 明确不在本债范围
 
 - 不把 `ExecutionRuntime` / adapter / SQLite 写入搬进 kernel。
-- 不在本债中实现并行 worktree、跨 task 分区租约（见 `planner-workspace-partition-and-concurrency-debt.md`）；但那些能力未来的 **授权决策** 也应进入同一控制面，而不是再开一条 session 私规。
+- 不在本债中实现并行 worktree、跨 task 分区租约；这些事项已由 [Planner、Kernel 与并发调度收敛路线图](../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) 的 Phase 5～6 接管，但其 **授权决策** 仍应进入同一控制面，而不是再开一条 session 私规。
 - 不把 Planner 语义路由重新散回 runtime；Planner 继续只提案。
 - 不要求一次 PR 完成全部搬家；允许先“决策 API + 行为上收”，后“目录更名”。
 
