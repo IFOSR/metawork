@@ -111,6 +111,6 @@ export interface PlanningContext {
     allowFileModification: boolean;
     allowExternalGateway: boolean;
   };
-  executorCatalog?: PlannerExecutorCatalog;
+  executorCatalog: PlannerExecutorCatalog;
   timeoutMs: number;
 }

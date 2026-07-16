@@ -3,13 +3,23 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：已规划，待分三批实施
+- **当前状态**：第一批已完成；第二、三批待实施
 - **范围**：只统一 `codex-cli` 与 `pi-agent` 的静态能力定义、Planner 投影、Seeder 数据和 Adapter binding
 - **不在本轮**：PlanningAgentPlan v3、Subtask 拆分规则、并行调度、自动 fallback 策略、第三 Executor
-- **完成日期**：未完成
-- **实现提交**：未产生
+- **完成日期**：整体未完成；第一批完成于 2026-07-16
+- **实现提交**：`feat: establish canonical executor capability definitions`
 
 本计划落实 [`planner-routing-capability-model-debt.md`](../tech-debt/planner-routing-capability-model-debt.md)。当前静态 `executorCatalog` 已经注入 Planner 启动上下文，动态类健康与近期执行结果也已通过 `list_executor_status` 独立提供；本轮不重做这两条通路，只消除静态能力事实仍散落在目录、Seeder、数据库 profile 和 AdapterRegistry 中的问题。
+
+### 第一批完成记录
+
+- 已建立由 registry key 派生的受控 `RoutingCapabilityId`、稳定 `ExecutorAffordanceId`，以及带 `deliveryContract`、`requiredAffordances` 的两个能力定义。
+- 已将 Codex/Pi Routing Profile、两层 affordance、完整 AgentClass defaults 与声明式 Adapter binding 合入 canonical definitions；Pi 的 workspace 能力只保留在 native 层。
+- `historicalSuccess` 不进入 canonical Executor defaults 或 Planner catalog；Planner 继续通过 `list_executor_status` 获取动态健康与近期执行结果。
+- 已增加模块加载时 fail-fast 校验和可独立测试的纯 validator，并将 Planner catalog 升为 v2、加入顶层 capability contracts、保证稳定排序与深复制。
+- 已将 `PlanningContext.executorCatalog` 改为必填，并更新 Planner、runner、schema 与 context builder fixture；未修改 Seeder、AdapterRegistry、PolicyKernel、数据库、Plan schema 或调度行为。
+- 验证通过：目标 4 个测试文件共 25 项、额外 PlanningAgent plan schema 2 项、`npm run lint`、`npm run build`。
+- 第一批由 `feat: establish canonical executor capability definitions` 提交落地。
 
 ## 一、目标与约束
 

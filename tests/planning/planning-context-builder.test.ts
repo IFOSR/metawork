@@ -22,7 +22,17 @@ describe('PlanningContextBuilder', () => {
         allowExternalGateway: true,
       },
       executorCatalog: {
-        version: 1,
+        version: 2,
+        capabilities: [
+          expect.objectContaining({
+            id: 'current-web-research',
+            deliveryContract: expect.any(String),
+          }),
+          expect.objectContaining({
+            id: 'workspace-engineering',
+            deliveryContract: expect.any(String),
+          }),
+        ],
         executors: expect.arrayContaining([
           expect.objectContaining({ name: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
           expect.objectContaining({ name: 'pi-agent', routingCapabilities: ['current-web-research'] }),
@@ -34,5 +44,8 @@ describe('PlanningContextBuilder', () => {
     expect(context).not.toHaveProperty('agentClasses');
     expect(context).not.toHaveProperty('ruleHints');
     expect(context).not.toHaveProperty('currentFocus');
+    expect(JSON.stringify(context.executorCatalog)).not.toMatch(
+      /nativeAffordances|requiredAffordances|agentClassDefaults|adapterBinding|runtimeCommand|historicalSuccess/,
+    );
   });
 });

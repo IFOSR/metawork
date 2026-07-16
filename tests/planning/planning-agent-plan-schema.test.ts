@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import {
   applyContextDefaults,
   PlanningAgentPlanOutputSchema,
@@ -9,12 +10,17 @@ import type { PlanningContext } from '../../src/planning/planning-types.js';
 
 const CONTEXT: PlanningContext = {
   userInput: 'implement the requested change',
+  initialContext: {
+    longTermMemories: [],
+    conversationHistory: [],
+  },
   request: { sessionId: 'session_test', source: 'test' },
   permissions: {
     allowDurableTask: true,
     allowFileModification: true,
     allowExternalGateway: true,
   },
+  executorCatalog: getPlannerExecutorCatalog(),
   timeoutMs: 5_000,
 };
 
