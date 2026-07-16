@@ -6,7 +6,7 @@
 
 <div align="center">
 
-# MetaClaw
+# AnyFusion
 
 **A local AI Task OS for durable agentic work.**
 
@@ -20,19 +20,19 @@ Turn natural-language requests into tasks that can be planned, scheduled, resume
 
 </div>
 
-## What is MetaClaw?
+## What is AnyFusion?
 
-MetaClaw is an open-source local runtime for agentic work. It sits between people and agent CLIs such as Codex, Pi, Hermes, and other local executors, turning a chat-style request into a durable task with state, memory, planning, work-unit dispatch, verification, and delivery.
+AnyFusion is an open-source local runtime for agentic work. It sits between people and agent CLIs such as Codex, Pi, Hermes, and other local executors, turning a chat-style request into a durable task with state, memory, planning, work-unit dispatch, verification, and delivery.
 
-A normal assistant answers the current turn. MetaClaw gives longer-running work an operating system: tasks can be created, parked, resumed, searched, split into subtasks, assigned to executor work units, checked against evidence, and delivered back through terminal or Gateway surfaces.
+A normal assistant answers the current turn. AnyFusion gives longer-running work an operating system: tasks can be created, parked, resumed, searched, split into subtasks, assigned to executor work units, checked against evidence, and delivered back through terminal or Gateway surfaces.
 
-MetaClaw is currently optimized for local-first teams and research workflows that need more than prompt copy-paste: repository edits, multi-step analysis, artifact generation, Feishu delivery, and repeatable task recovery.
+AnyFusion is currently optimized for local-first teams and research workflows that need more than prompt copy-paste: repository edits, multi-step analysis, artifact generation, Feishu delivery, and repeatable task recovery.
 
-## Why MetaClaw?
+## Why AnyFusion?
 
 Agents are becoming capable workers, but most agent runs are still fragile sessions. When a terminal closes, context gets lost. When a task blocks, the system forgets why. When multiple executors exist, routing logic gets mixed into prompts. When output returns, there is often no durable evidence trail.
 
-MetaClaw treats agent work as work:
+AnyFusion treats agent work as work:
 
 - A request becomes either conversation, task control, or durable work.
 - Durable work gets explicit task state and resume context.
@@ -56,11 +56,11 @@ MetaClaw treats agent work as work:
 
 ## Quick Install
 
-MetaClaw targets Node.js 20+ and a Unix-like shell. On Windows, WSL2 with Ubuntu is the recommended runtime.
+AnyFusion targets Node.js 20+ and a Unix-like shell. On Windows, WSL2 with Ubuntu is the recommended runtime.
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
 metaclaw --help
 npm run smoke:metaclaw
@@ -136,7 +136,7 @@ password.)
 
 ## Getting Started
 
-Start MetaClaw in an interactive terminal:
+Start AnyFusion in an interactive terminal:
 
 ```bash
 metaclaw
@@ -148,7 +148,7 @@ Then give it work in natural language:
 Compare these three contracts and create a concise risk matrix.
 ```
 
-MetaClaw decides whether the input should be a direct reply, task control action, clarification, or durable task. Durable work is planned, authorized, persisted, dispatched to an executor work unit, verified, and recorded with artifacts when produced.
+AnyFusion decides whether the input should be a direct reply, task control action, clarification, or durable task. Durable work is planned, authorized, persisted, dispatched to an executor work unit, verified, and recorded with artifacts when produced.
 
 Useful commands:
 
