@@ -8,6 +8,10 @@ import { DeepSeekTuiAdapter } from '../executor/deepseek-tui.js';
 import { HermesAgentAdapter } from '../executor/hermes-agent.js';
 import { OpenClawAdapter } from '../executor/openclaw.js';
 import { PiAgentAdapter } from '../executor/pi-agent.js';
+import {
+  getBuiltinExecutorDefinition,
+  type BuiltinExecutorName,
+} from '../executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { AgentClass, Config, ExecutionContextBundleV2, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskResult } from './execution-aggregator.js';
@@ -56,6 +60,10 @@ interface AdapterFactoryConfig {
 }
 
 export type AdapterFactory = (config: AdapterFactoryConfig) => ExecutorAdapter;
+export type CanonicalAdapterFactory = (
+  config: AdapterFactoryConfig,
+  command: string,
+) => ExecutorAdapter;
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
@@ -81,12 +89,39 @@ export class ExecutorAdapterRegistry {
   private readonly commandAliases = new Map<string, string>();
 
   register(name: string, factory: AdapterFactory, commandAliases: string[] = []): this {
+    const bindingKeys = [name, ...commandAliases];
+    const seen = new Set<string>();
+    for (const bindingKey of bindingKeys) {
+      if (seen.has(bindingKey) || this.commandAliases.has(bindingKey)) {
+        throw new Error(`Duplicate Executor Adapter binding: ${bindingKey}`);
+      }
+      seen.add(bindingKey);
+    }
+    if (this.factories.has(name)) {
+      throw new Error(`Duplicate Executor Adapter name: ${name}`);
+    }
     this.factories.set(name, factory);
     this.commandAliases.set(name, name);
     for (const alias of commandAliases) {
       this.commandAliases.set(alias, name);
     }
     return this;
+  }
+
+  registerCanonical(name: BuiltinExecutorName, factory: CanonicalAdapterFactory): this {
+    const definition = getBuiltinExecutorDefinition(name);
+    if (!definition) {
+      throw new Error(`Missing canonical Executor definition: ${name}`);
+    }
+    const command = definition.adapterBinding.commandAliases[0];
+    if (!command) {
+      throw new Error(`Canonical Executor ${name} has no runtime command alias`);
+    }
+    return this.register(
+      definition.adapterBinding.adapterName,
+      config => factory(config, command),
+      [...definition.adapterBinding.commandAliases],
+    );
   }
 
   create(name: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
@@ -106,12 +141,12 @@ export class ExecutorAdapterRegistry {
 
 export function createDefaultExecutorAdapterRegistry(): ExecutorAdapterRegistry {
   return new ExecutorAdapterRegistry()
-    .register('codex-cli', config => new CodexCliAdapter({ ...config, command: 'codex' }), ['codex'])
+    .registerCanonical('codex-cli', (config, command) => new CodexCliAdapter({ ...config, command }))
     .register('claude-code', config => new ClaudeCodeAdapter({ ...config, command: 'claude' }), ['claude'])
     .register('hermes-agent', config => new HermesAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command: 'hermes' })), ['hermes'])
-    .register('pi-agent', config => new PiAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command: 'pi' })), ['pi'])
-    .register('deepseek-tui', config => new DeepSeekTuiAdapter({ ...config, command: 'deepseek-tui' }), ['deepseek', 'deepseek-tui'])
-    .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }), ['openclaw']);
+    .registerCanonical('pi-agent', (config, command) => new PiAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command })))
+    .register('deepseek-tui', config => new DeepSeekTuiAdapter({ ...config, command: 'deepseek-tui' }), ['deepseek'])
+    .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }));
 }
 
 /** Resolves executor names from injected defaults, registered adapters, or custom AgentClass runtime commands. */

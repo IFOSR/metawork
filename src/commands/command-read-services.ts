@@ -128,7 +128,6 @@ export class CommandReadServices {
       `  avoid use cases: ${formatList(agentClass.avoidUseCases)}`,
       `  intent affinity: ${affinity}`,
       `  risk: ${agentClass.riskLevel}`,
-      `  historical success: ${agentClass.historicalSuccess}`,
       `  harness/model: ${agentClass.harness ?? '-'} / ${agentClass.model ?? '-'}`,
       `  skills: ${formatList(agentClass.skills)}`,
       `  MCP servers: ${formatList(agentClass.mcpServers)}`,

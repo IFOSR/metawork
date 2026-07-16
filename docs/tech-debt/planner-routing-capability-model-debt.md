@@ -1,6 +1,6 @@
 # Planner 路由能力模型统一源技术债
 
-> 状态：第一批已完成；第二、三批待实施
+> 状态：第一、二批已完成；第三批待实施
 >
 > 创建日期：2026-07-15
 >
@@ -131,12 +131,13 @@ PolicyKernel 在实际应用计划前继续检查清单中的 AgentClass 是否�
 - [x] 定义受控 `RoutingCapabilityId` 注册表、交付契约和基于 required affordances 的支持边界。
 - [x] 将两个内置 Executor 的 Routing Profile、AgentClass defaults、声明式 Adapter binding 和 affordance 声明合入 canonical definitions。
 - [x] 让现有 `getPlannerExecutorCatalog()` 只从 canonical definitions 做稳定、深复制的 v2 投影。
-- [ ] 让 Seeder 从 canonical definitions 构造内置默认值，不再按名称复制 profile。
-- [ ] 让 AdapterRegistry 从 canonical binding 派生或对其做强一致性校验。
+- [x] 让 Seeder 从 canonical definitions 构造内置默认值，不再按名称复制 profile。
+- [x] 让 AdapterRegistry 从 canonical binding 派生或对其做强一致性校验。
 - [x] 对未注册 capability、重复 Executor/binding/alias、缺失 required native/planner affordance 和越界 Planner affordance 在模块加载时 fail closed。
-- [ ] 在接入 AdapterRegistry 后，对缺失实际 Adapter/factory 和 canonical binding 不一致继续 fail closed。
-- [ ] 保留旧自定义 Executor 数据，但不把其自由 capability 字符串自动认证为受控 Routing Capability。
-- [ ] 证明 `list_executor_status` 仍只承载动态状态，静态能力不重新进入 MCP 查询。
+- [x] 在接入 AdapterRegistry 后，对缺失实际 Adapter/factory 和 canonical binding 不一致继续 fail closed。
+- [x] 保留旧自定义 Executor 数据，但不把其自由 capability 字符串自动认证为受控 Routing Capability。
+- [x] 证明 `list_executor_status` 仍只承载动态状态，静态能力不重新进入 MCP 查询。
+- [x] 删除静态 `historicalSuccess`，并通过 migration v19 物理移除新旧两张 Executor 表中的历史列。
 - [x] 将第一批 PlanningContext、PlanningAgent 和 runner fixture 改为显式使用 canonical catalog。
 - [ ] 在第二、三批接入 Seeder/Runtime 后，继续移除其重复 fixture。
 

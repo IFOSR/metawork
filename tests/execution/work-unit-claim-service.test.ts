@@ -26,7 +26,6 @@ function agentClass(name = 'codex-cli'): AgentClass {
     avoidUseCases: [],
     intentAffinity: {},
     riskLevel: 'medium',
-    historicalSuccess: 0.8,
     harness: 'cli',
     model: null,
     skills: [],

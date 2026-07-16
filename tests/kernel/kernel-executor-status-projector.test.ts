@@ -9,7 +9,7 @@ import type { AgentClass } from '../../src/core/types.js';
 function agentClass(name = 'codex-cli'): AgentClass {
   return {
     name, kind: 'executor', domains: [], capabilities: [], inputTypes: [], outputTypes: [], strengths: [], weaknesses: [],
-    primaryUseCases: [], avoidUseCases: [], intentAffinity: {}, riskLevel: 'medium', historicalSuccess: 0.5,
+    primaryUseCases: [], avoidUseCases: [], intentAffinity: {}, riskLevel: 'medium',
     harness: null, model: null, skills: [], mcpServers: [], plugins: [], runtimeCommand: null, runtimeArgs: [], runtimeCheckCommand: null, projectUrl: null,
   };
 }

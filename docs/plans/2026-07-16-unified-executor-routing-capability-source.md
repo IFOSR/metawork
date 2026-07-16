@@ -3,11 +3,11 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：第一批已完成；第二、三批待实施
+- **当前状态**：第一、二批已完成；第三批待实施
 - **范围**：只统一 `codex-cli` 与 `pi-agent` 的静态能力定义、Planner 投影、Seeder 数据和 Adapter binding
 - **不在本轮**：PlanningAgentPlan v3、Subtask 拆分规则、并行调度、自动 fallback 策略、第三 Executor
-- **完成日期**：整体未完成；第一批完成于 2026-07-16
-- **实现提交**：`feat: establish canonical executor capability definitions`
+- **完成日期**：整体未完成；第一、二批完成于 2026-07-16
+- **实现提交**：第一批 `feat: establish canonical executor capability definitions`；第二批当前工作区未提交
 
 本计划落实 [`planner-routing-capability-model-debt.md`](../tech-debt/planner-routing-capability-model-debt.md)。当前静态 `executorCatalog` 已经注入 Planner 启动上下文，动态类健康与近期执行结果也已通过 `list_executor_status` 独立提供；本轮不重做这两条通路，只消除静态能力事实仍散落在目录、Seeder、数据库 profile 和 AdapterRegistry 中的问题。
 
@@ -20,6 +20,15 @@
 - 已将 `PlanningContext.executorCatalog` 改为必填，并更新 Planner、runner、schema 与 context builder fixture；未修改 Seeder、AdapterRegistry、PolicyKernel、数据库、Plan schema 或调度行为。
 - 验证通过：目标 4 个测试文件共 25 项、额外 PlanningAgent plan schema 2 项、`npm run lint`、`npm run build`。
 - 第一批由 `feat: establish canonical executor capability definitions` 提交落地。
+
+### 第二批完成记录
+
+- Seeder 已从 canonical definitions 组装 Codex/Pi AgentClass；仅在缺行时插入，并在任何写入前拒绝未预注册的非 canonical 默认 Executor。
+- `ExecutorAdapterRegistry.registerCanonical()` 已从 definition 派生 Adapter 名称、aliases 与首个启动命令；Codex/Pi 只保留 factory 选择，其余四个 Adapter 保持直接注册。
+- CLI、单行注册、wizard 与 unregister 已禁止创建、修改或删除 canonical 同名 AgentClass；历史同名数据库行仍保持原样。
+- `historicalSuccess` 已从 AgentClass、Repo、Seeder、注册参数、wizard 与读模型输出删除；migration v19 物理删除 `agent_classes` 和旧 `executor_profiles` 的 `historical_success` 列。
+- `list_executor_status` 仍只返回动态 class health 与近期 attempts，不承载静态成功率或 runtime 配置。
+- 验证通过：主机 `npm run lint`、`npm run build` 与纯 catalog 测试；Docker 聚焦测试 8 个文件共 39 项；完整 Docker 套件 174 个文件、788 项通过，2 个文件/4 项按既有配置跳过。
 
 ## 一、目标与约束
 

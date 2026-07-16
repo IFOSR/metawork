@@ -298,7 +298,6 @@ function executorNodes(): CommandNode[] {
     ...['domains', 'capabilities', 'inputs', 'outputs', 'strengths', 'weaknesses', 'primary-use-cases', 'avoid-use-cases']
       .map(name => option(`--${name}` as `--${string}`, `${name} 逗号分隔列表`, text(name, `${name} 列表`))),
     option('--risk', '风险等级', enumArg('risk', '风险等级', ['low', 'medium', 'high'])),
-    option('--success', '历史成功率', text('success', '0 到 1 的成功率')),
   ];
   const registerAction = action({
     name: '<executorName>', summary: '注册或更新 Executor', effect: '持久化 AgentClass 路由画像与运行绑定。',

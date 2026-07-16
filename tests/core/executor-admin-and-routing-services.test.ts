@@ -74,4 +74,19 @@ describe('agent class admin and planner dispatch services', () => {
     expect(result.lines.join('\n')).toContain('command=research-bot');
     expect(result.lines.join('\n')).toContain('check=research-bot --version');
   });
+
+  it('rejects canonical names at the first wizard step', async () => {
+    const db = createDb();
+    const service = new ExecutorAdminService({
+      agentClassService: new AgentClassService({ db, defaultExecutorName: 'codex-cli' }),
+      presentation: new SessionPresentationService(),
+      fetchText: vi.fn(),
+    });
+
+    service.startWizard();
+    const result = await service.handlePendingWizardInput('codex-cli');
+
+    expect(result.lines).toEqual(['Cannot register canonical Executor AgentClass: codex-cli']);
+    expect(service.hasPendingWizard()).toBe(true);
+  });
 });

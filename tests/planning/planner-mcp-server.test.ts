@@ -152,6 +152,7 @@ describe('PlannerDataReader', () => {
     ]));
     expect(JSON.stringify(status)).not.toContain('sensitive-runtime-token');
     expect(JSON.stringify(status)).not.toContain('runtimeCommand');
+    expect(JSON.stringify(status)).not.toContain('historicalSuccess');
   });
 
   it('performs all planner reads with SQLite query-only mode enabled', () => {

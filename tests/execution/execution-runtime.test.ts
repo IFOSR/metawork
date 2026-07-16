@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { ExecutorAdapter, ExecutorInput } from '../../src/executor/adapter.js';
 import type { AgentClass, Config, ExecutorResult, Subtask, Task, WorkUnit } from '../../src/core/types.js';
-import { ExecutionRuntime, ExecutorAdapterRegistry, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
+import {
+  createDefaultExecutorAdapterRegistry,
+  ExecutionRuntime,
+  ExecutorAdapterRegistry,
+  ExecutorRegistry,
+} from '../../src/execution/execution-runtime.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -81,7 +86,6 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
     avoidUseCases: [],
     intentAffinity: {},
     riskLevel: 'medium',
-    historicalSuccess: 0.8,
     harness: 'cli',
     model: null,
     skills: [],
@@ -334,5 +338,45 @@ describe('ExecutionRuntime', () => {
     const executor = registry.resolve('test-agent');
 
     expect(executor?.name).toBe('test-agent');
+  });
+
+  it('derives canonical adapter names, aliases, and runtime commands from definitions', () => {
+    let codexCommand = '';
+    const registry = new ExecutorAdapterRegistry()
+      .registerCanonical('codex-cli', (_config, command) => {
+        codexCommand = command;
+        return createExecutor('codex-cli', createResult('ok'));
+      });
+
+    expect(registry.createByCommand('codex', {
+      timeout: 60,
+      workspaceRoot: process.cwd(),
+    })?.name).toBe('codex-cli');
+    expect(codexCommand).toBe('codex');
+  });
+
+  it('fails closed on duplicate adapter names and aliases', () => {
+    const registry = new ExecutorAdapterRegistry()
+      .register('first', () => createExecutor('first', createResult('ok')), ['shared']);
+
+    expect(() => registry.register(
+      'second',
+      () => createExecutor('second', createResult('ok')),
+      ['shared'],
+    )).toThrow('Duplicate Executor Adapter binding: shared');
+    expect(() => registry.register(
+      'first',
+      () => createExecutor('first', createResult('ok')),
+    )).toThrow('Duplicate Executor Adapter binding: first');
+  });
+
+  it('keeps non-canonical built-in adapters registered', () => {
+    const registry = createDefaultExecutorAdapterRegistry();
+    const config = { timeout: 60, workspaceRoot: process.cwd() };
+
+    expect(registry.createByCommand('claude', config)?.name).toBe('claude-code');
+    expect(registry.createByCommand('hermes', config)?.name).toBe('hermes-agent');
+    expect(registry.createByCommand('deepseek', config)?.name).toBe('deepseek-tui');
+    expect(registry.createByCommand('openclaw', config)?.name).toBe('openclaw');
   });
 });

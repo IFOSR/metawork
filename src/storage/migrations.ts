@@ -664,6 +664,13 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 19,
+    up: (db) => {
+      dropColumnIfExists(db, 'agent_classes', 'historical_success');
+      dropColumnIfExists(db, 'executor_profiles', 'historical_success');
+    },
+  },
 ];
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {
@@ -677,6 +684,14 @@ function addColumnIfMissing(db: Database.Database, table: string, column: string
   }
 
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function dropColumnIfExists(db: Database.Database, table: string, column: string): void {
+  if (!columnExists(db, table, column)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
 }
 
 function runMigration(db: Database.Database, migration: Migration): void {

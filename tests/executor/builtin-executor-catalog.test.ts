@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   getBuiltinExecutorDefinitions,
+  getBuiltinExecutorDefinition,
   getPlannerExecutorCatalog,
+  isBuiltinExecutorName,
   validateBuiltinExecutorDefinitions,
   type BuiltinExecutorDefinition,
   type ExecutorAffordanceId,
@@ -74,6 +76,16 @@ describe('built-in Executor catalog', () => {
     expect(getPlannerExecutorCatalog().executors[0]?.affordances).not.toContain('public-web-search');
   });
 
+  it('reads canonical definitions by typed name without exposing canonical state', () => {
+    const codex = getBuiltinExecutorDefinition('codex-cli');
+    expect(isBuiltinExecutorName('codex-cli')).toBe(true);
+    expect(isBuiltinExecutorName('claude-code')).toBe(false);
+    expect(getBuiltinExecutorDefinition('claude-code')).toBeNull();
+
+    codex!.adapterBinding.commandAliases[0] = 'polluted';
+    expect(getBuiltinExecutorDefinition('codex-cli')?.adapterBinding.commandAliases[0]).toBe('codex');
+  });
+
   it('rejects unregistered capabilities and duplicate Executor bindings in stable order', () => {
     const invalid = definitions();
     invalid[0]!.routingCapabilities = ['not-registered' as RoutingCapabilityId];
@@ -125,6 +137,15 @@ describe('built-in Executor catalog', () => {
 
     expect(validateBuiltinExecutorDefinitions(invalid)).toContain(
       'Executor codex-cli exposes non-native Planner affordance: public-web-search',
+    );
+  });
+
+  it('requires a runtime command alias for every canonical binding', () => {
+    const invalid = definitions();
+    invalid[0]!.adapterBinding.commandAliases = [];
+
+    expect(validateBuiltinExecutorDefinitions(invalid)).toContain(
+      'Executor codex-cli must declare at least one command alias',
     );
   });
 });

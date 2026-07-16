@@ -374,8 +374,9 @@ Recommended routing fields:
 - `avoidUseCases`: examples of tasks that should not route to this executor.
 - `riskLevel`: `low`, `medium`, or `high`.
 - `intentAffinity`: route-intent affinity by keys such as `repo_execution`, `research_workflow`, `memory_agent_ops`, and `general`.
-- `historicalSuccess`: success metadata retained for compatibility and candidate ranking fallback when a route-intent affinity is not present.
 - `projectUrl`: source repository or documentation URL.
+
+Executor health and recent outcomes are dynamic status. Planner reads them through `list_executor_status`; they are not stored as static AgentClass routing metadata.
 
 Required runtime binding:
 

@@ -15,6 +15,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
+import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
@@ -403,6 +404,13 @@ describe('scripted session', () => {
 
   it('does not write a fallback Feishu Markdown artifact from undeliverable executor output', async () => {
     const db = createTestDb();
+    const agentClassService = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    agentClassService.seedDefaults();
+    agentClassService.upsert({
+      ...agentClassService.findByName('codex-cli')!,
+      name: 'hermes-agent',
+      runtimeCommand: 'hermes-agent',
+    });
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));

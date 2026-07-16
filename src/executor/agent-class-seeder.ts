@@ -2,47 +2,25 @@
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import {
+  getBuiltinExecutorDefinition,
+  getBuiltinExecutorDefinitions,
+  type BuiltinExecutorDefinition,
+} from './builtin-executor-catalog.js';
 
 export interface AgentClassSeedInput {
   defaultExecutorName: string;
   availableCommands?: Set<string>;
 }
 
-function executorClass(defaultExecutorName: string): AgentClass {
-  const isPi = defaultExecutorName === 'pi-agent';
+function agentClassFromDefinition(definition: BuiltinExecutorDefinition): AgentClass {
   return {
-    name: defaultExecutorName,
+    name: definition.name,
     kind: 'executor',
-    domains: isPi ? ['research', 'web'] : ['software', 'repo', 'terminal', 'code_review'],
-    capabilities: isPi
-      ? ['current-web-research', 'source-verification', 'citation-handoff']
-      : ['workspace-engineering', 'coding', 'tests', 'debugging', 'refactor', 'code_review', 'noninteractive_execution'],
-    inputTypes: ['text', 'files'],
-    outputTypes: ['code', 'patch', 'markdown', 'review'],
-    strengths: isPi
-      ? ['current public-web research', 'source verification', 'citation handoff']
-      : ['local repository editing', 'test execution', 'bug fixing', 'code review'],
-    weaknesses: isPi ? ['repository engineering delivery'] : ['broad business workflow orchestration'],
-    primaryUseCases: isPi
-      ? ['current public-web research', 'source-backed reports']
-      : ['implementation', 'bugfix', 'test execution', 'code review'],
-    avoidUseCases: isPi
-      ? ['local repository modification and testing']
-      : ['current public-web research requiring source-backed delivery'],
-    intentAffinity: isPi
-      ? { repo_execution: 0.1, technical_reasoning: 0.35, research_workflow: 1, general: 0.25 }
-      : { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
-    riskLevel: 'medium',
-    historicalSuccess: 0.85,
-    harness: 'cli',
-    model: null,
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-    runtimeCommand: null,
-    runtimeArgs: [],
-    runtimeCheckCommand: null,
-    projectUrl: null,
+    ...definition.agentClassDefaults,
+    capabilities: [...definition.routingCapabilities],
+    primaryUseCases: [...definition.primaryUseCases],
+    avoidUseCases: [...definition.avoidUseCases],
   };
 }
 
@@ -60,7 +38,6 @@ function plannerClass(): AgentClass {
     avoidUseCases: ['direct code implementation', 'artifact mutation'],
     intentAffinity: {},
     riskLevel: 'medium',
-    historicalSuccess: 0.8,
     harness: 'in_process',
     model: null,
     skills: ['metaclaw-planner'],
@@ -77,10 +54,20 @@ export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
   input: AgentClassSeedInput,
 ): void {
+  if (
+    !getBuiltinExecutorDefinition(input.defaultExecutorName)
+    && !agentClassRepo.findByName(input.defaultExecutorName)
+  ) {
+    throw new Error(
+      `Default Executor ${input.defaultExecutorName} is not canonical and has no registered AgentClass. `
+      + 'Start with codex-cli or pi-agent, register the Executor AgentClass, then switch the default configuration.',
+    );
+  }
+
   if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
-  for (const name of new Set(['codex-cli', 'pi-agent', input.defaultExecutorName])) {
-    if (!agentClassRepo.findByName(name)) {
-      agentClassRepo.upsert(executorClass(name));
+  for (const definition of getBuiltinExecutorDefinitions()) {
+    if (!agentClassRepo.findByName(definition.name)) {
+      agentClassRepo.upsert(agentClassFromDefinition(definition));
     }
   }
 }

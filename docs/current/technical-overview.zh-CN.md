@@ -372,8 +372,9 @@ Executor 扩展契约：
 - `avoidUseCases`：不适合路由给它的任务。
 - `riskLevel`：`low`、`medium` 或 `high`。
 - `intentAffinity`：按 route intent 记录的 affinity，例如 `repo_execution`、`research_workflow`、`memory_agent_ops` 和 `general`。
-- `historicalSuccess`：兼容保留的成功元数据；当 route-intent affinity 不存在时可作为候选排序的 fallback 信号。
 - `projectUrl`：项目仓库或文档地址。
+
+Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_executor_status` 读取，不再将其保存为 AgentClass 的静态路由元数据。
 
 必需的运行绑定：
 

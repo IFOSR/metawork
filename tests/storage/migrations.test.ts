@@ -71,7 +71,7 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -104,12 +104,12 @@ describe('runMigrations', () => {
       'domains_json',
       'capabilities_json',
       'risk_level',
-      'historical_success',
       'runtime_command',
       'runtime_args_json',
       'runtime_check_command',
       'project_url',
     ]));
+    expect(executorProfileColumns.map(column => column.name)).not.toContain('historical_success');
 
     const agentClassColumns = db.prepare('PRAGMA table_info(agent_classes)').all() as Array<{ name: string }>;
     expect(agentClassColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -122,6 +122,7 @@ describe('runMigrations', () => {
       'plugins_json',
       'runtime_command',
     ]));
+    expect(agentClassColumns.map(column => column.name)).not.toContain('historical_success');
 
     const subtaskColumns = db.prepare('PRAGMA table_info(subtasks)').all() as Array<{ name: string }>;
     expect(subtaskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -191,5 +192,46 @@ describe('runMigrations', () => {
     });
 
     expect(repo.findById('task_legacy_repaired')?.title).toBe('legacy repaired');
+  });
+
+  it('drops static historical success from a v18 database without losing Executor rows or foreign keys', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(`
+      CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+      INSERT INTO schema_version (version) VALUES (18);
+
+      CREATE TABLE executor_profiles (
+        name TEXT PRIMARY KEY,
+        historical_success REAL NOT NULL DEFAULT 0.5
+      );
+      INSERT INTO executor_profiles (name, historical_success) VALUES ('legacy-profile', 0.9);
+
+      CREATE TABLE executor_route_events (id TEXT PRIMARY KEY);
+
+      CREATE TABLE agent_classes (
+        name TEXT PRIMARY KEY,
+        historical_success REAL NOT NULL DEFAULT 0.5
+      );
+      INSERT INTO agent_classes (name, historical_success) VALUES ('codex-cli', 0.85);
+
+      CREATE TABLE work_units (
+        id TEXT PRIMARY KEY,
+        agent_class_name TEXT NOT NULL,
+        FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+      );
+      INSERT INTO work_units (id, agent_class_name) VALUES ('wu-1', 'codex-cli');
+    `);
+
+    runMigrations(db);
+
+    const executorProfileColumns = db.prepare('PRAGMA table_info(executor_profiles)').all() as Array<{ name: string }>;
+    const agentClassColumns = db.prepare('PRAGMA table_info(agent_classes)').all() as Array<{ name: string }>;
+    expect(executorProfileColumns.map(column => column.name)).not.toContain('historical_success');
+    expect(agentClassColumns.map(column => column.name)).not.toContain('historical_success');
+    expect(db.prepare('SELECT name FROM executor_profiles').all()).toEqual([{ name: 'legacy-profile' }]);
+    expect(db.prepare('SELECT name FROM agent_classes').all()).toEqual([{ name: 'codex-cli' }]);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 19 });
   });
 });

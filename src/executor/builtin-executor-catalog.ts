@@ -31,6 +31,8 @@ export const ROUTING_CAPABILITY_REGISTRY = {
 
 export type RoutingCapabilityId = keyof typeof ROUTING_CAPABILITY_REGISTRY;
 
+export type BuiltinExecutorName = 'codex-cli' | 'pi-agent';
+
 type AgentClassDefaults = Omit<
   AgentClass,
   | 'name'
@@ -38,7 +40,6 @@ type AgentClassDefaults = Omit<
   | 'capabilities'
   | 'primaryUseCases'
   | 'avoidUseCases'
-  | 'historicalSuccess'
   | 'createdAt'
   | 'updatedAt'
 > & {
@@ -46,7 +47,7 @@ type AgentClassDefaults = Omit<
 };
 
 export interface BuiltinExecutorDefinition {
-  name: 'codex-cli' | 'pi-agent';
+  name: BuiltinExecutorName;
   routingCapabilities: readonly RoutingCapabilityId[];
   primaryUseCases: readonly string[];
   avoidUseCases: readonly string[];
@@ -208,6 +209,9 @@ export function validateBuiltinExecutorDefinitions(
     }
 
     const bindingKeys = [definition.adapterBinding.adapterName, ...definition.adapterBinding.commandAliases];
+    if (definition.adapterBinding.commandAliases.length === 0) {
+      errors.push(`Executor ${definition.name} must declare at least one command alias`);
+    }
     for (const bindingKey of bindingKeys) {
       if (!bindingKey.trim()) {
         errors.push(`Executor ${definition.name} contains an empty Adapter binding`);
@@ -234,6 +238,15 @@ export function getBuiltinExecutorDefinitions(): BuiltinExecutorDefinition[] {
   return BUILTIN_EXECUTOR_DEFINITIONS
     .map(cloneBuiltinExecutorDefinition)
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function getBuiltinExecutorDefinition(name: string): BuiltinExecutorDefinition | null {
+  const definition = BUILTIN_EXECUTOR_DEFINITIONS.find(candidate => candidate.name === name);
+  return definition ? cloneBuiltinExecutorDefinition(definition) : null;
+}
+
+export function isBuiltinExecutorName(name: string): name is BuiltinExecutorName {
+  return BUILTIN_EXECUTOR_DEFINITIONS.some(definition => definition.name === name);
 }
 
 export function getPlannerExecutorCatalog(): PlannerExecutorCatalog {

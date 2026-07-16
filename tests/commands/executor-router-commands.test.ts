@@ -34,7 +34,7 @@ describe('agent class and planner route commands', () => {
       '/executor register research-bot --command research-bot --args "run --prompt {prompt}" '
       + '--check "research-bot --version" --domains research,reporting '
       + '--capabilities research,report_generation --inputs text,files '
-      + '--outputs markdown,report --risk low --success 0.8',
+      + '--outputs markdown,report --risk low',
       context,
     );
     expect(register.content).toBe('Registered Executor AgentClass: research-bot');
@@ -58,7 +58,7 @@ describe('agent class and planner route commands', () => {
 
     await catalog.execute(
       '/executor register legal-contract --domains legal,contract '
-      + '--capabilities contract_review,risk_matrix --risk high --success 0.9',
+      + '--capabilities contract_review,risk_matrix --risk high',
       context,
     );
 
@@ -69,5 +69,18 @@ describe('agent class and planner route commands', () => {
     const feedback = await catalog.execute('/executor feedback', context);
     expect(feedback.content).toContain('taskId');
     expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
+  });
+
+  it('rejects register, update, and unregister operations for canonical names', async () => {
+    const db = createDb();
+    const context = createContext(db);
+    const catalog = createDefaultCommandCatalog();
+
+    expect((await catalog.execute('/executor register codex-cli --command custom', context)).content)
+      .toBe('Cannot register or update canonical Executor AgentClass: codex-cli');
+    expect((await catalog.execute('/executor register pi-agent --command custom', context)).content)
+      .toBe('Cannot register or update canonical Executor AgentClass: pi-agent');
+    expect((await catalog.execute('/executor unregister codex-cli', context)).content)
+      .toBe('Cannot unregister canonical Executor AgentClass: codex-cli');
   });
 });
