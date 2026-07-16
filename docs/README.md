@@ -28,7 +28,7 @@ Files in [plans/](plans/) and older top-level docs record design exploration, im
 ## Operational Notes
 
 - [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the unified API endpoint (`docker/pi.env`) — see the README section. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Closed migration records remain historical.
+- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Planner routing capability boundaries are tracked in [planner-routing-capability-model-debt](tech-debt/planner-routing-capability-model-debt.md). Closed migration records remain historical.
 
 ## For Agents
 

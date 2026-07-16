@@ -40,7 +40,6 @@ function agentClass(name: string): AgentClass {
     avoidUseCases: [],
     intentAffinity: {},
     riskLevel: 'medium',
-    historicalSuccess: 0.5,
     harness: null,
     model: null,
     skills: [],

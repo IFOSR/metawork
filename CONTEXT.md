@@ -14,7 +14,7 @@ The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. 
 
 The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService`; do not reintroduce a parallel routing layer.
 
-Startup inserts missing `planner` and configured executor AgentClasses without overwriting database records. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. Existing `executor_profiles` rows migrate into `agent_classes` as `kind=executor`.
+Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions. A non-canonical configured Executor must already be registered and is not rewritten. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. The retired `executor_profiles` table is removed by migration v20.
 
 When touching dispatch, update focused tests around the active path first: PlanningAgent/PolicyKernel, work-graph runtime service, work unit claim service, session execution coordinator, execution runtime, and storage migrations. The current regression anchor is `tests/session/planner-work-unit-bugfix.test.ts`.
 
@@ -35,6 +35,14 @@ _Avoid_: executor state, work unit state
 **Agent Class**:
 A fixed configuration template for a type of agent, including its harness, model, skills, MCP servers, plugins, runtime command, affinity metadata, and runtime settings. MetaClaw starts with canonical planner and executor classes.
 _Avoid_: executor profile, capability class, instance, worker
+
+**Routing Capability**:
+A controlled, supported delivery contract that helps Planner prefer an Executor AgentClass. It is not an exhaustive inventory of that Executor's native tools, permissions, or theoretical abilities.
+_Avoid_: tool list, hard permission, free-form capability tag
+
+**Executor Catalog**:
+The canonical static definitions of built-in Executor AgentClasses and the Planner-safe projection derived from them. Dynamic class health and recent execution outcomes are not part of this catalog.
+_Avoid_: executor status, Work Unit capacity, runtime inventory
 
 **Planner**:
 The agent class responsible for understanding user intent and proposing structured plans. A concrete planner work unit implements the PlanningAgent interface; it proposes but does not authorize or apply runtime state changes.
@@ -84,6 +92,22 @@ _Avoid_: ExecutionPolicy, primaryExecutor, candidateExecutors, fallbackChain
 A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.
 _Avoid_: TUI output line, transient progress text, task message
 
+**Kernel Executor Status Projection**:
+The Kernel-owned, persisted, one-row-per-AgentClass current control-plane view of class health and recent execution outcomes, synchronously derived from Runtime work-unit facts and execution outcomes. AgentClass instances are independently started, so a busy Work Unit does not change this projection; it is not a Work Unit or an execution log.
+_Avoid_: AgentClass availability, Work Unit state, executor call log
+
+**AgentClass Health**:
+The Kernel's classification of whether an AgentClass itself is usable: unverified, healthy, error, or disabled. A failed executor instance does not change class health unless its cause proves a class-level fault or meets the configured systemic-failure rule.
+_Avoid_: Work Unit status, last execution result, capacity
+
+**Recent Execution Outcome**:
+The latest recorded result and classified reason for an AgentClass execution attempt. It informs Planner choice without by itself making the AgentClass unhealthy.
+_Avoid_: AgentClass Health, executor availability
+
+**Recent Execution Attempts**:
+The bounded, Planner-safe history of the three latest execution outcomes for one AgentClass. It contains outcome time and classified reason, not prompts, raw logs, tool traces, or credentials.
+_Avoid_: execution transcript, executor call log
+
 **Task Event**:
 A durable event about a task or subtask, such as planned, recovered, dispatched, blocked, succeeded, failed, cancelled, or resumed. Task events are the replayable source of truth for planner recovery; session output is only a UI projection.
 _Avoid_: executor-only log, route event, progress line
@@ -97,12 +121,16 @@ A valid planner outcome meaning no subtask should be dispatched. The runtime mus
 _Avoid_: failure, clarification, unknown route
 
 **Selection Signal**:
-A hard, quantifiable fact read by the Planner through tools when multiple agent classes can satisfy a subtask, such as static capability metadata or current WorkUnit capacity. Natural-language keyword weights and legacy AgentClass availability are not selection signals.
+A controlled fact used by Planner to order AgentClasses for a Subtask, such as a static Routing Capability or current AgentClass Health and Recent Execution Outcome. Natural-language keyword weights, legacy AgentClass availability, and WorkUnit busy state are not selection signals.
 _Avoid_: static historical success as truth, user preference
 
+**Preferred AgentClass List**:
+The ordered AgentClasses proposed for one Subtask. The first item is preferred and the remaining items form its fallback chain; the list is still subject to Kernel validation before execution.
+_Avoid_: unordered candidates, Work Unit pool, capability registry
+
 **Fallback Chain**:
-The ordered list of AgentClass candidates already approved in a plan. Runtime may probe each candidate in order when capacity is absent; failed probes become failed WorkUnits. If all probes fail, Runtime blocks the task without calling Planner again.
-_Avoid_: race, parallel candidates, unplanned platform reroute
+The ordered tail of a Preferred AgentClass List after its first item. Runtime may try these already-approved alternatives in order when the preferred class cannot be used; new cross-class retry and recovery policy remains a separate Kernel concern.
+_Avoid_: preferred AgentClass, race, parallel candidates, unplanned platform reroute
 
 **Verification Level**:
 The strength of post-execution validation: none, compile, test, or review.

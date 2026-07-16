@@ -1,6 +1,7 @@
 import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import { isBuiltinExecutorName } from '../executor/builtin-executor-catalog.js';
 import type { CommandHandler } from './router.js';
 
 function parseListArg(args: string[], flag: string): string[] {
@@ -42,7 +43,6 @@ function buildAgentClassFromArgs(
       : existing?.avoidUseCases ?? [],
     intentAffinity: existing?.intentAffinity ?? {},
     riskLevel: risk,
-    historicalSuccess: Number.parseFloat(parseScalarArg(args, '--success') ?? String(existing?.historicalSuccess ?? 0.5)),
     harness: existing?.harness ?? 'cli',
     model: existing?.model ?? null,
     skills: existing?.skills ?? [],
@@ -62,7 +62,7 @@ function formatAgentClass(agentClass: AgentClass): string {
   const runtime = agentClass.runtimeCommand
     ? `runtime=${agentClass.runtimeCommand} ${(agentClass.runtimeArgs ?? []).join(' ')}`.trim()
     : 'runtime=-';
-  return `  ${agentClass.name} kind=${agentClass.kind} domains=${agentClass.domains.join(',') || '-'} capabilities=${agentClass.capabilities.join(',') || '-'} intents=${intents || '-'} risk=${agentClass.riskLevel} success=${agentClass.historicalSuccess} ${runtime}`;
+  return `  ${agentClass.name} kind=${agentClass.kind} domains=${agentClass.domains.join(',') || '-'} capabilities=${agentClass.capabilities.join(',') || '-'} intents=${intents || '-'} risk=${agentClass.riskLevel} ${runtime}`;
 }
 
 export const executorCommand: CommandHandler = {
@@ -94,6 +94,9 @@ export const executorCommand: CommandHandler = {
           data: { executorRegisterWizard: true },
         };
       }
+      if (isBuiltinExecutorName(name)) {
+        return { type: 'text', content: `Cannot register or update canonical Executor AgentClass: ${name}` };
+      }
       agentClassRepo.upsert(buildAgentClassFromArgs(name, optionArgs, agentClassRepo.findByName(name)));
       return {
         type: 'text',
@@ -107,6 +110,9 @@ export const executorCommand: CommandHandler = {
       const name = args[1];
       if (!name) {
         return { type: 'text', content: 'Usage: /executor unregister <name>' };
+      }
+      if (isBuiltinExecutorName(name)) {
+        return { type: 'text', content: `Cannot unregister canonical Executor AgentClass: ${name}` };
       }
       const existing = agentClassRepo.findByName(name);
       if (!existing) {

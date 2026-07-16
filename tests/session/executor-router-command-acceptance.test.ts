@@ -278,7 +278,6 @@ describe('planner-first executor command acceptance', () => {
       availableExecutorCommands: new Set(['codex', 'pi']),
     });
     session.initialize();
-    await session.submit('/executor register pi-agent --command pi --args "run --prompt {prompt}" --check "pi --version" --domains general --capabilities report_generation');
     await session.submit('执行带候选回退的任务', { awaitAsyncWork: true });
 
     const output = session.getSnapshot().output.join('\n');

@@ -154,7 +154,7 @@ MetaClaw supports these executor adapters:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
 | Hermes Agent | `hermes` | Research tasks, multi-tool orchestration, memory/gateway/assistant workflows | Install and authenticate Hermes |
 
-The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi Agent and Hermes Agent can be selected for research-style work when registered in the catalog.
+The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi is the canonical current-web-research class; other Executor classes must be explicitly registered before use.
 
 ## Prerequisites
 
@@ -358,6 +358,8 @@ One-line registration is also supported:
 
 `{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaClaw appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
 
+`codex-cli` and `pi-agent` are owned completely by the canonical built-in definitions. Startup force-converges every persisted static AgentClass field for those names, and normal registration APIs reject attempts to overwrite or delete them. Non-canonical Executor capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. The legacy `executor_profiles` table is removed at schema version 20.
+
 Executor extension contract:
 
 Required routing fields:
@@ -374,8 +376,9 @@ Recommended routing fields:
 - `avoidUseCases`: examples of tasks that should not route to this executor.
 - `riskLevel`: `low`, `medium`, or `high`.
 - `intentAffinity`: route-intent affinity by keys such as `repo_execution`, `research_workflow`, `memory_agent_ops`, and `general`.
-- `historicalSuccess`: success metadata retained for compatibility and candidate ranking fallback when a route-intent affinity is not present.
 - `projectUrl`: source repository or documentation URL.
+
+Executor health and recent outcomes are dynamic status. Planner reads them through `list_executor_status`; they are not stored as static AgentClass routing metadata.
 
 Required runtime binding:
 

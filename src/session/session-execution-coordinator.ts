@@ -25,6 +25,7 @@ import type { WorkUnitClaim, WorkUnitClaimService } from '../execution/work-unit
 import type { AcceptanceCriterion } from '../execution/execution-aggregator.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
 import type { PlanningAction } from '../planning/planning-types.js';
+import type { KernelExecutorStatusProjector } from '../kernel/kernel-executor-status-projector.js';
 
 // Plan actions that intend executor work when they reach dispatch. resume/fork
 // carry 'task_control' (no longer relabeled to 'plan_work_graph'); everything
@@ -61,6 +62,7 @@ export interface SessionExecutionCoordinatorDeps {
   verificationAndDeliveryService: VerificationAndDeliveryService;
   persistenceService: SessionPersistenceService;
   memoryCaptureService: MemoryCaptureService;
+  kernelExecutorStatusProjector: KernelExecutorStatusProjector;
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
@@ -241,6 +243,11 @@ export class SessionExecutionCoordinator {
           onProgress: progressTracker.onProgress,
         });
         finalExecution = execution;
+        this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
+          agentClassName: agentClass.name,
+          outcome: execution.status === 'success' ? 'succeeded' : 'failed',
+          error: execution.status === 'success' ? null : execution.error,
+        });
 
         const postRunTask = this.deps.taskRuntimeService.findTask(taskId);
         if (postRunTask?.status !== 'running') {

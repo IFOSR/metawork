@@ -68,7 +68,6 @@ export interface AgentClass {
   avoidUseCases: string[];
   intentAffinity: Record<string, number>;
   riskLevel: AgentClassRiskLevel;
-  historicalSuccess: number;
   harness: string | null;
   model: string | null;
   skills: string[];

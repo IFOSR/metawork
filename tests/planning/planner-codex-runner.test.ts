@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import {
   buildPlannerCodexArgs,
   CodexPlannerRunner,
@@ -10,12 +11,17 @@ import type { PlanningContext } from '../../src/planning/planning-types.js';
 function context(): PlanningContext {
   return {
     userInput: 'continue',
+    initialContext: {
+      longTermMemories: [],
+      conversationHistory: [],
+    },
     request: { sessionId: 'sess_runner', source: 'interactive' },
     permissions: {
       allowDurableTask: true,
       allowFileModification: true,
       allowExternalGateway: false,
     },
+    executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 1_234,
   };
 }

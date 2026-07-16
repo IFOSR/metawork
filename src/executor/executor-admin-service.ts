@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassService } from './agent-class-service.js';
 import type { SessionPresentationService } from '../session/session-presentation-service.js';
+import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
 
 type ExecutorRegisterWizardStep =
   | 'name'
@@ -71,7 +72,7 @@ export class ExecutorAdminService {
     this.wizard = { step: 'name', profile: {} };
     return [
       '1/8 Executor AgentClass name?',
-      'Examples: codex-cli, finance-research-agent',
+      'Examples: research-bot, finance-research-agent',
     ];
   }
 
@@ -88,6 +89,9 @@ export class ExecutorAdminService {
     switch (wizard.step) {
       case 'name':
         if (!value) return { handled: true, lines: ['Name cannot be empty.'] };
+        if (isBuiltinExecutorName(value)) {
+          return { handled: true, lines: [`Cannot register canonical Executor AgentClass: ${value}`] };
+        }
         wizard.profile.name = value;
         wizard.step = 'mode';
         return { handled: true, lines: ['2/8 Type url or manual.'] };
@@ -183,6 +187,9 @@ export class ExecutorAdminService {
     if (!wizard.profile.name || !wizard.profile.runtimeCommand) {
       return ['Registration failed: missing name or command.'];
     }
+    if (isBuiltinExecutorName(wizard.profile.name)) {
+      return [`Cannot register canonical Executor AgentClass: ${wizard.profile.name}`];
+    }
 
     const existing = this.deps.agentClassService.findByName(wizard.profile.name);
     const agentClass: AgentClass = {
@@ -198,7 +205,6 @@ export class ExecutorAdminService {
       avoidUseCases: existing?.avoidUseCases ?? [],
       intentAffinity: existing?.intentAffinity ?? {},
       riskLevel: existing?.riskLevel ?? 'medium',
-      historicalSuccess: existing?.historicalSuccess ?? 0.5,
       harness: existing?.harness ?? 'cli',
       model: existing?.model ?? null,
       skills: existing?.skills ?? [],

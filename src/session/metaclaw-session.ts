@@ -54,6 +54,8 @@ import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
 import { KernelDecisionApplier } from './kernel-decision-applier.js';
 import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
+import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import { KernelExecutorStatusProjector } from '../kernel/kernel-executor-status-projector.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -143,6 +145,7 @@ export class MetaclawSession {
   private readonly sessionExecutionCoordinator: SessionExecutionCoordinator;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
   private readonly kernelDecisionApplier: KernelDecisionApplier;
+  private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
@@ -186,6 +189,7 @@ export class MetaclawSession {
       60_000,
       name => this.executionRuntime.isExecutorAvailable(name),
     );
+    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
     this.workspaceTargetService = new WorkspaceTargetService();
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
@@ -259,6 +263,7 @@ export class MetaclawSession {
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
       memoryCaptureService: this.memoryCaptureService,
+      kernelExecutorStatusProjector: new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo),
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
@@ -735,6 +740,8 @@ export class MetaclawSession {
         tasks: this.taskRuntimeService.listTasks(),
         runningTask: this.taskRuntimeService.getCurrentRunningTask(),
         agentClasses: this.listRuntimeVisibleAgentClasses(),
+        executorCatalog: context.executorCatalog,
+        executorStatuses: this.kernelExecutorStatusRepo.list(),
         currentFocus: this.getFocusContext(),
       });
 

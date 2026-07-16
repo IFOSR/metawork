@@ -1,38 +1,16 @@
 // Seeds built-in AgentClass profiles without treating command probes as static metadata.
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import {
+  getBuiltinExecutorAgentClasses,
+  getBuiltinExecutorDefinition,
+} from './builtin-executor-catalog.js';
 
 export interface AgentClassSeedInput {
   defaultExecutorName: string;
   availableCommands?: Set<string>;
-}
-
-function executorClass(defaultExecutorName: string): AgentClass {
-  return {
-    name: defaultExecutorName,
-    kind: 'executor',
-    domains: ['software', 'repo', 'terminal', 'code_review'],
-    capabilities: ['coding', 'tests', 'debugging', 'refactor', 'code_review', 'noninteractive_execution'],
-    inputTypes: ['text', 'files'],
-    outputTypes: ['code', 'patch', 'markdown', 'review'],
-    strengths: ['local repository editing', 'test execution', 'bug fixing', 'code review'],
-    weaknesses: ['broad business workflow orchestration'],
-    primaryUseCases: ['implementation', 'bugfix', 'test execution', 'code review'],
-    avoidUseCases: ['task planning ownership', 'long-thread lifecycle management'],
-    intentAffinity: { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
-    riskLevel: 'medium',
-    historicalSuccess: 0.85,
-    harness: 'cli',
-    model: null,
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-    runtimeCommand: null,
-    runtimeArgs: [],
-    runtimeCheckCommand: null,
-    projectUrl: null,
-  };
 }
 
 function plannerClass(): AgentClass {
@@ -49,7 +27,6 @@ function plannerClass(): AgentClass {
     avoidUseCases: ['direct code implementation', 'artifact mutation'],
     intentAffinity: {},
     riskLevel: 'medium',
-    historicalSuccess: 0.8,
     harness: 'in_process',
     model: null,
     skills: ['metaclaw-planner'],
@@ -62,13 +39,34 @@ function plannerClass(): AgentClass {
   };
 }
 
+function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
+  const { createdAt: _existingCreatedAt, updatedAt: _existingUpdatedAt, ...existingStatic } = existing;
+  const { createdAt: _canonicalCreatedAt, updatedAt: _canonicalUpdatedAt, ...canonicalStatic } = canonical;
+  return isDeepStrictEqual(existingStatic, canonicalStatic);
+}
+
 export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
   input: AgentClassSeedInput,
 ): void {
+  const canonicalAgentClasses = getBuiltinExecutorAgentClasses();
+  if (
+    !getBuiltinExecutorDefinition(input.defaultExecutorName)
+    && !agentClassRepo.findByName(input.defaultExecutorName)
+  ) {
+    throw new Error(
+      `Default Executor ${input.defaultExecutorName} is not canonical and has no registered AgentClass. `
+      + `Start with ${canonicalAgentClasses.map(agentClass => agentClass.name).join(' or ')}, `
+      + 'register the Executor AgentClass, then switch the default configuration.',
+    );
+  }
+
   if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
-  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
-    agentClassRepo.upsert(executorClass(input.defaultExecutorName));
+  for (const canonical of canonicalAgentClasses) {
+    const existing = agentClassRepo.findByName(canonical.name);
+    if (!existing || !hasCanonicalStaticFields(existing, canonical)) {
+      agentClassRepo.upsert({ ...canonical, createdAt: existing?.createdAt });
+    }
   }
 }
 

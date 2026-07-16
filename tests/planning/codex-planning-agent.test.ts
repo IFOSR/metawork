@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import { CodexPlanningAgent } from '../../src/planning/codex-planning-agent.js';
 import { validatePlanningAgentPlan } from '../../src/planning/planning-agent-plan-validator.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
@@ -16,6 +17,7 @@ function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
       allowFileModification: true,
       allowExternalGateway: true,
     },
+    executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 5_000,
     ...overrides,
   };

@@ -6,7 +6,7 @@
 
 <div align="center">
 
-# MetaClaw
+# AnyFusion
 
 **面向持久化智能体工作的本地 AI Task OS。**
 
@@ -20,19 +20,19 @@
 
 </div>
 
-## MetaClaw 是什么？
+## AnyFusion 是什么？
 
-MetaClaw 是一个开源的本地智能体工作运行时。它位于人和 Codex、Pi、Hermes 以及其他本地 executor CLI 之间，把聊天式请求转化为带有状态、记忆、规划、work-unit 分发、验证和交付链路的持久化任务。
+AnyFusion 是一个开源的本地智能体工作运行时。它位于人和 Codex、Pi、Hermes 以及其他本地 executor CLI 之间，把聊天式请求转化为带有状态、记忆、规划、work-unit 分发、验证和交付链路的持久化任务。
 
-普通助手回答当前这一轮。MetaClaw 给更长周期的工作提供一个操作系统：任务可以被创建、挂起、恢复、搜索、拆成子任务、分配给 executor work unit、按证据验收，并通过终端或 Gateway 返回给用户。
+普通助手回答当前这一轮。AnyFusion 给更长周期的工作提供一个操作系统：任务可以被创建、挂起、恢复、搜索、拆成子任务、分配给 executor work unit、按证据验收，并通过终端或 Gateway 返回给用户。
 
-MetaClaw 当前适合 local-first 团队和研究型工作流：仓库修改、多步骤分析、产物生成、飞书交付，以及可重复恢复的任务执行。
+AnyFusion 当前适合 local-first 团队和研究型工作流：仓库修改、多步骤分析、产物生成、飞书交付，以及可重复恢复的任务执行。
 
-## 为什么需要 MetaClaw？
+## 为什么需要 AnyFusion？
 
 Agent 正在变成可以承担工作的执行者，但大多数 agent run 仍然是脆弱的会话。终端关闭后，上下文会丢。任务阻塞后，系统会忘记原因。多个 executor 并存时，路由逻辑容易混进 prompt。结果返回后，也经常缺少持久化证据链。
 
-MetaClaw 把 agent work 当作真正的 work 来处理：
+AnyFusion 把 agent work 当作真正的 work 来处理：
 
 - 一个请求会被归类为普通对话、任务控制，或持久化工作。
 - 持久化工作拥有明确任务状态和恢复上下文。
@@ -55,11 +55,11 @@ MetaClaw 把 agent work 当作真正的 work 来处理：
 
 ## 快速安装
 
-MetaClaw 需要 Node.js 20+ 和类 Unix shell。Windows 推荐使用 WSL2 + Ubuntu 作为运行环境。
+AnyFusion 需要 Node.js 20+ 和类 Unix shell。Windows 推荐使用 WSL2 + Ubuntu 作为运行环境。
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
 metaclaw --help
 npm run smoke:metaclaw
@@ -78,7 +78,7 @@ metaclaw --help
 
 ## 开始使用
 
-在交互式终端中启动 MetaClaw：
+在交互式终端中启动 AnyFusion：
 
 ```bash
 metaclaw
@@ -90,7 +90,7 @@ metaclaw
 Compare these three contracts and create a concise risk matrix.
 ```
 
-MetaClaw 会判断输入应当是直接回答、任务控制、澄清，还是持久化任务。持久化工作会被规划、授权、保存、分发给 executor work unit、验证，并在产生文件时记录为任务产物。
+AnyFusion 会判断输入应当是直接回答、任务控制、澄清，还是持久化任务。持久化工作会被规划、授权、保存、分发给 executor work unit、验证，并在产生文件时记录为任务产物。
 
 常用命令：
 

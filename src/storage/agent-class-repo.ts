@@ -14,7 +14,6 @@ interface AgentClassRow {
   avoid_use_cases_json: string;
   intent_affinity_json: string;
   risk_level: AgentClassRiskLevel;
-  historical_success: number;
   harness: string | null;
   model: string | null;
   skills_json: string;
@@ -50,7 +49,6 @@ function rowToAgentClass(row: AgentClassRow): AgentClass {
     avoidUseCases: parseList(row.avoid_use_cases_json),
     intentAffinity: parseAffinity(row.intent_affinity_json),
     riskLevel: row.risk_level,
-    historicalSuccess: row.historical_success,
     harness: row.harness,
     model: row.model,
     skills: parseList(row.skills_json),
@@ -74,10 +72,10 @@ export class AgentClassRepo {
       INSERT INTO agent_classes (
         name, kind, domains_json, capabilities_json, input_types_json, output_types_json,
         strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
-        intent_affinity_json, risk_level, historical_success, harness, model,
+        intent_affinity_json, risk_level, harness, model,
         skills_json, mcp_servers_json, plugins_json, runtime_command, runtime_args_json,
         runtime_check_command, project_url, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         kind = excluded.kind,
         domains_json = excluded.domains_json,
@@ -90,7 +88,6 @@ export class AgentClassRepo {
         avoid_use_cases_json = excluded.avoid_use_cases_json,
         intent_affinity_json = excluded.intent_affinity_json,
         risk_level = excluded.risk_level,
-        historical_success = excluded.historical_success,
         harness = excluded.harness,
         model = excluded.model,
         skills_json = excluded.skills_json,
@@ -114,7 +111,6 @@ export class AgentClassRepo {
       JSON.stringify(agentClass.avoidUseCases),
       JSON.stringify(agentClass.intentAffinity),
       agentClass.riskLevel,
-      agentClass.historicalSuccess,
       agentClass.harness,
       agentClass.model,
       JSON.stringify(agentClass.skills),
