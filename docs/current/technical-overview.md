@@ -154,7 +154,7 @@ MetaClaw supports these executor adapters:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
 | Hermes Agent | `hermes` | Research tasks, multi-tool orchestration, memory/gateway/assistant workflows | Install and authenticate Hermes |
 
-The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi is the canonical current-web-research class; other Executor classes must be explicitly registered before use.
+The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi is the canonical current-web-research class. A configured non-canonical default that has not been registered is materialized as an unclassified AgentClass with no routing capabilities; an existing non-canonical class is preserved.
 
 ## Prerequisites
 
@@ -358,7 +358,7 @@ One-line registration is also supported:
 
 `{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaClaw appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
 
-`codex-cli` and `pi-agent` are owned completely by the canonical built-in definitions. Startup force-converges every persisted static AgentClass field for those names, and normal registration APIs reject attempts to overwrite or delete them. Non-canonical Executor capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. The legacy `executor_profiles` table is removed at schema version 20.
+`codex-cli` and `pi-agent` are owned completely by the canonical built-in definitions. Startup force-converges every persisted static AgentClass field for those names, and normal registration APIs reject attempts to overwrite or delete them. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability display metadata is irreversibly replaced by the controlled Routing Capability IDs (`workspace-engineering` / `current-web-research`); this is intentional. Non-canonical Executor capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. A missing non-canonical default receives only an empty-capability, unclassified record. The legacy `executor_profiles` table is removed at schema version 20.
 
 Executor extension contract:
 
