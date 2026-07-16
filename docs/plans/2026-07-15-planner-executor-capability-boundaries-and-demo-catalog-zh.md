@@ -4,13 +4,15 @@
 
 - **计划日期**：2026-07-15
 - **修订日期**：2026-07-16
-- **当前状态**：规划已收敛，尚未开始生产实现
+- **当前状态**：已拆分；能力统一源由 2026-07-16 聚焦计划接管，其余工作暂缓
 - **本轮 Executor 范围**：`codex-cli` 与 `pi-agent`
 - **第三 Executor**：明确暂缓，不是本轮交付、验收或阻塞条件
 - **完成日期**：未完成
 - **实现提交**：未产生
 
 本轮的目标是先打通 Planner 决策能力与 Executor 能力声明，而不是凑齐三个 demo Executor。第三 Executor 只在双执行器能力模型、目录、Planner、Kernel 和执行范围防线稳定后，作为独立目录扩展示例另行立项。
+
+> 2026-07-16 范围调整：本文件保留为前期整体设计记录。当前只实施 [`2026-07-16-unified-executor-routing-capability-source.md`](2026-07-16-unified-executor-routing-capability-source.md) 中的统一能力定义源；PlanningAgentPlan v3、工作图拆分/合并规则、并行语义和 Executor 执行范围防线全部暂缓，不得混入本轮实现。
 
 计划完成时必须回填：实际 Planner 行为、两个内置 Executor 的能力 profile、Schema 版本、迁移、验证命令及结果、实现与收尾提交。第三 Executor 不在本计划的完成定义内。
 

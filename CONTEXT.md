@@ -36,6 +36,14 @@ _Avoid_: executor state, work unit state
 A fixed configuration template for a type of agent, including its harness, model, skills, MCP servers, plugins, runtime command, affinity metadata, and runtime settings. MetaClaw starts with canonical planner and executor classes.
 _Avoid_: executor profile, capability class, instance, worker
 
+**Routing Capability**:
+A controlled, supported delivery contract that helps Planner prefer an Executor AgentClass. It is not an exhaustive inventory of that Executor's native tools, permissions, or theoretical abilities.
+_Avoid_: tool list, hard permission, free-form capability tag
+
+**Executor Catalog**:
+The canonical static definitions of built-in Executor AgentClasses and the Planner-safe projection derived from them. Dynamic class health and recent execution outcomes are not part of this catalog.
+_Avoid_: executor status, Work Unit capacity, runtime inventory
+
 **Planner**:
 The agent class responsible for understanding user intent and proposing structured plans. A concrete planner work unit implements the PlanningAgent interface; it proposes but does not authorize or apply runtime state changes.
 _Avoid_: leader, router agent, implementation agent, executor
@@ -113,12 +121,16 @@ A valid planner outcome meaning no subtask should be dispatched. The runtime mus
 _Avoid_: failure, clarification, unknown route
 
 **Selection Signal**:
-A hard, quantifiable fact read by the Planner through tools when multiple agent classes can satisfy a subtask, such as static capability metadata or current WorkUnit capacity. Natural-language keyword weights and legacy AgentClass availability are not selection signals.
+A controlled fact used by Planner to order AgentClasses for a Subtask, such as a static Routing Capability or current AgentClass Health and Recent Execution Outcome. Natural-language keyword weights, legacy AgentClass availability, and WorkUnit busy state are not selection signals.
 _Avoid_: static historical success as truth, user preference
 
+**Preferred AgentClass List**:
+The ordered AgentClasses proposed for one Subtask. The first item is preferred and the remaining items form its fallback chain; the list is still subject to Kernel validation before execution.
+_Avoid_: unordered candidates, Work Unit pool, capability registry
+
 **Fallback Chain**:
-The ordered list of AgentClass candidates already approved in a plan. Runtime may probe each candidate in order when capacity is absent; failed probes become failed WorkUnits. If all probes fail, Runtime blocks the task without calling Planner again.
-_Avoid_: race, parallel candidates, unplanned platform reroute
+The ordered tail of a Preferred AgentClass List after its first item. Runtime may try these already-approved alternatives in order when the preferred class cannot be used; new cross-class retry and recovery policy remains a separate Kernel concern.
+_Avoid_: preferred AgentClass, race, parallel candidates, unplanned platform reroute
 
 **Verification Level**:
 The strength of post-execution validation: none, compile, test, or review.

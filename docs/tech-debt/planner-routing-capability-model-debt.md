@@ -1,56 +1,72 @@
-# Planner 路由能力模型技术债
+# Planner 路由能力模型统一源技术债
 
-> 状态：已定方案，待实施  
-> 创建日期：2026-07-15  
-> 修订日期：2026-07-16  
-> 关联计划：[`docs/plans/2026-07-15-planner-executor-capability-boundaries-and-demo-catalog-zh.md`](../plans/2026-07-15-planner-executor-capability-boundaries-and-demo-catalog-zh.md)  
-> 本轮范围：仅 `codex-cli` 与 `pi-agent`；第三 Executor 明确暂缓。
+> 状态：方案已补充，待分三批实施
+>
+> 创建日期：2026-07-15
+>
+> 修订日期：2026-07-16
+>
+> 实施计划：[`docs/plans/2026-07-16-unified-executor-routing-capability-source.md`](../plans/2026-07-16-unified-executor-routing-capability-source.md)
+>
+> 架构决策：[`ADR-0018`](../adr/0018-supported-routing-contracts-and-unified-executor-definitions.md)
+>
+> 本轮范围：仅统一 `codex-cli` 与 `pi-agent` 的静态能力定义源。
 
 ## 结论
 
-Planner 的能力需求、AgentClass 的能力声明和 Kernel 的覆盖判断必须来自同一个受控注册表。不能让 Planner 生成自由字符串，也不能让 Seeder、prompt、MCP SQL、fixture 分别维护不同能力表。
+Planner 的静态 Executor 目录、AgentClass Seeder、Adapter binding 和能力证据必须来自同一个 canonical built-in Executor definition source。不能让 Planner catalog、Seeder、AdapterRegistry、数据库默认值和 fixture 分别维护不同能力表。
 
-采用 **Routing Capability 注册表 + canonical AgentClass Routing Profile + Planner-safe projection**：
+采用：
 
 ```text
-能力注册表
-  ├── 稳定 ID
-  ├── 最小交付契约
-  ├── 验证证据要求
-  └── 适用/避免语义
+受控 Routing Capability 注册表
         │
-        ├── 内置 AgentClass canonical profile
-        │     ├── codex-cli
-        │     └── pi-agent
-        │
-        ├── Planner-safe snapshot → Planner 决策
-        └── 同一 snapshot + 注册表 → PolicyKernel 覆盖校验
+        └── canonical BuiltinExecutorDefinition
+              ├── Routing Profile
+              ├── Planner-safe affordance projection
+              ├── AgentClass seed defaults
+              ├── Adapter binding / command aliases
+              └── capability evidence requirements
+                        │
+                        ├── Planner 启动上下文 executorCatalog
+                        ├── Seeder
+                        ├── PolicyKernel 静态校验输入
+                        └── ExecutionRuntime Adapter 注册/校验
+
+动态 Kernel Executor Status Projection
+        └── list_executor_status
 ```
 
-完整工具、CLI、Skill、MCP、运行命令、权限和 probe 是能力声明的实现证据；它们不应作为 Planner 的逐工具编排输入。
+静态能力与动态状态是两个来源不同、语义不同的输入：前者来自 canonical definitions，后者以现有 `list_executor_status` 为准。本轮不合并它们，也不重做动态健康投影。
 
-## 为什么现在必须先做
+## Routing Capability 的语义
 
-`PlanningAgentPlan v3.requiredCapabilities` 在没有注册表时只能安全地为 `[]`。此时结构规则可以阻止明显的同 Executor 步骤拆分，却不能判断一个 Executor 是否覆盖整个任务，也不能证明两个 Executor 的交接确有必要。
+`Routing Capability` 是 MetaClaw 对某 Executor 提供的**受支持路由契约**，用于优化任务选择；它不是底层工具、权限或理论能力全集。
 
-因此本技术债是 v3 真实能力语义、最少 Executor 拆分和 Kernel 防线的前置条件，而不是第三 Executor demo 的附属工作。
+因此：
+
+- 不同 Executor 的通用底层能力不需要全部暴露给 Planner；
+- 未暴露某项 Routing Capability，不等于物理禁用对应工具；
+- `primaryUseCases` 与 `avoidUseCases` 表达路由偏好，不是安全沙箱；
+- 完整 CLI、Skill、MCP、命令、权限和 probe 是实现与验证证据，不是 Planner 的逐工具编排输入；
+- 可以向 Planner 暴露稳定的差异性 affordance，例如 `workspace-read-write`、`public-web-search`，但不暴露易漂移的完整工具清单。
+
+本轮保留 `pi-agent` 原生的 `bash/read/write/edit` 等工具。本地工程任务应避免优先路由给 Pi，但未来 Kernel 可以在首选类不可用时考虑具有重叠底层功能的次优类；该 fallback 政策不是本轮实现目标。
 
 ## 本轮最小能力注册表
 
-只登记会改变“选择哪个 Executor”或“是否需要 Executor 交接”的能力。通用文本交付、命令执行细节、模型偏好、成本、成功率和主观强项不属于 Routing Capability。
+只登记会显著影响 Executor 首选顺序的能力。通用文本交付、命令执行细节、模型偏好、成本、成功率和主观强项不属于 Routing Capability。
 
-| ID | 最小交付契约 | 证据要求 | 本轮声明者 |
+| ID | 受支持交付契约 | 证据要求 | 本轮主要声明者 |
 | --- | --- | --- | --- |
 | `workspace-engineering` | 在受控工作区理解、修改和验证代码/文本文件；交付变更、测试或必要本地产物 | 对应 Adapter、工作区读写与命令执行 probe、工程任务测试 | `codex-cli` |
 | `current-web-research` | 获取当前公开网页信息、记录可追溯来源，并交付可被下游消费的研究结论 | 对应 Adapter、web search/web fetch 工具、来源与失败降级测试 | `pi-agent` |
 
-`workspace-engineering` 包含工程文档、普通本地 PDF 和同次验证，只要这些工作不会改变 Executor 选择。`current-web-research` 不隐含本地代码库修改能力。
+“主要声明者”表示正常路由首选，不表示其他 Executor 必须删除相近工具。新能力只能在出现新的、无法由现有契约表达的路由差异时增加，并同时定义 ID、交付契约、证据要求和 profile 声明。
 
-新能力只能在出现新的、不可由现有能力表达的 Executor 路由边界时增加；必须同时定义 ID、最小交付契约、验证证据和 profile 声明。第三 Executor 若未来加入，必须走该流程，不能先注册再补能力语义。
+## canonical definition 与 Planner-safe projection
 
-## canonical profile 与安全投影
-
-目录模块应是唯一内置定义来源。它可以包含完整运行事实，但必须导出稳定、最小的 Planner-safe projection：
+`src/executor/` 中的内置目录模块是唯一静态定义源。它拥有完整的内置定义，但向 Planner 只投影稳定、最小的信息：
 
 ```ts
 type RoutingCapabilityId =
@@ -62,70 +78,72 @@ interface PlannerExecutorProfile {
   routingCapabilities: RoutingCapabilityId[];
   primaryUseCases: string[];
   avoidUseCases: string[];
+  affordances: string[];
 }
 ```
 
 本轮 profile：
 
 ```ts
-const codexCli: PlannerExecutorProfile = {
+const codexCli = {
   name: 'codex-cli',
   routingCapabilities: ['workspace-engineering'],
   primaryUseCases: ['代码库实现、测试、工程文档与本地产物'],
   avoidUseCases: ['需要当前公开网页证据的研究'],
+  affordances: ['workspace-read-write', 'workspace-command-validation'],
 };
 
-const piAgent: PlannerExecutorProfile = {
+const piAgent = {
   name: 'pi-agent',
   routingCapabilities: ['current-web-research'],
   primaryUseCases: ['当前公开网络研究、来源核验与引用交接'],
   avoidUseCases: ['本地代码库修改、测试与工程产物生成'],
+  affordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
 };
 ```
 
-Planner 的启动上下文只读取该静态投影；不得看到凭据、具体命令、环境变量、完整 Skill 内容、实时 WorkUnit 状态或 capacity。近期执行结果与 AgentClass 健康状态不属于静态能力事实，按 ADR-0017 通过独立的 Kernel Executor Status Projection 查询提供受限摘要。PolicyKernel 使用同次静态快照和同一注册表，不重新从数据库或 MCP 获得另一份能力事实。
+Planner 不得从该投影看到凭据、具体命令、环境变量、完整 Skill 内容或工具全集。`list_executor_status` 继续按 ADR-0017 提供动态类健康和近期执行结果。
 
-## 覆盖与拆分规则
+## Planner 与 Kernel 的本轮使用方式
 
-Planner 为每个任务或候选 Subtask 输出受控的 `requiredCapabilities`。Kernel 判定：
+Planner 综合启动上下文中的静态 `executorCatalog` 与按需查询的 `list_executor_status`，为每个 Subtask 生成有序 Preferred AgentClass List：
 
 ```text
-subtask.requiredCapabilities ⊆ candidate.routingCapabilities
-  => 该 candidate 有资格执行 subtask
-
-存在一个 candidate 覆盖顶层任务全部 requiredCapabilities
-  => 默认单 Executor、单 Subtask
+[首选 AgentClass, fallback 1, fallback 2, ...]
 ```
 
-没有单一 candidate 覆盖并集时，Planner 才按不可替代能力安排交接。Planner 不能因为“实现、文档、PDF、验证”是不同步骤而拆分；这些步骤若都落在 `workspace-engineering` 内，就是一个 `codex-cli` Subtask。
+首项是 preferred AgentClass，其余项是 fallback chain。现有 `candidateAgentClasses` 可继续作为该概念的 wire/storage 字段，本轮不升级 PlanningAgentPlan schema。
 
-用户指定多个 Executor 或独立实例不构成能力词条。本轮 Kernel 尚不能保证数量/实例语义，Planner 必须 clarification，而不是增加例外路由规则。
+PolicyKernel 在实际应用计划前继续检查清单中的 AgentClass 是否已注册以及当前状态是否允许；前项不可用时按已批准顺序回退的现有行为保持不变。本轮不新增自动重试、熔断、跨类替代推理或失败后重新规划。
 
-## 本轮路由示例
+## 当前重复事实
 
-| 用户目标 | 需求能力 | 正确计划 |
-| --- | --- | --- |
-| 修改代码、补测试、更新文档、生成普通本地 PDF 并验证 | `workspace-engineering` | 1 个 `codex-cli` Subtask |
-| 调研最新公开信息并输出带引用报告 | `current-web-research` | 1 个 `pi-agent` Subtask |
-| 调研最新公开信息，再修改代码库 | 两项能力 | `pi-agent` 交接给 `codex-cli`，前提是没有单一候选覆盖并集 |
-| 将实现、文档、PDF、验证拆成四个 `codex-cli` Subtask | 仍只有 `workspace-engineering` | 拒绝并 repair 为 1 个 Subtask |
+- `builtin-executor-catalog.ts` 只拥有 Planner-safe profile；
+- `agent-class-seeder.ts` 再按名称分支复制 capabilities、用途和弱项；
+- `execution-runtime.ts` 单独维护 Adapter 名称、factory 和命令别名；
+- `agent_classes.capabilities_json` 与自定义向导仍接受自由字符串；
+- 测试 fixture 分别复制 profile 和 Adapter 名称。
+
+统一源完成后，以上内置静态事实必须从 canonical definitions 派生或由其强校验。旧自定义 Executor 数据保留，但自由字符串 capability 不自动进入受控内置目录。
 
 ## 实施债务与验收
 
-- [ ] 在 `src/executor/` 定义受控 `RoutingCapabilityId` 注册表、契约和证据要求。
-- [ ] 用版本化内置目录替换按默认 Executor 名称生成通用 profile 的 Seeder 行为。
-- [ ] 为 `codex-cli` 与 `pi-agent` 声明 canonical profile，并校验 profile、Adapter binding 和工具/probe 证据一致。
-- [ ] 导出稳定排序的 Planner-safe snapshot；Planner 和 Kernel 消费同一次快照。
-- [ ] 删除 Planner MCP 的静态能力查询入口。
-- [ ] 按 ADR-0017 提供独立的 Planner-safe Kernel Executor Status Projection 查询，不将其混入静态能力目录。
-- [ ] 将 v3 `requiredCapabilities`、Planner repair 与 PolicyKernel 覆盖校验接入注册表。
-- [ ] 证明单 Executor 连续工程任务只调用一次；只有能力并集无单一覆盖者时才出现 `pi-agent → codex-cli` 交接。
-- [ ] 证明未注册 capability、候选不覆盖 capability、或 profile/Adapter 不一致时 fail closed。
+- [ ] 定义受控 `RoutingCapabilityId` 注册表、交付契约和证据要求。
+- [ ] 将两个内置 Executor 的 Routing Profile、AgentClass defaults、Adapter binding 和证据声明合入 canonical definitions。
+- [ ] 让现有 `getPlannerExecutorCatalog()` 只从 canonical definitions 做稳定投影。
+- [ ] 让 Seeder 从 canonical definitions 构造内置默认值，不再按名称复制 profile。
+- [ ] 让 AdapterRegistry 从 canonical binding 派生或对其做强一致性校验。
+- [ ] 对未注册 capability、重复 Executor、缺失 Adapter/binding、缺失证据声明 fail closed。
+- [ ] 保留旧自定义 Executor 数据，但不把其自由 capability 字符串自动认证为受控 Routing Capability。
+- [ ] 证明 `list_executor_status` 仍只承载动态状态，静态能力不重新进入 MCP 查询。
+- [ ] 将重复 fixture 改为从统一目录 builder 生成。
 
 ## 非目标
 
-- 不构建覆盖所有 CLI、MCP、文件格式和模型技巧的百科式能力库。
-- 不要求 Planner 预测 Executor 的逐工具调用序列。
-- 不把 `strengths`、模型偏好、成功率或成本伪装为硬能力。
-- 不在本轮设计或注册第三 Executor。
+- 不实现 PlanningAgentPlan v3 或 `requiredCapabilities`。
+- 不实现 Subtask 合并、同层 Executor 唯一、并行或单线依赖规则。
+- 不设计异步任务系统、workspace partition 或多 worktree。
+- 不新增 Kernel fallback、重试、熔断或恢复政策。
+- 不移除 Pi 的写入、shell 或其他原生工具。
+- 不设计第三 Executor 或自定义 Executor capability certification。
 - 不实现 capability 蕴含、模糊匹配、自动 ontology 学习或动态成本路由。

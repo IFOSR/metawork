@@ -1,8 +1,10 @@
 # ADR-0016: Executor Capability Context and Work-Graph Structure
 
-- Status: Accepted
+- Status: Partially superseded by ADR-0018
 - Date: 2026-07-15
 - Scope: design decision only; production implementation starts after Phase 0
+
+ADR-0018 supersedes this ADR's decomposition-at-executor-boundaries, PlanningAgentPlan v3 and shared work-graph rule commitments by deferring them. Static catalog injection and versioned built-in definition decisions remain accepted.
 
 ## Context
 
