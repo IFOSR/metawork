@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
-import { getBuiltinExecutorDefinition } from '../../src/executor/builtin-executor-catalog.js';
+import {
+  getBuiltinExecutorAgentClasses,
+} from '../../src/executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
@@ -48,17 +50,55 @@ describe('AgentClassService startup catalog', () => {
     expect(service.listByKind('executor')).toEqual([]);
   });
 
-  it('inserts missing built-ins once without overwriting database customizations', () => {
+  it('overwrites every drifted canonical static field while preserving creation time', () => {
     const db = createDb();
     const service = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
     service.seedDefaults();
-    const customized = service.findByName('codex-cli')!;
-    service.upsert({ ...customized, capabilities: ['custom-capability'] });
+    const createdAt = service.findByName('codex-cli')!.createdAt;
+    new AgentClassRepo(db).upsert({
+      name: 'codex-cli',
+      kind: 'planner',
+      domains: ['drifted-domain'],
+      capabilities: ['drifted-capability'],
+      inputTypes: ['drifted-input'],
+      outputTypes: ['drifted-output'],
+      strengths: ['drifted-strength'],
+      weaknesses: ['drifted-weakness'],
+      primaryUseCases: ['drifted-use-case'],
+      avoidUseCases: ['drifted-avoid-case'],
+      intentAffinity: { drifted_intent: 0.99 },
+      riskLevel: 'high',
+      harness: 'drifted-harness',
+      model: 'drifted-model',
+      skills: ['drifted-skill'],
+      mcpServers: ['drifted-mcp'],
+      plugins: ['drifted-plugin'],
+      runtimeCommand: 'drifted-command',
+      runtimeArgs: ['drifted-arg'],
+      runtimeCheckCommand: 'drifted-check',
+      projectUrl: 'https://example.com/drifted',
+      createdAt,
+    });
 
     service.seedDefaults();
 
-    expect(service.findByName('codex-cli')?.capabilities).toEqual(['custom-capability']);
+    const seeded = service.findByName('codex-cli')!;
+    const { createdAt: actualCreatedAt, updatedAt: _updatedAt, ...actual } = seeded;
+    const canonical = getBuiltinExecutorAgentClasses().find(agentClass => agentClass.name === 'codex-cli')!;
+    expect(actual).toEqual(canonical);
+    expect(actualCreatedAt).toBe(createdAt);
     expect(new WorkUnitRepo(db).findAll().filter(unit => unit.agentClassKind === 'executor')).toEqual([]);
+  });
+
+  it('does not rewrite canonical rows that already match definitions', () => {
+    const db = createDb();
+    const service = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    service.seedDefaults();
+    db.prepare("UPDATE agent_classes SET updated_at = '2020-01-01T00:00:00.000Z' WHERE name = 'codex-cli'").run();
+
+    service.seedDefaults();
+
+    expect(service.findByName('codex-cli')?.updatedAt).toBe('2020-01-01T00:00:00.000Z');
   });
 
   it('materializes missing built-ins from canonical definitions', () => {
@@ -66,18 +106,10 @@ describe('AgentClassService startup catalog', () => {
     const service = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
     service.seedDefaults();
 
-    for (const name of ['codex-cli', 'pi-agent'] as const) {
-      const definition = getBuiltinExecutorDefinition(name)!;
-      const seeded = service.findByName(name)!;
+    for (const canonical of getBuiltinExecutorAgentClasses()) {
+      const seeded = service.findByName(canonical.name)!;
       const { createdAt: _createdAt, updatedAt: _updatedAt, ...actual } = seeded;
-      expect(actual).toEqual({
-        name,
-        kind: 'executor',
-        ...definition.agentClassDefaults,
-        capabilities: [...definition.routingCapabilities],
-        primaryUseCases: [...definition.primaryUseCases],
-        avoidUseCases: [...definition.avoidUseCases],
-      });
+      expect(actual).toEqual(canonical);
       expect(seeded).not.toHaveProperty('historicalSuccess');
     }
   });
@@ -100,7 +132,19 @@ describe('AgentClassService startup catalog', () => {
     service.seedDefaults();
 
     expect(service.findByName('claude-code')?.capabilities).toEqual(['custom-capability']);
-    expect(service.findByName('codex-cli')?.capabilities).toEqual(['workspace-engineering']);
-    expect(service.findByName('pi-agent')?.capabilities).toEqual(['current-web-research']);
+    for (const canonical of getBuiltinExecutorAgentClasses()) {
+      expect(service.findByName(canonical.name)?.capabilities).toEqual(canonical.capabilities);
+    }
+  });
+
+  it('rejects canonical writes through the AgentClass service', () => {
+    const db = createDb();
+    const service = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    const canonical = getBuiltinExecutorAgentClasses()[0]!;
+
+    expect(() => service.upsert(canonical)).toThrow(
+      `Cannot overwrite canonical Executor AgentClass: ${canonical.name}`,
+    );
+    expect(service.findByName(canonical.name)).toBeNull();
   });
 });

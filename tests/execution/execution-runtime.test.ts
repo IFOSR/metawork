@@ -10,6 +10,10 @@ import {
 } from '../../src/execution/execution-runtime.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import {
+  getBuiltinExecutorAgentClasses,
+  getBuiltinExecutorDefinition,
+} from '../../src/executor/builtin-executor-catalog.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -73,6 +77,8 @@ function createResult(output: string, success = true): ExecutorResult {
 }
 
 function createAgentClass(name = 'codex-cli'): AgentClass {
+  const canonical = getBuiltinExecutorAgentClasses().find(agentClass => agentClass.name === name);
+  if (canonical) return canonical;
   return {
     name,
     kind: 'executor',
@@ -342,17 +348,39 @@ describe('ExecutionRuntime', () => {
 
   it('derives canonical adapter names, aliases, and runtime commands from definitions', () => {
     let codexCommand = '';
+    const definition = getBuiltinExecutorDefinition('codex-cli')!;
     const registry = new ExecutorAdapterRegistry()
       .registerCanonical('codex-cli', (_config, command) => {
         codexCommand = command;
         return createExecutor('codex-cli', createResult('ok'));
       });
 
-    expect(registry.createByCommand('codex', {
+    expect(registry.createByCommand(definition.adapterBinding.commandAliases[0]!, {
       timeout: 60,
       workspaceRoot: process.cwd(),
     })?.name).toBe('codex-cli');
-    expect(codexCommand).toBe('codex');
+    expect(codexCommand).toBe(definition.adapterBinding.commandAliases[0]);
+  });
+
+  it('requires complete canonical factory coverage only when explicitly asserted', () => {
+    const partial = new ExecutorAdapterRegistry()
+      .registerCanonical('codex-cli', () => createExecutor('codex-cli', createResult('ok')));
+
+    expect(partial.has('codex-cli')).toBe(true);
+    expect(() => partial.assertCanonicalCoverage()).toThrow(
+      'Missing canonical Executor Adapter registrations: pi-agent',
+    );
+    expect(() => createDefaultExecutorAdapterRegistry().assertCanonicalCoverage()).not.toThrow();
+  });
+
+  it('does not treat direct canonical-looking bindings as canonical registrations', () => {
+    const registry = new ExecutorAdapterRegistry()
+      .register('codex-cli', () => createExecutor('codex-cli', createResult('ok')), ['codex'])
+      .register('pi-agent', () => createExecutor('pi-agent', createResult('ok')), ['pi']);
+
+    expect(() => registry.assertCanonicalCoverage()).toThrow(
+      'Missing canonical Executor Adapter registrations: codex-cli, pi-agent',
+    );
   });
 
   it('fails closed on duplicate adapter names and aliases', () => {

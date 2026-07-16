@@ -4,6 +4,7 @@ import type { AgentClass, AgentClassKind } from '../core/types.js';
 import { seedDefaultAgentClasses, seedDefaultWorkUnits } from './agent-class-seeder.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
 
 export interface AgentClassServiceDeps {
   db: Database.Database;
@@ -44,6 +45,9 @@ export class AgentClassService {
   }
 
   upsert(agentClass: AgentClass): void {
+    if (isBuiltinExecutorName(agentClass.name)) {
+      throw new Error(`Cannot overwrite canonical Executor AgentClass: ${agentClass.name}`);
+    }
     this.agentClassRepo.upsert(agentClass);
   }
 }

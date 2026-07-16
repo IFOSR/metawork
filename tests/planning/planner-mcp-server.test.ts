@@ -128,6 +128,7 @@ describe('PlannerDataReader', () => {
     agentClassService.seedDefaults();
     agentClassService.upsert({
       ...agentClassService.findByName('codex-cli')!,
+      name: 'research-bot',
       runtimeCommand: 'C:\\private\\codex.exe',
       runtimeArgs: ['--token', 'sensitive-runtime-token'],
     });

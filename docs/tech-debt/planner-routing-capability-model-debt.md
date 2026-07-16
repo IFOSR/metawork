@@ -1,6 +1,6 @@
 # Planner 路由能力模型统一源技术债
 
-> 状态：第一、二批已完成；第三批待实施
+> 状态：已完成（第一至第三批）
 >
 > 创建日期：2026-07-15
 >
@@ -14,7 +14,7 @@
 
 ## 结论
 
-Planner 的静态 Executor 目录、AgentClass Seeder、Adapter binding 和能力证据必须来自同一个 canonical built-in Executor definition source。不能让 Planner catalog、Seeder、AdapterRegistry、数据库默认值和 fixture 分别维护不同能力表。
+Planner 的静态 Executor 目录、AgentClass Seeder、Adapter binding 和 required-affordance 支持边界必须来自同一个 canonical built-in Executor definition source。不能让 Planner catalog、Seeder、AdapterRegistry、数据库默认值和 fixture 分别维护不同能力表。
 
 采用：
 
@@ -26,7 +26,7 @@ Planner 的静态 Executor 目录、AgentClass Seeder、Adapter binding 和能�
               ├── Planner-safe affordance projection
               ├── AgentClass seed defaults
               ├── Adapter binding / command aliases
-              └── capability evidence requirements
+              └── required affordance support boundary
                         │
                         ├── Planner 启动上下文 executorCatalog
                         ├── Seeder
@@ -57,12 +57,12 @@ Planner 的静态 Executor 目录、AgentClass Seeder、Adapter binding 和能�
 
 只登记会显著影响 Executor 首选顺序的能力。通用文本交付、命令执行细节、模型偏好、成本、成功率和主观强项不属于 Routing Capability。
 
-| ID | 受支持交付契约 | 证据要求 | 本轮主要声明者 |
+| ID | 受支持交付契约 | Required affordances | 本轮主要声明者 |
 | --- | --- | --- | --- |
-| `workspace-engineering` | 在受控工作区理解、修改和验证代码/文本文件；交付变更、测试或必要本地产物 | 对应 Adapter、工作区读写与命令执行 probe、工程任务测试 | `codex-cli` |
-| `current-web-research` | 获取当前公开网页信息、记录可追溯来源，并交付可被下游消费的研究结论 | 对应 Adapter、web search/web fetch 工具、来源与失败降级测试 | `pi-agent` |
+| `workspace-engineering` | 在受控工作区理解、修改和验证代码/文本文件；交付变更、测试或必要本地产物 | `workspace-read-write`、`workspace-command-validation` | `codex-cli` |
+| `current-web-research` | 获取当前公开网页信息、记录可追溯来源，并交付可被下游消费的研究结论 | `public-web-search`、`public-web-fetch`、`source-citation` | `pi-agent` |
 
-“主要声明者”表示正常路由首选，不表示其他 Executor 必须删除相近工具。新能力只能在出现新的、无法由现有契约表达的路由差异时增加，并同时定义 ID、交付契约、证据要求和 profile 声明。
+“主要声明者”表示正常路由首选，不表示其他 Executor 必须删除相近工具。新能力只能在出现新的、无法由现有契约表达的路由差异时增加，并同时定义 ID、交付契约、required affordances 和 profile 声明。
 
 ## canonical definition 与 Planner-safe projection
 
@@ -116,15 +116,15 @@ Planner 综合启动上下文中的静态 `executorCatalog` 与按需查询的 `
 
 PolicyKernel 在实际应用计划前继续检查清单中的 AgentClass 是否已注册以及当前状态是否允许；前项不可用时按已批准顺序回退的现有行为保持不变。本轮不新增自动重试、熔断、跨类替代推理或失败后重新规划。
 
-## 当前重复事实
+## 已消除的重复事实
 
-- `builtin-executor-catalog.ts` 只拥有 Planner-safe profile；
-- `agent-class-seeder.ts` 再按名称分支复制 capabilities、用途和弱项；
-- `execution-runtime.ts` 单独维护 Adapter 名称、factory 和命令别名；
-- `agent_classes.capabilities_json` 与自定义向导仍接受自由字符串；
-- 测试 fixture 分别复制 profile 和 Adapter 名称。
+- Planner catalog、Codex/Pi AgentClass、Adapter 名称与 aliases 均由 canonical definitions 派生。
+- 默认 Adapter 组合根验证全部 canonical definitions 均有 factory。
+- Codex/Pi 数据库行在启动时强制收敛；业务写入口拒绝 canonical 名称。
+- 非 canonical `agent_classes.capabilities_json` 仍是自由字符串，但不会进入受控 Planner catalog。
+- 遗留 `executor_profiles` 已由 migration v20 删除，canonical fixture 不再复制另一套 profile 或 binding。
 
-统一源完成后，以上内置静态事实必须从 canonical definitions 派生或由其强校验。旧自定义 Executor 数据保留，但自由字符串 capability 不自动进入受控内置目录。
+以上内置静态事实现在均从 canonical definitions 派生或由其强校验。非 canonical 自定义 Executor 数据保留，但自由字符串 capability 不自动进入受控内置目录。
 
 ## 实施债务与验收
 
@@ -138,8 +138,10 @@ PolicyKernel 在实际应用计划前继续检查清单中的 AgentClass 是否�
 - [x] 保留旧自定义 Executor 数据，但不把其自由 capability 字符串自动认证为受控 Routing Capability。
 - [x] 证明 `list_executor_status` 仍只承载动态状态，静态能力不重新进入 MCP 查询。
 - [x] 删除静态 `historicalSuccess`，并通过 migration v19 物理移除新旧两张 Executor 表中的历史列。
+- [x] 启动时将 Codex/Pi 全量静态 AgentClass 字段强制收敛到 canonical definitions，并封闭业务写入口。
+- [x] 通过 migration v20 删除停用的 `executor_profiles`，不再保留数据库中的第二套能力字段。
 - [x] 将第一批 PlanningContext、PlanningAgent 和 runner fixture 改为显式使用 canonical catalog。
-- [ ] 在第二、三批接入 Seeder/Runtime 后，继续移除其重复 fixture。
+- [x] 在第二、三批接入 Seeder/Runtime 后，移除重复 canonical fixture，并从 definitions 派生名称类型与 AgentClass 投影。
 
 ## 非目标
 

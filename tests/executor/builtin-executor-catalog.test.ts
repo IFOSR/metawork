@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getBuiltinExecutorAgentClasses,
   getBuiltinExecutorDefinitions,
   getBuiltinExecutorDefinition,
   getPlannerExecutorCatalog,
@@ -20,7 +21,7 @@ describe('built-in Executor catalog', () => {
 
     expect(validateBuiltinExecutorDefinitions(catalog)).toEqual([]);
     expect(catalog.map(definition => definition.name)).toEqual(['codex-cli', 'pi-agent']);
-    expect(catalog.map(definition => definition.agentClassDefaults.capabilities)).toEqual([
+    expect(catalog.map(definition => definition.routingCapabilities)).toEqual([
       ['workspace-engineering'],
       ['current-web-research'],
     ]);
@@ -63,15 +64,18 @@ describe('built-in Executor catalog', () => {
 
   it('returns deep copies that cannot pollute canonical definitions', () => {
     const firstDefinitions = definitions();
+    const firstAgentClasses = getBuiltinExecutorAgentClasses();
     const firstCatalog = getPlannerExecutorCatalog();
 
     (firstDefinitions[0]?.nativeAffordances as ExecutorAffordanceId[]).push('public-web-search');
     if (firstDefinitions[0]) firstDefinitions[0].agentClassDefaults.strengths.push('polluted');
+    firstAgentClasses[0]!.capabilities.push('current-web-research');
     firstCatalog.capabilities[0]!.deliveryContract = 'polluted';
     firstCatalog.executors[0]!.affordances.push('public-web-search');
 
     expect(definitions()[0]?.nativeAffordances).not.toContain('public-web-search');
     expect(definitions()[0]?.agentClassDefaults.strengths).not.toContain('polluted');
+    expect(getBuiltinExecutorAgentClasses()[0]?.capabilities).not.toContain('current-web-research');
     expect(getPlannerExecutorCatalog().capabilities[0]?.deliveryContract).not.toBe('polluted');
     expect(getPlannerExecutorCatalog().executors[0]?.affordances).not.toContain('public-web-search');
   });
@@ -116,15 +120,6 @@ describe('built-in Executor catalog', () => {
     ]));
     expect(validateBuiltinExecutorDefinitions(missingPlanner)).toContain(
       'Executor pi-agent capability current-web-research lacks Planner affordance: source-citation',
-    );
-  });
-
-  it('rejects AgentClass capabilities that drift from Routing Capabilities', () => {
-    const invalid = definitions();
-    invalid[0]!.agentClassDefaults.capabilities = ['current-web-research'];
-
-    expect(validateBuiltinExecutorDefinitions(invalid)).toContain(
-      'Executor codex-cli AgentClass capabilities must equal its Routing Capabilities',
     );
   });
 

@@ -10,6 +10,7 @@ import { OpenClawAdapter } from '../executor/openclaw.js';
 import { PiAgentAdapter } from '../executor/pi-agent.js';
 import {
   getBuiltinExecutorDefinition,
+  getBuiltinExecutorDefinitions,
   type BuiltinExecutorName,
 } from '../executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
@@ -87,6 +88,7 @@ function unique(values: string[]): string[] {
 export class ExecutorAdapterRegistry {
   private readonly factories = new Map<string, AdapterFactory>();
   private readonly commandAliases = new Map<string, string>();
+  private readonly canonicalRegistrations = new Set<BuiltinExecutorName>();
 
   register(name: string, factory: AdapterFactory, commandAliases: string[] = []): this {
     const bindingKeys = [name, ...commandAliases];
@@ -117,11 +119,24 @@ export class ExecutorAdapterRegistry {
     if (!command) {
       throw new Error(`Canonical Executor ${name} has no runtime command alias`);
     }
-    return this.register(
+    this.register(
       definition.adapterBinding.adapterName,
       config => factory(config, command),
       [...definition.adapterBinding.commandAliases],
     );
+    this.canonicalRegistrations.add(name);
+    return this;
+  }
+
+  assertCanonicalCoverage(): this {
+    const missing = getBuiltinExecutorDefinitions()
+      .map(definition => definition.name)
+      .filter(name => !this.canonicalRegistrations.has(name))
+      .sort((left, right) => left.localeCompare(right));
+    if (missing.length > 0) {
+      throw new Error(`Missing canonical Executor Adapter registrations: ${missing.join(', ')}`);
+    }
+    return this;
   }
 
   create(name: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
@@ -146,7 +161,8 @@ export function createDefaultExecutorAdapterRegistry(): ExecutorAdapterRegistry 
     .register('hermes-agent', config => new HermesAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command: 'hermes' })), ['hermes'])
     .registerCanonical('pi-agent', (config, command) => new PiAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command })))
     .register('deepseek-tui', config => new DeepSeekTuiAdapter({ ...config, command: 'deepseek-tui' }), ['deepseek'])
-    .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }));
+    .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }))
+    .assertCanonicalCoverage();
 }
 
 /** Resolves executor names from injected defaults, registered adapters, or custom AgentClass runtime commands. */

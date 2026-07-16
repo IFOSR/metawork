@@ -1,27 +1,16 @@
 // Seeds built-in AgentClass profiles without treating command probes as static metadata.
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import {
+  getBuiltinExecutorAgentClasses,
   getBuiltinExecutorDefinition,
-  getBuiltinExecutorDefinitions,
-  type BuiltinExecutorDefinition,
 } from './builtin-executor-catalog.js';
 
 export interface AgentClassSeedInput {
   defaultExecutorName: string;
   availableCommands?: Set<string>;
-}
-
-function agentClassFromDefinition(definition: BuiltinExecutorDefinition): AgentClass {
-  return {
-    name: definition.name,
-    kind: 'executor',
-    ...definition.agentClassDefaults,
-    capabilities: [...definition.routingCapabilities],
-    primaryUseCases: [...definition.primaryUseCases],
-    avoidUseCases: [...definition.avoidUseCases],
-  };
 }
 
 function plannerClass(): AgentClass {
@@ -50,24 +39,33 @@ function plannerClass(): AgentClass {
   };
 }
 
+function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
+  const { createdAt: _existingCreatedAt, updatedAt: _existingUpdatedAt, ...existingStatic } = existing;
+  const { createdAt: _canonicalCreatedAt, updatedAt: _canonicalUpdatedAt, ...canonicalStatic } = canonical;
+  return isDeepStrictEqual(existingStatic, canonicalStatic);
+}
+
 export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
   input: AgentClassSeedInput,
 ): void {
+  const canonicalAgentClasses = getBuiltinExecutorAgentClasses();
   if (
     !getBuiltinExecutorDefinition(input.defaultExecutorName)
     && !agentClassRepo.findByName(input.defaultExecutorName)
   ) {
     throw new Error(
       `Default Executor ${input.defaultExecutorName} is not canonical and has no registered AgentClass. `
-      + 'Start with codex-cli or pi-agent, register the Executor AgentClass, then switch the default configuration.',
+      + `Start with ${canonicalAgentClasses.map(agentClass => agentClass.name).join(' or ')}, `
+      + 'register the Executor AgentClass, then switch the default configuration.',
     );
   }
 
   if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
-  for (const definition of getBuiltinExecutorDefinitions()) {
-    if (!agentClassRepo.findByName(definition.name)) {
-      agentClassRepo.upsert(agentClassFromDefinition(definition));
+  for (const canonical of canonicalAgentClasses) {
+    const existing = agentClassRepo.findByName(canonical.name);
+    if (!existing || !hasCanonicalStaticFields(existing, canonical)) {
+      agentClassRepo.upsert({ ...canonical, createdAt: existing?.createdAt });
     }
   }
 }

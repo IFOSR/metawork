@@ -671,6 +671,10 @@ const MIGRATIONS: Migration[] = [
       dropColumnIfExists(db, 'executor_profiles', 'historical_success');
     },
   },
+  {
+    version: 20,
+    up: 'DROP TABLE IF EXISTS executor_profiles;',
+  },
 ];
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {
@@ -719,13 +723,6 @@ export function runMigrations(db: Database.Database): void {
     }
   }
 
-  addColumnIfMissing(db, 'executor_profiles', 'primary_use_cases_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'executor_profiles', 'avoid_use_cases_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'executor_profiles', 'intent_affinity_json', "TEXT NOT NULL DEFAULT '{}'");
-  addColumnIfMissing(db, 'executor_profiles', 'runtime_command', 'TEXT');
-  addColumnIfMissing(db, 'executor_profiles', 'runtime_args_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'executor_profiles', 'runtime_check_command', 'TEXT');
-  addColumnIfMissing(db, 'executor_profiles', 'project_url', 'TEXT');
   addColumnIfMissing(db, 'executor_route_events', 'primary_intent', "TEXT NOT NULL DEFAULT 'general'");
   addColumnIfMissing(db, 'executor_route_events', 'matched_boundary_json', "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, 'executor_route_events', 'rejected_json', "TEXT NOT NULL DEFAULT '[]'");

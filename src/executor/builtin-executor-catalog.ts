@@ -31,8 +31,6 @@ export const ROUTING_CAPABILITY_REGISTRY = {
 
 export type RoutingCapabilityId = keyof typeof ROUTING_CAPABILITY_REGISTRY;
 
-export type BuiltinExecutorName = 'codex-cli' | 'pi-agent';
-
 type AgentClassDefaults = Omit<
   AgentClass,
   | 'name'
@@ -42,12 +40,10 @@ type AgentClassDefaults = Omit<
   | 'avoidUseCases'
   | 'createdAt'
   | 'updatedAt'
-> & {
-  capabilities: RoutingCapabilityId[];
-};
+>;
 
-export interface BuiltinExecutorDefinition {
-  name: BuiltinExecutorName;
+interface BuiltinExecutorDefinitionShape {
+  name: string;
   routingCapabilities: readonly RoutingCapabilityId[];
   primaryUseCases: readonly string[];
   avoidUseCases: readonly string[];
@@ -58,6 +54,12 @@ export interface BuiltinExecutorDefinition {
     commandAliases: readonly string[];
   };
   agentClassDefaults: AgentClassDefaults;
+}
+
+function defineBuiltinExecutorDefinitions<const TName extends string>(
+  definitions: readonly (Omit<BuiltinExecutorDefinitionShape, 'name'> & { name: TName })[],
+): readonly (Omit<BuiltinExecutorDefinitionShape, 'name'> & { name: TName })[] {
+  return definitions;
 }
 
 export interface PlannerRoutingCapabilityDefinition {
@@ -79,7 +81,7 @@ export interface PlannerExecutorCatalog {
   executors: PlannerExecutorCatalogEntry[];
 }
 
-const BUILTIN_EXECUTOR_DEFINITIONS: readonly BuiltinExecutorDefinition[] = [
+const BUILTIN_EXECUTOR_DEFINITIONS = defineBuiltinExecutorDefinitions([
   {
     name: 'codex-cli',
     routingCapabilities: ['workspace-engineering'],
@@ -92,7 +94,6 @@ const BUILTIN_EXECUTOR_DEFINITIONS: readonly BuiltinExecutorDefinition[] = [
       commandAliases: ['codex'],
     },
     agentClassDefaults: {
-      capabilities: ['workspace-engineering'],
       domains: ['software', 'repo', 'terminal', 'code_review'],
       inputTypes: ['text', 'files'],
       outputTypes: ['code', 'patch', 'markdown', 'review'],
@@ -129,7 +130,6 @@ const BUILTIN_EXECUTOR_DEFINITIONS: readonly BuiltinExecutorDefinition[] = [
       commandAliases: ['pi'],
     },
     agentClassDefaults: {
-      capabilities: ['current-web-research'],
       domains: ['research', 'web'],
       inputTypes: ['text', 'files'],
       outputTypes: ['code', 'patch', 'markdown', 'review'],
@@ -148,7 +148,13 @@ const BUILTIN_EXECUTOR_DEFINITIONS: readonly BuiltinExecutorDefinition[] = [
       projectUrl: null,
     },
   },
-];
+]);
+
+export type BuiltinExecutorName = typeof BUILTIN_EXECUTOR_DEFINITIONS[number]['name'];
+
+export type BuiltinExecutorDefinition = Omit<BuiltinExecutorDefinitionShape, 'name'> & {
+  name: BuiltinExecutorName;
+};
 
 export function validateBuiltinExecutorDefinitions(
   definitions: readonly BuiltinExecutorDefinition[],
@@ -168,24 +174,11 @@ export function validateBuiltinExecutorDefinitions(
     }
 
     collectDuplicateValues(errors, definition.name, 'Routing Capability', definition.routingCapabilities);
-    collectDuplicateValues(
-      errors,
-      definition.name,
-      'AgentClass capability',
-      definition.agentClassDefaults.capabilities,
-    );
     collectDuplicateValues(errors, definition.name, 'native affordance', definition.nativeAffordances);
     collectDuplicateValues(errors, definition.name, 'Planner affordance', definition.plannerAffordances);
 
     const nativeAffordances = new Set<ExecutorAffordanceId>(definition.nativeAffordances);
     const plannerAffordances = new Set<ExecutorAffordanceId>(definition.plannerAffordances);
-    const routingCapabilities = [...definition.routingCapabilities].sort();
-    const agentClassCapabilities = [...definition.agentClassDefaults.capabilities].sort();
-
-    if (JSON.stringify(routingCapabilities) !== JSON.stringify(agentClassCapabilities)) {
-      errors.push(`Executor ${definition.name} AgentClass capabilities must equal its Routing Capabilities`);
-    }
-
     for (const affordance of plannerAffordances) {
       if (!nativeAffordances.has(affordance)) {
         errors.push(`Executor ${definition.name} exposes non-native Planner affordance: ${affordance}`);
@@ -245,6 +238,17 @@ export function getBuiltinExecutorDefinition(name: string): BuiltinExecutorDefin
   return definition ? cloneBuiltinExecutorDefinition(definition) : null;
 }
 
+export function getBuiltinExecutorAgentClasses(): AgentClass[] {
+  return getBuiltinExecutorDefinitions().map(definition => ({
+    name: definition.name,
+    kind: 'executor',
+    ...definition.agentClassDefaults,
+    capabilities: [...definition.routingCapabilities],
+    primaryUseCases: [...definition.primaryUseCases],
+    avoidUseCases: [...definition.avoidUseCases],
+  }));
+}
+
 export function isBuiltinExecutorName(name: string): name is BuiltinExecutorName {
   return BUILTIN_EXECUTOR_DEFINITIONS.some(definition => definition.name === name);
 }
@@ -296,7 +300,6 @@ function cloneBuiltinExecutorDefinition(definition: BuiltinExecutorDefinition): 
     },
     agentClassDefaults: {
       ...definition.agentClassDefaults,
-      capabilities: [...definition.agentClassDefaults.capabilities],
       domains: [...definition.agentClassDefaults.domains],
       inputTypes: [...definition.agentClassDefaults.inputTypes],
       outputTypes: [...definition.agentClassDefaults.outputTypes],
