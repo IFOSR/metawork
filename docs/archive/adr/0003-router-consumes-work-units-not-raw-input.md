@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0014, ADR-0019, ADR-0020
 ---
 
 # Router consumes subtasks, not raw user input
+
+> Historical design only. PlanningAgent now proposes the work graph, Work Graph owns structural semantics, and Control Kernel owns authorization and dispatch policy.
 
 ## Context
 

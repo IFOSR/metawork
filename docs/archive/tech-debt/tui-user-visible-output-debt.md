@@ -317,7 +317,7 @@ docker run --rm metaclaw-test npx vitest run tests/tui/conversation-routing.test
 | `src/tui/app.tsx`：`classifyOutputLine` | 将请求理解标题归为 `context`，其余箭头行及未匹配行归为 `system`；只负责样式，不知道哪些内容是内部审计。 |
 | `tests/tui/conversation-routing.test.ts` | “handles simple conversation without creating a task” 当前正向断言冗余过程文本必须出现。 |
 | `docs/adr/0014-planning-agent-policy-kernel-boundary.md` | 要求 direct reply 仍经过 kernel 构造的 decision 并写审计记录；不要求在用户 UI 中展示 decision 细节。 |
-| `docs/adr/0012-persistent-planner-subtask-runtime.md` | 明确 `MetaclawSession.output` 只是 UI projection，不是规划恢复或任务状态的事实来源，为精简投影提供了架构依据。 |
+| `docs/archive/adr/0012-persistent-planner-subtask-runtime.md` | 历史 ADR；其 `MetaclawSession.output` 只是 UI projection、持久事实才是恢复来源的有效规则已吸收到 ADR-0019。 |
 
 ### 影响与风险
 

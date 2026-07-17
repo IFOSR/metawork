@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted; amended by ADR-0019 and ADR-0020.
+
+ADR-0020 retains the `PlanningAgent -> Control Kernel -> Runtime` chain and expands the Kernel from plan-only authorization to the single strategic control-plane seam. The `authorizeDirectReply` shortcut below documents current implementation history, but is superseded as the target Interface: Phase 3 routes all Kernel-owned decisions through unified `decide(event, snapshot)` rather than preserving a second public Kernel entry.
 
 ## Context
 
@@ -29,17 +31,17 @@ This replaces the previous planner-first execution-dispatch framing, where sessi
 
 The current implementation is interface-first rather than a real Codex CLI planning adapter. Existing semantic routing logic may be reused only inside the `PlanningAgent` implementation; session code must not keep a fallback path that bypasses the kernel. The kernel returns a decision instead of writing storage directly.
 
-The one sanctioned exception is a `direct_reply` plan: it is a read-only answer the planner has already produced and validated, and the kernel applies no state-changing authorization to it (no single-active-task check, executor rewrite, or risk/confidence gate — `decide()` would only re-validate and rubber-stamp `accept`). For a reply turn the session therefore calls `PolicyKernel.authorizeDirectReply(plan)` directly, skipping the `decide()` round-trip. `KernelDecision` construction still belongs to the kernel, the `KernelDecisionApplier` still records the `planning_decisions` audit row, and delivery is unchanged — so this is a shortcut through the authorization *round-trip*, not a bypass of the seam or the audit trail. No other action may skip the kernel.
+Temporary implementation exception: a `direct_reply` plan is read-only, so the current Session may call `PolicyKernel.authorizeDirectReply(plan)` and still record the resulting `KernelDecision`. ADR-0020 supersedes this as the target Interface. Roadmap Phase 3 must express direct reply through the unified `decide(event, snapshot)` seam or explicitly keep it outside Kernel ownership; it must not retain a second public Kernel entry as a permanent shortcut. No state-changing action may use the temporary path.
 
 Explicit memory/preference capture fast paths remain outside this policy kernel in v1. This avoids expanding the memory policy while this change is only trying to restore the task planning and dispatch boundary.
 
 ## Consequences
 
-The natural-language path has one policy seam: `PlanningAgent -> PolicyKernel -> KernelDecisionApplier`. This makes it easier to test whether task creation, task control, direct reply, clarification, and work graph execution all pass through the same authorization point. `direct_reply` reaches the applier through `authorizeDirectReply` rather than `decide` (see Decision), but still through the kernel and the same audit row — every action's decision is still kernel-constructed and audited.
+The natural-language path has one logical policy seam: `PlanningAgent -> PolicyKernel -> Runtime decision application`. This makes it possible to test task creation, task control, direct reply, clarification and work graph execution at one authorization boundary. The current `authorizeDirectReply` method is a migration exception described above, not a second target seam.
 
 Planner output is a proposal, not an executable command. Work graphs become durable `Subtask` records only after the kernel accepts or rewrites the plan.
 
-The first version preserves current product behavior: one active top-level task, serial subtasks, fixed planner/executor work-unit pool, and synchronous heartbeat sweep before dispatch or claim attempts.
+The current product behavior remains one active top-level Task and serial Subtasks. Executor WorkUnits are created/probed on demand, and Runtime performs heartbeat sweep before relevant dispatch or claim attempts.
 
 ## Future Work
 
@@ -51,7 +53,7 @@ The first version preserves current product behavior: one active top-level task,
 - Add parallel subtask dispatch with real worktree lease enforcement.
 
 All lossy legacy-compat shims tracked in
-[docs/tech-debt/legacy-compat-layers.md](../tech-debt/legacy-compat-layers.md) have been
+[docs/archive/tech-debt/legacy-compat-layers.md](../archive/tech-debt/legacy-compat-layers.md) have been
 removed, and no `TODO(adr-0014-compat)` marker remains in source. The planner adapter (#1/#2),
 its `AgentClass → ExecutorProfile` down-cast, the `intentDecisionFromPlan` round-trip (#3),
 the runtime resume-target selection (#5), and the `bindPlanToTask` action-relabel (#4) are all

@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0020 and convergence-roadmap Phase 5
 ---
 
 # Parallel executor isolation via git worktree
+
+> Historical design input only. The obsolete `ExecutionPolicy.isolationRequired` contract is not active; partition identity, leases and worktree enforcement will be decided under ADR-0020 and roadmap Phase 5.
 
 ## Context
 

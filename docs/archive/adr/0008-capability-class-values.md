@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0018, ADR-0019, ADR-0020
 ---
 
 # CapabilityClass values — seven, by tool/side-effect boundary
+
+> Historical design only. ADR-0018's controlled Routing Capability registry is the current static routing authority.
 
 ## Context
 

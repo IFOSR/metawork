@@ -6,6 +6,7 @@
 - **当前状态**：实施中；Phase 1 已完成
 - **当前激活阶段**：Phase 2——Executor 执行范围与 dependency handoff（待制定实施计划）
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
+- **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
 - **完成日期**：未完成
 - **实现提交**：未产生
@@ -21,6 +22,8 @@
 5. 建立 workspace/resource partition、持久租约和崩溃恢复后，再启用真正并发。
 
 本路线图不要求一次完成全部目标。每个阶段都必须形成可独立验收的最终形态，不保留为了下一阶段而存在的临时兼容路径。
+
+本路线图只规定跨阶段能力收敛顺序；模块职责、公开 seam、依赖方向和 Application Shell/Storage 的外围定位由 [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md) 规范。若阶段实施细节与该 ADR 冲突，必须先修订 ADR，不能以现有目录布局或历史调用路径作为例外依据。
 
 ## 二、当前基线与问题拆分
 
@@ -60,6 +63,9 @@ Canonical definitions 已经是 Codex/Pi 静态路由能力、Planner catalog、
 6. **Fallback 是前一 attempt 结束并释放资源后的下一次 attempt，不允许并行双重所有权。**
 7. **Runtime 不自行作战略判断；策略迁入 Kernel 时必须同步删除旧分支。**
 8. **未建立 partition 授权和租约前，Runtime 保持串行。**
+9. **Work Graph 与 Routing Catalog 是独立共享语义；不得把规则复制到 Planner、Kernel 或 Runtime。**
+10. **Session/Commands/TUI/Gateway 是 Application Shell，Storage 是 Adapter；二者不拥有控制策略。**
+11. **新增跨模块依赖必须符合 ADR-0020；现有违规 seam 只能收敛，不能扩大。**
 
 ## 四、阶段依赖
 
@@ -187,6 +193,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 - 本文件是跨阶段总路线图，只记录依赖、全局不变量和阶段退出条件。
 - 每次只为当前激活阶段建立详细实施计划。
+- 每份阶段实施计划必须以 ADR-0020 为设计门，列明受影响模块与 owner、公开 Interface 及消费者、禁止依赖、要删除的旧跨模块入口、临时例外的最迟删除阶段，以及边界测试证据。
+- 若阶段触及 `TaskRuntimeService`、`SessionExecutionCoordinator`、Planning 内部工作图规则、带 Repository 的 Kernel projector 或其他已知违规 seam，必须在同阶段收敛，或记录有明确删除阶段的例外；不得新增调用方。
 - 阶段完成后更新本文件状态、验证和提交，再归档该阶段实施计划。
 - 技术债文档只记录未被计划接管的问题；一旦被本路线图完整覆盖，转入 `docs/archive/tech-debt/` 作为历史问题记录。
 - 旧的 [Planner 执行器能力边界与双执行器目录改造计划](../archive/plans/2026-07-15-planner-executor-capability-boundaries-and-demo-catalog-zh.md) 已由本路线图接管并归档。

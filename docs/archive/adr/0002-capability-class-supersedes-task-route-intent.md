@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0018, ADR-0019, ADR-0020
 ---
 
 # CapabilityClass supersedes TaskRouteIntent
+
+> Historical design only. Controlled `RoutingCapability` and canonical AgentClass definitions replaced `CapabilityClass` on the active path.
 
 ## Context
 

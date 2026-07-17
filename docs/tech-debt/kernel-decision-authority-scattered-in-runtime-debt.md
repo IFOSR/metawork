@@ -1,9 +1,10 @@
 # Kernel 决策权散落 Runtime 技术债
 
-> 状态：已盘点，待建控制面策略层  
-> 创建日期：2026-07-16  
-> 关联 ADR：ADR-0006（fallback chain + replaceable failure judgment）、ADR-0013（planner-first work-unit dispatch）、ADR-0014（PlanningAgent / PolicyKernel boundary）  
-> 用途：记录当前“策略决策散落在 session/execution runtime，PolicyKernel 只审 plan”的架构缺口。本文只登记债务与目标边界，不在此直接改实现。  
+> 状态：架构归属已由 ADR-0020 固定，待路线图 Phase 3～4 完成实现收敛
+> 创建日期：2026-07-16
+> 现行关联 ADR：ADR-0014（PlanningAgent / PolicyKernel boundary）、ADR-0019（v3 work graph authority）、[ADR-0020（核心模块归属与依赖方向）](../adr/0020-core-module-ownership-and-dependency-direction.md)
+> 历史参考：ADR-0006、ADR-0013 已被 ADR-0020 统一为历史设计，不再作为实现权威
+> 用途：记录当前“策略决策散落在 session/execution runtime，PolicyKernel 只审 plan”的架构缺口。本文只登记债务与目标边界，不在此直接改实现。
 > 边界：本文讨论的是 **决策权归属**，不是要求把 claim / 跑 executor / 写库 / 发消息等副作用搬进 `policy-kernel.ts`。
 
 ## 总体判断
@@ -31,8 +32,8 @@ PlanningAgentPlan → PolicyKernel → KernelDecision → Runtime apply
 结果是：
 
 1. `src/kernel/` 过窄，只覆盖 plan admission；
-2. 失败分类、block/park、是否自动恢复、候选探测等策略散落在 runtime；
-3. ADR 已写的 fallback / replan / retry cap / 熔断大多未落地；
+2. 原始失败规范化与 block/park、是否自动恢复、候选探测等策略混在 runtime；
+3. 路线图要求的 fallback / replan / retry cap / 熔断大多未落地；
 4. 测试与场景验证无法把“kernel 调度行为”当作单一入口断言。
 
 **应聚合的是决策策略，不是执行代码。**  
@@ -45,7 +46,8 @@ PlanningAgentPlan → PolicyKernel → KernelDecision → Runtime apply
 | 理解用户意图、提出 work graph / 候选执行器 | Planner | 已有 `src/planning/` |
 | 授权 plan：schema、单活跃任务、未知 executor rewrite、risk/confidence | Kernel | 已有 `src/kernel/policy-kernel.ts` |
 | claim / release / heartbeat、真正跑 adapter、写 task/subtask/work unit 状态 | Runtime | 应在 runtime；大体也在 session/execution |
-| 按失败原因选择 recovery、是否换 peer、是否 replan、熔断与次数上限 | Kernel / Policy | **缺失或散落** |
+| 把退出码、超时、原始异常规范化为稳定 `ExecutionOutcome` | Executor Adapter / Runtime | **目前与策略判断混杂** |
+| 按规范化事实选择 recovery、是否换 peer、是否 replan、熔断与次数上限 | Kernel / Policy | **缺失或散落** |
 | 定时器、事件到达后触发一次裁决并 apply | Runtime 触发 + Kernel 决策 | 现在 timer 自己拍板 |
 
 ## 2. 当前散落在 Runtime 的“本应是 Kernel 决策”的点
@@ -54,7 +56,7 @@ PlanningAgentPlan → PolicyKernel → KernelDecision → Runtime apply
 
 | 位置 | 当前行为 | 问题 |
 | --- | --- | --- |
-| `src/executor/error-utils.ts`：`isRecoverableExecutorFailure` | 用正则识别网络 / timeout / 权限失败 | 策略藏在工具函数名与词表里；语义还与 ADR-0006 “force-majeure vs capability” 直觉相反 |
+| `src/executor/error-utils.ts`：`isRecoverableExecutorFailure` | 用正则识别网络 / timeout / 权限失败 | 原始事实识别与“是否恢复”的政策结论绑在一个布尔函数里；目标是 Adapter/Runtime 产出稳定 failure kind，Kernel 再决定动作 |
 | `src/session/session-execution-coordinator.ts` 失败分支 | recoverable → `markDispatchBlocked`；否则 task `parked`；subtask 标 `blocked` | Runtime 同时做 **判定 + 落态**，无 `RecoveryDecision` |
 | 同文件 claim 失败 | 无 idle work unit → task blocked + recoverable hint | “等容量”策略写死在 coordinator，不是 kernel decision |
 
@@ -120,25 +122,25 @@ Kernel **不会**产出 park / suspend / retry / switch_candidate 等决策；�
 
 - **无法按场景测 “kernel 调度行为”**：同工作区冲突、失败重试、换 peer、回 planner、熔断等，要么根本没有 decision，要么藏在 session timer / coordinator 分支。
 - **策略双轨 / 多轨**：plan 冲突走 `PolicyKernel.reject`；执行冲突/失败走 admission gate、error-utils、coordinator、timer 各自规则，容易漂移。
-- **ADR 契约与实现脱节**：0006 / 0013 / 0014 写了 failure judgment、replan、retry，实现仍是 plan-only kernel + 临时 runtime 启发式。
+- **ADR 契约与实现脱节**：ADR-0014/0019/0020 已固定提案、决策、应用三段式职责，实现仍是 plan-only kernel + 临时 runtime 启发式。
 - **演进成本高**：以后加熔断、抢占、分区租约、并行调度时，若继续写进 session/execution，控制面会更碎，而不是收敛到可测 policy。
 - **命名误导**：`kernel-decision-applier` 在 session、真正失败策略不在 kernel，新同学容易把“执行编排”当成“策略内核”，或反过来把 PolicyKernel 误当成整颗大脑。
 
-## 4. 非约束性目标形态
+## 4. 受 ADR-0020 约束的目标形态
 
 不要求一次大搬家，但方向应固定为：
 
 ```text
-src/kernel/   # 控制面决策（可拆多文件，统一 Decision 模型）
-  plan 授权
-  failure / recovery 策略
-  admission / 冲突 / 抢占策略
-  熔断与 retry cap
-  （未来）workspace partition / 租约授权
+Control Kernel    # 纯控制面决策；统一 Decision 模型
+  plan / dispatch / admission 授权
+  failure / recovery / fallback 策略
+  conflict / preemption / retry cap / circuit
+  （未来）capacity / workspace partition 授权
 
-src/session/  # 入口、组装、UI/会话投影（逐步变瘦）
-src/task/     # 任务状态机与调度执行细节
-src/execution/# claim、run、work graph 物化等副作用
+Application Shell # session/commands/tui/gateway；入口、组装和投影
+Task Domain       # Task/Subtask 生命周期与状态迁移不变量
+Execution Runtime # claim、run、work graph 物化、持久化等副作用
+Executor Adapter  # 原始错误/退出状态规范化为 Runtime facts
 ```
 
 统一决策形状示例（示意，非最终 API）：
@@ -166,9 +168,9 @@ apply(decision) → 写状态 / claim / run / 投递 / 安排下一次 timer
 | 优先级 | 项 | 建议动作 |
 | --- | --- | --- |
 | P0 | 定义 `ExecutionOutcome` → `RecoveryDecision` 模型 | 先立类型与单测，不接副作用 |
-| P0 | 上收 `isRecoverableExecutorFailure` + coordinator block/park 分支 | Kernel 出 decision；coordinator 只 apply |
+| P0 | 拆开 `isRecoverableExecutorFailure` 的事实规范化与 coordinator block/park 政策 | Adapter/Runtime 出稳定 failure kind；Kernel 出 decision；coordinator 只 apply |
 | P0 | 上收 timer 自动 `resume-blocked` 规则 | timer 只触发 `decide`/`apply`，不内嵌策略表 |
-| P1 | 落地 ADR-0006：失败后是否换 plan 内候选 | claim 探测与 post-failure peer retry 分离 |
+| P1 | 按 ADR-0020/路线图 Phase 4 决定失败后是否换 plan 内候选 | claim 探测与 post-failure peer retry 分离 |
 | P1 | 定义 replan / 回传 Planner 触发条件与上限 | 与 retry cap、chain exhausted 一起设计 |
 | P1 | retry cap / 简易熔断 | 防无限 block-recheck 循环 |
 | P2 | 应急细分（写库失败、容量、heartbeat_lost 等） | 扩展 failure taxonomy，而不是继续堆 regex |
@@ -193,7 +195,7 @@ apply(decision) → 写状态 / claim / run / 投递 / 安排下一次 timer
    - capability 失败 → switch_candidate 或 park/replan（按已定 ADR）；  
    - 候选耗尽 → 终端 decision，而非静默空转；  
    - 超过 retry cap → 熔断或升级。
-4. **ADR 对齐**：ADR-0006 / 0013 / 0014 中已接受的 failure/recovery 方向有实现锚点，或显式修订 ADR 声明缩窄范围。
+4. **ADR 对齐**：ADR-0014 / 0019 / 0020 的提案、决策、应用职责有实现锚点；历史 ADR-0006 / 0013 不再被当作现行接口依据。
 5. **文档与命名不再把 PolicyKernel 描述成“整颗调度内核”却只审 plan**：要么扩展 kernel 能力，要么在文档中明确 control-plane 仍不完整——二者不可长期并存。
 
 ## 8. 当前临时行为（供对照，勿固化为契约）

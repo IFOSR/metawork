@@ -1,14 +1,17 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0014, ADR-0015, ADR-0018, ADR-0019
 ---
 
 # Classification via LLM, reusing the existing semantic bridge
+
+> Historical design only. CodexPlanningAgent replaced the SemanticIntentRouter and emits strict PlanningAgentPlan v3 proposals.
 
 ## Context
 
 The router must map a subtask to `CapabilityClass`. Options were regex matching, LLM classification, or rules+LLM-fallback. The user chose **LLM** outright: this is MetaClaw's reason for existing — the decision layer's job is to allocate by understanding the user's need, and regex is unacceptable because many tasks require decomposition (a separate skill, future). The decomposition-skill guidance is itself future work.
 
-Investigation shows the LLM path already exists: `SemanticIntentRouter.decide` already calls `llmBridge.query` with a built prompt ([semantic-intent-router.ts:141-148](src/core/semantic-intent-router.ts#L141)), and `IntentOrchestrator` consumes it. So this is **not** building an LLM classifier from scratch — it is repurposing the existing one to emit `CapabilityClass` instead of `TaskRouteIntent`.
+Investigation at the time showed an LLM path in the now-removed `src/core/semantic-intent-router.ts`: `SemanticIntentRouter.decide` called `llmBridge.query`, and `IntentOrchestrator` consumed it. This historical proposal intended to repurpose that path rather than build a second classifier.
 
 ## Decision
 

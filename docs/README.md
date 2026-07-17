@@ -11,16 +11,17 @@ This directory contains both current technical documentation and historical plan
 
 ## Architecture Decisions
 
-ADRs in [adr/](adr/) capture durable architectural decisions. Prefer ADRs over older plans when you need to understand why the current runtime is shaped the way it is.
+Use the [ADR authority index](adr/README.md) before opening individual decisions. It records the required reading order, current topic owner and archive policy. ADRs under [archive/adr/](archive/adr/) are historical and must not guide new implementation.
 
 Key recent ADRs:
 
 - [ADR-0011: Single Active Task Admission Gate](adr/0011-single-active-task-admission-gate.md)
-- [ADR-0012: Persistent Planner Subtask Runtime](adr/0012-persistent-planner-subtask-runtime.md)
-- [ADR-0013: Planner-First Work-Unit Dispatch](adr/0013-planner-first-work-unit-dispatch.md)
 - [ADR-0014: PlanningAgent / PolicyKernel Boundary](adr/0014-planning-agent-policy-kernel-boundary.md)
 - [ADR-0015: Planner-Owned Semantics And Tool-Mediated Context](adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
+- [ADR-0017: Kernel Executor Status Projection](adr/0017-kernel-executor-status-projection.md)
+- [ADR-0018: Supported Routing Contracts And Unified Executor Definitions](adr/0018-supported-routing-contracts-and-unified-executor-definitions.md)
 - [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
+- [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
 
 ## Active Roadmap
 

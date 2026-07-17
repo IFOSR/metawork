@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-16
 - Scope: PlanningAgent, PolicyKernel, v3 Subtask persistence, and serial work-graph runtime
+- Architecture: ADR-0020 assigns the shared graph contract/rules to Work Graph and forbids Execution Runtime from depending on Planning implementation details
 
 ## Context
 
@@ -16,9 +17,17 @@ PlanningAgentPlan is hard-cut to strict schema v3. `plan_work_graph` carries one
 
 `validateWorkGraphStructure` is the pure shared authority for graph invariants. It reports stable structured violations for identity and dependency errors, cycles and roots, longest-path-derived layer conflicts, and locally mergeable same-preferred single-chain edges. It has no catalog, storage, health, or Runtime dependency. Planner validation and PolicyKernel consume the same seam.
 
+The current source file may remain under `src/planning/` during migration, but its logical owner is the Work Graph module. The first later phase that extends graph handoff or runnable-frontier behavior must establish the independent Work Graph public entry instead of adding more consumers of Planning internals.
+
 Planner owns generation and one repair attempt. PolicyKernel independently repeats strict and catalog-aware validation, applies existing state/risk admission, then removes only dynamically `error` or `disabled` AgentClasses. It preserves order and keeps `unverified` and `healthy`. Any rewrite is structurally revalidated; exhausted or newly invalid graphs are rejected.
 
 Migration v21 preserves the old Subtask table as read-only `subtasks_v2_audit` and creates a v3-only production table. Non-terminal v2 tasks are parked for explicit natural-language replan; Runtime never reads audit rows. Runtime may apply an approved new graph only when none exists or recover an existing v3 graph when no new graph is supplied. It does not replace an existing graph, synthesize a fallback graph, infer capabilities, or switch AgentClasses after execution failure.
+
+### Durable runtime facts and recovery
+
+Task, v3 Subtask, TaskEvent, WorkUnit and WorkUnitEvent persistence—not `MetaclawSession.output` or executor memory—is the recovery source of truth. Planner proposes durable structure but never performs Executor work. Runtime claims one concrete WorkUnit for one Subtask attempt, records lifecycle facts, and releases the claim when execution completes, blocks or suspends. Resume and process recovery rebuild from persisted facts and authorized v3 graphs.
+
+This decision does not claim that real worktree allocation or partition leases already exist. Their identity, authorization, heartbeat/expiry and cleanup semantics remain roadmap Phase 5 work governed by ADR-0020's Resource Model, Control Kernel and Execution Runtime ownership split.
 
 ## Consequences
 
@@ -28,3 +37,4 @@ Migration v21 preserves the old Subtask table as read-only `subtasks_v2_audit` a
 - v2 execution state remains auditable without a compatibility parser or inferred migration.
 - Dependency-result injection, attempt fallback/retry, Kernel recovery control, resource partitioning, and concurrency remain explicit later phases.
 - ADR-0018 remains the authority for unified built-in Executor definitions, but its v3 deferral and continued `candidateAgentClasses` wire-format consequence are superseded by this decision.
+- The durable Task/Subtask/WorkUnit facts and Session-as-projection rule formerly recorded in ADR-0012 are incorporated here; ADR-0012 is historical.

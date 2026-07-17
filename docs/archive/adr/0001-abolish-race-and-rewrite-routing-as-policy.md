@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0014, ADR-0019, ADR-0020
 ---
 
 # Abolish race_executors and rewrite routing as ExecutionPolicy
+
+> Historical design only. The `ExecutionPolicy` and explicit single/multi execution-mode architecture was removed from the active path; current authority is ADR-0019 plus ADR-0020.
 
 ## Context
 
