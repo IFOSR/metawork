@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { AgentClassRiskLevel, Subtask, TaskStatus } from '../core/types.js';
+import type { ContextRef, WorkGraphAcceptanceCriterion, WorkGraphDependency } from '../work-graph/index.js';
 
 interface SubtaskRow {
   id: string;
@@ -7,11 +8,14 @@ interface SubtaskRow {
   title: string;
   goal: string;
   status: TaskStatus;
-  depends_on_json: string;
+  dependencies_json: string;
+  context_refs_json: string;
   required_capabilities_json: string;
   preferred_agent_class_list_json: string;
   expected_output: Subtask['expectedOutput'];
   acceptance_json: string;
+  artifacts_json: string;
+  verification_json: string;
   risk_level: AgentClassRiskLevel;
   result: string;
   error: string | null;
@@ -23,6 +27,10 @@ function parseList(value: string): string[] {
   return JSON.parse(value || '[]') as string[];
 }
 
+function parseJson<T>(value: string, fallback: T): T {
+  return JSON.parse(value || JSON.stringify(fallback)) as T;
+}
+
 function rowToSubtask(row: SubtaskRow): Subtask {
   return {
     id: row.id,
@@ -30,13 +38,16 @@ function rowToSubtask(row: SubtaskRow): Subtask {
     title: row.title,
     goal: row.goal,
     status: row.status,
-    dependsOn: parseList(row.depends_on_json),
+    dependencies: parseJson<WorkGraphDependency[]>(row.dependencies_json, []),
+    contextRefs: parseJson<ContextRef[]>(row.context_refs_json, []),
     requiredCapabilities: parseList(row.required_capabilities_json),
     preferredAgentClassList: parseList(row.preferred_agent_class_list_json),
     expectedOutput: row.expected_output,
-    acceptance: parseList(row.acceptance_json),
+    acceptance: parseJson<WorkGraphAcceptanceCriterion[]>(row.acceptance_json, []),
     riskLevel: row.risk_level,
     result: row.result,
+    artifacts: parseList(row.artifacts_json),
+    verification: parseJson(row.verification_json, { warnings: [], completionSchemaVersion: null }),
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -50,21 +61,24 @@ export class SubtaskRepo {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO subtasks (
-        id, task_id, title, goal, status, depends_on_json, required_capabilities_json,
+        id, task_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
         preferred_agent_class_list_json, expected_output, acceptance_json,
-        risk_level, result, error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        risk_level, result, artifacts_json, verification_json, error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
         status = excluded.status,
-        depends_on_json = excluded.depends_on_json,
+        dependencies_json = excluded.dependencies_json,
+        context_refs_json = excluded.context_refs_json,
         required_capabilities_json = excluded.required_capabilities_json,
         preferred_agent_class_list_json = excluded.preferred_agent_class_list_json,
         expected_output = excluded.expected_output,
         acceptance_json = excluded.acceptance_json,
         risk_level = excluded.risk_level,
         result = excluded.result,
+        artifacts_json = excluded.artifacts_json,
+        verification_json = excluded.verification_json,
         error = excluded.error,
         updated_at = excluded.updated_at
     `).run(
@@ -73,13 +87,16 @@ export class SubtaskRepo {
       subtask.title,
       subtask.goal,
       subtask.status,
-      JSON.stringify(subtask.dependsOn),
+      JSON.stringify(subtask.dependencies),
+      JSON.stringify(subtask.contextRefs),
       JSON.stringify(subtask.requiredCapabilities),
       JSON.stringify(subtask.preferredAgentClassList),
       subtask.expectedOutput,
       JSON.stringify(subtask.acceptance),
       subtask.riskLevel,
       subtask.result,
+      JSON.stringify(subtask.artifacts),
+      JSON.stringify(subtask.verification),
       subtask.error,
       subtask.createdAt || now,
       now,
@@ -101,17 +118,33 @@ export class SubtaskRepo {
     return row ? rowToSubtask(row) : null;
   }
 
-  updateStatus(id: string, status: TaskStatus, changes: { result?: string; error?: string | null } = {}): void {
+  updateStatus(id: string, status: TaskStatus, changes: {
+    result?: string;
+    artifacts?: string[];
+    verification?: Subtask['verification'];
+    error?: string | null;
+  } = {}): void {
     const now = new Date().toISOString();
     const hasError = Object.prototype.hasOwnProperty.call(changes, 'error');
     this.db.prepare(`
       UPDATE subtasks
       SET status = ?,
           result = COALESCE(?, result),
+          artifacts_json = COALESCE(?, artifacts_json),
+          verification_json = COALESCE(?, verification_json),
           error = CASE WHEN ? THEN ? ELSE error END,
           updated_at = ?
       WHERE id = ?
-    `).run(status, changes.result ?? null, hasError ? 1 : 0, changes.error ?? null, now, id);
+    `).run(
+      status,
+      changes.result ?? null,
+      changes.artifacts ? JSON.stringify(changes.artifacts) : null,
+      changes.verification ? JSON.stringify(changes.verification) : null,
+      hasError ? 1 : 0,
+      changes.error ?? null,
+      now,
+      id,
+    );
   }
 
   deleteByTask(taskId: string): void {

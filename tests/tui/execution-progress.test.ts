@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -86,7 +87,7 @@ describe('App execution progress', () => {
         input.onProgress?.({ kind: 'log', text: '正在检索市场份额数据' });
         return {
           success: true,
-          output: '调研完成',
+          output: completionResponse(input, '调研完成'),
           exitCode: 0,
           durationMs: 500,
         };
@@ -121,9 +122,6 @@ describe('App execution progress', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('【MetaClaw｜提取最近历史记录上下文】');
-    expect(app.lastFrame()).toContain('【MetaClaw｜构建执行上下文】');
-    expect(app.lastFrame()).toContain('【MetaClaw｜执行上下文准备完成】');
     expect(app.lastFrame()).toContain('【Executor: codex-cli｜派发准备】');
     expect(app.lastFrame()).toContain('→ Executor: codex-cli 将处理该任务');
     expect(app.lastFrame()).toContain('当前任务 #');
@@ -163,11 +161,11 @@ describe('App execution progress', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async () => {
+      execute: vi.fn().mockImplementation(async input => {
         await new Promise(resolve => setTimeout(resolve, 900));
         return {
           success: true,
-          output: '调研完成',
+          output: completionResponse(input, '调研完成'),
           exitCode: 0,
           durationMs: 280,
         };

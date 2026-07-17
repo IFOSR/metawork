@@ -16,6 +16,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -87,12 +88,12 @@ describe('App permission recovery natural-language control', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '授权后已恢复执行',
         exitCode: 0,
         durationMs: 500,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -126,7 +127,7 @@ describe('App permission recovery natural-language control', () => {
     await flushUpdates();
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].executionContextBundle.mode).toBe('resume-blocked');
+    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.id).toBe(blockedTask.id);
     expect(app.lastFrame()).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
 
     app.unmount();

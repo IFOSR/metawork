@@ -29,11 +29,15 @@ describe('SSH login environment', () => {
         {
           env: {
             ...process.env,
+            OPENAI_API_KEY: 'must-not-be-persisted',
             OPENAI_BASE_URL: 'https://example.invalid/v1',
+            METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-codex.env',
+            METACLAW_CODEX_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-codex.env',
+            METACLAW_PI_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-pi.env',
             METACLAW_HOME: '/test/data/metaclaw',
             METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
             METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v3.schema.json',
+            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v4.schema.json',
             METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
           },
         },
@@ -41,12 +45,18 @@ describe('SSH login environment', () => {
 
       expect(Object.fromEntries(readEnvironmentFile(environmentPath))).toMatchObject({
         LANG: 'C.UTF-8',
+        METACLAW_PLANNER_ENV_FILE: '/run/metaclaw/env/planner-codex.env',
+        METACLAW_CODEX_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-codex.env',
+        METACLAW_PI_EXECUTOR_ENV_FILE: '/run/metaclaw/env/executor-pi.env',
         METACLAW_HOME: '/test/data/metaclaw',
         METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
         METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v3.schema.json',
+        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v4.schema.json',
         METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
       });
+      const persisted = Object.fromEntries(readEnvironmentFile(environmentPath));
+      expect(persisted).not.toHaveProperty('OPENAI_API_KEY');
+      expect(persisted).not.toHaveProperty('OPENAI_BASE_URL');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

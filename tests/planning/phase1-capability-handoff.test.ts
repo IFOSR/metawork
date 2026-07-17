@@ -9,11 +9,12 @@ function subtask(overrides: Partial<SubtaskProposal>): SubtaskProposal {
     id: 'implement',
     title: 'Implement',
     goal: 'Implement and verify the requested workspace change',
-    dependsOn: [],
+    dependencies: [],
+    contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
     expectedOutput: 'patch',
-    acceptance: ['The change is implemented and verified'],
+    acceptance: [{ key: 'verified', description: 'The change is implemented and verified', requiredEvidence: [] }],
     riskLevel: 'medium',
     ...overrides,
   };
@@ -22,7 +23,7 @@ function subtask(overrides: Partial<SubtaskProposal>): SubtaskProposal {
 function plan(subtasks: SubtaskProposal[]): PlanningAgentPlan {
   return {
     id: 'phase1_handoff',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'plan_work_graph',
     confidence: 0.95,
     reason: 'Route work by capability handoff',
@@ -46,7 +47,7 @@ const snapshot: RuntimeSnapshot = {
   agentClasses: [],
   executorCatalog: getPlannerExecutorCatalog(),
   executorStatuses: [],
-  v3WorkGraphTaskIds: [],
+  v4WorkGraphTaskIds: [],
   currentFocus: null,
 };
 
@@ -60,9 +61,12 @@ describe('Phase 1 capability-minimal planning and authorization', () => {
         requiredCapabilities: ['current-web-research'],
         preferredAgentClassList: ['pi-agent'],
         expectedOutput: 'summary',
-        acceptance: ['Findings include traceable sources'],
+        acceptance: [{ key: 'sources', description: 'Findings include traceable sources', requiredEvidence: ['sources'] }],
       }),
-      subtask({ dependsOn: ['research'] }),
+      subtask({ dependencies: [{
+        fromSubtaskId: 'research',
+        requiredItems: [{ key: 'findings', type: 'text', description: 'source-backed findings' }],
+      }] }),
     ]);
 
     expect(validatePlanningAgentPlan(candidate, getPlannerExecutorCatalog())).toEqual({ valid: true, errors: [] });
@@ -73,7 +77,7 @@ describe('Phase 1 capability-minimal planning and authorization', () => {
     });
   });
 
-  it('rejects both an uncovered combined node and a step-shaped same-AgentClass chain', () => {
+  it('rejects both an uncovered combined node and an invalid dependency contract', () => {
     const combined = plan([subtask({
       requiredCapabilities: ['current-web-research', 'workspace-engineering'],
       preferredAgentClassList: ['pi-agent', 'codex-cli'],
@@ -81,10 +85,13 @@ describe('Phase 1 capability-minimal planning and authorization', () => {
     expect(validatePlanningAgentPlan(combined, getPlannerExecutorCatalog()).errors)
       .toContain('no_capable_agent_class: subtask implement must be split at a Routing Capability handoff');
 
-    const stepShaped = plan([
+    const invalidEdge = plan([
       subtask({ id: 'implement' }),
-      subtask({ id: 'verify', title: 'Verify', dependsOn: ['implement'], expectedOutput: 'summary' }),
+      subtask({ id: 'verify', title: 'Verify', dependencies: [{
+        fromSubtaskId: 'missing',
+        requiredItems: [{ key: 'result', type: 'text', description: 'result' }],
+      }], expectedOutput: 'summary' }),
     ]);
-    expect(new PolicyKernel().decide(stepShaped, snapshot)).toMatchObject({ outcome: 'reject', rejected: true });
+    expect(new PolicyKernel().decide(invalidEdge, snapshot)).toMatchObject({ outcome: 'reject', rejected: true });
   });
 });

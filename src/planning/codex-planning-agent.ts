@@ -109,7 +109,7 @@ export class CodexPlanningAgent implements PlanningAgent {
   private safeClarification(reason: string): PlanningAgentPlan {
     return {
       id: `plan_${generateInteractionId()}`,
-      schemaVersion: 3,
+      schemaVersion: 4,
       action: 'clarification',
       confidence: 0,
       reason,
@@ -140,20 +140,21 @@ export class CodexPlanningAgent implements PlanningAgent {
       '你是 MetaClaw 的 PlanningAgent。自然语言语义、任务目标、恢复目标、风险、优先级、任务拆分和 AgentClass 选择都由你判断。',
       '需要历史、任务状态或执行器事实时主动调用 metaclaw_planner MCP；不得猜测 taskId、阻塞状态或 AgentClass。',
       '静态执行器目录已在上下文 executorCatalog 中提供；不要通过 MCP 查询能力目录。只有需要创建工作图且近期健康事实会影响候选顺序时才查询执行器状态。证据不足时返回 clarification。',
-      '只返回严格符合 PlanningAgentPlan v3 的 JSON，不要返回 Markdown、解释、v2 execution 对象或旧 executor summary 字段。',
+      '只返回严格符合 PlanningAgentPlan v4 的 JSON，不要返回 Markdown、解释、v2/v3 execution 对象或旧 executor summary 字段。',
+      '每个 Subtask 必须声明 dependencies（每条边含非空 requiredItems）、contextRefs 和结构化 acceptance。禁止 dependsOn 与纯排序边。',
       '',
       '约束：',
       '- action: direct_reply | clarification | task_control | plan_work_graph | no_action。',
       '- direct_reply 必须在 response.directReply 填写最终用户可见答案；runtime 不再二次执行，空 directReply 会被拒绝。',
       '- 只有 plan_work_graph 携带非空 workGraph；其他 action 必须令 workGraph=null。',
-      '- resume_task/recover_blocked 必须选择明确 taskId、binding=reference，并先查询事实；它们只恢复已有 v3 图。',
+      '- resume_task/recover_blocked 必须选择明确 taskId、binding=reference，并先查询事实；它们只能运行已持久化的 v4 图，不能为 v2/v3 audit 自动生成语义新图。',
       '- plan_work_graph 只在受控 Routing Capability 交接处拆节点。单个 workspace-engineering 交付不得按实现、文档、PDF、验证等步骤拆分，必须由 codex-cli 一次完成。',
       '- 当前研究后修改代码的场景使用 pi-agent -> codex-cli；若目录中出现覆盖能力并集的单一 canonical AgentClass，则必须合并为单节点。',
       '- requiredCapabilities 非空；preferredAgentClassList 必须完整列出覆盖节点全部能力的所有 canonical AgentClass，第一项为 preferred，其余按 fallback 顺序。',
       '- 同一最长依赖路径派生层内不能重复第一首选 AgentClass；合并节点或选择另一完整覆盖的第一首选。',
       '- 若边 A -> B 满足 A 只有 B 一个直接子节点、B 只有 A 一个直接依赖且第一首选相同，必须合并。A 可承接上游汇合，B 可向下游分叉。',
       '- 用户指定 Executor 数量但与能力最小图冲突时返回 clarification，不得为凑数量制造节点。',
-      '- get_task_context 返回 requiresWorkGraphReplan 时，必须为引用任务生成新的 plan_work_graph；v2 摘要只作为有界审计证据。',
+      '- get_task_context 返回 requiresWorkGraphReplan 时，只有当前自然语言请求明确要求继续该任务，才为引用任务生成新的 plan_work_graph；v2/v3 摘要只作为有界审计证据。',
       '- plan_work_graph、resume_task、recover_blocked 必须设置 task.priority={level,reason}。',
       '- 其他动作的 task.priority 必须是 null。',
       '- status_query scope 只能是 dashboard/blocked/running；clear_tasks scope 只能是 all/parked/blocked。',
@@ -171,7 +172,7 @@ export class CodexPlanningAgent implements PlanningAgent {
 
   private buildRepairPrompt(context: PlanningContext, errors: string[]): string {
     return [
-      '上一次 PlanningAgentPlan 未通过校验，请修正全部错误，只返回完整严格的 v3 JSON：',
+      '上一次 PlanningAgentPlan 未通过校验，请修正全部错误，只返回完整严格的 v4 JSON：',
       ...errors.map(error => `- ${error}`),
       '',
       this.buildPrompt(context),
@@ -187,7 +188,7 @@ export function createDefaultPlanningAgent(
 
 const PLAN_SCHEMA_EXAMPLE = {
   id: 'plan_generated_id',
-  schemaVersion: 3,
+  schemaVersion: 4,
   action: 'direct_reply',
   confidence: 0.9,
   reason: 'answer without state change',

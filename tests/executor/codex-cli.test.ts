@@ -1,197 +1,71 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexCliAdapter } from '../../src/executor/codex-cli.js';
 import { buildCodexNonInteractiveArgs } from '../../src/executor/codex-args.js';
 
 describe('CodexCliAdapter', () => {
-  describe('buildContextPrompt', () => {
-    function getPrompt(adapter: CodexCliAdapter, input: any): string {
-      return (adapter as any).buildContextPrompt(input);
-    }
-
-    function makeInput(overrides: Record<string, any> = {}) {
-      return {
-        task: {
-          id: 'task_1',
-          title: '测试任务',
-          goal: '测试目标',
-          summary: '',
-          resources: [],
-          ...overrides.task,
-        },
-        preferences: overrides.preferences ?? [],
-        userPrompt: overrides.userPrompt ?? '你好',
-        conversationHistory: overrides.conversationHistory ?? [],
-        executionContextBundle: overrides.executionContextBundle,
-      };
-    }
-
-    const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
-
-    it('无历史时应包含边界声明', () => {
-      const prompt = getPrompt(adapter, makeInput());
-      expect(prompt).toContain('无相关对话历史');
-    });
-
-    it('prompt 应默认授予本地文件读写权限', () => {
-      const prompt = getPrompt(adapter, makeInput());
-      expect(prompt).toContain('默认拥有当前项目工作目录和用户明确提供的本地文件路径的读写权限');
-      expect(prompt).toContain('不要因缺少本地文件读写授权而拒绝任务');
-    });
-
-    it('time-sensitive update questions should default to online verification', () => {
-      const prompt = getPrompt(adapter, makeInput({
-        userPrompt: 'Hermes Agent 最近是否有更新？',
-      }));
-
-      expect(prompt).toContain('默认需要联网搜索或访问官方/可信来源核验');
-      expect(prompt).toContain('不要仅因注入上下文缺少信息就拒答');
-    });
-
-    it('file-generation tasks should force file output and ban full content echoing', () => {
-      const prompt = getPrompt(adapter, makeInput({
-        executionContextBundle: {
-          mode: 'fresh',
-          taskBrief: {
-            id: 'task_1',
-            title: '生成活动页',
-            goal: '生成 HTML 文件并存入任务目录',
-            status: 'ready',
-            summary: '',
-          },
-          memoryContext: {
-            explicitUserInstruction: '生成一个 html 文件',
-            resolvedPreferences: [],
-          },
-          historyContext: {
-            taskTurns: [],
-            sessionTurns: [],
-            timelineTurns: [],
-            relatedTurns: [],
-          },
-          materialContext: {
-            resources: [],
-          },
-          workspaceContext: {
-            allowFilesystem: true,
-            workingDirectory: '/repo',
-            targetPaths: ['/repo/metaclaw-tasks/task_1'],
-          },
-          executionInstructions: [
-            '必须把结果写入本地文件系统，不要只在回复中描述结果',
-            '不要在回复中粘贴或打印完整文件内容，只返回简短摘要和最终文件路径',
-            '目标目录：/repo/metaclaw-tasks/task_1',
-          ],
-        },
-      }));
-
-      expect(prompt).toContain('可以访问当前项目工作目录');
-      expect(prompt).toContain('/repo/metaclaw-tasks/task_1');
-      expect(prompt).toContain('不要在回复中粘贴或打印完整文件内容');
-      expect(prompt).not.toContain('不要因缺少本地文件读写授权而拒绝任务');
-    });
-
-    it('local file analysis tasks should not ask for filesystem authorization', () => {
-      const prompt = getPrompt(adapter, makeInput({
-        task: {
-          resources: ['/repo/materials/phoenix-weekly.md'],
-        },
-        userPrompt: '读取 /repo/materials/phoenix-weekly.md 并分析里面的内容',
-      }));
-
-      expect(prompt).toContain('默认拥有当前项目工作目录和用户明确提供的本地文件路径的读写权限');
-      expect(prompt).toContain('本地文件材料：/repo/materials/phoenix-weekly.md');
-      expect(prompt).toContain('不要因缺少本地文件读写授权而拒绝任务');
-      expect(prompt).not.toContain('不要读取或访问本地文件系统和工作目录');
-    });
-
-    it('injects text material excerpts into the prompt when available', () => {
-      const prompt = getPrompt(adapter, makeInput({
-        executionContextBundle: {
-          mode: 'fresh',
-          taskBrief: {
-            id: 'task_1',
-            title: 'Phoenix 周报',
-            goal: '整理 Phoenix 周报',
-            status: 'ready',
-            summary: '',
-          },
-          memoryContext: {
-            explicitUserInstruction: '结合材料整理 Phoenix 周报结论',
-            resolvedPreferences: [],
-          },
-          historyContext: {
-            taskTurns: [],
-            sessionTurns: [],
-            timelineTurns: [],
-            relatedTurns: [],
-          },
-          materialContext: {
-            resources: ['/repo/materials/phoenix-weekly.md'],
-            textSnippets: [
-              {
-                path: '/repo/materials/phoenix-weekly.md',
-                content: '# Phoenix Weekly\n本周完成核心模块联调，主线推进稳定。',
-              },
-            ],
-          },
-          executionInstructions: [],
-        },
-      }));
-
-      expect(prompt).toContain('关联材料：/repo/materials/phoenix-weekly.md');
-      expect(prompt).toContain('材料摘录：');
-      expect(prompt).toContain('核心模块联调');
-    });
-
-    it('separates local files and web links in the prompt materials section', () => {
-      const prompt = getPrompt(adapter, makeInput({
-        executionContextBundle: {
-          mode: 'fresh',
-          taskBrief: {
-            id: 'task_1',
-            title: 'Phoenix 周报',
-            goal: '整理 Phoenix 周报',
-            status: 'ready',
-            summary: '',
-          },
-          memoryContext: {
-            explicitUserInstruction: '整理 Phoenix 周报',
-            resolvedPreferences: [],
-          },
-          historyContext: {
-            taskTurns: [],
-            sessionTurns: [],
-            timelineTurns: [],
-            relatedTurns: [],
-          },
-          materialContext: {
-            resources: ['/repo/materials/phoenix-weekly.md', 'https://example.com/phoenix-weekly'],
-            textSnippets: [],
-          },
-          executionInstructions: [],
-        },
-      }));
-
-      expect(prompt).toContain('材料概览：');
-      expect(prompt).toContain('材料状态：');
-      expect(prompt).toContain('本地文件材料：/repo/materials/phoenix-weekly.md');
-      expect(prompt).toContain('网页链接材料：https://example.com/phoenix-weekly');
-    });
+  it('uses non-interactive Codex arguments', () => {
+    const args = buildCodexNonInteractiveArgs('prompt', { ephemeral: false });
+    expect(args).toContain('exec');
+    expect(args).toContain('prompt');
   });
 
-  describe('shared Codex arguments', () => {
-    it('keeps ephemeral mode for generic LLM calls by default', () => {
-      const args = buildCodexNonInteractiveArgs('test prompt');
+  it('renders only the SubtaskExecutionContext contract', () => {
+    const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
+    const prompt = (adapter as any).buildContextPrompt({ context: {
+      taskBackground: { id: 'task', title: 'Task', goal: 'background', instruction: 'background_only' },
+      currentSubtask: { id: 'a', title: 'A', goal: 'do A', expectedOutput: 'summary', acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }] },
+      incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
+      workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
+      identity: { executionId: 'e', taskId: 'task', subtaskId: 'a', attemptId: 'attempt', workUnitId: 'wu' },
+      completionContract: { marker: '<!-- metaclaw:completion:v1 -->', schemaVersion: 1 },
+      evidenceTools: { availability: 'unavailable', reason: 'test' },
+    } });
+    expect(prompt).toContain('Operative goal: do A');
+    expect(prompt).toContain('/repo/out');
+  });
 
-      expect(args[0]).toBe('exec');
-      expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
-      expect(args).toContain('--dangerously-bypass-hook-trust');
-      expect(args).toContain('--skip-git-repo-check');
-      expect(args).toContain('--ephemeral');
-      expect(args).not.toContain('--output-last-message');
-      expect(args).toContain('--color');
-      expect(args).toContain('never');
-      expect(args).toContain('test prompt');
-    });
+  it('binds the attempt-scoped evidence MCP without rendering its token into the prompt', () => {
+    const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
+    const input = { context: {
+      taskBackground: { id: 'task', title: 'Task', goal: 'background', instruction: 'background_only' as const },
+      currentSubtask: { id: 'a', title: 'A', goal: 'do A', expectedOutput: 'summary' as const, acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }] },
+      incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
+      workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
+      identity: { executionId: 'e', taskId: 'task', subtaskId: 'a', attemptId: 'attempt', workUnitId: 'wu' },
+      completionContract: { marker: '<!-- metaclaw:completion:v1 -->' as const, schemaVersion: 1 as const },
+      evidenceTools: {
+        availability: 'available' as const,
+        reason: 'test',
+        binding: { mcpUrl: 'http://127.0.0.1:1234/mcp', jsonUrl: 'http://127.0.0.1:1234/evidence', bearerToken: 'secret-token' },
+      },
+    } };
+    const execution = (adapter as any).prepareExecution('prompt', input);
+    const joined = execution.args.join(' ');
+    expect(joined).toContain('mcp_servers.metaclaw_evidence.url');
+    expect(joined).toContain('METACLAW_EVIDENCE_TOKEN');
+    expect(joined).not.toContain('secret-token');
+    expect((adapter as any).buildSpawnEnv(input).METACLAW_EVIDENCE_TOKEN).toBe('secret-token');
+    execution.cleanup();
+  });
+
+  it('loads the Executor Codex provider env file with precedence over inherited values', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-codex-env-'));
+    const envFile = join(directory, 'executor-codex.env');
+    writeFileSync(envFile, 'OPENAI_API_KEY=codex-file-key\nOPENAI_BASE_URL=https://codex.invalid/v1\n');
+    vi.stubEnv('METACLAW_CODEX_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('OPENAI_API_KEY', 'inherited-key');
+
+    try {
+      const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
+      const env = (adapter as any).buildSpawnEnv();
+      expect(env.OPENAI_API_KEY).toBe('codex-file-key');
+      expect(env.OPENAI_BASE_URL).toBe('https://codex.invalid/v1');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

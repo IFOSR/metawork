@@ -44,7 +44,7 @@ function createConfig(): Config {
 }
 
 describe('blocked task user journey', () => {
-  it('lets the user see, unblock, resume, and get notified about an old blocked task', async () => {
+  it('lets the user inspect a blocked attempt but does not retry it through /task unblock in Phase 2', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
@@ -103,8 +103,7 @@ describe('blocked task user journey', () => {
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]?.description).toBe('执行器网络连接失败，请检查网络或代理配置');
     let output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 已转为阻塞`);
-    expect(output).toContain(`/task unblock ${blockedTask.id}`);
+    expect(output).toContain('Execution blocked: 执行器网络连接失败，请检查网络或代理配置');
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
@@ -114,29 +113,13 @@ describe('blocked task user journey', () => {
 
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
-    expect(taskRepo.findById(blockedTask.id)?.status).toBe('done');
-    expect(executor.execute).toHaveBeenCalledTimes(2);
-    const resumedInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[1][0];
-    expect(resumedInput.task.id).toBe(blockedTask.id);
-    expect(resumedInput.executionContextBundle.mode).toBe('resume-blocked');
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
+    expect(executor.execute).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
-    expect(output).toContain('✓ 旧阻塞任务已完成');
-    expect(output).toContain('这是针对旧任务的答案');
-    expect(output).toContain('触发方式：你刚才显式解除/继续旧阻塞任务');
-    expect(output).toContain('原阻塞原因：执行器网络连接失败，请检查网络或代理配置');
-    expect(output).toContain('阻塞解除后已完成用户旅程验收报告');
-    expect(notifier.notifyTaskCompleted).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: blockedTask.id,
-      title: blockedTask.title,
-      executionMode: 'resume-blocked',
-      origin: 'user',
-      recoveryTrigger: expect.objectContaining({
-        kind: 'explicit-task-command',
-        blockedReason: '执行器网络连接失败，请检查网络或代理配置',
-        triggerReason: '显式解除阻塞',
-      }),
-    }));
+    expect(output).toContain('no ready Subtask; unfinished nodes remain blocked');
+    expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
+    expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();
   });
 });

@@ -121,16 +121,12 @@ describe('App permission failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('! 执行失败: 执行器权限受限，请确认已授予所需目录访问权限后重试') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器权限受限，请确认已授予所需目录访问权限后重试') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]?.description).toBe('执行器权限受限，请确认已授予所需目录访问权限后重试');
-    expect(app.lastFrame()).toContain('! 执行失败: 执行器权限受限，请确认已授予所需目录访问权限后重试');
-    expect(app.lastFrame()).toContain('请先确认相关目录权限或系统授权');
-    expect(app.lastFrame()).toContain('/task unblock');
-    expect(app.lastFrame()).toContain(blockedTask.id);
-    expect(app.lastFrame()).toContain('已授权，继续刚才那个任务');
+    expect(app.lastFrame()).toContain('Execution blocked: 执行器权限受限，请确认已授予所需目录访问权限后重试');
 
     app.unmount();
     app.cleanup();

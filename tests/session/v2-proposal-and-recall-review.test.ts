@@ -14,6 +14,7 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -95,12 +96,12 @@ describe('V2 proposal flow', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'Phoenix 周报已补齐经营数据并完成输出',
         exitCode: 0,
         durationMs: 200,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -130,8 +131,8 @@ describe('V2 proposal flow', () => {
     expect(afterProposalAccept).toContain('Phoenix 周报统一保留风险栏目和经营数据栏目');
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      .executionContextBundle.memoryContext.resolvedPreferences)
-      .toEqual([expect.objectContaining({ content: 'Phoenix 周报统一保留风险栏目和经营数据栏目' })]);
+      .context.selectedEvidence)
+      .toEqual([expect.objectContaining({ ref: { kind: 'current_user_input' } })]);
     expect(afterProposalAccept).toContain('Phoenix 周报已补齐经营数据并完成输出');
   });
 
@@ -201,12 +202,12 @@ describe('V2 proposal flow', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'MetaClaw 优化已完成',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -225,7 +226,13 @@ describe('V2 proposal flow', () => {
       contextRecaller,
       llmBridge,
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '根据最终优化方案实施 MetaClaw' }),
+        workGraphPlan({
+          goal: '根据最终优化方案实施 MetaClaw',
+          contextRefs: [
+            { kind: 'current_user_input' },
+            { kind: 'preference', preferenceId: 'pref_auto_apply' },
+          ],
+        }),
       ),
     });
 
@@ -251,10 +258,10 @@ describe('V2 proposal flow', () => {
     }));
 
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const resolvedPreferences = executionInput.executionContextBundle.memoryContext.resolvedPreferences;
-    expect(resolvedPreferences.map((preference: { id: string }) => preference.id)).toEqual([
-      'pref_auto_apply',
-    ]);
+    expect(executionInput.context.selectedEvidence).toContainEqual(expect.objectContaining({
+      ref: { kind: 'preference', preferenceId: 'pref_auto_apply' },
+      content: 'MetaClaw 优化方案默认先给结论，再列执行细节',
+    }));
 
     const finalOutput = session.getSnapshot().output.join('\n');
     expect(finalOutput).toContain('已自动采用记忆');
@@ -297,12 +304,12 @@ describe('V2 proposal flow', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '飞书调研报告已生成',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };

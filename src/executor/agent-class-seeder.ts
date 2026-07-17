@@ -99,6 +99,7 @@ export function seedDefaultWorkUnits(
       state: 'idle',
       claimedTaskId: null,
       claimedSubtaskId: null,
+      claimedAttemptId: null,
       heartbeatAt: now,
       leaseExpiresAt: null,
       createdAt: now,

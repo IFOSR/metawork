@@ -14,7 +14,7 @@ function createDb(): Database.Database {
 function directReplyPlan(): PlanningAgentPlan {
   return {
     id: 'plan_direct',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'direct_reply',
     confidence: 0.95,
     reason: 'chat',
@@ -66,7 +66,7 @@ describe('PlanningDecisionRepo', () => {
         taskId: null,
         outcome: 'accept',
         reason: 'direct reply authorized',
-        planSchemaVersion: 3,
+        planSchemaVersion: 4,
       }),
     ]);
   });

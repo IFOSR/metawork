@@ -13,8 +13,10 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import type { ExecutorInput } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -92,9 +94,13 @@ describe('App execution indicator', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
+    let executionInput: ExecutorInput | undefined;
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockReturnValue(deferred.promise),
+      execute: vi.fn().mockImplementation((input) => {
+        executionInput = input;
+        return deferred.promise;
+      }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -134,7 +140,7 @@ describe('App execution indicator', () => {
 
     deferred.resolve({
       success: true,
-      output: '执行完成',
+      output: completionResponse(executionInput!, '执行完成'),
       exitCode: 0,
       durationMs: 1200,
     });
@@ -143,9 +149,9 @@ describe('App execution indicator', () => {
     await flushUpdates();
 
     expect(
-      app.frames.some(frame => frame.includes('✓ 任务完成') && frame.includes('当前执行 1 |'))
+      app.frames.some(frame => frame.includes('completed 1 Subtask(s)') && frame.includes('当前执行 1 |'))
     ).toBe(false);
-    expect(app.lastFrame()).toContain('✓ 任务完成');
+    expect(app.lastFrame()).toContain('completed 1 Subtask(s)');
     expect(app.lastFrame()).toContain('当前执行 0 | 待执行 0 | 已挂起 0 | 阻塞 0');
     expect(app.lastFrame()).toContain('status: idle');
 

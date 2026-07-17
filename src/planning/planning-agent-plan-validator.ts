@@ -1,7 +1,7 @@
 import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
-import { validateWorkGraphStructure } from './work-graph-structure-rules.js';
+import { validateWorkGraph } from '../work-graph/index.js';
 
 export interface PlanningAgentPlanValidationResult {
   valid: boolean;
@@ -31,8 +31,8 @@ export function validatePlanningAgentPlan(
   validateTaskPriority(plan, errors);
 
   if (plan.workGraph) {
-    errors.push(...validateWorkGraphStructure(plan.workGraph).map(
-      violation => `${violation.code}: ${violation.message}`,
+    errors.push(...validateWorkGraph(plan.workGraph).map(
+      violation => `${violation.code}: ${violation.path}: ${violation.message}`,
     ));
     validateRouting(plan.workGraph.subtasks, executorCatalog, errors);
   }

@@ -4,17 +4,17 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. The isolated Codex `PlanningAgent` owns all natural-language semantics and proposes a strict v3 `PlanningAgentPlan`. Its startup context is minimal; bounded read-only stdio MCP tools provide task, current-session, runtime, executor, and bounded v2 migration-audit facts on demand. The deterministic `PolicyKernel` validates or rewrites that plan and returns a `KernelDecision`. Runtime applies an approved new v3 work graph or recovers the existing one, claims an executor `WorkUnit` in approved preference order, and calls `ExecutionRuntime` with a `SubtaskExecutionSpec`.
+The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. The isolated Codex `PlanningAgent` owns natural-language semantics and proposes a strict v4 `PlanningAgentPlan`. Its startup context is minimal; bounded read-only stdio MCP tools provide task, current-session, runtime, executor, and v2/v3 migration-audit facts on demand. The deterministic `PolicyKernel` validates or rewrites that plan and returns a `KernelDecision`. Runtime persists or recovers the authorized v4 graph, selects one ready Subtask, and delegates one complete attempt to `SubtaskAttemptRunner`.
 
-`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal context construction, v3 plan types/schema, catalog-aware validation, and the pure shared work-graph structure rules. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v2 parser, legacy intent route, semantic default, or keyword fallback.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v4 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v4 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3 parser, legacy intent route, semantic default, or keyword fallback.
 
 `src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
 
-`src/execution/work-unit-claim-service.ts` is the runtime resource arbitration layer. It owns starting/probe, approved-order claim, running, waiting, failure, release, heartbeat, and heartbeat-lost transitions. It always queries `executor` work units and does not re-evaluate capabilities or perform post-failure AgentClass fallback. Static `AgentClass` data never represents live health; the legacy database `availability` column is ignored.
+`src/execution/subtask-attempt-runner.ts` is the deep execution module. It creates one attempt identity, claims one WorkUnit, builds the only `SubtaskExecutionContext`, starts attempt-scoped evidence access, invokes one Adapter, validates Completion Protocol v1, atomically persists terminal receipt/handoffs/clean result, and releases the same claim in `finally`. `src/execution/work-unit-claim-service.ts` owns WorkUnit state transitions and attempt-aware claims; it does not re-evaluate capabilities or perform fallback.
 
-Migration v21 renamed the complete legacy `subtasks` table to read-only `subtasks_v2_audit` and created a v3-only production table with `required_capabilities_json` and `preferred_agent_class_list_json`. Non-terminal tasks that owned v2 subtasks are parked for explicit natural-language replan; terminal tasks stay terminal and active legacy WorkUnits become `heartbeat_lost`. Runtime never reads the audit table. A task with an existing v3 graph may only resume it through task control; Phase 1 does not replace or merge an existing graph.
+Migration v22 renamed the Phase 1 `subtasks` table to read-only `subtasks_v3_audit` and created a v4-only production table with `dependencies_json`, `context_refs_json`, structured acceptance, artifacts, and verification. It also created immutable `subtask_handoffs`, terminal `executor_attempt_receipts`, materialized task evidence, and attempt-aware WorkUnit claims. Non-terminal tasks with v3 graphs are parked for explicit natural-language replan; terminal tasks remain terminal. `/task resume`, timers, and startup never perform semantic replan or implicit retry.
 
-The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService`; do not reintroduce a parallel routing layer.
+The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService → SubtaskAttemptRunner`; do not reintroduce a parallel routing or Executor-input layer.
 
 Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions. A missing non-canonical configured default is materialized as an unclassified AgentClass with no routing capabilities, while an existing non-canonical class is not rewritten. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability metadata is irreversibly replaced by the controlled Routing Capability IDs. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. The retired `executor_profiles` table is removed by migration v20.
 
@@ -55,7 +55,7 @@ The small interface exposed by a planner work unit: given a planning context, re
 _Avoid_: policy kernel, session intent service, executor
 
 **PlanningAgentPlan**:
-A strict v3 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. It has no top-level execution summary. A plan is not executable until the PolicyKernel accepts or rewrites it.
+A strict v4 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until the PolicyKernel accepts or rewrites it.
 _Avoid_: runtime command, task event, execution policy
 
 **PolicyKernel**:
@@ -83,12 +83,24 @@ The runtime lifecycle vocabulary for work units: starting, idle, claimed, runnin
 _Avoid_: task state, subtask state
 
 **Work Graph**:
-The sole execution-structure fact for one task: a DAG of capability-minimal subtasks split at controlled Routing Capability handoffs. Every executable subtask has non-empty `requiredCapabilities` and a complete ordered `preferredAgentClassList` of all statically eligible canonical AgentClasses. Runtime currently consumes the graph serially; dependency-result injection and concurrency are later phases.
+The sole execution-structure fact for one task: a v4 DAG of capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every edge has one to twelve keyed `text` or `artifact` items; only completed direct-edge handoffs enter downstream context. Runtime consumes one ready node at a time. Concurrency, retry, fallback, and workspace-state handoff are later phases.
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
-**SubtaskExecutionSpec**:
-The runtime input shape for executing a claimed subtask: subtask, executor work unit, agent class runtime configuration, task context, expected output, and acceptance requirements.
-_Avoid_: ExecutionPolicy, primaryExecutor, candidateExecutors, fallbackChain
+**Subtask Execution Context**:
+The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing keyed requirements, Planner-selected evidence, sibling identities marked out of scope, workspace/attempt identity, completion contract, and evidence-tool availability.
+_Avoid_: Task prompt passthrough, conversation history, task-level memory bundle, sibling goals
+
+**Completion Protocol**:
+The required final Executor response contract: non-empty clean Markdown followed by exactly one `metaclaw:completion:v1` strict JSON envelope. Runtime validates acceptance evidence, exact handoffs, budgets, and artifact containment, then strips the envelope from every user-facing and memory-facing result.
+_Avoid_: best-effort trailer, inferred handoff, visible machine block
+
+**Execution Evidence**:
+The attempt-bound, Task-scoped read-only port for eligible user input, user materials, and confirmed preferences. Ordinary assistant/Executor output and dependency results are not generally searchable; an explicitly authorized assistant interaction is exact-get only.
+_Avoid_: conversation transcript, cross-task search, dependency output channel
+
+**Attempt Receipt**:
+The immutable terminal audit for one Task/Subtask/attempt/WorkUnit/AgentClass invocation, including raw response and parsing/verification facts. Phase 2 receipts do not contain retry, fallback, backoff, or workspace-state policy.
+_Avoid_: retry state machine, user-visible result, mutable handoff
 
 **Work Unit Event**:
 A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.

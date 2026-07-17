@@ -14,6 +14,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -82,12 +83,12 @@ describe('Phase E8 TaskMemoryCard recall integration', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'Phoenix 周报已完成',
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -117,6 +118,6 @@ describe('Phase E8 TaskMemoryCard recall integration', () => {
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.executionContextBundle.materialContext.resources).not.toContain('docs/phoenix-weekly-output.md');
+    expect(JSON.stringify(executionInput.context.selectedEvidence)).not.toContain('docs/phoenix-weekly-output.md');
   });
 });

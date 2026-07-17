@@ -16,6 +16,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -59,11 +60,14 @@ describe('Round 7 inline materials acceptance', () => {
     writeFileSync(weeklyPath, '本周完成 Phoenix 核心模块联调。', 'utf-8');
     writeFileSync(riskPath, '当前风险在跨团队依赖和测试数据准备不足。', 'utf-8');
 
+    const plan = workGraphPlan({ goal: 'Use the two Task resources to prepare the Phoenix weekly summary.' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [{ kind: 'task_resource', locator: weeklyPath }, { kind: 'task_resource', locator: riskPath }];
+
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async (input) => ({
         success: true,
-        output: `结论：${input.executionContextBundle?.materialContext.textSnippets?.map(item => item.content).join(' | ')}`,
+        output: completionResponse(input, input.context.selectedEvidence.map(item => item.content).join(' | ')),
         exitCode: 0,
         durationMs: 80,
       })),
@@ -86,9 +90,7 @@ describe('Round 7 inline materials acceptance', () => {
       sessionId: 'sess_round7_inline_materials',
       contextRecaller,
       llmBridge,
-      planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: `基于 ${weeklyPath} 和 ${riskPath} 整理 Phoenix 周报，输出一个简短结论` }),
-      ),
+      planningAgent: stubPlanningAgent(plan),
     });
 
     session.initialize();

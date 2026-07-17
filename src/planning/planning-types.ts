@@ -1,9 +1,7 @@
-import type { AgentClassRiskLevel, Subtask } from '../core/types.js';
 import type {
-  BuiltinExecutorName,
   PlannerExecutorCatalog,
-  RoutingCapabilityId,
 } from '../executor/builtin-executor-catalog.js';
+import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/index.js';
 
 export type PlanningAction =
   | 'direct_reply'
@@ -25,26 +23,12 @@ export type IntentTaskControl =
   | 'none';
 export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
 
-export interface SubtaskProposal {
-  id: string;
-  title: string;
-  goal: string;
-  dependsOn: string[];
-  requiredCapabilities: RoutingCapabilityId[];
-  preferredAgentClassList: BuiltinExecutorName[];
-  expectedOutput: Subtask['expectedOutput'];
-  acceptance: string[];
-  riskLevel: AgentClassRiskLevel;
-}
-
-export interface WorkGraphProposal {
-  reason: string;
-  subtasks: SubtaskProposal[];
-}
+export type SubtaskProposal = WorkGraphSubtask;
+export type { WorkGraphProposal };
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 3;
+  schemaVersion: 4;
   action: PlanningAction;
   confidence: number;
   reason: string;

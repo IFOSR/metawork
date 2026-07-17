@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   PlanningAgentPlanOutputSchema,
   PlanningAgentPlanSchema,
@@ -7,7 +8,7 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -30,11 +31,12 @@ function outputPlan() {
         id: 'impl',
         title: 'Implement',
         goal: 'Implement and test',
-        dependsOn: [],
+        dependencies: [],
+        contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch',
-        acceptance: ['tests pass'],
+        acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
     },
@@ -43,6 +45,15 @@ function outputPlan() {
 }
 
 describe('PlanningAgent plan schemas', () => {
+  it('generates a Responses API compatible structured-output schema without oneOf', () => {
+    const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
+      target: 'draft-7',
+      unrepresentable: 'any',
+    });
+
+    expect(JSON.stringify(schema)).not.toContain('"oneOf"');
+  });
+
   it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
     const valid = outputPlan();
     const parsed = PlanningAgentPlanSchema.safeParse({
@@ -63,12 +74,21 @@ describe('PlanningAgent plan schemas', () => {
     expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '   ' }).success).toBe(false);
   });
 
-  it('rejects v2 and removed execution-routing fields', () => {
+  it('rejects v2/v3 and removed execution-routing fields', () => {
     const valid = outputPlan();
     expect(PlanningAgentPlanSchema.safeParse({
       ...valid,
       schemaVersion: 2,
       execution: { mode: 'single_executor', selectedExecutor: 'codex-cli' },
+    }).success).toBe(false);
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, schemaVersion: 3 }).success).toBe(false);
+
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{ ...valid.workGraph.subtasks[0], dependsOn: [] }],
+      },
     }).success).toBe(false);
 
     const subtask = valid.workGraph.subtasks[0];

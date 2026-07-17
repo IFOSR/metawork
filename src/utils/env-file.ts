@@ -1,10 +1,31 @@
 import { existsSync, readFileSync } from 'fs';
 
 export function loadEnvFileIfExists(envPath: string, targetEnv: NodeJS.ProcessEnv = process.env): void {
+  for (const [key, value] of Object.entries(readEnvFileIfExists(envPath))) {
+    if (targetEnv[key]) {
+      continue;
+    }
+    targetEnv[key] = value;
+  }
+}
+
+/** Builds a child-process environment with one executor-specific env file taking precedence. */
+export function buildEnvFromFile(
+  envPath: string | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    ...(envPath ? readEnvFileIfExists(envPath) : {}),
+  };
+}
+
+export function readEnvFileIfExists(envPath: string): NodeJS.ProcessEnv {
   if (!existsSync(envPath)) {
-    return;
+    return {};
   }
 
+  const values: NodeJS.ProcessEnv = {};
   const content = readFileSync(envPath, 'utf-8');
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -16,11 +37,12 @@ export function loadEnvFileIfExists(envPath: string, targetEnv: NodeJS.ProcessEn
       continue;
     }
     const key = line.slice(0, separatorIndex).trim();
-    if (!key || targetEnv[key]) {
+    if (!key) {
       continue;
     }
-    targetEnv[key] = parseEnvValue(line.slice(separatorIndex + 1).trim());
+    values[key] = parseEnvValue(line.slice(separatorIndex + 1).trim());
   }
+  return values;
 }
 
 function parseEnvValue(rawValue: string): string {

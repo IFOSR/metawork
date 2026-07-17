@@ -16,6 +16,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -80,8 +81,8 @@ afterEach(() => {
   inputCapture.handler = undefined;
 });
 
-describe('App resume bundle integration', () => {
-  it('passes a resume-parked execution context bundle to the executor when resuming a parked task', async () => {
+describe('App persisted v4 resume integration', () => {
+  it('passes the persisted task-scoped execution context when resuming a parked task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -103,12 +104,12 @@ describe('App resume bundle integration', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '恢复完成',
         exitCode: 0,
         durationMs: 800,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -148,9 +149,9 @@ describe('App resume bundle integration', () => {
     await waitFor(() => {
       expect(executor.execute).toHaveBeenCalled();
       const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].executionContextBundle?.mode === 'resume-parked');
-      expect(executionCall?.[0].executionContextBundle.mode).toBe('resume-parked');
-      expect(executionCall?.[0].executionContextBundle.resumeContext.lastProgress).toContain('报告 A 已完成');
+        .find(call => call[0].context.taskBackground.id === parkedTask.id);
+      expect(executionCall?.[0].context.taskBackground.goal).toBe('完成分析摘要');
+      expect(JSON.stringify(executionCall?.[0].context)).not.toContain('报告 A 已完成');
     });
 
     app.unmount();

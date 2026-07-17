@@ -14,6 +14,7 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -91,7 +92,7 @@ describe('Session skill usage observability', () => {
             payload: { tests: 'passed' },
           },
         });
-        return { success: true, output: '完成', exitCode: 0, durationMs: 100 };
+        return { success: true, output: completionResponse(input, '完成'), exitCode: 0, durationMs: 100 };
       }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),

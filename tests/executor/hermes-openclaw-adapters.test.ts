@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { DeepSeekTuiAdapter } from '../../src/executor/deepseek-tui.js';
 import { HermesAgentAdapter } from '../../src/executor/hermes-agent.js';
 import { OpenClawAdapter } from '../../src/executor/openclaw.js';
@@ -42,13 +45,31 @@ describe('PiAgentAdapter', () => {
       '--no-extensions',
       '--extension',
       '--tools',
-      'web_search,web_fetch,bash,read,write,edit,grep,find,ls',
+      'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
       '--append-system-prompt',
       '-p',
       'test prompt',
     ]));
     expect(args[args.indexOf('--extension') + 1]).toContain('metaclaw-web-tools.ts');
     expect(args[args.indexOf('--append-system-prompt') + 1]).toContain('Use web_search automatically');
+  });
+
+  it('loads the Executor Pi provider env file with precedence over inherited values', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-pi-env-'));
+    const envFile = join(directory, 'executor-pi.env');
+    writeFileSync(envFile, 'OPENAI_API_KEY=pi-file-key\nOPENAI_BASE_URL=https://pi.invalid/v1\n');
+    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('OPENAI_API_KEY', 'inherited-key');
+
+    try {
+      const adapter = new PiAgentAdapter({ command: 'pi', timeout: 300 });
+      const env = (adapter as any).buildSpawnEnv();
+      expect(env.OPENAI_API_KEY).toBe('pi-file-key');
+      expect(env.OPENAI_BASE_URL).toBe('https://pi.invalid/v1');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

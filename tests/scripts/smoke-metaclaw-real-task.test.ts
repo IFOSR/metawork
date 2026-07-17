@@ -69,4 +69,12 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(smoke.extractArtifactPath('已创建文件：`/tmp/smoke-result.md`'))
       .toBe('/tmp/smoke-result.md');
   });
+
+  it('directs artifact output to the runtime-authorized target instead of the process cwd', async () => {
+    const smoke = await loadSmokeScript();
+    const script = smoke.buildScenarioScript('artifact');
+
+    expect(script).toContain('authorized Task target directory');
+    expect(script).not.toContain('in the current directory');
+  });
 });

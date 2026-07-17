@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -83,12 +84,12 @@ describe('App conversation routing', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '你好，我在。',
         exitCode: 0,
         durationMs: 50,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -230,12 +231,12 @@ describe('App conversation routing', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '最容易被替代的是通用 prompt 编排，最难被替代的是调度、状态与恢复。',
         exitCode: 0,
         durationMs: 90,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -285,12 +286,12 @@ describe('App conversation routing', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
         exitCode: 0,
         durationMs: 90,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -350,10 +351,10 @@ describe('App conversation routing', () => {
     expect(executor.execute).toHaveBeenCalled();
     const followUpCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
       .map(call => call[0])
-      .find(input => input.task.title.includes('把刚才那段回答整理成三点结论'));
+      .find(input => input.context.taskBackground.title.includes('把刚才那段回答整理成三点结论'));
     expect(followUpCall).toBeDefined();
-    expect(followUpCall!.task.id).not.toBe(parkedTaskId);
-    expect(followUpCall!.conversationHistory.some((turn: { userInput: string }) => turn.userInput.includes('未来随着基座模型'))).toBe(true);
+    expect(followUpCall!.context.taskBackground.id).not.toBe(parkedTaskId);
+    expect(JSON.stringify(followUpCall!.context)).not.toContain('未来随着基座模型');
     expect(taskRepo.findById(parkedTaskId)?.status).toBe('parked');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTaskId}`);
 

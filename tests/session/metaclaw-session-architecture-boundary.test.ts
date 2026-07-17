@@ -89,7 +89,7 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(applicationSource).toContain('presentation.formatTaskClearResult');
   });
 
-  it('delegates delivery notifications and blocked recovery formatting to VerificationAndDeliveryService', () => {
+  it('delegates clean aggregate notifications to VerificationAndDeliveryService without legacy recovery formatting', () => {
     const source = readSource('src/session/metaclaw-session.ts');
     const coordinatorSource = readSource('src/session/session-execution-coordinator.ts');
 
@@ -100,8 +100,8 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('verificationAndDeliveryService.deliverTaskCompletion');
     expect(source).toContain('memoryCaptureService');
     expect(coordinatorSource).toContain('verificationAndDeliveryService.deliverTaskCompletion');
-    expect(coordinatorSource).toContain('verificationAndDeliveryService.appendBlockedRecoveryCompletionBlock');
-    expect(coordinatorSource).toContain('await this.deps.verificationAndDeliveryService.prepareAsync');
+    expect(coordinatorSource).not.toContain('appendBlockedRecoveryCompletionBlock');
+    expect(coordinatorSource).toContain('void this.deps.verificationAndDeliveryService.deliverTaskCompletion');
     expect(source).not.toContain('this.verificationAndDeliveryService.prepare({');
   });
 

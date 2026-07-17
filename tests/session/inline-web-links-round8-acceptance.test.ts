@@ -16,6 +16,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -58,11 +59,14 @@ describe('Round 8 inline web links acceptance', () => {
     writeFileSync(weeklyPath, '本周完成 Phoenix 核心模块联调。', 'utf-8');
     const weeklyUrl = 'https://example.com/phoenix-weekly';
 
+    const plan = workGraphPlan({ goal: 'Use the Task resources to prepare the Phoenix weekly summary.' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [{ kind: 'task_resource', locator: weeklyPath }, { kind: 'task_resource', locator: weeklyUrl }];
+
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async (input) => ({
         success: true,
-        output: `资源：${input.executionContextBundle?.materialContext.resources.join(' | ')}`,
+        output: completionResponse(input, input.context.selectedEvidence.map(item => item.content).join(' | ')),
         exitCode: 0,
         durationMs: 80,
       })),
@@ -85,9 +89,7 @@ describe('Round 8 inline web links acceptance', () => {
       sessionId: 'sess_round8_inline_links',
       contextRecaller,
       llmBridge,
-      planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: `基于 ${weeklyPath} 和 ${weeklyUrl} 整理 Phoenix 周报，输出一个简短结论` }),
-      ),
+      planningAgent: stubPlanningAgent(plan),
     });
 
     session.initialize();

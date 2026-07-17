@@ -1,22 +1,29 @@
 <p align="center">
-  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="96" align="middle" /></a>
-  <img src="docs/assets/brand-times.svg" alt="x" height="96" align="middle" />
-  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="96" align="middle" /></a>
+  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="88" align="middle" /></a>
+  <img src="docs/assets/brand-times.svg" alt="x" height="88" align="middle" />
+  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="88" align="middle" /></a>
 </p>
 
 <div align="center">
 
 # AnyFusion
 
-**A local AI Task OS for durable agentic work.**
+**AI Task OS for Durable Agentic Work**
 
-Turn natural-language requests into tasks that can be planned, scheduled, resumed, verified, remembered, and delivered through local agent runtimes.
+Plan, govern, execute, resume, verify, and deliver long-running agent workflows through a durable local runtime.
 
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
+<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion,<br />with core development led by AnyInt. It is currently deployed for limited internal pilot use.</strong>
 
-[Technical Overview](docs/current/technical-overview.md) | [Docs](docs/README.md) | [Architecture Decisions](docs/adr) | [Chinese](README.zh-CN.md)
+<sub>Hosted by MetaAny as a neutral open-source home.</sub>
+
+<br /><br />
+
+[![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
+[![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
+[![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
+
+[Quick Start](#quick-start) · [Architecture](#architecture) · [Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) · [Technical Overview](docs/current/technical-overview.md) · [中文](README.zh-CN.md)
 
 </div>
 
@@ -52,9 +59,9 @@ AnyFusion treats agent work as work:
 - **Hybrid task retrieval**: historical tasks are searchable through SQLite FTS and semantic ranking signals.
 - **Gateway delivery**: terminal, local Gateway, Feishu progress cards, artifact upload, and Markdown preview links share one session runtime.
 - **Verification loop**: executor outputs can be checked for evidence, artifacts, test results, and missing acceptance criteria.
-- **Real smoke gate**: `npm run smoke:metaclaw` runs an end-to-end task through the built CLI and verifies generated artifacts.
+- **Real smoke gate**: `npm run smoke:anyfusion` runs an end-to-end task through the built CLI and verifies generated artifacts.
 
-## Quick Install
+## Quick Start
 
 AnyFusion targets Node.js 20+ and a Unix-like shell. On Windows, WSL2 with Ubuntu is the recommended runtime.
 
@@ -62,11 +69,12 @@ AnyFusion targets Node.js 20+ and a Unix-like shell. On Windows, WSL2 with Ubunt
 git clone https://github.com/MetaAny/AnyFusion.git
 cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion
 ```
 
-`setup.sh` installs dependencies, builds the CLI, links `metaclaw`, creates a local config, and detects available executor commands on `PATH`.
+`setup.sh` installs dependencies, builds the CLI, links `anyfusion`, creates a local config, and detects available executor commands on `PATH`.
+
+For a credential-backed end-to-end validation, run `npm run smoke:anyfusion` separately.
 
 Manual development setup:
 
@@ -74,72 +82,19 @@ Manual development setup:
 npm install
 npm run build
 npm link
-metaclaw --help
+anyfusion
 ```
 
-## Running interactively via Docker + SSH
+## Containerized Development
 
-On Windows, `docker exec -it` does not give the Ink TUI a real terminal, which
-crashes it with `Raw mode is not supported`. The included SSH workflow runs the
-container as an SSH server, giving you a genuine PTY for the TUI **and** a
-general-purpose shell for browsing/editing `/workspace` output files. VS Code
-Remote-SSH can also open `/workspace` as a full folder.
-
-Prerequisites: Docker Desktop, and `docker/pi.env` with `OPENAI_API_KEY` **and**
-`OPENAI_BASE_URL` set (copy `docker/pi.env.example`). `docker/pi.env` is the
-single API config entry point — both `codex` (default planner + executor) and
-`pi` (available as an executor candidate) read their key and base URL from it.
-`entrypoint.sh` substitutes `OPENAI_BASE_URL` into the Codex and Pi templates
-at container start. Planner and executor use separate `CODEX_HOME` directories;
-only API credentials are shared. The image contains `dist/index.js`,
-`dist/planner-mcp.js`, the generated PlanningAgentPlan v3 schema, the Planner
-Skill, and both Codex configurations. Host `dist`, Codex/PI configuration, and
-the entrypoint are not bind-mounted. After source changes, use `-Rebuild`;
-only dedicated `/workspace` and `/data` volumes persist at runtime.
-
-```powershell
-.\docker\shell.ps1 -Start    # build image (if needed) + start the SSH container
-.\docker\shell.ps1 -SetupSsh # one-time: set up passwordless key login
-.\docker\shell.ps1           # SSH in and launch the TUI (default)
-.\docker\shell.ps1 -Bash     # SSH in to a plain bash shell (browse files)
-.\docker\shell.ps1 -Stop     # stop the container (keeps it for next time)
-.\docker\shell.ps1 -Remove   # stop and remove the container
-.\docker\shell.ps1 -Rebuild  # rebuild the image, then recreate the container
-```
-
-SSH details: host `localhost`, port `2222`, user `root`, password `metaclaw`
-(local single-machine default). The host key is written to
-`.tmp/ssh_known_hosts` so your global known_hosts is untouched.
-
-**Planner read-only shell (`--security-opt seccomp=unconfined`):** the container
-is created with a relaxed seccomp filter so the read-only PlanningAgent can run a
-sandboxed shell (bubblewrap) to read repository files while all writes stay
-denied. This is granted **once**, at `docker run` (`-Start`); `-Stop`/`-Start`
-reuse the same container with no re-grant. `-Rebuild` (or `-Remove` then
-`-Start`) creates a fresh container and re-applies it. For production deploys,
-grant the same flag once when creating the runtime container. Without it the
-planner's shell fails closed and it cannot read files (it still works via its
-read-only MCP task/runtime tools).
-
-**Passwordless login (optional, recommended):** run `.\docker\shell.ps1 -SetupSsh`
-once. It generates a dedicated key under `.tmp/ssh_key` (gitignored), installs
-the public key into the container, and writes an SSH client config defining the
-host alias `metaclaw`. After that, `.\docker\shell.ps1` and `.\docker\shell.ps1
--Bash` connect with no password prompt. The public key is re-seeded on every
-`-Start`, so it survives `-Rebuild`. You can also connect directly with
-`ssh -F .tmp/ssh_key/config metaclaw`.
-
-To open the workspace in VS Code: install the **Remote - SSH** extension. After
-`-SetupSsh`, connect to host `metaclaw` and open `/workspace`. (Without
-`-SetupSsh`, add a host `localhost:2222` user `root` and use the `metaclaw`
-password.)
+A Docker + SSH workflow is available when the Ink TUI needs a real PTY on Windows. It keeps planner and executor provider files isolated, mounts a persistent workspace, and supports VS Code Remote-SSH. See the [Technical Overview](docs/current/technical-overview.md#running-in-docker-windows--containerized) for the maintained operational path.
 
 ## Getting Started
 
 Start AnyFusion in an interactive terminal:
 
 ```bash
-metaclaw
+anyfusion
 ```
 
 Then give it work in natural language:
@@ -181,7 +136,7 @@ Slash commands use one hierarchical catalog for help, validation, execution, and
 |-- CONTEXT.md           # Current migration vocabulary and architecture context
 |-- AGENTS.md            # Repository instructions for coding agents
 |-- setup.sh             # Main local install script
-|-- metaclaw.sh          # Runtime helper script
+|-- anyfusion.sh          # Public runtime helper wrapper
 `-- package.json         # Node package metadata and development commands
 ```
 
@@ -210,7 +165,7 @@ Source modules are organized by runtime responsibility:
 ```mermaid
 flowchart LR
   User[User] --> Surfaces[TUI / CLI / Gateway / Feishu]
-  Surfaces --> Session[MetaclawSession]
+  Surfaces --> Session[AnyFusion Session Runtime]
   Session --> FastPath[Explicit memory and preference fast paths]
   Session --> Planner[PlanningAgent]
   Planner --> Plan[PlanningAgentPlan]
@@ -247,21 +202,21 @@ flowchart LR
   Kernel -. audit .-> Store
 ```
 
-The important boundary is that natural-language planning does not directly execute work. The isolated Codex `PlanningAgent` owns semantic interpretation and uses bounded read-only MCP tools when task/session/runtime facts are needed. `PolicyKernel` validates and authorizes the v2 proposal against state, conflicts, confidence, catalog membership, and confirmation requirements. Runtime then applies the decision and obtains live executor health only from `WorkUnit` claim/probe state.
+The important boundary is that natural-language planning does not directly execute work. The isolated Codex `PlanningAgent` owns semantic interpretation and uses bounded read-only MCP tools when task/session/runtime facts are needed. `PolicyKernel` validates and authorizes the v4 proposal against state, conflicts, confidence, catalog membership, and confirmation requirements. Runtime then applies the decision and obtains live executor health only from `WorkUnit` claim/probe state.
 
-The current production path deliberately keeps one active top-level task admitted at a time. Multiple subtasks can exist inside that task, and ready subtasks are claimed by executor work units as dependencies are satisfied. This keeps local execution predictable while the planner, policy, and work-unit lifecycle continue to harden.
+The current preview runtime deliberately keeps one active top-level task admitted at a time. Multiple subtasks can exist inside that task, and ready subtasks are claimed by executor work units as dependencies are satisfied. This keeps local execution predictable while the planner, policy, and work-unit lifecycle continue to harden.
 
 ## CLI and Development
 
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Build in watch mode with tsup. |
-| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v3 JSON Schema. |
+| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v4 JSON Schema. |
 | `npm run start` | Run the built CLI from `dist/`. |
 | `npm test` | Run the Vitest suite once. |
 | `npm run test:watch` | Run Vitest in watch mode. |
 | `npm run lint` | Type-check with `tsc --noEmit`. |
-| `npm run smoke:metaclaw` | Run the real end-to-end task smoke gate. |
+| `npm run smoke:anyfusion` | Run the real end-to-end task smoke gate. |
 
 For deeper implementation details, see the [Technical Overview](docs/current/technical-overview.md). For the documentation map, ADRs, and historical plans, start with [docs/README.md](docs/README.md).
 

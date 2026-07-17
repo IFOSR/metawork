@@ -5,8 +5,9 @@ const expectedTools = [
   'search_tasks',
   'get_task_context',
   'get_current_session_context',
+  'get_session_interaction',
   'get_runtime_state',
-  'list_executor_classes',
+  'list_executor_status',
 ];
 
 const transport = new StdioClientTransport({

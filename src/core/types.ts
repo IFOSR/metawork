@@ -1,4 +1,10 @@
 // ─── 任务状态 ───
+import type {
+  ContextRef,
+  WorkGraphAcceptanceCriterion,
+  WorkGraphDependency,
+} from '../work-graph/types.js';
+
 export const TaskStatus = {
   CREATED: 'created',
   READY: 'ready',
@@ -87,13 +93,19 @@ export interface Subtask {
   title: string;
   goal: string;
   status: TaskStatus;
-  dependsOn: string[];
+  dependencies: WorkGraphDependency[];
+  contextRefs: ContextRef[];
   requiredCapabilities: string[];
   preferredAgentClassList: string[];
   expectedOutput: 'analysis' | 'patch' | 'artifact' | 'review' | 'summary';
-  acceptance: string[];
+  acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: AgentClassRiskLevel;
   result: string;
+  artifacts: string[];
+  verification: {
+    warnings: string[];
+    completionSchemaVersion: number | null;
+  };
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -117,6 +129,7 @@ export interface WorkUnit {
   state: WorkUnitState;
   claimedTaskId: string | null;
   claimedSubtaskId: string | null;
+  claimedAttemptId: string | null;
   heartbeatAt: string | null;
   leaseExpiresAt: string | null;
   createdAt: string;
@@ -138,6 +151,7 @@ export interface WorkUnitEvent {
   workUnitId: string;
   taskId: string | null;
   subtaskId: string | null;
+  attemptId: string | null;
   eventType: string;
   state: WorkUnitState | null;
   message: string;

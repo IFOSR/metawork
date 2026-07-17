@@ -13,6 +13,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -43,7 +44,7 @@ function createConfig(): Config {
 function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -66,11 +67,12 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
         id: 'subtask_execute',
         title: '实现一个普通功能',
         goal: '实现一个普通功能',
-        dependsOn: [],
+        dependencies: [],
+        contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch',
-        acceptance: ['List changed files and provide test command output or explain why tests were not run.'],
+        acceptance: [{ key: 'tests', description: 'List changed files and provide test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
     },
@@ -89,12 +91,12 @@ describe('MetaclawSession planning-agent routing', () => {
     const contextRecaller = new ContextRecaller(db);
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: 'done',
+        output: completionResponse(input, 'done'),
         exitCode: 0,
         durationMs: 100,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -130,7 +132,7 @@ describe('MetaclawSession planning-agent routing', () => {
     expect(llmBridge.resolveIntent).not.toHaveBeenCalled();
     expect(llmBridge.resolveTaskStateOwnership).not.toHaveBeenCalled();
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(session.getSnapshot().output.join('\n')).toContain('任务 #');
+    expect(session.getSnapshot().output.join('\n')).toContain('completed 1 Subtask(s)');
   });
 
   it('surfaces a clarification plan without creating or executing a task', async () => {
@@ -203,12 +205,13 @@ describe('MetaclawSession planning-agent routing', () => {
     const contextRecaller = new ContextRecaller(db);
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: '已修改代码并完成实现。',
+        output: completionResponse(input, '已修改代码并完成实现。')
+          .replace('tests were not run: deterministic test fixture', 'implementation completed'),
         exitCode: 0,
         durationMs: 100,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -254,15 +257,12 @@ describe('MetaclawSession planning-agent routing', () => {
     const [task] = taskRepo.findAll();
     expect(task.status).toBe('blocked');
     expect(task.summary).toBe('');
-    expect(task.dependencies).toEqual([
-      expect.objectContaining({
-        description: '缺少仓库修改任务的测试证据或未测试说明',
-        status: 'waiting',
-      }),
-    ]);
+    expect(db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get()).toEqual({
+      terminal_state: 'contract_blocked',
+      error_code: 'completion_patch_evidence_missing',
+    });
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('✗ 验收未通过: 缺少仓库修改任务的测试证据或未测试说明');
-    expect(output).toContain(`任务 #${task.id} 已转为阻塞`);
-    expect(output).not.toContain('✓ 任务完成');
+    expect(output).toContain('completion_patch_evidence_missing');
+    expect(output).not.toContain('completed 1 Subtask(s)');
   });
 });

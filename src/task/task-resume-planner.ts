@@ -87,6 +87,12 @@ export class TaskResumePlanner {
     plan: PlanningAgentPlan,
     requestedResume: boolean,
   ): ResumePlanResult {
+    if (/completion_[a-z_]+:/.test(task.lastInterruptionReason)) {
+      return {
+        action: 'message',
+        lines: [`Task #${task.id} is frozen by a Phase 2 completion-contract failure; resume/retry is not available.`],
+      };
+    }
     const blockedReason = task.dependencies.find(dependency => dependency.status === 'waiting')?.description ?? null;
     if (!requestedResume || !blockedReason) {
       return { action: 'message', lines: [`错误：${executionPlan.error}`] };

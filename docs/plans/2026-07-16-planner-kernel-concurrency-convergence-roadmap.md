@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1 已完成
-- **当前激活阶段**：Phase 2——Executor 执行范围与 dependency handoff（待制定实施计划）
+- **当前状态**：实施中；Phase 1、Phase 2 已完成
+- **当前激活阶段**：Phase 3——Kernel 控制面收敛；待形成该阶段总体行动计划与详细实施计划
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -31,17 +31,13 @@
 
 Canonical definitions 已经是 Codex/Pi 静态路由能力、Planner catalog、Seeder AgentClass 投影与 Adapter binding 的唯一来源。动态健康与近期执行状态继续由 `list_executor_status` 提供。
 
-能力事实源已经统一，但路由闭环尚未完成：当前 Plan 没有为每个 Subtask 声明受控的 required capabilities，Kernel 也没有用 canonical definitions 对候选覆盖做完整授权。
+能力事实源、Planner required capabilities、Kernel canonical coverage 和完整有序 AgentClass 授权已经统一。Phase 2 没有扩大 routing 语义；Attempt Runner 只使用 Kernel 已授权的当前 AgentClass。
 
-### 2.2 依赖字段存在，但工作图语义尚未成型
+### 2.2 Work Graph v4 与 dependency handoff 已落地
 
-当前 `SubtaskProposal` 已有 `dependsOn`，Plan schema、持久化和 Runtime ready 选择也会读取它。因此缺口不是增加一个依赖字段，而是建立以下共同契约：
+`dependencies` 已完全替换 `dependsOn`，同时作为 DAG 拓扑与 keyed `text`/`artifact` delivery contract 的唯一事实源。独立 `src/work-graph/` 提供 Planning、Kernel 和 Execution 共享的类型与纯校验；Runtime 只注入已完成直接入边的不可变 handoff，不继承祖先结果。
 
-- Planner 在什么情况下建立依赖；
-- 什么情况下两个节点必须合并；
-- 如何从 DAG 推导 runnable frontier；
-- Planner validator 与 Kernel 如何共享相同结构规则；
-- dependency result 如何成为下游 Executor 的受控 handoff。
+当前生产图为严格 v4，Executor 响应通过 Completion Protocol v1 精确交付 acceptance evidence、artifacts 和 outgoing handoffs。SQLite v22 保留只读 v3 audit 并 park 非终态旧图；只有用户自然语言可触发 v4 replan。
 
 ### 2.3 Kernel 目前只完成 Plan admission
 
@@ -117,6 +113,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 退出条件：原始“一个 Executor 可完成的任务被拆成多个调用并重复执行”的问题关闭，且不依赖未来并发实现。
 
+完成记录（2026-07-17）：Work Graph v4、SQLite v22、唯一 Subtask context、Execution Evidence、Completion Protocol v1、最小 attempt receipt、原子 handoff 和串行 Attempt Runner 已交付。`npm run lint`、`npm run build`、聚焦回归和 Docker/Linux 全量回归通过（182 个文件、769 个测试；另有 2 个文件、4 个测试跳过）。Planner MCP 六工具 smoke、真实 Codex Planner API-key smoke 与 Planner→Kernel→Runtime→Codex Executor artifact smoke 均通过。实现提交为 `9783518`、`1472a3c`；Phase 2 计划已归档，Phase 3 激活。
+
 ### Phase 3：Kernel 控制面收敛
 
 目标：建立一个小而稳定的 Kernel 决策 seam，将战略决策从 Session/Runtime 收回。
@@ -128,6 +126,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - Kernel 内部可以由多个 policy 模块组成，但对调用者只暴露一个决策接口。
 - Runtime 保留写库、claim/release、Adapter 执行、heartbeat 和 delivery 等副作用。
 - 逐条迁入现有 admission、容量不足、失败落态和定时恢复策略；每迁入一条，同时删除原 Runtime 分支。
+- 新增 `handoff_contract_failed` Kernel event，携带 attemptId、Subtask、WorkUnit、授权 completion contract 和全部 violations。
+- 对该事件最多授权一次同 AgentClass 纠正 attempt，并把精确缺失 key、错误类型与完整 trailer 格式反馈给 Executor；第二次失败即 blocked，不做 fallback 或 backoff。
 - `SessionExecutionCoordinator` 最终只驱动 decide/apply/observe 循环。
 
 退出条件：当前已有战略行为均能通过 Kernel 决策测试，Session/Runtime 不再维护并行策略表。

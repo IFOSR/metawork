@@ -8,6 +8,7 @@ interface WorkUnitRow {
   state: WorkUnitState;
   claimed_task_id: string | null;
   claimed_subtask_id: string | null;
+  claimed_attempt_id: string | null;
   heartbeat_at: string | null;
   lease_expires_at: string | null;
   created_at: string;
@@ -19,6 +20,7 @@ interface WorkUnitEventRow {
   work_unit_id: string;
   task_id: string | null;
   subtask_id: string | null;
+  attempt_id: string | null;
   event_type: string;
   state: WorkUnitState | null;
   message: string;
@@ -34,6 +36,7 @@ function rowToWorkUnit(row: WorkUnitRow): WorkUnit {
     state: row.state,
     claimedTaskId: row.claimed_task_id,
     claimedSubtaskId: row.claimed_subtask_id,
+    claimedAttemptId: row.claimed_attempt_id,
     heartbeatAt: row.heartbeat_at,
     leaseExpiresAt: row.lease_expires_at,
     createdAt: row.created_at,
@@ -47,6 +50,7 @@ function rowToEvent(row: WorkUnitEventRow): WorkUnitEvent {
     workUnitId: row.work_unit_id,
     taskId: row.task_id,
     subtaskId: row.subtask_id,
+    attemptId: row.attempt_id,
     eventType: row.event_type,
     state: row.state,
     message: row.message,
@@ -63,14 +67,15 @@ export class WorkUnitRepo {
     this.db.prepare(`
       INSERT INTO work_units (
         id, agent_class_name, agent_class_kind, state, claimed_task_id, claimed_subtask_id,
-        heartbeat_at, lease_expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        claimed_attempt_id, heartbeat_at, lease_expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         agent_class_name = excluded.agent_class_name,
         agent_class_kind = excluded.agent_class_kind,
         state = excluded.state,
         claimed_task_id = excluded.claimed_task_id,
         claimed_subtask_id = excluded.claimed_subtask_id,
+        claimed_attempt_id = excluded.claimed_attempt_id,
         heartbeat_at = excluded.heartbeat_at,
         lease_expires_at = excluded.lease_expires_at,
         updated_at = excluded.updated_at
@@ -81,6 +86,7 @@ export class WorkUnitRepo {
       workUnit.state,
       workUnit.claimedTaskId,
       workUnit.claimedSubtaskId,
+      workUnit.claimedAttemptId,
       workUnit.heartbeatAt,
       workUnit.leaseExpiresAt,
       workUnit.createdAt || now,
@@ -125,6 +131,7 @@ export class WorkUnitRepo {
     changes: {
       claimedTaskId?: string | null;
       claimedSubtaskId?: string | null;
+      claimedAttemptId?: string | null;
       heartbeatAt?: string | null;
       leaseExpiresAt?: string | null;
     } = {},
@@ -136,6 +143,7 @@ export class WorkUnitRepo {
     }
     const hasClaimedTaskId = Object.prototype.hasOwnProperty.call(changes, 'claimedTaskId');
     const hasClaimedSubtaskId = Object.prototype.hasOwnProperty.call(changes, 'claimedSubtaskId');
+    const hasClaimedAttemptId = Object.prototype.hasOwnProperty.call(changes, 'claimedAttemptId');
     const hasHeartbeatAt = Object.prototype.hasOwnProperty.call(changes, 'heartbeatAt');
     const hasLeaseExpiresAt = Object.prototype.hasOwnProperty.call(changes, 'leaseExpiresAt');
     this.db.prepare(`
@@ -143,6 +151,7 @@ export class WorkUnitRepo {
       SET state = ?,
           claimed_task_id = ?,
           claimed_subtask_id = ?,
+          claimed_attempt_id = ?,
           heartbeat_at = ?,
           lease_expires_at = ?,
           updated_at = ?
@@ -151,6 +160,7 @@ export class WorkUnitRepo {
       state,
       hasClaimedTaskId ? changes.claimedTaskId ?? null : existing.claimedTaskId,
       hasClaimedSubtaskId ? changes.claimedSubtaskId ?? null : existing.claimedSubtaskId,
+      hasClaimedAttemptId ? changes.claimedAttemptId ?? null : existing.claimedAttemptId,
       hasHeartbeatAt ? changes.heartbeatAt ?? null : existing.heartbeatAt,
       hasLeaseExpiresAt ? changes.leaseExpiresAt ?? null : existing.leaseExpiresAt,
       now,
@@ -161,13 +171,14 @@ export class WorkUnitRepo {
   insertEvent(event: WorkUnitEvent): void {
     this.db.prepare(`
       INSERT INTO work_unit_events (
-        id, work_unit_id, task_id, subtask_id, event_type, state, message, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, work_unit_id, task_id, subtask_id, attempt_id, event_type, state, message, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       event.id,
       event.workUnitId,
       event.taskId,
       event.subtaskId,
+      event.attemptId,
       event.eventType,
       event.state,
       event.message,

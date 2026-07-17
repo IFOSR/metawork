@@ -1,4 +1,4 @@
-# MetaClaw Documentation
+# AnyFusion Documentation
 
 This directory contains both current technical documentation and historical planning material. Start with the current docs before opening dated plans.
 
@@ -8,6 +8,11 @@ This directory contains both current technical documentation and historical plan
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, PolicyKernel, and work-unit migration vocabulary.
+
+## Releases
+
+- [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
+- [Changelog](../CHANGELOG.md): public release history.
 
 ## Architecture Decisions
 
@@ -23,9 +28,13 @@ Key recent ADRs:
 - [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
 - [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
 
+The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md).
+
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
+
+Phase 3 (Kernel control-plane convergence) is the active roadmap stage; its implementation plans have not yet been opened.
 
 ## Historical Plans
 
@@ -33,9 +42,11 @@ Files in [plans/](plans/) contain active plans explicitly linked above. Supersed
 
 The completed [Phase 1 work-graph semantics convergence plan](archive/plans/2026-07-16-phase-1-work-graph-semantics-convergence.md) records the v3 contract, migration, runtime cutover, and validation evidence.
 
+The completed [Phase 2 overall action plan](archive/plans/2026-07-17-phase-2-executor-scope-and-dependency-handoff.md) and [detailed implementation plan](archive/plans/2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md) record the Work Graph v4, execution-scope, evidence, completion, handoff, attempt, migration, and validation contracts.
+
 ## Operational Notes
 
-- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the unified API endpoint (`docker/pi.env`) — see the README section. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
+- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
 - [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Scattered Kernel decision authority is tracked in [kernel-decision-authority-scattered-in-runtime-debt](tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) and is scheduled by the active roadmap. Closed capability and workspace-partition records remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents

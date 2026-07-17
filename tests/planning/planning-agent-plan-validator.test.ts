@@ -10,11 +10,12 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
     id: 'impl',
     title: 'Implement',
     goal: 'Implement and verify the change',
-    dependsOn: [],
+    dependencies: [],
+    contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
     expectedOutput: 'patch',
-    acceptance: ['tests pass'],
+    acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
     riskLevel: 'low',
     ...overrides,
   };
@@ -23,7 +24,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
 function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -121,11 +122,17 @@ describe('validatePlanningAgentPlan', () => {
   it('includes pure work-graph structure violations', () => {
     const candidate = plan([
       subtask({ id: 'a' }),
-      subtask({ id: 'b', dependsOn: ['a'] }),
+      subtask({
+        id: 'b',
+        dependencies: [{
+          fromSubtaskId: 'missing',
+          requiredItems: [{ key: 'result', type: 'text', description: 'upstream result' }],
+        }],
+      }),
     ]);
 
     expect(validatePlanningAgentPlan(candidate, catalog).errors).toContain(
-      'mergeable_same_agent_chain: subtasks a -> b form a mergeable codex-cli single chain',
+      'unknown_dependency: subtasks.1.dependencies.0.fromSubtaskId: subtask b depends on unknown subtask missing',
     );
   });
 });

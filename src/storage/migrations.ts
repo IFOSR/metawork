@@ -749,6 +749,174 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 22,
+    up: (db) => {
+      const now = new Date().toISOString();
+      if (tableExists(db, 'subtasks')) {
+        db.exec('DROP INDEX IF EXISTS idx_subtasks_task;');
+        db.exec('ALTER TABLE subtasks RENAME TO subtasks_v3_audit;');
+        db.exec(`
+          CREATE TRIGGER subtasks_v3_audit_read_only_insert
+          BEFORE INSERT ON subtasks_v3_audit BEGIN
+            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
+          END;
+          CREATE TRIGGER subtasks_v3_audit_read_only_update
+          BEFORE UPDATE ON subtasks_v3_audit BEGIN
+            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
+          END;
+          CREATE TRIGGER subtasks_v3_audit_read_only_delete
+          BEFORE DELETE ON subtasks_v3_audit BEGIN
+            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
+          END;
+        `);
+      }
+
+      db.exec(`
+        CREATE TABLE subtasks (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'created',
+          dependencies_json TEXT NOT NULL DEFAULT '[]',
+          context_refs_json TEXT NOT NULL DEFAULT '[]',
+          required_capabilities_json TEXT NOT NULL,
+          preferred_agent_class_list_json TEXT NOT NULL,
+          expected_output TEXT NOT NULL DEFAULT 'summary',
+          acceptance_json TEXT NOT NULL DEFAULT '[]',
+          risk_level TEXT NOT NULL DEFAULT 'medium',
+          result TEXT NOT NULL DEFAULT '',
+          artifacts_json TEXT NOT NULL DEFAULT '[]',
+          verification_json TEXT NOT NULL DEFAULT '{}',
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+        CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
+
+        CREATE TABLE subtask_handoffs (
+          task_id TEXT NOT NULL,
+          from_subtask_id TEXT NOT NULL,
+          to_subtask_id TEXT NOT NULL,
+          attempt_id TEXT NOT NULL,
+          items_json TEXT NOT NULL,
+          completion_schema_version INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (task_id, from_subtask_id, to_subtask_id),
+          FOREIGN KEY (task_id) REFERENCES tasks(id),
+          FOREIGN KEY (from_subtask_id) REFERENCES subtasks(id),
+          FOREIGN KEY (to_subtask_id) REFERENCES subtasks(id)
+        );
+        CREATE INDEX idx_subtask_handoffs_to ON subtask_handoffs(task_id, to_subtask_id);
+        CREATE TRIGGER subtask_handoffs_immutable_update
+        BEFORE UPDATE ON subtask_handoffs BEGIN
+          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
+        END;
+        CREATE TRIGGER subtask_handoffs_immutable_delete
+        BEFORE DELETE ON subtask_handoffs BEGIN
+          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
+        END;
+
+        CREATE TABLE executor_attempt_receipts (
+          attempt_id TEXT PRIMARY KEY,
+          execution_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          subtask_id TEXT NOT NULL,
+          work_unit_id TEXT NOT NULL,
+          agent_class_name TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          completed_at TEXT NOT NULL,
+          terminal_state TEXT NOT NULL,
+          raw_response TEXT NOT NULL,
+          completion_schema_version INTEGER,
+          parsing_json TEXT NOT NULL DEFAULT '{}',
+          verification_json TEXT NOT NULL DEFAULT '{}',
+          error_code TEXT,
+          error_detail TEXT,
+          FOREIGN KEY (task_id) REFERENCES tasks(id),
+          FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
+          FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
+        );
+        CREATE INDEX idx_executor_attempt_receipts_subtask
+          ON executor_attempt_receipts(task_id, subtask_id, completed_at);
+        CREATE TRIGGER executor_attempt_receipts_immutable_update
+        BEFORE UPDATE ON executor_attempt_receipts BEGIN
+          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+        END;
+        CREATE TRIGGER executor_attempt_receipts_immutable_delete
+        BEFORE DELETE ON executor_attempt_receipts BEGIN
+          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+        END;
+
+        CREATE TABLE task_execution_evidence (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source_id TEXT,
+          title TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL,
+          exact_only INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+        CREATE INDEX idx_task_execution_evidence_task
+          ON task_execution_evidence(task_id, created_at, id);
+      `);
+
+      if (tableExists(db, 'work_units')) {
+        addColumnIfMissing(db, 'work_units', 'state', "TEXT NOT NULL DEFAULT 'idle'");
+        addColumnIfMissing(db, 'work_units', 'claimed_task_id', 'TEXT');
+        addColumnIfMissing(db, 'work_units', 'claimed_subtask_id', 'TEXT');
+        addColumnIfMissing(db, 'work_units', 'claimed_attempt_id', 'TEXT');
+        addColumnIfMissing(db, 'work_units', 'lease_expires_at', 'TEXT');
+        addColumnIfMissing(db, 'work_units', 'updated_at', "TEXT NOT NULL DEFAULT ''");
+        db.exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_units_one_active_attempt_per_subtask
+          ON work_units(claimed_subtask_id)
+          WHERE claimed_subtask_id IS NOT NULL AND state IN ('claimed', 'running', 'waiting');
+        `);
+      }
+      if (tableExists(db, 'work_unit_events')) {
+        addColumnIfMissing(db, 'work_unit_events', 'attempt_id', 'TEXT');
+      }
+
+      if (tableExists(db, 'tasks') && tableExists(db, 'subtasks_v3_audit')) {
+        const auditedTaskIds = tableExists(db, 'subtasks_v2_audit')
+          ? `SELECT DISTINCT task_id FROM subtasks_v3_audit
+             UNION
+             SELECT DISTINCT task_id FROM subtasks_v2_audit`
+          : 'SELECT DISTINCT task_id FROM subtasks_v3_audit';
+        db.prepare(`
+          UPDATE tasks
+          SET status = 'parked',
+              last_interruption_reason = ?,
+              updated_at = ?
+          WHERE id IN (${auditedTaskIds})
+            AND status NOT IN ('done', 'archived', 'cancelled')
+        `).run(
+          'work graph schema upgraded to v4; continue with natural language to replan',
+          now,
+        );
+      }
+      if (tableExists(db, 'work_units')) {
+        db.prepare(`
+          UPDATE work_units
+          SET state = 'heartbeat_lost',
+              claimed_task_id = NULL,
+              claimed_subtask_id = NULL,
+              claimed_attempt_id = NULL,
+              lease_expires_at = NULL,
+              updated_at = ?
+          WHERE state IN ('claimed', 'running', 'waiting')
+             OR claimed_task_id IS NOT NULL
+             OR claimed_subtask_id IS NOT NULL
+             OR claimed_attempt_id IS NOT NULL
+        `).run(now);
+      }
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {

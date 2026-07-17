@@ -14,6 +14,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -149,12 +150,12 @@ describe('planner-first executor command acceptance', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: 'code task done',
+        output: completionResponse(input, 'code task done'),
         exitCode: 0,
         durationMs: 50,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -315,7 +316,7 @@ describe('planner-first executor command acceptance', () => {
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('✗ 执行失败');
+    expect(output).toContain('Execution blocked: executor idle timeout');
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });

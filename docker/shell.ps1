@@ -51,7 +51,12 @@ $sshHost     = 'localhost'
 $sshPort     = 2222
 $sshUser     = 'root'
 $sshPassword = 'metaclaw'   # only used to print a reminder; ssh prompts for it
-$envFile      = Join-Path $repoRoot 'docker\pi.env'
+$plannerEnvFile = Join-Path $repoRoot 'docker\planner-codex.env'
+$codexExecutorEnvFile = Join-Path $repoRoot 'docker\executor-codex.env'
+$piExecutorEnvFile = Join-Path $repoRoot 'docker\executor-pi.env'
+$plannerEnvContainerPath = '/run/metaclaw/env/planner-codex.env'
+$codexExecutorEnvContainerPath = '/run/metaclaw/env/executor-codex.env'
+$piExecutorEnvContainerPath = '/run/metaclaw/env/executor-pi.env'
 $workspaceVolume = 'metaclaw-shell-workspace'
 $dataVolume = 'metaclaw-shell-data'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
@@ -168,9 +173,12 @@ function Invoke-SetupSsh {
 }
 
 function Test-Prereqs {
-    if (-not (Test-Path $envFile)) {
-        Write-Error ("Missing " + $envFile + ". Fill OPENAI_API_KEY in docker\pi.env.")
-        exit 1
+    $requiredEnvFiles = @($plannerEnvFile, $codexExecutorEnvFile, $piExecutorEnvFile)
+    foreach ($requiredEnvFile in $requiredEnvFiles) {
+        if (-not (Test-Path $requiredEnvFile)) {
+            Write-Error ("Missing " + $requiredEnvFile + ". Copy its .example file and fill the provider settings.")
+            exit 1
+        }
     }
 }
 
@@ -219,8 +227,13 @@ function Start-ShellContainer {
       --entrypoint /bin/bash `
       -v "${workspaceVolume}:/workspace" `
       -v "${dataVolume}:/data" `
+      -v "${plannerEnvFile}:${plannerEnvContainerPath}:ro" `
+      -v "${codexExecutorEnvFile}:${codexExecutorEnvContainerPath}:ro" `
+      -v "${piExecutorEnvFile}:${piExecutorEnvContainerPath}:ro" `
       -w /workspace `
-      --env-file $envFile `
+      -e METACLAW_PLANNER_ENV_FILE=$plannerEnvContainerPath `
+      -e METACLAW_CODEX_EXECUTOR_ENV_FILE=$codexExecutorEnvContainerPath `
+      -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
       -e METACLAW_HOME=/data/metaclaw `
       -e PI_SKIP_VERSION_CHECK=1 `
       -e PI_TELEMETRY=0 `

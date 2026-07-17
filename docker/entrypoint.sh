@@ -1,38 +1,70 @@
 #!/usr/bin/env bash
 # Container entrypoint that:
-#  1. Writes API settings and MetaClaw runtime paths from the container env
-#     into /etc/environment so SSH login shells inherit them (sshd drops
-#     --env-file vars by default —
-#     only AcceptEnv whitelisted names cross over, so codex/pi spawned from a
-#     TUI started over SSH saw "Missing environment variable: OPENAI_API_KEY").
-#     /etc/environment is read by pam_env.so for every SSH session, login or not.
-#  2. Seeds writable ~/.pi/agent and ~/.codex from the read-only templates,
-#     substituting the __OPENAI_BASE_URL__ placeholder from OPENAI_BASE_URL.
-#  3. execs the real command.
-#
-# docker/pi.env is the single API config entry point (supplier key + base URL).
-# TOML/JSON can't interpolate env vars, so the templates carry a placeholder and
-# this entrypoint fills it at start. Change supplier by editing only pi.env.
+#  1. Persists non-secret MetaClaw runtime paths for SSH login sessions.
+#  2. Reads Planner Codex, Executor Codex, and Executor Pi provider settings
+#     from their assigned env files.
+#  3. Renders the writable Codex and Pi configs with each executor's base URL.
+#  4. Executes the requested runtime command.
 set -euo pipefail
 
-# Fail loudly if the base URL wasn't passed — silently hitting a wrong/stale
-# endpoint wastes a lot of debugging time (we learned this the hard way).
-if [ -z "${OPENAI_BASE_URL:-}" ]; then
-  echo "entrypoint: OPENAI_BASE_URL is empty — set it in docker/pi.env" >&2
-  exit 1
-fi
+env_file_value() {
+  local env_file="$1"
+  local key="$2"
+  local line
+  local value
 
-# Persist the vars SSH login shells need. pam_env.so (enabled in
-# /etc/pam.d/sshd) loads /etc/environment into every session.
-source /opt/metaclaw/persist-ssh-environment.sh
-persist_ssh_environment /etc/environment
+  if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      case "$line" in
+        ''|'#'*) continue ;;
+      esac
+      if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*=(.*)$ ]]; then
+        value="${BASH_REMATCH[1]}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [[ "$value" == \"*\" ]] || [[ "$value" == \'*\' ]]; then
+          value="${value:1:${#value}-2}"
+        fi
+        printf '%s' "$value"
+        return 0
+      fi
+    done < "$env_file"
+  fi
+
+  printf '%s' "${!key:-}"
+}
+
+require_base_url() {
+  local label="$1"
+  local env_file="$2"
+  local base_url
+  local source_label="${env_file:-process environment}"
+  base_url="$(env_file_value "$env_file" OPENAI_BASE_URL)"
+  if [ -z "$base_url" ]; then
+    echo "entrypoint: OPENAI_BASE_URL is empty for ${label}; set it in ${source_label}" >&2
+    exit 1
+  fi
+  printf '%s' "$base_url"
+}
 
 render() {
-  # Replace the placeholder with the env-supplied base URL. `|` is the sed
-  # delimiter because URLs contain slashes; OPENAI_BASE_URL must not contain a
-  # literal pipe (it never does for http(s) endpoints).
-  sed "s|__OPENAI_BASE_URL__|${OPENAI_BASE_URL}|g" "$1"
+  local template="$1"
+  local base_url="$2"
+  # The URL must not contain a literal pipe because it is the sed delimiter.
+  sed "s|__OPENAI_BASE_URL__|${base_url}|g" "$template"
 }
+
+PLANNER_ENV_FILE="${METACLAW_PLANNER_ENV_FILE:-}"
+CODEX_EXECUTOR_ENV_FILE="${METACLAW_CODEX_EXECUTOR_ENV_FILE:-}"
+PI_EXECUTOR_ENV_FILE="${METACLAW_PI_EXECUTOR_ENV_FILE:-}"
+PLANNER_OPENAI_BASE_URL="$(require_base_url 'Planner Codex' "$PLANNER_ENV_FILE")"
+CODEX_EXECUTOR_OPENAI_BASE_URL="$(require_base_url 'Executor Codex' "$CODEX_EXECUTOR_ENV_FILE")"
+PI_EXECUTOR_OPENAI_BASE_URL="$(require_base_url 'Executor Pi' "$PI_EXECUTOR_ENV_FILE")"
+
+# pam_env supplies these non-secret paths to sessions started by sshd.
+source /opt/metaclaw/persist-ssh-environment.sh
+persist_ssh_environment /etc/environment
 
 PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_TEMPLATE_DIR="/opt/metaclaw/pi-config"
@@ -41,7 +73,7 @@ if [ -d "$PI_TEMPLATE_DIR" ]; then
   mkdir -p "$PI_AGENT_DIR"
   for f in models.json settings.json; do
     if [ -f "$PI_TEMPLATE_DIR/$f" ]; then
-      render "$PI_TEMPLATE_DIR/$f" > "$PI_AGENT_DIR/$f"
+      render "$PI_TEMPLATE_DIR/$f" "$PI_EXECUTOR_OPENAI_BASE_URL" > "$PI_AGENT_DIR/$f"
     fi
   done
 fi
@@ -51,8 +83,8 @@ EXECUTOR_CODEX_HOME="${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/exe
 CODEX_TEMPLATE_DIR="/opt/metaclaw/codex-config"
 
 mkdir -p "$PLANNER_CODEX_HOME" "$EXECUTOR_CODEX_HOME"
-render "$CODEX_TEMPLATE_DIR/planner/config.toml" > "$PLANNER_CODEX_HOME/config.toml"
-render "$CODEX_TEMPLATE_DIR/executor/config.toml" > "$EXECUTOR_CODEX_HOME/config.toml"
+render "$CODEX_TEMPLATE_DIR/planner/config.toml" "$PLANNER_OPENAI_BASE_URL" > "$PLANNER_CODEX_HOME/config.toml"
+render "$CODEX_TEMPLATE_DIR/executor/config.toml" "$CODEX_EXECUTOR_OPENAI_BASE_URL" > "$EXECUTOR_CODEX_HOME/config.toml"
 rm -rf "$PLANNER_CODEX_HOME/skills"
 cp -R "$CODEX_TEMPLATE_DIR/planner/skills" "$PLANNER_CODEX_HOME/skills"
 
@@ -62,8 +94,6 @@ if [ ! -f "$METACLAW_HOME_DIR/config.yaml" ]; then
   cp /opt/metaclaw/default-config.yaml "$METACLAW_HOME_DIR/config.yaml"
 fi
 
-# No command to exec (e.g. devcontainer postCreateCommand passes `:` or nothing)?
-# `exec` would try to run it as an external command and fail, so just exit 0.
 if [ "$#" -eq 0 ] || [ "$1" = ":" ]; then
   exit 0
 fi

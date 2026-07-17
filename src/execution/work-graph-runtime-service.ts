@@ -1,9 +1,10 @@
-// Applies a Kernel-approved v3 work graph or recovers an already-persisted v3 graph.
+// Applies a Kernel-approved v4 work graph or recovers an already-persisted v4 graph.
 import type { Subtask, Task } from '../core/types.js';
 import type { PlanningAgentPlan, SubtaskProposal, WorkGraphProposal } from '../planning/planning-types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
+import { createEvidenceId, TaskExecutionEvidenceRepo } from './execution-evidence-port.js';
 
 export type WorkGraphRuntimeResult =
   | { outcome: 'applied'; workGraph: WorkGraphProposal; subtasks: Subtask[] }
@@ -17,6 +18,7 @@ export class WorkGraphRuntimeService {
   constructor(
     private readonly subtaskRepo: SubtaskRepo,
     taskEventRepo: TaskEventRepo,
+    private readonly evidenceRepo?: TaskExecutionEvidenceRepo,
   ) {
     this.taskEvents = new TaskEventRecorder(taskEventRepo);
   }
@@ -24,6 +26,7 @@ export class WorkGraphRuntimeService {
   apply(input: {
     task: Task;
     userPrompt: string;
+    sessionId?: string;
     approvedPlan?: PlanningAgentPlan | null;
   }): WorkGraphRuntimeResult {
     const proposedGraph = input.approvedPlan?.action === 'plan_work_graph'
@@ -35,7 +38,7 @@ export class WorkGraphRuntimeService {
       return { outcome: 'not_executable', reason: 'graph_already_exists' };
     }
     if (proposedGraph) {
-      const subtasks = this.persistWorkGraph(input.task.id, proposedGraph);
+      const subtasks = this.persistWorkGraph(input.task.id, input.userPrompt, input.sessionId, proposedGraph);
       return { outcome: 'applied', workGraph: proposedGraph, subtasks };
     }
     if (existing.length > 0) {
@@ -43,7 +46,7 @@ export class WorkGraphRuntimeService {
       return {
         outcome: 'recovered',
         workGraph: {
-          reason: 'reusing existing persisted v3 work graph',
+          reason: 'reusing existing persisted v4 work graph',
           subtasks: subtasks.map(subtaskToProposal),
         },
         subtasks,
@@ -54,20 +57,21 @@ export class WorkGraphRuntimeService {
 
   private recoverExisting(taskId: string, existing: Subtask[]): Subtask[] {
     return existing.map(subtask => {
-      if (isTerminalStatus(subtask.status)) return subtask;
-      const previousStatus = subtask.status;
-      const readySubtask: Subtask = { ...subtask, status: 'ready' };
-      if (previousStatus !== 'ready') {
-        this.subtaskRepo.upsert(readySubtask);
-        this.taskEvents.record(taskId, readySubtask.id, 'subtask_recovered_for_dispatch', readySubtask.title, {
-          previousStatus,
-        });
-      }
-      return readySubtask;
+      if (isTerminalStatus(subtask.status) || subtask.status === 'ready' || subtask.status === 'blocked') return subtask;
+      const blockedSubtask: Subtask = {
+        ...subtask,
+        status: 'blocked',
+        error: subtask.error ?? `stale ${subtask.status} subtask requires explicit future recovery policy`,
+      };
+      this.subtaskRepo.upsert(blockedSubtask);
+      this.taskEvents.record(taskId, blockedSubtask.id, 'subtask_recovery_blocked', blockedSubtask.error ?? '', {
+        previousStatus: subtask.status,
+      });
+      return blockedSubtask;
     });
   }
 
-  private persistWorkGraph(taskId: string, workGraph: WorkGraphProposal): Subtask[] {
+  private persistWorkGraph(taskId: string, userPrompt: string, sessionId: string | undefined, workGraph: WorkGraphProposal): Subtask[] {
     const now = new Date().toISOString();
     const idMap = buildSubtaskIdMap(taskId, workGraph.subtasks);
     const subtasks: Subtask[] = workGraph.subtasks.map(proposal => ({
@@ -75,8 +79,14 @@ export class WorkGraphRuntimeService {
       id: idMap.get(proposal.id) ?? stableSubtaskId(taskId, proposal.id, new Set()),
       taskId,
       status: 'ready',
-      dependsOn: proposal.dependsOn.map(dependencyId => idMap.get(dependencyId) ?? normalizeSubtaskId(taskId, dependencyId)),
+      dependencies: proposal.dependencies.map(dependency => ({
+        ...dependency,
+        fromSubtaskId: idMap.get(dependency.fromSubtaskId)
+          ?? normalizeSubtaskId(taskId, dependency.fromSubtaskId),
+      })),
       result: '',
+      artifacts: [],
+      verification: { warnings: [], completionSchemaVersion: null },
       error: null,
       createdAt: now,
       updatedAt: now,
@@ -85,9 +95,28 @@ export class WorkGraphRuntimeService {
     for (const subtask of subtasks) {
       this.subtaskRepo.upsert(subtask);
       this.taskEvents.record(taskId, subtask.id, 'subtask_planned', subtask.title, {
-        dependsOn: subtask.dependsOn,
+        dependencies: subtask.dependencies,
         requiredCapabilities: subtask.requiredCapabilities,
         preferredAgentClassList: subtask.preferredAgentClassList,
+      });
+    }
+    if (subtasks.some(subtask => subtask.contextRefs.some(ref => ref.kind === 'current_user_input'))) {
+      this.evidenceRepo?.upsert({
+        id: createEvidenceId('current_user_input', taskId),
+        taskId,
+        kind: 'user_input',
+        sourceId: taskId,
+        title: 'Current user input',
+        content: userPrompt,
+      });
+    }
+    for (const ref of subtasks.flatMap(subtask => subtask.contextRefs).filter(ref => ref.kind === 'interaction')) {
+      if (!sessionId) throw new Error('sessionId is required to materialize interaction evidence');
+      this.evidenceRepo?.materializeInteraction({
+        taskId,
+        sessionId,
+        interactionId: ref.interactionId,
+        side: ref.side,
       });
     }
     this.taskEvents.record(taskId, null, 'work_graph_applied', workGraph.reason, {
@@ -108,7 +137,8 @@ function subtaskToProposal(subtask: Subtask): SubtaskProposal {
     id: subtask.id,
     title: subtask.title,
     goal: subtask.goal,
-    dependsOn: subtask.dependsOn,
+    dependencies: subtask.dependencies,
+    contextRefs: subtask.contextRefs,
     requiredCapabilities: subtask.requiredCapabilities as SubtaskProposal['requiredCapabilities'],
     preferredAgentClassList: subtask.preferredAgentClassList as SubtaskProposal['preferredAgentClassList'],
     expectedOutput: subtask.expectedOutput,

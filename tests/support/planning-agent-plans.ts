@@ -6,6 +6,7 @@ import type {
   SubtaskProposal,
   WorkGraphProposal,
 } from '../../src/planning/planning-types.js';
+import type { ContextRef } from '../../src/work-graph/index.js';
 
 // Test-only builders for PlanningAgentPlan. Full-stack/acceptance tests inject a
 // PlanningAgent whose plan() returns one of these, exercising the real
@@ -15,7 +16,7 @@ import type {
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
@@ -48,6 +49,7 @@ export function singleSubtaskWorkGraph(input: {
   expectedOutput?: SubtaskProposal['expectedOutput'];
   acceptance?: string[];
   riskLevel?: SubtaskProposal['riskLevel'];
+  contextRefs?: ContextRef[];
 }): WorkGraphProposal {
   const executor = input.executor === 'pi-agent' ? 'pi-agent' : 'codex-cli';
   const expectedOutput = input.expectedOutput ?? 'patch';
@@ -57,13 +59,19 @@ export function singleSubtaskWorkGraph(input: {
       id: 'subtask_execute',
       title: input.title ?? input.goal.slice(0, 50) ?? 'Execute task',
       goal: input.goal,
-      dependsOn: [],
+      dependencies: [],
+      contextRefs: input.contextRefs ?? [{ kind: 'current_user_input' }],
       requiredCapabilities: [executor === 'pi-agent' ? 'current-web-research' : 'workspace-engineering'],
       preferredAgentClassList: [executor],
       expectedOutput,
-      acceptance: input.acceptance ?? (expectedOutput === 'patch'
+      acceptance: (input.acceptance ?? (expectedOutput === 'patch'
         ? ['List changed files and provide test command output or explain why tests were not run.']
-        : ['Satisfy the user request and report verification or remaining risk.']),
+        : ['Satisfy the user request and report verification or remaining risk.']))
+        .map((description, index) => ({
+          key: `criterion_${index + 1}`,
+          description,
+          requiredEvidence: expectedOutput === 'patch' ? ['test result or explicit not-tested reason'] : [],
+        })),
       riskLevel: input.riskLevel ?? 'low',
     }],
   };
@@ -80,6 +88,7 @@ export function workGraphPlan(input: {
   includeRecentConversationContext?: boolean;
   expectedOutput?: SubtaskProposal['expectedOutput'];
   priority?: PlanningAgentPlan['task']['priority'];
+  contextRefs?: ContextRef[];
   overrides?: Partial<PlanningAgentPlan>;
 } ): PlanningAgentPlan {
   const executor = input.executor ?? 'codex-cli';
@@ -105,6 +114,7 @@ export function workGraphPlan(input: {
       title: input.title,
       executor,
       expectedOutput,
+      contextRefs: input.contextRefs,
     }),
     ...input.overrides,
   };

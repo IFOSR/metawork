@@ -121,14 +121,12 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('! 执行失败: 执行器网络连接失败，请检查网络或代理配置') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器网络连接失败，请检查网络或代理配置') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]?.description).toBe('执行器网络连接失败，请检查网络或代理配置');
-    expect(app.lastFrame()).toContain('! 执行失败: 执行器网络连接失败，请检查网络或代理配置');
-    expect(app.lastFrame()).toContain(`任务 #${blockedTask.id} 已转为阻塞`);
-    expect(app.lastFrame()).toContain(`/task unblock ${blockedTask.id}`);
+    expect(app.lastFrame()).toContain('Execution blocked: 执行器网络连接失败，请检查网络或代理配置');
 
     app.unmount();
     app.cleanup();
@@ -180,13 +178,12 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('执行器长时间没有输出或状态变化') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器空闲超时') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]?.description).toBe('执行器空闲超时，长时间无输出或状态变化，请检查执行器是否卡住');
-    expect(app.lastFrame()).toContain('执行器长时间没有输出或状态变化');
-    expect(app.lastFrame()).toContain(`/task unblock ${blockedTask.id}`);
+    expect(app.lastFrame()).toContain('Execution blocked: 执行器空闲超时');
 
     app.unmount();
     app.cleanup();

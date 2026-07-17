@@ -14,6 +14,7 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -48,7 +49,7 @@ function createMinimalBridge(): LlmBridge {
 }
 
 describe('Round 1 memory acceptance', () => {
-  it('supports three-hit confirm and contact recall in a follow-up task', async () => {
+  it('supports three-hit confirmation without bypassing Planner-selected execution evidence', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -59,12 +60,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '邮件草稿已生成',
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -109,9 +110,10 @@ describe('Round 1 memory acceptance', () => {
     expect(output).not.toContain('confidence=');
     expect(output).toContain('命中主体：张总');
     const finalExecution = (executor.execute as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
-    expect(finalExecution.executionContextBundle.memoryContext.resolvedPreferences).toEqual([
-      expect.objectContaining({ scope: 'contact', content: '用正式语气' }),
+    expect(finalExecution.context.selectedEvidence).toEqual([
+      expect.objectContaining({ ref: { kind: 'current_user_input' } }),
     ]);
+    expect(JSON.stringify(finalExecution.context)).not.toContain('用正式语气');
   });
 
   it('applies explicit input, then project/contact, then global memory in a project task', async () => {
@@ -122,18 +124,18 @@ describe('Round 1 memory acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    memoryEngine.addManual({
+    const globalPreference = memoryEngine.addManual({
       content: '输出尽量简洁',
       scope: 'global',
       type: 'style',
     });
-    memoryEngine.addManual({
+    const projectPreference = memoryEngine.addManual({
       content: 'Phoenix 项目材料统一使用 Phoenix 术语',
       scope: 'project',
       type: 'domain',
       subject: 'Phoenix',
     });
-    memoryEngine.addManual({
+    const contactPreference = memoryEngine.addManual({
       content: '给张总的邮件使用正式语气',
       scope: 'contact',
       type: 'contact',
@@ -142,12 +144,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '项目周报已整理',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -163,7 +165,13 @@ describe('Round 1 memory acceptance', () => {
       contextRecaller,
       llmBridge: createMinimalBridge(),
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '给张总整理一份 Phoenix 项目周报，今天明确要求先保留表格格式' }),
+        workGraphPlan({
+          goal: '给张总整理一份 Phoenix 项目周报，今天明确要求先保留表格格式',
+          contextRefs: [
+            { kind: 'current_user_input' },
+            { kind: 'preference', preferenceId: projectPreference.id },
+          ],
+        }),
       ),
     });
 
@@ -180,12 +188,16 @@ describe('Round 1 memory acceptance', () => {
     expect(output).not.toContain('输出尽量简洁');
 
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const resolvedPreferences = executionInput.executionContextBundle.memoryContext.resolvedPreferences;
-
-    expect(resolvedPreferences.map((preference: { id: string }) => preference.id)).toEqual([
-      expect.any(String),
+    const selectedPreferences = executionInput.context.selectedEvidence
+      .filter((item: { ref: { kind: string } }) => item.ref.kind === 'preference');
+    expect(selectedPreferences).toEqual([
+      expect.objectContaining({
+        ref: { kind: 'preference', preferenceId: projectPreference.id },
+        content: projectPreference.content,
+      }),
     ]);
-    expect(resolvedPreferences[0].scope).toBe('project');
+    expect(JSON.stringify(executionInput.context)).not.toContain(globalPreference.content);
+    expect(JSON.stringify(executionInput.context)).not.toContain(contactPreference.content);
 
     const finalOutput = session.getSnapshot().output.join('\n');
     expect(finalOutput).toContain('今天明确要求先保留表格格式');
@@ -204,12 +216,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '邮件草稿已生成',
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -255,12 +267,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '邮件草稿已生成',
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -307,12 +319,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已记录偏好候选',
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -351,7 +363,7 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: [
           '基于当前注入的近期上下文，我能提炼出几条“可沿用的工作记忆”：',
@@ -360,7 +372,7 @@ describe('Round 1 memory acceptance', () => {
         ].join('\n'),
         exitCode: 0,
         durationMs: 120,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -400,12 +412,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'noop',
         exitCode: 0,
         durationMs: 10,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -448,12 +460,12 @@ describe('Round 1 memory acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'noop',
         exitCode: 0,
         durationMs: 10,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };

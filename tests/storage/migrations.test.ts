@@ -71,7 +71,7 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -131,6 +131,7 @@ describe('runMigrations', () => {
       'state',
       'claimed_task_id',
       'claimed_subtask_id',
+      'claimed_attempt_id',
       'heartbeat_at',
       'lease_expires_at',
     ]));
@@ -226,10 +227,10 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT id FROM executor_route_events').all()).toEqual([{ id: 'route-1' }]);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 21 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 22 });
   });
 
-  it('cuts v20 subtasks over to an empty v3 production table and parks unfinished v2 tasks', () => {
+  it('hard-cuts v20 subtasks through audit tables to an empty v4 graph and parks unfinished tasks', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     db.exec(`
@@ -274,18 +275,21 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT * FROM subtasks').all()).toEqual([]);
     const columns = (db.prepare('PRAGMA table_info(subtasks)').all() as Array<{ name: string }>).map(row => row.name);
+    expect(columns).toContain('dependencies_json');
+    expect(columns).toContain('context_refs_json');
     expect(columns).toContain('required_capabilities_json');
     expect(columns).toContain('preferred_agent_class_list_json');
     expect(columns).not.toContain('required_agent_class_kind');
     expect(db.prepare('SELECT status, last_interruption_reason FROM tasks WHERE id = ?').get('active')).toEqual({
       status: 'parked',
-      last_interruption_reason: 'work graph schema upgraded to v3; continue with natural language to replan',
+      last_interruption_reason: 'work graph schema upgraded to v4; continue with natural language to replan',
     });
     expect(db.prepare('SELECT status FROM tasks WHERE id = ?').get('terminal')).toEqual({ status: 'done' });
-    expect(db.prepare('SELECT state, claimed_subtask_id FROM work_units WHERE id = ?').get('wu-active')).toEqual({
+    expect(db.prepare('SELECT state, claimed_subtask_id, claimed_attempt_id FROM work_units WHERE id = ?').get('wu-active')).toEqual({
       state: 'heartbeat_lost',
-      claimed_subtask_id: 'old-active',
+      claimed_subtask_id: null,
+      claimed_attempt_id: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 21 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 22 });
   });
 });
