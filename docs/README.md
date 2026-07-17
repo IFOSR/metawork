@@ -28,15 +28,16 @@ The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution C
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
-- [Phase 2：Executor 执行范围与 Dependency Handoff 总体行动计划](plans/2026-07-17-phase-2-executor-scope-and-dependency-handoff.md): current active phase; implementation is complete, but the real Codex artifact smoke awaits credential re-authentication before completion and archival.
 
-- [Phase 2 detailed implementation plan](plans/2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md): frozen v4 interfaces, delivered migration/runtime record, validation evidence, and the remaining external smoke blocker.
+Phase 3 (Kernel control-plane convergence) is the active roadmap stage; its implementation plans have not yet been opened.
 
 ## Historical Plans
 
 Files in [plans/](plans/) contain active plans explicitly linked above. Superseded and completed plans are moved to [archive/plans/](archive/plans/); treat archived plans as historical context unless they are referenced by the current README, `CONTEXT.md`, or an ADR.
 
 The completed [Phase 1 work-graph semantics convergence plan](archive/plans/2026-07-16-phase-1-work-graph-semantics-convergence.md) records the v3 contract, migration, runtime cutover, and validation evidence.
+
+The completed [Phase 2 overall action plan](archive/plans/2026-07-17-phase-2-executor-scope-and-dependency-handoff.md) and [detailed implementation plan](archive/plans/2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md) record the Work Graph v4, execution-scope, evidence, completion, handoff, attempt, migration, and validation contracts.
 
 ## Operational Notes
 

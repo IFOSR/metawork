@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1 已完成，Phase 2 实现完成但验证门未关闭
-- **当前激活阶段**：Phase 2——Executor 执行范围与 dependency handoff；代码与文档已收敛，等待 Codex 重新认证后通过真实 artifact smoke，再归档并激活 Phase 3
+- **当前状态**：实施中；Phase 1、Phase 2 已完成
+- **当前激活阶段**：Phase 3——Kernel 控制面收敛；待形成该阶段总体行动计划与详细实施计划
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -113,7 +113,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 退出条件：原始“一个 Executor 可完成的任务被拆成多个调用并重复执行”的问题关闭，且不依赖未来并发实现。
 
-当前记录（2026-07-17）：上述实现、`npm run lint`、`npm run build`、聚焦回归以及 Docker/Linux 全量回归（182 个文件、767 个测试通过；2 个文件、4 个测试跳过）已经交付。最终关闭仍等待真实 Planner→Kernel→Runtime→Executor artifact smoke；当前 smoke 的唯一失败发生在 Codex Planner 启动时，挂载的 refresh token 已被消费，需要重新登录。关闭前不归档 Phase 2，也不激活 Phase 3。
+完成记录（2026-07-17）：Work Graph v4、SQLite v22、唯一 Subtask context、Execution Evidence、Completion Protocol v1、最小 attempt receipt、原子 handoff 和串行 Attempt Runner 已交付。`npm run lint`、`npm run build`、聚焦回归和 Docker/Linux 全量回归通过（182 个文件、769 个测试；另有 2 个文件、4 个测试跳过）。Planner MCP 六工具 smoke、真实 Codex Planner API-key smoke 与 Planner→Kernel→Runtime→Codex Executor artifact smoke 均通过。实现提交为 `9783518`、`1472a3c`；Phase 2 计划已归档，Phase 3 激活。
 
 ### Phase 3：Kernel 控制面收敛
 

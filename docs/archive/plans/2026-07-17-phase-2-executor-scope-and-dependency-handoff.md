@@ -3,14 +3,14 @@
 ## 计划状态
 
 - **计划日期**：2026-07-17
-- **当前状态**：实现完成；因真实 Codex artifact smoke 的外部凭据失效，完成门尚未关闭
-- **所属路线图**：[`2026-07-16-planner-kernel-concurrency-convergence-roadmap.md`](2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
+- **当前状态**：已完成并归档
+- **所属路线图**：[`2026-07-16-planner-kernel-concurrency-convergence-roadmap.md`](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
 - **对应阶段**：Phase 2——Executor 执行范围与 dependency handoff
-- **架构设计门**：[`ADR-0020：核心模块归属与依赖方向`](../adr/0020-core-module-ownership-and-dependency-direction.md)
-- **完成日期**：未完成
-- **实现提交**：未产生
+- **架构设计门**：[`ADR-0020：核心模块归属与依赖方向`](../../adr/0020-core-module-ownership-and-dependency-direction.md)
+- **完成日期**：2026-07-17
+- **实现提交**：`9783518`、`1472a3c`
 
-本计划规定 Phase 2 的目标、改动范围、模块所有权、依赖边界、实施原则、验收标准与完成门槛。最终数据结构、公开接口、预算、迁移顺序和测试矩阵已在[详细实施计划](2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md)及 [ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)冻结。
+本计划规定 Phase 2 的目标、改动范围、模块所有权、依赖边界、实施原则、验收标准与完成门槛。最终数据结构、公开接口、预算、迁移顺序和测试矩阵已在[详细实施计划](2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md)及 [ADR-0021](../../adr/0021-work-graph-v4-subtask-execution-contract.md)冻结。
 
 计划完成时必须回填实际交付行为、最终接口与迁移结果、验证命令及结果、相关文档更新、实现提交和收尾提交。
 
@@ -224,4 +224,6 @@ Phase 2 关闭时必须同时完成：
 
 Work Graph v4、SQLite v22、唯一 Subtask execution context、Task/attempt-scoped Execution Evidence、Completion Protocol v1、最小 attempt receipt、原子 handoff 持久化和串行 Attempt Runner 已实现。Session 已收缩为 ready-node 串行外壳，Executor Adapter 不再接收 Task prompt、全量 history 或 Task 级 memory bundle；contract failure 会冻结 Task 且不会被 `/task resume`、timer 或重启隐式重试。
 
-`npm run lint`、`npm run build` 与最新聚焦 Docker 回归（5 个文件、23 个测试）通过；最终 Docker/Linux 全量回归通过 182 个文件、767 个测试（另有 2 个文件、4 个测试跳过，共 184 个文件、771 个测试）。真实 Codex artifact smoke 因挂载凭据的 refresh token 已被消费而在 Planner 启动阶段失败，尚未形成 Planner 输出或 Executor 调用。因此本计划不标记完成、不归档，也不激活 Phase 3；重新登录 Codex 并通过真实 smoke 后再执行关闭动作。
+`npm run lint`、`npm run build` 与聚焦回归通过；最终 Docker/Linux 全量回归通过 182 个文件、769 个测试（另有 2 个文件、4 个测试跳过，共 184 个文件、773 个测试）。Planner MCP 六工具 smoke、真实 Codex Planner API-key smoke 和 Planner→Kernel→Runtime→Codex Executor artifact smoke 全部通过；artifact 位于 Task 授权 target path，Completion Protocol 机器块未进入用户输出。
+
+诊断中确认生产链路不需要登录：API key 位于 `docker/pi.env`，正式 runtime entrypoint 渲染 `anyint` provider 并通过 `OPENAI_API_KEY` 调用 Codex。最初的 refresh-token 报错来自错误的人工 smoke 命令——它没有加载 `docker/pi.env`，却复制了个人 `auth.json`。同时修复了真实 smoke 揭示的两个问题：v4 ContextRef 输出 schema 改用 Responses API 支持的 `anyOf`，以及 smoke 场景改为写入授权 Task target path。

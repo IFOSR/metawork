@@ -3,12 +3,11 @@
 ## Plan status
 
 - Plan date: 2026-07-17
-- Status: implementation complete; completion gate blocked by external Codex authentication
+- Status: completed
 - Parent plan: [Phase 2 overall action plan](2026-07-17-phase-2-executor-scope-and-dependency-handoff.md)
-- Governing architecture: [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md) and [ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)
-- Completion date: not completed
-- Implementation commits: not produced
-- Blocking validation: the real Codex artifact smoke reaches the Planner launch but Codex rejects the mounted credential because its refresh token has already been consumed; re-authentication is required before this plan can be marked complete or archived
+- Governing architecture: [ADR-0020](../../adr/0020-core-module-ownership-and-dependency-direction.md) and [ADR-0021](../../adr/0021-work-graph-v4-subtask-execution-contract.md)
+- Completion date: 2026-07-17
+- Implementation commits: `9783518` (`feat: isolate executor scope and dependency handoffs`) and `1472a3c` (`fix: keep phase 2 smoke on the api key path`)
 
 ## Objective
 
@@ -59,12 +58,14 @@ Delivered behavior:
 - Clean Subtask Markdown is displayed once; completion envelopes never enter Interaction, Memory, delivery, or downstream context; Task completion aggregates persisted clean results, warnings, and deduplicated artifacts.
 - Completion contract failures block without retry; `/task resume`, restart, and timers do not replan or retry a blocked attempt.
 
-Validation completed so far:
+Validation completed:
 
 - `npm run lint`: passed.
 - Focused Docker Vitest for assistant-reference eligibility, Completion Protocol, Attempt Runner, WorkUnit claim, and smoke harness: 5 files / 23 tests passed.
 - `npm run build`: passed and generated the v4 Planner schema.
-- Final Docker/Linux suite: 182 files / 767 tests passed, with 2 files / 4 tests skipped (184 files / 771 tests total).
-- Real artifact smoke: blocked before Planner output by Codex authentication (`refresh token has already been used to generate a new access token`). The smoke harness now prints the latest redacted `planner_runs` diagnostic on failure.
+- Final Docker/Linux suite: 182 files / 769 tests passed, with 2 files / 4 tests skipped (184 files / 773 tests total).
+- Planner MCP smoke: passed with all six v4 tools.
+- Real Codex Planner smoke: passed through the configured `docker/pi.env` API-key provider and called `get_runtime_state`.
+- Real Planner → Kernel → Runtime → Codex Executor artifact smoke: passed; one Subtask produced one clean result and one artifact under the authorized Task target path.
 
-Completion remains intentionally open. After Codex is re-authenticated, rerun the real artifact smoke and record its executor call count/clean output/artifact de-duplication evidence, then fill the completion date and commit references, archive both Phase 2 plans, and activate Phase 3.
+The earlier refresh-token failure was a diagnostic-command error: the command copied personal Codex login files while failing to load the API key stored in `docker/pi.env`. No login is required by the production path. The final smoke uses the project runtime entrypoint, `anyint` provider, and `OPENAI_API_KEY`; it also verifies that the v4 generated schema contains no unsupported `oneOf` and that smoke artifacts target only the runtime-authorized directory.
