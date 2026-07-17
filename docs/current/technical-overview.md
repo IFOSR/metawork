@@ -16,7 +16,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
-- Provides a tested Agentic Loop core that aggregates executor results, checks evidence, and feeds failures back for retry.
+- Validates every Subtask through Completion Protocol v1, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
 - Recalls only clearly applicable preferences and task memory; uncertain recall is skipped by default so Feishu and unattended executors never wait for confirmation.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
@@ -35,7 +35,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>single runtime coordinator]
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v3<br/>intent, target, risk,<br/>work graph proposal]
+  Planning --> Plan[PlanningAgentPlan v4<br/>intent, target, risk,<br/>typed work graph proposal]
   Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>confirmation and catalog]
   Kernel --> Decision{KernelDecision}
   Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>deliver plan.response.directReply, no executor]
@@ -45,14 +45,13 @@ flowchart LR
   Decision -->|reject/no_action| Stop[No execution<br/>preserve state]
 
   Runtime --> TaskOS[Task OS<br/>TaskRuntimeService and Scheduler]
-  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>context and dispatch loop]
-  ExecCoord --> Memory[MemoryContextService<br/>resume pack, preferences, materials]
-  Memory --> GraphRuntime[WorkGraphRuntimeService<br/>apply approved work graph]
+  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>serial ready-node shell]
+  ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>apply approved work graph]
   GraphRuntime --> Graph[Work Graph<br/>persisted Subtasks]
-  Graph --> Claim[WorkUnitClaimService<br/>claim or probe executor WorkUnit]
-  Claim --> Spec[SubtaskExecutionSpec<br/>subtask, work unit, agent class]
-  Spec --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
-  Executors --> Verify[Verification and delivery<br/>tests, evidence, artifacts]
+  Graph --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
+  Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
+  Context --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
+  Executors --> Verify[Completion Protocol v1<br/>evidence, handoffs, artifacts]
   Verify --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Conversation --> Delivery
   Clarify --> Delivery
@@ -62,13 +61,12 @@ flowchart LR
 
   Session <--> Store[(Local SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
   Kernel -. audit .-> Decisions[(planning_decisions)]
-  Memory <--> Store
   TaskOS <--> Store
   Graph <--> Store
-  Claim <--> Store
+  Attempt <--> Store
 ```
 
-Every natural-language input enters one runtime, then an isolated Codex planner exposes `PlanningAgent` and proposes a strict v3 `PlanningAgentPlan`. Its startup context is minimal and it reads bounded task/session/runtime/executor facts through a read-only stdio MCP only when needed. `PolicyKernel` validates state and conflicts, independently certifies graph structure and static capability coverage, filters dynamically unavailable AgentClasses, and revalidates any rewrite. Runtime applies an approved new graph or recovers an existing v3 graph, claims an executor WorkUnit in approved order, and runs ready subtasks serially through `ExecutionRuntime`.
+Every natural-language input enters one runtime, then an isolated Codex planner exposes `PlanningAgent` and proposes a strict v4 `PlanningAgentPlan`. Its startup context is minimal and it reads bounded task/session/runtime/executor and migration-audit facts through a read-only stdio MCP only when needed. `PolicyKernel` validates state and conflicts, independently certifies the shared Work Graph contract and static capability coverage, filters dynamically unavailable AgentClasses, and revalidates any rewrite. Runtime persists or recovers the authorized v4 graph and runs one ready Subtask at a time through `SubtaskAttemptRunner`.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
@@ -100,14 +98,12 @@ flowchart LR
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>create or bind task]
   Task --> Scheduler[SchedulerEngine<br/>readiness, priority, idle resume]
-  Scheduler --> Context[MemoryContextService<br/>resume pack, preferences, materials]
-  Context --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply approved graph]
+  Scheduler --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply approved graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>persist Subtasks]
-  WorkGraph --> Ready[Ready Subtask<br/>dependsOn satisfied]
-  Ready --> Claim[WorkUnitClaimService<br/>claim idle executor WorkUnit]
-  Claim --> Spec[SubtaskExecutionSpec<br/>subtask, work unit, agent class]
-  Spec --> Run[ExecutionRuntime<br/>run adapter]
-  Run --> Verify[VerificationAndDeliveryService]
+  WorkGraph --> Ready[Ready Subtask<br/>direct dependency handoffs satisfied]
+  Ready --> Attempt[SubtaskAttemptRunner<br/>claim, context, one adapter call]
+  Attempt --> Run[ExecutionRuntime<br/>transport and execute]
+  Run --> Verify[Completion Protocol v1<br/>validate and persist atomically]
   Verify --> Done{Pass?}
   Done -->|yes| Result[Done with artifacts]
   Done -->|no| Blocked[Blocked with recovery hint]
@@ -563,7 +559,7 @@ executors read `OPENAI_API_KEY` and `OPENAI_BASE_URL` from it, and
 `docker/entrypoint.sh` substitutes the base URL into the config templates at
 container start.
 
-The hermetic runtime image contains the CLI, Planner MCP, generated v2 schema,
+The hermetic runtime image contains the CLI, Planner MCP, generated v4 schema,
 Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
 Codex/PI configs, and entrypoint are not mounted. Source changes require
 `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. See
@@ -729,7 +725,7 @@ Useful commands:
 /task resume <id>
 /task block <id> waiting for customer data
 /task unblock <id>
-/task unblock <id> /tmp/evidence-v3.pdf
+/task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
 /task complete <id>
 /task index rebuild
@@ -787,14 +783,14 @@ This prevents queued work from wasting compute while preserving task safety. Mul
 
 ## Planning Agent, Policy Kernel, And Work Units
 
-Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v3 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
+Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v4 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
 `PolicyKernel` validates strict schema shape, priority requirements, confidence, task status, single-active-task conflicts, explicit recovery targets, graph structure, canonical capability coverage, task-control scopes, and confirmation requirements. It removes only dynamically `error` or `disabled` AgentClasses, rejects exhausted nodes, and reruns graph rules after a rewrite. It returns `accept`, `rewrite`, `reject`, or `clarify`. The kernel remains pure.
 
-Runtime services apply kernel decisions. `KernelDecisionApplier` writes current v3 `planning_decisions`; historical decisions remain safe-parsed audit records. Planner runs and bounded redacted tool summaries are audited in `planner_runs` and `planner_tool_calls`. `WorkGraphRuntimeService` persists a kernel-approved graph only when no v3 graph exists, recovers an existing graph when no new graph is supplied, and otherwise returns explicit `missing_graph` or `graph_already_exists` outcomes. It never synthesizes fallback routing. `WorkUnitClaimService` queries only executor work units and claims or probes in the approved preference order. `ExecutionRuntime` receives the claimed `SubtaskExecutionSpec`.
+Runtime services apply kernel decisions. `KernelDecisionApplier` writes current v4 `planning_decisions`; historical decisions remain safe-parsed audit records. Planner runs and bounded redacted tool summaries are audited in `planner_runs` and `planner_tool_calls`. `WorkGraphRuntimeService` persists a kernel-approved graph only when no v4 graph exists, recovers an existing v4 graph when no new graph is supplied, and otherwise returns explicit `missing_graph` or `graph_already_exists` outcomes. It never synthesizes fallback routing. `SessionExecutionCoordinator` chooses one ready node and authorized AgentClass; `SubtaskAttemptRunner` owns claim, attempt context/evidence, one Adapter call, completion validation, terminal persistence, and release.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -802,7 +798,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
 
-In the active session path, proposed nodes become persisted v3 `Subtask` records only after `PolicyKernel` accepts or legally rewrites the plan. Migration v21 preserves all former rows in read-only `subtasks_v2_audit`; unfinished v2 tasks remain parked until natural language triggers a fresh plan. `WorkGraphRuntimeService` applies or recovers the approved graph, and the dispatcher claims and executes ready subtasks serially in dependency order. Dependency result injection, failure fallback, resource partitioning, and concurrent runnable-frontier dispatch remain later roadmap phases.
+In the active session path, proposed nodes become persisted v4 `Subtask` records only after `PolicyKernel` accepts or legally rewrites the plan. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; unfinished v3 tasks remain parked until natural language triggers a fresh v4 plan. `dependencies` is the only topology and typed handoff source. The serial shell executes one ready node, injects only completed direct-edge handoffs, and never reruns completed nodes or reparses persisted handoffs.
+
+`SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
+
+Every Executor response must end with Completion Protocol v1. `SubtaskAttemptRunner` strips the machine envelope, checks exact acceptance and outgoing edge contracts, budgets, patch/artifact gates, realpath containment, and direct-edge aggregate limits. Success atomically persists the terminal receipt, immutable normalized handoffs, clean Subtask body, artifacts, warnings, and `done`. Malformed or incomplete completion blocks without retry and its raw body remains audit-only. Retry/fallback, resource partitioning, and concurrent runnable-frontier dispatch remain later roadmap phases.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 

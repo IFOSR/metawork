@@ -46,6 +46,7 @@ function workUnit(): WorkUnit {
     state: 'idle',
     claimedTaskId: null,
     claimedSubtaskId: null,
+    claimedAttemptId: null,
     heartbeatAt: null,
     leaseExpiresAt: null,
     createdAt: '2026-07-02T00:00:00.000Z',
@@ -62,6 +63,7 @@ describe('WorkUnitClaimService', () => {
 
     const claim = await new WorkUnitClaimService(repo).claim({
       taskId: 'task_1',
+      attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
         preferredAgentClassList: ['codex-cli'],
@@ -73,6 +75,7 @@ describe('WorkUnitClaimService', () => {
       state: 'claimed',
       claimedTaskId: 'task_1',
       claimedSubtaskId: 'subtask_1',
+      claimedAttemptId: 'attempt_1',
     });
 
     claim?.markRunning();
@@ -83,6 +86,7 @@ describe('WorkUnitClaimService', () => {
       state: 'idle',
       claimedTaskId: null,
       claimedSubtaskId: null,
+      claimedAttemptId: null,
     });
     expect(repo.listEvents('executor-1').map(event => event.eventType)).toEqual([
       'claimed',
@@ -105,6 +109,7 @@ describe('WorkUnitClaimService', () => {
       state: 'running',
       claimedTaskId: 'task_1',
       claimedSubtaskId: 'subtask_1',
+      claimedAttemptId: 'attempt_1',
       leaseExpiresAt: '2026-07-02T00:00:00.000Z',
     });
 
@@ -123,6 +128,24 @@ describe('WorkUnitClaimService', () => {
     });
   });
 
+  it('enforces one active attempt per Subtask at the database boundary', () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+    repo.upsert(workUnit());
+    repo.upsert({ ...workUnit(), id: 'executor-2' });
+    repo.updateState('executor-1', 'running', {
+      claimedTaskId: 'task_1',
+      claimedSubtaskId: 'subtask_1',
+      claimedAttemptId: 'attempt_1',
+    });
+    expect(() => repo.updateState('executor-2', 'claimed', {
+      claimedTaskId: 'task_1',
+      claimedSubtaskId: 'subtask_1',
+      claimedAttemptId: 'attempt_2',
+    })).toThrow();
+  });
+
   it('provisions and claims an executor only after a successful runtime probe', async () => {
     const db = createDb();
     new AgentClassRepo(db).upsert(agentClass());
@@ -131,6 +154,7 @@ describe('WorkUnitClaimService', () => {
 
     const claim = await new WorkUnitClaimService(repo, 60_000, probe).claim({
       taskId: 'task_1',
+      attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
         preferredAgentClassList: ['codex-cli'],
@@ -156,6 +180,7 @@ describe('WorkUnitClaimService', () => {
 
     const claim = await new WorkUnitClaimService(repo, 60_000, probe).claim({
       taskId: 'task_1',
+      attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
         preferredAgentClassList: ['first-executor', 'second-executor'],
@@ -179,6 +204,7 @@ describe('WorkUnitClaimService', () => {
 
     const claim = await new WorkUnitClaimService(repo, 60_000, async () => false).claim({
       taskId: 'task_1',
+      attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
         preferredAgentClassList: ['first-executor', 'second-executor'],

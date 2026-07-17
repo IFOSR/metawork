@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createConfig(): Config {
   return {
@@ -28,7 +29,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 3,
+    schemaVersion: 4,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -51,11 +52,12 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         id: 'subtask_execute',
         title: '实现一个普通功能',
         goal: '实现一个普通功能',
-        dependsOn: [],
+        dependencies: [],
+        contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch',
-        acceptance: ['List changed files and provide test command output or explain why tests were not run.'],
+        acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
     },
@@ -76,7 +78,9 @@ function createSession(
   const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
   const executor: ExecutorAdapter = {
     name: 'codex-cli',
-    execute: vi.fn().mockResolvedValue({ success: true, output: 'done', exitCode: 0, durationMs: 10 }),
+    execute: vi.fn().mockImplementation(async input => ({
+      success: true, output: completionResponse(input, 'done'), exitCode: 0, durationMs: 10,
+    })),
     isAvailable: vi.fn().mockResolvedValue(true),
     abort: vi.fn(),
   };

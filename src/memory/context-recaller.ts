@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { ConversationTurn } from '../executor/adapter.js';
+import type { ConversationTurn } from './conversation-turn.js';
 import type { LlmBridge } from '../core/llm-bridge.js';
 
 const TASK_HISTORY_LIMIT = 10;

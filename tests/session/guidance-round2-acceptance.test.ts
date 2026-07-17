@@ -14,6 +14,7 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -53,12 +54,12 @@ function createSession(config: Config, notifier?: NotificationService) {
   const contextRecaller = new ContextRecaller(db);
   const executor: ExecutorAdapter = {
     name: 'codex-cli',
-    execute: vi.fn().mockResolvedValue({
+    execute: vi.fn().mockImplementation(async input => { const result = {
       success: true,
       output: 'ok',
       exitCode: 0,
       durationMs: 50,
-    }),
+    }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
     isAvailable: vi.fn().mockResolvedValue(true),
     abort: vi.fn(),
   };
@@ -164,8 +165,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(executor.isAvailable).toHaveBeenCalled();
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.task.id).toBe(task.id);
-    expect(executionInput.executionContextBundle.mode).toBe('resume-blocked');
+    expect(executionInput.context.taskBackground.id).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('定时检查');
   });
@@ -199,7 +199,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(notifier.notifyTaskCompleted).toHaveBeenCalledWith(expect.objectContaining({
       taskId: task.id,
       title: '后台恢复任务',
-      summary: 'ok',
+      summary: expect.stringContaining('- 后台恢复任务: ok'),
       executionMode: 'resume-blocked',
       origin: 'system',
       recoveryTrigger: expect.objectContaining({
@@ -282,8 +282,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(handled).toBe(true);
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.task.id).toBe(task.id);
-    expect(executionInput.executionContextBundle.mode).toBe('resume-parked');
+    expect(executionInput.context.taskBackground.id).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('任务池看护：发现可执行任务');
   });

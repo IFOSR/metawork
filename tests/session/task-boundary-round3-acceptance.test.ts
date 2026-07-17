@@ -19,6 +19,7 @@ import {
   taskControlPlan,
 } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -115,7 +116,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(session.getSnapshot().output.join('\n')).toContain('最终回答');
   });
 
-  it('turns conversation-derived follow-up work into a new task with inherited conversation context', async () => {
+  it('turns conversation-derived follow-up work into a new task without implicitly inheriting conversation history', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -199,9 +200,9 @@ describe('Round 3 task boundary acceptance', () => {
     // new follow-up task, not the old parked one.
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(secondCall.task.id).not.toBe(parkedTaskId);
-    expect(secondCall.task.title).toContain('把刚才那段分析整理成三点结论');
-    expect(secondCall.conversationHistory.some((turn: { userInput: string }) => turn.userInput.includes('未来随着基座模型'))).toBe(true);
+    expect(secondCall.context.taskBackground.id).not.toBe(parkedTaskId);
+    expect(secondCall.context.taskBackground.title).toContain('把刚才那段分析整理成三点结论');
+    expect(JSON.stringify(secondCall.context)).not.toContain('未来随着基座模型');
     expect(taskRepo.findById(parkedTaskId)?.status).toBe('parked');
 
     const snapshot = session.getSnapshot().output.join('\n');
@@ -220,12 +221,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -284,12 +285,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -345,12 +346,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -393,12 +394,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -446,12 +447,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -502,12 +503,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -550,12 +551,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '检查完成：文档内容完整。',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -601,12 +602,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已继续生成预览版。',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -651,12 +652,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 1,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -722,12 +723,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '挂起任务已恢复',
         exitCode: 0,
         durationMs: 10,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -772,8 +773,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.task.id).toBe(parkedTask.id);
-    expect(executionInput.executionContextBundle.mode).toBe('resume-parked');
+    expect(executionInput.context.taskBackground.id).toBe(parkedTask.id);
     expect(session.getSnapshot().output.join('\n')).toContain(`Resuming parked task #${parkedTask.id}`);
   });
 
@@ -787,12 +787,12 @@ describe('Round 3 task boundary acceptance', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '阻塞任务已恢复',
         exitCode: 0,
         durationMs: 10,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -837,8 +837,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.task.id).toBe(blockedTask.id);
-    expect(executionInput.executionContextBundle.mode).toBe('resume-blocked');
+    expect(executionInput.context.taskBackground.id).toBe(blockedTask.id);
     expect(session.getSnapshot().output.join('\n')).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
   });
 });

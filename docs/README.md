@@ -23,9 +23,14 @@ Key recent ADRs:
 - [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
 - [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
 
+The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md).
+
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
+- [Phase 2：Executor 执行范围与 Dependency Handoff 总体行动计划](plans/2026-07-17-phase-2-executor-scope-and-dependency-handoff.md): current active phase; implementation is complete, but the real Codex artifact smoke awaits credential re-authentication before completion and archival.
+
+- [Phase 2 detailed implementation plan](plans/2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md): frozen v4 interfaces, delivered migration/runtime record, validation evidence, and the remaining external smoke blocker.
 
 ## Historical Plans
 

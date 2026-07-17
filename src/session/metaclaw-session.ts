@@ -46,6 +46,11 @@ import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
+import { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.js';
+import { contextRefKey } from '../work-graph/index.js';
+import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
+import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
@@ -182,6 +187,7 @@ export class MetaclawSession {
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
+      new TaskExecutionEvidenceRepo(deps.db),
     );
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
@@ -243,22 +249,29 @@ export class MetaclawSession {
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
+    const attemptRunner = new SubtaskAttemptRunner({
+      db: deps.db,
+      sessionId: deps.sessionId,
+      taskRuntimeService: this.taskRuntimeService,
+      subtaskRepo: this.subtaskRepo,
+      workUnitClaimService: this.workUnitClaimService,
+      executionRuntime: this.executionRuntime,
+      agentClassService: this.agentClassService,
+    });
     this.sessionExecutionCoordinator = new SessionExecutionCoordinator({
       sessionId: deps.sessionId,
-      memoryEngine: deps.memoryEngine,
       orchestration: deps.orchestration,
       notifier: this.notifier,
       taskRuntimeService: this.taskRuntimeService,
-      memoryContextService: this.memoryContextService,
       agentClassService: this.agentClassService,
       workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
+      subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
-      executionRuntime: this.executionRuntime,
+      attemptRunner,
       scheduler: this.scheduler,
       executionProgressService: this.executionProgressService,
-      workspaceTargetService: this.workspaceTargetService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
       memoryCaptureService: this.memoryCaptureService,
@@ -741,7 +754,8 @@ export class MetaclawSession {
         agentClasses: this.listRuntimeVisibleAgentClasses(),
         executorCatalog: context.executorCatalog,
         executorStatuses: this.kernelExecutorStatusRepo.list(),
-        v3WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
+        v4WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
+        eligibleContextRefKeys: this.buildEligibleContextRefKeys(plan, userInput),
         currentFocus: this.getFocusContext(),
       });
 
@@ -754,6 +768,39 @@ export class MetaclawSession {
 
   private listRuntimeVisibleAgentClasses(): AgentClass[] {
     return this.agentClassService.listAgentClasses();
+  }
+
+  private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
+    const refs = (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs);
+    const targetTask = plan.task.taskId ? this.taskRuntimeService.findTask(plan.task.taskId) : null;
+    const eligible = new Set<string>();
+    for (const ref of refs) {
+      if (ref.kind === 'current_user_input') {
+        eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (ref.kind === 'task_resource') {
+        if (targetTask?.resources.includes(ref.locator) || (!targetTask && userInput.includes(ref.locator))) {
+          eligible.add(contextRefKey(ref));
+        }
+        continue;
+      }
+      if (ref.kind === 'preference') {
+        const row = this.deps.db.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
+        if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (isEligibleInteractionRef({
+        db: this.deps.db,
+        sessionId: this.deps.sessionId,
+        ref,
+        targetTaskId: targetTask?.id ?? null,
+        userInput,
+      })) {
+        eligible.add(contextRefKey(ref));
+      }
+    }
+    return [...eligible];
   }
 
   private appendPlanningClarification(plan: PlanningAgentPlan): void {

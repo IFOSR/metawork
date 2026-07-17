@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -85,12 +86,12 @@ describe('App risky action gate', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: '已发送给客户',
+        output: completionResponse(input, '已发送给客户'),
         exitCode: 0,
         durationMs: 500,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -141,12 +142,12 @@ describe('App risky action gate', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: '已发送给客户',
+        output: completionResponse(input, '已发送给客户'),
         exitCode: 0,
         durationMs: 500,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };

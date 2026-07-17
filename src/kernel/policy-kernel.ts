@@ -5,6 +5,7 @@ import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-valid
 import type { PlanningAgentPlan, PlanningAction, SubtaskProposal } from '../planning/planning-types.js';
 import { validateWorkGraphStructure } from '../planning/work-graph-structure-rules.js';
 import { generateInteractionId } from '../utils/id.js';
+import { contextRefKey } from '../work-graph/index.js';
 
 export type KernelOutcome = 'accept' | 'rewrite' | 'reject' | 'clarify';
 
@@ -22,7 +23,8 @@ export interface RuntimeSnapshot {
   agentClasses: AgentClass[];
   executorCatalog?: PlannerExecutorCatalog;
   executorStatuses?: KernelExecutorStatusProjection[];
-  v3WorkGraphTaskIds?: string[];
+  v4WorkGraphTaskIds?: string[];
+  eligibleContextRefKeys?: string[];
   currentFocus: {
     kind: 'conversation' | 'task';
     taskId: string | null;
@@ -156,8 +158,21 @@ export class PolicyKernel {
       return this.reject(plan, `单活跃任务限制: 当前活跃顶层任务 #${snapshot.runningTask.id}`);
     }
 
-    if (targetTask && (snapshot.v3WorkGraphTaskIds ?? []).includes(targetTask.id)) {
-      return this.reject(plan, `task ${targetTask.id} already has a v3 work graph; use task_control to resume it`);
+    if (targetTask && (snapshot.v4WorkGraphTaskIds ?? []).includes(targetTask.id)) {
+      return this.reject(plan, `task ${targetTask.id} already has a v4 work graph; use task_control to resume it`);
+    }
+
+    if (snapshot.eligibleContextRefKeys) {
+      const eligible = new Set(snapshot.eligibleContextRefKeys);
+      const invalid = (plan.workGraph?.subtasks ?? []).flatMap(subtask =>
+        subtask.contextRefs
+          .map(ref => contextRefKey(ref))
+          .filter(key => !eligible.has(key))
+          .map(key => `${subtask.id}:${key}`)
+      );
+      if (invalid.length > 0) {
+        return this.clarify(plan, `work graph contains context refs that are not qualified for this Task/session: ${invalid.join(', ')}`);
+      }
     }
 
     const rewrite = this.filterUnhealthyAgentClasses(plan, snapshot.executorStatuses ?? []);

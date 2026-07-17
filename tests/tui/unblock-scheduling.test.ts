@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -80,7 +81,7 @@ afterEach(() => {
 });
 
 describe('App unblock scheduling', () => {
-  it('dispatches an unblocked task with a resume-blocked bundle when idle', async () => {
+  it('dispatches an unblocked task with its persisted v4 execution context when idle', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -101,12 +102,12 @@ describe('App unblock scheduling', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已恢复处理',
         exitCode: 0,
         durationMs: 500,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -140,15 +141,15 @@ describe('App unblock scheduling', () => {
     await waitFor(() => {
       expect(executor.execute).toHaveBeenCalled();
       const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].executionContextBundle?.mode === 'resume-blocked');
-      expect(executionCall?.[0].executionContextBundle.mode).toBe('resume-blocked');
+        .find(call => call[0].context.taskBackground.id === blockedTask.id);
+      expect(executionCall?.[0].context.currentSubtask.id).toContain(blockedTask.id);
     });
 
     app.unmount();
     app.cleanup();
   });
 
-  it('threads newly provided resources into the resume-blocked bundle on unblock', async () => {
+  it('persists newly provided resources without injecting undeclared resources into context', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -169,12 +170,12 @@ describe('App unblock scheduling', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已恢复处理',
         exitCode: 0,
         durationMs: 500,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -205,20 +206,18 @@ describe('App unblock scheduling', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    let executionBundle: NonNullable<Parameters<ExecutorAdapter['execute']>[0]['executionContextBundle']> | null = null;
+    let executionContext: Parameters<ExecutorAdapter['execute']>[0]['context'] | null = null;
     await waitFor(() => {
       expect(executor.execute).toHaveBeenCalled();
       const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].executionContextBundle?.mode === 'resume-blocked');
-      expect(executionCall?.[0].executionContextBundle).toBeTruthy();
-      executionBundle = executionCall![0].executionContextBundle!;
+        .find(call => call[0].context.taskBackground.id === blockedTask.id);
+      expect(executionCall?.[0].context).toBeTruthy();
+      executionContext = executionCall![0].context;
     });
-    if (!executionBundle) {
-      throw new Error('expected a task execution call with an executionContextBundle');
+    if (!executionContext) {
+      throw new Error('expected a task execution call with a SubtaskExecutionContext');
     }
-    expect(executionBundle.mode).toBe('resume-blocked');
-    expect(executionBundle.resumeContext.blockedReason).toBe('等待客户补充证据文件');
-    expect(executionBundle.materialContext.resources).toContain('/tmp/evidence-v3.pdf');
+    expect(JSON.stringify(executionContext.selectedEvidence)).not.toContain('/tmp/evidence-v3.pdf');
     expect(taskEngine['taskRepo'].findById(blockedTask.id)?.resources).toContain('/tmp/evidence-v3.pdf');
 
     app.unmount();

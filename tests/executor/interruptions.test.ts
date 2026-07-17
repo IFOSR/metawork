@@ -18,32 +18,18 @@ const spawnSyncMock = vi.fn().mockReturnValue({ status: 0 });
 
 function createExecutorInput() {
   return {
-    task: {
-      id: 'task_1',
-      title: '测试任务',
-      goal: '测试目标',
-      status: 'running' as const,
-      summary: '',
-      snapshots: [],
-      resources: [],
-      dependencies: [],
-      prioritySignals: {
-        dueAt: null,
-        isReady: true,
-        progressRatio: 0,
-        blocksOthers: false,
-        idleHours: 0,
+    context: {
+      taskBackground: { id: 'task_1', title: '测试任务', goal: '测试目标', instruction: 'background_only' as const },
+      currentSubtask: {
+        id: 'subtask_1', title: '继续', goal: '继续', expectedOutput: 'summary' as const,
+        acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       },
-      injectedPreferences: [],
-      lastSchedulingReason: '',
-      lastInterruptionReason: '',
-      interruptionCount: 0,
-      createdAt: '2026-04-16T00:00:00Z',
-      updatedAt: '2026-04-16T00:00:00Z',
+      incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
+      workspaceContext: { allowFilesystem: true, workingDirectory: process.cwd(), targetPaths: [] },
+      identity: { executionId: 'exec_1', taskId: 'task_1', subtaskId: 'subtask_1', attemptId: 'attempt_1', workUnitId: 'wu_1' },
+      completionContract: { marker: '<!-- metaclaw:completion:v1 -->' as const, schemaVersion: 1 as const },
+      evidenceTools: { availability: 'unavailable' as const, reason: 'test' },
     },
-    preferences: [],
-    userPrompt: '继续',
-    conversationHistory: [],
   };
 }
 
@@ -151,34 +137,7 @@ describe('executor interruption semantics', () => {
     const { CodexCliAdapter } = await import('../../src/executor/codex-cli.js');
     const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
 
-    const resultPromise = adapter.execute({
-      task: {
-        id: 'task_1',
-        title: '测试任务',
-        goal: '测试目标',
-        status: 'running',
-        summary: '',
-        snapshots: [],
-        resources: [],
-        dependencies: [],
-        prioritySignals: {
-          dueAt: null,
-          isReady: true,
-          progressRatio: 0,
-          blocksOthers: false,
-          idleHours: 0,
-        },
-        injectedPreferences: [],
-        lastSchedulingReason: '',
-        lastInterruptionReason: '',
-        interruptionCount: 0,
-        createdAt: '2026-04-16T00:00:00Z',
-        updatedAt: '2026-04-16T00:00:00Z',
-      },
-      preferences: [],
-      userPrompt: '继续',
-      conversationHistory: [],
-    });
+    const resultPromise = adapter.execute(createExecutorInput());
 
     const outputPath = getCodexFinalMessagePath();
     adapter.abort();
@@ -196,34 +155,7 @@ describe('executor interruption semantics', () => {
     const { ClaudeCodeAdapter } = await import('../../src/executor/claude-code.js');
     const adapter = new ClaudeCodeAdapter({ command: 'claude', timeout: 300 });
 
-    const resultPromise = adapter.execute({
-      task: {
-        id: 'task_1',
-        title: '测试任务',
-        goal: '测试目标',
-        status: 'running',
-        summary: '',
-        snapshots: [],
-        resources: [],
-        dependencies: [],
-        prioritySignals: {
-          dueAt: null,
-          isReady: true,
-          progressRatio: 0,
-          blocksOthers: false,
-          idleHours: 0,
-        },
-        injectedPreferences: [],
-        lastSchedulingReason: '',
-        lastInterruptionReason: '',
-        interruptionCount: 0,
-        createdAt: '2026-04-16T00:00:00Z',
-        updatedAt: '2026-04-16T00:00:00Z',
-      },
-      preferences: [],
-      userPrompt: '继续',
-      conversationHistory: [],
-    });
+    const resultPromise = adapter.execute(createExecutorInput());
 
     adapter.abort();
     const result = await resultPromise;
@@ -240,34 +172,7 @@ describe('executor interruption semantics', () => {
     const { CodexCliAdapter } = await import('../../src/executor/codex-cli.js');
     const adapter = new CodexCliAdapter({ command: 'codex', timeout: 1, maxDuration: 10 });
 
-    const resultPromise = adapter.execute({
-      task: {
-        id: 'task_1',
-        title: '测试任务',
-        goal: '测试目标',
-        status: 'running',
-        summary: '',
-        snapshots: [],
-        resources: [],
-        dependencies: [],
-        prioritySignals: {
-          dueAt: null,
-          isReady: true,
-          progressRatio: 0,
-          blocksOthers: false,
-          idleHours: 0,
-        },
-        injectedPreferences: [],
-        lastSchedulingReason: '',
-        lastInterruptionReason: '',
-        interruptionCount: 0,
-        createdAt: '2026-04-16T00:00:00Z',
-        updatedAt: '2026-04-16T00:00:00Z',
-      },
-      preferences: [],
-      userPrompt: '继续',
-      conversationHistory: [],
-    });
+    const resultPromise = adapter.execute(createExecutorInput());
 
     for (let i = 0; i < 12; i += 1) {
       await vi.advanceTimersByTimeAsync(900);
@@ -289,34 +194,7 @@ describe('executor interruption semantics', () => {
     const { CodexCliAdapter } = await import('../../src/executor/codex-cli.js');
     const adapter = new CodexCliAdapter({ command: 'codex', timeout: 1, maxDuration: 10 });
 
-    const resultPromise = adapter.execute({
-      task: {
-        id: 'task_1',
-        title: '测试任务',
-        goal: '测试目标',
-        status: 'running',
-        summary: '',
-        snapshots: [],
-        resources: [],
-        dependencies: [],
-        prioritySignals: {
-          dueAt: null,
-          isReady: true,
-          progressRatio: 0,
-          blocksOthers: false,
-          idleHours: 0,
-        },
-        injectedPreferences: [],
-        lastSchedulingReason: '',
-        lastInterruptionReason: '',
-        interruptionCount: 0,
-        createdAt: '2026-04-16T00:00:00Z',
-        updatedAt: '2026-04-16T00:00:00Z',
-      },
-      preferences: [],
-      userPrompt: '继续',
-      conversationHistory: [],
-    });
+    const resultPromise = adapter.execute(createExecutorInput());
 
     const outputPath = getCodexFinalMessagePath();
     await vi.advanceTimersByTimeAsync(1001);

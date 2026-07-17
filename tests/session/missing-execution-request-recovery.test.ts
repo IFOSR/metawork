@@ -15,6 +15,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan, directReplyPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -64,12 +65,12 @@ describe('session dispatch recovery', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '挂起任务已自动恢复执行',
         exitCode: 0,
         durationMs: 300,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -98,8 +99,7 @@ describe('session dispatch recovery', () => {
     await session.waitForAsyncWork();
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].task.id).toBe(task.id);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].executionContextBundle.mode).toBe('resume-parked');
+    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.id).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('恢复已挂起任务');
     expect(session.getSnapshot().output.join('\n')).toContain('挂起任务已自动恢复执行');
@@ -114,12 +114,12 @@ describe('session dispatch recovery', () => {
     const contextRecaller = new ContextRecaller(db);
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '语义优先级任务完成',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -188,14 +188,15 @@ describe('session dispatch recovery', () => {
     const executionOrder: string[] = [];
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async ({ task }) => {
-        executionOrder.push(task.id);
-        return {
+      execute: vi.fn().mockImplementation(async input => {
+        executionOrder.push(input.context.taskBackground.id);
+        const result = {
           success: true,
-          output: `完成 ${task.title}`,
+          output: `完成 ${input.context.taskBackground.title}`,
           exitCode: 0,
           durationMs: 100,
         };
+        return { ...result, output: completionResponse(input, result.output) };
       }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
@@ -245,12 +246,12 @@ describe('session dispatch recovery', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已根据任务持久化目标恢复执行',
         exitCode: 0,
         durationMs: 300,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -275,7 +276,7 @@ describe('session dispatch recovery', () => {
     await session.waitForAsyncWork();
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].userPrompt).toBe(task.goal);
+    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.goal).toBe(task.goal);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain(`任务 #${task.id} 缺少待执行上下文，已根据持久化任务信息重建执行请求`);
   });
@@ -305,12 +306,12 @@ describe('session dispatch recovery', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '补充材料后已继续完成飞书 Client API 调研',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -339,8 +340,7 @@ describe('session dispatch recovery', () => {
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.task.id).toBe(task.id);
-    expect(executionInput.executionContextBundle.mode).toBe('resume-blocked');
+    expect(executionInput.context.taskBackground.id).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     const output = session.getSnapshot().output.join('\n');
     // Runtime no longer "detects which task" — the planner pinned it. Assert the
@@ -386,12 +386,12 @@ describe('session dispatch recovery', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '不应执行',
         exitCode: 0,
         durationMs: 100,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -418,8 +418,7 @@ describe('session dispatch recovery', () => {
 
     await session.submit('我补充一下飞书材料：需要 user_access_token', { awaitAsyncWork: true });
 
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls
-      .some(call => call[0].executionContextBundle?.mode === 'resume-blocked')).toBe(false);
+    expect(executor.execute).not.toHaveBeenCalled();
     expect(taskRepo.findByStatus('blocked')).toHaveLength(2);
   });
 });

@@ -12,11 +12,14 @@ For architecture or roadmap work, read the smallest applicable set in this order
 
 Do not bulk-load archived ADRs. Open one only when investigating why an older design existed or when a current ADR explicitly cites it as historical context.
 
+ADR-0021 is the current authority for the strict Work Graph v4, Subtask execution context, dependency handoff, completion envelope, execution evidence, and minimal attempt receipt. ADR-0019 remains authority only for v3 historical and migration context.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
+| v4 work graph and Subtask execution | [ADR-0021](0021-work-graph-v4-subtask-execution-contract.md) | strict v4 dependencies, context refs, handoff protocol, completion envelope, evidence port and attempt receipt |
 | v3 work graph and durable execution facts | [ADR-0019](0019-planning-agent-plan-v3-work-graph-authority.md) | strict schema v3, graph authority, Planner/Kernel validation, v3 persistence and Runtime apply/recovery |
 | Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome projection and static/dynamic fact split |

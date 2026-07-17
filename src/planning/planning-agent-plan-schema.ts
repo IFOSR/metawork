@@ -22,6 +22,8 @@ const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
 const EXPECTED_OUTPUT_VALUES = ['analysis', 'patch', 'artifact', 'review', 'summary'] as const;
 const ROUTING_CAPABILITY_VALUES = ['current-web-research', 'workspace-engineering'] as const;
 const BUILTIN_EXECUTOR_VALUES = ['codex-cli', 'pi-agent'] as const;
+const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
+const WORK_GRAPH_KEY = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const ResponseSchema = z.object({
   directReply: z.string().nullable(),
@@ -47,15 +49,45 @@ const RiskSchema = z.object({
   reasons: z.array(z.string()),
 }).strict();
 
+const DescriptionSchema = z.string().trim().min(1).max(500);
+const KeySchema = z.string().regex(WORK_GRAPH_KEY);
+
+const ContextRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('current_user_input') }).strict(),
+  z.object({
+    kind: z.literal('interaction'),
+    interactionId: z.string().trim().min(1),
+    side: z.enum(['user', 'assistant']),
+  }).strict(),
+  z.object({ kind: z.literal('task_resource'), locator: z.string().trim().min(1) }).strict(),
+  z.object({ kind: z.literal('preference'), preferenceId: z.string().trim().min(1) }).strict(),
+]);
+
+const DependencySchema = z.object({
+  fromSubtaskId: z.string().trim().min(1),
+  requiredItems: z.array(z.object({
+    key: KeySchema,
+    type: z.enum(WORK_GRAPH_ITEM_TYPE_VALUES),
+    description: DescriptionSchema,
+  }).strict()).min(1).max(12),
+}).strict();
+
+const AcceptanceSchema = z.object({
+  key: KeySchema,
+  description: DescriptionSchema,
+  requiredEvidence: z.array(z.string().trim().min(1).max(500)).max(4),
+}).strict();
+
 const SubtaskSchema = z.object({
   id: z.string(),
   title: z.string(),
   goal: z.string(),
-  dependsOn: z.array(z.string()),
+  dependencies: z.array(DependencySchema),
+  contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_VALUES)).min(1),
   preferredAgentClassList: z.array(z.enum(BUILTIN_EXECUTOR_VALUES)).min(1),
   expectedOutput: z.enum(EXPECTED_OUTPUT_VALUES),
-  acceptance: z.array(z.string()),
+  acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
 }).strict();
 
@@ -66,7 +98,7 @@ const WorkGraphSchema = z.object({
 
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),

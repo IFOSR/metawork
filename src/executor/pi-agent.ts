@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { CommandLineExecutorAdapter } from './command-line-adapter.js';
+import type { ExecutorInput } from './adapter.js';
 
 const PI_WEB_EXTENSION_PATH = join(homedir(), '.metaclaw', 'pi-extensions', 'metaclaw-web-tools.ts');
 
@@ -207,9 +208,60 @@ const webFetchTool = defineTool({
   },
 });
 
+async function callEvidence(operation: string, input: Record<string, unknown>) {
+  const url = process.env.METACLAW_EVIDENCE_JSON_URL;
+  const token = process.env.METACLAW_EVIDENCE_TOKEN;
+  if (!url || !token) throw new Error("Execution evidence capability is unavailable for this attempt.");
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ operation, input }),
+  });
+  const payload = await response.text();
+  if (!response.ok) throw new Error(payload);
+  return { content: [{ type: "text", text: payload }], details: { operation } };
+}
+
+const evidenceListTool = defineTool({
+  name: "evidence_list",
+  label: "Task Evidence List",
+  description: "List user evidence authorized for this Task and attempt.",
+  parameters: Type.Object({
+    cursor: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Number()),
+  }),
+  async execute(_toolCallId, params) { return callEvidence("list", params); },
+});
+
+const evidenceSearchTool = defineTool({
+  name: "evidence_search",
+  label: "Task Evidence Search",
+  description: "Search user evidence authorized for this Task and attempt.",
+  parameters: Type.Object({
+    query: Type.String(),
+    cursor: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Number()),
+  }),
+  async execute(_toolCallId, params) { return callEvidence("search", params); },
+});
+
+const evidenceGetTool = defineTool({
+  name: "evidence_get",
+  label: "Task Evidence Get",
+  description: "Read an authorized evidence item in bounded chunks.",
+  parameters: Type.Object({
+    evidenceId: Type.String(),
+    offset: Type.Optional(Type.Number()),
+  }),
+  async execute(_toolCallId, params) { return callEvidence("get", params); },
+});
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool(webSearchTool);
   pi.registerTool(webFetchTool);
+  pi.registerTool(evidenceListTool);
+  pi.registerTool(evidenceSearchTool);
+  pi.registerTool(evidenceGetTool);
 }
 `;
 
@@ -232,11 +284,22 @@ export class PiAgentAdapter extends CommandLineExecutorAdapter {
       '--extension',
       ensurePiWebExtension(),
       '--tools',
-      'web_search,web_fetch,bash,read,write,edit,grep,find,ls',
+      'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
       '--append-system-prompt',
       PI_RESEARCH_SYSTEM_PROMPT,
       '-p',
       prompt,
     ];
+  }
+
+  protected buildSpawnEnv(input?: ExecutorInput): NodeJS.ProcessEnv {
+    const binding = input?.context.evidenceTools.binding;
+    return {
+      ...process.env,
+      ...(binding ? {
+        METACLAW_EVIDENCE_JSON_URL: binding.jsonUrl,
+        METACLAW_EVIDENCE_TOKEN: binding.bearerToken,
+      } : {}),
+    };
   }
 }

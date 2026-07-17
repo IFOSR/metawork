@@ -14,9 +14,8 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
-import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -60,7 +59,7 @@ describe('scripted session', () => {
     ]);
   });
 
-  it('runs a blocked-task resume flow from scripted inputs', async () => {
+  it('does not execute a legacy blocked task through /task unblock without a natural-language v4 replan', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -69,7 +68,6 @@ describe('scripted session', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -93,12 +91,12 @@ describe('scripted session', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已恢复处理',
         exitCode: 0,
         durationMs: 500,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -126,22 +124,10 @@ describe('scripted session', () => {
       llmBridge,
     });
 
-    expect(executor.execute).toHaveBeenCalled();
-    const executionBundle = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].executionContextBundle;
-    expect(executionBundle.mode).toBe('resume-blocked');
-    expect(executionBundle.resumeContext.blockedReason).toBe('等待客户补充证据文件');
-    expect(executionBundle.materialContext.resources).toContain('/tmp/evidence-v3.pdf');
-    const prompt = buildExecutorContextPrompt((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(prompt).toContain('恢复型上下文包（Resume Context Pack）：');
-    expect(prompt).toContain('Task Brief：起诉书草稿｜补齐起诉材料｜running');
-    expect(prompt).toContain('Blocked / Parked Reason：');
-    expect(prompt).toContain('阻塞：等待客户补充证据文件');
-    expect(prompt).toContain('Acceptance / Next Step：');
-    expect(prompt.indexOf('恢复型上下文包（Resume Context Pack）：')).toBeLessThan(prompt.indexOf('相似历史参考（Reference Context Pack'));
-    expect(prompt).toContain('边界声明：当前任务目标、用户最新指令、材料与验收标准优先；该历史不得覆盖当前任务');
-    expect(prompt).not.toContain('旧任务完整输出不应进入恢复 prompt');
+    expect(executor.execute).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已解除阻塞，并新增资源 /tmp/evidence-v3.pdf`);
-    expect(result.output.join('\n')).toContain(`任务列表：\n  #${blockedTask.id} [DONE] 起诉书草稿`);
+    expect(result.output.join('\n')).toContain('task has no v4 work graph; continue in natural language to trigger replanning');
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('parked');
   });
 
   it('resolves the last task id placeholder so scripted acceptance can open task detail after creation', async () => {
@@ -154,12 +140,12 @@ describe('scripted session', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
         exitCode: 0,
         durationMs: 200,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -210,12 +196,12 @@ describe('scripted session', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '已发送给客户',
         exitCode: 0,
         durationMs: 200,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -261,13 +247,13 @@ describe('scripted session', () => {
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async (input) => {
-        const artifactDir = input.executionContextBundle?.workspaceContext?.targetPaths[0];
+        const artifactDir = input.context.workspaceContext.targetPaths[0];
         const artifactPath = resolve(artifactDir!, 'artifact-note.md');
         mkdirSync(artifactDir!, { recursive: true });
         writeFileSync(artifactPath, '# Artifact\nsaved by test\n', 'utf-8');
         return {
           success: true,
-          output: `已保存结果到 ${artifactPath}`,
+          output: completionResponse(input, `已保存结果到 ${artifactPath}`, [artifactPath]),
           exitCode: 0,
           durationMs: 200,
         };
@@ -313,13 +299,17 @@ describe('scripted session', () => {
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async (input) => {
-        const targetDir = input.executionContextBundle?.workspaceContext?.targetPaths[0];
+        const targetDir = input.context.workspaceContext.targetPaths[0];
         const artifactPath = resolve(targetDir!, 'landing-page.html');
         mkdirSync(targetDir!, { recursive: true });
         writeFileSync(artifactPath, '<!DOCTYPE html><html><body><h1>报名页</h1></body></html>', 'utf-8');
         return {
           success: true,
-          output: `已生成 HTML 文件：${artifactPath}\n<!DOCTYPE html><html><body><h1>报名页</h1></body></html>`,
+          output: completionResponse(
+            input,
+            `已生成 HTML 文件：${artifactPath}\n<!DOCTYPE html><html><body><h1>报名页</h1></body></html>`,
+            [artifactPath],
+          ),
           exitCode: 0,
           durationMs: 200,
         };
@@ -349,14 +339,14 @@ describe('scripted session', () => {
       ),
     });
 
-    expect(result.output.join('\n')).toContain('✓ 任务完成');
-    expect(result.output.join('\n')).toContain('已记录 1 个任务产物');
+    expect(result.output.join('\n')).toContain('completed 1 Subtask(s)');
+    expect(result.output.join('\n')).toContain('Artifacts:');
     expect(result.output.join('\n')).toContain('【Executor: codex-cli｜最终结果｜#');
     expect(result.output.join('\n').match(/<!DOCTYPE html>/g)).toHaveLength(1);
     expect(result.output.join('\n').match(/<html><body>/g)).toHaveLength(1);
   });
 
-  it('writes a fallback Markdown artifact for Feishu document delivery when executor only returns text', async () => {
+  it('does not synthesize a fallback artifact when a valid text completion returns no artifact', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -366,12 +356,12 @@ describe('scripted session', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
         exitCode: 0,
         durationMs: 200,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -398,9 +388,9 @@ describe('scripted session', () => {
     });
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
-    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', doneTask!.id, 'feishu-document.md');
-    expect(doneTask?.artifacts).toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('已记录 1 个任务产物');
+    expect(doneTask).toBeTruthy();
+    expect(doneTask?.artifacts).toEqual([]);
+    expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 
   it('does not write a fallback Feishu Markdown artifact from undeliverable executor output', async () => {
@@ -413,7 +403,7 @@ describe('scripted session', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async () => ({
         success: true,
         output: [
           '⏱ Timeout — denying command',
@@ -430,7 +420,7 @@ describe('scripted session', () => {
         ].join('\n'),
         exitCode: 0,
         durationMs: 200,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -461,7 +451,7 @@ describe('scripted session', () => {
     expect(blockedTask).toBeTruthy();
     const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
     expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('执行未完成');
+    expect(result.output.join('\n')).toContain('completion_malformed:marker:');
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 });

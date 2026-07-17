@@ -45,14 +45,13 @@ flowchart LR
   Decision -->|reject/no_action| Stop[不执行<br/>保留状态]
 
   Runtime --> TaskOS[Task OS<br/>TaskRuntimeService 和 Scheduler]
-  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>上下文和 dispatch loop]
-  ExecCoord --> Memory[MemoryContextService<br/>恢复包、偏好、材料]
-  Memory --> GraphRuntime[WorkGraphRuntimeService<br/>应用已授权 work graph]
+  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>串行 ready-node 外壳]
+  ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>应用已授权 work graph]
   GraphRuntime --> Graph[Work Graph<br/>持久化 Subtasks]
-  Graph --> Claim[WorkUnitClaimService<br/>claim 空闲 executor WorkUnit]
-  Claim --> Spec[SubtaskExecutionSpec<br/>subtask、work unit、agent class]
-  Spec --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
-  Executors --> Verify[验收和交付<br/>测试、证据、产物]
+  Graph --> Attempt[SubtaskAttemptRunner<br/>一个 attempt、一个 WorkUnit]
+  Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
+  Context --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
+  Executors --> Verify[Completion Protocol v1<br/>验收、handoff、产物]
   Verify --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
@@ -62,13 +61,12 @@ flowchart LR
 
   Session <--> Store[(本地 SQLite<br/>任务、subtasks、agent classes、<br/>work units、events、memory)]
   Kernel -. audit .-> Decisions[(planning_decisions)]
-  Memory <--> Store
   TaskOS <--> Store
   Graph <--> Store
-  Claim <--> Store
+  Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出 v2 `PlanningAgentPlan`。启动 context 只含输入、可信 session/source、授权边界和超时；任务、会话、runtime 和 executor 事实通过只读 stdio MCP 按需查询。`PolicyKernel` 负责确定性授权，Runtime 再 claim 健康容量或探测并创建 executor WorkUnit。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v4 `PlanningAgentPlan`。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 stdio MCP 按需查询。`PolicyKernel` 负责确定性授权，Runtime 持久化或恢复已授权 v4 图，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
 
 Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
@@ -100,14 +98,12 @@ flowchart LR
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>创建或绑定任务]
   Task --> Scheduler[SchedulerEngine<br/>准备度、优先级、空闲恢复]
-  Scheduler --> Context[MemoryContextService<br/>恢复包、偏好、材料]
-  Context --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
+  Scheduler --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>持久化 Subtasks]
-  WorkGraph --> Ready[Ready Subtask<br/>dependsOn 已满足]
-  Ready --> Claim[WorkUnitClaimService<br/>claim 空闲 executor WorkUnit]
-  Claim --> Spec[SubtaskExecutionSpec<br/>subtask、work unit、agent class]
-  Spec --> Run[ExecutionRuntime<br/>运行 adapter]
-  Run --> Verify[VerificationAndDeliveryService]
+  WorkGraph --> Ready[Ready Subtask<br/>直接依赖 handoff 已满足]
+  Ready --> Attempt[SubtaskAttemptRunner<br/>claim、context、单次 adapter 调用]
+  Attempt --> Run[ExecutionRuntime<br/>传输并执行]
+  Run --> Verify[Completion Protocol v1<br/>验证并原子持久化]
   Verify --> Done{是否通过？}
   Done -->|是| Result[完成并记录产物]
   Done -->|否| Blocked[阻塞并给出恢复提示]
@@ -590,7 +586,7 @@ metaclaw --connect
 
 在 Windows 上，`docker exec -it` 无法给 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流改为把容器当作 SSH 服务运行，既能给 TUI 一个真实 PTY，又能开一个 shell 浏览/编辑 `/workspace` 输出文件（并支持 VS Code Remote-SSH）。默认 planner + 执行器是 Codex（`gpt-5.6-luna`）；Pi 作为执行器候选保留。`docker/pi.env` 是唯一的 API 配置入口——两个执行器都从中读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`，`docker/entrypoint.sh` 在容器启动时把 base URL 替换进配置模板。
 
-完整运行镜像内置 CLI、Planner MCP、v2 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
+完整运行镜像内置 CLI、Planner MCP、v4 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
 
 ## 配置
 
@@ -751,7 +747,7 @@ MetaClaw 会：
 /task resume <id>
 /task block <id> waiting for customer data
 /task unblock <id>
-/task unblock <id> /tmp/evidence-v3.pdf
+/task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
 /task complete <id>
 /task index rebuild
@@ -809,25 +805,22 @@ MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出 v2 `PlanningAgentPlan`。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出严格 v4 `PlanningAgentPlan`。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
 `PolicyKernel` 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
 
-Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化 kernel-approved work graph，并恢复已有未完成 subtasks 以便继续 dispatch。`WorkUnitClaimService` 会 sweep 过期 lease，寻找空闲 executor `WorkUnit`，维护 claimed/running/waiting/failed/released 状态，并记录 work-unit events。`ExecutionRuntime` 接收 `SubtaskExecutionSpec`，其中包含已 claim 的 subtask、work unit、agent class runtime config、上下文和验收要求。它不再接收 `ExecutionPolicy`、`primaryExecutor`、`candidateExecutors` 或 `fallbackChain`。
+Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化或恢复 kernel-approved v4 work graph。`SessionExecutionCoordinator` 只选择一个 ready Subtask 和当前 AgentClass；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 `SubtaskExecutionContext`、evidence capability、一次 Adapter 调用、Completion Protocol 门禁、终态事务与 release。`ExecutionRuntime` 不再接收 Task prompt、全量历史、Task 级 memory bundle、`ExecutionPolicy`、`candidateExecutors` 或 `fallbackChain`。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
 ## 复杂任务策略和 Agentic Loop
 
-MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。当 `PlanningAgent`（`CodexPlanningAgent`）产出 `plan_work_graph` 计划时，会在两种模式之间选择：
+MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-- `single_executor`：任务足够集中，一个 executor 可以完成。
-- `multi_executor`：任务被拆成多个 subtasks，每个 subtask 有 executor hint、依赖、输入、期望输出类型、风险等级和验收项。
-
-planner 直接提出 work graph。在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会变成持久化 `Subtask` 节点。`WorkGraphRuntimeService` 恢复已批准的工作图，dispatcher 再按依赖顺序串行 claim 并执行 ready subtasks。
+在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会成为持久化 v4 `Subtask` 节点。SQLite v22 把旧 v3 图保存在只读 `subtasks_v3_audit`，非终态旧 Task 必须由用户自然语言触发 v4 replan。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff，不继承祖先或普通 assistant/Executor 历史。每次 Executor 最终响应都必须带 Completion Protocol v1；成功结果剥离机器块并原子写入 receipt、handoff 与 clean result，contract failure 阻断且不自动重试。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

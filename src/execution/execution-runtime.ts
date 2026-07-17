@@ -14,9 +14,11 @@ import {
   type BuiltinExecutorName,
 } from '../executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import type { AgentClass, Config, ExecutionContextBundleV2, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
+import type { AgentClass, Config, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
+import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
+import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -32,7 +34,7 @@ export interface ExecutionResult {
   durationMs: number;
   userPrompt: string;
   preferences: ResolvedPreference[];
-  context: ExecutionContextBundleV2;
+  context: SubtaskExecutionContext;
   recovery: {
     recoverable: boolean;
     blockReason: string | null;
@@ -273,7 +275,7 @@ export interface SubtaskExecutionSpec {
   subtask: Subtask;
   workUnit: WorkUnit;
   agentClass: AgentClass;
-  acceptance: string[];
+  acceptance: WorkGraphAcceptanceCriterion[];
   expectedOutput: Subtask['expectedOutput'];
 }
 
@@ -374,9 +376,9 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       artifacts: input.subtaskResults.flatMap(result => result.artifacts),
       subtaskResults: input.subtaskResults,
       durationMs: input.result.durationMs,
-      userPrompt: input.input.executorInput.userPrompt,
-      preferences: input.input.executorInput.executionContextBundle?.memoryContext.resolvedPreferences ?? [],
-      context: input.input.executorInput.executionContextBundle!,
+      userPrompt: input.input.executorInput.context.currentSubtask.goal,
+      preferences: [],
+      context: input.input.executorInput.context,
       recovery: {
         recoverable: Boolean(input.result.error),
         blockReason: input.result.error ?? null,

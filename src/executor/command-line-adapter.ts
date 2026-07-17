@@ -20,18 +20,18 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
 
   constructor(protected config: { command: string; timeout: number; maxDuration?: number; workspaceRoot?: string }) {}
 
-  protected abstract buildSpawnArgs(prompt: string): string[];
+  protected abstract buildSpawnArgs(prompt: string, input?: ExecutorInput): string[];
 
-  protected prepareExecution(prompt: string): CommandLineExecution {
+  protected prepareExecution(prompt: string, input?: ExecutorInput): CommandLineExecution {
     return {
-      args: this.buildSpawnArgs(prompt),
+      args: this.buildSpawnArgs(prompt, input),
       captureStdout: true,
       readFinalOutput: (stdout) => stdout.trim(),
       cleanup: () => undefined,
     };
   }
 
-  protected buildSpawnEnv(): NodeJS.ProcessEnv {
+  protected buildSpawnEnv(_input?: ExecutorInput): NodeJS.ProcessEnv {
     return process.env;
   }
 
@@ -41,7 +41,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
     let execution: CommandLineExecution;
 
     try {
-      execution = this.prepareExecution(contextPrompt);
+      execution = this.prepareExecution(contextPrompt, input);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -90,7 +90,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
         this.process = spawn(this.config.command, execution.args, {
           cwd: this.config.workspaceRoot ?? process.cwd(),
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: this.buildSpawnEnv(),
+          env: this.buildSpawnEnv(input),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

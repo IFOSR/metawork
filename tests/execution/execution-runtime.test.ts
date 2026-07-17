@@ -111,13 +111,16 @@ function createSubtask(): Subtask {
     title: 'Runtime subtask',
     goal: 'execute runtime subtask',
     status: 'running',
-    dependsOn: [],
+    dependencies: [],
+    contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'],
     expectedOutput: 'summary',
-    acceptance: [],
+    acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
     riskLevel: 'medium',
     result: '',
+    artifacts: [],
+    verification: { warnings: [], completionSchemaVersion: null },
     error: null,
     createdAt: '2026-06-22T00:00:00Z',
     updatedAt: '2026-06-22T00:00:00Z',
@@ -132,6 +135,7 @@ function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
     state: 'running',
     claimedTaskId: 'task_runtime',
     claimedSubtaskId: 'subtask_runtime',
+    claimedAttemptId: 'attempt_runtime',
     heartbeatAt: '2026-06-22T00:00:00Z',
     leaseExpiresAt: null,
     createdAt: '2026-06-22T00:00:00Z',
@@ -140,11 +144,23 @@ function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
 }
 
 function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
+  const subtask = createSubtask();
   return {
-    task: createTask(),
-    preferences: [],
-    userPrompt: 'execute task',
-    conversationHistory: [],
+    context: {
+      taskBackground: { id: 'task_runtime', title: 'runtime task', goal: 'execute runtime task', instruction: 'background_only' },
+      currentSubtask: {
+        id: subtask.id, title: subtask.title, goal: subtask.goal,
+        expectedOutput: subtask.expectedOutput, acceptance: subtask.acceptance,
+      },
+      incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
+      workspaceContext: { allowFilesystem: true, workingDirectory: process.cwd(), targetPaths: [] },
+      identity: {
+        executionId: 'exec_runtime', taskId: 'task_runtime', subtaskId: subtask.id,
+        attemptId: 'attempt_runtime', workUnitId: 'executor-1',
+      },
+      completionContract: { marker: '<!-- metaclaw:completion:v1 -->', schemaVersion: 1 },
+      evidenceTools: { availability: 'unavailable', reason: 'unit test' },
+    },
   };
 }
 

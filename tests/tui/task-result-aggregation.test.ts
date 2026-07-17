@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -75,12 +76,12 @@ describe('App task result aggregation', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。',
+        output: completionResponse(input, 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。'),
         exitCode: 0,
         durationMs: 500,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -111,11 +112,10 @@ describe('App task result aggregation', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(app.lastFrame()).toContain('✓ 任务完成');
-    expect(app.lastFrame()).toContain('任务结果');
-    expect(app.lastFrame()).toContain('摘要:');
-    expect(app.lastFrame()).toContain('下一步:');
+    expect(app.lastFrame()).toContain('completed 1 Subtask(s)');
+    expect(app.lastFrame()).toContain('completed');
     expect(app.lastFrame()).toContain('Phoenix 周报结论');
+    expect(app.lastFrame().match(/Phoenix 周报结论/g)).toHaveLength(1);
 
     app.unmount();
     app.cleanup();

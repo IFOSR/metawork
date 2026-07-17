@@ -16,6 +16,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -106,12 +107,12 @@ describe('App parked task intent resolution', () => {
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => { const result = {
         success: true,
         output: '继续输出 memory 调研内容',
         exitCode: 0,
         durationMs: 700,
-      }),
+      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
@@ -167,8 +168,7 @@ describe('App parked task intent resolution', () => {
 
     expect(querySpy).not.toHaveBeenCalled();
     expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls.some(call =>
-      call[0].task.id === parkedTask.id
-      && call[0].executionContextBundle.mode === 'resume-parked'
+      call[0].context.taskBackground.id === parkedTask.id
     )).toBe(true);
 
     app.unmount();

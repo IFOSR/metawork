@@ -29,7 +29,7 @@ function task(id = 'task_1'): Task {
 
 function plan(taskId: string): PlanningAgentPlan {
   return {
-    id: 'plan_1', schemaVersion: 3, action: 'plan_work_graph', confidence: 0.9,
+    id: 'plan_1', schemaVersion: 4, action: 'plan_work_graph', confidence: 0.9,
     reason: 'execute', clarificationQuestion: null, response: { directReply: null },
     task: {
       binding: 'reference', taskId, control: 'none', scope: null, title: 'Task', goal: 'Do work',
@@ -39,9 +39,9 @@ function plan(taskId: string): PlanningAgentPlan {
     workGraph: {
       reason: 'approved plan',
       subtasks: [{
-        id: 'execute', title: 'Execute', goal: 'Do work', dependsOn: [],
+        id: 'execute', title: 'Execute', goal: 'Do work', dependencies: [], contextRefs: [],
         requiredCapabilities: ['workspace-engineering'], preferredAgentClassList: ['codex-cli'],
-        expectedOutput: 'patch', acceptance: ['run the unit tests'], riskLevel: 'low',
+        expectedOutput: 'patch', acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }], riskLevel: 'low',
       }],
     },
     source: 'codex-planner',
@@ -49,7 +49,7 @@ function plan(taskId: string): PlanningAgentPlan {
 }
 
 describe('WorkGraphRuntimeService', () => {
-  it('applies and round-trips only a Kernel-approved v3 graph', () => {
+  it('applies and round-trips only a Kernel-approved v4 graph', () => {
     const db = createDb();
     const taskRecord = task();
     new TaskRepo(db).insert(taskRecord);
@@ -62,7 +62,8 @@ describe('WorkGraphRuntimeService', () => {
     if (result.outcome !== 'applied') return;
     expect(result.subtasks[0]).toMatchObject({
       id: `${taskRecord.id}_execute`, requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'], expectedOutput: 'patch', acceptance: ['run the unit tests'],
+      preferredAgentClassList: ['codex-cli'], expectedOutput: 'patch',
+      acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }],
     });
     expect(repo.listByTask(taskRecord.id)[0]).toMatchObject({
       requiredCapabilities: ['workspace-engineering'], preferredAgentClassList: ['codex-cli'],
@@ -81,7 +82,7 @@ describe('WorkGraphRuntimeService', () => {
     expect(repo.listByTask(taskRecord.id)).toEqual([]);
   });
 
-  it('recovers an existing v3 graph only when no new graph is supplied', () => {
+  it('keeps a stale running v4 node blocked instead of implicitly retrying it', () => {
     const db = createDb();
     const taskRecord = task('task_recover');
     new TaskRepo(db).insert(taskRecord);
@@ -92,10 +93,10 @@ describe('WorkGraphRuntimeService', () => {
 
     const result = service.apply({ task: taskRecord, userPrompt: 'resume', approvedPlan: null });
     expect(result).toMatchObject({ outcome: 'recovered' });
-    expect(repo.findById(`${taskRecord.id}_execute`)).toMatchObject({ status: 'ready', error: 'previous timeout' });
+    expect(repo.findById(`${taskRecord.id}_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
   });
 
-  it('defensively rejects a new approved graph when a v3 graph already exists', () => {
+  it('defensively rejects a new approved graph when a v4 graph already exists', () => {
     const db = createDb();
     const taskRecord = task('task_conflict');
     new TaskRepo(db).insert(taskRecord);

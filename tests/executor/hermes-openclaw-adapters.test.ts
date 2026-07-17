@@ -42,7 +42,7 @@ describe('PiAgentAdapter', () => {
       '--no-extensions',
       '--extension',
       '--tools',
-      'web_search,web_fetch,bash,read,write,edit,grep,find,ls',
+      'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
       '--append-system-prompt',
       '-p',
       'test prompt',

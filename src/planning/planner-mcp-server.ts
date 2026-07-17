@@ -61,13 +61,18 @@ export class PlannerDataReader {
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
     const latest = snapshots.at(-1) ?? null;
-    const v3SubtaskCount = Number((this.db.prepare(
+    const v4SubtaskCount = Number((this.db.prepare(
       'SELECT COUNT(*) AS count FROM subtasks WHERE task_id = ?',
     ).get(taskId) as { count: number }).count);
-    const legacySubtasks = v3SubtaskCount === 0 && tableExists(this.db, 'subtasks_v2_audit')
+    const auditTable = v4SubtaskCount === 0
+      ? (tableExists(this.db, 'subtasks_v3_audit')
+          ? 'subtasks_v3_audit'
+          : tableExists(this.db, 'subtasks_v2_audit') ? 'subtasks_v2_audit' : null)
+      : null;
+    const legacySubtasks = auditTable
       ? (this.db.prepare(`
           SELECT id, title, goal, status, result, error
-          FROM subtasks_v2_audit WHERE task_id = ?
+          FROM ${auditTable} WHERE task_id = ?
           ORDER BY created_at ASC LIMIT ?
         `).all(taskId, 8) as Array<Record<string, unknown>>).map(legacy => ({
           id: legacy.id,
@@ -80,8 +85,9 @@ export class PlannerDataReader {
       : [];
     return {
       found: true,
-      requiresWorkGraphReplan: v3SubtaskCount === 0 && legacySubtasks.length > 0,
-      v2AuditSubtasks: legacySubtasks,
+      requiresWorkGraphReplan: v4SubtaskCount === 0 && legacySubtasks.length > 0,
+      auditSchemaVersion: auditTable === 'subtasks_v3_audit' ? 3 : auditTable === 'subtasks_v2_audit' ? 2 : null,
+      auditSubtasks: legacySubtasks,
       task: {
         id: row.id,
         title: truncateText(String(row.title ?? ''), 200),
@@ -108,7 +114,7 @@ export class PlannerDataReader {
   getCurrentSessionContext(limit?: number) {
     const bounded = boundedLimit(limit);
     const interactions = this.db.prepare(`
-      SELECT task_id, user_input, system_output, executor_used, created_at
+      SELECT id, task_id, user_input, system_output, executor_used, created_at
       FROM interactions WHERE session_id = ?
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, bounded) as Array<Record<string, unknown>>;
@@ -120,6 +126,7 @@ export class PlannerDataReader {
     return {
       sessionId: this.sessionId,
       interactions: interactions.reverse().map(row => ({
+        interactionId: row.id,
         taskId: row.task_id,
         userInput: truncateText(String(row.user_input ?? ''), 500),
         systemOutput: truncateText(String(row.system_output ?? ''), 500),
@@ -142,6 +149,25 @@ export class PlannerDataReader {
           createdAt: row.created_at,
         };
       }),
+    };
+  }
+
+  getSessionInteraction(input: { interactionId: string; side: 'user' | 'assistant' }) {
+    const row = this.db.prepare(`
+      SELECT id, task_id, user_input, system_output, executor_used, created_at
+      FROM interactions WHERE id = ? AND session_id = ?
+    `).get(input.interactionId, this.sessionId) as Record<string, unknown> | undefined;
+    if (!row) return { found: false, interactionId: input.interactionId };
+    const content = input.side === 'user' ? row.user_input : row.system_output;
+    return {
+      found: true,
+      interactionId: row.id,
+      taskId: row.task_id,
+      side: input.side,
+      content: truncateText(String(content ?? ''), 4_000),
+      truncated: String(content ?? '').length > 4_000,
+      executorUsed: row.executor_used,
+      createdAt: row.created_at,
     };
   }
 
@@ -207,6 +233,13 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     description: 'Read bounded recent interactions and planning decisions for the current trusted session only.',
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
+  server.registerTool('get_session_interaction', {
+    description: 'Read one bounded interaction side by stable ID only when the current user explicitly referenced it.',
+    inputSchema: {
+      interactionId: z.string().min(1).max(160),
+      side: z.enum(['user', 'assistant']),
+    },
+  }, async input => toolResult(reader.getSessionInteraction(input)));
   server.registerTool('get_runtime_state', {
     description: 'Read current task focus and active task state without changing runtime state.',
     inputSchema: {},

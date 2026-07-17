@@ -1,4 +1,4 @@
-import type { ConversationTurn } from '../executor/adapter.js';
+import type { ConversationTurn } from './conversation-turn.js';
 import type { ContextRecaller } from './context-recaller.js';
 import type { MemoryEngine } from './memory-engine.js';
 import type { TaskMemoryDocument } from '../task/task-embedding-service.js';

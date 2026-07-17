@@ -35,7 +35,7 @@ function runner(run: (prompt: string) => Promise<string>) {
 
 const VALID_PLAN = JSON.stringify({
   id: 'plan_1',
-  schemaVersion: 3,
+  schemaVersion: 4,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: '需要执行',
@@ -58,11 +58,12 @@ const VALID_PLAN = JSON.stringify({
       id: 'impl',
       title: '实现',
       goal: '实现并测试',
-      dependsOn: [],
+      dependencies: [],
+      contextRefs: [{ kind: 'current_user_input' }],
       requiredCapabilities: ['workspace-engineering'],
       preferredAgentClassList: ['codex-cli'],
       expectedOutput: 'patch',
-      acceptance: ['测试通过'],
+      acceptance: [{ key: 'tests_pass', description: '测试通过', requiredEvidence: ['test result'] }],
       riskLevel: 'medium',
     }],
   },
@@ -101,11 +102,11 @@ describe('CodexPlanningAgent', () => {
     expect(receivedPrompt).toContain('暗号是青鸟。');
   });
 
-  it('parses a v3 tool-grounded work graph and priority', async () => {
+  it('parses a v4 tool-grounded work graph and priority', async () => {
     const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
     const result = await agent.plan(context());
 
-    expect(result.schemaVersion).toBe(3);
+    expect(result.schemaVersion).toBe(4);
     expect(result.task.priority).toEqual({ level: 'high', reason: '用户要求优先完成' });
     expect(result.workGraph?.subtasks[0]?.id).toBe('impl');
     expect(validatePlanningAgentPlan(result, getPlannerExecutorCatalog())).toEqual({ valid: true, errors: [] });

@@ -205,6 +205,7 @@ export function run(command, args, options = {}) {
     },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
+    shell: options.shell ?? false,
   });
 
   if (result.status !== 0) {
@@ -214,6 +215,23 @@ export function run(command, args, options = {}) {
   }
 
   return result;
+}
+
+function readPlannerDiagnostics(repoRoot, metaclawHome) {
+  const dbPath = join(metaclawHome, 'metaclaw.db');
+  if (!existsSync(dbPath)) return '';
+  const source = [
+    "import Database from 'better-sqlite3';",
+    "const db = new Database(process.argv[1], { readonly: true });",
+    "const rows = db.prepare('SELECT status, attempt_count, error_summary FROM planner_runs ORDER BY created_at DESC LIMIT 3').all();",
+    'process.stdout.write(JSON.stringify(rows));',
+  ].join(' ');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', source, dbPath], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    maxBuffer: 1024 * 1024,
+  });
+  return result.status === 0 ? String(result.stdout ?? '').trim() : '';
 }
 
 export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
@@ -271,10 +289,13 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     bootstrapExecutor({ executorCommand, executorHome, repoRoot });
     writeFileSync(scriptPath, buildScenarioScript(scenario));
 
-    run('npm', ['run', 'build'], { cwd: repoRoot });
+    run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+      cwd: repoRoot,
+      shell: process.platform === 'win32',
+    });
     const childEnv = {
       METACLAW_HOME: metaclawHome,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v3.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v4.schema.json'),
     };
     if (executorCommand === 'pi') {
       childEnv.HOME = executorHome;
@@ -305,6 +326,8 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       '',
     ].join('\n'));
   } catch (error) {
+    const plannerDiagnostics = readPlannerDiagnostics(repoRoot, metaclawHome);
+    if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
     throw error;
   } finally {
     rmSync(metaclawHome, { recursive: true, force: true });
