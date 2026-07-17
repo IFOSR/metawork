@@ -51,6 +51,9 @@ Delivered:
   serializes ready subtasks while safe asynchronous concurrency remains on the
   published partition/lease roadmap.
 - Added a focused documentation index for technical and contributor detail.
+- Refined the hero attribution to state both partners' concrete roles: AnyInt
+  leads core engineering, while MetaFusion supports server infrastructure,
+  project communications and outreach, and the internal pilot.
 
 Validation performed:
 
@@ -65,3 +68,4 @@ Implementation commits:
 
 - `5b23838` (`docs: productize AnyFusion README`)
 - `5cb9e46` (`docs: refine AnyFusion README hero`)
+- `83d43d4` (`docs: clarify AnyFusion partner contributions`)
