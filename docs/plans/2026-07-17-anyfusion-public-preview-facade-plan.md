@@ -117,4 +117,4 @@ Validation performed:
   not ship in the production dependency graph.
 - Credential-dependent live smoke — intentionally not run.
 
-Implementation/closing commit: pending creation after final staged-diff review.
+Implementation commit: `b5af218` (`feat: prepare AnyFusion public preview`).
