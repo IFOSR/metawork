@@ -96,14 +96,14 @@ export function bootstrapExecutor(input) {
 export function buildScenarioScript(scenario) {
   if (scenario === 'artifact') {
     return [
-      `Create a file named smoke-result.md in the current directory. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the file path.`,
+      `Create a file named smoke-result.md inside the authorized Task target directory provided in the execution context. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
       '/exit',
       '',
     ].join('\n');
   }
 
   return [
-    'Create a Python file named hello_world.py in the current directory.',
+    'Create a Python file named hello_world.py inside the authorized Task target directory provided in the execution context.',
     'The Python file content must include exactly this line: print("hello world")',
     'Run the file with python3 and report the stdout.',
     '/exit',

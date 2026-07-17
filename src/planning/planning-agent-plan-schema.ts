@@ -52,7 +52,9 @@ const RiskSchema = z.object({
 const DescriptionSchema = z.string().trim().min(1).max(500);
 const KeySchema = z.string().regex(WORK_GRAPH_KEY);
 
-const ContextRefSchema = z.discriminatedUnion('kind', [
+// Responses structured output accepts anyOf here but rejects the oneOf emitted
+// by Zod's discriminatedUnion. Literal kind fields keep the variants exclusive.
+const ContextRefSchema = z.union([
   z.object({ kind: z.literal('current_user_input') }).strict(),
   z.object({
     kind: z.literal('interaction'),

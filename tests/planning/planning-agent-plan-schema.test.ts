@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   PlanningAgentPlanOutputSchema,
   PlanningAgentPlanSchema,
@@ -44,6 +45,15 @@ function outputPlan() {
 }
 
 describe('PlanningAgent plan schemas', () => {
+  it('generates a Responses API compatible structured-output schema without oneOf', () => {
+    const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
+      target: 'draft-7',
+      unrepresentable: 'any',
+    });
+
+    expect(JSON.stringify(schema)).not.toContain('"oneOf"');
+  });
+
   it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
     const valid = outputPlan();
     const parsed = PlanningAgentPlanSchema.safeParse({
