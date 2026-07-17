@@ -15,7 +15,10 @@ ENV NODE_ENV=production \
     METACLAW_PLANNER_CODEX_HOME=/var/lib/metaclaw/codex/planner \
     METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor \
     METACLAW_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v4.schema.json \
-    METACLAW_PLANNER_WORKDIR=/var/empty/metaclaw-planner
+    METACLAW_PLANNER_WORKDIR=/var/empty/metaclaw-planner \
+    METACLAW_PLANNER_ENV_FILE=/run/metaclaw/env/planner-codex.env \
+    METACLAW_CODEX_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-codex.env \
+    METACLAW_PI_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-pi.env
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates git openssh-client python3 \

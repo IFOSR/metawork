@@ -2,6 +2,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { buildEnvFromFile } from '../utils/env-file.js';
 import {
   CommandLineExecutorAdapter,
   type CommandLineExecution,
@@ -47,7 +48,7 @@ export class CodexCliAdapter extends CommandLineExecutorAdapter {
   protected buildSpawnEnv(input?: ExecutorInput): NodeJS.ProcessEnv {
     const token = input?.context.evidenceTools.binding?.bearerToken;
     return {
-      ...process.env,
+      ...buildEnvFromFile(process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE),
       ...(process.env.METACLAW_EXECUTOR_CODEX_HOME
         ? { CODEX_HOME: process.env.METACLAW_EXECUTOR_CODEX_HOME }
         : {}),

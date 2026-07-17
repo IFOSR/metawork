@@ -85,15 +85,15 @@ container as an SSH server, giving you a genuine PTY for the TUI **and** a
 general-purpose shell for browsing/editing `/workspace` output files. VS Code
 Remote-SSH can also open `/workspace` as a full folder.
 
-Prerequisites: Docker Desktop, and `docker/pi.env` with `OPENAI_API_KEY` **and**
-`OPENAI_BASE_URL` set (copy `docker/pi.env.example`). `docker/pi.env` is the
-single API config entry point — both `codex` (default planner + executor) and
-`pi` (available as an executor candidate) read their key and base URL from it.
-`entrypoint.sh` substitutes `OPENAI_BASE_URL` into the Codex and Pi templates
-at container start. Planner and executor use separate `CODEX_HOME` directories;
-only API credentials are shared. The image contains `dist/index.js`,
-`dist/planner-mcp.js`, the generated PlanningAgentPlan v3 schema, the Planner
-Skill, and both Codex configurations. Host `dist`, Codex/PI configuration, and
+Prerequisites: Docker Desktop and three local provider files: `docker/planner-codex.env`,
+`docker/executor-codex.env`, and `docker/executor-pi.env`. Copy each matching
+`.env.example` file and fill `OPENAI_API_KEY` and `OPENAI_BASE_URL`. The SSH
+workflow mounts each file read-only, and Planner Codex, Executor Codex, and
+Executor Pi load only their assigned file when spawned. The three files may
+initially contain the same provider values and can diverge later without changing
+the runtime configuration. The image contains `dist/index.js`,
+`dist/planner-mcp.js`, the generated PlanningAgentPlan v4 schema, the Planner
+Skill, and both Codex configurations. Host `dist`, Codex/Pi configuration, and
 the entrypoint are not bind-mounted. After source changes, use `-Rebuild`;
 only dedicated `/workspace` and `/data` volumes persist at runtime.
 

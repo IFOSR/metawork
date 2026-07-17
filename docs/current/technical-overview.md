@@ -554,10 +554,10 @@ local install path assumes WSL2. The `docker/` workflow instead runs the
 container as an SSH server, giving a genuine PTY for the TUI plus a shell for
 browsing `/workspace` output files (and VS Code Remote-SSH access). The default
 planner + executor is Codex with separate Planner/Executor homes; Pi is retained as an executor
-candidate. `docker/pi.env` is the single API config entry point — both
-executors read `OPENAI_API_KEY` and `OPENAI_BASE_URL` from it, and
-`docker/entrypoint.sh` substitutes the base URL into the config templates at
-container start.
+candidate. Docker mounts `planner-codex.env`, `executor-codex.env`, and
+`executor-pi.env` read-only. Planner Codex, Executor Codex, and Executor Pi load
+only their assigned provider file, and `docker/entrypoint.sh` renders each config
+template with the base URL from that file.
 
 The hermetic runtime image contains the CLI, Planner MCP, generated v4 schema,
 Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,

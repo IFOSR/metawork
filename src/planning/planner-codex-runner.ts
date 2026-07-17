@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 import type { PlanningContext } from './planning-types.js';
@@ -31,6 +32,7 @@ export interface CodexPlannerRunnerDeps {
   codexHome?: string;
   schemaPath?: string;
   cwd?: string;
+  envFile?: string;
 }
 
 export class CodexPlannerRunner implements PlannerCodexRunner {
@@ -46,6 +48,9 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
       ?? process.env.METACLAW_PLANNER_SCHEMA_PATH
       ?? '/opt/metaclaw/schema/planning-agent-plan-v4.schema.json';
     const cwd = this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? tmpdir();
+    const plannerEnv = buildEnvFromFile(
+      this.deps.envFile ?? process.env.METACLAW_PLANNER_ENV_FILE,
+    );
 
     return new Promise((resolve, reject) => {
       const proc = (this.deps.spawn ?? spawn)(command, buildPlannerCodexArgs(prompt, schemaPath), {
@@ -53,7 +58,7 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
         timeout: context.timeoutMs,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-          ...process.env,
+          ...plannerEnv,
           CODEX_HOME: codexHome,
           METACLAW_PLANNER_SESSION_ID: context.request.sessionId,
           METACLAW_PLANNER_REQUEST_SOURCE: context.request.source,

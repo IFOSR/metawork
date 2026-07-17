@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexCliAdapter } from '../../src/executor/codex-cli.js';
 import { buildCodexNonInteractiveArgs } from '../../src/executor/codex-args.js';
 
@@ -46,5 +49,23 @@ describe('CodexCliAdapter', () => {
     expect(joined).not.toContain('secret-token');
     expect((adapter as any).buildSpawnEnv(input).METACLAW_EVIDENCE_TOKEN).toBe('secret-token');
     execution.cleanup();
+  });
+
+  it('loads the Executor Codex provider env file with precedence over inherited values', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-codex-env-'));
+    const envFile = join(directory, 'executor-codex.env');
+    writeFileSync(envFile, 'OPENAI_API_KEY=codex-file-key\nOPENAI_BASE_URL=https://codex.invalid/v1\n');
+    vi.stubEnv('METACLAW_CODEX_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('OPENAI_API_KEY', 'inherited-key');
+
+    try {
+      const adapter = new CodexCliAdapter({ command: 'codex', timeout: 300 });
+      const env = (adapter as any).buildSpawnEnv();
+      expect(env.OPENAI_API_KEY).toBe('codex-file-key');
+      expect(env.OPENAI_BASE_URL).toBe('https://codex.invalid/v1');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { buildEnvFromFile } from '../utils/env-file.js';
 import { CommandLineExecutorAdapter } from './command-line-adapter.js';
 import type { ExecutorInput } from './adapter.js';
 
@@ -295,7 +296,7 @@ export class PiAgentAdapter extends CommandLineExecutorAdapter {
   protected buildSpawnEnv(input?: ExecutorInput): NodeJS.ProcessEnv {
     const binding = input?.context.evidenceTools.binding;
     return {
-      ...process.env,
+      ...buildEnvFromFile(process.env.METACLAW_PI_EXECUTOR_ENV_FILE),
       ...(binding ? {
         METACLAW_EVIDENCE_JSON_URL: binding.jsonUrl,
         METACLAW_EVIDENCE_TOKEN: binding.bearerToken,

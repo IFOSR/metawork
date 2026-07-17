@@ -41,7 +41,7 @@ The completed [Phase 2 overall action plan](archive/plans/2026-07-17-phase-2-exe
 
 ## Operational Notes
 
-- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the unified API endpoint (`docker/pi.env`) — see the README section. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
+- [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
 - [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Scattered Kernel decision authority is tracked in [kernel-decision-authority-scattered-in-runtime-debt](tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) and is scheduled by the active roadmap. Closed capability and workspace-partition records remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents

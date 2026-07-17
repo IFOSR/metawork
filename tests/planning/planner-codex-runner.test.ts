@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import {
@@ -155,6 +158,38 @@ describe('CodexPlannerRunner', () => {
         }),
       }),
     );
+  });
+
+  it('loads the Planner-specific provider env file before spawning Codex', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-planner-env-'));
+    const envFile = join(directory, 'planner-codex.env');
+    const proc = fakeProcess();
+    const spawn = vi.fn(() => proc as never);
+    writeFileSync(envFile, 'OPENAI_API_KEY=planner-file-key\nOPENAI_BASE_URL=https://planner.invalid/v1\n');
+
+    try {
+      const runner = new CodexPlannerRunner({ spawn: spawn as never, envFile });
+      const promise = runner.run('prompt', context());
+      proc.stdout.emit('data', Buffer.from(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"ok":true}' },
+      })));
+      proc.emit('close', 0);
+
+      await promise;
+      expect(spawn).toHaveBeenCalledWith(
+        'codex',
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            OPENAI_API_KEY: 'planner-file-key',
+            OPENAI_BASE_URL: 'https://planner.invalid/v1',
+          }),
+        }),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('redacts sensitive stderr before exposing a runner failure', async () => {
