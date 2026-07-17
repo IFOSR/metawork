@@ -61,5 +61,7 @@ Validation performed:
 - `npm run build` — passed and generated the PlanningAgentPlan v4 schema.
 - `git diff --check` — passed.
 
-Implementation/closing commit: not created in this task; changes remain in the
-working tree for review.
+Implementation commits:
+
+- `5b23838` (`docs: productize AnyFusion README`)
+- `5cb9e46` (`docs: refine AnyFusion README hero`)
