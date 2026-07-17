@@ -12,12 +12,7 @@
 
 将企业级长周期工作转化为可持久化、受策略治理，并由专业智能体协同执行的任务图。
 
-<strong>AnyFusion 是由 AnyInt 与 MetaFusion 共同支持的战略级开源项目，<br />核心研发由 AnyInt 侧主导，目前已部署至内部服务器进行小范围试用。</strong>
-
-<sub>项目由 MetaAny 作为中立开源品牌载体进行托管。</sub>
-
-<br /><br />
-
+<strong>AnyFusion 是由 AnyInt 与 MetaFusion 共同支持的战略级开源项目，<br />核心研发由 AnyInt 侧主导，目前已部署至内部服务器进行小范围试用。</strong><br /><br />
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
 [![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
 [![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
@@ -133,3 +128,5 @@ AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证
 AnyFusion 使用 [Apache License, Version 2.0](LICENSE)。
 
 Copyright 2026 The AnyFusion Contributors.
+
+<p align="center"><sub>项目由 MetaAny 作为中立开源品牌载体进行托管。</sub></p>

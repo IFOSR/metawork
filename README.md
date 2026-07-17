@@ -12,12 +12,7 @@
 
 Turn long-running enterprise work into persistent, policy-governed task graphs executed by specialized agents.
 
-<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion,<br />with core development led by AnyInt. It is currently deployed for limited internal pilot use.</strong>
-
-<sub>Hosted by MetaAny as a neutral open-source home.</sub>
-
-<br /><br />
-
+<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion,<br />with core development led by AnyInt. It is currently deployed for limited internal pilot use.</strong><br /><br />
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
 [![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
 [![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
@@ -133,3 +128,5 @@ AnyFusion is not presented as Production Ready. The preview is intended to valid
 AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Copyright 2026 The AnyFusion Contributors.
+
+<p align="center"><sub>Hosted by MetaAny as a neutral open-source home.</sub></p>
