@@ -34,24 +34,24 @@ function runner(run: (prompt: string) => Promise<string>) {
 }
 
 const VALID_PLAN = JSON.stringify({
-  schemaVersion: 2,
+  id: 'plan_1',
+  schemaVersion: 3,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: '需要执行',
-  capabilityClass: 'code_edit',
+  clarificationQuestion: null,
+  response: { directReply: null },
   task: {
     binding: 'new',
+    taskId: null,
+    control: 'none',
+    scope: null,
     title: '重构',
     goal: '重构并测试',
+    includeRecentConversationContext: false,
     priority: { level: 'high', reason: '用户要求优先完成' },
   },
-  execution: {
-    mode: 'single_executor',
-    selectedExecutor: 'codex-cli',
-    candidateExecutors: ['codex-cli'],
-    canModifyFiles: true,
-  },
-  risk: { level: 'medium', requiresConfirmation: false },
+  risk: { level: 'medium', requiresConfirmation: false, reasons: [] },
   workGraph: {
     reason: '单步执行',
     subtasks: [{
@@ -59,14 +59,14 @@ const VALID_PLAN = JSON.stringify({
       title: '实现',
       goal: '实现并测试',
       dependsOn: [],
-      requiredAgentClassKind: 'executor',
-      agentClassHint: 'codex-cli',
-      candidateAgentClasses: ['codex-cli'],
+      requiredCapabilities: ['workspace-engineering'],
+      preferredAgentClassList: ['codex-cli'],
       expectedOutput: 'patch',
       acceptance: ['测试通过'],
       riskLevel: 'medium',
     }],
   },
+  source: 'codex-planner',
 });
 
 describe('CodexPlanningAgent', () => {
@@ -101,20 +101,20 @@ describe('CodexPlanningAgent', () => {
     expect(receivedPrompt).toContain('暗号是青鸟。');
   });
 
-  it('parses a v2 tool-grounded work graph and priority', async () => {
+  it('parses a v3 tool-grounded work graph and priority', async () => {
     const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
     const result = await agent.plan(context());
 
-    expect(result.schemaVersion).toBe(2);
+    expect(result.schemaVersion).toBe(3);
     expect(result.task.priority).toEqual({ level: 'high', reason: '用户要求优先完成' });
     expect(result.workGraph?.subtasks[0]?.id).toBe('impl');
-    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+    expect(validatePlanningAgentPlan(result, getPlannerExecutorCatalog())).toEqual({ valid: true, errors: [] });
   });
 
   it('repairs a schedulable plan that omitted priority', async () => {
     const invalid = JSON.stringify({
       ...JSON.parse(VALID_PLAN),
-      task: { binding: 'new', title: 'x', goal: 'x', priority: null },
+      task: { ...JSON.parse(VALID_PLAN).task, title: 'x', goal: 'x', priority: null },
     });
     const run = runner(vi.fn()
       .mockResolvedValueOnce(invalid)
@@ -137,7 +137,7 @@ describe('CodexPlanningAgent', () => {
     expect(result.action).toBe('clarification');
     expect(result.confidence).toBe(0);
     expect(result.task.priority).toBeNull();
-    expect(validatePlanningAgentPlan(result)).toEqual({ valid: true, errors: [] });
+    expect(validatePlanningAgentPlan(result, getPlannerExecutorCatalog())).toEqual({ valid: true, errors: [] });
   });
 
   it('returns the validated plan when audit finalization fails', async () => {
@@ -179,9 +179,13 @@ describe('CodexPlanningAgent', () => {
     }));
   });
 
-  it('applies the host file-modification authorization boundary', async () => {
-    const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
-    const result = await agent.plan(context({
+  it('injects the host file-modification authorization boundary into the prompt', async () => {
+    let receivedPrompt = '';
+    const agent = new CodexPlanningAgent({ runner: runner(async prompt => {
+      receivedPrompt = prompt;
+      return VALID_PLAN;
+    }) });
+    await agent.plan(context({
       permissions: {
         allowDurableTask: true,
         allowFileModification: false,
@@ -189,6 +193,6 @@ describe('CodexPlanningAgent', () => {
       },
     }));
 
-    expect(result.execution.canModifyFiles).toBe(false);
+    expect(receivedPrompt).toContain('"allowFileModification":false');
   });
 });

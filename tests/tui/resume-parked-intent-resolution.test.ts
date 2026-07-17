@@ -15,6 +15,7 @@ import { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { taskControlPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -140,6 +141,7 @@ describe('App parked task intent resolution', () => {
       title: '给 agent 增加 memory 的开源调研',
       goal: '充分调研 agent memory 的设计与开源方案',
     });
+    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
     parkedTaskId = parkedTask.id;
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');

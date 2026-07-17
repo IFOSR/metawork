@@ -182,7 +182,6 @@ export class MetaclawSession {
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
-      deps.executor.name,
     );
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
@@ -742,6 +741,7 @@ export class MetaclawSession {
         agentClasses: this.listRuntimeVisibleAgentClasses(),
         executorCatalog: context.executorCatalog,
         executorStatuses: this.kernelExecutorStatusRepo.list(),
+        v3WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
         currentFocus: this.getFocusContext(),
       });
 

@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -80,7 +81,7 @@ function createSession(config: Config, notifier?: NotificationService) {
     notifier,
   });
 
-  return { session, taskEngine, taskRepo, executor };
+  return { session, taskEngine, taskRepo, executor, db };
 }
 
 describe('Round 2 guidance acceptance', () => {
@@ -139,12 +140,13 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it('periodically unblocks and resumes a recoverable executor-failure task', async () => {
-    const { session, taskEngine, taskRepo, executor } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
 
     const task = taskEngine.create({ title: '恢复网络失败任务', goal: '继续执行网络恢复后的任务' });
+    seedPersistedV3WorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.block(task.id, {
@@ -173,12 +175,13 @@ describe('Round 2 guidance acceptance', () => {
       notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
-    const { session, taskEngine, taskRepo } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }), notifier);
 
     const task = taskEngine.create({ title: '后台恢复任务', goal: '继续执行后台恢复任务' });
+    seedPersistedV3WorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.block(task.id, {
@@ -208,7 +211,7 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it('does not periodically resume blocked tasks that still need user materials', async () => {
-    const { session, taskEngine, taskRepo, executor } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
@@ -256,12 +259,13 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it('task pool watchdog resumes executable parked tasks', async () => {
-    const { session, taskEngine, taskRepo, executor } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
 
     const task = taskEngine.create({ title: '被抢占任务', goal: '继续完成被抢占任务' });
+    seedPersistedV3WorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.park(task.id, '被更高优先级任务抢占：临时任务', {
@@ -334,12 +338,13 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it('clears stale guidance after a resumed parked task finishes with no next suggestion', async () => {
-    const { session, taskEngine, taskRepo } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, db } = createSession(createConfig({
       reminder_enabled: true,
       reminder_throttle: 60,
     }));
 
     const task = taskEngine.create({ title: 'Phoenix 周报', goal: '整理 Phoenix 周报' });
+    seedPersistedV3WorkGraph(db, task.id, task.title);
     taskRepo.update(task.id, {
       status: 'parked',
       summary: '已整理风险栏目，待补经营数据',

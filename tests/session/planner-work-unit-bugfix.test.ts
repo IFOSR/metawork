@@ -93,9 +93,8 @@ function subtask(input: Partial<Subtask> & { id: string; taskId: string; title: 
     goal: input.title,
     status: 'ready',
     dependsOn: [],
-    requiredAgentClassKind: 'executor',
-    agentClassHint: 'codex-cli',
-    candidateAgentClasses: ['codex-cli'],
+    requiredCapabilities: ['workspace-engineering'],
+    preferredAgentClassList: ['codex-cli'],
     expectedOutput: 'summary',
     acceptance: [],
     riskLevel: 'medium',
@@ -122,7 +121,7 @@ async function dispatchExistingTask(
 function directReplyPlan(): PlanningAgentPlan {
   return {
     id: 'plan_direct_reply',
-    schemaVersion: 2,
+    schemaVersion: 3,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -138,20 +137,9 @@ function directReplyPlan(): PlanningAgentPlan {
       includeRecentConversationContext: false,
       priority: null,
     },
-    execution: {
-      mode: 'none',
-      complexity: 'simple',
-      selectedExecutor: null,
-      candidateExecutors: [],
-      requiresVerification: false,
-      canModifyFiles: false,
-      requiresExternalGateway: false,
-      capabilityClass: 'conversation',
-      matchedBoundary: [],
-    },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     workGraph: null,
-    source: 'test',
+    source: 'codex-planner',
   };
 }
 
@@ -290,6 +278,11 @@ describe('planner/work-unit active path regressions', () => {
       }),
     };
     const task = readyTask(harness.taskEngine, 'throwing executor');
+    harness.subtaskRepo.upsert(subtask({
+      id: `${task.id}_subtask_execute`,
+      taskId: task.id,
+      title: 'throwing executor',
+    }));
 
     await dispatchExistingTask(harness, task.id);
 

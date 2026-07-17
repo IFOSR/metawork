@@ -1,13 +1,13 @@
 import { spawn } from 'node:child_process';
 
 const schemaPath = process.env.METACLAW_PLANNER_SCHEMA_PATH
-  ?? '/opt/metaclaw/schema/planning-agent-plan-v2.schema.json';
+  ?? '/opt/metaclaw/schema/planning-agent-plan-v3.schema.json';
 const codexHome = process.env.METACLAW_PLANNER_CODEX_HOME
   ?? '/var/lib/metaclaw/codex/planner';
 const prompt = [
   '$metaclaw-planner',
   'The user asks which MetaClaw tasks currently exist.',
-  'Call get_runtime_state before returning a PlanningAgentPlan v2 status_query JSON.',
+  'Call get_runtime_state before returning a PlanningAgentPlan v3 status_query JSON.',
   'Do not create or modify state, and set task.priority to null.',
 ].join('\n');
 const args = [

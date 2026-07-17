@@ -18,6 +18,7 @@ import {
   workGraphPlan,
   taskControlPlan,
 } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -754,6 +755,7 @@ describe('Round 3 task boundary acceptance', () => {
     session.initialize();
 
     const parkedTask = taskEngine.create({ title: 'Pi Agent 调研任务', goal: '继续调研 Pi Agent 能力' });
+    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
     parkedTaskId = parkedTask.id;
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
@@ -818,6 +820,7 @@ describe('Round 3 task boundary acceptance', () => {
     session.initialize();
 
     const blockedTask = taskEngine.create({ title: '飞书云文档调研', goal: '继续调研飞书云文档能力' });
+    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
     blockedTaskId = blockedTask.id;
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');

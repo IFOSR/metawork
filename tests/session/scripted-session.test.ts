@@ -15,8 +15,8 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -69,6 +69,7 @@ describe('scripted session', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
+    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -404,13 +405,6 @@ describe('scripted session', () => {
 
   it('does not write a fallback Feishu Markdown artifact from undeliverable executor output', async () => {
     const db = createTestDb();
-    const agentClassService = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
-    agentClassService.seedDefaults();
-    agentClassService.upsert({
-      ...agentClassService.findByName('codex-cli')!,
-      name: 'hermes-agent',
-      runtimeCommand: 'hermes-agent',
-    });
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
@@ -418,7 +412,7 @@ describe('scripted session', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const executor: ExecutorAdapter = {
-      name: 'hermes-agent',
+      name: 'codex-cli',
       execute: vi.fn().mockResolvedValue({
         success: true,
         output: [
@@ -459,7 +453,7 @@ describe('scripted session', () => {
       llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览', executor: 'hermes-agent' }),
+        workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览' }),
       ),
     });
 

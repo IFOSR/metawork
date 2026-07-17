@@ -92,7 +92,7 @@ single API config entry point — both `codex` (default planner + executor) and
 `entrypoint.sh` substitutes `OPENAI_BASE_URL` into the Codex and Pi templates
 at container start. Planner and executor use separate `CODEX_HOME` directories;
 only API credentials are shared. The image contains `dist/index.js`,
-`dist/planner-mcp.js`, the generated PlanningAgentPlan v2 schema, the Planner
+`dist/planner-mcp.js`, the generated PlanningAgentPlan v3 schema, the Planner
 Skill, and both Codex configurations. Host `dist`, Codex/PI configuration, and
 the entrypoint are not bind-mounted. After source changes, use `-Rebuild`;
 only dedicated `/workspace` and `/data` volumes persist at runtime.
@@ -256,7 +256,7 @@ The current production path deliberately keeps one active top-level task admitte
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Build in watch mode with tsup. |
-| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v2 JSON Schema. |
+| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v3 JSON Schema. |
 | `npm run start` | Run the built CLI from `dist/`. |
 | `npm test` | Run the Vitest suite once. |
 | `npm run test:watch` | Run Vitest in watch mode. |

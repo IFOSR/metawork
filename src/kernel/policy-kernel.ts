@@ -1,8 +1,9 @@
 import type { AgentClass, Task } from '../core/types.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import { getPlannerExecutorCatalog, type PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan, PlanningAction, SubtaskProposal } from '../planning/planning-types.js';
+import { validateWorkGraphStructure } from '../planning/work-graph-structure-rules.js';
 import { generateInteractionId } from '../utils/id.js';
 
 export type KernelOutcome = 'accept' | 'rewrite' | 'reject' | 'clarify';
@@ -21,6 +22,7 @@ export interface RuntimeSnapshot {
   agentClasses: AgentClass[];
   executorCatalog?: PlannerExecutorCatalog;
   executorStatuses?: KernelExecutorStatusProjection[];
+  v3WorkGraphTaskIds?: string[];
   currentFocus: {
     kind: 'conversation' | 'task';
     taskId: string | null;
@@ -40,7 +42,7 @@ const STATE_CHANGE_ACTIONS: PlanningAction[] = ['task_control', 'plan_work_graph
 
 export class PolicyKernel {
   decide(plan: PlanningAgentPlan, snapshot: RuntimeSnapshot): KernelDecision {
-    const validation = validatePlanningAgentPlan(plan);
+    const validation = validatePlanningAgentPlan(plan, snapshot.executorCatalog ?? getPlannerExecutorCatalog());
     if (!validation.valid) {
       return this.reject(plan, `invalid PlanningAgentPlan: ${validation.errors.join('; ')}`);
     }
@@ -154,16 +156,25 @@ export class PolicyKernel {
       return this.reject(plan, `单活跃任务限制: 当前活跃顶层任务 #${snapshot.runningTask.id}`);
     }
 
-    const rewrite = this.rewriteUnknownExecutors(
-      plan,
-      snapshot.agentClasses,
-      snapshot.executorStatuses ?? [],
-    );
-    if (!rewrite.plan.workGraph?.subtasks.every(subtask => subtask.candidateAgentClasses.length > 0)) {
-      return this.reject(rewrite.plan, 'no available executor agent class can satisfy the work graph');
+    if (targetTask && (snapshot.v3WorkGraphTaskIds ?? []).includes(targetTask.id)) {
+      return this.reject(plan, `task ${targetTask.id} already has a v3 work graph; use task_control to resume it`);
+    }
+
+    const rewrite = this.filterUnhealthyAgentClasses(plan, snapshot.executorStatuses ?? []);
+    if (rewrite.exhaustedSubtaskIds.length > 0) {
+      return this.reject(plan, `no healthy canonical AgentClass remains for subtasks: ${rewrite.exhaustedSubtaskIds.join(', ')}`);
     }
 
     if (rewrite.rewritten) {
+      const violations = rewrite.plan.workGraph
+        ? validateWorkGraphStructure(rewrite.plan.workGraph)
+        : [];
+      if (violations.length > 0) {
+        return this.reject(
+          plan,
+          `health rewrite requires replanning: ${violations.map(violation => `${violation.code}: ${violation.message}`).join('; ')}`,
+        );
+      }
       return {
         id: `kd_${generateInteractionId()}`,
         outcome: 'rewrite',
@@ -177,58 +188,40 @@ export class PolicyKernel {
     return this.accept(plan, 'work graph authorized');
   }
 
-  private rewriteUnknownExecutors(
+  private filterUnhealthyAgentClasses(
     plan: PlanningAgentPlan,
-    agentClasses: AgentClass[],
     statuses: KernelExecutorStatusProjection[],
   ): {
     plan: PlanningAgentPlan;
     rewritten: boolean;
     reason: string;
+    exhaustedSubtaskIds: string[];
   } {
-    const availableExecutorNames = new Set(agentClasses
-      .filter(agentClass => agentClass.kind === 'executor')
-      .map(agentClass => agentClass.name));
     const unavailableExecutorNames = new Set(statuses
       .filter(status => status.classHealth === 'disabled' || status.classHealth === 'error')
       .map(status => status.agentClassName));
     let rewritten = false;
+    const exhaustedSubtaskIds: string[] = [];
     const subtasks = (plan.workGraph?.subtasks ?? []).map(subtask => {
-      const filteredCandidates = subtask.candidateAgentClasses.filter(name =>
-        availableExecutorNames.has(name)
-        && !unavailableExecutorNames.has(name));
-      const agentClassHint = subtask.agentClassHint && availableExecutorNames.has(subtask.agentClassHint)
-        ? subtask.agentClassHint
-        : filteredCandidates[0] ?? null;
-      if (
-        filteredCandidates.length !== subtask.candidateAgentClasses.length
-        || agentClassHint !== subtask.agentClassHint
-      ) {
-        rewritten = true;
-      }
+      const preferredAgentClassList = subtask.preferredAgentClassList.filter(name => !unavailableExecutorNames.has(name));
+      if (preferredAgentClassList.length !== subtask.preferredAgentClassList.length) rewritten = true;
+      if (preferredAgentClassList.length === 0) exhaustedSubtaskIds.push(subtask.id);
       return {
         ...subtask,
-        agentClassHint,
-        candidateAgentClasses: filteredCandidates,
+        preferredAgentClassList,
       } satisfies SubtaskProposal;
     });
 
     return {
       plan: {
         ...plan,
-        execution: {
-          ...plan.execution,
-          selectedExecutor: plan.execution.selectedExecutor && availableExecutorNames.has(plan.execution.selectedExecutor)
-            ? plan.execution.selectedExecutor
-            : subtasks[0]?.candidateAgentClasses[0] ?? null,
-          candidateExecutors: plan.execution.candidateExecutors.filter(name => availableExecutorNames.has(name)),
-        },
         workGraph: plan.workGraph
           ? { ...plan.workGraph, subtasks }
           : null,
       },
       rewritten,
-      reason: 'rewrote unknown executor candidates',
+      reason: 'filtered dynamically unhealthy AgentClass preferences',
+      exhaustedSubtaskIds,
     };
   }
 
@@ -282,9 +275,7 @@ function isStateChangingPlan(plan: PlanningAgentPlan): boolean {
 }
 
 /**
- * Reshape a plan into a clarification: strip the work graph and neutralize
- * execution routing so the persisted decision cannot be mistaken for an
- * executable plan (only the clarification-relevant fields remain meaningful).
+ * Reshape a plan into a clarification and strip its executable work graph.
  */
 function toClarificationPlan(plan: PlanningAgentPlan, clarificationQuestion: string): PlanningAgentPlan {
   return {
@@ -296,15 +287,5 @@ function toClarificationPlan(plan: PlanningAgentPlan, clarificationQuestion: str
       priority: null,
     },
     workGraph: null,
-    execution: {
-      ...plan.execution,
-      mode: 'none',
-      selectedExecutor: null,
-      candidateExecutors: [],
-      requiresVerification: false,
-      canModifyFiles: false,
-      requiresExternalGateway: false,
-      matchedBoundary: [],
-    },
   };
 }

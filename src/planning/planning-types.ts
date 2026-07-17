@@ -1,6 +1,9 @@
-import type { AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
-import type { CapabilityClass } from '../core/capability-class.js';
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { AgentClassRiskLevel, Subtask } from '../core/types.js';
+import type {
+  BuiltinExecutorName,
+  PlannerExecutorCatalog,
+  RoutingCapabilityId,
+} from '../executor/builtin-executor-catalog.js';
 
 export type PlanningAction =
   | 'direct_reply'
@@ -20,8 +23,6 @@ export type IntentTaskControl =
   | 'resume_task'
   | 'recover_blocked'
   | 'none';
-export type IntentExecutionMode = 'none' | 'single_executor' | 'multi_executor';
-export type IntentExecutionComplexity = 'simple' | 'moderate' | 'complex';
 export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
 
 export interface SubtaskProposal {
@@ -29,9 +30,8 @@ export interface SubtaskProposal {
   title: string;
   goal: string;
   dependsOn: string[];
-  requiredAgentClassKind: AgentClassKind;
-  agentClassHint: string | null;
-  candidateAgentClasses: string[];
+  requiredCapabilities: RoutingCapabilityId[];
+  preferredAgentClassList: BuiltinExecutorName[];
   expectedOutput: Subtask['expectedOutput'];
   acceptance: string[];
   riskLevel: AgentClassRiskLevel;
@@ -44,7 +44,7 @@ export interface WorkGraphProposal {
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 2;
+  schemaVersion: 3;
   action: PlanningAction;
   confidence: number;
   reason: string;
@@ -64,17 +64,6 @@ export interface PlanningAgentPlan {
       level: TaskSemanticPriority;
       reason: string;
     } | null;
-  };
-  execution: {
-    mode: 'none' | 'single_executor' | 'multi_executor';
-    complexity: IntentExecutionComplexity;
-    selectedExecutor: string | null;
-    candidateExecutors: string[];
-    requiresVerification: boolean;
-    canModifyFiles: boolean;
-    requiresExternalGateway: boolean;
-    capabilityClass: CapabilityClass;
-    matchedBoundary: string[];
   };
   risk: {
     level: IntentRiskLevel;

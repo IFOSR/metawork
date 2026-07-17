@@ -13,6 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -123,7 +124,7 @@ describe('cross-session last-task continuation', () => {
       contextRecaller,
       llmBridge: llmBridge2,
       planningAgent: stubPlanningAgent(
-        taskControlPlan({ control: 'resume_task', taskId: completedTaskId, reason: '继续之前的任务' }),
+        workGraphPlan({ goal: `继续已完成任务 ${completedTaskId} 的后续工作` }),
       ),
       availableExecutorCommands: new Set(['codex']),
     });
@@ -133,7 +134,7 @@ describe('cross-session last-task continuation', () => {
 
     expect(executor2.execute).toHaveBeenCalledTimes(1);
     const followUpInput = (executor2.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(followUpInput.executionContextBundle.mode).toBe('follow-up');
+    expect(followUpInput.executionContextBundle.mode).toBe('fresh');
   });
 
   it('resumes a planner-pinned parked task across sessions', async () => {
@@ -148,6 +149,7 @@ describe('cross-session last-task continuation', () => {
       title: '历史未完成调研',
       goal: '继续历史未完成调研',
     });
+    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
     taskEngine.park(parkedTask.id, '等待继续', {

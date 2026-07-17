@@ -20,6 +20,7 @@ Key recent ADRs:
 - [ADR-0013: Planner-First Work-Unit Dispatch](adr/0013-planner-first-work-unit-dispatch.md)
 - [ADR-0014: PlanningAgent / PolicyKernel Boundary](adr/0014-planning-agent-policy-kernel-boundary.md)
 - [ADR-0015: Planner-Owned Semantics And Tool-Mediated Context](adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
+- [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
 
 ## Active Roadmap
 
@@ -28,6 +29,8 @@ Key recent ADRs:
 ## Historical Plans
 
 Files in [plans/](plans/) contain active plans explicitly linked above. Superseded and completed plans are moved to [archive/plans/](archive/plans/); treat archived plans as historical context unless they are referenced by the current README, `CONTEXT.md`, or an ADR.
+
+The completed [Phase 1 work-graph semantics convergence plan](archive/plans/2026-07-16-phase-1-work-graph-semantics-convergence.md) records the v3 contract, migration, runtime cutover, and validation evidence.
 
 ## Operational Notes
 

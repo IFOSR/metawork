@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：已规划，待按阶段实施
-- **当前激活阶段**：Phase 1——工作图语义收敛
+- **当前状态**：实施中；Phase 1 已完成
+- **当前激活阶段**：Phase 2——Executor 执行范围与 dependency handoff（待制定实施计划）
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
 - **完成日期**：未完成
@@ -93,6 +93,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - Runtime 继续串行消费通过授权的 DAG，不在本阶段启用并发。
 
 退出条件：Planner 不再把同一 AgentClass 可一次完成的步骤拆成无意义单链；跨能力交接才产生多个 Subtask；结构违规可由 Planner repair，并由 Kernel 防止绕过。
+
+完成记录（2026-07-16）：PlanningAgentPlan 已升级为严格 v3，纯工作图规则、catalog-aware Planner/Kernel 双重认证、动态健康 rewrite 复检、v21 只读审计迁移及无 fallback Runtime cutover 已交付。Docker/Linux 全套测试通过（176 个文件、776 个测试），真实 Planner→Kernel→Runtime artifact smoke 通过。Phase 1 实施计划已归档并随本次收尾提交落库。
 
 ### Phase 2：Executor 执行范围与 dependency handoff
 
