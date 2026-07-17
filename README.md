@@ -8,58 +8,75 @@
 
 # AnyFusion
 
-**AI Task OS for Durable Agentic Work**
+**AI Task Control Plane for Durable, Governed Agent Workflows**
 
-Plan, govern, execute, resume, verify, and deliver long-running agent workflows through a durable local runtime.
+Turn long-running enterprise work into persistent, policy-governed task graphs executed by specialized agents.
 
-<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion,<br />with core development led by AnyInt. It is currently deployed for limited internal pilot use.</strong>
-
-<sub>Hosted by MetaAny as a neutral open-source home.</sub>
-
-<br /><br />
-
+<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion,<br />with core development led by AnyInt. It is currently deployed for limited internal pilot use.</strong><br /><br />
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
 [![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
 [![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) · [Technical Overview](docs/current/technical-overview.md) · [中文](README.zh-CN.md)
+[Overview](#an-operating-system-for-long-running-agent-work) · [Capabilities](#core-capabilities) · [How It Works](#how-it-works) · [Quick Start](#quick-start) · [Status](#project-status) · [中文](README.zh-CN.md)
 
 </div>
 
-## What is AnyFusion?
+## An operating system for long-running agent work
 
-AnyFusion is an open-source local runtime for agentic work. It sits between people and agent CLIs such as Codex, Pi, Hermes, and other local executors, turning a chat-style request into a durable task with state, memory, planning, work-unit dispatch, verification, and delivery.
+Most agent tools optimize a single interactive session. Enterprise work is different: it can span hours or days, cross repositories and business domains, depend on several specialist agents, pause on missing inputs, and still need a controlled path to completion.
 
-A normal assistant answers the current turn. AnyFusion gives longer-running work an operating system: tasks can be created, parked, resumed, searched, split into subtasks, assigned to executor work units, checked against evidence, and delivered back through terminal or Gateway surfaces.
+AnyFusion is a local-first task control plane between people, business surfaces, and agent runtimes. It preserves the objective and execution state, decomposes complex work into a dependency-aware graph, routes each unit to an appropriate agent class, governs every state-changing decision, and records the evidence required to resume, verify, and deliver the result.
 
-AnyFusion is currently optimized for local-first teams and research workflows that need more than prompt copy-paste: repository edits, multi-step analysis, artifact generation, Feishu delivery, and repeatable task recovery.
+It is designed for workflows where continuity, control, and accountability matter more than producing one more chat response.
 
-## Why AnyFusion?
+## Core Capabilities
 
-Agents are becoming capable workers, but most agent runs are still fragile sessions. When a terminal closes, context gets lost. When a task blocks, the system forgets why. When multiple executors exist, routing logic gets mixed into prompts. When output returns, there is often no durable evidence trail.
+| Capability | What it provides |
+| --- | --- |
+| **Durable task scheduling** | Persistent task and subtask lifecycles, dependency readiness, blocking, parking, resumption, cancellation, and recovery across process or session boundaries. |
+| **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
+| **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
+| **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
+| **Isolated execution** | Every agent receives one bounded assignment, the required evidence, and direct dependency outputs—not an uncontrolled copy of the entire conversation or sibling work. |
+| **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
+| **Operational memory and delivery** | Confirmed preferences, task history, semantic retrieval, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
-AnyFusion treats agent work as work:
+## Built for complex enterprise workflows
 
-- A request becomes either conversation, task control, or durable work.
-- Durable work gets explicit task state and resume context.
-- Planning is separated from authorization through `PlanningAgent` and `PolicyKernel`.
-- Subtasks are persisted as a task-owned work graph.
-- Runtime claims a healthy idle executor work unit or probes and creates one on demand; executors never receive raw user input directly.
-- Results are verified, recorded, and delivered with artifacts.
+AnyFusion is intended to coordinate long-running work that crosses specialist boundaries, for example:
 
-## Features
+- **Engineering delivery:** planning, implementation, test execution, review, documentation, and artifact delivery across dedicated engineering agents.
+- **Research and analysis:** source collection, domain-specific analysis, evidence review, synthesis, and report generation with explicit dependency handoffs.
+- **Business operations:** intake from enterprise messaging, controlled specialist processing, human clarification when required, verification, and final delivery through the original channel.
 
-- **Durable task state**: created, ready, running, parked, blocked, done, archived, and cancelled tasks survive interruptions.
-- **Planner-owned semantics**: natural-language input flows through an isolated Codex `PlanningAgent`, then `PolicyKernel`, before any state change or executor call.
-- **Tool-mediated context**: bounded read-only Planner MCP tools expose task, current-session, runtime, and executor facts only when the Planner needs them.
-- **Work graphs and work units**: complex requests can become persisted subtasks with dependencies, acceptance criteria, executor candidates, and claimable runtime slots.
-- **Local executor adapters**: Codex CLI is the default executor; Pi Agent, Hermes Agent, and custom CLI executors can be registered for specialized work.
-- **Memory with boundaries**: confirmed preferences, task history, and context bundles are recalled only when clearly applicable.
-- **Hybrid task retrieval**: historical tasks are searchable through SQLite FTS and semantic ranking signals.
-- **Gateway delivery**: terminal, local Gateway, Feishu progress cards, artifact upload, and Markdown preview links share one session runtime.
-- **Verification loop**: executor outputs can be checked for evidence, artifacts, test results, and missing acceptance criteria.
-- **Real smoke gate**: `npm run smoke:anyfusion` runs an end-to-end task through the built CLI and verifies generated artifacts.
+The executor layer is adapter-based, so organizations can register vertical agents while keeping task state, routing facts, policy decisions, and completion evidence under one control plane.
+
+## How It Works
+
+```mermaid
+flowchart LR
+  Intake[People / CLI / Gateway / Feishu] --> Planning[Planning Agent<br/>Intent and work graph]
+  Planning --> Kernel[Control Kernel<br/>Policy and authorization]
+  Kernel --> Scheduler[Durable Scheduler<br/>State and dependency readiness]
+  Scheduler --> Routing[Capability Routing<br/>Agent class and runtime health]
+  Routing --> Agents[Specialized Agent Work Units<br/>Engineering / Analysis / Custom]
+  Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
+
+  State[(Persistent Task State<br/>memory / attempts / audit)]
+  Planning <--> State
+  Kernel <--> State
+  Scheduler <--> State
+  Verify --> State
+```
+
+Three boundaries keep the workflow governable:
+
+1. **The Planner proposes; it never grants itself execution authority.**
+2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
+3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
+
+Work graphs already model independent branches, specialist assignments, and typed dependency delivery. The current preview deliberately serializes ready-subtask execution while resource partitioning, durable leases, conflict detection, and crash-safe concurrent dispatch are completed. This preserves the final concurrency model without claiming unsafe parallelism prematurely.
 
 ## Quick Start
 
@@ -74,154 +91,42 @@ anyfusion
 
 `setup.sh` installs dependencies, builds the CLI, links `anyfusion`, creates a local config, and detects available executor commands on `PATH`.
 
-For a credential-backed end-to-end validation, run `npm run smoke:anyfusion` separately.
-
-Manual development setup:
-
-```bash
-npm install
-npm run build
-npm link
-anyfusion
-```
-
-## Containerized Development
-
-A Docker + SSH workflow is available when the Ink TUI needs a real PTY on Windows. It keeps planner and executor provider files isolated, mounts a persistent workspace, and supports VS Code Remote-SSH. See the [Technical Overview](docs/current/technical-overview.md#running-in-docker-windows--containerized) for the maintained operational path.
-
-## Getting Started
-
-Start AnyFusion in an interactive terminal:
-
-```bash
-anyfusion
-```
-
-Then give it work in natural language:
+Then give AnyFusion a multi-step objective in natural language:
 
 ```text
-Compare these three contracts and create a concise risk matrix.
+Analyze these contracts, assign legal and commercial review to the appropriate specialist agents, and deliver a consolidated risk matrix with supporting evidence.
 ```
 
-AnyFusion decides whether the input should be a direct reply, task control action, clarification, or durable task. Durable work is planned, authorized, persisted, dispatched to an executor work unit, verified, and recorded with artifacts when produced.
+AnyFusion classifies the request, creates a durable task when required, authorizes the work graph, dispatches ready work units, validates their completion contracts, and preserves the resulting evidence and artifacts. Run `npm run smoke:anyfusion` separately when credentials are available for a live end-to-end validation.
 
-Useful commands:
+## Project Status
 
-```bash
-/task list
-/task list active
-/task show <id>
-/task resume <id>
-/task block <id> waiting for source files
-/task index search contract risk matrix
-/task dashboard
-/memory list
-/config
-/help
-```
-
-Slash commands use one hierarchical catalog for help, validation, execution, and the main TUI completion UI. Use `Up`/`Down` to select a candidate, `Tab` to complete one path segment or argument, and `Enter` only when the command is complete and valid. Old flat entrypoints and aliases are intentionally unsupported. The four visible placeholders are tracked in [`docs/tech-debt/pending-command-implementations.md`](docs/tech-debt/pending-command-implementations.md).
-
-## Repository Structure
-
-```text
-.
-|-- src/                 # TypeScript source for the CLI, TUI, runtime, planners, storage, and integrations
-|-- tests/               # Vitest suites mirroring source domains
-|-- docs/                # Current docs, ADRs, historical plans, and technical notes
-|-- examples/            # Runnable/manual scenarios and fixtures
-|-- scripts/             # Smoke tests, setup helpers, and operational scripts
-|-- docker/              # Container and executor runtime support
-|-- dist/                # Built CLI output generated by tsup
-|-- CONTEXT.md           # Current migration vocabulary and architecture context
-|-- AGENTS.md            # Repository instructions for coding agents
-|-- setup.sh             # Main local install script
-|-- anyfusion.sh          # Public runtime helper wrapper
-`-- package.json         # Node package metadata and development commands
-```
-
-Source modules are organized by runtime responsibility:
-
-| Path | Responsibility |
+| Area | Current state |
 | --- | --- |
-| `src/cli/` | CLI argument parsing such as `--script`, `--gateway`, and connection modes. |
-| `src/tui/` | Ink terminal UI for interactive input, task status, and progress display. |
-| `src/session/` | Main session coordinator for interactive, scripted, Gateway, memory, planning, policy, and persistence flows. |
-| `src/planning/` | `PlanningAgent` interface (`CodexPlanningAgent`), context construction, plan schemas/vocabulary, and validation. |
-| `src/kernel/` | Pure `PolicyKernel` authorization for planner decisions. |
-| `src/task/` | Task state machine, scheduler, resume planning, ranking, and retrieval. |
-| `src/execution/` | Execution runtime, work graph application, work-unit claiming, orchestration, aggregation, progress, and conversation runtime. |
-| `src/executor/` | Executor adapters, agent-class registration, default seeding, prompts, and skill packages. |
-| `src/memory/` | Memory capture, recall, review, preferences, context bundles, and vault export. |
-| `src/storage/` | SQLite migrations and repositories for tasks, subtasks, work units, planning decisions, memory, and events. |
-| `src/gateway/` | Local Gateway server/client and Feishu Gateway runtime. |
-| `src/delivery/` | Verification, artifact extraction, aggregation checks, and delivery preparation. |
-| `src/integrations/` | External integration helpers such as Markdown preview. |
-| `src/commands/` | Slash command router and command handlers. |
-| `src/core/` | Narrow shared primitives, the LLM bridge, capability classes, and strategy primitives. |
+| Release | `v1.2.0-preview.0` |
+| Maturity | Developer Preview |
+| Deployment | Limited internal pilot use |
+| Task scope | One active top-level task with dependency-aware subtasks |
+| Dispatch | Serial ready-subtask execution in the current preview; safe asynchronous concurrency is on the published roadmap |
+| Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 
-## Architecture
+AnyFusion is not presented as Production Ready. The preview is intended to validate the task control plane, work-graph contracts, specialist routing, verification model, and operational workflow before stable compatibility commitments are made.
 
-```mermaid
-flowchart LR
-  User[User] --> Surfaces[TUI / CLI / Gateway / Feishu]
-  Surfaces --> Session[AnyFusion Session Runtime]
-  Session --> FastPath[Explicit memory and preference fast paths]
-  Session --> Planner[PlanningAgent]
-  Planner --> Plan[PlanningAgentPlan]
-  Plan --> Kernel[PolicyKernel]
-  Kernel --> Decision{KernelDecision}
+## Documentation
 
-  Decision -->|direct_reply| Conversation[ConversationRuntimeService]
-  Decision -->|clarification| Clarify[Ask for missing input]
-  Decision -->|task_control| Control[Task control runtime]
-  Decision -->|plan_work_graph| Apply[KernelDecisionApplier]
-  Decision -->|reject / no_action| Stop[Preserve state]
-
-  Apply --> Task[TaskRuntimeService]
-  Task --> Scheduler[SchedulerEngine]
-  Scheduler --> Memory[MemoryContextService]
-  Memory --> WorkGraph[WorkGraphRuntimeService]
-  WorkGraph --> Subtasks[Persisted subtasks]
-  Subtasks --> Claim[WorkUnitClaimService]
-  Claim --> Spec[SubtaskExecutionSpec]
-  Spec --> Executors[ExecutionRuntime: Codex / Pi / Hermes / custom CLI]
-  Executors --> Verify[Verification and artifact capture]
-  Verify --> Delivery[Terminal / Gateway / Feishu / preview links]
-
-  Conversation --> Delivery
-  Clarify --> Delivery
-  Control --> Delivery
-  Stop --> Delivery
-
-  Session <--> Store[(Local SQLite)]
-  Task <--> Store
-  WorkGraph <--> Store
-  Claim <--> Store
-  Memory <--> Store
-  Kernel -. audit .-> Store
-```
-
-The important boundary is that natural-language planning does not directly execute work. The isolated Codex `PlanningAgent` owns semantic interpretation and uses bounded read-only MCP tools when task/session/runtime facts are needed. `PolicyKernel` validates and authorizes the v4 proposal against state, conflicts, confidence, catalog membership, and confirmation requirements. Runtime then applies the decision and obtains live executor health only from `WorkUnit` claim/probe state.
-
-The current preview runtime deliberately keeps one active top-level task admitted at a time. Multiple subtasks can exist inside that task, and ready subtasks are claimed by executor work units as dependencies are satisfied. This keeps local execution predictable while the planner, policy, and work-unit lifecycle continue to harden.
-
-## CLI and Development
-
-| Command | Description |
+| Resource | Purpose |
 | --- | --- |
-| `npm run dev` | Build in watch mode with tsup. |
-| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v4 JSON Schema. |
-| `npm run start` | Run the built CLI from `dist/`. |
-| `npm test` | Run the Vitest suite once. |
-| `npm run test:watch` | Run Vitest in watch mode. |
-| `npm run lint` | Type-check with `tsc --noEmit`. |
-| `npm run smoke:anyfusion` | Run the real end-to-end task smoke gate. |
-
-For deeper implementation details, see the [Technical Overview](docs/current/technical-overview.md). For the documentation map, ADRs, and historical plans, start with [docs/README.md](docs/README.md).
+| [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
+| [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
+| [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
+| [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |
+| [Changelog](CHANGELOG.md) | Versioned lifecycle and notable changes |
+| [Documentation Map](docs/README.md) | Index of current, historical, and contributor-facing documentation |
 
 ## License
 
 AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Copyright 2026 The AnyFusion Contributors.
+
+<p align="center"><sub>Hosted by MetaAny as a neutral open-source home.</sub></p>
