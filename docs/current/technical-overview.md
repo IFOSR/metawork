@@ -950,4 +950,4 @@ Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally 
 
 ## License
 
-MIT
+AnyFusion is licensed under the [Apache License, Version 2.0](../../LICENSE). Copyright 2026 The AnyFusion Contributors.

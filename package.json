@@ -3,6 +3,7 @@
   "version": "1.1.0",
   "description": "任务连续性、偏好记忆与主动编排中枢",
   "type": "module",
+  "license": "Apache-2.0",
   "bin": {
     "metaclaw": "./dist/index.js"
   },

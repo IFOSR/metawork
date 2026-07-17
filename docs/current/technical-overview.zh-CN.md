@@ -936,4 +936,4 @@ src/
 
 ## License
 
-MIT
+AnyFusion 基于 [Apache License 2.0](../../LICENSE) 开源。版权所有 © 2026 The AnyFusion Contributors。

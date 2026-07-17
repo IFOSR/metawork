@@ -14,7 +14,7 @@ Turn natural-language requests into tasks that can be planned, scheduled, resume
 
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 
 [Technical Overview](docs/current/technical-overview.md) | [Docs](docs/README.md) | [Architecture Decisions](docs/adr) | [Chinese](README.zh-CN.md)
 
@@ -267,4 +267,6 @@ For deeper implementation details, see the [Technical Overview](docs/current/tec
 
 ## License
 
-MIT
+AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 The AnyFusion Contributors.
