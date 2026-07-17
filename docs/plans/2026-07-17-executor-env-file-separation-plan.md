@@ -1,7 +1,9 @@
 # Executor Env File Separation Plan
 
-Status: In progress
+Status: Completed
 Plan date: 2026-07-17
+Completion date: 2026-07-17
+Implementation commit: `65aaa27` (`feat: separate planner and executor provider env files`)
 
 ## Scope
 
@@ -35,3 +37,32 @@ partitioning work.
 - SSH login sessions retain the three env-file path variables but not provider API keys.
 - Examples and runtime documentation use the new names.
 - Focused tests, `npm run lint`, and `npm run build` pass.
+
+## Delivered behavior
+
+- Replaced the single local `docker/pi.env` entrypoint with three ignored files:
+  `docker/planner-codex.env`, `docker/executor-codex.env`, and
+  `docker/executor-pi.env`.
+- Added matching tracked example files and updated the Docker shell launcher to mount each real
+  file read-only under `/run/metaclaw/env/`.
+- Added `METACLAW_PLANNER_ENV_FILE`, `METACLAW_CODEX_EXECUTOR_ENV_FILE`, and
+  `METACLAW_PI_EXECUTOR_ENV_FILE`; each built-in process loads only its assigned provider file.
+- Rendered Planner Codex, Executor Codex, and Executor Pi runtime configuration independently so
+  each can use a different `OPENAI_BASE_URL`.
+- Limited `/etc/environment` persistence to non-secret runtime paths and env-file locations.
+- Preserved direct process-environment configuration when the configured env file is absent.
+- Left custom executors unchanged; they do not receive one of the built-in env files implicitly.
+
+## Validation performed
+
+- `npm run lint`
+- `npm run build`
+- Focused Docker tests: 4 files passed, 27 tests passed.
+- Full Docker test suite: 182 files passed, 2 skipped; 772 tests passed, 4 skipped.
+- Runtime image build:
+  `docker build -f docker/Dockerfile.runtime -t metaclaw-runtime-env-separation .`
+- Final runtime isolation probe with three distinct dummy base URLs verified separate Planner,
+  Executor Codex, and Executor Pi configuration, and verified that `/etc/environment` contains
+  env-file paths but not `OPENAI_API_KEY`.
+- `git diff --check`, ignored-file checks, and a tracked-diff credential scan passed; the only
+  key-like values in tracked changes are explicit test fixtures.
