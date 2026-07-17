@@ -1,12 +1,12 @@
-# MetaClaw
+# AnyFusion
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English Home](../../README.md) | [中文技术总览](technical-overview.zh-CN.md)
 
-MetaClaw is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
+AnyFusion is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
 
-It is built for teams who need agents to do more than answer the current turn. MetaClaw gives long-running AI work a task state machine, memory boundary, PlanningAgent/PolicyKernel decision layer, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
+It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, PlanningAgent/PolicyKernel decision layer, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-## What MetaClaw Does
+## What AnyFusion Does
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
@@ -20,14 +20,14 @@ It is built for teams who need agents to do more than answer the current turn. M
 - Recalls only clearly applicable preferences and task memory; uncertain recall is skipped by default so Feishu and unattended executors never wait for confirmation.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
-- Provides a local Gateway so multiple terminals can connect to one MetaClaw runtime.
+- Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
 - Shows the interactive TUI input, current task, planning and policy milestones, execution preparation, work-unit dispatch, executor progress, and final task result so users can follow the core execution path instead of seeing only the final answer.
 - Supports terminal-native editing in the TUI composer, including spaces, multiline input, left/right cursor movement, Backspace at the cursor, and forward delete when the terminal emits a raw delete sequence.
-- Ships with `npm run smoke:metaclaw`, a real MetaClaw end-to-end smoke gate that runs the CLI, executor, artifact capture, and regression checks.
+- Ships with `npm run smoke:anyfusion`, a real AnyFusion end-to-end smoke gate that runs the CLI, executor, artifact capture, and regression checks.
 
 ## Core Architecture
 
-MetaClaw is task-oriented rather than session-only. A normal agent session answers the current turn. MetaClaw decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
+AnyFusion is task-oriented rather than session-only. A normal agent session answers the current turn. AnyFusion decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
 
 ```mermaid
 flowchart LR
@@ -91,7 +91,7 @@ This path is still semantic. The PlanningAgent (read-only sandbox) resolves "con
 
 ```mermaid
 flowchart LR
-  Input[User asks MetaClaw to do work] --> Planning[PlanningAgent]
+  Input[User asks AnyFusion to do work] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
   Proposal --> Kernel[PolicyKernel<br/>authorize or rewrite]
   Kernel --> Decision[KernelDecision<br/>plan_work_graph]
@@ -119,30 +119,30 @@ The current natural-language path deliberately allows only one active top-level 
 flowchart LR
   Feishu[Feishu event] --> Handler[Feishu message handler]
   Handler --> Session[MetaclawSession]
-  Session --> Progress[Progress formatter<br/>MetaClaw milestones vs Executor milestones]
+  Session --> Progress[Progress formatter<br/>AnyFusion milestones vs Executor milestones]
   Progress --> Cards[Feishu progress cards]
   Session --> Final[Final answer settle]
   Final --> Reply[Final reply cards or post fallback]
   Reply --> Files[Artifact upload and Markdown preview links]
 ```
 
-Feishu progress is intentionally split into MetaClaw milestones and concrete executor milestones. Users can see when MetaClaw is planning, recalling context, scheduling, claiming a work unit, or waiting for the actual executor.
+Feishu progress is intentionally split into AnyFusion milestones and concrete executor milestones. Users can see when AnyFusion is planning, recalling context, scheduling, claiming a work unit, or waiting for the actual executor.
 
 The conversation/task boundary matters:
 
-- Conversation: answer now, do not create durable state. Before each PlanningAgent turn, MetaClaw injects bounded confirmed global memory and current-session conversation history. Direct replies are persisted as interactions and automatically appear in the recalled context of later turns.
+- Conversation: answer now, do not create durable state. Before each PlanningAgent turn, AnyFusion injects bounded confirmed global memory and current-session conversation history. Direct replies are persisted as interactions and automatically appear in the recalled context of later turns.
 - Task control: inspect or change existing task state. Good for "what is running?", "resume that task", or "clear blocked tasks".
 - Durable task: create or continue work that needs execution, persistence, artifacts, recovery, scheduling, or later retrieval.
 
-The current direct-reply path is explicit: MetaClaw assembles bounded long-term memory and recent conversation history before planning, the PlanningAgent produces `response.directReply`, and runtime delivers that answer without claiming an executor work unit. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
+The current direct-reply path is explicit: AnyFusion assembles bounded long-term memory and recent conversation history before planning, the PlanningAgent produces `response.directReply`, and runtime delivers that answer without claiming an executor work unit. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
 
-The Task OS upgrade described in [MetaClaw Task OS Architecture And Strategy Upgrade](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, PlanningAgent work graph proposals, PolicyKernel authorization, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
+The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, PlanningAgent work graph proposals, PolicyKernel authorization, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
 Important runtime boundary: the Agentic Loop is implemented as a core architecture layer and tested directly. The current interactive/script session path uses the session runtime unless a feature path explicitly calls the strategy/orchestration loop.
 
 ## Current Executors
 
-MetaClaw supports these executor adapters:
+AnyFusion supports these executor adapters:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
@@ -197,21 +197,21 @@ Markdown preview prerequisites:
 For most users, install and verify in this order:
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion --help
+npm run smoke:anyfusion
 ```
 
-The install is usable when `metaclaw --help` prints the CLI help and `npm run smoke:metaclaw` ends with:
+The install is usable when `anyfusion --help` prints the CLI help and `npm run smoke:anyfusion` ends with:
 
 ```text
-MetaClaw real task smoke passed.
+AnyFusion real task smoke passed.
 Artifact: /tmp/.../smoke-result.md
 ```
 
-`setup.sh` installs MetaClaw itself, builds the local CLI, links `metaclaw`, creates `~/.metaclaw/config.yaml`, and detects installed executors on `PATH`.
+`setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.metaclaw/config.yaml`, and detects installed executors on `PATH`.
 
 In an interactive terminal it shows the detected executor list, lets you choose which executors to connect, and asks which one should be the default. If a selected auto-installable executor is missing, setup can install it for you. Codex CLI is the default fallback when no executor is available:
 
@@ -230,9 +230,9 @@ Install checklist:
 - `node --version` is `>=20`.
 - `./setup.sh` finishes with "安装完成".
 - `~/.metaclaw/config.yaml` exists.
-- `metaclaw --help` works from a new shell.
+- `anyfusion --help` works from a new shell.
 - The default executor command works, for example `codex --help`.
-- `npm run smoke:metaclaw` passes and prints the generated artifact path.
+- `npm run smoke:anyfusion` passes and prints the generated artifact path.
 
 Setup options:
 
@@ -243,7 +243,7 @@ METACLAW_OVERWRITE_CONFIG=false ./setup.sh
 # Rewrite ~/.metaclaw/config.yaml
 METACLAW_OVERWRITE_CONFIG=true ./setup.sh
 
-# Build MetaClaw but skip npm link
+# Build AnyFusion but skip npm link
 METACLAW_INSTALL_MODE=none ./setup.sh
 
 # Do not auto-install Codex CLI when no executor is found
@@ -264,14 +264,14 @@ npm link
 Check the CLI:
 
 ```bash
-metaclaw --help
+anyfusion --help
 ```
 
-If `metaclaw` is not found after setup, first open a new shell so your `PATH` picks up the npm global link. If it is still missing, run the manual fallback again and check `npm config get prefix` to confirm that npm's global bin directory is on `PATH`.
+If `anyfusion` is not found after setup, first open a new shell so your `PATH` picks up the npm global link. If it is still missing, run the manual fallback again and check `npm config get prefix` to confirm that npm's global bin directory is on `PATH`.
 
 ## Windows Install
 
-The recommended Windows path is WSL2 with Ubuntu. This gives MetaClaw the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
+The recommended Windows path is WSL2 with Ubuntu. This gives AnyFusion the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
 
 Install WSL2 from PowerShell:
 
@@ -293,14 +293,14 @@ npm --version
 git --version
 ```
 
-Install and verify MetaClaw inside the WSL Ubuntu shell:
+Install and verify AnyFusion inside the WSL Ubuntu shell:
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion --help
+npm run smoke:anyfusion
 ```
 
 If setup installs Codex CLI, open it once inside WSL and finish login before running real tasks:
@@ -311,22 +311,22 @@ codex
 
 Windows install checklist:
 
-- Run MetaClaw commands inside WSL Ubuntu, not Windows PowerShell.
-- Keep the repository under the WSL filesystem, for example `~/metaclaw`, not `/mnt/c/...`, for better file and SQLite performance.
+- Run AnyFusion commands inside WSL Ubuntu, not Windows PowerShell.
+- Keep the repository under the WSL filesystem, for example `~/AnyFusion`, not `/mnt/c/...`, for better file and SQLite performance.
 - Confirm `node --version` is `>=20`.
-- Confirm `metaclaw --help` works in a fresh WSL shell.
+- Confirm `anyfusion --help` works in a fresh WSL shell.
 - Confirm the default executor works in WSL, for example `codex --help`.
-- Confirm `npm run smoke:metaclaw` prints `MetaClaw real task smoke passed.`
+- Confirm `npm run smoke:anyfusion` completes successfully
 
-Native Windows PowerShell is not the primary supported runtime today. Advanced users can try the manual fallback with Node.js 20, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `metaclaw.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use WSL2 when you need a reliable installation.
+Native Windows PowerShell is not the primary supported runtime today. Advanced users can try the manual fallback with Node.js 20, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use WSL2 when you need a reliable installation.
 
 ## Install Executors
 
-MetaClaw does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
+AnyFusion does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
 
 ### Register Custom Executors
 
-Installed executors are runtime workers that MetaClaw can assign subtasks to. A registered executor now has three parts:
+Installed executors are runtime workers that AnyFusion can assign subtasks to. A registered executor now has three parts:
 
 - The `AgentClass`: domains, capabilities, risk level, input/output types, use-case hints, route-intent affinity, and runtime defaults.
 - The runtime binding: local command, non-interactive arguments, install check command, and optional project URL.
@@ -338,7 +338,7 @@ Use the guided registration flow when you are not sure what to fill in:
 /executor register wizard
 ```
 
-The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, MetaClaw tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
+The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, AnyFusion tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
 
 One-line registration is also supported:
 
@@ -352,7 +352,7 @@ One-line registration is also supported:
   --capabilities research,report_generation
 ```
 
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaClaw appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
+`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, AnyFusion appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
 
 `codex-cli` and `pi-agent` are owned completely by the canonical built-in definitions. Startup force-converges every persisted static AgentClass field for those names, and normal registration APIs reject attempts to overwrite or delete them. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability display metadata is irreversibly replaced by the controlled Routing Capability IDs (`workspace-engineering` / `current-web-research`); this is intentional. Non-canonical Executor capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. A missing non-canonical default receives only an empty-capability, unclassified record. The legacy `executor_profiles` table is removed at schema version 20.
 
@@ -390,7 +390,7 @@ Runtime behavior requirements:
 - Failures should return a non-zero exit code or a clear stderr error.
 - Long-running tasks should emit progress periodically so the idle watchdog does not treat the process as stuck.
 - File artifacts should be written into the task output directory provided in the prompt.
-- Feishu delivery, file upload, and preview link generation should stay in MetaClaw's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
+- Feishu delivery, file upload, and preview link generation should stay in AnyFusion's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
 
 Optional advanced adapter interfaces:
 
@@ -427,7 +427,7 @@ executor:
   max_duration: 3600
 ```
 
-`timeout` is a continuous no-output watchdog, not a fixed wall-clock runtime limit. MetaClaw resets it whenever the executor writes stdout or stderr, so a live executor can keep running as long as it continues to show activity. `max_duration` is kept for backward-compatible configuration files and is not used to kill active executor processes.
+`timeout` is a continuous no-output watchdog, not a fixed wall-clock runtime limit. AnyFusion resets it whenever the executor writes stdout or stderr, so a live executor can keep running as long as it continues to show activity. `max_duration` is kept for backward-compatible configuration files and is not used to kill active executor processes.
 
 ### Pi Agent
 
@@ -439,13 +439,13 @@ which pi
 pi --help
 ```
 
-MetaClaw calls it as:
+AnyFusion calls it as:
 
 ```bash
 pi -p "<prompt>"
 ```
 
-Pi research workflows often run longer than CLI coding tasks. MetaClaw automatically gives `pi-agent` at least `timeout: 900` seconds of continuous no-output idle time, even if the global executor config is shorter. Active Pi processes are not stopped by a hard total-duration limit.
+Pi research workflows often run longer than CLI coding tasks. AnyFusion automatically gives `pi-agent` at least `timeout: 900` seconds of continuous no-output idle time, even if the global executor config is shorter. Active Pi processes are not stopped by a hard total-duration limit.
 
 Use Pi as the default executor if desired:
 
@@ -463,7 +463,7 @@ which hermes
 hermes --help
 ```
 
-MetaClaw calls it as:
+AnyFusion calls it as:
 
 ```bash
 hermes --oneshot "<prompt>" --yolo --accept-hooks
@@ -486,7 +486,7 @@ executor:
 Start the TUI:
 
 ```bash
-metaclaw
+anyfusion
 ```
 
 The interactive TUI is designed to keep the user oriented while work is running:
@@ -495,17 +495,17 @@ The interactive TUI is designed to keep the user oriented while work is running:
 - The composer shows `processing`, `running <executor>`, `blocked`, or `idle`.
 - The status panel shows the current task id, status, and title when a task is active.
 - Core progress lines are shown during planning and execution, including request understanding, work graph planning, context recall, context construction, work-unit claim, executor progress, verification, and final result.
-- MetaClaw orchestration milestones are labeled as `【MetaClaw｜...】`; worker milestones are labeled as `【Executor: <name>｜...】` and executor progress lines include the concrete executor name, so users can distinguish scheduler/routing work from the runtime that is actually answering or executing.
+- AnyFusion orchestration milestones are labeled as `【AnyFusion｜...】`; worker milestones are labeled as `【Executor: <name>｜...】` and executor progress lines include the concrete executor name, so users can distinguish scheduler/routing work from the runtime that is actually answering or executing.
 - The input composer supports normal terminal editing: spaces, multiline input with modified Enter/Ctrl+J, left/right cursor movement, Backspace deleting the character before the cursor, and forward delete for raw delete escape sequences.
 - Slash commands autocomplete: typing `/` shows a prioritized suggestion list; `↑`/`↓` selects, `Tab` or `Enter` completes the highlighted command into the composer (without submitting it), so you can keep typing arguments. `↑`/`↓` fall back to input-history recall when no suggestion list is open.
 
 Or use the project helper:
 
 ```bash
-./metaclaw.sh start
+./anyfusion.sh start
 ```
 
-On first launch, MetaClaw creates its local state under:
+On first launch, AnyFusion creates its local state under:
 
 ```text
 ~/.metaclaw/
@@ -517,34 +517,34 @@ On first launch, MetaClaw creates its local state under:
 Connect a second terminal to the same runtime:
 
 ```bash
-./metaclaw.sh connect
+./anyfusion.sh connect
 ```
 
 Runtime utilities:
 
 ```bash
-./metaclaw.sh status
-./metaclaw.sh logs
-./metaclaw.sh logs -f
-./metaclaw.sh restart
-./metaclaw.sh stop
+./anyfusion.sh status
+./anyfusion.sh logs
+./anyfusion.sh logs -f
+./anyfusion.sh restart
+./anyfusion.sh stop
 ```
 
-Install or manage MetaClaw as a user-level service:
+Install or manage AnyFusion as a user-level service:
 
 ```bash
-./metaclaw.sh gateway install
-./metaclaw.sh gateway start
-./metaclaw.sh gateway status
-./metaclaw.sh gateway restart
-./metaclaw.sh gateway stop
+./anyfusion.sh gateway install
+./anyfusion.sh gateway start
+./anyfusion.sh gateway status
+./anyfusion.sh gateway restart
+./anyfusion.sh gateway stop
 ```
 
 Direct Gateway modes:
 
 ```bash
-metaclaw --gateway
-metaclaw --connect
+anyfusion --gateway
+anyfusion --connect
 ```
 
 ### Running in Docker (Windows / containerized)
@@ -562,9 +562,7 @@ template with the base URL from that file.
 The hermetic runtime image contains the CLI, Planner MCP, generated v4 schema,
 Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
 Codex/PI configs, and entrypoint are not mounted. Source changes require
-`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. See
-the README's [Running interactively via Docker + SSH](../../README.md#running-interactively-via-docker--ssh)
-section for the full `shell.ps1` command reference and passwordless SSH setup.
+`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, including passwordless SSH and VS Code Remote-SSH setup.
 
 ## Configuration
 
@@ -637,29 +635,29 @@ Export the Feishu app secret before starting the runtime:
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./metaclaw.sh start
+./anyfusion.sh start
 ```
 
 ## Feishu Gateway Delivery And Markdown Preview
 
-MetaClaw separates document generation from Feishu delivery:
+AnyFusion separates document generation from Feishu delivery:
 
 - The executor writes Markdown or other files into the task output directory.
-- MetaClaw records those files as task artifacts.
+- AnyFusion records those files as task artifacts.
 - The Feishu Gateway sends the final answer back to the origin chat.
 - The Feishu Gateway uploads generated artifact files when file upload is available.
 - Markdown artifacts get online preview links when Markdown Preview is configured.
 - Delivery attempts are written to `~/.metaclaw/gateway-audit.jsonl`.
 
-Executors should not call Feishu Docs or cloud-document APIs directly. If a user asks for a "Feishu cloud document" or "online preview", MetaClaw instructs the executor to produce local Markdown artifacts; the Gateway handles Feishu synchronization and preview links.
+Executors should not call Feishu Docs or cloud-document APIs directly. If a user asks for a "Feishu cloud document" or "online preview", AnyFusion instructs the executor to produce local Markdown artifacts; the Gateway handles Feishu synchronization and preview links.
 
-Feishu progress cards show the execution chain explicitly. MetaClaw first performs intent parsing and execution preparation, then shows planner work-graph decisions, work-unit claim status, and the actual executor that starts the subtask. This prevents Feishu users from mistaking the intent parser, planner, or dispatcher for the final executor.
+Feishu progress cards show the execution chain explicitly. AnyFusion first performs intent parsing and execution preparation, then shows planner work-graph decisions, work-unit claim status, and the actual executor that starts the subtask. This prevents Feishu users from mistaking the intent parser, planner, or dispatcher for the final executor.
 
-Final Feishu replies use Markdown message cards first. Long answers are split into multiple cards. If a card chunk fails, MetaClaw retries that chunk as a rich-text post; if any chunk still cannot be delivered, MetaClaw uploads the complete final answer as a Markdown file so the user does not receive a partial result.
+Final Feishu replies use Markdown message cards first. Long answers are split into multiple cards. If a card chunk fails, AnyFusion retries that chunk as a rich-text post; if any chunk still cannot be delivered, AnyFusion uploads the complete final answer as a Markdown file so the user does not receive a partial result.
 
 Access control is handled by the Gateway:
 
-- Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `metaclaw gateway pairing`.
+- Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `anyfusion gateway pairing`.
 - Group chats default to `group_policy: open` with `require_mention: true`.
 - `/sethome` sent in a Feishu chat records that chat as `gateway.platforms.feishu.home_channel`.
 - Legacy `integrations.feishu` settings are still read as a compatibility source, but new deployments should use `gateway.platforms.feishu`.
@@ -667,10 +665,10 @@ Access control is handled by the Gateway:
 Useful Feishu Gateway commands:
 
 ```bash
-metaclaw gateway doctor
-metaclaw gateway pairing list
-metaclaw gateway pairing approve <open_id>
-metaclaw gateway pairing revoke <open_id>
+anyfusion gateway doctor
+anyfusion gateway pairing list
+anyfusion gateway pairing approve <open_id>
+anyfusion gateway pairing revoke <open_id>
 ```
 
 Default preview URL:
@@ -698,7 +696,7 @@ Create a task in natural language:
 > Compare these three contracts and create a risk matrix.
 ```
 
-MetaClaw will:
+AnyFusion will:
 
 1. Classify the input as conversation, task control, or durable work.
 2. Create or resolve the target task.
@@ -743,7 +741,7 @@ The main TUI obtains completion state from the same `CommandCatalog` used by `/h
 
 ## Task Search And Hybrid Retrieval
 
-MetaClaw keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
+AnyFusion keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
 
 Commands:
 
@@ -766,7 +764,7 @@ Implicit recall excludes the current task, so a task does not accidentally recal
 
 ## Scheduler And Priority Model
 
-MetaClaw currently uses a single active top-level task with a scheduler in front of it.
+AnyFusion currently uses a single active top-level task with a scheduler in front of it.
 
 - New tasks are scored by urgency, readiness, continuity benefit, downstream impact, and staleness.
 - Urgency is based on structured semantic priority, not keyword matching.
@@ -796,7 +794,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 ## Complex Task Strategy And Agentic Loop
 
-MetaClaw can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
+AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
 
 In the active session path, proposed nodes become persisted v4 `Subtask` records only after `PolicyKernel` accepts or legally rewrites the plan. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; unfinished v3 tasks remain parked until natural language triggers a fresh v4 plan. `dependencies` is the only topology and typed handoff source. The serial shell executes one ready node, injects only completed direct-edge handoffs, and never reruns completed nodes or reparses persisted handoffs.
 
@@ -819,7 +817,7 @@ Skills are lighter capability packages. They describe how to perform a specific 
 Executor strengths:
 
 - Adds a new runtime boundary: model, tools, credentials, permissions, and command-line behavior.
-- Lets MetaClaw assign ready subtasks to the executor work unit best suited for that work.
+- Lets AnyFusion assign ready subtasks to the executor work unit best suited for that work.
 - Enables planner-driven reassignment, cross-checking, and audit trails across different agents.
 - Can integrate private or domain-specific systems that a generic Skill cannot access.
 
@@ -843,11 +841,11 @@ Skill tradeoffs:
 - Cannot make an unavailable CLI, private API, browser, file permission, or enterprise integration appear by itself.
 - Usually improves execution quality rather than expanding the runtime boundary.
 
-MetaClaw uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
+AnyFusion uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
 
 ## Memory And Recall Review
 
-MetaClaw stores confirmed preferences, observations, task memory cards, recall events, and learning candidates in SQLite.
+AnyFusion stores confirmed preferences, observations, task memory cards, recall events, and learning candidates in SQLite.
 
 Memory is never injected blindly. Clearly applicable memories are applied automatically with an audit trail; uncertain memories are skipped by default instead of asking for confirmation. Feishu and unattended executor flows therefore keep moving without interactive prompts.
 
@@ -867,7 +865,7 @@ Commands:
 
 ## Learning Loop
 
-MetaClaw can turn successful tasks, failures, artifacts, and executor skill usage into learning candidates.
+AnyFusion can turn successful tasks, failures, artifacts, and executor skill usage into learning candidates.
 
 Commands:
 
@@ -885,12 +883,12 @@ Commands:
 ## Scripted Smoke Test
 
 ```bash
-cat > /tmp/metaclaw-flow.txt <<'EOF'
+cat > /tmp/anyfusion-flow.txt <<'EOF'
 Compare the risk points across three contracts and produce a concise table.
 /task list done
 EOF
 
-metaclaw --script /tmp/metaclaw-flow.txt
+anyfusion --script /tmp/anyfusion-flow.txt
 ```
 
 `--script` executes input line by line. Blank lines and lines starting with `#` are ignored.
@@ -902,10 +900,10 @@ npm run dev
 npm run build
 npm test
 npm run lint
-npm run smoke:metaclaw
+npm run smoke:anyfusion
 ```
 
-`npm run smoke:metaclaw` is the required real end-to-end smoke gate for feature work. It builds MetaClaw, starts `node dist/index.js --script` with an isolated temporary `METACLAW_HOME` and workspace, submits a real task, lets the configured executor create an artifact, and verifies the artifact path and file content. By default the smoke config uses `codex`; pass another executor/scenario with `npm run smoke:metaclaw -- --executor pi --scenario python-hello` or `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metaclaw`. New runtime features should pass this smoke path, or the failure/skip reason must be called out explicitly.
+`npm run smoke:anyfusion` is the required real end-to-end smoke gate for feature work. It builds AnyFusion, starts `node dist/index.js --script` with an isolated temporary `METACLAW_HOME` and workspace, submits a real task, lets the configured executor create an artifact, and verifies the artifact path and file content. By default the smoke config uses `codex`; pass another executor/scenario with `npm run smoke:anyfusion -- --executor pi --scenario python-hello` or `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:anyfusion`. New runtime features should pass this smoke path, or the failure/skip reason must be called out explicitly.
 
 Targeted tests:
 

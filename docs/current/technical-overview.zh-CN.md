@@ -1,8 +1,8 @@
-# MetaClaw
+# AnyFusion
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-MetaClaw 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
+AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
 它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / PolicyKernel 决策层和 work-unit dispatch runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
 
@@ -20,14 +20,14 @@ MetaClaw 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 - 只自动注入明确适用的记忆和偏好；不确定召回默认跳过，飞书和无人值守执行器不会等待确认。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
-- 本地 Gateway 支持多个终端连接同一个 MetaClaw runtime。
+- 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
 - 交互式 TUI 会展示用户提交内容、当前任务、planning/policy 里程碑、执行准备、work-unit dispatch、执行器进度和最终任务结果，让用户能看到核心执行路径，而不是只看到最后答案。
 - TUI 输入框支持常见终端编辑行为：空格、多行输入、左右光标移动、按光标位置 Backspace 删除前一个字符，以及终端发出原始 Delete escape sequence 时的向前删除。
-- 提供 `npm run smoke:metaclaw` 真实端到端烟测，实际启动 MetaClaw CLI、执行器、文件产物捕获和回归检查。
+- 提供 `npm run smoke:anyfusion` 真实端到端烟测，实际启动 AnyFusion CLI、执行器、文件产物捕获和回归检查。
 
 ## 核心架构
 
-MetaClaw 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。MetaClaw 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
+AnyFusion 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。AnyFusion 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
 
 ```mermaid
 flowchart LR
@@ -119,24 +119,24 @@ flowchart LR
 flowchart LR
   Feishu[飞书事件] --> Handler[飞书消息处理器]
   Handler --> Session[MetaclawSession]
-  Session --> Progress[进度格式化<br/>MetaClaw 里程碑 vs Executor 里程碑]
+  Session --> Progress[进度格式化<br/>AnyFusion 里程碑 vs Executor 里程碑]
   Progress --> Cards[飞书过程卡片]
   Session --> Final[最终答案 settle]
   Final --> Reply[最终回复卡片或富文本 fallback]
   Reply --> Files[产物上传和 Markdown 预览链接]
 ```
 
-飞书进度会刻意区分 MetaClaw 里程碑和具体 executor 里程碑。用户能看到当前是 MetaClaw 在规划、召回上下文、调度、claim work unit，还是具体 executor 正在执行。
+飞书进度会刻意区分 AnyFusion 里程碑和具体 executor 里程碑。用户能看到当前是 AnyFusion 在规划、召回上下文、调度、claim work unit，还是具体 executor 正在执行。
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。每次调用 PlanningAgent 前，MetaClaw 会注入有数量上限的已确认全局长期记忆和当前 session 的对话历史。direct reply 会持久化为 interaction，并在后续轮次自动进入召回上下文。
+- Conversation：即时回答，不创建持久任务。每次调用 PlanningAgent 前，AnyFusion 会注入有数量上限的已确认全局长期记忆和当前 session 的对话历史。direct reply 会持久化为 interaction，并在后续轮次自动进入召回上下文。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
+当前 direct reply 路径是显式的：AnyFusion 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
 
-[MetaClaw Task OS 架构与策略升级方案](docs/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、PlanningAgent work graph proposal、PolicyKernel authorization、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
+[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、PlanningAgent work graph proposal、PolicyKernel authorization、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
 重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
 
@@ -195,21 +195,21 @@ Markdown 在线预览前提：
 大多数用户按这个顺序安装和验证：
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion --help
+npm run smoke:anyfusion
 ```
 
-看到 `metaclaw --help` 能打印 CLI 帮助，并且 `npm run smoke:metaclaw` 最后输出下面内容，才说明安装后真实用户路径可用：
+看到 `anyfusion --help` 能打印 CLI 帮助，并且 `npm run smoke:anyfusion` 最后输出下面内容，才说明安装后真实用户路径可用：
 
 ```text
-MetaClaw real task smoke passed.
+AnyFusion real task smoke passed.
 Artifact: /tmp/.../smoke-result.md
 ```
 
-`setup.sh` 会安装 MetaClaw 本身、构建 CLI、执行 `npm link`、生成 `~/.metaclaw/config.yaml`，并自动检测当前系统里的 Executor。
+`setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.metaclaw/config.yaml`，并自动检测当前系统里的 Executor。
 
 在交互式终端里，它会展示检测到的 Executor 列表，让用户选择要接入哪几个 Executor，并选择哪个作为默认 Executor。如果选择了缺失但支持自动安装的 Executor，setup 可以直接安装。没有任何 Executor 可用时，默认 fallback 是安装 Codex CLI：
 
@@ -228,9 +228,9 @@ codex
 - `node --version` 是 `>=20`。
 - `./setup.sh` 最后显示“安装完成”。
 - `~/.metaclaw/config.yaml` 已生成。
-- 新开一个 shell 后，`metaclaw --help` 可用。
+- 新开一个 shell 后，`anyfusion --help` 可用。
 - 默认 executor 命令可用，例如 `codex --help`。
-- `npm run smoke:metaclaw` 通过，并打印生成的 artifact 路径。
+- `npm run smoke:anyfusion` 通过，并打印生成的 artifact 路径。
 
 setup 可选参数：
 
@@ -262,14 +262,14 @@ npm link
 检查 CLI：
 
 ```bash
-metaclaw --help
+anyfusion --help
 ```
 
-如果 setup 后提示找不到 `metaclaw` 命令，先新开一个 shell，让 `PATH` 重新加载 npm global link。如果仍然找不到，重新执行手动安装 fallback，并用 `npm config get prefix` 检查 npm global bin 目录是否在 `PATH` 中。
+如果 setup 后提示找不到 `anyfusion` 命令，先新开一个 shell，让 `PATH` 重新加载 npm global link。如果仍然找不到，重新执行手动安装 fallback，并用 `npm config get prefix` 检查 npm global bin 目录是否在 `PATH` 中。
 
 ## Windows 安装
 
-Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 MetaClaw 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
+Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 AnyFusion 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
 
 先在 Windows PowerShell 中安装 WSL2：
 
@@ -291,14 +291,14 @@ npm --version
 git --version
 ```
 
-然后在 WSL Ubuntu shell 内安装并验证 MetaClaw：
+然后在 WSL Ubuntu shell 内安装并验证 AnyFusion：
 
 ```bash
-git clone https://github.com/IFOSR/metaclaw.git
-cd metaclaw
+git clone https://github.com/MetaAny/AnyFusion.git
+cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion --help
+npm run smoke:anyfusion
 ```
 
 如果 setup 过程中安装了 Codex CLI，先在 WSL 里打开一次 Codex 并完成登录，再执行真实任务：
@@ -309,22 +309,22 @@ codex
 
 Windows 安装核验清单：
 
-- 在 WSL Ubuntu 里运行 MetaClaw 命令，不要在 Windows PowerShell 里直接运行。
-- 仓库建议放在 WSL 文件系统，例如 `~/metaclaw`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
+- 在 WSL Ubuntu 里运行 AnyFusion 命令，不要在 Windows PowerShell 里直接运行。
+- 仓库建议放在 WSL 文件系统，例如 `~/AnyFusion`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
 - `node --version` 是 `>=20`。
-- 新开一个 WSL shell 后，`metaclaw --help` 可用。
+- 新开一个 WSL shell 后，`anyfusion --help` 可用。
 - 默认 executor 在 WSL 内可用，例如 `codex --help`。
-- `npm run smoke:metaclaw` 输出 `MetaClaw real task smoke passed.`
+- `npm run smoke:anyfusion` 成功完成
 
-Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以手动尝试 Node.js 20、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js`，但 `setup.sh`、`metaclaw.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。需要稳定安装和推广给用户时，请使用 WSL2。
+Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以手动尝试 Node.js 20、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js`，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。需要稳定安装和推广给用户时，请使用 WSL2。
 
 ## 安装执行器
 
-MetaClaw 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
+AnyFusion 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
 
 ### 注册自定义 Executor
 
-Executor 是 MetaClaw 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
+Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
 
 - `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
 - 运行绑定：本机命令、非交互参数、安装检测命令和可选项目地址。
@@ -336,7 +336,7 @@ Executor 是 MetaClaw 可以分配 subtask 的运行时工人。一个已注册 
 /executor register wizard
 ```
 
-向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，MetaClaw 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
+向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，AnyFusion 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
 
 也可以一次性注册：
 
@@ -350,7 +350,7 @@ Executor 是 MetaClaw 可以分配 subtask 的运行时工人。一个已注册 
   --capabilities research,report_generation
 ```
 
-`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，MetaClaw 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，MetaClaw 会先执行配置的检测命令；检测失败时会把该 agent class 标记为 `unavailable`。不可用的 agent class 不会进入 planner candidates；如果没有可 claim 的 executor work unit，任务会进入 blocked 并给出恢复提示，而不是静默改派默认 executor。
+`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，AnyFusion 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，AnyFusion 会先执行配置的检测命令；检测失败时会把该 agent class 标记为 `unavailable`。不可用的 agent class 不会进入 planner candidates；如果没有可 claim 的 executor work unit，任务会进入 blocked 并给出恢复提示，而不是静默改派默认 executor。
 
 `codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态 AgentClass 字段强制收敛到 canonical 内容，常规注册接口也拒绝覆盖或删除它们。升级后的首次启动会不可逆地用受控 Routing Capability ID（`workspace-engineering` / `current-web-research`）替换旧的细粒度 capability 展示元数据，这是严格收敛的预期行为。非 canonical Executor 的 capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺失的非 canonical 默认类仅以空 capability 的未分类记录补齐。遗留 `executor_profiles` 表在 schema version 20 被删除。
 
@@ -388,7 +388,7 @@ Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_ex
 - 失败时应返回非 0 exit code，或在 stderr 输出明确错误。
 - 长任务应周期性输出进度，避免被 idle watchdog 判断为卡死。
 - 文件产物应写入 prompt 中指定的任务输出目录。
-- 飞书交付、文件上传和预览链接生成应由 MetaClaw 后端完成；Executor 应产出本地文件，不应自己直接调用飞书 API。
+- 飞书交付、文件上传和预览链接生成应由 AnyFusion 后端完成；Executor 应产出本地文件，不应自己直接调用飞书 API。
 
 可选高级 Adapter 接口：
 
@@ -425,7 +425,7 @@ executor:
   max_duration: 3600
 ```
 
-`timeout` 表示连续无输出 watchdog，不是固定墙钟总时长限制。只要 executor 仍在 stdout 或 stderr 输出内容，MetaClaw 就会续期，不会因为运行时间长而杀掉仍活跃的进程。`max_duration` 仅保留用于兼容旧配置，不再用于终止活跃 executor。
+`timeout` 表示连续无输出 watchdog，不是固定墙钟总时长限制。只要 executor 仍在 stdout 或 stderr 输出内容，AnyFusion 就会续期，不会因为运行时间长而杀掉仍活跃的进程。`max_duration` 仅保留用于兼容旧配置，不再用于终止活跃 executor。
 
 ### Pi Agent
 
@@ -437,13 +437,13 @@ which pi
 pi --help
 ```
 
-MetaClaw 调用方式：
+AnyFusion 调用方式：
 
 ```bash
 pi -p "<prompt>"
 ```
 
-Pi 调研类工作流通常比 CLI 编码任务执行更久。即使全局执行器配置更短，MetaClaw 也会自动给 `pi-agent` 至少 `timeout: 900` 秒的连续无输出等待时间。活跃的 Pi 进程不会再因为硬总时长上限被终止。
+Pi 调研类工作流通常比 CLI 编码任务执行更久。即使全局执行器配置更短，AnyFusion 也会自动给 `pi-agent` 至少 `timeout: 900` 秒的连续无输出等待时间。活跃的 Pi 进程不会再因为硬总时长上限被终止。
 
 如需将 Pi 设为默认执行器：
 
@@ -461,7 +461,7 @@ which hermes
 hermes --help
 ```
 
-MetaClaw 调用方式：
+AnyFusion 调用方式：
 
 ```bash
 hermes --oneshot "<prompt>" --yolo --accept-hooks
@@ -492,7 +492,7 @@ Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么�
 Executor 的优势：
 
 - 增加新的 runtime 边界，包括模型、工具、凭证、权限和命令行行为。
-- 让 MetaClaw 可以把 ready subtask 分配给最适合该工作的 executor work unit。
+- 让 AnyFusion 可以把 ready subtask 分配给最适合该工作的 executor work unit。
 - 支持 planner-driven reassignment、交叉验证和审计。
 - 可以接入通用 Skill 无法访问的私有系统或垂直领域系统。
 
@@ -516,12 +516,12 @@ Skill 的限制：
 - 不能凭空获得不存在的 CLI、私有 API、浏览器能力、文件权限或企业系统集成。
 - 通常提升执行质量，而不是扩展 runtime 边界。
 
-当缺失能力来自“需要不同工人或不同 runtime”时，MetaClaw 通过注册 Executor 扩展能力；当已有工人需要更好的流程、领域知识或输出规范时，通过 Skill 扩展能力。
+当缺失能力来自“需要不同工人或不同 runtime”时，AnyFusion 通过注册 Executor 扩展能力；当已有工人需要更好的流程、领域知识或输出规范时，通过 Skill 扩展能力。
 
 ## 运行
 
 ```bash
-metaclaw
+anyfusion
 ```
 
 交互式 TUI 会在任务执行时保持用户可见性：
@@ -530,14 +530,14 @@ metaclaw
 - 输入框状态会显示 `processing`、`running <executor>`、`blocked` 或 `idle`。
 - 状态栏会展示当前任务 ID、任务状态和标题。
 - Planner 和执行过程会展示核心进度，包括理解用户请求、work graph planning、上下文召回、执行上下文构建、work-unit claim、执行器进度、验收和最终结果。
-- MetaClaw 自身的调度/编排里程碑会标为 `【MetaClaw｜...】`；具体执行器的里程碑会标为 `【Executor: <name>｜...】`，执行器进度行也会带上实际 executor 名称，避免把 MetaClaw 的调度动作和真正处理任务的 runtime 混在一起。
+- AnyFusion 自身的调度/编排里程碑会标为 `【AnyFusion｜...】`；具体执行器的里程碑会标为 `【Executor: <name>｜...】`，执行器进度行也会带上实际 executor 名称，避免把 AnyFusion 的调度动作和真正处理任务的 runtime 混在一起。
 - 输入框支持正常终端编辑：空格、多行输入、左右移动光标、Backspace 删除光标前字符，以及原始 Delete escape sequence 的向前删除。
 - 斜杠命令自动补全：输入 `/` 会弹出按优先级排序的命令建议；`↑`/`↓` 选择，`Tab` 或 `Enter` 把选中命令补全进输入框（不会提交），方便接着输入参数。没有建议列表时，`↑`/`↓` 退回到输入历史回溯。
 
 或使用项目脚本：
 
 ```bash
-./metaclaw.sh start
+./anyfusion.sh start
 ```
 
 首次启动会创建：
@@ -552,34 +552,34 @@ metaclaw
 连接已有实例：
 
 ```bash
-./metaclaw.sh connect
+./anyfusion.sh connect
 ```
 
 运行管理：
 
 ```bash
-./metaclaw.sh status
-./metaclaw.sh logs
-./metaclaw.sh logs -f
-./metaclaw.sh restart
-./metaclaw.sh stop
+./anyfusion.sh status
+./anyfusion.sh logs
+./anyfusion.sh logs -f
+./anyfusion.sh restart
+./anyfusion.sh stop
 ```
 
 安装或管理用户级 Gateway 服务：
 
 ```bash
-./metaclaw.sh gateway install
-./metaclaw.sh gateway start
-./metaclaw.sh gateway status
-./metaclaw.sh gateway restart
-./metaclaw.sh gateway stop
+./anyfusion.sh gateway install
+./anyfusion.sh gateway start
+./anyfusion.sh gateway status
+./anyfusion.sh gateway restart
+./anyfusion.sh gateway stop
 ```
 
 直接 Gateway 模式：
 
 ```bash
-metaclaw --gateway
-metaclaw --connect
+anyfusion --gateway
+anyfusion --connect
 ```
 
 ### 在 Docker 中运行（Windows / 容器化）
@@ -659,29 +659,29 @@ integrations:
 
 ```bash
 export FEISHU_APP_SECRET="your Feishu app secret"
-./metaclaw.sh start
+./anyfusion.sh start
 ```
 
 ## 飞书交付和在线预览
 
-MetaClaw 将“文档生成”和“飞书交付”分开处理：
+AnyFusion 将“文档生成”和“飞书交付”分开处理：
 
 - 执行器只负责把 Markdown 或其他文件写入任务输出目录。
-- MetaClaw 将文件记录为 task artifacts。
+- AnyFusion 将文件记录为 task artifacts。
 - 飞书后端把最终答案发回聊天。
 - 如果文件上传能力可用，飞书后端会上传任务产物。
 - 如果配置了 Markdown Preview，Markdown 产物会附带在线预览链接。
 - 投递尝试会写入 `~/.metaclaw/gateway-audit.jsonl`。
 
-执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，MetaClaw 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
+执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，AnyFusion 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
 
-飞书进度卡片会明确展示执行链路。MetaClaw 先进行意图解析和执行准备，然后展示 planner work-graph 决策、work-unit claim 状态，以及真正启动 subtask 的执行器。这样飞书用户不会把意图解析器、planner 或 dispatcher 误认为最终执行器。
+飞书进度卡片会明确展示执行链路。AnyFusion 先进行意图解析和执行准备，然后展示 planner work-graph 决策、work-unit claim 状态，以及真正启动 subtask 的执行器。这样飞书用户不会把意图解析器、planner 或 dispatcher 误认为最终执行器。
 
-最终飞书回复优先使用 Markdown message card。长回复会拆成多张卡片；如果某个卡片 chunk 失败，MetaClaw 会把该 chunk 重试为富文本 post；如果仍有 chunk 无法投递，会上传完整最终答案 Markdown 文件，避免用户只收到半截结果。
+最终飞书回复优先使用 Markdown message card。长回复会拆成多张卡片；如果某个卡片 chunk 失败，AnyFusion 会把该 chunk 重试为富文本 post；如果仍有 chunk 无法投递，会上传完整最终答案 Markdown 文件，避免用户只收到半截结果。
 
 访问控制由 Gateway 处理：
 
-- 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `metaclaw gateway pairing` 审批或撤销。
+- 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `anyfusion gateway pairing` 审批或撤销。
 - 群聊默认使用 `group_policy: open` 和 `require_mention: true`。
 - 在飞书聊天里发送 `/sethome` 会把该聊天记录为 `gateway.platforms.feishu.home_channel`。
 - 旧版 `integrations.feishu` 配置仍会作为兼容来源读取，但新部署应使用 `gateway.platforms.feishu`。
@@ -689,10 +689,10 @@ MetaClaw 将“文档生成”和“飞书交付”分开处理：
 常用飞书 Gateway 命令：
 
 ```bash
-metaclaw gateway doctor
-metaclaw gateway pairing list
-metaclaw gateway pairing approve <open_id>
-metaclaw gateway pairing revoke <open_id>
+anyfusion gateway doctor
+anyfusion gateway pairing list
+anyfusion gateway pairing approve <open_id>
+anyfusion gateway pairing revoke <open_id>
 ```
 
 默认预览 URL：
@@ -720,7 +720,7 @@ integrations:
 > 对比三份合同的风险点，并生成风险矩阵。
 ```
 
-MetaClaw 会：
+AnyFusion 会：
 
 1. 判断输入是轻量对话、任务控制，还是持久任务。
 2. 创建新任务或定位已有任务。
@@ -765,7 +765,7 @@ MetaClaw 会：
 
 ## 任务检索和混合召回
 
-MetaClaw 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id，也可以通过关键词、上下文和关系找回相关任务。
+AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id，也可以通过关键词、上下文和关系找回相关任务。
 
 命令：
 
@@ -788,7 +788,7 @@ HybridTaskRetriever 会综合多种信号：
 
 ## 调度和优先级模型
 
-MetaClaw 当前使用单一活跃顶层任务，前面有一个调度器。
+AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 
 - 新任务按紧急度、准备度、连续性收益、下游影响和搁置时间评分。
 - 紧急度来自结构化语义判断，不靠关键词匹配。
@@ -818,7 +818,7 @@ Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `pla
 
 ## 复杂任务策略和 Agentic Loop
 
-MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
+AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
 在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会成为持久化 v4 `Subtask` 节点。SQLite v22 把旧 v3 图保存在只读 `subtasks_v3_audit`，非终态旧 Task 必须由用户自然语言触发 v4 replan。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff，不继承祖先或普通 assistant/Executor 历史。每次 Executor 最终响应都必须带 Completion Protocol v1；成功结果剥离机器块并原子写入 receipt、handoff 与 clean result，contract failure 阻断且不自动重试。
 
@@ -826,7 +826,7 @@ MetaClaw 可以把复杂需求表示成 work graph，而不是把整段需求一
 
 ## 记忆和召回审查
 
-MetaClaw 把确认过的偏好、观察、任务记忆卡片、召回事件和学习候选保存在 SQLite 中。
+AnyFusion 把确认过的偏好、观察、任务记忆卡片、召回事件和学习候选保存在 SQLite 中。
 
 记忆不会被盲目注入。明确适用的记忆会自动应用并留下审计记录；不确定记忆默认跳过，而不是要求用户现场确认。这样飞书和无人值守 executor 流程可以持续推进。
 
@@ -846,7 +846,7 @@ MetaClaw 把确认过的偏好、观察、任务记忆卡片、召回事件和�
 
 ## 学习循环
 
-MetaClaw 可以把成功任务、失败任务、文件产物和 executor skill 使用情况沉淀成学习候选。
+AnyFusion 可以把成功任务、失败任务、文件产物和 executor skill 使用情况沉淀成学习候选。
 
 命令：
 
@@ -868,23 +868,23 @@ npm run dev
 npm run build
 npm test
 npm run lint
-npm run smoke:metaclaw
+npm run smoke:anyfusion
 ```
 
 脚本化烟测：
 
 ```bash
-cat > /tmp/metaclaw-flow.txt <<'EOF'
+cat > /tmp/anyfusion-flow.txt <<'EOF'
 Compare the risk points across three contracts and produce a concise table.
 /task list done
 EOF
 
-metaclaw --script /tmp/metaclaw-flow.txt
+anyfusion --script /tmp/anyfusion-flow.txt
 ```
 
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
 
-`npm run smoke:metaclaw` 是功能交付前必须优先跑的真实端到端烟测。它会构建 MetaClaw，用隔离的临时 `METACLAW_HOME` 和工作目录启动 `node dist/index.js --script`，提交一个真实任务，让配置的 executor 创建文件产物，并检查产物路径和文件内容。默认 smoke 配置使用 `codex`；要切换执行器和场景，可以运行 `npm run smoke:metaclaw -- --executor pi --scenario python-hello`，或设置 `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metaclaw`。新的 runtime 功能应该通过这条烟测路径；如果不能跑，必须明确说明失败或跳过原因。
+`npm run smoke:anyfusion` 是功能交付前必须优先跑的真实端到端烟测。它会构建 AnyFusion，用隔离的临时 `METACLAW_HOME` 和工作目录启动 `node dist/index.js --script`，提交一个真实任务，让配置的 executor 创建文件产物，并检查产物路径和文件内容。默认 smoke 配置使用 `codex`；要切换执行器和场景，可以运行 `npm run smoke:anyfusion -- --executor pi --scenario python-hello`，或设置 `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:anyfusion`。新的 runtime 功能应该通过这条烟测路径；如果不能跑，必须明确说明失败或跳过原因。
 
 针对性测试：
 

@@ -1,4 +1,4 @@
-# MetaClaw Documentation
+# AnyFusion Documentation
 
 This directory contains both current technical documentation and historical planning material. Start with the current docs before opening dated plans.
 
@@ -8,6 +8,11 @@ This directory contains both current technical documentation and historical plan
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, PolicyKernel, and work-unit migration vocabulary.
+
+## Releases
+
+- [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
+- [Changelog](../CHANGELOG.md): public release history.
 
 ## Architecture Decisions
 

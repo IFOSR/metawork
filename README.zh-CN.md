@@ -1,22 +1,29 @@
 <p align="center">
-  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="96" align="middle" /></a>
-  <img src="docs/assets/brand-times.svg" alt="x" height="96" align="middle" />
-  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="96" align="middle" /></a>
+  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="88" align="middle" /></a>
+  <img src="docs/assets/brand-times.svg" alt="x" height="88" align="middle" />
+  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="88" align="middle" /></a>
 </p>
 
 <div align="center">
 
 # AnyFusion
 
-**面向持久化智能体工作的本地 AI Task OS。**
+**面向持久化智能体工作的 AI Task OS**
 
-把自然语言请求变成可以规划、调度、恢复、验证、记忆，并通过本地智能体运行时交付的任务。
+通过持久化本地运行时，对长周期智能体工作流进行规划、治理、执行、恢复、验证与交付。
 
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#许可证)
+<strong>AnyFusion 是由 AnyInt 与 MetaFusion 共同支持的战略级开源项目，<br />核心研发由 AnyInt 侧主导，目前已部署至内部服务器进行小范围试用。</strong>
 
-[技术总览](docs/current/technical-overview.zh-CN.md) | [文档地图](docs/README.md) | [架构决策](docs/adr) | [English](README.md)
+<sub>项目由 MetaAny 作为中立开源品牌载体进行托管。</sub>
+
+<br /><br />
+
+[![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
+[![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
+[![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#许可证)
+
+[快速开始](#快速开始) · [架构](#运行逻辑) · [路线图](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) · [技术总览](docs/current/technical-overview.zh-CN.md) · [English](README.md)
 
 </div>
 
@@ -51,9 +58,9 @@ AnyFusion 把 agent work 当作真正的 work 来处理：
 - **混合任务检索**：历史任务可通过 SQLite FTS 和语义排序信号检索。
 - **Gateway 交付**：终端、本地 Gateway、飞书进度卡片、文件上传和 Markdown 预览链接共享同一个 session runtime。
 - **验证循环**：executor 输出可以按证据、产物、测试结果和缺失验收条件进行检查。
-- **真实烟测入口**：`npm run smoke:metaclaw` 会通过构建后的 CLI 跑一个端到端任务，并验证生成产物。
+- **真实烟测入口**：`npm run smoke:anyfusion` 会通过构建后的 CLI 跑一个端到端任务，并验证生成产物。
 
-## 快速安装
+## 快速开始
 
 AnyFusion 需要 Node.js 20+ 和类 Unix shell。Windows 推荐使用 WSL2 + Ubuntu 作为运行环境。
 
@@ -61,11 +68,12 @@ AnyFusion 需要 Node.js 20+ 和类 Unix shell。Windows 推荐使用 WSL2 + Ubu
 git clone https://github.com/MetaAny/AnyFusion.git
 cd AnyFusion
 ./setup.sh
-metaclaw --help
-npm run smoke:metaclaw
+anyfusion
 ```
 
-`setup.sh` 会安装依赖、构建 CLI、链接 `metaclaw`、创建本地配置，并检测当前 `PATH` 中可用的 executor 命令。
+`setup.sh` 会安装依赖、构建 CLI、链接 `anyfusion`、创建本地配置，并检测当前 `PATH` 中可用的 executor 命令。
+
+如需使用真实凭证进行端到端验证，请另行运行 `npm run smoke:anyfusion`。
 
 开发环境也可以手动安装：
 
@@ -73,7 +81,7 @@ npm run smoke:metaclaw
 npm install
 npm run build
 npm link
-metaclaw --help
+anyfusion
 ```
 
 ## 开始使用
@@ -81,7 +89,7 @@ metaclaw --help
 在交互式终端中启动 AnyFusion：
 
 ```bash
-metaclaw
+anyfusion
 ```
 
 然后直接用自然语言交给它一个任务：
@@ -95,14 +103,14 @@ AnyFusion 会判断输入应当是直接回答、任务控制、澄清，还是�
 常用命令：
 
 ```bash
-/tasks
-/tasks active
-/task <id>
-/task <id> resume
-/task <id> block waiting for source files
+/task list
+/task list active
+/task show <id>
+/task resume <id>
+/task block <id> waiting for source files
 /task index search contract risk matrix
-/dashboard
-/memory
+/task dashboard
+/memory list
 /config
 /help
 ```
@@ -121,7 +129,7 @@ AnyFusion 会判断输入应当是直接回答、任务控制、澄清，还是�
 |-- CONTEXT.md           # 当前迁移词汇和架构上下文
 |-- AGENTS.md            # 面向 coding agents 的仓库说明
 |-- setup.sh             # 本地安装主脚本
-|-- metaclaw.sh          # runtime 辅助脚本
+|-- anyfusion.sh          # 对外 runtime 辅助入口
 `-- package.json         # Node 包信息和开发命令
 ```
 
@@ -150,7 +158,7 @@ AnyFusion 会判断输入应当是直接回答、任务控制、澄清，还是�
 ```mermaid
 flowchart LR
   User[用户] --> Surfaces[TUI / CLI / Gateway / 飞书]
-  Surfaces --> Session[MetaclawSession]
+  Surfaces --> Session[AnyFusion Session Runtime]
   Session --> FastPath[显式记忆和偏好快速路径]
   Session --> Planner[PlanningAgent]
   Planner --> Plan[PlanningAgentPlan]
@@ -189,19 +197,19 @@ flowchart LR
 
 关键边界是：自然语言规划不会直接执行工作。`PlanningAgent` 提出 intent、目标任务、executor candidates 和可选 work graph nodes。`PolicyKernel` 根据状态、冲突、置信度和 executor 可用性验证并授权该 proposal。runtime services 再应用被接受的 decision：直接回答、控制已有任务，或创建/绑定持久化任务状态并分发 ready subtasks。
 
-当前生产路径有意保持同一时间只接纳一个活跃顶层任务。一个顶层任务内部仍然可以有多个 subtasks；当依赖满足时，ready subtasks 会被 executor work units 认领。这让本地执行在 planner、policy 和 work-unit 生命周期继续加固期间保持可预测。
+当前 Preview runtime 有意保持同一时间只接纳一个活跃顶层任务。一个顶层任务内部仍然可以有多个 subtasks；当依赖满足时，ready subtasks 会被 executor work units 认领。这让本地执行在 planner、policy 和 work-unit 生命周期继续加固期间保持可预测。
 
 ## CLI 与开发
 
 | 命令 | 说明 |
 | --- | --- |
 | `npm run dev` | 使用 tsup watch 模式构建。 |
-| `npm run build` | 将 `src/index.ts` 打包到 `dist/index.js`。 |
+| `npm run build` | 打包 CLI 与 Planner MCP，并生成 PlanningAgentPlan v4 JSON Schema。 |
 | `npm run start` | 从 `dist/` 运行构建后的 CLI。 |
 | `npm test` | 单次运行 Vitest 测试套件。 |
 | `npm run test:watch` | 以 watch 模式运行 Vitest。 |
 | `npm run lint` | 使用 `tsc --noEmit` 做类型检查。 |
-| `npm run smoke:metaclaw` | 运行真实端到端任务烟测。 |
+| `npm run smoke:anyfusion` | 运行真实端到端任务烟测。 |
 
 更深入的实现细节见 [技术总览](docs/current/technical-overview.zh-CN.md)。文档入口、ADR 和历史计划请从 [文档地图](docs/README.md) 开始。
 

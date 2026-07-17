@@ -218,7 +218,7 @@ choose_executors_interactively() {
   fi
 
   print_executor_table
-  echo "请选择要接入 MetaClaw 的 Executor。"
+  echo "请选择要接入 AnyFusion 的 Executor。"
   echo "可输入编号或命令名，多个用空格或逗号分隔。例如：1,2,3 或 codex pi hermes"
   echo "默认：$default_selection"
   printf "Executor 选择> "
@@ -454,19 +454,19 @@ EOF
 }
 
 install_metaclaw() {
-  log_info "安装 MetaClaw 调度器依赖..."
+  log_info "安装 AnyFusion 调度器依赖..."
   npm install
 
-  log_info "构建 MetaClaw..."
+  log_info "构建 AnyFusion..."
   npm run build
 
   case "$INSTALL_MODE" in
     link)
-      log_info "注册本地 metaclaw CLI（npm link）..."
+      log_info "注册本地 AnyFusion CLI（npm link）..."
       npm link
       ;;
     none|skip)
-      log_warn "跳过 CLI link。之后可用 node dist/index.js 或 ./metaclaw.sh 启动。"
+      log_warn "跳过 CLI link。之后可用 node dist/index.js 或 ./anyfusion.sh 启动。"
       ;;
     *)
       log_error "METACLAW_INSTALL_MODE 只能是 link 或 none"
@@ -476,7 +476,7 @@ install_metaclaw() {
 }
 
 main() {
-  log_info "MetaClaw setup started"
+  log_info "AnyFusion setup started"
 
   require_command node
   require_command npm
@@ -485,7 +485,7 @@ main() {
   local node_major
   node_major="$(node_major_version)"
   if [ "$node_major" -lt 20 ]; then
-    log_error "Node.js 版本过低：$(node --version)。MetaClaw 需要 Node.js >= 20。"
+    log_error "Node.js 版本过低：$(node --version)。AnyFusion 需要 Node.js >= 20。"
     exit 1
   fi
 
@@ -512,18 +512,17 @@ main() {
   log_info "安装完成"
   echo ""
   echo "下一步："
-  echo "  metaclaw --help"
-  echo "  metaclaw"
-  echo "  npm run smoke:metaclaw"
+  echo "  anyfusion"
+  echo "  npm run smoke:anyfusion"
   echo ""
   echo "或使用项目启动脚本："
-  echo "  ./metaclaw.sh start"
-  echo "  ./metaclaw.sh connect"
+  echo "  ./anyfusion.sh start"
+  echo "  ./anyfusion.sh connect"
   echo ""
   echo "如果刚安装 Codex CLI，请先完成登录："
   echo "  codex"
   echo ""
-  echo "看到 smoke 输出 \"MetaClaw real task smoke passed.\" 才表示真实任务路径可用。"
+  echo "Smoke gate 通过后，才表示真实任务路径可用。"
 }
 
 main "$@"
