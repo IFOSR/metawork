@@ -56,6 +56,13 @@ describe('PlanningAgent plan schemas', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects empty or whitespace-only plan IDs instead of relying on generated defaults', () => {
+    const valid = outputPlan();
+
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '' }).success).toBe(false);
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '   ' }).success).toBe(false);
+  });
+
   it('rejects v2 and removed execution-routing fields', () => {
     const valid = outputPlan();
     expect(PlanningAgentPlanSchema.safeParse({

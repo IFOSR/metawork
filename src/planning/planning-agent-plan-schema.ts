@@ -65,7 +65,7 @@ const WorkGraphSchema = z.object({
 }).strict();
 
 const PlanShapeSchema = z.object({
-  id: z.string(),
+  id: z.string().trim().min(1),
   schemaVersion: z.literal(3),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),

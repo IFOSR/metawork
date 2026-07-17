@@ -78,6 +78,9 @@ describe('PolicyKernel v3 work-graph authorization', () => {
 
     const freeText = plan([subtask({ requiredCapabilities: ['database-free-text'] as never })]);
     expect(new PolicyKernel().decide(freeText, snapshot())).toMatchObject({ outcome: 'reject' });
+
+    expect(new PolicyKernel().decide(plan(undefined, { id: '' }), snapshot()))
+      .toMatchObject({ outcome: 'reject', runtimeAction: 'reject', rejected: true });
   });
 
   it('filters error/disabled preferences in order and returns a legal rewrite', () => {

@@ -127,6 +127,19 @@ describe('CodexPlanningAgent', () => {
     expect(result.action).toBe('plan_work_graph');
   });
 
+  it('repairs a plan with an empty ID instead of generating a default', async () => {
+    const invalid = JSON.stringify({ ...JSON.parse(VALID_PLAN), id: '' });
+    const run = runner(vi.fn()
+      .mockResolvedValueOnce(invalid)
+      .mockResolvedValueOnce(VALID_PLAN));
+    const agent = new CodexPlanningAgent({ runner: run });
+
+    const result = await agent.plan(context());
+
+    expect(run.run).toHaveBeenCalledTimes(2);
+    expect(result.id).toBe('plan_1');
+  });
+
   it.each([
     { label: 'transport failure', run: async () => { throw new Error('spawn failed'); } },
     { label: 'unparseable output', run: async () => 'not json' },
