@@ -172,6 +172,18 @@ export class SessionExecutionCoordinator {
         userPrompt,
         approvedPlan: request.planningPlan ?? null,
       });
+      if (workGraphResult.outcome === 'not_executable') {
+        const reason = workGraphResult.reason === 'missing_graph'
+          ? 'task has no v3 work graph; continue in natural language to trigger replanning'
+          : 'task already has a v3 work graph; replacement is not allowed in Phase 1';
+        this.deps.taskRuntimeService.transitionTask(taskId, 'parked');
+        this.recordTaskEvent(taskId, null, 'dispatch_requires_replan', reason, {
+          workGraphRuntimeReason: workGraphResult.reason,
+        });
+        this.deps.scheduler.clearDispatch(taskId, reason);
+        await finishExecution([`→ ${reason}`], { scheduleNext: false });
+        return;
+      }
       const executionOutputs: Array<{ subtaskId: string; title: string; output: string }> = [];
       const announcedExecutorNames = new Set<string>();
       let finalExecution: Awaited<ReturnType<ExecutionRuntime['run']>> | null = null;

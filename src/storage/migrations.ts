@@ -675,7 +675,88 @@ const MIGRATIONS: Migration[] = [
     version: 20,
     up: 'DROP TABLE IF EXISTS executor_profiles;',
   },
+  {
+    version: 21,
+    up: (db) => {
+      // Some historical tests intentionally construct partial schemas. A real
+      // v20 database always has subtasks, but the migration remains safe when
+      // that production table is absent.
+      if (!tableExists(db, 'subtasks')) return;
+
+      const now = new Date().toISOString();
+      db.exec('DROP INDEX IF EXISTS idx_subtasks_task;');
+      db.exec('ALTER TABLE subtasks RENAME TO subtasks_v2_audit;');
+      db.exec(`
+        CREATE TABLE subtasks (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'created',
+          depends_on_json TEXT NOT NULL DEFAULT '[]',
+          required_capabilities_json TEXT NOT NULL,
+          preferred_agent_class_list_json TEXT NOT NULL,
+          expected_output TEXT NOT NULL DEFAULT 'summary',
+          acceptance_json TEXT NOT NULL DEFAULT '[]',
+          risk_level TEXT NOT NULL DEFAULT 'medium',
+          result TEXT NOT NULL DEFAULT '',
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+        CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
+
+        CREATE TRIGGER subtasks_v2_audit_read_only_insert
+        BEFORE INSERT ON subtasks_v2_audit BEGIN
+          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
+        END;
+        CREATE TRIGGER subtasks_v2_audit_read_only_update
+        BEFORE UPDATE ON subtasks_v2_audit BEGIN
+          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
+        END;
+        CREATE TRIGGER subtasks_v2_audit_read_only_delete
+        BEFORE DELETE ON subtasks_v2_audit BEGIN
+          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
+        END;
+      `);
+
+      if (tableExists(db, 'tasks') && columnExists(db, 'tasks', 'last_interruption_reason')) {
+        db.prepare(`
+          UPDATE tasks
+          SET status = 'parked',
+              last_interruption_reason = ?,
+              updated_at = ?
+          WHERE id IN (SELECT DISTINCT task_id FROM subtasks_v2_audit)
+            AND status NOT IN ('done', 'archived', 'cancelled')
+        `).run(
+          'work graph schema upgraded to v3; continue with natural language to replan',
+          now,
+        );
+      }
+
+      if (
+        tableExists(db, 'work_units')
+        && columnExists(db, 'work_units', 'claimed_subtask_id')
+        && columnExists(db, 'work_units', 'state')
+      ) {
+        db.prepare(`
+          UPDATE work_units
+          SET state = 'heartbeat_lost', updated_at = ?
+          WHERE state IN ('claimed', 'running', 'waiting')
+            AND claimed_subtask_id IN (SELECT id FROM subtasks_v2_audit)
+        `).run(now);
+      }
+    },
+  },
 ];
+
+function tableExists(db: Database.Database, table: string): boolean {
+  const row = db.prepare(`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?
+  `).get(table) as { name: string } | undefined;
+  return Boolean(row);
+}
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;

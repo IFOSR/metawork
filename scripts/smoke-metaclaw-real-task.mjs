@@ -112,6 +112,14 @@ export function buildScenarioScript(scenario) {
 }
 
 export function extractArtifactPath(output) {
+  const markdownLink = output.match(/\[[^\]]*smoke-result\.md\]\(([^)]+smoke-result\.md)\)/);
+  if (markdownLink?.[1]) {
+    return markdownLink[1].trim();
+  }
+  const inlineCode = output.match(/`([^`\n]+smoke-result\.md)`/);
+  if (inlineCode?.[1]) {
+    return inlineCode[1].trim();
+  }
   const match = output.match(/-\s+([^\n]+smoke-result\.md)/);
   return match?.[1]?.trim() ?? null;
 }
@@ -138,7 +146,11 @@ export function findPythonCommand() {
 export function verifyArtifactScenario(input) {
   const artifactPath = extractArtifactPath(input.output);
   if (!artifactPath) {
-    throw new Error('Smoke failed: MetaClaw output did not include smoke-result.md artifact path');
+    throw new Error([
+      'Smoke failed: MetaClaw output did not include smoke-result.md artifact path.',
+      'Captured MetaClaw output:',
+      String(input.output).slice(-4000),
+    ].join('\n'));
   }
 
   if (!existsSync(artifactPath)) {
@@ -262,6 +274,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     run('npm', ['run', 'build'], { cwd: repoRoot });
     const childEnv = {
       METACLAW_HOME: metaclawHome,
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v3.schema.json'),
     };
     if (executorCommand === 'pi') {
       childEnv.HOME = executorHome;

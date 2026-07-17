@@ -1,6 +1,6 @@
 # ADR-0017: Kernel Executor Status Projection
 
-- Status: Accepted
+- Status: Accepted; amended by ADR-0019 and ADR-0020
 - Date: 2026-07-16
 - Scope: static Planner executor catalog and Kernel-owned dynamic executor-status projection
 
@@ -21,7 +21,7 @@ The second input is also a control-plane concern. The future Kernel expansion re
 
 The Planner receives a stable, Planner-safe static executor catalog when each planning run starts. It contains routing differences and key affordances only; it does not contain live health, WorkUnit state, capacity, runtime commands, credentials, raw logs, or tool transcripts.
 
-The Planner does not query MCP for this static catalog. This retains ADR-0016's startup-injection rule.
+The Planner does not query MCP for this static catalog. ADR-0018 is the current authority for startup injection and versioned canonical definitions.
 
 ### Persist a Kernel Executor Status Projection
 
@@ -46,17 +46,17 @@ No prompt, model output, tool trace, raw process output, credential, or runtime 
 
 A busy, running, waiting, or failed WorkUnit is an instance fact and never becomes an AgentClass health state. A single network or timeout failure is recorded in recent attempts but does not make the AgentClass unhealthy. The later Kernel control-plane work owns transition rules for systemic failure, recovery, retry caps, circuits, and re-enable behavior.
 
-### Put projection ownership in the Kernel subsystem without making PolicyKernel impure
+### Keep control-plane semantics pure and persistence in Runtime adapters
 
-`PolicyKernel` remains a pure decision component. A new `KernelExecutorStatusProjector` belongs to the Kernel subsystem and owns projection semantics. Runtime records confirmed execution facts; the projector synchronously updates the persisted projection in the same handling chain. The Planner and `PolicyKernel` read the resulting projection.
+The projection vocabulary is a Routing Catalog contract. Control Kernel owns the pure rules that interpret health, systemic failure, recovery and future circuit state. Runtime records confirmed execution facts, applies the pure transition result and synchronously updates the persisted projection through a persistence adapter. Planner and Control Kernel read the resulting bounded projection.
 
-This establishes Kernel ownership of the control-plane state model while preserving the rule that Runtime performs process execution, WorkUnit lifecycle effects, and storage application.
+This preserves the original control-plane ownership intent without making the pure Kernel module depend on a Repository. The current Repo-backed `KernelExecutorStatusProjector` is a migration-period application service; its physical name/location is not a public Kernel seam and must converge under ADR-0020 when the area is next refactored.
 
 ### Expose only dynamic status through Planner MCP
 
-Planner MCP replaces the mixed `list_executor_classes` capability query with a dynamic status query. It returns the bounded projection rows above. Static catalog facts remain startup context, while the dynamic query helps Planner order its single `executorCandidates` list.
+Planner MCP replaces the mixed `list_executor_classes` capability query with a dynamic status query. It returns the bounded projection rows above. Static catalog facts remain startup context, while the dynamic query helps Planner order its single v3 `preferredAgentClassList`.
 
-The Planner emits one ordered `executorCandidates` list per Subtask. Its first item is the preferred class and remaining items are approved fallback order. The Kernel validates registered AgentClass membership and current health constraints; the static catalog remains the Planner's built-in routing input and does not invalidate pre-existing registered custom classes. Runtime still starts/claims the concrete instance and tries the approved list in order. A Runtime failure immediately updates the projection for subsequent planning, but does not retroactively change an already-approved plan.
+The Planner emits one ordered `preferredAgentClassList` per Subtask containing the complete statically eligible canonical AgentClass set. Its first item is preferred. Kernel validates canonical membership and capability coverage, then may filter dynamically `error` or `disabled` classes. Custom AgentClasses do not enter v3 work graphs. Runtime follows the approved order for claim/probe mechanics, but does not switch AgentClass after execution failure; post-failure fallback remains a future Kernel decision. A Runtime outcome updates the projection for subsequent decisions but does not retroactively mutate an already-authorized graph.
 
 ## Consequences
 
@@ -64,11 +64,11 @@ The Planner emits one ordered `executorCandidates` list per Subtask. Its first i
 - `busy` and raw capacity are not routing signals for AgentClasses that start independent instances.
 - A transient instance failure remains visible to Planner without falsely declaring its AgentClass unusable.
 - The Kernel gains a durable control-plane state boundary that future scheduling/recovery work can extend without redefining Planner-facing vocabulary.
-- This ADR supersedes the portion of ADR-0016 that treats all live executor facts as excluded from Planner access: live facts remain excluded from startup catalog injection, but the bounded status projection is available through a dedicated read-only Planner MCP query.
+- Static facts remain excluded from dynamic MCP discovery, while the bounded status projection is available through a dedicated read-only Planner MCP query. ADR-0018 owns the static side of this split.
 
 ## Deferred
 
 - Automatic health transitions, recovery, circuit breaking, retry limits, and periodic rechecks;
-- execution-failure fallback policy beyond Runtime's existing ordered attempt behavior;
+- execution-failure fallback policy, which roadmap Phase 4 will place behind the unified Kernel seam;
 - capacity limits, shared worker pools, and parallel scheduling;
 - additional Executor classes and custom-Executor certification.

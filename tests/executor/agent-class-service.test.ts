@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { createDefaultExecutor } from '../../src/execution/execution-runtime.js';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import {
   getBuiltinExecutorAgentClasses,
@@ -114,14 +115,28 @@ describe('AgentClassService startup catalog', () => {
     }
   });
 
-  it('fails before seeding when a non-canonical default has not been registered', () => {
+  it.each([
+    ['claude', 'claude-code'],
+    ['hermes', 'hermes-agent'],
+    ['deepseek', 'deepseek-tui'],
+    ['openclaw', 'openclaw'],
+    ['unknown-command', 'claude-code'],
+  ])('materializes configured command %s as unclassified %s on a fresh database', (command, name) => {
     const db = createDb();
-    const service = new AgentClassService({ db, defaultExecutorName: 'claude-code' });
+    const executor = createDefaultExecutor({ command, timeout: 60, workspaceRoot: process.cwd() });
+    expect(executor.name).toBe(name);
+    const service = new AgentClassService({ db, defaultExecutorName: executor.name });
 
-    expect(() => service.seedDefaults()).toThrow(
-      'Default Executor claude-code is not canonical and has no registered AgentClass',
-    );
-    expect(service.listAgentClasses()).toEqual([]);
+    expect(() => service.seedDefaults()).not.toThrow();
+    expect(service.findByName(name)).toMatchObject({
+      name,
+      kind: 'executor',
+      domains: [],
+      capabilities: [],
+      primaryUseCases: [],
+      avoidUseCases: [],
+      runtimeCommand: null,
+    });
   });
 
   it('accepts an already registered non-canonical default without certifying it', () => {

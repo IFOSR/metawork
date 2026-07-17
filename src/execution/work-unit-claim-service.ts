@@ -1,4 +1,4 @@
-import type { AgentClassKind, Subtask, WorkUnit } from '../core/types.js';
+import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
 
@@ -20,14 +20,14 @@ export class WorkUnitClaimService {
 
   async claim(input: {
     taskId: string;
-    subtask: Pick<Subtask, 'id' | 'requiredAgentClassKind' | 'candidateAgentClasses'>;
+    subtask: Pick<Subtask, 'id' | 'preferredAgentClassList'>;
   }): Promise<WorkUnitClaim | null> {
     let workUnit = this.workUnitRepo.findIdleByKind(
-      input.subtask.requiredAgentClassKind as AgentClassKind,
-      input.subtask.candidateAgentClasses,
+      'executor',
+      input.subtask.preferredAgentClassList,
     );
-    if (!workUnit && input.subtask.requiredAgentClassKind === 'executor') {
-      for (const agentClassName of input.subtask.candidateAgentClasses) {
+    if (!workUnit) {
+      for (const agentClassName of input.subtask.preferredAgentClassList) {
         workUnit = await this.provisionExecutor(agentClassName);
         if (workUnit) break;
       }

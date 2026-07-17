@@ -1,8 +1,11 @@
 ---
 status: accepted
+amended_by: ADR-0020
 ---
 
 # Single active task admission gate (deliberate, current scope)
+
+> Architecture alignment (2026-07-17): the single-active-top-level-Task constraint remains accepted. `TaskAdmissionGate` in Session is the current implementation, not the final policy owner; roadmap Phase 3 moves admission authority behind the unified Control Kernel decision seam while Application Shell only applies the decision.
 
 ## Context
 
@@ -12,9 +15,10 @@ scheduler auto-resume a parked task ahead of a later queued task. That
 multi-task scheduling surface (queueing, preemption, cross-session resume
 choice) carries real complexity in the session/scheduler/TUI layers.
 
-The current development priority is the **routing layer** (ExecutionPolicy,
-capability-class classification, fallback chain, worktree isolation). To reduce
-development load and concentrate effort on the primary functionality, we
+The current development priority is the **PlanningAgent / Control Kernel / Runtime
+convergence path** (strict v3 work graphs, dependency handoff, recovery policy,
+resource partitioning and later concurrency). To reduce
+development load and concentrate effort on that primary functionality, we
 deliberately narrow the runtime to **one active top-level task at a time** for
 now. This is a scope decision, not a discovery of a bug.
 
@@ -46,7 +50,8 @@ now. This is a scope decision, not a discovery of a bug.
 - **Queueing, preemption, and auto-resume of a *second* task are intentionally
   disabled.** The single active task may still contain multiple subtasks on
   different executors (see CONTEXT.md "Single Active Task") — the restriction is
-  on *top-level* task intake, not on intra-task parallelism.
+  on *top-level* task intake. It does not authorize intra-task parallelism;
+  Runtime remains serial until the convergence roadmap explicitly enables it.
 - The following pre-existing acceptance cases encode the *old* multi-task
   behavior (queue / preempt / multi-task resume). They are **kept but
   `it.skip`-ped**, not deleted, because multi-task scheduling is expected to

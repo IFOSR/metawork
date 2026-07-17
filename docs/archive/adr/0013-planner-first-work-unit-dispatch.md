@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: partially_superseded
+superseded_by: ADR-0014, ADR-0019, ADR-0020
 ---
 
 # Planner-first work unit dispatch
+
+> Current authority: the Task/Subtask/AgentClass/WorkUnit vocabulary and one-claim execution model remain valid. “Planner is the only business dispatch owner” is superseded: Planner proposes, Control Kernel decides, and Execution Runtime applies side effects.
 
 ## Context
 

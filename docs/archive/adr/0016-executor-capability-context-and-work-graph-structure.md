@@ -1,10 +1,10 @@
 # ADR-0016: Executor Capability Context and Work-Graph Structure
 
-- Status: Partially superseded by ADR-0018
+- Status: Partially superseded by ADR-0018 and ADR-0019; module ownership clarified by ADR-0020
 - Date: 2026-07-15
 - Scope: design decision only; production implementation starts after Phase 0
 
-ADR-0018 supersedes this ADR's decomposition-at-executor-boundaries, PlanningAgentPlan v3 and shared work-graph rule commitments by deferring them. Static catalog injection and versioned built-in definition decisions remain accepted.
+ADR-0018 temporarily deferred this ADR's v3 and graph commitments while unifying built-in definitions. ADR-0019 later accepted and implemented the final strict v3 contract, capability-boundary decomposition and shared graph rules, superseding this ADR's provisional v3 field details. Static catalog injection and versioned built-in definition decisions remain accepted. ADR-0020 assigns the shared graph contract and rules to the logical Work Graph module rather than Planning internals.
 
 ## Context
 
@@ -40,7 +40,7 @@ The module must not read storage or runtime state. Capability coverage will be a
 
 ### Keep Runtime serial for now
 
-Derived layers are validation facts, not a parallel execution promise. Ready subtasks remain serial and use stable subtask ID ordering. Workspace partitions, leases, cross-task contention, worktree isolation, and eventual parallelism are deferred to `planner-workspace-partition-and-concurrency-debt.md`.
+Derived layers are validation facts, not a parallel execution promise. Ready subtasks remain serial and use stable subtask ID ordering. Workspace partitions, leases, cross-task contention, worktree isolation, and eventual parallelism are staged in the [Planner, Kernel, and concurrency convergence roadmap](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md).
 
 ### Version built-in definitions
 

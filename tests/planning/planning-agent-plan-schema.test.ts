@@ -1,33 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import {
-  applyContextDefaults,
   PlanningAgentPlanOutputSchema,
   PlanningAgentPlanSchema,
 } from '../../src/planning/planning-agent-plan-schema.js';
-import { validatePlanningAgentPlan } from '../../src/planning/planning-agent-plan-validator.js';
-import type { PlanningContext } from '../../src/planning/planning-types.js';
-
-const CONTEXT: PlanningContext = {
-  userInput: 'implement the requested change',
-  initialContext: {
-    longTermMemories: [],
-    conversationHistory: [],
-  },
-  request: { sessionId: 'session_test', source: 'test' },
-  permissions: {
-    allowDurableTask: true,
-    allowFileModification: true,
-    allowExternalGateway: true,
-  },
-  executorCatalog: getPlannerExecutorCatalog(),
-  timeoutMs: 5_000,
-};
 
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 2,
+    schemaVersion: 3,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -43,28 +23,16 @@ function outputPlan() {
       includeRecentConversationContext: false,
       priority: { level: 'normal', reason: 'normal scheduling' },
     },
-    execution: {
-      mode: 'single_executor',
-      complexity: 'simple',
-      selectedExecutor: 'codex-cli',
-      candidateExecutors: ['codex-cli'],
-      requiresVerification: true,
-      canModifyFiles: true,
-      requiresExternalGateway: false,
-      capabilityClass: 'code_edit',
-      matchedBoundary: [],
-    },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     workGraph: {
-      reason: 'single implementation step',
+      reason: 'single implementation delivery',
       subtasks: [{
         id: 'impl',
         title: 'Implement',
         goal: 'Implement and test',
         dependsOn: [],
-        requiredAgentClassKind: 'executor',
-        agentClassHint: 'codex-cli',
-        candidateAgentClasses: ['codex-cli'],
+        requiredCapabilities: ['workspace-engineering'],
+        preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch',
         acceptance: ['tests pass'],
         riskLevel: 'low',
@@ -75,7 +43,7 @@ function outputPlan() {
 }
 
 describe('PlanningAgent plan schemas', () => {
-  it('coerces a malformed priority so the validator can return the domain error', () => {
+  it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
     const valid = outputPlan();
     const parsed = PlanningAgentPlanSchema.safeParse({
       ...valid,
@@ -85,16 +53,36 @@ describe('PlanningAgent plan schemas', () => {
       },
     });
 
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) return;
+    expect(parsed.success).toBe(false);
+  });
 
-    const candidate = applyContextDefaults(parsed.data, CONTEXT);
-    expect(validatePlanningAgentPlan(candidate)).toMatchObject({
-      valid: false,
-      errors: expect.arrayContaining([
-        'schedulable actions require task.priority with valid level and non-empty reason',
-      ]),
-    });
+  it('rejects empty or whitespace-only plan IDs instead of relying on generated defaults', () => {
+    const valid = outputPlan();
+
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '' }).success).toBe(false);
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '   ' }).success).toBe(false);
+  });
+
+  it('rejects v2 and removed execution-routing fields', () => {
+    const valid = outputPlan();
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      schemaVersion: 2,
+      execution: { mode: 'single_executor', selectedExecutor: 'codex-cli' },
+    }).success).toBe(false);
+
+    const subtask = valid.workGraph.subtasks[0];
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{
+          ...subtask,
+          requiredAgentClassKind: 'executor',
+          candidateAgentClasses: ['codex-cli'],
+        }],
+      },
+    }).success).toBe(false);
   });
 
   it('rejects an empty work graph at the structured-output boundary', () => {
@@ -105,5 +93,13 @@ describe('PlanningAgent plan schemas', () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it('requires null workGraph for non-work-graph actions', () => {
+    const valid = outputPlan();
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      action: 'direct_reply',
+    }).success).toBe(false);
   });
 });

@@ -167,12 +167,12 @@ export class CommandReadServices {
       '1. Planner 提议',
       ...(decisions.length > 0
         ? decisions.flatMap(record => {
-            const graph = record.plan.workGraph;
+            const auditPlan = readAuditPlan(record.plan);
             return [
-              `  - ${record.createdAt} action=${record.plan.action} reason=${record.plan.reason}`,
-              ...(graph?.subtasks.map(subtask =>
-                `    ${subtask.id}: hint=${subtask.agentClassHint ?? '-'} candidates=${formatList(subtask.candidateAgentClasses)}`
-              ) ?? ['    无 WorkGraph']),
+              `  - ${record.createdAt} schema=v${record.planSchemaVersion ?? '?'} action=${auditPlan.action} reason=${auditPlan.reason}`,
+              ...(auditPlan.subtasks.length > 0
+                ? auditPlan.subtasks.map(subtask => `    ${subtask.id}: ${subtask.routing}`)
+                : ['    无 WorkGraph']),
             ];
           })
         : ['  - 该任务没有可关联的 Planner 路由记录（旧任务可能未保存 taskId 关联）。']),
@@ -180,12 +180,13 @@ export class CommandReadServices {
       '2. PolicyKernel 决策',
       ...(decisions.length > 0
         ? decisions.flatMap(record => {
-            const graph = record.decision.plan.workGraph;
+            const decision = isRecord(record.decision) ? record.decision : {};
+            const auditPlan = readAuditPlan(decision.plan);
             return [
-              `  - ${record.createdAt} outcome=${record.outcome} action=${record.decision.runtimeAction} reason=${record.reason}`,
-              ...(graph?.subtasks.map(subtask =>
-                `    ${subtask.id}: hint=${subtask.agentClassHint ?? '-'} candidates=${formatList(subtask.candidateAgentClasses)}`
-              ) ?? ['    无获批 WorkGraph']),
+              `  - ${record.createdAt} schema=v${record.decisionPlanSchemaVersion ?? '?'} outcome=${record.outcome} action=${String(decision.runtimeAction ?? '-')} reason=${record.reason}`,
+              ...(auditPlan.subtasks.length > 0
+                ? auditPlan.subtasks.map(subtask => `    ${subtask.id}: ${subtask.routing}`)
+                : ['    无获批 WorkGraph']),
             ];
           })
         : ['  - 无']),
@@ -227,6 +228,35 @@ export class CommandReadServices {
 
 function formatList(values: string[]): string {
   return values.join(', ') || '-';
+}
+
+function readAuditPlan(value: unknown): { action: string; reason: string; subtasks: Array<{ id: string; routing: string }> } {
+  if (!isRecord(value)) return { action: '-', reason: '-', subtasks: [] };
+  const graph = isRecord(value.workGraph) ? value.workGraph : null;
+  const rawSubtasks = graph && Array.isArray(graph.subtasks) ? graph.subtasks : [];
+  return {
+    action: String(value.action ?? '-'),
+    reason: String(value.reason ?? '-'),
+    subtasks: rawSubtasks.filter(isRecord).map(subtask => {
+      const capabilities = stringArray(subtask.requiredCapabilities);
+      const preferences = stringArray(subtask.preferredAgentClassList);
+      const legacyCandidates = stringArray(subtask.candidateAgentClasses);
+      return {
+        id: String(subtask.id ?? '-'),
+        routing: preferences.length > 0 || capabilities.length > 0
+          ? `capabilities=${formatList(capabilities)} preferences=${formatList(preferences)}`
+          : `legacyHint=${String(subtask.agentClassHint ?? '-')} legacyCandidates=${formatList(legacyCandidates)}`,
+      };
+    }),
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function excerpt(value: string | null, maxLength = 200): string {

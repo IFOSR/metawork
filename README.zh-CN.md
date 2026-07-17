@@ -14,7 +14,7 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#许可证)
 
 [技术总览](docs/current/technical-overview.zh-CN.md) | [文档地图](docs/README.md) | [架构决策](docs/adr) | [English](README.md)
 
@@ -207,4 +207,6 @@ flowchart LR
 
 ## 许可证
 
-MIT
+AnyFusion 基于 [Apache License 2.0](LICENSE) 开源。
+
+版权所有 © 2026 The AnyFusion Contributors。

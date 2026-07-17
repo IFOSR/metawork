@@ -14,6 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -89,6 +90,7 @@ describe('App resume bundle integration', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const parkedTask = taskEngine.create({ title: '行业分析', goal: '完成分析摘要' });
+    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
     taskEngine.park(parkedTask.id, '被高优任务抢占', {

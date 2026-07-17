@@ -1,8 +1,9 @@
 # Planner 工作区分区与并发调度技术债
 
-- 状态：已记录，未实现
+- 状态：已归档；全部未完成事项由 Planner、Kernel 与并发调度收敛路线图 Phase 5～6 接管
 - 记录日期：2026-07-15
-- 关联计划：`docs/plans/2026-07-15-planner-executor-capability-boundaries-and-demo-catalog-zh.md`
+- 归档日期：2026-07-16
+- 接管计划：`docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md`
 
 ## 为什么独立记录
 

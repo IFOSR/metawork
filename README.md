@@ -14,7 +14,7 @@ Turn natural-language requests into tasks that can be planned, scheduled, resume
 
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 
 [Technical Overview](docs/current/technical-overview.md) | [Docs](docs/README.md) | [Architecture Decisions](docs/adr) | [Chinese](README.zh-CN.md)
 
@@ -92,7 +92,7 @@ single API config entry point — both `codex` (default planner + executor) and
 `entrypoint.sh` substitutes `OPENAI_BASE_URL` into the Codex and Pi templates
 at container start. Planner and executor use separate `CODEX_HOME` directories;
 only API credentials are shared. The image contains `dist/index.js`,
-`dist/planner-mcp.js`, the generated PlanningAgentPlan v2 schema, the Planner
+`dist/planner-mcp.js`, the generated PlanningAgentPlan v3 schema, the Planner
 Skill, and both Codex configurations. Host `dist`, Codex/PI configuration, and
 the entrypoint are not bind-mounted. After source changes, use `-Rebuild`;
 only dedicated `/workspace` and `/data` volumes persist at runtime.
@@ -256,7 +256,7 @@ The current production path deliberately keeps one active top-level task admitte
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Build in watch mode with tsup. |
-| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v2 JSON Schema. |
+| `npm run build` | Bundle the CLI and Planner MCP, then generate the PlanningAgentPlan v3 JSON Schema. |
 | `npm run start` | Run the built CLI from `dist/`. |
 | `npm test` | Run the Vitest suite once. |
 | `npm run test:watch` | Run Vitest in watch mode. |
@@ -267,4 +267,6 @@ For deeper implementation details, see the [Technical Overview](docs/current/tec
 
 ## License
 
-MIT
+AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 The AnyFusion Contributors.

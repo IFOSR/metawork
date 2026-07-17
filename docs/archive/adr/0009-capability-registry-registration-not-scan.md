@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0018, ADR-0019, ADR-0020
 ---
 
 # Capability registry — registration, not scanning
+
+> Historical design input only. Free-form custom capability registration cannot enter v3 work graphs; future custom-Executor certification requires a new ADR compatible with the Routing Catalog module.
 
 ## Context
 

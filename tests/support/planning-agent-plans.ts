@@ -15,7 +15,7 @@ import type {
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 2,
+    schemaVersion: 3,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
@@ -30,17 +30,6 @@ function basePlan(): PlanningAgentPlan {
       goal: null,
       includeRecentConversationContext: false,
       priority: null,
-    },
-    execution: {
-      mode: 'none',
-      complexity: 'simple',
-      selectedExecutor: null,
-      candidateExecutors: [],
-      requiresVerification: false,
-      canModifyFiles: false,
-      requiresExternalGateway: false,
-      capabilityClass: 'conversation',
-      matchedBoundary: [],
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     workGraph: null,
@@ -60,7 +49,7 @@ export function singleSubtaskWorkGraph(input: {
   acceptance?: string[];
   riskLevel?: SubtaskProposal['riskLevel'];
 }): WorkGraphProposal {
-  const executor = input.executor ?? 'codex-cli';
+  const executor = input.executor === 'pi-agent' ? 'pi-agent' : 'codex-cli';
   const expectedOutput = input.expectedOutput ?? 'patch';
   return {
     reason: 'single executor work graph',
@@ -69,9 +58,8 @@ export function singleSubtaskWorkGraph(input: {
       title: input.title ?? input.goal.slice(0, 50) ?? 'Execute task',
       goal: input.goal,
       dependsOn: [],
-      requiredAgentClassKind: 'executor',
-      agentClassHint: executor,
-      candidateAgentClasses: [executor],
+      requiredCapabilities: [executor === 'pi-agent' ? 'current-web-research' : 'workspace-engineering'],
+      preferredAgentClassList: [executor],
       expectedOutput,
       acceptance: input.acceptance ?? (expectedOutput === 'patch'
         ? ['List changed files and provide test command output or explain why tests were not run.']
@@ -85,7 +73,7 @@ export function workGraphPlan(input: {
   goal: string;
   title?: string;
   executor?: string;
-  capabilityClass?: PlanningAgentPlan['execution']['capabilityClass'];
+  capabilityClass?: 'conversation' | 'general' | 'code_edit';
   requiresVerification?: boolean;
   canModifyFiles?: boolean;
   matchedBoundary?: string[];
@@ -111,16 +99,6 @@ export function workGraphPlan(input: {
       goal: input.goal,
       includeRecentConversationContext: input.includeRecentConversationContext ?? false,
       priority: input.priority ?? { level: 'normal', reason: 'test default priority' },
-    },
-    execution: {
-      ...basePlan().execution,
-      mode: 'single_executor',
-      selectedExecutor: executor,
-      candidateExecutors: [executor],
-      requiresVerification: input.requiresVerification ?? false,
-      canModifyFiles: input.canModifyFiles ?? (capabilityClass === 'code_edit'),
-      capabilityClass,
-      matchedBoundary: input.matchedBoundary ?? [],
     },
     workGraph: singleSubtaskWorkGraph({
       goal: input.goal,

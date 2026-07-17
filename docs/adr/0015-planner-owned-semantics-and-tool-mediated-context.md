@@ -1,8 +1,11 @@
 ---
 status: accepted
+amended_by: ADR-0017, ADR-0018, ADR-0019, ADR-0020
 ---
 
 # Planner-Owned Semantics And Tool-Mediated Context
+
+> Architecture alignment (2026-07-17): Planner semantic ownership, isolated execution, bounded context and fail-closed behavior remain accepted. PlanningAgentPlan v2, WorkUnit-only class health, Runtime-owned strategic fallback, configured-default resume routing and the `authorizeDirectReply` target exception are superseded by ADR-0017 through ADR-0020.
 
 ## Context
 
@@ -12,29 +15,29 @@ These overlaps made the same request answerable by several conflicting mechanism
 
 ## Decision
 
-All natural-language semantic interpretation belongs to the Codex `PlanningAgent`. Code may still parse deterministic syntax: slash commands, explicit IDs, paths, URLs, and attachments. `PlanningAgentPlan` is v2 only. It adds `task.priority`; executable work and resume/recovery plans require a non-empty priority, while non-scheduling actions require `null`. The JSON Schema is generated from the Zod contract during image build.
+All natural-language semantic interpretation belongs to the Codex `PlanningAgent`. Code may still parse deterministic syntax: slash commands, explicit IDs, paths, URLs, and attachments. ADR-0019 owns the current strict PlanningAgentPlan v3 schema and generated output contract; this ADR does not define a parallel plan version or semantic defaults.
 
 The Planner runs through a dedicated Codex runner with an isolated `CODEX_HOME`, the `metaclaw-planner` core Skill, structured output, JSONL event parsing, an ephemeral read-only sandbox, and a dedicated read-only stdio MCP. Planner and executor Codex configuration and Skills are not shared. Planner failure, timeout, invalid output after one repair, or MCP unavailability fails closed to clarification; no keyword routing fallback is allowed.
 
-Planner startup context contains user input, trusted session/source identity, authorization boundaries, timeout, bounded confirmed global memory, and bounded current-session conversation history. The memory and history block is assembled once before each `PlanningAgent.plan()` call; later direct replies are persisted as interactions and become input to subsequent turns. Other optional facts remain tools rather than passive prompt injection. The MCP exposes bounded read-only task search, explicit task context, current-session context, runtime state, and executor catalog/capacity. The host binds the current session; the model cannot request another session. Tool and run audits store only bounded, redacted summaries.
+Planner startup context contains user input, trusted session/source identity, authorization boundaries, timeout, bounded confirmed global memory, bounded current-session conversation history and the ADR-0018 static Planner-safe catalog. The memory/history/catalog block is assembled before each `PlanningAgent.plan()` call; later direct replies are persisted as interactions and become input to subsequent turns. Other optional facts remain tools rather than passive prompt injection. Planner MCP exposes bounded read-only task/session/runtime context and ADR-0017 dynamic executor status, not a second static catalog or raw capacity pool. The host binds the current session; the model cannot request another session. Tool and run audits store only bounded, redacted summaries.
 
-`PolicyKernel` remains deterministic authorization. A state-changing plan with `risk.requiresConfirmation=true` is converted to clarification. A later confirmation or cancellation is a new Planner turn that may inspect recent planning decisions. Invalid status and clear scopes are rejected; unknown clear scope never means `all`. A `direct_reply` plan — a read-only answer the planner already validated — is the one action that skips the `decide()` round-trip: the session calls `PolicyKernel.authorizeDirectReply(plan)`, which the kernel maps to the same `accept` decision `decide()` would return, since no state-changing authorization applies to a reply. The decision is still kernel-constructed and still audited via `planning_decisions`; this is a shortcut through the authorization round-trip, not a bypass of the seam. See ADR-0014.
+`PolicyKernel` remains deterministic authorization. A state-changing plan with `risk.requiresConfirmation=true` is converted to clarification. A later confirmation or cancellation is a new Planner turn that may inspect recent planning decisions. Invalid status and clear scopes are rejected; unknown clear scope never means `all`. ADR-0014 records the current audited `authorizeDirectReply` shortcut; ADR-0020 and roadmap Phase 3 require the target Control Kernel to expose one public decision seam rather than preserve that shortcut as a second Interface.
 
-`AgentClass` is static capability/configuration data. The legacy SQLite `availability` column remains physically present for migration compatibility but application code does not read or write it. Live health and capacity come only from `WorkUnit`. Startup inserts missing built-in AgentClasses without overwriting existing records and does not seed a fictitious executor WorkUnit.
+`AgentClass` and Routing Capability definitions are static catalog data governed by ADR-0018. Dynamic class health and recent outcomes come from the bounded ADR-0017 projection; WorkUnit state remains instance/claim/heartbeat fact and is not interchangeable with class health. Startup inserts or upgrades eligible built-in definitions according to provenance rules, does not overwrite user-modified/custom rows, and does not seed a fictitious executor WorkUnit.
 
-After authorization, Runtime claims a healthy idle WorkUnit or creates a `starting` instance and probes it with `runtimeCheckCommand` or adapter availability. A failed probe becomes `failed`; Runtime tries the next Planner candidate in order. If every candidate fails, the task becomes blocked with a persisted reason and Planner is not called again.
+After authorization, Runtime follows the Kernel-approved v3 `preferredAgentClassList` for claim/probe mechanics: it may claim an idle WorkUnit or create/probe a `starting` instance, and a failed probe becomes a Runtime fact. Runtime does not switch AgentClass after execution failure or decide the terminal Task action. Roadmap Phase 3～4 moves capacity exhaustion, retry, fallback, replan and terminal policy behind the unified Kernel seam.
 
-The runtime image contains compiled application and Planner MCP entry points, the generated v2 schema, isolated Planner/Executor Codex templates, Planner Skill, Pi templates, and entrypoint. Hosts inject secrets/environment plus dedicated data and workspace volumes. Source changes require an image rebuild; host `dist`, Codex/PI configs, and entrypoint are not runtime bind mounts.
+The runtime image contains compiled application and Planner MCP entry points, the generated current schema, isolated Planner/Executor Codex templates, Planner Skill, Pi templates, and entrypoint. Hosts inject secrets/environment plus dedicated data and workspace volumes. Source changes require an image rebuild; host `dist`, Codex/PI configs, and entrypoint are not runtime bind mounts.
 
 ## Supersedes
 
 - This ADR supersedes ADR-0014's exception that natural-language memory/preference capture fast paths may bypass PlanningAgent. Explicit `/memory add` remains deterministic; natural-language “remember” input is planned normally.
-- This ADR supersedes ADR-0013's fixed `planner-1` plus `executor-1` pool. `planner-1` may represent the in-process planner slot, but executor WorkUnits are created and probed on demand.
-- ADR-0014's PlanningAgent/PolicyKernel authority boundary and ADR-0013's Task/Subtask/AgentClass/WorkUnit vocabulary otherwise remain in force.
+- This ADR superseded the historical ADR-0013 fixed `planner-1` plus `executor-1` pool. `planner-1` may represent the in-process planner slot, but executor WorkUnits are created and probed on demand.
+- ADR-0014 remains authoritative for the PlanningAgent/PolicyKernel chain. ADR-0019 and ADR-0020 are the current authorities for Task/Subtask/AgentClass/WorkUnit vocabulary and ownership.
 
 ## Consequences
 
-There is one semantic owner and one authorization seam. New tasks do not consume unrelated history, while continuation/status requests can obtain evidence on demand. Static executor capabilities survive restarts without pretending to be runtime health. Runtime fallback is limited to the ordered AgentClass candidates already approved by the plan, except deterministic system resume paths that use the configured default AgentClass.
+There is one semantic owner and one logical authorization seam. New tasks do not consume unrelated history, while continuation/status requests can obtain evidence on demand. Static Routing Catalog facts survive restarts without pretending to be runtime health. Runtime follows approved claim/probe order but owns no post-failure fallback or configured-default resume policy.
 
 The first version intentionally does not add preference, long-term-memory, cross-session, or write-capable Planner tools. Confirmed global memory and current-session conversation history are instead provided through the bounded startup context; cross-session semantic search remains unavailable. Parallel execution, preemption, AgentClass versioning, and Planner replanning after probe exhaustion also remain out of scope.
 

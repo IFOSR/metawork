@@ -244,7 +244,7 @@ describe('planner-first executor command acceptance', () => {
     });
   });
 
-  it('announces the executor that actually claims the subtask after candidate fallback', async () => {
+  it('announces the executor that actually claims the approved preferred AgentClass', async () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-actual-executor-output');
@@ -261,11 +261,7 @@ describe('planner-first executor command acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(false),
       abort: vi.fn(),
     };
-    const planned = workGraphPlan({ goal: '执行带候选回退的任务' });
-    planned.execution.selectedExecutor = 'pi-agent';
-    planned.execution.candidateExecutors = ['pi-agent', 'codex-cli'];
-    planned.workGraph!.subtasks[0]!.agentClassHint = 'pi-agent';
-    planned.workGraph!.subtasks[0]!.candidateAgentClasses = ['pi-agent', 'codex-cli'];
+    const planned = workGraphPlan({ goal: '执行带受控路由的任务' });
 
     const session = createSession({
       db,

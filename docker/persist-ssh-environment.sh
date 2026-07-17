@@ -21,7 +21,7 @@ persist_ssh_environment() {
     "METACLAW_HOME=${METACLAW_HOME:-/data/metaclaw}" \
     "METACLAW_PLANNER_CODEX_HOME=${METACLAW_PLANNER_CODEX_HOME:-/var/lib/metaclaw/codex/planner}" \
     "METACLAW_EXECUTOR_CODEX_HOME=${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/executor}" \
-    "METACLAW_PLANNER_SCHEMA_PATH=${METACLAW_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v2.schema.json}" \
+    "METACLAW_PLANNER_SCHEMA_PATH=${METACLAW_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v3.schema.json}" \
     "METACLAW_PLANNER_WORKDIR=${METACLAW_PLANNER_WORKDIR:-/var/empty/metaclaw-planner}" \
   ; do
     local key="${kv%%=*}"

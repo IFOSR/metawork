@@ -14,7 +14,7 @@ function createDb(): Database.Database {
 function directReplyPlan(): PlanningAgentPlan {
   return {
     id: 'plan_direct',
-    schemaVersion: 2,
+    schemaVersion: 3,
     action: 'direct_reply',
     confidence: 0.95,
     reason: 'chat',
@@ -30,20 +30,9 @@ function directReplyPlan(): PlanningAgentPlan {
       includeRecentConversationContext: false,
       priority: null,
     },
-    execution: {
-      mode: 'none',
-      complexity: 'simple',
-      selectedExecutor: null,
-      candidateExecutors: [],
-      requiresVerification: false,
-      canModifyFiles: false,
-      requiresExternalGateway: false,
-      capabilityClass: 'conversation',
-      matchedBoundary: [],
-    },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     workGraph: null,
-    source: 'test',
+    source: 'codex-planner',
   };
 }
 
@@ -77,6 +66,7 @@ describe('PlanningDecisionRepo', () => {
         taskId: null,
         outcome: 'accept',
         reason: 'direct reply authorized',
+        planSchemaVersion: 3,
       }),
     ]);
   });
@@ -98,5 +88,22 @@ describe('PlanningDecisionRepo', () => {
     expect(repo.listByTask('task-created-later')).toEqual([
       expect.objectContaining({ id: decision.id, taskId: 'task-created-later' }),
     ]);
+  });
+
+  it('reads v2 and malformed historical JSON as inert audit data', () => {
+    const db = createDb();
+    db.prepare(`
+      INSERT INTO planning_decisions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'old', 'session_old', 'request_old', null, 'old input',
+      JSON.stringify({ schemaVersion: 2, execution: { selectedExecutor: 'legacy' } }),
+      '{malformed', 'accept', 'historical only', '2026-07-01T00:00:00.000Z',
+    );
+
+    expect(new PlanningDecisionRepo(db).findById('old')).toMatchObject({
+      planSchemaVersion: 2,
+      decisionPlanSchemaVersion: null,
+      decision: null,
+    });
   });
 });

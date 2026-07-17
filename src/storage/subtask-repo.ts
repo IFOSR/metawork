@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { AgentClassKind, AgentClassRiskLevel, Subtask, TaskStatus } from '../core/types.js';
+import type { AgentClassRiskLevel, Subtask, TaskStatus } from '../core/types.js';
 
 interface SubtaskRow {
   id: string;
@@ -8,9 +8,8 @@ interface SubtaskRow {
   goal: string;
   status: TaskStatus;
   depends_on_json: string;
-  required_agent_class_kind: AgentClassKind;
-  agent_class_hint: string | null;
-  candidate_agent_classes_json: string;
+  required_capabilities_json: string;
+  preferred_agent_class_list_json: string;
   expected_output: Subtask['expectedOutput'];
   acceptance_json: string;
   risk_level: AgentClassRiskLevel;
@@ -32,9 +31,8 @@ function rowToSubtask(row: SubtaskRow): Subtask {
     goal: row.goal,
     status: row.status,
     dependsOn: parseList(row.depends_on_json),
-    requiredAgentClassKind: row.required_agent_class_kind,
-    agentClassHint: row.agent_class_hint,
-    candidateAgentClasses: parseList(row.candidate_agent_classes_json),
+    requiredCapabilities: parseList(row.required_capabilities_json),
+    preferredAgentClassList: parseList(row.preferred_agent_class_list_json),
     expectedOutput: row.expected_output,
     acceptance: parseList(row.acceptance_json),
     riskLevel: row.risk_level,
@@ -52,18 +50,17 @@ export class SubtaskRepo {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO subtasks (
-        id, task_id, title, goal, status, depends_on_json, required_agent_class_kind,
-        agent_class_hint, candidate_agent_classes_json, expected_output, acceptance_json,
+        id, task_id, title, goal, status, depends_on_json, required_capabilities_json,
+        preferred_agent_class_list_json, expected_output, acceptance_json,
         risk_level, result, error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
         status = excluded.status,
         depends_on_json = excluded.depends_on_json,
-        required_agent_class_kind = excluded.required_agent_class_kind,
-        agent_class_hint = excluded.agent_class_hint,
-        candidate_agent_classes_json = excluded.candidate_agent_classes_json,
+        required_capabilities_json = excluded.required_capabilities_json,
+        preferred_agent_class_list_json = excluded.preferred_agent_class_list_json,
         expected_output = excluded.expected_output,
         acceptance_json = excluded.acceptance_json,
         risk_level = excluded.risk_level,
@@ -77,9 +74,8 @@ export class SubtaskRepo {
       subtask.goal,
       subtask.status,
       JSON.stringify(subtask.dependsOn),
-      subtask.requiredAgentClassKind,
-      subtask.agentClassHint,
-      JSON.stringify(subtask.candidateAgentClasses),
+      JSON.stringify(subtask.requiredCapabilities),
+      JSON.stringify(subtask.preferredAgentClassList),
       subtask.expectedOutput,
       JSON.stringify(subtask.acceptance),
       subtask.riskLevel,
@@ -93,6 +89,11 @@ export class SubtaskRepo {
   listByTask(taskId: string): Subtask[] {
     const rows = this.db.prepare('SELECT * FROM subtasks WHERE task_id = ? ORDER BY created_at ASC').all(taskId) as SubtaskRow[];
     return rows.map(rowToSubtask);
+  }
+
+  listTaskIds(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT task_id FROM subtasks ORDER BY task_id ASC').all() as Array<{ task_id: string }>;
+    return rows.map(row => row.task_id);
   }
 
   findById(id: string): Subtask | null {

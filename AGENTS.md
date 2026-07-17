@@ -21,7 +21,7 @@ Key areas are organized by responsibility:
 
 Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current PlanningAgent/PolicyKernel/work-unit vocabulary and migration context live in `CONTEXT.md`.
 
-For deeper current architecture context, read `docs/current/technical-overview.md`. Use `docs/README.md` as the docs map before opening older dated planning documents.
+For deeper current architecture context, read `docs/current/technical-overview.md`. Use `docs/README.md` as the docs map before opening older dated planning documents. Before architecture or roadmap changes, read `docs/adr/README.md` and ADR-0020; do not treat `docs/archive/adr/` as current implementation authority.
 
 ## Build, Test, and Development Commands
 

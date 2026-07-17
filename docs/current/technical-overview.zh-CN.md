@@ -152,7 +152,7 @@ conversation / task 的边界很重要：
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
 | Hermes Agent | `hermes` | 调研、多工具编排、记忆/网关/助手工作流 | 安装并登录 Hermes |
 
-默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。Pi 是 canonical 的当前网页研究类；其他 Executor 类必须先显式注册。
+默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。Pi 是 canonical 的当前网页研究类；配置为默认值但尚未注册的其他 Executor 会以不含路由能力的未分类 AgentClass 启动，已有的非 canonical 类则保持不变。
 
 ## 前提条件
 
@@ -356,7 +356,7 @@ Executor 是 MetaClaw 可以分配 subtask 的运行时工人。一个已注册 
 
 `{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，MetaClaw 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，MetaClaw 会先执行配置的检测命令；检测失败时会把该 agent class 标记为 `unavailable`。不可用的 agent class 不会进入 planner candidates；如果没有可 claim 的 executor work unit，任务会进入 blocked 并给出恢复提示，而不是静默改派默认 executor。
 
-`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态 AgentClass 字段强制收敛到 canonical 内容，常规注册接口也拒绝覆盖或删除它们。非 canonical Executor 的 capability 仍是自由注册元数据，不会自动进入受控 Planner catalog。遗留 `executor_profiles` 表在 schema version 20 被删除。
+`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态 AgentClass 字段强制收敛到 canonical 内容，常规注册接口也拒绝覆盖或删除它们。升级后的首次启动会不可逆地用受控 Routing Capability ID（`workspace-engineering` / `current-web-research`）替换旧的细粒度 capability 展示元数据，这是严格收敛的预期行为。非 canonical Executor 的 capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺失的非 canonical 默认类仅以空 capability 的未分类记录补齐。遗留 `executor_profiles` 表在 schema version 20 被删除。
 
 Executor 扩展契约：
 
@@ -936,4 +936,4 @@ src/
 
 ## License
 
-MIT
+AnyFusion 基于 [Apache License 2.0](../../LICENSE) 开源。版权所有 © 2026 The AnyFusion Contributors。

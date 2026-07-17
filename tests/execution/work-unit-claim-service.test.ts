@@ -64,8 +64,7 @@ describe('WorkUnitClaimService', () => {
       taskId: 'task_1',
       subtask: {
         id: 'subtask_1',
-        requiredAgentClassKind: 'executor',
-        candidateAgentClasses: ['codex-cli'],
+        preferredAgentClassList: ['codex-cli'],
       },
     });
 
@@ -134,8 +133,7 @@ describe('WorkUnitClaimService', () => {
       taskId: 'task_1',
       subtask: {
         id: 'subtask_1',
-        requiredAgentClassKind: 'executor',
-        candidateAgentClasses: ['codex-cli'],
+        preferredAgentClassList: ['codex-cli'],
       },
     });
 
@@ -160,8 +158,7 @@ describe('WorkUnitClaimService', () => {
       taskId: 'task_1',
       subtask: {
         id: 'subtask_1',
-        requiredAgentClassKind: 'executor',
-        candidateAgentClasses: ['first-executor', 'second-executor'],
+        preferredAgentClassList: ['first-executor', 'second-executor'],
       },
     });
 
@@ -184,8 +181,7 @@ describe('WorkUnitClaimService', () => {
       taskId: 'task_1',
       subtask: {
         id: 'subtask_1',
-        requiredAgentClassKind: 'executor',
-        candidateAgentClasses: ['first-executor', 'second-executor'],
+        preferredAgentClassList: ['first-executor', 'second-executor'],
       },
     });
 

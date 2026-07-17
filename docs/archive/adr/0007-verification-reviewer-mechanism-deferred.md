@@ -1,8 +1,11 @@
 ---
-status: deferred
+status: superseded
+superseded_by: ADR-0020; future reviewer work requires a new ADR
 ---
 
 # Verification / reviewer mechanism (deferred, with design refinements recorded)
+
+> Historical design input only. Its `ExecutionPolicy`, `CapabilityClass` and three-signal dispatch dependencies are obsolete; any reviewer feature must be redesigned against ADR-0020.
 
 ## Context
 
@@ -22,7 +25,7 @@ This entire mechanism is **deferred**. Two specific design refinements are recor
 
 ## Gaps to fill before this can be un-deferred
 
-- **`TaskStatus` has no "pending review" state.** Current statuses: `created / ready / running / parked / blocked / done / archived / cancelled` ([types.ts:2-11](src/core/types.ts#L2)). Neither `blocked` (failure/obstacle) nor `parked` (suspended) carries the "completed-but-awaiting-human-confirmation" semantics. A new status (e.g. `pending_review`) and its valid transitions must be added.
+- **`TaskStatus` has no "pending review" state.** Current statuses: `created / ready / running / parked / blocked / done / archived / cancelled` ([types.ts:2-11](../../../src/core/types.ts#L2)). Neither `blocked` (failure/obstacle) nor `parked` (suspended) carries the "completed-but-awaiting-human-confirmation" semantics. A new status (e.g. `pending_review`) and its valid transitions must be added.
 - **The execution hook mechanism does not exist.** Pre/post-execution intercepts that can trigger review at high-risk action points must be built. Existing "hooks" are Feishu webhooks — unrelated.
 - **Reviewer selection reuses ADR-0005's three signals.** No new selection logic; the same signal-provider + LLM-decided path applies, restricted to same-class candidates different from the primary.
 

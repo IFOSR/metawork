@@ -12,6 +12,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -49,6 +50,7 @@ describe('session startup running-task reconciliation', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const runningTask = taskEngine.create({ title: '长时间调研任务', goal: '继续调研产业链' });
+    seedPersistedV3WorkGraph(db, runningTask.id, runningTask.goal);
     taskEngine.transition(runningTask.id, 'ready');
     taskEngine.transition(runningTask.id, 'running');
     taskRepo.update(runningTask.id, {

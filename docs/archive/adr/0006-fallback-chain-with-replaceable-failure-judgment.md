@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0019, ADR-0020 and convergence-roadmap Phase 4
 ---
 
 # Fallback chain with a replaceable failure-judgment layer
+
+> Historical design input only. Adapters/Runtime normalize execution facts; Control Kernel owns retry, fallback and terminal-action policy. Raw error text is not the future Kernel Interface.
 
 ## Context
 

@@ -28,7 +28,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 2,
+    schemaVersion: 3,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -44,17 +44,6 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       includeRecentConversationContext: false,
       priority: { level: 'normal', reason: 'test priority' },
     },
-    execution: {
-      mode: 'single_executor',
-      complexity: 'simple',
-      selectedExecutor: 'codex-cli',
-      candidateExecutors: ['codex-cli'],
-      requiresVerification: false,
-      canModifyFiles: true,
-      requiresExternalGateway: false,
-      capabilityClass: 'code_edit',
-      matchedBoundary: [],
-    },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     workGraph: {
       reason: 'single executor work graph',
@@ -63,9 +52,8 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         title: '实现一个普通功能',
         goal: '实现一个普通功能',
         dependsOn: [],
-        requiredAgentClassKind: 'executor',
-        agentClassHint: 'codex-cli',
-        candidateAgentClasses: ['codex-cli'],
+        requiredCapabilities: ['workspace-engineering'],
+        preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch',
         acceptance: ['List changed files and provide test command output or explain why tests were not run.'],
         riskLevel: 'low',
@@ -142,17 +130,6 @@ describe('natural-language planning/kernel path', () => {
         includeRecentConversationContext: false,
         priority: null,
       },
-      execution: {
-        mode: 'none',
-        complexity: 'simple',
-        selectedExecutor: null,
-        candidateExecutors: [],
-        requiresVerification: false,
-        canModifyFiles: false,
-        requiresExternalGateway: false,
-        capabilityClass: 'conversation',
-        matchedBoundary: [],
-      },
       workGraph: null,
     }));
     harness.memoryEngine.addManual({
@@ -178,11 +155,6 @@ describe('natural-language planning/kernel path', () => {
       task: {
         binding: 'none', taskId: null, control: 'none', scope: null,
         title: null, goal: null, includeRecentConversationContext: false, priority: null,
-      },
-      execution: {
-        mode: 'none', complexity: 'simple', selectedExecutor: null, candidateExecutors: [],
-        requiresVerification: false, canModifyFiles: false, requiresExternalGateway: false,
-        capabilityClass: 'conversation', matchedBoundary: [],
       },
       workGraph: null,
     }));
@@ -225,17 +197,6 @@ describe('natural-language planning/kernel path', () => {
           includeRecentConversationContext: false,
           priority: null,
         },
-        execution: {
-          mode: 'none',
-          complexity: 'simple',
-          selectedExecutor: null,
-          candidateExecutors: [],
-          requiresVerification: false,
-          canModifyFiles: false,
-          requiresExternalGateway: false,
-          capabilityClass: 'conversation',
-          matchedBoundary: [],
-        },
         workGraph: null,
       });
     });
@@ -277,17 +238,6 @@ describe('natural-language planning/kernel path', () => {
         includeRecentConversationContext: false,
         priority: null,
       },
-      execution: {
-        mode: 'none',
-        complexity: 'simple',
-        selectedExecutor: null,
-        candidateExecutors: [],
-        requiresVerification: false,
-        canModifyFiles: false,
-        requiresExternalGateway: false,
-        capabilityClass: 'conversation',
-        matchedBoundary: [],
-      },
       workGraph: null,
     }));
 
@@ -321,17 +271,6 @@ describe('natural-language planning/kernel path', () => {
         goal: null,
         includeRecentConversationContext: false,
         priority: null,
-      },
-      execution: {
-        mode: 'none',
-        complexity: 'simple',
-        selectedExecutor: null,
-        candidateExecutors: [],
-        requiresVerification: false,
-        canModifyFiles: false,
-        requiresExternalGateway: false,
-        capabilityClass: 'conversation',
-        matchedBoundary: [],
       },
       workGraph: null,
     }));
@@ -374,19 +313,16 @@ describe('natural-language planning/kernel path', () => {
 
   it('maps executor rejection to a user-safe action while preserving the audit reason', async () => {
     const rejectedPlan = plan();
-    rejectedPlan.execution.selectedExecutor = 'ghost-executor';
-    rejectedPlan.execution.candidateExecutors = ['ghost-executor'];
-    rejectedPlan.workGraph!.subtasks[0]!.agentClassHint = 'ghost-executor';
-    rejectedPlan.workGraph!.subtasks[0]!.candidateAgentClasses = ['ghost-executor'];
+    rejectedPlan.workGraph!.subtasks[0]!.preferredAgentClassList = ['ghost-executor'] as never;
     const harness = createSession('sess_reject_executor', rejectedPlan);
 
     await harness.session.submit('交给不存在的执行器', { awaitAsyncWork: true });
 
     const output = harness.session.getSnapshot().output.join('\n');
-    expect(output).toContain('当前没有可用的 Executor，请检查配置或注册可执行的 Executor 后重试。');
+    expect(output).toContain('当前请求未通过执行校验，请调整请求后重试。');
     expect(output).not.toContain('PolicyKernel rejected request');
     expect(output).not.toContain('no available executor agent class');
     const [audit] = harness.planningDecisionRepo.listBySession('sess_reject_executor');
-    expect(audit?.reason).toContain('no available executor agent class');
+    expect(audit?.reason).toContain('preferredAgentClassList');
   });
 });

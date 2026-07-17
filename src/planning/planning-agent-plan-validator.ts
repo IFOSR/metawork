@@ -1,65 +1,59 @@
-import type { AgentClassKind, AgentClassRiskLevel, Subtask } from '../core/types.js';
-import type { PlanningAgentPlan, PlanningAction, SubtaskProposal } from './planning-types.js';
+import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
+import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
+import { validateWorkGraphStructure } from './work-graph-structure-rules.js';
 
 export interface PlanningAgentPlanValidationResult {
   valid: boolean;
   errors: string[];
 }
 
-const AGENT_CLASS_KINDS = new Set<AgentClassKind>(['planner', 'executor']);
-const EXPECTED_OUTPUTS = new Set<Subtask['expectedOutput']>(['analysis', 'patch', 'artifact', 'review', 'summary']);
-const RISK_LEVELS = new Set<AgentClassRiskLevel>(['low', 'medium', 'high']);
 const TASK_PRIORITIES = new Set(['normal', 'high', 'urgent']);
 
-const ACTIONS: PlanningAction[] = [
-  'direct_reply',
-  'clarification',
-  'task_control',
-  'plan_work_graph',
-  'no_action',
-];
+export function validatePlanningAgentPlan(
+  value: unknown,
+  executorCatalog: PlannerExecutorCatalog,
+): PlanningAgentPlanValidationResult {
+  const parsed = PlanningAgentPlanSchema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      valid: false,
+      errors: parsed.error.issues
+        .map(issue => `${issue.path.join('.') || 'plan'}: ${issue.message}`)
+        .sort(),
+    };
+  }
 
-export function validatePlanningAgentPlan(value: unknown): PlanningAgentPlanValidationResult {
+  const plan = parsed.data as PlanningAgentPlan;
   const errors: string[] = [];
-  if (!value || typeof value !== 'object') {
-    return { valid: false, errors: ['plan must be an object'] };
-  }
-
-  const plan = value as Partial<PlanningAgentPlan>;
-  if (plan.schemaVersion !== 2) errors.push('schemaVersion must be 2');
-  if (!plan.id || typeof plan.id !== 'string') errors.push('id must be a string');
-  if (!plan.action || !ACTIONS.includes(plan.action)) errors.push('action is invalid');
-  if (typeof plan.confidence !== 'number' || plan.confidence < 0 || plan.confidence > 1) {
-    errors.push('confidence must be between 0 and 1');
-  }
-  if (typeof plan.reason !== 'string') errors.push('reason must be a string');
-  if (!plan.task || typeof plan.task !== 'object') errors.push('task must be an object');
-  if (!plan.execution || typeof plan.execution !== 'object') errors.push('execution must be an object');
-  if (!plan.risk || typeof plan.risk !== 'object') errors.push('risk must be an object');
-  if (plan.action === 'clarification' && !plan.clarificationQuestion) {
-    errors.push('clarification requires clarificationQuestion');
-  }
-  if (plan.action === 'direct_reply' && !plan.response?.directReply?.trim()) {
-    errors.push('direct_reply requires a non-empty response.directReply');
-  }
-  if (plan.action === 'task_control' && plan.task?.control === 'none') {
-    errors.push('task_control requires a control kind');
-  }
+  validateActionSemantics(plan, errors);
   validateTaskControlScope(plan, errors);
   validateTaskPriority(plan, errors);
-  if (plan.action === 'plan_work_graph') {
-    if (!plan.workGraph) {
-      errors.push('plan_work_graph requires workGraph');
-    } else {
-      validateWorkGraph(plan.workGraph.subtasks, errors);
-    }
+
+  if (plan.workGraph) {
+    errors.push(...validateWorkGraphStructure(plan.workGraph).map(
+      violation => `${violation.code}: ${violation.message}`,
+    ));
+    validateRouting(plan.workGraph.subtasks, executorCatalog, errors);
   }
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors: errors.sort() };
 }
 
-function validateTaskControlScope(plan: Partial<PlanningAgentPlan>, errors: string[]): void {
-  if (plan.action !== 'task_control' || !plan.task) return;
+function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): void {
+  if (plan.action === 'clarification' && !plan.clarificationQuestion?.trim()) {
+    errors.push('clarification requires clarificationQuestion');
+  }
+  if (plan.action === 'direct_reply' && !plan.response.directReply?.trim()) {
+    errors.push('direct_reply requires a non-empty response.directReply');
+  }
+  if (plan.action === 'task_control' && plan.task.control === 'none') {
+    errors.push('task_control requires a control kind');
+  }
+}
+
+function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): void {
+  if (plan.action !== 'task_control') return;
   if (plan.task.control === 'status_query' && !['dashboard', 'blocked', 'running'].includes(plan.task.scope ?? '')) {
     errors.push('status_query requires scope dashboard, blocked, or running');
   }
@@ -74,15 +68,13 @@ function validateTaskControlScope(plan: Partial<PlanningAgentPlan>, errors: stri
   }
 }
 
-function validateTaskPriority(plan: Partial<PlanningAgentPlan>, errors: string[]): void {
+function validateTaskPriority(plan: PlanningAgentPlan, errors: string[]): void {
   const schedulable = plan.action === 'plan_work_graph'
     || (plan.action === 'task_control'
-      && (plan.task?.control === 'resume_task' || plan.task?.control === 'recover_blocked'));
-  const priority = plan.task?.priority;
+      && (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked'));
+  const priority = plan.task.priority;
   if (!schedulable) {
-    if (priority !== null && priority !== undefined) {
-      errors.push('task.priority must be null for non-schedulable actions');
-    }
+    if (priority !== null) errors.push('task.priority must be null for non-schedulable actions');
     return;
   }
   if (!priority || !TASK_PRIORITIES.has(priority.level) || !priority.reason.trim()) {
@@ -90,87 +82,84 @@ function validateTaskPriority(plan: Partial<PlanningAgentPlan>, errors: string[]
   }
 }
 
-function validateWorkGraph(subtasks: unknown, errors: string[]): void {
-  if (!Array.isArray(subtasks) || subtasks.length === 0) {
-    errors.push('workGraph.subtasks must be a non-empty array');
-    return;
-  }
-
-  const ids = new Set<string>();
-  for (const rawSubtask of subtasks) {
-    const subtask = rawSubtask as Partial<SubtaskProposal>;
-    if (!subtask.id || typeof subtask.id !== 'string') errors.push('subtask.id must be a string');
-    if (subtask.id && ids.has(subtask.id)) errors.push(`duplicate subtask id: ${subtask.id}`);
-    if (subtask.id) ids.add(subtask.id);
-    if (!subtask.title || typeof subtask.title !== 'string') errors.push('subtask.title must be a string');
-    if (!subtask.goal || typeof subtask.goal !== 'string') errors.push('subtask.goal must be a string');
-    if (!Array.isArray(subtask.dependsOn)) errors.push('subtask.dependsOn must be an array');
-    if (!Array.isArray(subtask.candidateAgentClasses)) errors.push('subtask.candidateAgentClasses must be an array');
-    if (!Array.isArray(subtask.acceptance)) errors.push('subtask.acceptance must be an array');
-    if (subtask.requiredAgentClassKind !== undefined && !AGENT_CLASS_KINDS.has(subtask.requiredAgentClassKind)) {
-      errors.push(`subtask.requiredAgentClassKind is invalid: ${String(subtask.requiredAgentClassKind)}`);
-    }
-    if (subtask.expectedOutput !== undefined && !EXPECTED_OUTPUTS.has(subtask.expectedOutput)) {
-      errors.push(`subtask.expectedOutput is invalid: ${String(subtask.expectedOutput)}`);
-    }
-    if (subtask.riskLevel !== undefined && !RISK_LEVELS.has(subtask.riskLevel)) {
-      errors.push(`subtask.riskLevel is invalid: ${String(subtask.riskLevel)}`);
-    }
-  }
-
-  // dependsOn must reference known subtasks, and the graph must be acyclic —
-  // otherwise the runtime's dependency-gated dispatch (findNextReadySubtask)
-  // would silently stall on a subtask whose dependencies never complete.
-  validateDependencyGraph(subtasks as Partial<SubtaskProposal>[], ids, errors);
-}
-
-function validateDependencyGraph(
-  subtasks: Partial<SubtaskProposal>[],
-  ids: Set<string>,
+function validateRouting(
+  subtasks: SubtaskProposal[],
+  catalog: PlannerExecutorCatalog,
   errors: string[],
 ): void {
-  const edges = new Map<string, string[]>();
-  for (const subtask of subtasks) {
-    if (!subtask.id || !Array.isArray(subtask.dependsOn)) continue;
-    const deps: string[] = [];
-    for (const dependencyId of subtask.dependsOn) {
-      if (typeof dependencyId !== 'string' || !ids.has(dependencyId)) {
-        errors.push(`subtask ${subtask.id} depends on unknown subtask: ${String(dependencyId)}`);
-        continue;
-      }
-      if (dependencyId === subtask.id) {
-        errors.push(`subtask ${subtask.id} depends on itself`);
-        continue;
-      }
-      deps.push(dependencyId);
-    }
-    edges.set(subtask.id, deps);
-  }
+  const capabilityIds = new Set(catalog.capabilities.map(capability => capability.id));
+  const executorsByName = new Map(catalog.executors.map(executor => [executor.name, executor]));
 
-  if (hasCycle(edges)) {
-    errors.push('workGraph.subtasks contains a dependency cycle');
+  for (const subtask of subtasks) {
+    collectDuplicateErrors(
+      subtask.id,
+      'Routing Capability',
+      subtask.requiredCapabilities,
+      errors,
+    );
+    collectDuplicateErrors(
+      subtask.id,
+      'preferred AgentClass',
+      subtask.preferredAgentClassList,
+      errors,
+    );
+
+    if (subtask.requiredCapabilities.length === 0) {
+      errors.push(`subtask ${subtask.id} requires at least one Routing Capability`);
+    }
+    if (subtask.preferredAgentClassList.length === 0) {
+      errors.push(`subtask ${subtask.id} requires at least one preferred AgentClass`);
+    }
+
+    const unknownCapabilities = subtask.requiredCapabilities.filter(capability => !capabilityIds.has(capability));
+    for (const capability of unknownCapabilities) {
+      errors.push(`subtask ${subtask.id} references unknown Routing Capability: ${capability}`);
+    }
+
+    const required = new Set(subtask.requiredCapabilities);
+    const eligible = catalog.executors
+      .filter(executor => [...required].every(capability => executor.routingCapabilities.includes(capability)))
+      .map(executor => executor.name)
+      .sort();
+
+    if (required.size > 0 && unknownCapabilities.length === 0 && eligible.length === 0) {
+      errors.push(`no_capable_agent_class: subtask ${subtask.id} must be split at a Routing Capability handoff`);
+    }
+
+    for (const name of subtask.preferredAgentClassList) {
+      const executor = executorsByName.get(name);
+      if (!executor) {
+        errors.push(`subtask ${subtask.id} references non-canonical AgentClass: ${name}`);
+        continue;
+      }
+      const uncovered = [...required]
+        .filter(capability => !executor.routingCapabilities.includes(capability))
+        .sort();
+      if (uncovered.length > 0) {
+        errors.push(`subtask ${subtask.id} AgentClass ${name} does not cover required capabilities: ${uncovered.join(', ')}`);
+      }
+    }
+
+    const actualSet = [...new Set(subtask.preferredAgentClassList)].sort();
+    if (!sameValues(actualSet, eligible)) {
+      errors.push(`subtask ${subtask.id} preferred AgentClass set must equal eligible canonical set: ${eligible.join(', ') || '(none)'}`);
+    }
   }
 }
 
-function hasCycle(edges: Map<string, string[]>): boolean {
-  const VISITING = 1;
-  const DONE = 2;
-  const state = new Map<string, number>();
-
-  const visit = (node: string): boolean => {
-    const current = state.get(node);
-    if (current === VISITING) return true;
-    if (current === DONE) return false;
-    state.set(node, VISITING);
-    for (const next of edges.get(node) ?? []) {
-      if (visit(next)) return true;
-    }
-    state.set(node, DONE);
-    return false;
-  };
-
-  for (const node of edges.keys()) {
-    if (visit(node)) return true;
+function collectDuplicateErrors(
+  subtaskId: string,
+  label: string,
+  values: readonly string[],
+  errors: string[],
+): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) errors.push(`subtask ${subtaskId} contains duplicate ${label}: ${value}`);
+    seen.add(value);
   }
-  return false;
+}
+
+function sameValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

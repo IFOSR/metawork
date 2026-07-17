@@ -14,6 +14,7 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan, directReplyPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -51,6 +52,7 @@ describe('session dispatch recovery', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const task = taskEngine.create({ title: '等待恢复的挂起任务', goal: '继续执行等待恢复的挂起任务' });
+    seedPersistedV3WorkGraph(db, task.id, task.goal);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.park(task.id, '等待恢复', {
@@ -172,6 +174,7 @@ describe('session dispatch recovery', () => {
     ].map(title => taskEngine.create({ title, goal: title }));
 
     for (const task of parkedTasks) {
+      seedPersistedV3WorkGraph(db, task.id, task.title);
       taskEngine.transition(task.id, 'ready');
       taskEngine.transition(task.id, 'running');
       taskEngine.park(task.id, '等待恢复', {
@@ -236,6 +239,7 @@ describe('session dispatch recovery', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const task = taskEngine.create({ title: '恢复缺失派发上下文', goal: '继续执行缺失上下文的任务' });
+    seedPersistedV3WorkGraph(db, task.id, task.goal);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
 
@@ -289,6 +293,7 @@ describe('session dispatch recovery', () => {
     };
 
     const task = taskEngine.create({ title: '飞书 Client API 调研', goal: '整理飞书 Client API 访问用户文档的方法' });
+    seedPersistedV3WorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.block(task.id, {

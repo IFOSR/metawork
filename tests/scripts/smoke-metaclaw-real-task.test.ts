@@ -60,4 +60,13 @@ describe('smoke-metaclaw-real-task helpers', () => {
 
     expect(smoke.findPythonHelloFile(workdir)).toBe(join(workdir, 'hello_world.py'));
   });
+
+  it('extracts the artifact path from the Executor markdown-link result', async () => {
+    const smoke = await loadSmokeScript();
+
+    expect(smoke.extractArtifactPath('绝对路径：[smoke-result.md](/tmp/smoke-result.md)'))
+      .toBe('/tmp/smoke-result.md');
+    expect(smoke.extractArtifactPath('已创建文件：`/tmp/smoke-result.md`'))
+      .toBe('/tmp/smoke-result.md');
+  });
 });

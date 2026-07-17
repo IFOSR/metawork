@@ -1,8 +1,11 @@
 ---
 status: accepted
+amended_by: ADR-0019, ADR-0020
 ---
 
 # Persistent planner and subtask runtime
+
+> Architecture alignment (2026-07-17): durable Task/Subtask/WorkUnit facts and recovery from persistence remain accepted. ADR-0019 owns the v3 graph contract; ADR-0020 assigns graph validation to Work Graph/Kernel, strategic resource decisions to Control Kernel, and all persistence/claim/lease side effects to Execution Runtime and adapters. Worktree allocation remains roadmap Phase 5 work, not a capability implied by this ADR's current status.
 
 MetaClaw will keep the existing single-active-top-level-task admission rule for the first planner rewrite, and will add persistent subtask state plus work unit runtime state inside that active task. An external Codex-backed planner may propose a work graph, but MetaClaw deterministically validates it, persists subtasks and task events, claims executor work units, allocates worktree leases, and schedules execution.
 

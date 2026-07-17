@@ -3,10 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentClass } from '../core/types.js';
 import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
-import {
-  getBuiltinExecutorAgentClasses,
-  getBuiltinExecutorDefinition,
-} from './builtin-executor-catalog.js';
+import { getBuiltinExecutorAgentClasses } from './builtin-executor-catalog.js';
 
 export interface AgentClassSeedInput {
   defaultExecutorName: string;
@@ -39,6 +36,32 @@ function plannerClass(): AgentClass {
   };
 }
 
+function unclassifiedExecutorClass(name: string): AgentClass {
+  return {
+    name,
+    kind: 'executor',
+    domains: [],
+    capabilities: [],
+    inputTypes: ['text'],
+    outputTypes: ['markdown'],
+    strengths: [],
+    weaknesses: [],
+    primaryUseCases: [],
+    avoidUseCases: [],
+    intentAffinity: {},
+    riskLevel: 'medium',
+    harness: 'cli',
+    model: null,
+    skills: [],
+    mcpServers: [],
+    plugins: [],
+    runtimeCommand: null,
+    runtimeArgs: [],
+    runtimeCheckCommand: null,
+    projectUrl: null,
+  };
+}
+
 function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
   const { createdAt: _existingCreatedAt, updatedAt: _existingUpdatedAt, ...existingStatic } = existing;
   const { createdAt: _canonicalCreatedAt, updatedAt: _canonicalUpdatedAt, ...canonicalStatic } = canonical;
@@ -50,16 +73,6 @@ export function seedDefaultAgentClasses(
   input: AgentClassSeedInput,
 ): void {
   const canonicalAgentClasses = getBuiltinExecutorAgentClasses();
-  if (
-    !getBuiltinExecutorDefinition(input.defaultExecutorName)
-    && !agentClassRepo.findByName(input.defaultExecutorName)
-  ) {
-    throw new Error(
-      `Default Executor ${input.defaultExecutorName} is not canonical and has no registered AgentClass. `
-      + `Start with ${canonicalAgentClasses.map(agentClass => agentClass.name).join(' or ')}, `
-      + 'register the Executor AgentClass, then switch the default configuration.',
-    );
-  }
 
   if (!agentClassRepo.findByName('planner')) agentClassRepo.upsert(plannerClass());
   for (const canonical of canonicalAgentClasses) {
@@ -67,6 +80,9 @@ export function seedDefaultAgentClasses(
     if (!existing || !hasCanonicalStaticFields(existing, canonical)) {
       agentClassRepo.upsert({ ...canonical, createdAt: existing?.createdAt });
     }
+  }
+  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
+    agentClassRepo.upsert(unclassifiedExecutorClass(input.defaultExecutorName));
   }
 }
 

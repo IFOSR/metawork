@@ -1,8 +1,11 @@
 ---
-status: proposed
+status: superseded
+superseded_by: ADR-0017, ADR-0018, ADR-0019, ADR-0020
 ---
 
 # Executor selection: three quantifiable signals, LLM-decided
+
+> Historical design only. Planner now orders the complete statically eligible canonical AgentClass set, Kernel authorizes it, and future capacity/fallback strategy belongs to the Control Kernel.
 
 ## Context
 

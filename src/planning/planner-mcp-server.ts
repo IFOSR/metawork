@@ -61,8 +61,27 @@ export class PlannerDataReader {
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
     const latest = snapshots.at(-1) ?? null;
+    const v3SubtaskCount = Number((this.db.prepare(
+      'SELECT COUNT(*) AS count FROM subtasks WHERE task_id = ?',
+    ).get(taskId) as { count: number }).count);
+    const legacySubtasks = v3SubtaskCount === 0 && tableExists(this.db, 'subtasks_v2_audit')
+      ? (this.db.prepare(`
+          SELECT id, title, goal, status, result, error
+          FROM subtasks_v2_audit WHERE task_id = ?
+          ORDER BY created_at ASC LIMIT ?
+        `).all(taskId, 8) as Array<Record<string, unknown>>).map(legacy => ({
+          id: legacy.id,
+          title: truncateText(String(legacy.title ?? ''), 160),
+          goal: truncateText(String(legacy.goal ?? ''), 320),
+          status: legacy.status,
+          result: truncateText(String(legacy.result ?? ''), 500),
+          error: legacy.error === null ? null : truncateText(String(legacy.error ?? ''), 320),
+        }))
+      : [];
     return {
       found: true,
+      requiresWorkGraphReplan: v3SubtaskCount === 0 && legacySubtasks.length > 0,
+      v2AuditSubtasks: legacySubtasks,
       task: {
         id: row.id,
         title: truncateText(String(row.title ?? ''), 200),
@@ -221,6 +240,12 @@ function boundedLimit(limit?: number): number {
 function safeJson<T>(value: unknown, fallback: T): T {
   if (typeof value !== 'string' || !value) return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table));
 }
 
 function sanitizeSnapshot(snapshot: Record<string, unknown>) {

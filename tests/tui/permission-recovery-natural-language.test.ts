@@ -15,6 +15,7 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
+import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -74,6 +75,7 @@ describe('App permission recovery natural-language control', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '调研 memory', goal: '继续整理 memory 方案' });
+    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {

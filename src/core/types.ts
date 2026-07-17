@@ -88,9 +88,8 @@ export interface Subtask {
   goal: string;
   status: TaskStatus;
   dependsOn: string[];
-  requiredAgentClassKind: AgentClassKind;
-  agentClassHint: string | null;
-  candidateAgentClasses: string[];
+  requiredCapabilities: string[];
+  preferredAgentClassList: string[];
   expectedOutput: 'analysis' | 'patch' | 'artifact' | 'review' | 'summary';
   acceptance: string[];
   riskLevel: AgentClassRiskLevel;
