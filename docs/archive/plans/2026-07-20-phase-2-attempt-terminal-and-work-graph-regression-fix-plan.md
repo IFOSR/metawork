@@ -1,9 +1,18 @@
 # Phase 2 Attempt Terminal And Work Graph Regression Fix Plan
 
-- Status: In progress
+- Status: Completed
 - Plan date: 2026-07-20
-- Governing roadmap: [Planner/Kernel concurrency convergence roadmap](2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
-- Governing architecture: [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md) and [ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)
+- Completion date: 2026-07-20
+- Delivered behavior: contract and stale attempt outcomes now finish Subtask, Task-domain, and
+  attempt-bound WorkUnit state coherently; stale release cannot clear a newer claim; the shared v4
+  validator again enforces both Phase 1 topology rules; source-text assertions were replaced by
+  persisted coordinator/attempt behavior tests.
+- Validation performed: focused red tests reproduced all reported failures; focused and adjacent
+  suites passed after the fix; `npm run lint` and `npm run build` passed; the final Linux container
+  suite passed 181 files and 781 tests, with 2 files and 4 tests skipped.
+- Implementation commit: `11c8e27`
+- Governing roadmap: [Planner/Kernel concurrency convergence roadmap](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
+- Governing architecture: [ADR-0020](../../adr/0020-core-module-ownership-and-dependency-direction.md) and [ADR-0021](../../adr/0021-work-graph-v4-subtask-execution-contract.md)
 
 ## Scope
 

@@ -115,6 +115,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 完成记录（2026-07-17）：Work Graph v4、SQLite v22、唯一 Subtask context、Execution Evidence、Completion Protocol v1、最小 attempt receipt、原子 handoff 和串行 Attempt Runner 已交付。`npm run lint`、`npm run build`、聚焦回归和 Docker/Linux 全量回归通过（182 个文件、769 个测试；另有 2 个文件、4 个测试跳过）。Planner MCP 六工具 smoke、真实 Codex Planner API-key smoke 与 Planner→Kernel→Runtime→Codex Executor artifact smoke 均通过。实现提交为 `9783518`、`1472a3c`；Phase 2 计划已归档，Phase 3 激活。
 
+残余加固记录（2026-07-20）：contract/stale 终态统一回到 Task domain 与 attempt-bound WorkUnit，恢复 Phase 1 的可合并单链和同层 preferred 冲突校验，并以 coordinator/attempt 行为测试替换读源码断言。修复提交为 `11c8e27`；Phase 3 的事件和纠正策略范围不变。
+
 ### Phase 3：Kernel 控制面收敛
 
 目标：建立一个小而稳定的 Kernel 决策 seam，将战略决策从 Session/Runtime 收回。
