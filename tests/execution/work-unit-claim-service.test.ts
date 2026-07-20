@@ -128,6 +128,42 @@ describe('WorkUnitClaimService', () => {
     });
   });
 
+  it('does not let a stale attempt release a WorkUnit that has been claimed by another attempt', async () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+    repo.upsert(workUnit());
+    const claim = await new WorkUnitClaimService(repo).claim({
+      taskId: 'task_1',
+      attemptId: 'attempt_1',
+      subtask: {
+        id: 'subtask_1',
+        preferredAgentClassList: ['codex-cli'],
+      },
+    });
+    repo.updateState('executor-1', 'running', {
+      claimedTaskId: 'task_2',
+      claimedSubtaskId: 'subtask_2',
+      claimedAttemptId: 'attempt_2',
+    });
+
+    claim?.release();
+
+    expect(repo.findById('executor-1')).toMatchObject({
+      state: 'running',
+      claimedTaskId: 'task_2',
+      claimedSubtaskId: 'subtask_2',
+      claimedAttemptId: 'attempt_2',
+    });
+    expect(repo.listEvents('executor-1').at(-1)).toMatchObject({
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      attemptId: 'attempt_1',
+      eventType: 'release_skipped_stale',
+      state: 'running',
+    });
+  });
+
   it('enforces one active attempt per Subtask at the database boundary', () => {
     const db = createDb();
     new AgentClassRepo(db).upsert(agentClass());

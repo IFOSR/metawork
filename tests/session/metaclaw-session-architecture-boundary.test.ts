@@ -68,7 +68,9 @@ describe('MetaclawSession architecture boundaries', () => {
     expect(source).not.toContain('scheduler.markDispatchBlocked');
     expect(coordinatorSource).toContain('scheduler.markDispatchStarted');
     expect(coordinatorSource).toContain('scheduler.markDispatchFinished');
-    expect(coordinatorSource).toContain('scheduler.markDispatchBlocked');
+    expect(coordinatorSource).not.toContain('scheduler.markDispatchBlocked');
+    expect(coordinatorSource).toContain('taskRuntimeService.blockTask');
+    expect(coordinatorSource).toContain('scheduler.clearDispatch');
     expect(source).not.toContain("transitionTask(taskId, 'done')");
     expect(source).not.toContain('blockTaskOnVerificationFailure');
     expect(source).not.toContain('blockTaskOnRecoverableFailure');

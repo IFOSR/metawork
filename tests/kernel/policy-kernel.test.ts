@@ -64,4 +64,21 @@ describe('PolicyKernel Work Graph v4 authorization', () => {
       ...snapshot, tasks: [existing], v4WorkGraphTaskIds: [existing.id],
     })).toMatchObject({ outcome: 'reject', rejected: true });
   });
+
+  it('rejects a same-layer preferred AgentClass conflict from shared Work Graph validation', () => {
+    const dependency = {
+      fromSubtaskId: 'root',
+      requiredItems: [{ key: 'result', type: 'text' as const, description: 'root result' }],
+    };
+    const candidate = plan([
+      node({ id: 'root' }),
+      node({ id: 'left', dependencies: [dependency] }),
+      node({ id: 'right', dependencies: [dependency] }),
+    ]);
+
+    const decision = new PolicyKernel().decide(candidate, snapshot);
+
+    expect(decision).toMatchObject({ outcome: 'reject', rejected: true });
+    expect(decision.reason).toContain('same_layer_preferred_conflict');
+  });
 });

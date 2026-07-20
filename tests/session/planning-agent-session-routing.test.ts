@@ -257,10 +257,33 @@ describe('MetaclawSession planning-agent routing', () => {
     const [task] = taskRepo.findAll();
     expect(task.status).toBe('blocked');
     expect(task.summary).toBe('');
+    expect(task.dependencies).toEqual([expect.objectContaining({
+      taskId: task.id,
+      type: 'manual',
+      status: 'waiting',
+      description: expect.stringContaining('completion_patch_evidence_missing'),
+    })]);
+    expect(db.prepare('SELECT status, result FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({
+      status: 'blocked',
+      result: '',
+    });
     expect(db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get()).toEqual({
       terminal_state: 'contract_blocked',
       error_code: 'completion_patch_evidence_missing',
     });
+    expect(db.prepare(`
+      SELECT state, claimed_task_id, claimed_subtask_id, claimed_attempt_id
+      FROM work_units WHERE agent_class_kind = 'executor'
+    `).get()).toEqual({
+      state: 'failed',
+      claimed_task_id: null,
+      claimed_subtask_id: null,
+      claimed_attempt_id: null,
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM task_events
+      WHERE task_id = ? AND event_type = 'phase2_execution_blocked'
+    `).get(task.id)).toEqual({ count: 1 });
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('completion_patch_evidence_missing');
     expect(output).not.toContain('completed 1 Subtask(s)');

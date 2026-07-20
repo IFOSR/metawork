@@ -16,7 +16,9 @@ export type WorkGraphViolationCode =
   | 'empty_work_graph'
   | 'evidence_requirements_count_invalid'
   | 'invalid_key'
+  | 'mergeable_same_agent_chain'
   | 'missing_entry_node'
+  | 'same_layer_preferred_conflict'
   | 'self_dependency'
   | 'too_many_context_refs'
   | 'unknown_dependency';
@@ -76,6 +78,65 @@ export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): W
   }
   if (containsCycle(dependencyGraph)) {
     violations.push(violation('dependency_cycle', [], 'subtasks', 'work graph contains a dependency cycle'));
+  }
+
+  const children = new Map<string, string[]>();
+  for (const subtask of graph.subtasks) children.set(subtask.id, []);
+  for (const subtask of graph.subtasks) {
+    for (const dependency of subtask.dependencies) {
+      children.get(dependency.fromSubtaskId)?.push(subtask.id);
+    }
+  }
+  for (const [index, downstream] of graph.subtasks.entries()) {
+    if (downstream.dependencies.length !== 1) continue;
+    const upstreamId = downstream.dependencies[0]!.fromSubtaskId;
+    if (children.get(upstreamId)?.length !== 1) continue;
+    const upstream = subtasksById.get(upstreamId);
+    const preferred = upstream?.preferredAgentClassList[0];
+    if (!preferred || downstream.preferredAgentClassList[0] !== preferred) continue;
+    violations.push(violation(
+      'mergeable_same_agent_chain',
+      [upstreamId, downstream.id],
+      `subtasks.${index}.dependencies.0`,
+      `subtasks ${upstreamId} -> ${downstream.id} form a mergeable ${preferred} single chain`,
+    ));
+  }
+
+  const layers = new Map<string, number>();
+  const visiting = new Set<string>();
+  const deriveLayer = (subtaskId: string): number => {
+    const cached = layers.get(subtaskId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(subtaskId)) return 0;
+    visiting.add(subtaskId);
+    const subtask = subtasksById.get(subtaskId);
+    const dependencyLayers = (subtask?.dependencies ?? [])
+      .map(dependency => dependency.fromSubtaskId)
+      .filter(dependencyId => subtasksById.has(dependencyId))
+      .map(deriveLayer);
+    visiting.delete(subtaskId);
+    const layer = dependencyLayers.length === 0 ? 0 : Math.max(...dependencyLayers) + 1;
+    layers.set(subtaskId, layer);
+    return layer;
+  };
+  const ownershipByLayer = new Map<string, string[]>();
+  for (const subtask of graph.subtasks) {
+    const preferred = subtask.preferredAgentClassList[0];
+    if (!preferred) continue;
+    const layer = deriveLayer(subtask.id);
+    const key = `${layer}\u0000${preferred}`;
+    ownershipByLayer.set(key, [...(ownershipByLayer.get(key) ?? []), subtask.id]);
+  }
+  for (const [key, subtaskIds] of ownershipByLayer) {
+    if (subtaskIds.length < 2) continue;
+    const [layer, preferred] = key.split('\u0000');
+    const sortedIds = [...subtaskIds].sort((left, right) => left.localeCompare(right));
+    violations.push(violation(
+      'same_layer_preferred_conflict',
+      sortedIds,
+      'subtasks',
+      `derived layer ${layer} assigns preferred AgentClass ${preferred} more than once: ${sortedIds.join(', ')}`,
+    ));
   }
   return violations.sort(compareViolations);
 }

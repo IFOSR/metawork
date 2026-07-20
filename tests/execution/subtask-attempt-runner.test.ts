@@ -8,17 +8,11 @@ import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner
 import { COMPLETION_MARKER_V1 } from '../../src/execution/completion-protocol.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
-import type { Subtask, Task } from '../../src/core/types.js';
-
-function task(): Task {
-  return {
-    id: 'task_phase2', title: 'Phase 2', goal: 'complete the graph', status: 'running', summary: '',
-    snapshots: [], resources: [], artifacts: [], dependencies: [],
-    prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-    injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
-    createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
-  };
-}
+import { TaskRepo } from '../../src/storage/task-repo.js';
+import { TaskEngine } from '../../src/task/task-engine.js';
+import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
+import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
+import type { Subtask } from '../../src/core/types.js';
 
 function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -34,6 +28,7 @@ function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
 function setup(rawResponse: string) {
   const db = new Database(':memory:');
   runMigrations(db);
+  const taskRepo = new TaskRepo(db);
   db.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
@@ -41,6 +36,12 @@ function setup(rawResponse: string) {
       last_interruption_reason, interruption_count, created_at, updated_at
     ) VALUES (?, ?, ?, ?, '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
   `).run('task_phase2', 'Phase 2', 'complete the graph', 'running', '2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
+  const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-phase2-attempt-runner');
+  const taskRuntimeService = new TaskRuntimeService({
+    taskEngine,
+    taskRepo,
+    orchestration: new OrchestrationEngine(taskEngine),
+  });
   const subtaskRepo = new SubtaskRepo(db);
   new AgentClassRepo(db).upsert(
     getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
@@ -68,13 +69,13 @@ function setup(rawResponse: string) {
   const runner = new SubtaskAttemptRunner({
     db,
     sessionId: 'session_1',
-    taskRuntimeService: { findTask: vi.fn().mockReturnValue(task()) } as never,
+    taskRuntimeService,
     subtaskRepo,
     workUnitClaimService: new WorkUnitClaimService(workUnitRepo),
     executionRuntime: executionRuntime as never,
     agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
   });
-  return { db, runner, subtaskRepo, workUnitRepo, executionRuntime, a, b };
+  return { db, runner, taskRuntimeService, subtaskRepo, workUnitRepo, executionRuntime, a, b };
 }
 
 function validResponse(): string {
@@ -116,7 +117,62 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
       .toEqual({ terminal_state: 'contract_blocked', raw_response: 'plain response without envelope' });
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
-    expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ claimedAttemptId: null });
+    expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({
+      status: 'blocked',
+      dependencies: [expect.objectContaining({
+        taskId: 'task_phase2',
+        type: 'manual',
+        status: 'waiting',
+        description: expect.stringContaining('completion_malformed'),
+      })],
+    });
+    expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
+      state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+    });
+    expect(setupResult.db.prepare(`
+      SELECT event_type, state, attempt_id FROM work_unit_events
+      WHERE work_unit_id = 'executor-codex' AND event_type IN ('failed', 'released')
+      ORDER BY rowid
+    `).all()).toEqual([
+      { event_type: 'failed', state: 'failed', attempt_id: outcome.attemptId },
+      { event_type: 'released', state: 'failed', attempt_id: outcome.attemptId },
+    ]);
+  });
+
+  it('terminates a stale attempt without leaving its Subtask running or releasing its WorkUnit as idle', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.executionRuntime.run.mockImplementationOnce(async () => {
+      setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled while executor was running');
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+        output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+
+    const outcome = await setupResult.runner.run({
+      executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli', executionMode: 'fresh',
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
+    expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'cancelled' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'blocked', error: 'Task, Subtask, or WorkUnit claim changed before commit',
+    });
+    expect(setupResult.db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get())
+      .toEqual({ terminal_state: 'cancelled_or_stale', error_code: 'attempt_stale' });
+    expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
+    expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
+      state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+    });
+    expect(setupResult.db.prepare(`
+      SELECT event_type, state, attempt_id FROM work_unit_events
+      WHERE work_unit_id = 'executor-codex' AND event_type IN ('failed', 'released')
+      ORDER BY rowid
+    `).all()).toEqual([
+      { event_type: 'failed', state: 'failed', attempt_id: outcome.attemptId },
+      { event_type: 'released', state: 'failed', attempt_id: outcome.attemptId },
+    ]);
   });
 
   it('blocks a handoff that would exceed the downstream aggregate budget', async () => {

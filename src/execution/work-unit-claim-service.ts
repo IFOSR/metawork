@@ -60,7 +60,12 @@ export class WorkUnitClaimService {
         'attempt_started',
         'claimed',
       ),
-      release: () => this.release(workUnit!.id),
+      release: () => this.release(
+        workUnit!.id,
+        input.taskId,
+        input.subtask.id,
+        input.attemptId,
+      ),
       markRunning: () => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'running'),
       heartbeat: () => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'running'),
       markWaiting: (message = 'work unit waiting') => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'waiting', message),
@@ -128,9 +133,21 @@ export class WorkUnitClaimService {
     this.recordEvent(workUnitId, taskId, subtaskId, attemptId, state, state, message);
   }
 
-  private release(workUnitId: string): void {
+  private release(workUnitId: string, taskId: string, subtaskId: string, attemptId: string): void {
     const existing = this.workUnitRepo.findById(workUnitId);
     if (!existing) return;
+    if (existing.claimedAttemptId !== attemptId) {
+      this.recordEvent(
+        workUnitId,
+        taskId,
+        subtaskId,
+        attemptId,
+        'release_skipped_stale',
+        existing.state,
+        `release skipped because WorkUnit is no longer claimed by attempt ${attemptId}`,
+      );
+      return;
+    }
     const claimedTaskId = existing.claimedTaskId;
     const claimedSubtaskId = existing.claimedSubtaskId;
     const claimedAttemptId = existing.claimedAttemptId;

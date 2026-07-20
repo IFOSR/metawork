@@ -194,12 +194,12 @@ describe('planner-first executor command acceptance', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
     const defaultExecutor: ExecutorAdapter = {
       name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn().mockImplementation(async input => ({
         success: true,
-        output: 'default executor completed research',
+        output: completionResponse(input, 'default executor completed research'),
         exitCode: 0,
         durationMs: 50,
-      }),
+      })),
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };

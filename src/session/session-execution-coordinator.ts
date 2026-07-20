@@ -215,13 +215,19 @@ export class SessionExecutionCoordinator {
   private async blockTask(
     taskId: string,
     reason: string,
-    finishExecution: (lines: string[]) => Promise<void>,
+    finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
   ): Promise<void> {
-    // Scheduler owns the Task blocked transition so the blocker record and
-    // interruption reason are persisted together with the dispatch state.
-    await this.deps.scheduler.markDispatchBlocked(taskId, reason);
+    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
+      this.deps.taskRuntimeService.blockTask(taskId, {
+        taskId,
+        type: 'manual',
+        description: reason,
+        status: 'waiting',
+      });
+    }
+    this.deps.scheduler.clearDispatch(taskId, reason);
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', reason, {});
-    await finishExecution([`Execution blocked: ${reason}`]);
+    await finishExecution([`Execution blocked: ${reason}`], true);
   }
 
   private async completeTask(input: {

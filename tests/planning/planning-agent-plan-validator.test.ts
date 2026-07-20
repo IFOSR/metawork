@@ -135,4 +135,21 @@ describe('validatePlanningAgentPlan', () => {
       'unknown_dependency: subtasks.1.dependencies.0.fromSubtaskId: subtask b depends on unknown subtask missing',
     );
   });
+
+  it('rejects a mergeable same-AgentClass chain through shared Work Graph validation', () => {
+    const candidate = plan([
+      subtask({ id: 'implement' }),
+      subtask({
+        id: 'verify',
+        dependencies: [{
+          fromSubtaskId: 'implement',
+          requiredItems: [{ key: 'result', type: 'text', description: 'implementation result' }],
+        }],
+      }),
+    ]);
+
+    expect(validatePlanningAgentPlan(candidate, catalog).errors).toContain(
+      'mergeable_same_agent_chain: subtasks.1.dependencies.0: subtasks implement -> verify form a mergeable codex-cli single chain',
+    );
+  });
 });

@@ -171,27 +171,49 @@ export class SubtaskAttemptRunner {
             errorDetail: detail,
           }));
           this.deps.subtaskRepo.updateStatus(subtask.id, 'blocked', { error: detail });
-          this.deps.db.prepare(`UPDATE tasks SET status = 'blocked', last_interruption_reason = ?, updated_at = ? WHERE id = ?`)
-            .run(detail, new Date().toISOString(), task.id);
+          this.deps.taskRuntimeService.blockTask(task.id, {
+            taskId: task.id,
+            type: 'manual',
+            description: detail,
+            status: 'waiting',
+          });
         });
         transaction();
+        claim.markFailed(detail);
         return { outcome: 'contract_blocked', attemptId, violations: completion.violations };
       }
 
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
-        this.persistFailure({
-          attemptId,
-          executionId: input.executionId,
-          taskId: task.id,
-          subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id,
-          agentClassName: agentClass.name,
-          startedAt,
-          terminalState: 'cancelled_or_stale',
-          rawResponse,
-          errorCode: 'attempt_stale',
-          errorDetail: 'Task, Subtask, or WorkUnit claim changed before commit',
-        });
+        const detail = 'Task, Subtask, or WorkUnit claim changed before commit';
+        this.deps.db.transaction(() => {
+          this.persistFailure({
+            attemptId,
+            executionId: input.executionId,
+            taskId: task.id,
+            subtaskId: subtask.id,
+            workUnitId: claim.workUnit.id,
+            agentClassName: agentClass.name,
+            startedAt,
+            terminalState: 'cancelled_or_stale',
+            rawResponse,
+            errorCode: 'attempt_stale',
+            errorDetail: detail,
+          });
+          if (this.deps.subtaskRepo.findById(subtask.id)?.status === 'running') {
+            this.deps.subtaskRepo.updateStatus(subtask.id, 'blocked', { error: detail });
+          }
+          if (this.deps.taskRuntimeService.findTask(task.id)?.status === 'running') {
+            this.deps.taskRuntimeService.blockTask(task.id, {
+              taskId: task.id,
+              type: 'manual',
+              description: detail,
+              status: 'waiting',
+            });
+          }
+        })();
+        if (this.isAttemptClaimCurrent(attemptId, claim.workUnit.id)) {
+          claim.markFailed(detail);
+        }
         return { outcome: 'cancelled_or_stale', attemptId, reason: 'attempt became stale before commit' };
       }
 
@@ -275,6 +297,12 @@ export class SubtaskAttemptRunner {
       && subtask?.status === 'running'
       && workUnit?.state === 'running'
       && workUnit.claimed_attempt_id === attemptId;
+  }
+
+  private isAttemptClaimCurrent(attemptId: string, workUnitId: string): boolean {
+    const workUnit = this.deps.db.prepare(`SELECT claimed_attempt_id FROM work_units WHERE id = ?`)
+      .get(workUnitId) as { claimed_attempt_id: string | null } | undefined;
+    return workUnit?.claimed_attempt_id === attemptId;
   }
 
   private persistFailure(input: {
