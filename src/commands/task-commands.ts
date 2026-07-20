@@ -358,10 +358,9 @@ export const taskCommand: CommandHandler = {
           return { type: 'text', content: `任务 #${taskId} 已暂停` };
 
         case 'resume': {
-          const { resumeSummary } = context.taskEngine.resume(taskId);
           return {
             type: 'text',
-            content: `任务 #${taskId} 已恢复\n上次进度: ${resumeSummary.lastProgress}\n下一步: ${resumeSummary.nextStep}`,
+            content: `任务 #${taskId} 已提交恢复请求`,
             data: {
               schedulerAction: 'resume',
               taskId,
@@ -389,16 +388,11 @@ export const taskCommand: CommandHandler = {
             .map(dependency => dependency.description)
             .filter(Boolean)
             .join('；');
-          for (const resourcePath of newlyProvidedResources) {
-            context.taskEngine.attachResource(taskId, resourcePath);
-          }
-
-          context.taskEngine.unblock(taskId);
           return {
             type: 'text',
             content: newlyProvidedResources.length > 0
-              ? `任务 #${taskId} 已解除阻塞，并新增资源 ${newlyProvidedResources.join(', ')}`
-              : `任务 #${taskId} 已解除阻塞`,
+              ? `任务 #${taskId} 已提交恢复请求，并附带资源 ${newlyProvidedResources.join(', ')}`
+              : `任务 #${taskId} 已提交恢复请求`,
             data: {
               schedulerAction: 'resume',
               taskId,

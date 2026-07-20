@@ -119,10 +119,20 @@ export class PlannerDataReader {
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, bounded) as Array<Record<string, unknown>>;
     const decisions = this.db.prepare(`
-      SELECT id, task_id, plan_json, outcome, reason, created_at
-      FROM planning_decisions WHERE session_id = ?
+      SELECT id, task_id, event_json, decision_json, action, reason, created_at
+      FROM kernel_decisions WHERE session_id = ? AND event_type = 'plan_proposed'
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
+    const legacyDecisions = this.db.prepare(`
+      SELECT id, task_id, plan_json, decision_json, outcome, reason, created_at
+      FROM planning_decisions_legacy_audit WHERE session_id = ?
+      ORDER BY created_at DESC LIMIT ?
+    `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
+    const recentPlanningDecisions = [
+      ...decisions.map(row => ({ kind: 'kernel' as const, row })),
+      ...legacyDecisions.map(row => ({ kind: 'legacy' as const, row })),
+    ].sort((left, right) => String(left.row.created_at).localeCompare(String(right.row.created_at)))
+      .slice(-Math.min(5, bounded));
     return {
       sessionId: this.sessionId,
       interactions: interactions.reverse().map(row => ({
@@ -133,8 +143,11 @@ export class PlannerDataReader {
         executorUsed: row.executor_used,
         createdAt: row.created_at,
       })),
-      recentPlanningDecisions: decisions.reverse().map((row) => {
-        const plan = safeJson<Record<string, unknown>>(row.plan_json, {});
+      recentPlanningDecisions: recentPlanningDecisions.map(({ kind, row }) => {
+        const event = kind === 'kernel' ? safeJson<Record<string, unknown>>(row.event_json, {}) : {};
+        const plan = kind === 'kernel'
+          ? isRecord(event.proposal) ? event.proposal : {}
+          : safeJson<Record<string, unknown>>(row.plan_json, {});
         const task = isRecord(plan.task) ? plan.task : {};
         const risk = isRecord(plan.risk) ? plan.risk : {};
         return {
@@ -143,7 +156,9 @@ export class PlannerDataReader {
           action: plan.action,
           control: task.control,
           targetTaskId: task.taskId,
-          outcome: row.outcome,
+          outcome: kind === 'kernel' ? 'issued' : row.outcome,
+          kernelAction: kind === 'kernel' ? row.action : null,
+          legacyAudit: kind === 'legacy',
           riskRequiresConfirmation: risk.requiresConfirmation === true,
           reason: truncateText(String(row.reason ?? ''), 320),
           createdAt: row.created_at,

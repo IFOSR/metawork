@@ -18,6 +18,17 @@ export const TaskStatus = {
 
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
+export const SubtaskStatus = {
+  READY: 'ready',
+  RUNNING: 'running',
+  AWAITING_DECISION: 'awaiting_decision',
+  BLOCKED: 'blocked',
+  DONE: 'done',
+  CANCELLED: 'cancelled',
+} as const;
+
+export type SubtaskStatus = (typeof SubtaskStatus)[keyof typeof SubtaskStatus];
+
 // ─── 任务快照 ───
 export interface TaskSnapshot {
   done: string[];           // 已完成内容
@@ -92,7 +103,7 @@ export interface Subtask {
   taskId: string;
   title: string;
   goal: string;
-  status: TaskStatus;
+  status: SubtaskStatus;
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
   requiredCapabilities: string[];

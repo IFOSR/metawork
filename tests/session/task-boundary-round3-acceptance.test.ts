@@ -774,7 +774,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(executionInput.context.taskBackground.id).toBe(parkedTask.id);
-    expect(session.getSnapshot().output.join('\n')).toContain(`Resuming parked task #${parkedTask.id}`);
+    expect(session.getSnapshot().output.join('\n')).toContain('resume parked task');
   });
 
   it('unblocks and resumes an explicitly requested blocked task instead of creating a new task', async () => {
@@ -838,6 +838,6 @@ describe('Round 3 task boundary acceptance', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
     const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(executionInput.context.taskBackground.id).toBe(blockedTask.id);
-    expect(session.getSnapshot().output.join('\n')).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
+    expect(session.getSnapshot().output.join('\n')).toContain('resume after capacity block');
   });
 });

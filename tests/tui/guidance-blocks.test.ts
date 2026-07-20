@@ -266,7 +266,7 @@ describe('App guidance blocks', () => {
 
     await waitFor(() => {
       expect(app.lastFrame()).toContain('当前建议');
-      expect(app.lastFrame()).toContain('场景: 解除阻塞后恢复');
+      expect(app.lastFrame()).toContain('resume after capacity block');
       expect(app.lastFrame()).toContain(blockedTask.id);
       expect(app.lastFrame()).toContain(blockedTask.title);
     });
@@ -336,7 +336,7 @@ describe('App guidance blocks', () => {
 
     await waitFor(() => {
       expect(app.lastFrame()).toContain('当前建议');
-      expect(app.lastFrame()).toContain('场景: 恢复已挂起任务');
+      expect(app.lastFrame()).toContain('resume parked task');
       expect(app.lastFrame()).toContain(parkedTask.id);
       expect(app.lastFrame()).toContain('刚被高优任务打断');
     });

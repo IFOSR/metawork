@@ -11,6 +11,7 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
+  COMPLETION_MARKER_V1,
   validateCompletionProtocol,
   type CompletionContractViolation,
   type CompletionHandoffV1,
@@ -24,7 +25,8 @@ export type ProgressCallback = (event: ExecutorProgressEvent, executor: Executor
 
 export type SubtaskAttemptOutcome =
   | { outcome: 'completed'; attemptId: string; output: string; artifacts: string[]; warnings: string[]; executorName: string; durationMs: number }
-  | { outcome: 'contract_blocked'; attemptId: string; violations: CompletionContractViolation[] }
+  | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
+  | { outcome: 'contract_failed'; attemptId: string; workUnitId: string; agentClassName: string; responseBytes: number; receiptCount: number; completionContract: unknown; violations: CompletionContractViolation[] }
   | { outcome: 'executor_failed'; attemptId: string; error: string }
   | { outcome: 'cancelled_or_stale'; attemptId: string; reason: string };
 
@@ -50,7 +52,38 @@ export class SubtaskAttemptRunner {
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
   }
 
+  supportsResponseOnly(agentClassName: string): boolean {
+    return this.deps.executionRuntime.supportsResponseOnly(agentClassName);
+  }
+
+  landHeartbeatLost(input: {
+    attemptId: string;
+    executionId: string;
+    taskId: string;
+    subtaskId: string;
+    workUnitId: string;
+    agentClassName: string;
+  }): void {
+    const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
+    if (!subtask || subtask.status === 'done' || this.receiptRepo.findByAttemptId(input.attemptId)) return;
+    const now = new Date().toISOString();
+    this.deps.db.transaction(() => {
+      this.receiptRepo.insert(buildReceipt({
+        ...input,
+        startedAt: now,
+        terminalState: 'heartbeat_lost',
+        rawResponse: '',
+        errorCode: 'heartbeat_lost',
+        errorDetail: 'WorkUnit lease expired before a terminal observation',
+      }, now));
+      this.deps.subtaskRepo.updateStatus(input.subtaskId, 'awaiting_decision', {
+        error: 'WorkUnit heartbeat lost',
+      });
+    })();
+  }
+
   async run(input: {
+    attemptId: string;
     executionId: string;
     taskId: string;
     subtaskId: string;
@@ -58,7 +91,7 @@ export class SubtaskAttemptRunner {
     executionMode: ExecutionMode;
     onProgress?: ProgressCallback;
   }): Promise<SubtaskAttemptOutcome> {
-    const attemptId = `attempt_${generateInteractionId()}`;
+    const attemptId = input.attemptId;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     if (!task || !subtask || subtask.taskId !== input.taskId || subtask.status !== 'ready') {
@@ -69,7 +102,7 @@ export class SubtaskAttemptRunner {
       subtask: { id: subtask.id, preferredAgentClassList: [input.agentClassName] },
       attemptId,
     });
-    if (!claim) return { outcome: 'executor_failed', attemptId, error: 'no executor WorkUnit is available' };
+    if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName: input.agentClassName };
 
     const startedAt = new Date().toISOString();
     let rawResponse = '';
@@ -117,20 +150,12 @@ export class SubtaskAttemptRunner {
       rawResponse = execution.output;
       if (execution.status !== 'success') {
         const error = execution.error ?? 'Executor failed without an error message';
-        this.persistFailure({
-          attemptId,
-          executionId: input.executionId,
-          taskId: task.id,
-          subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id,
-          agentClassName: agentClass.name,
-          startedAt,
-          terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed',
-          rawResponse,
-          errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed',
-          errorDetail: error,
+        this.persistNonSuccess({
+          attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
+          terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
+          errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
         });
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'blocked', { error });
         claim.markFailed(error);
         return execution.status === 'cancelled'
           ? { outcome: 'cancelled_or_stale', attemptId, reason: error }
@@ -170,23 +195,23 @@ export class SubtaskAttemptRunner {
             errorCode: completion.violations[0]?.code ?? 'completion_malformed',
             errorDetail: detail,
           }));
-          this.deps.subtaskRepo.updateStatus(subtask.id, 'blocked', { error: detail });
-          this.deps.taskRuntimeService.blockTask(task.id, {
-            taskId: task.id,
-            type: 'manual',
-            description: detail,
-            status: 'waiting',
-          });
+          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
         });
         transaction();
         claim.markFailed(detail);
-        return { outcome: 'contract_blocked', attemptId, violations: completion.violations };
+        return {
+          outcome: 'contract_failed', attemptId, workUnitId: claim.workUnit.id, agentClassName: agentClass.name,
+          responseBytes: Buffer.byteLength(rawResponse, 'utf8'),
+          receiptCount: this.receiptRepo.countByTerminal(task.id, subtask.id, 'contract_blocked'),
+          completionContract: built.context.completionContract,
+          violations: completion.violations,
+        };
       }
 
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
         const detail = 'Task, Subtask, or WorkUnit claim changed before commit';
         this.deps.db.transaction(() => {
-          this.persistFailure({
+          this.receiptRepo.insert(buildReceipt({
             attemptId,
             executionId: input.executionId,
             taskId: task.id,
@@ -198,17 +223,9 @@ export class SubtaskAttemptRunner {
             rawResponse,
             errorCode: 'attempt_stale',
             errorDetail: detail,
-          });
+          }));
           if (this.deps.subtaskRepo.findById(subtask.id)?.status === 'running') {
-            this.deps.subtaskRepo.updateStatus(subtask.id, 'blocked', { error: detail });
-          }
-          if (this.deps.taskRuntimeService.findTask(task.id)?.status === 'running') {
-            this.deps.taskRuntimeService.blockTask(task.id, {
-              taskId: task.id,
-              type: 'manual',
-              description: detail,
-              status: 'waiting',
-            });
+            this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
           }
         })();
         if (this.isAttemptClaimCurrent(attemptId, claim.workUnit.id)) {
@@ -262,20 +279,11 @@ export class SubtaskAttemptRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       try {
-        this.persistFailure({
-          attemptId,
-          executionId: input.executionId,
-          taskId: input.taskId,
-          subtaskId: input.subtaskId,
-          workUnitId: claim.workUnit.id,
-          agentClassName: input.agentClassName,
-          startedAt,
-          terminalState: 'executor_failed',
-          rawResponse,
-          errorCode: 'attempt_exception',
-          errorDetail: message,
+        this.persistNonSuccess({
+          attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
+          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          terminalState: 'executor_failed', rawResponse, errorCode: 'attempt_exception', errorDetail: message,
         });
-        this.deps.subtaskRepo.updateStatus(input.subtaskId, 'blocked', { error: message });
       } catch {
         // Preserve the original attempt exception; the finally block still clears the claim.
       }
@@ -284,6 +292,121 @@ export class SubtaskAttemptRunner {
     } finally {
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
+      claim.release();
+    }
+  }
+
+  async runCorrection(input: {
+    attemptId: string;
+    sourceAttemptId: string;
+    executionId: string;
+    taskId: string;
+    subtaskId: string;
+    agentClassName: string;
+    completionContract: unknown;
+    violations: CompletionContractViolation[];
+  }): Promise<SubtaskAttemptOutcome> {
+    const task = this.deps.taskRuntimeService.findTask(input.taskId);
+    const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
+    const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
+    if (!task || !subtask || subtask.status !== 'awaiting_decision' || !source || source.agentClassName !== input.agentClassName) {
+      return { outcome: 'cancelled_or_stale', attemptId: input.attemptId, reason: 'response-only correction source is stale' };
+    }
+    const claim = await this.deps.workUnitClaimService.claim({
+      taskId: task.id,
+      subtask: { id: subtask.id, preferredAgentClassList: [input.agentClassName] },
+      attemptId: input.attemptId,
+    });
+    if (!claim) return { outcome: 'capacity_unavailable', attemptId: input.attemptId, agentClassName: input.agentClassName };
+    const startedAt = new Date().toISOString();
+    try {
+      claim.startAttempt();
+      this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
+      claim.markRunning();
+      const prompt = buildCorrectionPrompt(source.rawResponse, input.completionContract, input.violations);
+      const result = await this.deps.executionRuntime.runResponseOnly(input.agentClassName, prompt, 128 * 1024);
+      if (!result?.success) {
+        const error = result?.error ?? 'AgentClass does not enforce response-only correction';
+        this.persistNonSuccess({
+          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          terminalState: 'executor_failed', rawResponse: result?.output ?? '', errorCode: 'correction_unavailable', errorDetail: error,
+        });
+        claim.markFailed(error);
+        return { outcome: 'executor_failed', attemptId: input.attemptId, error };
+      }
+      const allSubtasks = this.deps.subtaskRepo.listByTask(task.id);
+      const outgoingHandoffs = allSubtasks.flatMap(candidate => {
+        const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
+        return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
+      });
+      const targetPath = resolve(process.cwd(), 'metaclaw-tasks', task.id);
+      const completion = validateCompletionProtocol({
+        rawResponse: result.output,
+        subtask,
+        outgoingHandoffs,
+        targetPaths: [targetPath],
+        cwd: process.cwd(),
+        incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
+          contract.toSubtaskId,
+          summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
+        ])),
+      });
+      if (!completion.ok) {
+        const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
+        this.deps.db.transaction(() => {
+          this.receiptRepo.insert(buildReceipt({
+            attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+            workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+            terminalState: 'contract_blocked', rawResponse: result.output,
+            completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
+            violations: completion.violations, errorCode: completion.violations[0]?.code ?? 'completion_malformed', errorDetail: detail,
+          }));
+          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
+        })();
+        claim.markFailed(detail);
+        return {
+          outcome: 'contract_failed', attemptId: input.attemptId, workUnitId: claim.workUnit.id,
+          agentClassName: input.agentClassName, responseBytes: Buffer.byteLength(result.output, 'utf8'),
+          receiptCount: this.receiptRepo.countByTerminal(task.id, subtask.id, 'contract_blocked'),
+          completionContract: input.completionContract, violations: completion.violations,
+        };
+      }
+      const completedAt = new Date().toISOString();
+      this.deps.db.transaction(() => {
+        this.receiptRepo.insert(buildReceipt({
+          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 1, warnings: completion.warnings,
+        }, completedAt));
+        for (const handoff of completion.envelope.handoffs) {
+          this.handoffRepo.insert({
+            taskId: task.id, fromSubtaskId: subtask.id, toSubtaskId: handoff.toSubtaskId,
+            attemptId: input.attemptId, items: handoff.items, completionSchemaVersion: 1, createdAt: completedAt,
+          });
+        }
+        this.deps.subtaskRepo.updateStatus(subtask.id, 'done', {
+          result: completion.body, artifacts: completion.normalizedArtifacts,
+          verification: { warnings: completion.warnings, completionSchemaVersion: 1 }, error: null,
+        });
+      })();
+      return {
+        outcome: 'completed', attemptId: input.attemptId, output: completion.body,
+        artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
+        executorName: input.agentClassName, durationMs: result.durationMs,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.receiptRepo.findByAttemptId(input.attemptId)) {
+        this.persistNonSuccess({
+          attemptId: input.attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
+          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          terminalState: 'executor_failed', rawResponse: '', errorCode: 'correction_exception', errorDetail: message,
+        });
+      }
+      claim.markFailed(message);
+      return { outcome: 'executor_failed', attemptId: input.attemptId, error: message };
+    } finally {
       claim.release();
     }
   }
@@ -305,7 +428,7 @@ export class SubtaskAttemptRunner {
     return workUnit?.claimed_attempt_id === attemptId;
   }
 
-  private persistFailure(input: {
+  private persistNonSuccess(input: {
     attemptId: string;
     executionId: string;
     taskId: string;
@@ -318,7 +441,10 @@ export class SubtaskAttemptRunner {
     errorCode: string;
     errorDetail: string;
   }): void {
-    this.receiptRepo.insert(buildReceipt(input));
+    this.deps.db.transaction(() => {
+      this.receiptRepo.insert(buildReceipt(input));
+      this.deps.subtaskRepo.updateStatus(input.subtaskId, 'awaiting_decision', { error: input.errorDetail });
+    })();
   }
 }
 
@@ -370,4 +496,19 @@ function buildReceipt(input: {
     errorCode: input.errorCode ?? null,
     errorDetail: input.errorDetail ?? null,
   };
+}
+
+function buildCorrectionPrompt(
+  rawResponse: string,
+  completionContract: unknown,
+  violations: CompletionContractViolation[],
+): string {
+  return [
+    'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
+    'Return non-empty Markdown followed by exactly one completion trailer.',
+    `Trailer marker: ${COMPLETION_MARKER_V1}`,
+    `Completion contract:\n${JSON.stringify(completionContract, null, 2)}`,
+    `Violations:\n${JSON.stringify(violations, null, 2)}`,
+    `Original response:\n${rawResponse}`,
+  ].join('\n\n');
 }

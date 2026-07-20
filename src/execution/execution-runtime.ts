@@ -293,6 +293,16 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     return this.registry.isAvailable(name);
   }
 
+  supportsResponseOnly(name: string): boolean {
+    return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
+  }
+
+  async runResponseOnly(agentClassName: string, prompt: string, maxBytes: number) {
+    const executor = this.registry.resolve(agentClassName);
+    if (!executor?.executeResponseOnly) return null;
+    return executor.executeResponseOnly({ prompt, maxBytes });
+  }
+
   inspectExecutorRegistration(name: string): ExecutorRegistrationInspection {
     return this.registry.inspect(name);
   }

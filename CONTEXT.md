@@ -4,34 +4,34 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-The active natural-language path is `PlanningAgent -> PolicyKernel -> Runtime`. The isolated Codex `PlanningAgent` owns natural-language semantics and proposes a strict v4 `PlanningAgentPlan`. Its startup context is minimal; bounded read-only stdio MCP tools provide task, current-session, runtime, executor, and v2/v3 migration-audit facts on demand. The deterministic `PolicyKernel` validates or rewrites that plan and returns a `KernelDecision`. Runtime persists or recovers the authorized v4 graph, selects one ready Subtask, and delegates one complete attempt to `SubtaskAttemptRunner`.
+The active control path is `event -> snapshot -> ControlKernel.decide -> kernel_decisions -> Runtime apply -> normalized event`. The isolated Codex `PlanningAgent` owns natural-language semantics and proposes a strict v4 plan, but Planning and Runtime facts enter the same versioned Kernel event seam. The synchronous `KernelControlLoop` persists every Decision before applying its single high-level action.
 
 `src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v4 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v4 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3 parser, legacy intent route, semantic default, or keyword fallback.
 
-`src/kernel/` owns deterministic policy authorization. It may accept, rewrite, reject, or clarify a plan, but it must not write storage, claim work units, call executors, or send delivery messages.
+`src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
-`src/execution/subtask-attempt-runner.ts` is the deep execution module. It creates one attempt identity, claims one WorkUnit, builds the only `SubtaskExecutionContext`, starts attempt-scoped evidence access, invokes one Adapter, validates Completion Protocol v1, atomically persists terminal receipt/handoffs/clean result, and releases the same claim in `finally`. Contract and stale terminal paths block through the Task domain, finish any still-running Subtask, and record `failed` against the same attempt-bound WorkUnit before release. `src/execution/work-unit-claim-service.ts` owns WorkUnit state transitions and attempt-aware claims; release is guarded by attempt identity so an old attempt cannot clear a newer claim. It does not re-evaluate capabilities or perform fallback.
+`src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. Success atomically commits receipt, handoff, result and `done`; every non-success atomically commits a terminal receipt and `awaiting_decision`. It releases the WorkUnit before returning a normalized Kernel event. A first completion-contract failure may receive one response-only correction on the same AgentClass; the isolated correction has no normal Subtask context, evidence tools or writable workspace.
 
-Migration v22 renamed the Phase 1 `subtasks` table to read-only `subtasks_v3_audit` and created a v4-only production table with `dependencies_json`, `context_refs_json`, structured acceptance, artifacts, and verification. It also created immutable `subtask_handoffs`, terminal `executor_attempt_receipts`, materialized task evidence, and attempt-aware WorkUnit claims. Non-terminal tasks with v3 graphs are parked for explicit natural-language replan; terminal tasks remain terminal. `/task resume`, timers, and startup never perform semantic replan or implicit retry.
+Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. `awaiting_decision` is a Subtask-only state. `/task resume` and `/task unblock` submit `dispatch_requested` before changing execution state; startup blocks orphaned work through a persisted Kernel decision; timers reconsider only ledger-authorized capacity blocks.
 
-The legacy routing/intent subsystem (`src/core/executor-router.ts`, `src/core/intent-orchestrator.ts`, `src/core/semantic-intent-router.ts`, `src/core/execution-planning-service.ts`, `src/routing/execution-policy-planner.ts`, and the `src/planner/` skill subtree) has been fully removed. The active execution path is `PlanningAgent → PolicyKernel → SessionExecutionCoordinator → WorkGraphRuntimeService → SubtaskAttemptRunner`; do not reintroduce a parallel routing or Executor-input layer.
+The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The active path is `PlanningAgent → ControlKernel → KernelControlLoop → Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter.
 
 Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions. A missing non-canonical configured default is materialized as an unclassified AgentClass with no routing capabilities, while an existing non-canonical class is not rewritten. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability metadata is irreversibly replaced by the controlled Routing Capability IDs. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. The retired `executor_profiles` table is removed by migration v20.
 
-When touching dispatch, update focused behavior tests around the active path first: PlanningAgent/PolicyKernel, work-graph runtime service, work unit claim service, session execution coordinator, execution runtime, and storage migrations. Attempt terminal regressions are anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`; do not replace them with source-text assertions.
+When touching dispatch, update focused behavior tests around `ControlKernel`, `KernelControlLoop`, the decision ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
 
 ## Routing Language
 
 **Task**:
-A user-opened conversation window with a unique id and its own durable context, including user messages, task state, execution results, and later re-entry. A task may contain multiple subtasks, and tasks and subtasks use the same task state vocabulary.
+A durable top-level unit of user work. Phase 3 admits at most one active top-level Task while a Task may contain multiple Subtasks.
 _Avoid_: request, prompt, executor run, browser tab
 
 **Subtask**:
-A decomposed piece of work inside a task, planned so it can be claimed and executed by one work unit at a time. Subtasks share the task state vocabulary rather than having a separate lifecycle language.
+A decomposed piece of work inside a Task, planned so it can be claimed and executed by one WorkUnit at a time. Its lifecycle is `ready | running | awaiting_decision | blocked | done | cancelled`.
 _Avoid_: work unit, executor instance, raw prompt
 
 **Task State**:
-The shared lifecycle vocabulary for tasks and subtasks, currently including states such as created, ready, running, parked, blocked, done, archived, and cancelled.
+The top-level Task lifecycle: created, ready, running, parked, blocked, done, archived, and cancelled. It never contains `awaiting_decision`.
 _Avoid_: executor state, work unit state
 
 **Agent Class**:
@@ -55,19 +55,19 @@ The small interface exposed by a planner work unit: given a planning context, re
 _Avoid_: policy kernel, session intent service, executor
 
 **PlanningAgentPlan**:
-A strict v4 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until the PolicyKernel accepts or rewrites it.
+A strict v4 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until a `plan_proposed` event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
 _Avoid_: runtime command, task event, execution policy
 
-**PolicyKernel**:
-The deterministic authorization module that validates or rewrites a PlanningAgentPlan against the current RuntimeSnapshot. It is the only natural-language policy seam allowed to approve task creation, task control, work graph persistence, executor selection, or clarification.
+**ControlKernel**:
+The pure deterministic decision module for Planning, dispatch, capacity, execution outcome, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
 _Avoid_: planning agent, runtime applier, executor router
 
 **KernelDecision**:
-The PolicyKernel output that the runtime may apply. It records whether the plan was accepted, rewritten, rejected, or converted into clarification, and contains the runtime action to perform.
+The one high-level authorization that Runtime may apply. Its identity is deterministically derived from the triggering event ID.
 _Avoid_: raw plan, route decision, executor output
 
-**RuntimeSnapshot**:
-The immutable view of current session, task, subtask, agent class, and work-unit state used by the PolicyKernel to decide whether a plan is allowed.
+**KernelSnapshot**:
+The minimal, complete and bounded immutable facts required for one Kernel event.
 _Avoid_: live repository handle, mutable runtime state, session transcript
 
 **Executor**:

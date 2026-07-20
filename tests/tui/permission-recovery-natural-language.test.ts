@@ -128,7 +128,7 @@ describe('App permission recovery natural-language control', () => {
 
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.id).toBe(blockedTask.id);
-    expect(app.lastFrame()).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
+    expect(app.lastFrame()).toContain('阻塞已解除，任务重新具备执行条件');
 
     app.unmount();
     app.cleanup();

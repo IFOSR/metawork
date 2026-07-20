@@ -125,8 +125,8 @@ describe('scripted session', () => {
     });
 
     expect(executor.execute).not.toHaveBeenCalled();
-    expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已解除阻塞，并新增资源 /tmp/evidence-v3.pdf`);
-    expect(result.output.join('\n')).toContain('task has no v4 work graph; continue in natural language to trigger replanning');
+    expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已提交恢复请求，并附带资源 /tmp/evidence-v3.pdf`);
+    expect(result.output.join('\n')).toContain('work graph is missing; replanning is required');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('parked');
   });
 
@@ -451,7 +451,7 @@ describe('scripted session', () => {
     expect(blockedTask).toBeTruthy();
     const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
     expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('completion_malformed:marker:');
+    expect(result.output.join('\n')).toContain('response-only correction is unavailable or already exhausted');
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 });

@@ -5,6 +5,7 @@ export type ExecutorAttemptTerminalState =
   | 'completed'
   | 'contract_blocked'
   | 'executor_failed'
+  | 'heartbeat_lost'
   | 'cancelled_or_stale';
 
 export interface ExecutorAttemptReceipt {
@@ -53,5 +54,35 @@ export class ExecutorAttemptReceiptRepo {
       receipt.errorCode,
       receipt.errorDetail,
     );
+  }
+
+  countByTerminal(taskId: string, subtaskId: string, terminalState: ExecutorAttemptTerminalState): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM executor_attempt_receipts
+      WHERE task_id = ? AND subtask_id = ? AND terminal_state = ?
+    `).get(taskId, subtaskId, terminalState) as { count: number };
+    return row.count;
+  }
+
+  findByAttemptId(attemptId: string): ExecutorAttemptReceipt | null {
+    const row = this.db.prepare('SELECT * FROM executor_attempt_receipts WHERE attempt_id = ?').get(attemptId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      attemptId: String(row.attempt_id),
+      executionId: String(row.execution_id),
+      taskId: String(row.task_id),
+      subtaskId: String(row.subtask_id),
+      workUnitId: String(row.work_unit_id),
+      agentClassName: String(row.agent_class_name),
+      startedAt: String(row.started_at),
+      completedAt: String(row.completed_at),
+      terminalState: row.terminal_state as ExecutorAttemptTerminalState,
+      rawResponse: String(row.raw_response),
+      completionSchemaVersion: row.completion_schema_version == null ? null : Number(row.completion_schema_version),
+      parsing: JSON.parse(String(row.parsing_json)) as Record<string, unknown>,
+      verification: JSON.parse(String(row.verification_json)) as ExecutorAttemptReceipt['verification'],
+      errorCode: row.error_code == null ? null : String(row.error_code),
+      errorDetail: row.error_detail == null ? null : String(row.error_detail),
+    };
   }
 }

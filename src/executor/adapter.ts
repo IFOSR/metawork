@@ -22,6 +22,7 @@ export interface ExecutorProgressEvent {
 export interface ExecutorAdapter {
   readonly name: string;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
+  executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
   installSkill?(pkg: import('./skill-package-builder.js').ExecutorSkillPackage): Promise<ExecutorSkillInstallResult>;
   updateSkill?(pkg: import('./skill-package-builder.js').ExecutorSkillPackage): Promise<ExecutorSkillInstallResult>;
   disableSkill?(target: ExecutorSkillGovernanceTarget): Promise<ExecutorSkillInstallResult>;

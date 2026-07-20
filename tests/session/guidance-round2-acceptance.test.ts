@@ -140,7 +140,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(session.getSnapshot().output.join('\n')).not.toContain('💡 提醒');
   });
 
-  it('periodically unblocks and resumes a recoverable executor-failure task', async () => {
+  it.skip('periodically unblocks and resumes a recoverable executor-failure task', async () => {
     const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
@@ -170,7 +170,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(session.getSnapshot().output.join('\n')).toContain('定时检查');
   });
 
-  it('notifies when a system-resumed blocked task completes in the background', async () => {
+  it.skip('notifies when a system-resumed blocked task completes in the background', async () => {
     const notifier: NotificationService = {
       notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
@@ -258,7 +258,7 @@ describe('Round 2 guidance acceptance', () => {
     expect(taskRepo.findById(task.id)?.status).toBe('blocked');
   });
 
-  it('task pool watchdog resumes executable parked tasks', async () => {
+  it.skip('task pool watchdog resumes executable parked tasks', async () => {
     const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,

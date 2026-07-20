@@ -14,11 +14,14 @@ Do not bulk-load archived ADRs. Open one only when investigating why an older de
 
 ADR-0021 is the current authority for the strict Work Graph v4, Subtask execution context, dependency handoff, completion envelope, execution evidence, and minimal attempt receipt. ADR-0019 remains authority only for v3 historical and migration context.
 
+ADR-0022 is the current authority for the unified Phase 3 Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and response-only correction.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
+| Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and response-only correction |
 | v4 work graph and Subtask execution | [ADR-0021](0021-work-graph-v4-subtask-execution-contract.md) | strict v4 dependencies, context refs, handoff protocol, completion envelope, evidence port and attempt receipt |
 | v3 work graph and durable execution facts | [ADR-0019](0019-planning-agent-plan-v3-work-graph-authority.md) | strict schema v3, graph authority, Planner/Kernel validation, v3 persistence and Runtime apply/recovery |
 | Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |

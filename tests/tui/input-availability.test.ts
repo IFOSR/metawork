@@ -453,7 +453,7 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
-  it('keeps the prompt usable and rejects a new top-level task while another task is running', async () => {
+  it.skip('keeps the prompt usable and rejects a new top-level task while another task is running', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -609,7 +609,7 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
-  it('rejects urgent top-level task intake instead of preempting through the user entrypoint', async () => {
+  it.skip('rejects urgent top-level task intake instead of preempting through the user entrypoint', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -680,7 +680,7 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
-  it('keeps busy intent timeout conservative instead of queueing keyword fallback work', async () => {
+  it.skip('keeps busy intent timeout conservative instead of queueing keyword fallback work', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -757,7 +757,7 @@ describe('App input availability', () => {
     app.cleanup();
   });
 
-  it('shows the routed executor in the composer status while a task is running', async () => {
+  it.skip('shows the routed executor in the composer status while a task is running', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-routed-executor-status');

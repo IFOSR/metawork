@@ -71,7 +71,7 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -136,7 +136,7 @@ describe('runMigrations', () => {
       'lease_expires_at',
     ]));
 
-    const planningDecisionColumns = db.prepare('PRAGMA table_info(planning_decisions)').all() as Array<{ name: string }>;
+    const planningDecisionColumns = db.prepare('PRAGMA table_info(planning_decisions_legacy_audit)').all() as Array<{ name: string }>;
     expect(planningDecisionColumns.map(column => column.name)).toEqual(expect.arrayContaining([
       'id',
       'session_id',
@@ -146,6 +146,26 @@ describe('runMigrations', () => {
       'plan_json',
       'decision_json',
       'outcome',
+      'reason',
+      'created_at',
+    ]));
+
+    const kernelDecisionColumns = db.prepare('PRAGMA table_info(kernel_decisions)').all() as Array<{ name: string }>;
+    expect(kernelDecisionColumns.map(column => column.name)).toEqual(expect.arrayContaining([
+      'id',
+      'schema_version',
+      'event_id',
+      'event_type',
+      'correlation_id',
+      'causation_id',
+      'session_id',
+      'task_id',
+      'subtask_id',
+      'attempt_id',
+      'event_json',
+      'snapshot_json',
+      'decision_json',
+      'action',
       'reason',
       'created_at',
     ]));
@@ -227,7 +247,7 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT id FROM executor_route_events').all()).toEqual([{ id: 'route-1' }]);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 22 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 23 });
   });
 
   it('hard-cuts v20 subtasks through audit tables to an empty v4 graph and parks unfinished tasks', () => {
@@ -290,6 +310,6 @@ describe('runMigrations', () => {
       claimed_subtask_id: null,
       claimed_attempt_id: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 22 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 23 });
   });
 });

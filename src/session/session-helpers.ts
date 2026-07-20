@@ -1,7 +1,7 @@
 // Shared structural session helpers for execution requests, inline resources,
 // editor submission, and preference capture.
 import type { TaskRecoveryTrigger } from '../core/types.js';
-import type { PlanningAgentPlan } from '../planning/planning-types.js';
+import type { WorkGraphProposal } from '../work-graph/types.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
 export {
   extractInlineResourceMatches,
@@ -13,7 +13,7 @@ export type QueuedExecutionRequest = {
   userPrompt: string;
   contextTaskId: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
-  planningPlan?: PlanningAgentPlan | null;
+  authorizedWorkGraph?: WorkGraphProposal | null;
   kernelDecisionId?: string | null;
   origin?: 'user' | 'system';
   schedulingReason?: string;

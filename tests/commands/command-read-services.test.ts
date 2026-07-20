@@ -145,15 +145,17 @@ describe('command fact queries', () => {
       },
     };
     db.prepare(`
-      INSERT INTO planning_decisions (
-        id, session_id, request_id, task_id, user_input, plan_json,
-        decision_json, outcome, reason, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, created_at
+      ) VALUES (?, 1, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
     `).run(
-      'decision-1', 'session-feedback', 'request-1', task.id, '实现功能',
-      JSON.stringify(proposedPlan),
-      JSON.stringify({ outcome: 'accepted', runtimeAction: 'plan_work_graph', reason: 'approved', plan: approvedPlan }),
-      'accepted', 'approved', '2026-07-14T10:00:00.000Z',
+      'decision-1', 'event-1', 'request-1', 'session-feedback', task.id,
+      JSON.stringify({ schemaVersion: 1, type: 'plan_proposed', id: 'event-1', correlationId: 'request-1', causationId: null, occurredAt: '2026-07-14T10:00:00.000Z', sessionId: 'session-feedback', taskId: task.id, proposal: proposedPlan }),
+      JSON.stringify({ schemaVersion: 1, type: 'plan_admission' }),
+      JSON.stringify({ schemaVersion: 1, id: 'decision-1', eventId: 'event-1', action: { type: 'authorize_task_plan', taskId: task.id, task: {}, workGraph: approvedPlan.workGraph }, reason: 'approved' }),
+      'authorize_task_plan', 'approved', '2026-07-14T10:00:00.000Z',
     );
     const workUnitRepo = new WorkUnitRepo(db);
     workUnitRepo.upsert({
@@ -176,8 +178,8 @@ describe('command fact queries', () => {
 
     expect(result.content).toContain('1. Planner 提议');
     expect(result.content).toContain('claude-code');
-    expect(result.content).toContain('2. PolicyKernel 决策');
-    expect(result.content).toContain('outcome=accepted');
+    expect(result.content).toContain('2. ControlKernel 决策');
+    expect(result.content).toContain('outcome=issued');
     expect(result.content).toContain('3. WorkUnit 过程');
     expect(result.content).toContain('claimed');
     expect(result.content).toContain('4. Executor 结果');

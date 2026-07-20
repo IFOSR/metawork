@@ -261,7 +261,7 @@ describe('MetaclawSession planning-agent routing', () => {
       taskId: task.id,
       type: 'manual',
       status: 'waiting',
-      description: expect.stringContaining('completion_patch_evidence_missing'),
+      description: 'response-only correction is unavailable or already exhausted',
     })]);
     expect(db.prepare('SELECT status, result FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({
       status: 'blocked',
@@ -285,7 +285,7 @@ describe('MetaclawSession planning-agent routing', () => {
       WHERE task_id = ? AND event_type = 'phase2_execution_blocked'
     `).get(task.id)).toEqual({ count: 1 });
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('completion_patch_evidence_missing');
+    expect(output).toContain('response-only correction is unavailable or already exhausted');
     expect(output).not.toContain('completed 1 Subtask(s)');
   });
 });

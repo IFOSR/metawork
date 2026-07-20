@@ -158,7 +158,7 @@ export class CodexPlanningAgent implements PlanningAgent {
       '- plan_work_graph、resume_task、recover_blocked 必须设置 task.priority={level,reason}。',
       '- 其他动作的 task.priority 必须是 null。',
       '- status_query scope 只能是 dashboard/blocked/running；clear_tasks scope 只能是 all/parked/blocked。',
-      '- 风险动作设置 risk.requiresConfirmation=true；PolicyKernel 会阻止执行并要求确认。',
+      '- 风险动作设置 risk.requiresConfirmation=true；ControlKernel 会阻止执行并要求确认。',
       '',
       `用户输入：${context.userInput}`,
       `Initial long-term memory and conversation history: ${JSON.stringify(context.initialContext)}`,

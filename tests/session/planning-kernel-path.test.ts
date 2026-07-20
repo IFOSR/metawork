@@ -4,13 +4,13 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { ObservationRepo } from '../../src/storage/observation-repo.js';
-import { PlanningDecisionRepo } from '../../src/storage/planning-decision-repo.js';
+import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import { PolicyKernel } from '../../src/kernel/policy-kernel.js';
+import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
@@ -107,7 +107,7 @@ function createSession(
     availableExecutorCommands: new Set(['codex']),
   });
   session.initialize({ resumeStartupTasks: false });
-  return { db, session, taskRepo, memoryEngine, executor, planningDecisionRepo: new PlanningDecisionRepo(db), sessionId };
+  return { db, session, taskRepo, memoryEngine, executor, kernelDecisionRepo: new KernelDecisionRepo(db), sessionId };
 }
 
 // Behavior-first coverage of the PlanningAgent -> PolicyKernel -> Runtime seam.
@@ -220,11 +220,10 @@ describe('natural-language planning/kernel path', () => {
     expect(createdTask).toBeDefined();
     expect(harness.executor.execute).toHaveBeenCalledTimes(1);
 
-    const audits = harness.planningDecisionRepo.listBySession('sess_durable');
-    expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('plan_work_graph');
-    expect(['accept', 'rewrite']).toContain(audits[0]!.outcome);
-    expect(audits[0]!.taskId).toBe(createdTask!.id);
+    const audits = harness.kernelDecisionRepo.listBySession('sess_durable');
+    expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
+    expect(audits.some(audit => audit.action === 'dispatch_attempt')).toBe(true);
+    expect(audits.some(audit => audit.action === 'complete_task')).toBe(true);
   });
 
   it('handles a direct reply without creating a task and audits it', async () => {
@@ -250,18 +249,14 @@ describe('natural-language planning/kernel path', () => {
     expect(harness.taskRepo.findAll()).toHaveLength(0);
     expect(harness.executor.execute).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你好，我是 MetaClaw。');
-    const audits = harness.planningDecisionRepo.listBySession('sess_direct');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_direct');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
-    expect(audits[0]!.outcome).toBe('accept');
+    expect(audits[0]!.action).toBe('deliver_direct_reply');
     expect(audits[0]!.taskId).toBeNull();
   });
 
-  it('short-circuits the kernel decide() round-trip for a direct reply while still auditing', async () => {
-    // A direct_reply is a read-only answer the planner already produced and
-    // validated; the session authorizes it directly instead of running the full
-    // authorization round-trip. Behavior (audit + delivery) must be unchanged.
-    const decideSpy = vi.spyOn(PolicyKernel.prototype, 'decide');
+  it('routes direct replies through the same persisted decide() seam', async () => {
+    const decideSpy = vi.spyOn(ControlKernel.prototype, 'decide');
     const harness = createSession('sess_shortcircuit', plan({
       action: 'direct_reply',
       reason: '普通对话',
@@ -281,13 +276,12 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('今天星期几', { awaitAsyncWork: true });
 
-    expect(decideSpy).not.toHaveBeenCalled();
+    expect(decideSpy).toHaveBeenCalledTimes(1);
     expect(harness.executor.execute).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('今天是星期四。');
-    const audits = harness.planningDecisionRepo.listBySession('sess_shortcircuit');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_shortcircuit');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
-    expect(audits[0]!.outcome).toBe('accept');
+    expect(audits[0]!.action).toBe('deliver_direct_reply');
 
     decideSpy.mockRestore();
   });
@@ -309,10 +303,9 @@ describe('natural-language planning/kernel path', () => {
     expect(output).not.toContain('→ 输入：');
     expect(output).not.toContain('→ 判断：');
     expect(output).not.toContain('confidence=');
-    const audits = harness.planningDecisionRepo.listBySession('sess_clarify');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_clarify');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.outcome).toBe('clarify');
-    expect(audits[0]!.decision.runtimeAction).toBe('clarification');
+    expect(audits[0]!.action).toBe('request_clarification');
   });
 
   it('maps executor rejection to a user-safe action while preserving the audit reason', async () => {
@@ -326,7 +319,7 @@ describe('natural-language planning/kernel path', () => {
     expect(output).toContain('当前请求未通过执行校验，请调整请求后重试。');
     expect(output).not.toContain('PolicyKernel rejected request');
     expect(output).not.toContain('no available executor agent class');
-    const [audit] = harness.planningDecisionRepo.listBySession('sess_reject_executor');
+    const [audit] = harness.kernelDecisionRepo.listBySession('sess_reject_executor');
     expect(audit?.reason).toContain('preferredAgentClassList');
   });
 });

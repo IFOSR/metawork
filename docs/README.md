@@ -7,7 +7,7 @@ This directory contains both current technical documentation and historical plan
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
-- [CONTEXT](../CONTEXT.md): current PlanningAgent, PolicyKernel, and work-unit migration vocabulary.
+- [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
 ## Releases
 
@@ -27,14 +27,14 @@ Key recent ADRs:
 - [ADR-0018: Supported Routing Contracts And Unified Executor Definitions](adr/0018-supported-routing-contracts-and-unified-executor-definitions.md)
 - [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
 - [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
+- [ADR-0022: Unified Kernel Control Plane And Decision Ledger](adr/0022-unified-kernel-control-plane-and-decision-ledger.md): current event, snapshot, decision, ledger, Subtask and synchronous-loop contract delivered by Phase 3.
 
 The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md).
 
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
-
-Phase 3 (Kernel control-plane convergence) is the active roadmap stage; its implementation plans have not yet been opened.
+Phase 4 (recovery, fallback, retry, and circuit breaking) is the active roadmap stage. Its detailed implementation plan has not yet been written.
 
 ## Historical Plans
 
@@ -45,6 +45,8 @@ The completed [Phase 1 work-graph semantics convergence plan](archive/plans/2026
 The completed [Phase 2 overall action plan](archive/plans/2026-07-17-phase-2-executor-scope-and-dependency-handoff.md) and [detailed implementation plan](archive/plans/2026-07-17-phase-2-executor-scope-and-handoff-detailed-implementation-plan.md) record the Work Graph v4, execution-scope, evidence, completion, handoff, attempt, migration, and validation contracts.
 
 The completed [Phase 2 attempt-terminal and Work Graph regression fix plan](archive/plans/2026-07-20-phase-2-attempt-terminal-and-work-graph-regression-fix-plan.md) records the pre-Phase-3 hardening of blocked/stale terminal ownership, attempt-safe release, restored Phase 1 topology rules, and behavior-test coverage.
+
+The completed [Phase 3 overall action plan](archive/plans/2026-07-20-phase-3-kernel-control-plane-convergence.md) and [detailed implementation plan](archive/plans/2026-07-20-phase-3-kernel-control-plane-detailed-implementation-plan.md) record the unified ControlKernel, decision ledger, synchronous control loop, capacity handling, outcome landing, response-only correction, and validation evidence.
 
 ## Operational Notes
 

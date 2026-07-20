@@ -101,9 +101,9 @@ describe('blocked task user journey', () => {
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('执行器网络连接失败，请检查网络或代理配置');
+    expect(blockedTask.dependencies[0]?.description).toBe('executor_failed requires explicit recovery');
     let output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Execution blocked: 执行器网络连接失败，请检查网络或代理配置');
+    expect(output).toContain('Execution blocked: executor_failed requires explicit recovery');
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
@@ -117,8 +117,8 @@ describe('blocked task user journey', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
-    expect(output).toContain('no ready Subtask; unfinished nodes remain blocked');
+    expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);
+    expect(output).toContain('no ready Subtask while work remains');
     expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
     expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();
   });

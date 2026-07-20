@@ -73,10 +73,22 @@ export class WorkUnitClaimService {
     };
   }
 
+  async probe(agentClassName: string): Promise<boolean> {
+    if (this.workUnitRepo.findIdleByKind('executor', [agentClassName])) return true;
+    return Boolean(await this.provisionExecutor(agentClassName));
+  }
+
   sweepExpired(now = new Date()): WorkUnit[] {
     const lost = this.workUnitRepo.markHeartbeatLost(now.toISOString());
     for (const workUnit of lost) {
       this.recordEvent(workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId, workUnit.claimedAttemptId, 'heartbeat_lost', 'heartbeat_lost');
+      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost', {
+        claimedTaskId: null,
+        claimedSubtaskId: null,
+        claimedAttemptId: null,
+        leaseExpiresAt: null,
+      });
+      this.recordEvent(workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId, workUnit.claimedAttemptId, 'released', 'heartbeat_lost');
     }
     return lost;
   }

@@ -4,15 +4,14 @@
 
 AnyFusion is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
 
-It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, PlanningAgent/PolicyKernel decision layer, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
+It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
 ## What AnyFusion Does
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
-- Auto-resumes executable parked tasks when the scheduler is idle.
-- Uses semantic priority, not keyword matching, for scheduler ordering when work is eligible to run.
-- Enforces one active top-level task at a time while the PlanningAgent/PolicyKernel and work-unit dispatch layers are being hardened.
+- Enforces one active top-level task and a single synchronous Kernel control loop in Phase 3.
+- Persists Planning and Runtime decisions in one append-only `kernel_decisions` ledger before applying them.
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
@@ -36,37 +35,30 @@ flowchart LR
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v4<br/>intent, target, risk,<br/>typed work graph proposal]
-  Plan --> Kernel[PolicyKernel<br/>schema, state, conflict,<br/>confirmation and catalog]
-  Kernel --> Decision{KernelDecision}
-  Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>deliver plan.response.directReply, no executor]
-  Decision -->|clarification| Clarify[Clarification<br/>ask for missing input]
-  Decision -->|task_control| Control[Task control runtime<br/>status, resume, clear, recover]
-  Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>create or bind task]
-  Decision -->|reject/no_action| Stop[No execution<br/>preserve state]
+  Plan --> Event[KernelEvent<br/>plan_proposed]
+  Event --> Loop[KernelControlLoop<br/>snapshot, decide, ledger, apply]
+  Loop --> Kernel[ControlKernel<br/>one pure decide interface]
+  Kernel --> Decision{KernelDecision<br/>one action}
+  Decision --> Runtime[Runtime handlers]
+  Runtime --> Observation[Normalized KernelEvent]
+  Observation --> Loop
 
-  Runtime --> TaskOS[Task OS<br/>TaskRuntimeService and Scheduler]
-  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>serial ready-node shell]
-  ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>apply approved work graph]
+  Runtime --> GraphRuntime[WorkGraphRuntimeService<br/>apply authorized work graph]
   GraphRuntime --> Graph[Work Graph<br/>persisted Subtasks]
   Graph --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
   Context --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
   Executors --> Verify[Completion Protocol v1<br/>evidence, handoffs, artifacts]
   Verify --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
-  Conversation --> Delivery
-  Clarify --> Delivery
-  Control --> Delivery
-  Stop --> Delivery
   Delivery --> User
 
   Session <--> Store[(Local SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
-  Kernel -. audit .-> Decisions[(planning_decisions)]
-  TaskOS <--> Store
+  Loop --> Decisions[(kernel_decisions)]
   Graph <--> Store
   Attempt <--> Store
 ```
 
-Every natural-language input enters one runtime, then an isolated Codex planner exposes `PlanningAgent` and proposes a strict v4 `PlanningAgentPlan`. Its startup context is minimal and it reads bounded task/session/runtime/executor and migration-audit facts through a read-only stdio MCP only when needed. `PolicyKernel` validates state and conflicts, independently certifies the shared Work Graph contract and static capability coverage, filters dynamically unavailable AgentClasses, and revalidates any rewrite. Runtime persists or recovers the authorized v4 graph and runs one ready Subtask at a time through `SubtaskAttemptRunner`.
+Every natural-language input becomes `plan_proposed`; deterministic commands become `dispatch_requested`; attempts return capacity, outcome or contract facts. `ControlKernel` validates Planning admission, selects the ready Subtask and ordered AgentClass, lands execution outcomes, and authorizes timer capacity probes. Runtime applies no unpersisted strategy.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
@@ -76,12 +68,13 @@ The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented 
 flowchart LR
   Input[User asks a question] --> Planning[PlanningAgent]
   Planning --> Plan[PlanningAgentPlan<br/>direct_reply]
-  Plan --> Kernel[PolicyKernel]
-  Kernel --> Decision[KernelDecision<br/>direct_reply]
-  Decision --> Runtime[KernelDecisionApplier]
+  Plan --> Event[plan_proposed]
+  Event --> Kernel[ControlKernel]
+  Kernel --> Decision[deliver_direct_reply]
+  Decision --> Runtime[Session Kernel Runtime]
   Runtime --> Deliver[deliverDirectReply<br/>surface plan.response.directReply]
   Deliver --> Answer[Final answer]
-  Answer --> Persist[Record interaction<br/>and planning_decision]
+  Answer --> Persist[Record interaction;<br/>decision already in kernel_decisions]
   Answer --> UI[TUI or Feishu]
 ```
 
@@ -93,12 +86,11 @@ This path is still semantic. The PlanningAgent (read-only sandbox) resolves "con
 flowchart LR
   Input[User asks AnyFusion to do work] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
-  Proposal --> Kernel[PolicyKernel<br/>authorize or rewrite]
-  Kernel --> Decision[KernelDecision<br/>plan_work_graph]
-  Decision --> Apply[KernelDecisionApplier]
+  Proposal --> Kernel[ControlKernel<br/>authorize or reject]
+  Kernel --> Decision[authorize_task_plan]
+  Decision --> Apply[KernelControlLoop Runtime apply]
   Apply --> Task[TaskRuntimeService<br/>create or bind task]
-  Task --> Scheduler[SchedulerEngine<br/>readiness, priority, idle resume]
-  Scheduler --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply approved graph]
+  Task --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply authorized graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>persist Subtasks]
   WorkGraph --> Ready[Ready Subtask<br/>direct dependency handoffs satisfied]
   Ready --> Attempt[SubtaskAttemptRunner<br/>claim, context, one adapter call]
@@ -111,7 +103,7 @@ flowchart LR
 
 This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, and verification matter. The first production version keeps one admitted top-level task and advances ready subtasks serially inside that task.
 
-The current natural-language path deliberately allows only one active top-level task at a time. Direct replies, clarifications, status queries, clear-task commands, and requests that reference the active task itself are still allowed. A new unrelated top-level task is rejected by `PolicyKernel` with a visible message until the active task is finished or cancelled. Slash-command and deterministic execution paths still use the existing task-admission gate. This keeps the user path predictable while the planning-agent, policy-kernel, and work-unit lifecycle layers are being hardened.
+Phase 3 deliberately allows only one active top-level Task. Direct replies, clarifications and non-executing domain commands remain available. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no TaskAdmissionGate shortcut. Multi-Task queueing, preemption and parked auto-resume return in Phase 6 on the partition and lease foundations.
 
 ### Feishu And Progress Path
 
@@ -762,33 +754,22 @@ The hybrid retriever combines several signals:
 
 Implicit recall excludes the current task, so a task does not accidentally recall itself during first execution. Uncertain memory is not injected blindly; unattended Gateway and Feishu flows keep moving instead of blocking on confirmation prompts.
 
-## Scheduler And Priority Model
+## Serial Kernel Control Model
 
-AnyFusion currently uses a single active top-level task with a scheduler in front of it.
+AnyFusion currently admits one active top-level Task and has no production multi-Task scheduler. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are deferred to Phase 6, after partition and lease foundations exist. Direct replies, clarifications, status/query commands and explicit non-executing pause/block/cancel commands remain available.
 
-- New tasks are scored by urgency, readiness, continuity benefit, downstream impact, and staleness.
-- Urgency is based on structured semantic priority, not keyword matching.
-- Executable parked tasks auto-resume when the system is idle.
-- Semantically urgent parked tasks resume before normal parked tasks.
-- The task pool watchdog periodically surfaces blocked and parked tasks with the missing condition or next step.
-- Recoverable executor failures can be rechecked on a timer and moved back into scheduling when the executor is available again.
-- Material, permission, authorization, and access blocks stay blocked until the user provides the missing input or explicitly unblocks the task.
-- Not-ready tasks do not auto-run.
+Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. Multiple Subtasks may exist inside the admitted Task, but the Kernel authorizes one ready Subtask and one AgentClass at a time. Timer ticks may only recheck a live `wait_for_capacity` decision; ordinary execution, network, timeout, permission and heartbeat failures do not auto-resume.
 
-While one top-level task is running, `PolicyKernel` rejects new unrelated natural-language durable tasks and execution requests for other tasks. It still allows direct replies, clarifications, status queries, clear-task commands, and work that explicitly targets the active task. Slash-command and deterministic execution paths still pass through `TaskAdmissionGate`. Queueing, urgent preemption, and auto-resume of a second top-level task are intentionally disabled in the current scope; ADR-0011 tracks this as a reversible decision.
-
-This prevents queued work from wasting compute while preserving task safety. Multiple subtasks can still exist inside the one admitted top-level task; the current dispatcher advances ready subtasks serially as their dependencies are satisfied.
-
-## Planning Agent, Policy Kernel, And Work Units
+## Planning Agent, Control Kernel, And Work Units
 
 Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v4 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-`PolicyKernel` validates strict schema shape, priority requirements, confidence, task status, single-active-task conflicts, explicit recovery targets, graph structure, canonical capability coverage, task-control scopes, and confirmation requirements. It removes only dynamically `error` or `disabled` AgentClasses, rejects exhausted nodes, and reruns graph rules after a rewrite. It returns `accept`, `rewrite`, `reject`, or `clarify`. The kernel remains pure.
+`ControlKernel` exposes only `decide(event, snapshot)`. It validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides dispatch, capacity handling, execution landing, timer rechecks and contract correction without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and the decision ID and attempt authorization are deterministic from the event.
 
-Runtime services apply kernel decisions. `KernelDecisionApplier` writes current v4 `planning_decisions`; historical decisions remain safe-parsed audit records. Planner runs and bounded redacted tool summaries are audited in `planner_runs` and `planner_tool_calls`. `WorkGraphRuntimeService` persists a kernel-approved graph only when no v4 graph exists, recovers an existing v4 graph when no new graph is supplied, and otherwise returns explicit `missing_graph` or `graph_already_exists` outcomes. It never synthesizes fallback routing. `SessionExecutionCoordinator` chooses one ready node and authorized AgentClass; `SubtaskAttemptRunner` owns claim, attempt context/evidence, one Adapter call, completion validation, terminal persistence, and release.
+`KernelControlLoop` writes each decision to `kernel_decisions` before applying its one high-level action, then feeds any normalized observation into the next loop iteration. A duplicate event cannot be applied again. `planning_decisions_legacy_audit` is read-only history; Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph/frontier facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `SubtaskAttemptRunner` executes the exact authorized attempt, persists receipts/handoffs/results, releases its WorkUnit, and reports a normalized event.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -796,11 +777,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
 
-In the active session path, proposed nodes become persisted v4 `Subtask` records only after `PolicyKernel` accepts or legally rewrites the plan. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; unfinished v3 tasks remain parked until natural language triggers a fresh v4 plan. `dependencies` is the only topology and typed handoff source. The serial shell executes one ready node, injects only completed direct-edge handoffs, and never reruns completed nodes or reparses persisted handoffs.
+In the active session path, proposed nodes become persisted v4 `Subtask` records only after a persisted `authorize_task_plan` decision. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; migration v23 adds the unified decision ledger and freezes legacy Planning decisions. `dependencies` is the only topology and typed handoff source. The serial shell executes one Kernel-authorized ready node, injects only completed direct-edge handoffs, and never reruns completed nodes or reparses persisted handoffs.
 
 `SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v1. `SubtaskAttemptRunner` strips the machine envelope, checks exact acceptance and outgoing edge contracts, budgets, patch/artifact gates, realpath containment, and direct-edge aggregate limits. Success atomically persists the terminal receipt, immutable normalized handoffs, clean Subtask body, artifacts, warnings, and `done`. Malformed, incomplete, cancelled, or stale completion cannot leave a running Subtask: the Runner persists the terminal receipt, blocks through the Task domain when the Task is still running, records `failed` on the same attempt-bound WorkUnit, and releases only that attempt's claim. Contract-failure raw bodies remain audit-only and do not retry. Retry/fallback, resource partitioning, and concurrent runnable-frontier dispatch remain later roadmap phases.
+Every Executor response must end with Completion Protocol v1. `SubtaskAttemptRunner` strips the machine envelope, checks exact acceptance and outgoing-edge contracts, budgets, patch/artifact gates, realpath containment, and direct-edge aggregate limits. Success atomically persists the terminal receipt, immutable normalized handoffs, clean Subtask body, artifacts, warnings, and `done`. A non-success attempt atomically persists its terminal receipt and `awaiting_decision`, then releases its WorkUnit before the Kernel chooses the next state. The first contract failure may receive one same-AgentClass response-only correction in an empty read-only workspace with no normal context, evidence or tools; only the corrected response can be published. A second failure blocks. General retry/fallback, durable unapplied-decision recovery, resource partitioning and concurrent dispatch remain later roadmap phases.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 
@@ -932,19 +913,19 @@ src/
 ├── guidance/       # Proactive guidance, task signals, guidance policy, dashboard orchestration
 ├── integrations/   # External integration helpers such as Markdown preview
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
-├── kernel/         # Pure PolicyKernel authorization for PlanningAgentPlan decisions
+├── kernel/         # Pure ControlKernel contracts/decisions and synchronous control-loop seam
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Memory capture, recall, recall review, preferences, context bundles, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
 ├── planning/       # PlanningAgent interface (CodexPlanningAgent), context builder, plan schema/vocabulary, validation
-├── session/        # Session coordination, PlanningAgent/PolicyKernel wiring, decision application
+├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories
-├── task/           # Task state machine, runtime, scheduler, resume planning, ranking, semantic/embedding retrieval
+├── task/           # Task domain state machine/runtime, ranking, semantic/embedding retrieval
 ├── tui/            # Ink terminal UI
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives and the generic memory/ranking `llm-bridge`; the obsolete `CapabilityClass` vocabulary has been removed in favor of controlled Routing Capability IDs. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/`, `src/session/kernel-decision-applier.ts`, `src/execution/work-graph-runtime-service.ts`, `src/execution/work-unit-claim-service.ts`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives and the generic memory/ranking `llm-bridge`; the obsolete `CapabilityClass` vocabulary has been removed in favor of controlled Routing Capability IDs. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-control-loop.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
 
 ## License
 

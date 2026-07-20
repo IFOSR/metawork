@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1、Phase 2 已完成
-- **当前激活阶段**：Phase 3——Kernel 控制面收敛；待形成该阶段总体行动计划与详细实施计划
+- **当前状态**：实施中；Phase 1～3 已完成
+- **当前激活阶段**：Phase 4——Recovery、fallback、retry 与熔断；详细实施计划待制定
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -39,9 +39,9 @@ Canonical definitions 已经是 Codex/Pi 静态路由能力、Planner catalog、
 
 当前生产图为严格 v4，Executor 响应通过 Completion Protocol v1 精确交付 acceptance evidence、artifacts 和 outgoing handoffs。SQLite v22 保留只读 v3 audit 并 park 非终态旧图；只有用户自然语言可触发 v4 replan。
 
-### 2.3 Kernel 目前只完成 Plan admission
+### 2.3 Kernel 控制面已统一
 
-当前 `PolicyKernel` 能授权、重写或拒绝 Plan，但容量不足、执行失败、定时恢复、fallback、retry cap 和熔断等战略判断仍散落在 Session/Execution Runtime。后续并发和 partition 授权不能继续建立在这些分散分支上。
+Phase 3 已用 `ControlKernel.decide(event, snapshot)` 和持久 decision ledger 统一 Planning admission、串行 dispatch、capacity、execution outcome、timer 与 completion correction。Phase 4 将继续在同一 seam 上增加 durable recovery、failure taxonomy、retry/fallback/backoff 与 circuit breaker，不再建立第二条控制链。
 
 ### 2.4 并发的前置条件不是线程池，而是资源模型
 
@@ -133,6 +133,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - `SessionExecutionCoordinator` 最终只驱动 decide/apply/observe 循环。
 
 退出条件：当前已有战略行为均能通过 Kernel 决策测试，Session/Runtime 不再维护并行策略表。
+
+完成记录（2026-07-20）：统一 Kernel event/snapshot/decision、ledger-first 同步控制循环、SQLite v23 decision ledger、只读 legacy Planning audit、`awaiting_decision`、确定性 capacity candidate switching、timer capacity recovery、outcome landing 与一次 response-only contract correction 已交付。旧 `PolicyKernel`、`TaskAdmissionGate`、多 Task Scheduler policy、`TaskResumePlanner` 和 Session 错误文本恢复策略已删除。`npm run lint`、`npm run build` 与 Docker/Linux 全量回归通过（176 个文件、715 个测试；另有 4 个文件、15 个 Phase 4/6 历史测试跳过）；真实 Linux Codex Planner→Kernel→Runtime→Codex Executor artifact smoke 通过。实现仍在当前工作树，尚未生成提交；Phase 3 两份计划已归档，Phase 4 激活。
 
 ### Phase 4：Recovery、fallback、retry 与熔断
 

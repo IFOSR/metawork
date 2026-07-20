@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { AgentClassRiskLevel, Subtask, TaskStatus } from '../core/types.js';
+import type { AgentClassRiskLevel, Subtask, SubtaskStatus } from '../core/types.js';
 import type { ContextRef, WorkGraphAcceptanceCriterion, WorkGraphDependency } from '../work-graph/index.js';
 
 interface SubtaskRow {
@@ -7,7 +7,7 @@ interface SubtaskRow {
   task_id: string;
   title: string;
   goal: string;
-  status: TaskStatus;
+  status: SubtaskStatus;
   dependencies_json: string;
   context_refs_json: string;
   required_capabilities_json: string;
@@ -118,7 +118,7 @@ export class SubtaskRepo {
     return row ? rowToSubtask(row) : null;
   }
 
-  updateStatus(id: string, status: TaskStatus, changes: {
+  updateStatus(id: string, status: SubtaskStatus, changes: {
     result?: string;
     artifacts?: string[];
     verification?: Subtask['verification'];

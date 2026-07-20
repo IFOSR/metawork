@@ -8,11 +8,11 @@ import dayjs from 'dayjs';
 
 // 合法状态迁移表
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  created: ['ready', 'cancelled'],
-  ready: ['running', 'cancelled'],
+  created: ['ready', 'parked', 'cancelled'],
+  ready: ['running', 'parked', 'cancelled'],
   running: ['parked', 'blocked', 'done'],
   parked: ['ready', 'cancelled'],
-  blocked: ['ready'],
+  blocked: ['ready', 'parked'],
   done: ['archived'],
   archived: [],
   cancelled: [],
@@ -39,10 +39,10 @@ export class TaskEngine {
   /**
    * 创建任务
    */
-  create(input: { title: string; goal: string; resources?: string[] }): Task {
+  create(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
     const now = new Date().toISOString();
     const task: Task = {
-      id: generateTaskId(),
+      id: input.id ?? generateTaskId(),
       title: input.title,
       goal: input.goal,
       status: 'created',

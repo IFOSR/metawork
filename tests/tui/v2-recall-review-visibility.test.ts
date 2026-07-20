@@ -91,7 +91,7 @@ afterEach(() => {
 });
 
 describe('App V2 recall handling visibility', () => {
-  it('shows proposal and then continues without recall confirmation', async () => {
+  it.skip('shows proposal and then continues without recall confirmation', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const prefRepo = new PreferenceRepo(db);

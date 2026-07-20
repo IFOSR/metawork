@@ -1,6 +1,7 @@
-import { projectExecutionOutcome, type KernelExecutorStatusProjection } from './executor-status-projection.js';
+import { projectExecutionOutcome, type KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import type { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 
+/** Execution-side projector that persists dynamic AgentClass health facts. */
 export class KernelExecutorStatusProjector {
   constructor(private readonly repo: KernelExecutorStatusRepo) {}
 
@@ -16,5 +17,9 @@ export class KernelExecutorStatusProjector {
     });
     this.repo.upsert(projection);
     return projection;
+  }
+
+  list(): KernelExecutorStatusProjection[] {
+    return this.repo.list();
   }
 }

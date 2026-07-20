@@ -303,4 +303,17 @@ export class PiAgentAdapter extends CommandLineExecutorAdapter {
       } : {}),
     };
   }
+
+  async executeResponseOnly(input: { prompt: string; maxBytes: number }) {
+    if (Buffer.byteLength(input.prompt, 'utf8') > input.maxBytes) {
+      return { success: false, output: '', error: 'response-only correction input exceeds byte limit', exitCode: 1, durationMs: 0 };
+    }
+    const { runResponseOnlyCli } = await import('./response-only-cli.js');
+    return runResponseOnlyCli({
+      command: this.config.command,
+      args: ['--no-extensions', '--tools', '', '-p', input.prompt],
+      env: buildEnvFromFile(process.env.METACLAW_PI_EXECUTOR_ENV_FILE),
+      timeoutSeconds: this.config.timeout,
+    });
+  }
 }

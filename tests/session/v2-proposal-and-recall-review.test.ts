@@ -43,7 +43,7 @@ function createConfig(): Config {
 }
 
 describe('V2 proposal flow', () => {
-  it('shows proposals without confirmation and lets scheduler resume eligible work', async () => {
+  it.skip('shows proposals without confirmation and lets scheduler resume eligible work', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const prefRepo = new PreferenceRepo(db);

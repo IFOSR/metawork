@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { WorkUnitEvent } from '../core/types.js';
 import type { ExecutorRegistrationInspection } from '../execution/execution-runtime.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
+import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -51,7 +52,8 @@ type TaskHistoryEntry =
 
 export class CommandReadServices {
   private readonly agentClasses: AgentClassRepo;
-  private readonly planningDecisions: PlanningDecisionRepo;
+  private readonly kernelDecisions: KernelDecisionRepo;
+  private readonly legacyPlanningDecisions: PlanningDecisionRepo;
   private readonly taskEvents: TaskEventRepo;
   private readonly workUnits: WorkUnitRepo;
 
@@ -60,7 +62,8 @@ export class CommandReadServices {
     private readonly executorRuntime: ExecutorRuntimeInspector,
   ) {
     this.agentClasses = new AgentClassRepo(db);
-    this.planningDecisions = new PlanningDecisionRepo(db);
+    this.kernelDecisions = new KernelDecisionRepo(db);
+    this.legacyPlanningDecisions = new PlanningDecisionRepo(db);
     this.taskEvents = new TaskEventRepo(db);
     this.workUnits = new WorkUnitRepo(db);
   }
@@ -154,7 +157,21 @@ export class CommandReadServices {
       return `Error: task not found ${taskId}`;
     }
 
-    const decisions = this.planningDecisions.listByTask(taskId);
+    const kernelDecisions = this.kernelDecisions.listByTask(taskId).map(record => {
+      const plan = record.event.type === 'plan_proposed' ? record.event.proposal : null;
+      return {
+        ...record,
+        plan,
+        planSchemaVersion: plan?.schemaVersion ?? null,
+        decisionPlanSchemaVersion: plan?.schemaVersion ?? null,
+        outcome: 'issued',
+        decision: { plan, runtimeAction: record.action } as Record<string, unknown>,
+      };
+    });
+    const decisions = [
+      ...this.legacyPlanningDecisions.listByTask(taskId),
+      ...kernelDecisions,
+    ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     const workUnitEvents = collapseWorkUnitHeartbeats(
       this.workUnits.listEventsByTask(taskId).filter(event => FEEDBACK_WORK_UNIT_EVENTS.has(event.eventType)),
     );
@@ -177,7 +194,7 @@ export class CommandReadServices {
           })
         : ['  - 该任务没有可关联的 Planner 路由记录（旧任务可能未保存 taskId 关联）。']),
       '',
-      '2. PolicyKernel 决策',
+      '2. ControlKernel 决策',
       ...(decisions.length > 0
         ? decisions.flatMap(record => {
             const decision = isRecord(record.decision) ? record.decision : {};

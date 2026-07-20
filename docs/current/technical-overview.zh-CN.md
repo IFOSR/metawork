@@ -2,17 +2,19 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
+> Phase 3 架构更新（2026-07-20）：当前控制链已收敛为 `event → snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`。`PolicyKernel`、`TaskAdmissionGate`、`SchedulerEngine`、多 Task queue、preemption 与 parked auto-resume 已退出生产路径。Subtask 独立使用 `awaiting_decision`；timer 只重查 ledger 中的容量阻塞。本文较后位置保留的旧表述是待重写的历史说明，不具有架构权威性；以本段、ADR-0022、英文技术总览与 `CONTEXT.md` 为准。
+
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
-它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / PolicyKernel 决策层和 work-unit dispatch runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
+它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / ControlKernel / KernelControlLoop / work-unit runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
 
 ## 核心能力
 
 - 持久任务状态：created、ready、running、parked、blocked、done、archived、cancelled。
 - 中断后通过 resume context 继续，不从头重做。
-- 系统空闲时自动恢复满足条件的挂起任务。
-- 用语义优先级判断可执行任务的调度顺序，不靠关键词匹配。
-- 当前强制单一活跃顶层任务，避免 PlanningAgent / PolicyKernel 和 work-unit dispatch 加固期间出现多任务并存的歧义。
+- timer 仅重查由 decision ledger 标记的容量阻塞；普通执行失败不自动恢复。
+- 当前串行 Kernel 直接授权唯一 ready Subtask，不运行多 Task 优先级调度。
+- 当前强制单一活跃顶层任务，避免 ControlKernel 与 work-unit dispatch 加固期间出现多任务并存的歧义。
 - 通过本地 SQLite FTS 索引检索历史任务，并结合混合召回恢复相关上下文。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。

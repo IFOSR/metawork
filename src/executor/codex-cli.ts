@@ -9,6 +9,8 @@ import {
 } from './command-line-adapter.js';
 import { buildCodexNonInteractiveArgs } from './codex-args.js';
 import type { ExecutorInput } from './adapter.js';
+import type { ExecutorResult } from '../core/types.js';
+import { runResponseOnlyCli } from './response-only-cli.js';
 
 /** Runs Codex CLI exec with MetaClaw's configured non-interactive argument set. */
 export class CodexCliAdapter extends CommandLineExecutorAdapter {
@@ -54,6 +56,23 @@ export class CodexCliAdapter extends CommandLineExecutorAdapter {
         : {}),
       ...(token ? { METACLAW_EVIDENCE_TOKEN: token } : {}),
     };
+  }
+
+  async executeResponseOnly(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult> {
+    if (Buffer.byteLength(input.prompt, 'utf8') > input.maxBytes) {
+      return { success: false, output: '', error: 'response-only correction input exceeds byte limit', exitCode: 1, durationMs: 0 };
+    }
+    const outputName = 'last-message.txt';
+    return runResponseOnlyCli({
+      command: this.config.command,
+      args: [
+        'exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral',
+        '--output-last-message', outputName, '--color', 'never', input.prompt,
+      ],
+      env: this.buildSpawnEnv(),
+      timeoutSeconds: this.config.timeout,
+      readOutput: (_stdout, workingDirectory) => readFileSync(join(workingDirectory, outputName), 'utf8'),
+    });
   }
 }
 

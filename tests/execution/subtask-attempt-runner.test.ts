@@ -65,6 +65,8 @@ function setup(rawResponse: string) {
       taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
       output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
     }),
+    supportsResponseOnly: vi.fn().mockReturnValue(true),
+    runResponseOnly: vi.fn(),
   };
   const runner = new SubtaskAttemptRunner({
     db,
@@ -92,6 +94,7 @@ describe('SubtaskAttemptRunner', () => {
   it('atomically commits clean body, receipt and immutable handoff then releases the claim', async () => {
     const setupResult = setup(validResponse());
     const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       agentClassName: 'codex-cli', executionMode: 'fresh',
     });
@@ -109,23 +112,16 @@ describe('SubtaskAttemptRunner', () => {
   it('blocks malformed completion without exposing it as a successful Subtask result', async () => {
     const setupResult = setup('plain response without envelope');
     const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       agentClassName: 'codex-cli', executionMode: 'fresh',
     });
-    expect(outcome.outcome).toBe('contract_blocked');
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'blocked', result: '' });
+    expect(outcome.outcome).toBe('contract_failed');
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
     expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
       .toEqual({ terminal_state: 'contract_blocked', raw_response: 'plain response without envelope' });
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
-    expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({
-      status: 'blocked',
-      dependencies: [expect.objectContaining({
-        taskId: 'task_phase2',
-        type: 'manual',
-        status: 'waiting',
-        description: expect.stringContaining('completion_malformed'),
-      })],
-    });
+    expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'running' });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
@@ -150,6 +146,7 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       agentClassName: 'codex-cli', executionMode: 'fresh',
     });
@@ -157,7 +154,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
     expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'cancelled' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'blocked', error: 'Task, Subtask, or WorkUnit claim changed before commit',
+      status: 'awaiting_decision', error: 'Task, Subtask, or WorkUnit claim changed before commit',
     });
     expect(setupResult.db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get())
       .toEqual({ terminal_state: 'cancelled_or_stale', error_code: 'attempt_stale' });
@@ -207,11 +204,12 @@ describe('SubtaskAttemptRunner', () => {
     );
 
     const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       agentClassName: 'codex-cli', executionMode: 'fresh',
     });
-    expect(outcome).toMatchObject({ outcome: 'contract_blocked' });
-    expect(outcome.outcome === 'contract_blocked' ? outcome.violations : []).toContainEqual(expect.objectContaining({
+    expect(outcome).toMatchObject({ outcome: 'contract_failed' });
+    expect(outcome.outcome === 'contract_failed' ? outcome.violations : []).toContainEqual(expect.objectContaining({
       code: 'completion_budget_exceeded',
       path: 'handoffs.0.toSubtaskId',
     }));
@@ -222,15 +220,47 @@ describe('SubtaskAttemptRunner', () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('progress callback failed'));
     const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       agentClassName: 'codex-cli', executionMode: 'fresh',
     });
     expect(outcome).toMatchObject({ outcome: 'executor_failed', error: 'progress callback failed' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'blocked' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision' });
     expect(setupResult.db.prepare('SELECT terminal_state, error_detail FROM executor_attempt_receipts').get())
       .toEqual({ terminal_state: 'executor_failed', error_detail: 'progress callback failed' });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
+  });
+
+  it('publishes only a corrected response from one isolated response-only attempt', async () => {
+    const setupResult = setup('first malformed response');
+    const first = await setupResult.runner.run({
+      attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli', executionMode: 'fresh',
+    });
+    expect(first.outcome).toBe('contract_failed');
+    if (first.outcome !== 'contract_failed') return;
+    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
+      success: true, output: validResponse(), exitCode: 0, durationMs: 5,
+    });
+
+    const corrected = await setupResult.runner.runCorrection({
+      attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, executionId: 'exec_1',
+      taskId: 'task_phase2', subtaskId: setupResult.a.id, agentClassName: 'codex-cli',
+      completionContract: first.completionContract, violations: first.violations,
+    });
+
+    expect(corrected).toMatchObject({ outcome: 'completed', output: 'A completed.' });
+    expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
+    expect(setupResult.executionRuntime.runResponseOnly.mock.calls[0][1]).toContain('first malformed response');
+    expect(setupResult.db.prepare(`
+      SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
+    `).all()).toEqual(expect.arrayContaining([
+      { attempt_id: 'attempt_primary', terminal_state: 'contract_blocked', raw_response: 'first malformed response' },
+      { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: validResponse() },
+    ]));
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done', result: 'A completed.' });
   });
 });

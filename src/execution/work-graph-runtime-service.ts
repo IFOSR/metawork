@@ -1,6 +1,6 @@
 // Applies a Kernel-approved v4 work graph or recovers an already-persisted v4 graph.
 import type { Subtask, Task } from '../core/types.js';
-import type { PlanningAgentPlan, SubtaskProposal, WorkGraphProposal } from '../planning/planning-types.js';
+import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
@@ -27,11 +27,9 @@ export class WorkGraphRuntimeService {
     task: Task;
     userPrompt: string;
     sessionId?: string;
-    approvedPlan?: PlanningAgentPlan | null;
+    authorizedWorkGraph?: WorkGraphProposal | null;
   }): WorkGraphRuntimeResult {
-    const proposedGraph = input.approvedPlan?.action === 'plan_work_graph'
-      ? input.approvedPlan.workGraph
-      : null;
+    const proposedGraph = input.authorizedWorkGraph ?? null;
     const existing = this.subtaskRepo.listByTask(input.task.id);
 
     if (proposedGraph && existing.length > 0) {
@@ -126,7 +124,7 @@ export class WorkGraphRuntimeService {
   }
 }
 
-const TERMINAL_SUBTASK_STATUSES: ReadonlySet<Subtask['status']> = new Set(['done', 'cancelled', 'archived']);
+const TERMINAL_SUBTASK_STATUSES: ReadonlySet<Subtask['status']> = new Set(['done', 'cancelled']);
 
 function isTerminalStatus(status: Subtask['status']): boolean {
   return TERMINAL_SUBTASK_STATUSES.has(status);

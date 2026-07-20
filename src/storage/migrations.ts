@@ -917,6 +917,75 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 23,
+    up: (db) => {
+      if (tableExists(db, 'planning_decisions') && !tableExists(db, 'planning_decisions_legacy_audit')) {
+        db.exec('ALTER TABLE planning_decisions RENAME TO planning_decisions_legacy_audit');
+      }
+      if (!tableExists(db, 'planning_decisions_legacy_audit')) {
+        db.exec(`
+          CREATE TABLE planning_decisions_legacy_audit (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            task_id TEXT,
+            user_input TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            decision_json TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          )
+        `);
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_planning_decisions_session;
+        DROP INDEX IF EXISTS idx_planning_decisions_task;
+        CREATE INDEX IF NOT EXISTS idx_planning_decisions_legacy_session
+          ON planning_decisions_legacy_audit(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_planning_decisions_legacy_task
+          ON planning_decisions_legacy_audit(task_id, created_at);
+        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_insert
+        BEFORE INSERT ON planning_decisions_legacy_audit BEGIN
+          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_update
+        BEFORE UPDATE ON planning_decisions_legacy_audit BEGIN
+          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_delete
+        BEFORE DELETE ON planning_decisions_legacy_audit BEGIN
+          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
+        END;
+
+        CREATE TABLE IF NOT EXISTS kernel_decisions (
+          id TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL,
+          event_id TEXT NOT NULL UNIQUE,
+          event_type TEXT NOT NULL,
+          correlation_id TEXT NOT NULL,
+          causation_id TEXT,
+          session_id TEXT NOT NULL,
+          task_id TEXT,
+          subtask_id TEXT,
+          attempt_id TEXT,
+          event_json TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          decision_json TEXT NOT NULL,
+          action TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_kernel_decisions_session
+          ON kernel_decisions(session_id, created_at, id);
+        CREATE INDEX idx_kernel_decisions_task
+          ON kernel_decisions(task_id, created_at, id);
+        CREATE INDEX idx_kernel_decisions_correlation
+          ON kernel_decisions(correlation_id, created_at, id);
+      `);
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {

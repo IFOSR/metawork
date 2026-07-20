@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { KernelExecutorStatusProjector } from '../../src/kernel/kernel-executor-status-projector.js';
+import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';

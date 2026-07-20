@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import type { Task } from '../../src/core/types.js';
 import { WorkGraphRuntimeService } from '../../src/execution/work-graph-runtime-service.js';
-import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
+import type { WorkGraphProposal } from '../../src/work-graph/types.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
@@ -27,24 +27,14 @@ function task(id = 'task_1'): Task {
   };
 }
 
-function plan(taskId: string): PlanningAgentPlan {
+function graph(_taskId: string): WorkGraphProposal {
   return {
-    id: 'plan_1', schemaVersion: 4, action: 'plan_work_graph', confidence: 0.9,
-    reason: 'execute', clarificationQuestion: null, response: { directReply: null },
-    task: {
-      binding: 'reference', taskId, control: 'none', scope: null, title: 'Task', goal: 'Do work',
-      includeRecentConversationContext: false, priority: { level: 'normal', reason: 'test priority' },
-    },
-    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-    workGraph: {
-      reason: 'approved plan',
+      reason: 'authorized graph',
       subtasks: [{
         id: 'execute', title: 'Execute', goal: 'Do work', dependencies: [], contextRefs: [],
         requiredCapabilities: ['workspace-engineering'], preferredAgentClassList: ['codex-cli'],
         expectedOutput: 'patch', acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }], riskLevel: 'low',
       }],
-    },
-    source: 'codex-planner',
   };
 }
 
@@ -55,7 +45,7 @@ describe('WorkGraphRuntimeService', () => {
     new TaskRepo(db).insert(taskRecord);
     const repo = new SubtaskRepo(db);
     const result = new WorkGraphRuntimeService(repo, new TaskEventRepo(db)).apply({
-      task: taskRecord, userPrompt: 'ignored by graph materialization', approvedPlan: plan(taskRecord.id),
+      task: taskRecord, userPrompt: 'ignored by graph materialization', authorizedWorkGraph: graph(taskRecord.id),
     });
 
     expect(result).toMatchObject({ outcome: 'applied' });
@@ -77,7 +67,7 @@ describe('WorkGraphRuntimeService', () => {
     const repo = new SubtaskRepo(db);
 
     expect(new WorkGraphRuntimeService(repo, new TaskEventRepo(db)).apply({
-      task: taskRecord, userPrompt: 'just do it', approvedPlan: null,
+      task: taskRecord, userPrompt: 'just do it', authorizedWorkGraph: null,
     })).toEqual({ outcome: 'not_executable', reason: 'missing_graph' });
     expect(repo.listByTask(taskRecord.id)).toEqual([]);
   });
@@ -88,10 +78,10 @@ describe('WorkGraphRuntimeService', () => {
     new TaskRepo(db).insert(taskRecord);
     const repo = new SubtaskRepo(db);
     const service = new WorkGraphRuntimeService(repo, new TaskEventRepo(db));
-    expect(service.apply({ task: taskRecord, userPrompt: 'apply', approvedPlan: plan(taskRecord.id) })).toMatchObject({ outcome: 'applied' });
+    expect(service.apply({ task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id) })).toMatchObject({ outcome: 'applied' });
     repo.updateStatus(`${taskRecord.id}_execute`, 'running', { error: 'previous timeout' });
 
-    const result = service.apply({ task: taskRecord, userPrompt: 'resume', approvedPlan: null });
+    const result = service.apply({ task: taskRecord, userPrompt: 'resume', authorizedWorkGraph: null });
     expect(result).toMatchObject({ outcome: 'recovered' });
     expect(repo.findById(`${taskRecord.id}_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
   });
@@ -101,9 +91,9 @@ describe('WorkGraphRuntimeService', () => {
     const taskRecord = task('task_conflict');
     new TaskRepo(db).insert(taskRecord);
     const service = new WorkGraphRuntimeService(new SubtaskRepo(db), new TaskEventRepo(db));
-    service.apply({ task: taskRecord, userPrompt: 'apply', approvedPlan: plan(taskRecord.id) });
+    service.apply({ task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id) });
 
-    expect(service.apply({ task: taskRecord, userPrompt: 'replace', approvedPlan: plan(taskRecord.id) })).toEqual({
+    expect(service.apply({ task: taskRecord, userPrompt: 'replace', authorizedWorkGraph: graph(taskRecord.id) })).toEqual({
       outcome: 'not_executable', reason: 'graph_already_exists',
     });
   });

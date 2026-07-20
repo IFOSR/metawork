@@ -42,7 +42,7 @@ function createConfig(): Config {
 }
 
 describe('session startup running-task reconciliation', () => {
-  it('reconciles orphaned running tasks on startup and resumes execution automatically', async () => {
+  it('records and safely blocks orphaned running work without automatic execution', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -92,10 +92,10 @@ describe('session startup running-task reconciliation', () => {
     await session.waitForAsyncWork();
     const snapshot = session.getSnapshot();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(taskRepo.findById(runningTask.id)?.status).toBe('done');
-    expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已转为挂起`);
-    expect(snapshot.output.join('\n')).toContain(`启动后继续未完成任务 #${runningTask.id}`);
-    expect(snapshot.output.join('\n')).toContain('自动恢复成功');
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
+    expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
+      .toEqual({ action: 'block_work' });
   });
 });

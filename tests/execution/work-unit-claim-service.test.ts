@@ -118,8 +118,8 @@ describe('WorkUnitClaimService', () => {
     expect(lost).toHaveLength(1);
     expect(repo.findById('executor-1')).toMatchObject({
       state: 'heartbeat_lost',
-      claimedTaskId: 'task_1',
-      claimedSubtaskId: 'subtask_1',
+      claimedTaskId: null,
+      claimedSubtaskId: null,
     });
     expect(lost[0]).toMatchObject({
       state: 'heartbeat_lost',
