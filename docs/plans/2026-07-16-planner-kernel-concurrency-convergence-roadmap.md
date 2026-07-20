@@ -134,7 +134,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 退出条件：当前已有战略行为均能通过 Kernel 决策测试，Session/Runtime 不再维护并行策略表。
 
-完成记录（2026-07-20）：统一 Kernel event/snapshot/decision、ledger-first 同步控制循环、SQLite v23 decision ledger、只读 legacy Planning audit、`awaiting_decision`、确定性 capacity candidate switching、timer capacity recovery、outcome landing 与一次 response-only contract correction 已交付。旧 `PolicyKernel`、`TaskAdmissionGate`、多 Task Scheduler policy、`TaskResumePlanner` 和 Session 错误文本恢复策略已删除。`npm run lint`、`npm run build` 与 Docker/Linux 全量回归通过（176 个文件、715 个测试；另有 4 个文件、15 个 Phase 4/6 历史测试跳过）；真实 Linux Codex Planner→Kernel→Runtime→Codex Executor artifact smoke 通过。实现仍在当前工作树，尚未生成提交；Phase 3 两份计划已归档，Phase 4 激活。
+完成记录（2026-07-20）：统一 Kernel event/snapshot/decision、ledger-first 同步控制循环、SQLite v23 decision ledger、只读 legacy Planning audit、`awaiting_decision`、确定性 capacity candidate switching、timer capacity recovery、outcome landing 与一次 response-only contract correction 已交付。旧 `PolicyKernel`、`TaskAdmissionGate`、多 Task Scheduler policy、`TaskResumePlanner` 和 Session 错误文本恢复策略已删除。`npm run lint`、`npm run build` 与 Docker/Linux 全量回归通过（176 个文件、715 个测试；另有 4 个文件、15 个 Phase 4/6 历史测试跳过）；真实 Linux Codex Planner→Kernel→Runtime→Codex Executor artifact smoke 通过。实现提交为 `bfca74a`；Phase 3 两份计划已归档，Phase 4 激活。
 
 ### Phase 4：Recovery、fallback、retry 与熔断
 

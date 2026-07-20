@@ -8,7 +8,7 @@
 - **总体行动计划**：[Phase 3 Kernel 控制面收敛总体行动计划](2026-07-20-phase-3-kernel-control-plane-convergence.md)
 - **架构设计门**：[ADR-0020](../../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)
 - **完成日期**：2026-07-20
-- **实现提交**：当前工作树，尚未提交
+- **实现提交**：`bfca74a`
 
 ## 目标与控制链
 

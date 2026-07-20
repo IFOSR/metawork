@@ -9,7 +9,7 @@
 - **架构设计门**：[`ADR-0020：核心模块归属与依赖方向`](../../adr/0020-core-module-ownership-and-dependency-direction.md)
 - **相关现行约束**：[`ADR-0011`](../../adr/0011-single-active-task-admission-gate.md)、[`ADR-0014`](../../adr/0014-planning-agent-policy-kernel-boundary.md)、[`ADR-0017`](../../adr/0017-kernel-executor-status-projection.md)、[`ADR-0019`](../../adr/0019-planning-agent-plan-v3-work-graph-authority.md)、[`ADR-0021`](../../adr/0021-work-graph-v4-subtask-execution-contract.md)
 - **完成日期**：2026-07-20
-- **实现提交**：当前工作树，尚未提交
+- **实现提交**：`bfca74a`
 
 本计划规定 Phase 3 的阶段目标、改动范围、模块所有权、依赖边界、实施原则、验收标准与完成门槛。它不冻结具体类型字段、Decision 变体名称、policy 拆分、持久化结构、文件清单或迁移顺序；这些内容必须在后续 Plan 模式中结合本计划逐项核对并形成详细实施计划后，才能开始代码改动。
 
@@ -274,4 +274,4 @@ Runtime 已按 Kernel 指定的 Subtask、AgentClass、attempt ID 执行；非�
 
 旧 plan-only `PolicyKernel`、direct-reply shortcut、`TaskAdmissionGate`、多 Task Scheduler policy、`TaskResumePlanner` 与 Session 错误文本恢复策略已删除。Task 命令/查询收敛到领域接口，focus 留在 Session projection，executor status projector 归 Execution/Storage 应用层。
 
-验证：`npm run lint` 与 `npm run build` 通过；Docker/Linux 全量 Vitest 为 176 个文件、715 个测试通过，4 个文件、15 个明确延期到 Phase 4/6 的历史测试跳过。Kernel 决策矩阵、架构边界、ledger/migration、capacity loop、outcome landing 与 correction isolation 均有聚焦回归。真实 Linux `npm run smoke:metaclaw` 通过，Codex Planner 经统一 Kernel/ledger 驱动 Codex Executor，在授权 Task workspace 生成并验证 `smoke-result.md`；Windows host 直接运行仍受仓库已知的 `better-sqlite3` native binding 缺失限制。实现尚未提交，因此提交字段保留为“当前工作树”。
+验证：`npm run lint` 与 `npm run build` 通过；Docker/Linux 全量 Vitest 为 176 个文件、715 个测试通过，4 个文件、15 个明确延期到 Phase 4/6 的历史测试跳过。Kernel 决策矩阵、架构边界、ledger/migration、capacity loop、outcome landing 与 correction isolation 均有聚焦回归。真实 Linux `npm run smoke:metaclaw` 通过，Codex Planner 经统一 Kernel/ledger 驱动 Codex Executor，在授权 Task workspace 生成并验证 `smoke-result.md`；Windows host 直接运行仍受仓库已知的 `better-sqlite3` native binding 缺失限制。实现提交为 `bfca74a`。
