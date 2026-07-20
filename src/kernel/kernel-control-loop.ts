@@ -62,8 +62,8 @@ export class KernelControlLoop {
         causationId: event.causationId,
         sessionId: event.sessionId,
         taskId: event.taskId ?? decisionTaskId(nextDecision),
-        subtaskId: event.subtaskId ?? null,
-        attemptId: event.attemptId ?? null,
+        subtaskId: event.subtaskId ?? decisionSubtaskId(nextDecision),
+        attemptId: event.attemptId ?? decisionAttemptId(nextDecision),
         event,
         snapshot,
         decision: nextDecision,
@@ -80,5 +80,13 @@ export class KernelControlLoop {
 }
 
 function decisionTaskId(decision: KernelDecision): string | null {
-  return decision.action.type === 'authorize_task_plan' ? decision.action.taskId : null;
+  return 'taskId' in decision.action ? decision.action.taskId : null;
+}
+
+function decisionSubtaskId(decision: KernelDecision): string | null {
+  return 'subtaskId' in decision.action ? decision.action.subtaskId : null;
+}
+
+function decisionAttemptId(decision: KernelDecision): string | null {
+  return decision.action.type === 'dispatch_attempt' ? decision.action.attemptId : null;
 }

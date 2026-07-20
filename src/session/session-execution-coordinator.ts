@@ -27,6 +27,11 @@ interface FocusContext {
   taskId: string | null;
 }
 
+interface DispatchStableFacts {
+  executorStatuses: Extract<KernelSnapshot, { type: 'dispatch' }>['executorStatuses'];
+  correctionSupportedAgentClasses: string[];
+}
+
 export interface KernelExecutionRuntimeInput {
   taskId: string;
   request: QueuedExecutionRequest;
@@ -82,6 +87,7 @@ export class KernelExecutionRuntime {
     taskId: string,
     attemptedAgentClasses: Set<string>,
     graphState: 'ready' | 'missing' | 'conflict' = 'ready',
+    stableFacts: DispatchStableFacts = this.buildDispatchStableFacts(),
   ): KernelSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const subtasks = this.deps.subtaskRepo.listByTask(taskId);
@@ -109,6 +115,13 @@ export class KernelExecutionRuntime {
       })),
       readyFrontier,
       attemptedAgentClasses: [...attemptedAgentClasses],
+      executorStatuses: stableFacts.executorStatuses,
+      correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
+    };
+  }
+
+  private buildDispatchStableFacts(): DispatchStableFacts {
+    return {
       executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
       correctionSupportedAgentClasses: this.deps.agentClassService.listAgentClasses()
         .map(agentClass => agentClass.name)
@@ -169,7 +182,6 @@ export class KernelExecutionRuntime {
             onProgress: input.progressTracker.onProgress,
           });
       this.deps.callbacks.clearRunningExecutorName(action.taskId);
-      this.projectExecutorOutcome(action.agentClassName, outcome);
       if (outcome.outcome === 'capacity_unavailable') {
         return this.eventFromDecision(decision, {
           type: 'capacity_signal', taskId: action.taskId, subtaskId: action.subtaskId,
@@ -177,6 +189,7 @@ export class KernelExecutionRuntime {
           attemptKind: action.attemptKind,
         });
       }
+      this.projectExecutorOutcome(action.agentClassName, outcome);
       if (outcome.outcome === 'contract_failed') {
         input.correctionInputs.set(action.subtaskId, {
           sourceAttemptId: outcome.attemptId,
@@ -294,6 +307,7 @@ export class KernelExecutionRuntime {
       completionContract: unknown;
       violations: Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }>['violations'];
     }>();
+    const stableFacts = this.buildDispatchStableFacts();
     const initialEvent: KernelEvent = {
       schemaVersion: 1,
       type: 'dispatch_requested',
@@ -305,7 +319,7 @@ export class KernelExecutionRuntime {
       taskId,
       reason: request.schedulingReason ?? 'authorized execution request',
     };
-    const buildSnapshot = (): KernelSnapshot => this.buildDispatchSnapshot(taskId, attemptedAgentClasses, graphState);
+    const buildSnapshot = (): KernelSnapshot => this.buildDispatchSnapshot(taskId, attemptedAgentClasses, graphState, stableFacts);
     const loop = new KernelControlLoop({
       kernel: this.deps.controlKernel,
       buildSnapshot,
@@ -353,6 +367,7 @@ export class KernelExecutionRuntime {
       completionContract: unknown;
       violations: Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }>['violations'];
     }>();
+    const stableFacts = this.buildDispatchStableFacts();
     let applied = false;
     const finishExecution = async (lines: string[]) => {
       this.deps.callbacks.clearRunningExecutorName(task.id);
@@ -379,9 +394,9 @@ export class KernelExecutionRuntime {
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,
             capacityAgentClasses: subtask.preferredAgentClassList,
-            executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
+            executorStatuses: stableFacts.executorStatuses,
           }
-        : this.buildDispatchSnapshot(task.id, attemptedAgentClasses),
+        : this.buildDispatchSnapshot(task.id, attemptedAgentClasses, 'ready', stableFacts),
       ledger: this.deps.kernelDecisionRepo,
       runtime: {
         apply: async decision => {

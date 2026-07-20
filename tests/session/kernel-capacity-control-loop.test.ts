@@ -13,6 +13,8 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { completionResponse } from '../support/completion-response.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
+import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 
 describe('Kernel capacity control loop', () => {
   it('exhausts authorized candidates, persists wait_for_capacity, and resumes only from a timer event', async () => {
@@ -64,6 +66,8 @@ describe('Kernel capacity control loop', () => {
     expect(executor.execute).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
+    expect(new KernelExecutorStatusProjector(new KernelExecutorStatusRepo(db)).list()
+      .find(item => item.agentClassName === 'codex-cli')?.recentAttempts ?? []).toEqual([]);
 
     available.value = true;
     const handled = await session.maybeReconcileBlockedTasksOnTimer(Date.now() + 10_000);

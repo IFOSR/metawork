@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutorResult } from '../core/types.js';
 
+const TERMINATION_GRACE_MS = 1000;
+
 export async function runResponseOnlyCli(input: {
   command: string;
   args: string[];
@@ -18,6 +20,8 @@ export async function runResponseOnlyCli(input: {
       let stdout = '';
       let stderr = '';
       let settled = false;
+      let timedOut = false;
+      let forceKillTimer: NodeJS.Timeout | null = null;
       const child = spawn(input.command, input.args, {
         cwd: workingDirectory,
         env: input.env,
@@ -27,16 +31,24 @@ export async function runResponseOnlyCli(input: {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
         resolve(result);
       };
       const timer = setTimeout(() => {
+        timedOut = true;
         child.kill('SIGTERM');
-        finish({ success: false, output: '', error: 'response-only correction timeout', exitCode: 1, durationMs: Date.now() - startedAt });
+        forceKillTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }, TERMINATION_GRACE_MS);
       }, Math.max(1, input.timeoutSeconds) * 1000);
       child.stdout?.on('data', chunk => { stdout += String(chunk); });
       child.stderr?.on('data', chunk => { stderr += String(chunk); });
       child.on('error', error => finish({ success: false, output: '', error: error.message, exitCode: 1, durationMs: Date.now() - startedAt }));
       child.on('close', code => {
+        if (timedOut) {
+          finish({ success: false, output: '', error: 'response-only correction timeout', exitCode: 1, durationMs: Date.now() - startedAt });
+          return;
+        }
         if (code !== 0) {
           finish({ success: false, output: '', error: stderr.trim() || `response-only process exited ${code}`, exitCode: code ?? 1, durationMs: Date.now() - startedAt });
           return;

@@ -44,4 +44,47 @@ describe('KernelControlLoop', () => {
 
     expect(order).toEqual(['issue:event_1', 'apply:event_1', 'issue:event_1']);
   });
+
+  it('persists Task and Subtask identities derived by a dispatch decision', async () => {
+    const dispatchEvent: KernelEvent = {
+      schemaVersion: 1,
+      type: 'dispatch_requested',
+      id: 'dispatch_event_1',
+      correlationId: 'request_1',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      reason: 'initial dispatch',
+    };
+    const dispatchSnapshot: KernelSnapshot = {
+      schemaVersion: 1,
+      type: 'dispatch',
+      task: { id: 'task_1', status: 'running' },
+      runningTaskId: 'task_1',
+      graphState: 'ready',
+      subtasks: [{
+        id: 'subtask_1', taskId: 'task_1', status: 'ready', preferredAgentClassList: ['codex-cli'],
+      }],
+      readyFrontier: ['subtask_1'],
+      attemptedAgentClasses: [],
+      executorStatuses: [{
+        agentClassName: 'codex-cli', classHealth: 'error', recentAttempts: [],
+        updatedAt: '2026-07-20T00:00:00.000Z',
+      }],
+      correctionSupportedAgentClasses: ['codex-cli'],
+    };
+    let persisted: Parameters<KernelDecisionLedger['issue']>[0] | null = null;
+    const loop = new KernelControlLoop({
+      kernel: new ControlKernel(),
+      buildSnapshot: () => dispatchSnapshot,
+      ledger: { issue: record => { persisted = record; return true; } },
+      runtime: { apply: async () => null },
+    });
+
+    const [decision] = await loop.run(dispatchEvent);
+
+    expect(decision.action).toEqual({ type: 'wait_for_capacity', taskId: 'task_1', subtaskId: 'subtask_1' });
+    expect(persisted).toMatchObject({ taskId: 'task_1', subtaskId: 'subtask_1' });
+  });
 });
