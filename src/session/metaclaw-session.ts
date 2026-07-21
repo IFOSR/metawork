@@ -1235,8 +1235,7 @@ export class MetaclawSession {
           occurredAt: now,
         }));
       }
-      const recoverable = this.kernelWorkflowRepo.listRecoverableApplications(undefined, task.id);
-      if (taskClaims.length === 0 && recoverable.length === 0) {
+      if (taskClaims.length === 0 && !this.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
         const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
         if (orphan) {
           this.kernelWorkflowRepo.enqueue(startupOrphanEvent({

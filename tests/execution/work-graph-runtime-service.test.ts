@@ -84,7 +84,7 @@ describe('WorkGraphRuntimeService', () => {
     expect(repo.listByTask(taskRecord.id)).toEqual([]);
   });
 
-  it('keeps a stale running v4 node blocked instead of implicitly retrying it', () => {
+  it('projects persisted active work without making an orphan recovery decision', () => {
     const db = createDb();
     const taskRecord = task('task_recover');
     new TaskRepo(db).insert(taskRecord);
@@ -98,7 +98,7 @@ describe('WorkGraphRuntimeService', () => {
 
     const result = runtime.apply({ task: taskRecord, userPrompt: 'resume', authorizedWorkGraph: null });
     expect(result).toMatchObject({ outcome: 'recovered' });
-    expect(repo.findById(`${taskRecord.id}_r1_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
+    expect(repo.findById(`${taskRecord.id}_r1_execute`)).toMatchObject({ status: 'running', error: 'previous timeout' });
   });
 
   it('reapplies the same authorized revision without changing in-flight Subtask state', () => {

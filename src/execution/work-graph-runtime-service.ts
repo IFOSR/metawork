@@ -87,33 +87,16 @@ export class WorkGraphRuntimeService {
       });
     }
     if (existing.length > 0) {
-      const subtasks = this.recoverExisting(input.task.id, existing);
       return {
         outcome: 'recovered',
         workGraph: {
           reason: 'reusing existing persisted v5 work graph revision',
-          subtasks: subtasks.map(subtaskToProposal),
+          subtasks: existing.map(subtaskToProposal),
         },
-        subtasks,
+        subtasks: existing,
       };
     }
     return { outcome: 'not_executable', reason: 'missing_graph' };
-  }
-
-  private recoverExisting(taskId: string, existing: Subtask[]): Subtask[] {
-    return existing.map(subtask => {
-      if (isTerminalStatus(subtask.status) || subtask.status === 'ready' || subtask.status === 'blocked') return subtask;
-      const blockedSubtask: Subtask = {
-        ...subtask,
-        status: 'blocked',
-        error: subtask.error ?? `stale ${subtask.status} subtask requires explicit future recovery policy`,
-      };
-      this.subtaskRepo.upsert(blockedSubtask);
-      this.taskEvents.record(taskId, blockedSubtask.id, 'subtask_recovery_blocked', blockedSubtask.error ?? '', {
-        previousStatus: subtask.status,
-      });
-      return blockedSubtask;
-    });
   }
 
   materializeCompletedEvidence(taskId: string, revision: number): string[] {
@@ -218,12 +201,6 @@ export class WorkGraphRuntimeService {
     });
     return subtasks;
   }
-}
-
-const TERMINAL_SUBTASK_STATUSES: ReadonlySet<Subtask['status']> = new Set(['done', 'cancelled']);
-
-function isTerminalStatus(status: Subtask['status']): boolean {
-  return TERMINAL_SUBTASK_STATUSES.has(status);
 }
 
 function subtaskToProposal(subtask: Subtask): SubtaskProposal {

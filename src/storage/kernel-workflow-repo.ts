@@ -187,6 +187,22 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return counts;
   }
 
+  hasRecoverableWork(taskId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      WHERE EXISTS (
+        SELECT 1 FROM kernel_events
+        WHERE task_id = ? AND status IN ('pending', 'processing')
+      ) OR EXISTS (
+        SELECT 1
+        FROM kernel_decision_applications application
+        JOIN kernel_decisions decision ON decision.id = application.decision_id
+        WHERE decision.task_id = ? AND application.status <> 'applied'
+      )
+    `).get(taskId, taskId) as { present: number } | undefined;
+    return Boolean(row?.present);
+  }
+
   listRecoveryItems(taskId: string): KernelDecisionApplicationRecord[] {
     const rows = this.db.prepare(`
       SELECT application.*, decision.decision_json

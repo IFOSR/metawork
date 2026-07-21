@@ -32,6 +32,15 @@ describe('KernelWorkflowRepo', () => {
     expect(db.prepare('SELECT status FROM kernel_events WHERE id = ?').get(event.id)).toEqual({ status: 'processed' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM kernel_decisions').get()).toEqual({ count: 1 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM kernel_decision_applications').get()).toEqual({ count: 1 });
+    expect(repo.hasRecoverableWork('task_1')).toBe(false);
+    expect(repo.enqueue({
+      ...event,
+      id: 'event_task_1',
+      type: 'dispatch_requested',
+      taskId: 'task_1',
+      reason: 'durable recovery remains pending',
+    })).toBe(true);
+    expect(repo.hasRecoverableWork('task_1')).toBe(true);
   });
 
   it('stores the stable observation while completing apply and makes it drainable once', () => {
