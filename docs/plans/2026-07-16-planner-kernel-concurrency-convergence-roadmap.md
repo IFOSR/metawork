@@ -4,7 +4,7 @@
 
 - **计划日期**：2026-07-16
 - **当前状态**：实施中；Phase 1～3 已完成
-- **当前激活阶段**：Phase 4——Recovery、fallback、retry 与熔断；详细实施计划待制定
+- **当前激活阶段**：Phase 4——持久恢复、fallback、retry、replan 与 Kernel 派生可用性；[详细实施计划](2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md)实施中
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -136,20 +136,23 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 完成记录（2026-07-20）：统一 Kernel event/snapshot/decision、ledger-first 同步控制循环、SQLite v23 decision ledger、只读 legacy Planning audit、`awaiting_decision`、确定性 capacity candidate switching、timer capacity recovery、outcome landing 与一次 response-only contract correction 已交付。旧 `PolicyKernel`、`TaskAdmissionGate`、多 Task Scheduler policy、`TaskResumePlanner` 和 Session 错误文本恢复策略已删除。`npm run lint`、`npm run build` 与 Docker/Linux 全量回归通过（176 个文件、715 个测试；另有 4 个文件、15 个 Phase 4/6 历史测试跳过）；真实 Linux Codex Planner→Kernel→Runtime→Codex Executor artifact smoke 通过。实现提交为 `bfca74a`；Phase 3 两份计划已归档，Phase 4 激活。
 
-### Phase 4：Recovery、fallback、retry 与熔断
+### Phase 4：持久恢复、fallback、retry、replan 与 Kernel 派生可用性
 
-目标：在统一 Kernel seam 上形成可持久、可测试的失败恢复状态机。
+目标：把统一 Kernel seam 升级为跨进程可恢复、可测试、可审计的串行工作流；所有恢复策略继续由纯 Kernel 决定。
 
 执行方向：
 
-- 建立稳定 failure taxonomy，区分容量、基础设施、权限、能力不足、任务失败和质量失败。
-- 增加 attempt 记录、retry cap、backoff/cooldown 和简单 circuit breaker。
+- 建立 durable event inbox、Decision application、effect outbox 和启动恢复顺序，保持授权 ledger 不可变。
+- 建立结构化 failure taxonomy，区分容量、基础设施、权限、能力不足、任务失败和质量失败。
+- 增加 attempt continuation、retry cap 和持久 backoff；旧 attempt ID 永不原地重放。
 - 按 `preferredAgentClassList` 实现顺序 fallback；candidate 切换只发生在前一 attempt 终止并释放后。
-- 明确候选耗尽后的 replan、clarify、park 或终止策略。
+- 将 circuit breaker 收敛为 Kernel 对 bounded recent-attempt projection 的纯派生可用性规则，不新增状态机或事实源。
+- 候选耗尽后每个 user generation 最多自动 replan 一次，并通过 Work Graph v5 revision 保留已完成证据、替换剩余工作。
 - timer 只产生 Kernel event，不自行恢复任务。
-- 对进程恢复、重复事件和 decision apply 建立幂等保证。
+- 对进程恢复、重复事件、Decision apply 和外部 delivery 建立幂等或 explicit uncertain 保证。
+- 领域契约与 fault matrix 冻结后执行 LangGraph Functional API 门控 spike；只允许替换 workflow cursor/replay implementation。
 
-退出条件：失败、恢复、fallback、候选耗尽和熔断均由单一控制面决定，Runtime 不再通过正则或 if-else 私自拍板。
+退出条件：失败、恢复、fallback、候选耗尽、replan 和可用性均由单一控制面决定；主数据库可独立从全部 crash window 恢复；Runtime 不再通过正则、隐藏 retry 或 if-else 私自拍板；生产只保留一条 workflow 路径。
 
 ### Phase 5：Partition 模型在串行 Runtime 中落地
 

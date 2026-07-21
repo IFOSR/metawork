@@ -10,8 +10,8 @@ It is built for teams who need agents to do more than answer the current turn. A
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
-- Enforces one active top-level task and a single synchronous Kernel control loop in Phase 3.
-- Persists Planning and Runtime decisions in one append-only `kernel_decisions` ledger before applying them.
+- Enforces one active top-level task while Phase 4 replaces the synchronous loop with a durable serial `KernelWorkflow`.
+- Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
@@ -58,7 +58,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become `dispatch_requested`; attempts return capacity, outcome or contract facts. `ControlKernel` validates Planning admission, selects the ready Subtask and ordered AgentClass, lands execution outcomes, and authorizes timer capacity probes. Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become `dispatch_requested`; attempts return capacity, structured outcome or contract facts. `ControlKernel` validates Planning admission, selects the ready Subtask and ordered AgentClass, and remains the sole authority for recovery, retry, fallback, replan and derived availability. Phase 4 persists input before drain and makes Runtime application idempotent by Decision ID; Runtime applies no unpersisted strategy.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 

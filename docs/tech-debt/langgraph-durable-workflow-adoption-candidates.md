@@ -1,10 +1,10 @@
 # LangGraph durable workflow 引入候选
 
-> 状态：候选已登记，等待 Phase 4 详细设计门评估
+> 状态：Phase 4 实施计划已接管，等待领域契约与 fault-injection 测试冻结后的 gated spike
 > 创建日期：2026-07-21
 > 最佳引入阶段：Phase 4 后半段；不得早于 failure/apply persistence 契约冻结
 > 关联路线图：[Planner、Kernel 与并发调度收敛路线图](../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
-> 关联 ADR：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)
+> 关联 ADR：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md)
 > 用途：只登记满足本文三项硬门槛、可由 LangGraph 明显降低维护复杂度的 workflow implementation；不授权直接引入依赖或改写 Kernel。
 
 ## 一、登记门槛

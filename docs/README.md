@@ -28,13 +28,14 @@ Key recent ADRs:
 - [ADR-0019: PlanningAgentPlan v3 And Work Graph Authority](adr/0019-planning-agent-plan-v3-work-graph-authority.md)
 - [ADR-0020: Core Module Ownership And Dependency Direction](adr/0020-core-module-ownership-and-dependency-direction.md): normative module and dependency guide for the active convergence roadmap.
 - [ADR-0022: Unified Kernel Control Plane And Decision Ledger](adr/0022-unified-kernel-control-plane-and-decision-ledger.md): current event, snapshot, decision, ledger, Subtask and synchronous-loop contract delivered by Phase 3.
+- [ADR-0023: Durable Kernel Workflow, Recovery And Availability](adr/0023-durable-kernel-workflow-recovery-and-availability.md): Phase 4 durable inbox/application/outbox, recovery, structured failure, retry/fallback, availability, continuation and graph revision authority.
 
 The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md).
 
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
-Phase 4 (recovery, fallback, retry, and circuit breaking) is the active roadmap stage. Its detailed implementation plan has not yet been written.
+Phase 4 (durable recovery, fallback, retry, replan and derived availability) is the active roadmap stage. Its [detailed implementation plan](plans/2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md) is in progress.
 
 ## Historical Plans
 

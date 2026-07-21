@@ -1,0 +1,57 @@
+# ADR-0023: Durable Kernel Workflow, Recovery And Availability
+
+- **Status**: Accepted
+- **Date**: 2026-07-21
+- **Scope**: Phase 4 durable workflow, application recovery, structured failure, retry/fallback, availability, continuation, replan revisions, outbox and manual recovery
+- **Amends**: ADR-0017, ADR-0018, ADR-0021, ADR-0022
+- **Governed by**: ADR-0020
+
+## Context
+
+ADR-0022 established a ledger-first synchronous loop but intentionally failed closed after a crash between Decision issuance and apply. It also deferred structured failure, retry/fallback, continuation, automatic replan and reliable external effects. Implementing these independently in Session, timers, adapters or a workflow framework would recreate competing strategic interpreters.
+
+## Decision
+
+MetaClaw introduces one durable application seam:
+
+```ts
+interface KernelWorkflow {
+  submit(event: KernelEvent): Promise<KernelWorkflowResult>;
+  recover(): Promise<KernelRecoveryReport>;
+}
+```
+
+`submit` durably enqueues before synchronously draining. `recover` reconciles applications, orphan attempts and due events before external input opens. The pure `ControlKernel.decide(event, snapshot)` Interface remains the only strategic authority.
+
+SQLite v24 separates immutable authorization (`kernel_decisions`) from inbox lifecycle (`kernel_events`), application lifecycle (`kernel_decision_applications`), external effects (`kernel_effect_outbox`), attempt continuation metadata (`executor_attempt_runtime`) and work graph generations (`work_graph_revisions`). Issuance, application creation and source-event advancement are atomic. Runtime apply is idempotent by Decision ID and checks durable postconditions before mutating state.
+
+Kernel contracts hard-upgrade to v2 and carry structured, bounded `KernelFailure` facts. Completion Protocol hard-upgrades to v2 and Work Graph/Planning to v5. Capacity remains separate from execution failure and never affects health history. Runtime and workflow engines may not perform hidden semantic retry.
+
+Retry policy is deterministic: the preferred AgentClass gets at most one delayed continuation after a recoverable infrastructure failure; each fallback gets one attempt. Task/domain failure skips same-class retry. Exhaustion may authorize one automatic replan per user generation. Contract correction remains an isolated one-shot path.
+
+AgentClass “circuit breaking” is a pure derived availability rule, not a new persisted state machine. Kernel interprets the bounded recent structured projection and explicit event time. Class-level permanent faults are skipped; three attributable transient failures in ten minutes cause a five-minute cooldown; the next eligible serial dispatch is the probe. Capacity and task-domain outcomes are excluded.
+
+Recovery safety is canonical Routing Capability metadata: `read_only`, `workspace_reconcilable`, or `external_non_idempotent`. Native continuation is preferred, otherwise Runtime supplies a bounded recovery packet and workspace delta. Unknown non-idempotent external effects fail closed unless a stable provider idempotency key exists.
+
+Replan creates a new graph revision within the same generation. Completed facts remain immutable task evidence, unfinished old nodes are cancelled, dependencies stay revision-local, and only the new revision provides the frontier. User plans and explicit recovery create generations; automatic revisions do not reset the one-replan quota.
+
+External effects use an outbox. Unknown delivery without provider idempotency becomes `uncertain` and requires a Kernel-authorized Task recovery command; it is never blindly resent.
+
+## LangGraph Boundary
+
+LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.
+
+Adoption requires the full crash matrix, no domain-framework coupling, at least 30% net removal of cursor/replay implementation, checkpoint-loss recovery, and exactly one production workflow path. Failure of any gate requires deleting the spike and dependency.
+
+## Ownership And Dependencies
+
+- Kernel owns pure decisions and may depend only on pure domain/routing/work-graph facts.
+- Workflow is a deep Application module owning durable sequencing, recovery and handler orchestration, not policy.
+- Runtime owns idempotent effects, attempt execution and normalized observations.
+- Storage implements transactional repositories; tables do not define policy.
+- Session, Gateway and commands only submit events, call startup recovery and project results.
+
+## Consequences
+
+Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan and availability become auditable Kernel actions. The hard schema cut requires coordinated migration and replacement of every manual issue/apply path. Phase 4 remains serial; partition/lease enforcement and multi-Task concurrency remain Phase 5 and Phase 6 respectively.
+
