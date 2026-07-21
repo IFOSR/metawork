@@ -1,11 +1,24 @@
 # LangGraph durable workflow 引入候选
 
-> 状态：Phase 4 实施计划已接管，等待领域契约与 fault-injection 测试冻结后的 gated spike
+> 状态：已关闭——Phase 4 门控 spike 未达到采用标准，不引入 LangGraph
+> 关闭日期：2026-07-21
 > 创建日期：2026-07-21
 > 最佳引入阶段：Phase 4 后半段；不得早于 failure/apply persistence 契约冻结
 > 关联路线图：[Planner、Kernel 与并发调度收敛路线图](../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
 > 关联 ADR：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md)
 > 用途：只登记满足本文三项硬门槛、可由 LangGraph 明显降低维护复杂度的 workflow implementation；不授权直接引入依赖或改写 Kernel。
+
+## Phase 4 门控 spike 结论
+
+结论为**不采用**。评估以已经冻结的 `KernelWorkflow`、SQLite v24 application/outbox 契约和官方 Functional API 恢复语义为边界，没有加入试验依赖或保留第二条生产路径。
+
+- 当前 `DurableKernelWorkflow` 文件共 196 行，其中真正可能被 Functional API 替换的串行 drain/apply 区间约 60 行；其余是稳定公开 Interface、领域 application 状态和 ledger record 构造。
+- `KernelWorkflowRepo` 共 257 行。它负责主库 inbox、Decision/application 原子 issuance、幂等键、人工恢复与 checkpoint 丢失后的事实重建；按 ADR-0023，这些代码即使采用 LangGraph 也必须保留。
+- Functional API 恢复会从 entrypoint 起点重放，并复用已完成 task 的 checkpoint 结果；未完成 task 仍可能再次执行。因此 MetaClaw 的后置条件检查、application 状态与 outbox 幂等不能由 checkpointer 替代。
+- 接入仍需新增独立 SQLite checkpointer 生命周期、`entrypoint/task` glue、thread 配置、checkpoint 损坏处理和双存储故障测试。可删除代码少于新增 glue，明显不满足“净减少至少 30%”门槛。
+- 独立 checkpoint 会成为第二个 workflow cursor，而主库已经可以独立恢复；在当前串行控制面中，它增加一致性面而没有删除领域恢复知识。
+
+因此 Phase 4 保留自研 `DurableKernelWorkflow` 作为唯一生产 implementation，删除旧 `KernelControlLoop`，不增加 `@langchain/langgraph` 或 checkpointer 依赖。Phase 6 也不得以“未来并发”重新打开该依赖；只有新的、可量化删除至少 30% 实现复杂度的独立证据，才允许新建 ADR 重新评估。
 
 ## 一、登记门槛
 

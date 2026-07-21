@@ -43,6 +43,8 @@ LangGraph may replace only the durable workflow cursor/replay implementation aft
 
 Adoption requires the full crash matrix, no domain-framework coupling, at least 30% net removal of cursor/replay implementation, checkpoint-loss recovery, and exactly one production workflow path. Failure of any gate requires deleting the spike and dependency.
 
+The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replaceable drain/apply loop was materially smaller than the required MetaClaw inbox/application/outbox recovery layer, while Functional API integration would add a second SQLite cursor and replay glue. It could not produce the required 30% net removal. `DurableKernelWorkflow` is therefore the sole production workflow implementation and no LangGraph dependency or compatibility path is retained.
+
 ## Ownership And Dependencies
 
 - Kernel owns pure decisions and may depend only on pure domain/routing/work-graph facts.
@@ -54,4 +56,3 @@ Adoption requires the full crash matrix, no domain-framework coupling, at least 
 ## Consequences
 
 Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan and availability become auditable Kernel actions. The hard schema cut requires coordinated migration and replacement of every manual issue/apply path. Phase 4 remains serial; partition/lease enforcement and multi-Task concurrency remain Phase 5 and Phase 6 respectively.
-

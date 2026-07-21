@@ -1078,7 +1078,7 @@ export class MetaclawSession {
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
       item: application
-        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: false }
+        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
         : effect && (effect.status === 'uncertain' || effect.status === 'failed')
           ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
           : null,

@@ -131,6 +131,12 @@ describe('ControlKernel', () => {
     expect(kernel.decide({ ...recoveryEvent, resolution: 'assume_applied' }, unsafe).action).toEqual({
       type: 'resolve_recovery', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'assume_applied',
     });
+    expect(kernel.decide(recoveryEvent, {
+      ...unsafe,
+      item: { id: 'effect_1', kind: 'application', status: 'uncertain', retrySafe: true },
+    }).action).toEqual({
+      type: 'resolve_recovery', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
+    });
   });
 
   it('skips a class during derived cooldown and makes it eligible as the next serial probe after cooldown', () => {

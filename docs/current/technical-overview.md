@@ -36,7 +36,7 @@ flowchart LR
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v4<br/>intent, target, risk,<br/>typed work graph proposal]
   Plan --> Event[KernelEvent<br/>plan_proposed]
-  Event --> Loop[KernelControlLoop<br/>snapshot, decide, ledger, apply]
+  Event --> Loop[Durable KernelWorkflow<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
   Kernel --> Decision{KernelDecision<br/>one action}
   Decision --> Runtime[Runtime handlers]
@@ -88,7 +88,7 @@ flowchart LR
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
   Proposal --> Kernel[ControlKernel<br/>authorize or reject]
   Kernel --> Decision[authorize_task_plan]
-  Decision --> Apply[KernelControlLoop Runtime apply]
+  Decision --> Apply[KernelWorkflow idempotent Runtime apply]
   Apply --> Task[TaskRuntimeService<br/>create or bind task]
   Task --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply authorized graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>persist Subtasks]
@@ -769,7 +769,7 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 
 `ControlKernel` exposes only `decide(event, snapshot)`. It validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides dispatch, capacity handling, execution landing, timer rechecks and contract correction without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and the decision ID and attempt authorization are deterministic from the event.
 
-`KernelControlLoop` writes each decision to `kernel_decisions` before applying its one high-level action, then feeds any normalized observation into the next loop iteration. A duplicate event cannot be applied again. `planning_decisions_legacy_audit` is read-only history; Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph/frontier facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `SubtaskAttemptRunner` executes the exact authorized attempt, persists receipts/handoffs/results, releases its WorkUnit, and reports a normalized event.
+`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles processing/application state before accepting input. `planning_decisions_legacy_audit` is read-only history; Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph/frontier facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `SubtaskAttemptRunner` executes the exact authorized attempt, persists receipts/handoffs/results, releases its WorkUnit, and reports a normalized event.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -925,7 +925,7 @@ src/
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives and the generic memory/ranking `llm-bridge`; the obsolete `CapabilityClass` vocabulary has been removed in favor of controlled Routing Capability IDs. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-control-loop.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives and the generic memory/ranking `llm-bridge`; the obsolete `CapabilityClass` vocabulary has been removed in favor of controlled Routing Capability IDs. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
 
 ## License
 

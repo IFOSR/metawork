@@ -101,6 +101,29 @@ describe('WorkGraphRuntimeService', () => {
     expect(repo.findById(`${taskRecord.id}_r1_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
   });
 
+  it('reapplies the same authorized revision without changing in-flight Subtask state', () => {
+    const db = createDb();
+    const taskRecord = task('task_reapply');
+    new TaskRepo(db).insert(taskRecord);
+    const repo = new SubtaskRepo(db);
+    const runtime = service(db);
+    const authorization = {
+      decisionId: 'decision_initial', generationId: 'generation_1', revision: 1,
+      source: 'initial' as const, automaticReplan: false,
+    };
+    runtime.apply({
+      task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id), authorization,
+    });
+    repo.updateStatus(`${taskRecord.id}_r1_execute`, 'awaiting_decision', { error: 'waiting for Kernel' });
+
+    expect(runtime.apply({
+      task: taskRecord, userPrompt: 'reapply', authorizedWorkGraph: graph(taskRecord.id), authorization,
+    })).toMatchObject({ outcome: 'recovered' });
+    expect(repo.findById(`${taskRecord.id}_r1_execute`)).toMatchObject({
+      status: 'awaiting_decision', error: 'waiting for Kernel',
+    });
+  });
+
   it('defensively rejects a conflicting revision', () => {
     const db = createDb();
     const taskRecord = task('task_conflict');

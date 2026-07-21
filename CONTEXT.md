@@ -18,7 +18,7 @@ The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `Sched
 
 Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions. A missing non-canonical configured default is materialized as an unclassified AgentClass with no routing capabilities, while an existing non-canonical class is not rewritten. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability metadata is irreversibly replaced by the controlled Routing Capability IDs. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. The retired `executor_profiles` table is removed by migration v20.
 
-When touching dispatch, update focused behavior tests around `ControlKernel`, `KernelControlLoop`, the decision ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
+When touching dispatch, update focused behavior tests around `ControlKernel`, `DurableKernelWorkflow`, the decision/application ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
 
 ## Routing Language
 

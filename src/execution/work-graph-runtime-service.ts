@@ -54,7 +54,7 @@ export class WorkGraphRuntimeService {
           return { outcome: 'not_executable', reason: 'generation_conflict' };
         }
         if (authorization.revision === activeRevision.revision) {
-          return { outcome: 'recovered', workGraph: proposedGraph, subtasks: this.recoverExisting(input.task.id, existing) };
+          return { outcome: 'recovered', workGraph: proposedGraph, subtasks: existing };
         }
         if (authorization.source !== 'replan' || authorization.revision !== activeRevision.revision + 1) {
           return { outcome: 'not_executable', reason: 'revision_conflict' };

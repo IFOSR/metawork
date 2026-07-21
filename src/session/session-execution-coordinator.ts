@@ -380,6 +380,13 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'complete_task') {
+      const effectId = `effect_${decision.id}_task_completion`;
+      if (
+        this.deps.taskRuntimeService.findTask(action.taskId)?.status === 'done'
+        && this.deps.effectOutboxRepo.find(effectId)
+      ) {
+        return null;
+      }
       const activeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
       const subtasks = this.deps.subtaskRepo.listByTask(action.taskId).filter(subtask =>
         subtask.status === 'done'
