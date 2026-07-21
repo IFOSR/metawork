@@ -160,6 +160,13 @@ export class SessionKernelRuntime {
     await this.deps.callbacks.prepareTaskExecution(task.id, {
       ...buildExecutionRequest({ userInput, taskId: task.id, executionMode: 'fresh', decision }),
       authorizedWorkGraph: decision.action.workGraph,
+      workGraphAuthorization: {
+        decisionId: decision.id,
+        generationId: decision.action.generationId,
+        revision: decision.action.graphRevision,
+        source: decision.action.proposalSource,
+        automaticReplan: decision.action.proposalSource === 'replan',
+      },
       includeRecentConversationContext: command.includeRecentConversationContext,
     });
   }

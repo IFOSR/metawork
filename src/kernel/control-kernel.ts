@@ -15,7 +15,7 @@ export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
 export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
 
 export interface KernelEventEnvelope {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   correlationId: string;
   causationId: string | null;
@@ -28,7 +28,7 @@ export interface KernelEventEnvelope {
 
 export interface KernelPlanProposal {
   id: string;
-  schemaVersion: 4;
+  schemaVersion: 5;
   action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'no_action';
   confidence: number;
   reason: string;
@@ -50,7 +50,13 @@ export interface KernelPlanProposal {
 }
 
 export type KernelEvent =
-  | (KernelEventEnvelope & { type: 'plan_proposed'; proposal: KernelPlanProposal })
+  | (KernelEventEnvelope & {
+      type: 'plan_proposed';
+      proposal: KernelPlanProposal;
+      generationId: string;
+      proposalSource: 'initial' | 'replan';
+      targetGraphRevision: number;
+    })
   | (KernelEventEnvelope & { type: 'dispatch_requested'; reason: string })
   | (KernelEventEnvelope & {
       type: 'capacity_signal';
@@ -108,17 +114,17 @@ export interface KernelAttemptFact {
 
 export type KernelSnapshot =
   | {
-      schemaVersion: 1;
+      schemaVersion: 2;
       type: 'plan_admission';
       tasks: KernelTaskFact[];
       runningTaskId: string | null;
       executorCatalog: PlannerExecutorCatalog;
       executorStatuses: KernelExecutorStatusProjection[];
-      v4WorkGraphTaskIds: string[];
+      v5WorkGraphTaskIds: string[];
       eligibleContextRefKeys: string[];
     }
   | {
-      schemaVersion: 1;
+      schemaVersion: 2;
       type: 'dispatch';
       task: KernelTaskFact | null;
       runningTaskId: string | null;
@@ -136,7 +142,7 @@ export type KernelSnapshot =
       automaticRecoveryAllowed: boolean;
     }
   | {
-      schemaVersion: 1;
+      schemaVersion: 2;
       type: 'timer';
       capacityBlockedAt: string | null;
       recheckAfterMs: number;
@@ -144,7 +150,7 @@ export type KernelSnapshot =
       executorStatuses: KernelExecutorStatusProjection[];
     }
   | {
-      schemaVersion: 1;
+      schemaVersion: 2;
       type: 'invalid';
       reason: string;
     };
@@ -159,6 +165,9 @@ export type KernelDecisionAction =
       taskId: string;
       task: KernelPlanProposal['task'];
       workGraph: WorkGraphProposal;
+      generationId: string;
+      graphRevision: number;
+      proposalSource: 'initial' | 'replan';
     }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
@@ -188,7 +197,7 @@ export type KernelDecisionAction =
   | { type: 'complete_task'; taskId: string };
 
 export interface KernelDecision {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   eventId: string;
   action: KernelDecisionAction;
@@ -253,11 +262,20 @@ export class ControlKernel {
       return decision(event, { type: 'authorize_task_control', task: proposal.task }, 'task control authorized');
     }
     if (!proposal.workGraph) return decision(event, { type: 'reject_request' }, 'work graph is required');
+    if (!event.generationId || !Number.isSafeInteger(event.targetGraphRevision) || event.targetGraphRevision < 1) {
+      return decision(event, { type: 'reject_request' }, 'invalid graph generation or revision');
+    }
+    if (event.proposalSource === 'initial' && event.targetGraphRevision !== 1) {
+      return decision(event, { type: 'reject_request' }, 'initial plan must authorize graph revision 1');
+    }
+    if (event.proposalSource === 'replan' && (!proposal.task.taskId || event.targetGraphRevision < 2)) {
+      return decision(event, { type: 'reject_request' }, 'replan must target an existing Task and a later revision');
+    }
     if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId) {
       return decision(event, { type: 'reject_request' }, `single-active Task constraint: ${snapshot.runningTaskId}`);
     }
-    if (proposal.task.taskId && snapshot.v4WorkGraphTaskIds.includes(proposal.task.taskId)) {
-      return decision(event, { type: 'reject_request' }, `task ${proposal.task.taskId} already has a v4 work graph`);
+    if (event.proposalSource === 'initial' && proposal.task.taskId && snapshot.v5WorkGraphTaskIds.includes(proposal.task.taskId)) {
+      return decision(event, { type: 'reject_request' }, `task ${proposal.task.taskId} already has an active v5 work graph`);
     }
     const eligible = new Set(snapshot.eligibleContextRefKeys);
     const invalidRefs = proposal.workGraph.subtasks.flatMap(subtask => subtask.contextRefs
@@ -286,6 +304,9 @@ export class ControlKernel {
       taskId: proposal.task.taskId ?? deterministicTaskId(event.id),
       task: proposal.task,
       workGraph,
+      generationId: event.generationId,
+      graphRevision: event.targetGraphRevision,
+      proposalSource: event.proposalSource,
     }, 'work graph authorized');
   }
 
@@ -370,6 +391,9 @@ export class ControlKernel {
     const failure = event.failure;
     if (!subtask || !event.attemptId || !failure) {
       return decision(event, { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null }, 'failure facts are incomplete');
+    }
+    if (event.attemptKind === 'contract_correction') {
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'response-only correction failed and cannot enter ordinary recovery');
     }
     if (failure.kind === 'cancelled' && snapshot.task?.status === 'cancelled') {
       return decision(event, { type: 'no_op' }, 'cancelled Task requires no recovery');
@@ -481,7 +505,7 @@ export class ControlKernel {
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
-  return { schemaVersion: 1, id: `decision_${event.id}`, eventId: event.id, action, reason };
+  return { schemaVersion: 2, id: `decision_${event.id}`, eventId: event.id, action, reason };
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {

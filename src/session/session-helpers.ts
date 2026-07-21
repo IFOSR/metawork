@@ -2,6 +2,7 @@
 // editor submission, and preference capture.
 import type { TaskRecoveryTrigger } from '../core/types.js';
 import type { WorkGraphProposal } from '../work-graph/types.js';
+import type { WorkGraphAuthorization } from '../execution/work-graph-runtime-service.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
 export {
   extractInlineResourceMatches,
@@ -14,6 +15,7 @@ export type QueuedExecutionRequest = {
   contextTaskId: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   authorizedWorkGraph?: WorkGraphProposal | null;
+  workGraphAuthorization?: WorkGraphAuthorization | null;
   kernelDecisionId?: string | null;
   origin?: 'user' | 'system';
   schedulingReason?: string;

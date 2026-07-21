@@ -12,7 +12,7 @@ function input() {
       outOfScopeSiblings: [{ id: 'b', title: 'B' }],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'e', taskId: 'task', subtaskId: 'a', attemptId: 'attempt', workUnitId: 'wu' },
-      completionContract: { marker: '<!-- metaclaw:completion:v1 -->' as const, schemaVersion: 1 as const },
+      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'unit test' },
     },
   };
@@ -31,7 +31,7 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).toContain('selected evidence only');
     expect(prompt).toContain('toSubtaskId');
     expect(prompt).toContain('"title": "B"');
-    expect(prompt).toContain('<!-- metaclaw:completion:v1 -->');
+    expect(prompt).toContain('<!-- metaclaw:completion:v2 -->');
     expect(prompt).not.toContain('conversationHistory');
     expect(prompt).not.toContain('executionContextBundle');
   });

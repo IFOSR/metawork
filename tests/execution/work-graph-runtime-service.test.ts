@@ -7,6 +7,8 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
 
 const now = '2026-07-16T00:00:00.000Z';
 
@@ -39,19 +41,29 @@ function graph(_taskId: string): WorkGraphProposal {
 }
 
 describe('WorkGraphRuntimeService', () => {
-  it('applies and round-trips only a Kernel-approved v4 graph', () => {
+  function service(db: Database.Database): WorkGraphRuntimeService {
+    return new WorkGraphRuntimeService(
+      new SubtaskRepo(db),
+      new TaskEventRepo(db),
+      new WorkGraphRevisionRepo(db),
+      new TaskExecutionEvidenceRepo(db),
+    );
+  }
+
+  it('applies and round-trips only a Kernel-approved v5 graph revision', () => {
     const db = createDb();
     const taskRecord = task();
     new TaskRepo(db).insert(taskRecord);
     const repo = new SubtaskRepo(db);
-    const result = new WorkGraphRuntimeService(repo, new TaskEventRepo(db)).apply({
+    const result = service(db).apply({
       task: taskRecord, userPrompt: 'ignored by graph materialization', authorizedWorkGraph: graph(taskRecord.id),
+      authorization: { decisionId: 'decision_initial', generationId: 'generation_1', revision: 1, source: 'initial', automaticReplan: false },
     });
 
     expect(result).toMatchObject({ outcome: 'applied' });
     if (result.outcome !== 'applied') return;
     expect(result.subtasks[0]).toMatchObject({
-      id: `${taskRecord.id}_execute`, requiredCapabilities: ['workspace-engineering'],
+      id: `${taskRecord.id}_r1_execute`, graphRevision: 1, generationId: 'generation_1', requiredCapabilities: ['workspace-engineering'],
       preferredAgentClassList: ['codex-cli'], expectedOutput: 'patch',
       acceptance: [{ key: 'tests', description: 'run the unit tests', requiredEvidence: ['test result'] }],
     });
@@ -66,7 +78,7 @@ describe('WorkGraphRuntimeService', () => {
     new TaskRepo(db).insert(taskRecord);
     const repo = new SubtaskRepo(db);
 
-    expect(new WorkGraphRuntimeService(repo, new TaskEventRepo(db)).apply({
+    expect(service(db).apply({
       task: taskRecord, userPrompt: 'just do it', authorizedWorkGraph: null,
     })).toEqual({ outcome: 'not_executable', reason: 'missing_graph' });
     expect(repo.listByTask(taskRecord.id)).toEqual([]);
@@ -77,24 +89,78 @@ describe('WorkGraphRuntimeService', () => {
     const taskRecord = task('task_recover');
     new TaskRepo(db).insert(taskRecord);
     const repo = new SubtaskRepo(db);
-    const service = new WorkGraphRuntimeService(repo, new TaskEventRepo(db));
-    expect(service.apply({ task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id) })).toMatchObject({ outcome: 'applied' });
-    repo.updateStatus(`${taskRecord.id}_execute`, 'running', { error: 'previous timeout' });
+    const runtime = service(db);
+    expect(runtime.apply({
+      task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id),
+      authorization: { decisionId: 'decision_initial', generationId: 'generation_1', revision: 1, source: 'initial', automaticReplan: false },
+    })).toMatchObject({ outcome: 'applied' });
+    repo.updateStatus(`${taskRecord.id}_r1_execute`, 'running', { error: 'previous timeout' });
 
-    const result = service.apply({ task: taskRecord, userPrompt: 'resume', authorizedWorkGraph: null });
+    const result = runtime.apply({ task: taskRecord, userPrompt: 'resume', authorizedWorkGraph: null });
     expect(result).toMatchObject({ outcome: 'recovered' });
-    expect(repo.findById(`${taskRecord.id}_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
+    expect(repo.findById(`${taskRecord.id}_r1_execute`)).toMatchObject({ status: 'blocked', error: 'previous timeout' });
   });
 
-  it('defensively rejects a new approved graph when a v4 graph already exists', () => {
+  it('defensively rejects a conflicting revision', () => {
     const db = createDb();
     const taskRecord = task('task_conflict');
     new TaskRepo(db).insert(taskRecord);
-    const service = new WorkGraphRuntimeService(new SubtaskRepo(db), new TaskEventRepo(db));
-    service.apply({ task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id) });
-
-    expect(service.apply({ task: taskRecord, userPrompt: 'replace', authorizedWorkGraph: graph(taskRecord.id) })).toEqual({
-      outcome: 'not_executable', reason: 'graph_already_exists',
+    const runtime = service(db);
+    runtime.apply({
+      task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id),
+      authorization: { decisionId: 'decision_initial', generationId: 'generation_1', revision: 1, source: 'initial', automaticReplan: false },
     });
+
+    expect(runtime.apply({
+      task: taskRecord, userPrompt: 'replace', authorizedWorkGraph: graph(taskRecord.id),
+      authorization: { decisionId: 'decision_conflict', generationId: 'generation_1', revision: 3, source: 'replan', automaticReplan: true },
+    })).toEqual({
+      outcome: 'not_executable', reason: 'revision_conflict',
+    });
+  });
+
+  it('supersedes unfinished work and exposes completed work as immutable task evidence', () => {
+    const db = createDb();
+    const taskRecord = task('task_replan');
+    new TaskRepo(db).insert(taskRecord);
+    const repo = new SubtaskRepo(db);
+    const runtime = service(db);
+    const firstGraph: WorkGraphProposal = {
+      reason: 'initial',
+      subtasks: [
+        { ...graph(taskRecord.id).subtasks[0]!, id: 'research', title: 'Research' },
+        { ...graph(taskRecord.id).subtasks[0]!, id: 'write', title: 'Write', dependencies: [{ fromSubtaskId: 'research', requiredItems: [] }] },
+      ],
+    };
+    runtime.apply({
+      task: taskRecord, userPrompt: 'initial', authorizedWorkGraph: firstGraph,
+      authorization: { decisionId: 'decision_initial', generationId: 'generation_1', revision: 1, source: 'initial', automaticReplan: false },
+    });
+    repo.updateStatus('task_replan_r1_research', 'done', { result: 'Verified facts', artifacts: ['report.md'] });
+
+    const evidenceId = 'evidence_task_evidence_task_replan_r1_task_replan_r1_research';
+    const replacement: WorkGraphProposal = {
+      reason: 'remaining work',
+      subtasks: [{
+        ...graph(taskRecord.id).subtasks[0]!, id: 'finish', title: 'Finish',
+        contextRefs: [{ kind: 'task_evidence', evidenceId }],
+      }],
+    };
+    const result = runtime.apply({
+      task: taskRecord, userPrompt: 'replan', authorizedWorkGraph: replacement,
+      authorization: { decisionId: 'decision_replan', generationId: 'generation_1', revision: 2, source: 'replan', automaticReplan: true },
+    });
+
+    expect(result).toMatchObject({ outcome: 'applied' });
+    expect(repo.findById('task_replan_r1_research')).toMatchObject({ status: 'done', result: 'Verified facts' });
+    expect(repo.findById('task_replan_r1_write')).toMatchObject({ status: 'cancelled' });
+    expect(repo.listActiveByTask(taskRecord.id)).toEqual([
+      expect.objectContaining({ id: 'task_replan_r2_finish', graphRevision: 2, generationId: 'generation_1' }),
+    ]);
+    expect(new TaskExecutionEvidenceRepo(db).findForTask(taskRecord.id, evidenceId)).toMatchObject({
+      kind: 'task_evidence', source_id: 'task_replan_r1_research',
+    });
+    expect(new WorkGraphRevisionRepo(db).find(taskRecord.id, 1)).toMatchObject({ status: 'superseded' });
+    expect(new WorkGraphRevisionRepo(db).findActive(taskRecord.id)).toMatchObject({ revision: 2, automaticReplan: true });
   });
 });

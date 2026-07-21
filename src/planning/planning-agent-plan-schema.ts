@@ -62,6 +62,7 @@ const ContextRefSchema = z.union([
     side: z.enum(['user', 'assistant']),
   }).strict(),
   z.object({ kind: z.literal('task_resource'), locator: z.string().trim().min(1) }).strict(),
+  z.object({ kind: z.literal('task_evidence'), evidenceId: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('preference'), preferenceId: z.string().trim().min(1) }).strict(),
 ]);
 
@@ -100,7 +101,7 @@ const WorkGraphSchema = z.object({
 
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(4),
+  schemaVersion: z.literal(5),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),

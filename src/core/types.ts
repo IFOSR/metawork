@@ -101,6 +101,8 @@ export interface AgentClass {
 export interface Subtask {
   id: string;
   taskId: string;
+  graphRevision: number;
+  generationId: string;
   title: string;
   goal: string;
   status: SubtaskStatus;

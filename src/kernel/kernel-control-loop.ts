@@ -2,7 +2,7 @@ import type { KernelDecision, KernelEvent, KernelSnapshot } from './control-kern
 
 export interface KernelDecisionLedgerRecord {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   eventId: string;
   eventType: KernelEvent['type'];
   correlationId: string;
@@ -55,7 +55,7 @@ export class KernelControlLoop {
       const nextDecision = this.deps.kernel.decide(event, snapshot);
       const issued = this.deps.ledger.issue({
         id: nextDecision.id,
-        schemaVersion: 1,
+        schemaVersion: 2,
         eventId: event.id,
         eventType: event.type,
         correlationId: event.correlationId,

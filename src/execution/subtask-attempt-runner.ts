@@ -11,10 +11,10 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
-  COMPLETION_MARKER_V1,
+  COMPLETION_MARKER_V2,
   validateCompletionProtocol,
   type CompletionContractViolation,
-  type CompletionHandoffV1,
+  type CompletionHandoffV2,
 } from './completion-protocol.js';
 import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
@@ -211,6 +211,21 @@ export class SubtaskAttemptRunner {
           violations: completion.violations,
         };
       }
+      if (completion.envelope.status === 'failed') {
+        const failure = completion.envelope.failure;
+        this.persistNonSuccess({
+          attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
+          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 2,
+          errorCode: failure.code, errorDetail: failure.summary,
+        });
+        claim.markFailed(failure.summary);
+        return {
+          outcome: 'executor_failed', attemptId, error: failure.summary,
+          failure: { ...failure, scope: 'task' },
+        };
+      }
+      const completedEnvelope = completion.envelope;
 
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
         const detail = 'Task, Subtask, or WorkUnit claim changed before commit';
@@ -250,24 +265,24 @@ export class SubtaskAttemptRunner {
           startedAt,
           terminalState: 'completed',
           rawResponse,
-          completionSchemaVersion: 1,
+          completionSchemaVersion: 2,
           warnings: completion.warnings,
         }, completedAt));
-        for (const handoff of completion.envelope.handoffs) {
+        for (const handoff of completedEnvelope.handoffs) {
           this.handoffRepo.insert({
             taskId: task.id,
             fromSubtaskId: subtask.id,
             toSubtaskId: handoff.toSubtaskId,
             attemptId,
             items: handoff.items,
-            completionSchemaVersion: 1,
+            completionSchemaVersion: 2,
             createdAt: completedAt,
           });
         }
         this.deps.subtaskRepo.updateStatus(subtask.id, 'done', {
           result: completion.body,
           artifacts: completion.normalizedArtifacts,
-          verification: { warnings: completion.warnings, completionSchemaVersion: 1 },
+          verification: { warnings: completion.warnings, completionSchemaVersion: 2 },
           error: null,
         });
       })();
@@ -382,22 +397,37 @@ export class SubtaskAttemptRunner {
           completionContract: input.completionContract, violations: completion.violations,
         };
       }
+      if (completion.envelope.status === 'failed') {
+        const failure = completion.envelope.failure;
+        this.persistNonSuccess({
+          attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 2,
+          errorCode: failure.code, errorDetail: failure.summary,
+        });
+        claim.markFailed(failure.summary);
+        return {
+          outcome: 'executor_failed', attemptId: input.attemptId, error: failure.summary,
+          failure: { ...failure, scope: 'task' },
+        };
+      }
+      const completedEnvelope = completion.envelope;
       const completedAt = new Date().toISOString();
       this.deps.db.transaction(() => {
         this.receiptRepo.insert(buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 1, warnings: completion.warnings,
+          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 2, warnings: completion.warnings,
         }, completedAt));
-        for (const handoff of completion.envelope.handoffs) {
+        for (const handoff of completedEnvelope.handoffs) {
           this.handoffRepo.insert({
             taskId: task.id, fromSubtaskId: subtask.id, toSubtaskId: handoff.toSubtaskId,
-            attemptId: input.attemptId, items: handoff.items, completionSchemaVersion: 1, createdAt: completedAt,
+            attemptId: input.attemptId, items: handoff.items, completionSchemaVersion: 2, createdAt: completedAt,
           });
         }
         this.deps.subtaskRepo.updateStatus(subtask.id, 'done', {
           result: completion.body, artifacts: completion.normalizedArtifacts,
-          verification: { warnings: completion.warnings, completionSchemaVersion: 1 }, error: null,
+          verification: { warnings: completion.warnings, completionSchemaVersion: 2 }, error: null,
         });
       })();
       return {
@@ -451,6 +481,7 @@ export class SubtaskAttemptRunner {
     startedAt: string;
     terminalState: ExecutorAttemptReceipt['terminalState'];
     rawResponse: string;
+    completionSchemaVersion?: number | null;
     errorCode: string;
     errorDetail: string;
   }): void {
@@ -461,7 +492,7 @@ export class SubtaskAttemptRunner {
   }
 }
 
-function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV1['items'] }>): {
+function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV2['items'] }>): {
   textCharacters: number;
   artifactPaths: number;
 } {
@@ -519,7 +550,7 @@ function buildCorrectionPrompt(
   return [
     'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
     'Return non-empty Markdown followed by exactly one completion trailer.',
-    `Trailer marker: ${COMPLETION_MARKER_V1}`,
+    `Trailer marker: ${COMPLETION_MARKER_V2}`,
     `Completion contract:\n${JSON.stringify(completionContract, null, 2)}`,
     `Violations:\n${JSON.stringify(violations, null, 2)}`,
     `Original response:\n${rawResponse}`,

@@ -4,10 +4,11 @@ import { KernelControlLoop, type KernelDecisionLedger, type KernelRuntime } from
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 
 const event: KernelEvent = {
-  schemaVersion: 1, type: 'plan_proposed', id: 'event_1', correlationId: 'request_1', causationId: null,
+  schemaVersion: 2, type: 'plan_proposed', id: 'event_1', correlationId: 'request_1', causationId: null,
   occurredAt: '2026-07-20T00:00:00.000Z', sessionId: 'session_1',
+  generationId: 'generation_event_1', proposalSource: 'initial', targetGraphRevision: 1,
   proposal: {
-    id: 'plan_1', schemaVersion: 4, action: 'direct_reply', confidence: 1, reason: 'answer',
+    id: 'plan_1', schemaVersion: 5, action: 'direct_reply', confidence: 1, reason: 'answer',
     clarificationQuestion: null, response: { directReply: 'done' },
     task: { binding: 'none', taskId: null, control: 'none', scope: null, title: null, goal: null, includeRecentConversationContext: false, priority: null },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] }, workGraph: null, source: 'codex-planner',
@@ -15,8 +16,8 @@ const event: KernelEvent = {
 };
 
 const snapshot: KernelSnapshot = {
-  schemaVersion: 1, type: 'plan_admission', tasks: [], runningTaskId: null,
-  executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v4WorkGraphTaskIds: [], eligibleContextRefKeys: [],
+  schemaVersion: 2, type: 'plan_admission', tasks: [], runningTaskId: null,
+  executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [],
 };
 
 describe('KernelControlLoop', () => {
@@ -47,7 +48,7 @@ describe('KernelControlLoop', () => {
 
   it('persists Task and Subtask identities derived by a dispatch decision', async () => {
     const dispatchEvent: KernelEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'dispatch_requested',
       id: 'dispatch_event_1',
       correlationId: 'request_1',
@@ -58,7 +59,7 @@ describe('KernelControlLoop', () => {
       reason: 'initial dispatch',
     };
     const dispatchSnapshot: KernelSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'dispatch',
       task: { id: 'task_1', status: 'running' },
       runningTaskId: 'task_1',

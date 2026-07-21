@@ -28,7 +28,7 @@ export type { WorkGraphProposal };
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 4;
+  schemaVersion: 5;
   action: PlanningAction;
   confidence: number;
   reason: string;

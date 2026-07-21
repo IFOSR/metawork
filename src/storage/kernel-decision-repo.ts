@@ -5,7 +5,7 @@ export type { KernelDecisionLedgerRecord } from '../kernel/kernel-control-loop.j
 
 interface KernelDecisionRow {
   id: string;
-  schema_version: 1;
+  schema_version: 1 | 2;
   event_id: string;
   event_type: KernelEvent['type'];
   correlation_id: string;

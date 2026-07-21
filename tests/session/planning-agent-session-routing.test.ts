@@ -44,7 +44,7 @@ function createConfig(): Config {
 function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 4,
+    schemaVersion: 5,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',

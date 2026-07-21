@@ -158,7 +158,7 @@ function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
         executionId: 'exec_runtime', taskId: 'task_runtime', subtaskId: subtask.id,
         attemptId: 'attempt_runtime', workUnitId: 'executor-1',
       },
-      completionContract: { marker: '<!-- metaclaw:completion:v1 -->', schemaVersion: 1 },
+      completionContract: { marker: '<!-- metaclaw:completion:v2 -->', schemaVersion: 2 },
       evidenceTools: { availability: 'unavailable', reason: 'unit test' },
     },
   };

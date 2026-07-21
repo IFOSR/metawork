@@ -26,6 +26,7 @@ import {
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -51,6 +52,7 @@ export interface KernelExecutionRuntimeDeps {
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
+  workGraphRevisionRepo: WorkGraphRevisionRepo;
   subtaskHandoffRepo: SubtaskHandoffRepo;
   taskEventRepo: TaskEventRepo;
   workUnitClaimService: WorkUnitClaimService;
@@ -96,7 +98,10 @@ export class KernelExecutionRuntime {
     attempts: KernelAttemptFact[] = [],
   ): KernelSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
-    const subtasks = this.deps.subtaskRepo.listByTask(taskId);
+    const activeRevision = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const subtasks = activeRevision
+      ? this.deps.subtaskRepo.listActiveByTask(taskId)
+      : this.deps.subtaskRepo.listByTask(taskId);
     const done = new Set(subtasks.filter(subtask => subtask.status === 'done').map(subtask => subtask.id));
     const handoffs = new Set(this.deps.subtaskHandoffRepo.listByTask(taskId)
       .map(handoff => `${handoff.fromSubtaskId}\u0000${handoff.toSubtaskId}`));
@@ -108,7 +113,7 @@ export class KernelExecutionRuntime {
       )
     ).map(subtask => subtask.id);
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'dispatch',
       task: task ? { id: task.id, status: task.status } : null,
       runningTaskId: this.deps.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
@@ -124,9 +129,11 @@ export class KernelExecutionRuntime {
       executorStatuses: stableFacts.executorStatuses,
       correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
       attempts,
-      generationId: `generation_${taskId}_1`,
-      graphRevision: 1,
-      automaticReplansUsed: 0,
+      generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
+      graphRevision: activeRevision?.revision ?? 1,
+      automaticReplansUsed: activeRevision
+        ? this.deps.workGraphRevisionRepo.countAutomaticReplans(taskId, activeRevision.generationId)
+        : 0,
       recoverySafety: 'workspace_reconcilable',
       automaticRecoveryAllowed: true,
     };
@@ -291,7 +298,12 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'complete_task') {
-      const subtasks = this.deps.subtaskRepo.listByTask(action.taskId);
+      const activeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+      const subtasks = this.deps.subtaskRepo.listByTask(action.taskId).filter(subtask =>
+        subtask.status === 'done'
+        && (!activeRevision || subtask.generationId === activeRevision.generationId)
+      );
+      if (activeRevision) this.deps.workGraphRevisionRepo.complete(action.taskId, activeRevision.revision, new Date().toISOString());
       await this.completeTask({
         taskId: action.taskId, executionId: input.executionId, request: input.request, subtasks,
         finishExecution: input.finishExecution,
@@ -307,7 +319,7 @@ export class KernelExecutionRuntime {
     event: Omit<KernelEvent, keyof import('../kernel/control-kernel.js').KernelEventEnvelope | 'schemaVersion' | 'id' | 'correlationId' | 'causationId' | 'occurredAt' | 'sessionId'> & Record<string, unknown>,
   ): KernelEvent {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: `event_${decision.id}_${String(event.type)}`,
       correlationId: decision.eventId,
       causationId: decision.id,
@@ -338,6 +350,7 @@ export class KernelExecutionRuntime {
       userPrompt: request.userPrompt,
       sessionId: this.deps.sessionId,
       authorizedWorkGraph: request.authorizedWorkGraph ?? null,
+      authorization: request.workGraphAuthorization ?? null,
     });
     const graphState = graph.outcome === 'not_executable'
       ? graph.reason === 'missing_graph' ? 'missing' : 'conflict'
@@ -354,7 +367,7 @@ export class KernelExecutionRuntime {
     const attemptFacts: KernelAttemptFact[] = [];
     const stableFacts = this.buildDispatchStableFacts();
     const initialEvent: KernelEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'dispatch_requested',
       id: `dispatch_event_${executionId}`,
       correlationId: request.kernelDecisionId ?? executionId,
@@ -366,7 +379,7 @@ export class KernelExecutionRuntime {
     };
     const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'timer_tick'
       ? {
-          schemaVersion: 1,
+          schemaVersion: 2,
           type: 'timer',
           capacityBlockedAt: null,
           recheckAfterMs: 0,
@@ -418,7 +431,7 @@ export class KernelExecutionRuntime {
       });
       const occurredAt = new Date().toISOString();
       const event: Extract<KernelEvent, { type: 'execution_outcome' }> = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         type: 'execution_outcome',
         id: `heartbeat_event_${workUnit.claimedAttemptId}`,
         correlationId: task.id,
@@ -487,7 +500,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(...lines);
     };
     const initialEvent: KernelEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'timer_tick',
       id: `timer_event_${input.blockedDecisionId}_${input.occurredAt}`,
       correlationId: input.blockedDecisionId,
@@ -505,7 +518,7 @@ export class KernelExecutionRuntime {
       kernel: this.deps.controlKernel,
       buildSnapshot: event => event.type === 'timer_tick'
         ? {
-            schemaVersion: 1,
+            schemaVersion: 2,
             type: 'timer',
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,

@@ -8,7 +8,7 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 4,
+    schemaVersion: 5,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',

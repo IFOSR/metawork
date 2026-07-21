@@ -206,6 +206,7 @@ export function contextRefKey(ref: ContextRef): string {
     case 'current_user_input': return ref.kind;
     case 'interaction': return `${ref.kind}:${ref.interactionId}:${ref.side}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
+    case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
     case 'preference': return `${ref.kind}:${ref.preferenceId}`;
   }
 }

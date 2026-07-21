@@ -3,7 +3,7 @@ import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import { generateInteractionId } from '../utils/id.js';
 
-export type ExecutionEvidenceKind = 'user_input' | 'task_resource' | 'preference' | 'assistant_ref';
+export type ExecutionEvidenceKind = 'user_input' | 'task_resource' | 'task_evidence' | 'preference' | 'assistant_ref';
 
 export interface EvidenceDescriptor {
   evidenceId: string;

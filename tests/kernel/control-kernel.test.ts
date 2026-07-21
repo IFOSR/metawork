@@ -3,16 +3,19 @@ import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 
 const event: KernelEvent = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: 'plan_proposed',
   id: 'event_plan_1',
   correlationId: 'request_1',
   causationId: null,
   occurredAt: '2026-07-20T00:00:00.000Z',
   sessionId: 'session_1',
+  generationId: 'generation_event_plan_1',
+  proposalSource: 'initial',
+  targetGraphRevision: 1,
   proposal: {
     id: 'plan_1',
-    schemaVersion: 4,
+    schemaVersion: 5,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -29,13 +32,13 @@ const event: KernelEvent = {
 };
 
 const snapshot: KernelSnapshot = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
   executorCatalog: getPlannerExecutorCatalog(),
   executorStatuses: [],
-  v4WorkGraphTaskIds: [],
+  v5WorkGraphTaskIds: [],
   eligibleContextRefKeys: [],
 };
 
@@ -48,7 +51,7 @@ describe('ControlKernel', () => {
 
     expect(first).toEqual(second);
     expect(first).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: 'decision_event_plan_1',
       eventId: 'event_plan_1',
       action: { type: 'deliver_direct_reply', response: 'Hello' },
@@ -161,7 +164,7 @@ describe('ControlKernel', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
       type: 'handoff_contract_failed', attemptId: 'attempt_1', workUnitId: 'wu_1', agentClassName: 'codex-cli',
-      contract: { schemaVersion: 1 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
+      contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
       receiptCount: 1, responseBytes: 100,
     });
     expect(kernel.decide(first, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
@@ -179,7 +182,7 @@ describe('ControlKernel', () => {
       sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
     });
     const timerSnapshot: KernelSnapshot = {
-      schemaVersion: 1, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      schemaVersion: 2, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
     };
     expect(kernel.decide(timer, timerSnapshot).action).toEqual({
@@ -194,7 +197,7 @@ describe('ControlKernel', () => {
       ...dispatchSnapshot(), runningTaskId: 'task_other',
     }).action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1' });
     expect(kernel.decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
-      schemaVersion: 1, type: 'invalid', reason: 'corrupt snapshot',
+      schemaVersion: 2, type: 'invalid', reason: 'corrupt snapshot',
     }).action.type).toBe('block_work');
   });
 });
@@ -203,7 +206,7 @@ function runtimeEvent<T extends Omit<KernelEvent, keyof import('../../src/kernel
   value: T,
 ): KernelEvent {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: `event_${value.type}`,
     correlationId: 'correlation_1',
     causationId: null,
@@ -220,7 +223,7 @@ function dispatchSnapshot(
   status: 'ready' | 'awaiting_decision' | 'done' = 'ready',
 ): Extract<KernelSnapshot, { type: 'dispatch' }> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     type: 'dispatch',
     task: { id: 'task_1', status: 'running' },
     runningTaskId: 'task_1',

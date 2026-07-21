@@ -41,6 +41,7 @@ import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
 import { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.js';
 import { contextRefKey } from '../work-graph/index.js';
@@ -142,6 +143,7 @@ export class MetaclawSession {
   private readonly kernelDecisionRepo: KernelDecisionRepo;
   private readonly kernelWorkflowRepo: KernelWorkflowRepo;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
+  private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
@@ -182,9 +184,11 @@ export class MetaclawSession {
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
+    this.workGraphRevisionRepo = new WorkGraphRevisionRepo(deps.db);
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
+      this.workGraphRevisionRepo,
       new TaskExecutionEvidenceRepo(deps.db),
     );
     this.workUnitClaimService = new WorkUnitClaimService(
@@ -253,6 +257,7 @@ export class MetaclawSession {
       agentClassService: this.agentClassService,
       workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
+      workGraphRevisionRepo: this.workGraphRevisionRepo,
       subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
@@ -659,25 +664,29 @@ export class MetaclawSession {
     });
     const context = this.planningContextBuilder.build({ userInput, initialContext });
     const plan = await this.planningAgent.plan(context);
+    const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'plan_proposed',
-      id: `plan_event_${plan.id}_${generateInteractionId()}`,
+      id: eventId,
       correlationId: plan.id,
       causationId: null,
       occurredAt: new Date().toISOString(),
       sessionId: this.deps.sessionId,
       taskId: plan.task.taskId ?? undefined,
       proposal: plan,
+      generationId: `generation_${eventId}`,
+      proposalSource: 'initial',
+      targetGraphRevision: 1,
     };
     const snapshot: KernelSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
       executorCatalog: context.executorCatalog,
       executorStatuses: this.kernelExecutorStatusRepo.list(),
-      v4WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
+      v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(plan, userInput),
     };
     const workflow = new DurableKernelWorkflow({
@@ -709,6 +718,13 @@ export class MetaclawSession {
       if (ref.kind === 'preference') {
         const row = this.deps.db.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
         if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (ref.kind === 'task_evidence') {
+        const row = this.deps.db.prepare(`
+          SELECT id FROM task_execution_evidence WHERE id = ? AND task_id = ? AND kind = 'task_evidence'
+        `).get(ref.evidenceId, targetTask?.id ?? '') as { id: string } | undefined;
+        if (row) eligible.add(contextRefKey(ref));
         continue;
       }
       if (isEligibleInteractionRef({
@@ -949,7 +965,7 @@ export class MetaclawSession {
       const orphan = subtasks.find(subtask => subtask.status === 'running' || subtask.status === 'awaiting_decision') ?? null;
       const occurredAt = new Date().toISOString();
       const event: KernelEvent = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         type: 'execution_outcome',
         id: `startup_orphan_${task.id}_${task.updatedAt.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
         correlationId: task.id,
@@ -970,7 +986,7 @@ export class MetaclawSession {
         },
       };
       const snapshot: KernelSnapshot = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         type: 'dispatch',
         task: { id: task.id, status: task.status },
         runningTaskId: task.id,
@@ -995,7 +1011,7 @@ export class MetaclawSession {
       const decision = this.controlKernel.decide(event, snapshot);
       const issued = this.kernelDecisionRepo.issue({
         id: decision.id,
-        schemaVersion: 1,
+        schemaVersion: 2,
         eventId: event.id,
         eventType: event.type,
         correlationId: event.correlationId,

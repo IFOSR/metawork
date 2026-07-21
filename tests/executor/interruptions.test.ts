@@ -27,7 +27,7 @@ function createExecutorInput() {
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
       workspaceContext: { allowFilesystem: true, workingDirectory: process.cwd(), targetPaths: [] },
       identity: { executionId: 'exec_1', taskId: 'task_1', subtaskId: 'subtask_1', attemptId: 'attempt_1', workUnitId: 'wu_1' },
-      completionContract: { marker: '<!-- metaclaw:completion:v1 -->' as const, schemaVersion: 1 as const },
+      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'test' },
     },
   };

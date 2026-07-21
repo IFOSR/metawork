@@ -109,7 +109,7 @@ export class CodexPlanningAgent implements PlanningAgent {
   private safeClarification(reason: string): PlanningAgentPlan {
     return {
       id: `plan_${generateInteractionId()}`,
-      schemaVersion: 4,
+      schemaVersion: 5,
       action: 'clarification',
       confidence: 0,
       reason,
@@ -188,7 +188,7 @@ export function createDefaultPlanningAgent(
 
 const PLAN_SCHEMA_EXAMPLE = {
   id: 'plan_generated_id',
-  schemaVersion: 4,
+  schemaVersion: 5,
   action: 'direct_reply',
   confidence: 0.9,
   reason: 'answer without state change',

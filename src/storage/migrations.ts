@@ -1074,6 +1074,8 @@ const MIGRATIONS: Migration[] = [
             revision INTEGER NOT NULL,
             generation_id TEXT NOT NULL,
             authorized_decision_id TEXT,
+            proposal_source TEXT NOT NULL DEFAULT 'initial',
+            automatic_replan INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -1093,11 +1095,11 @@ const MIGRATIONS: Migration[] = [
           db.exec(`
             INSERT OR IGNORE INTO work_graph_revisions (
               id, task_id, revision, generation_id, authorized_decision_id,
-              status, created_at, updated_at
+              proposal_source, automatic_replan, status, created_at, updated_at
             )
             SELECT
               'revision_' || task_id || '_1', task_id, 1,
-              'generation_' || task_id || '_1', NULL,
+              'generation_' || task_id || '_1', NULL, 'initial', 0,
               CASE WHEN SUM(CASE WHEN status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END) = 0
                 THEN 'completed' ELSE 'active' END,
               MIN(created_at), MAX(updated_at)

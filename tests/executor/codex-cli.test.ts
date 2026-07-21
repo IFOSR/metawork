@@ -20,7 +20,7 @@ describe('CodexCliAdapter', () => {
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'e', taskId: 'task', subtaskId: 'a', attemptId: 'attempt', workUnitId: 'wu' },
-      completionContract: { marker: '<!-- metaclaw:completion:v1 -->', schemaVersion: 1 },
+      completionContract: { marker: '<!-- metaclaw:completion:v2 -->', schemaVersion: 2 },
       evidenceTools: { availability: 'unavailable', reason: 'test' },
     } });
     expect(prompt).toContain('Operative goal: do A');
@@ -35,7 +35,7 @@ describe('CodexCliAdapter', () => {
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'e', taskId: 'task', subtaskId: 'a', attemptId: 'attempt', workUnitId: 'wu' },
-      completionContract: { marker: '<!-- metaclaw:completion:v1 -->' as const, schemaVersion: 1 as const },
+      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
       evidenceTools: {
         availability: 'available' as const,
         reason: 'test',

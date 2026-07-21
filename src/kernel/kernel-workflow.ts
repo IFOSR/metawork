@@ -152,7 +152,7 @@ function ledgerRecord(
 ): KernelDecisionLedgerRecord {
   return {
     id: nextDecision.id,
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: event.id,
     eventType: event.type,
     correlationId: event.correlationId,

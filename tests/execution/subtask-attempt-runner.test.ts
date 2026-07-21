@@ -5,7 +5,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
-import { COMPLETION_MARKER_V1 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -81,8 +81,9 @@ function setup(rawResponse: string) {
 }
 
 function validResponse(): string {
-  return `A completed.\n\n${COMPLETION_MARKER_V1}\n${JSON.stringify({
-    schemaVersion: 1,
+  return `A completed.\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+    schemaVersion: 2,
+    status: 'completed',
     subtaskId: 'task_phase2_a',
     acceptanceEvidence: [{ key: 'done', evidence: ['verified A'] }],
     artifacts: [],
@@ -173,8 +174,9 @@ describe('SubtaskAttemptRunner', () => {
   });
 
   it('blocks a handoff that would exceed the downstream aggregate budget', async () => {
-    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V1}\n${JSON.stringify({
-      schemaVersion: 1,
+    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+      schemaVersion: 2,
+      status: 'completed',
       subtaskId: 'task_phase2_a',
       acceptanceEvidence: [{ key: 'done', evidence: ['verified A'] }],
       artifacts: [],
