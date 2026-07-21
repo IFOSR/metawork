@@ -1001,6 +1001,7 @@ export class MetaclawSession {
         attemptedAgentClasses: [],
         executorStatuses: this.kernelExecutorStatusRepo.list(),
         correctionSupportedAgentClasses: [],
+        nativeContinuationAgentClasses: [],
         attempts: [],
         generationId: `generation_${task.id}_1`,
         graphRevision: 1,

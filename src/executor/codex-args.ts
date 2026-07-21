@@ -22,3 +22,23 @@ export function buildCodexNonInteractiveArgs(
     prompt,
   ];
 }
+
+export function buildCodexResumeArgs(
+  sessionId: string,
+  prompt: string,
+  options: CodexNonInteractiveArgsOptions = {},
+): string[] {
+  return [
+    'exec',
+    'resume',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--dangerously-bypass-hook-trust',
+    '--skip-git-repo-check',
+    '--json',
+    ...(options.outputLastMessagePath ? ['--output-last-message', options.outputLastMessagePath] : []),
+    '--color',
+    'never',
+    sessionId,
+    prompt,
+  ];
+}

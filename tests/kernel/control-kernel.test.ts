@@ -184,6 +184,7 @@ describe('ControlKernel', () => {
     const timerSnapshot: KernelSnapshot = {
       schemaVersion: 2, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
+      nativeContinuationAgentClasses: ['codex-cli'],
     };
     expect(kernel.decide(timer, timerSnapshot).action).toEqual({
       type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'codex-cli',
@@ -236,6 +237,7 @@ function dispatchSnapshot(
     attemptedAgentClasses,
     executorStatuses: [],
     correctionSupportedAgentClasses: ['codex-cli'],
+    nativeContinuationAgentClasses: ['codex-cli'],
     attempts: [],
     generationId: 'generation_task_1_1',
     graphRevision: 1,

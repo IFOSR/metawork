@@ -5,7 +5,11 @@ import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
-import { ExecutorAttemptReceiptRepo, type ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
+import {
+  ExecutorAttemptReceiptRepo,
+  type ExecutorAttemptReceipt,
+  type ExecutorAttemptReceiptInsert,
+} from '../storage/executor-attempt-receipt-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
@@ -21,6 +25,10 @@ import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
+import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
+import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
+import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
+import { captureWorkspaceState, deriveWorkspaceDelta, type WorkspaceState } from './workspace-change-tracker.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -46,15 +54,21 @@ export class SubtaskAttemptRunner {
   private readonly contextBuilder: SubtaskExecutionContextBuilder;
   private readonly receiptRepo: ExecutorAttemptReceiptRepo;
   private readonly handoffRepo: SubtaskHandoffRepo;
+  private readonly attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db);
     this.receiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
+    this.attemptRuntimeRepo = new ExecutorAttemptRuntimeRepo(deps.db);
   }
 
   supportsResponseOnly(agentClassName: string): boolean {
     return this.deps.executionRuntime.supportsResponseOnly(agentClassName);
+  }
+
+  supportsContinuation(agentClassName: string): boolean {
+    return this.deps.executionRuntime.supportsContinuation(agentClassName);
   }
 
   landHeartbeatLost(input: {
@@ -90,6 +104,9 @@ export class SubtaskAttemptRunner {
     subtaskId: string;
     agentClassName: string;
     executionMode: ExecutionMode;
+    attemptKind?: KernelAttemptKind;
+    sourceAttemptId?: string | null;
+    recoveryMode?: KernelRecoveryMode;
     onProgress?: ProgressCallback;
   }): Promise<SubtaskAttemptOutcome> {
     const attemptId = input.attemptId;
@@ -109,6 +126,7 @@ export class SubtaskAttemptRunner {
     let rawResponse = '';
     let evidenceCapability: { revoke(): void } | null = null;
     let evidenceToolServer: ExecutionEvidenceToolServer | null = null;
+    let workspaceBaseline: WorkspaceState | null = null;
     try {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
@@ -117,9 +135,28 @@ export class SubtaskAttemptRunner {
       if (!agentClass || claim.workUnit.agentClassName !== input.agentClassName) {
         throw new Error(`attempt AgentClass mismatch: ${input.agentClassName}`);
       }
-      const allSubtasks = this.deps.subtaskRepo.listByTask(input.taskId);
+      const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(input.taskId);
+      const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(input.taskId);
       const targetPath = resolve(process.cwd(), 'metaclaw-tasks', task.id);
       mkdirSync(targetPath, { recursive: true });
+      workspaceBaseline = captureWorkspaceState(process.cwd());
+      const sourceRuntime = input.sourceAttemptId
+        ? this.attemptRuntimeRepo.find(input.sourceAttemptId)
+        : null;
+      const sourceReceipt = input.sourceAttemptId
+        ? this.receiptRepo.findByAttemptId(input.sourceAttemptId)
+        : null;
+      const recoveryMode: KernelRecoveryMode = input.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
+        ? 'recovery_packet'
+        : input.recoveryMode ?? 'fresh';
+      this.attemptRuntimeRepo.start({
+        attemptId,
+        sourceAttemptId: input.sourceAttemptId ?? null,
+        workspaceRoot: process.cwd(),
+        workspaceBaseline: { ...workspaceBaseline },
+        recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
+        now: startedAt,
+      });
       const evidenceToolsAvailable = input.agentClassName === 'codex-cli' || input.agentClassName === 'pi-agent';
       const built = this.contextBuilder.build({
         executionId: input.executionId,
@@ -135,6 +172,11 @@ export class SubtaskAttemptRunner {
           targetPaths: [targetPath],
         },
         evidenceToolsAvailable,
+        recovery: {
+          mode: recoveryMode,
+          sourceAttemptId: input.sourceAttemptId ?? null,
+          packet: recoveryMode === 'fresh' ? null : boundedRecoveryPacket(sourceReceipt, sourceRuntime),
+        },
       });
       evidenceCapability = built.evidenceCapability;
       if (evidenceToolsAvailable) {
@@ -145,8 +187,23 @@ export class SubtaskAttemptRunner {
         taskId: input.taskId,
         executionId: input.executionId,
         spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, expectedOutput: subtask.expectedOutput },
-        executorInput: { context: built.context },
-        onProgress: input.onProgress ?? (() => undefined),
+        executorInput: {
+          context: built.context,
+          recovery: {
+            mode: recoveryMode,
+            continuationToken: sourceRuntime?.continuationToken ?? null,
+            onContinuationToken: token => this.attemptRuntimeRepo.recordContinuationToken(
+              attemptId, token, new Date().toISOString(),
+            ),
+          },
+        },
+        onProgress: (event, executor) => {
+          this.attemptRuntimeRepo.recordProgress(attemptId, {
+            kind: event.kind,
+            text: event.text.slice(0, 2_000),
+          }, new Date().toISOString());
+          input.onProgress?.(event, executor);
+        },
       });
       rawResponse = execution.output;
       if (execution.status !== 'success') {
@@ -156,6 +213,7 @@ export class SubtaskAttemptRunner {
           workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
           terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
           errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
+          failure: execution.failure,
         });
         claim.markFailed(error);
         return execution.status === 'cancelled'
@@ -218,6 +276,7 @@ export class SubtaskAttemptRunner {
           workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
           terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 2,
           errorCode: failure.code, errorDetail: failure.summary,
+          failure: { ...failure, scope: 'task' },
         });
         claim.markFailed(failure.summary);
         return {
@@ -312,6 +371,13 @@ export class SubtaskAttemptRunner {
         failure: { kind: 'unknown', scope: 'attempt', code: 'attempt_exception', summary: message },
       };
     } finally {
+      if (workspaceBaseline) {
+        this.attemptRuntimeRepo.recordWorkspaceDelta(
+          attemptId,
+          deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(process.cwd())),
+          new Date().toISOString(),
+        );
+      }
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
       claim.release();
@@ -360,7 +426,8 @@ export class SubtaskAttemptRunner {
           failure: result?.failure ?? { kind: 'unknown', scope: 'attempt', code: 'correction_unavailable', summary: error },
         };
       }
-      const allSubtasks = this.deps.subtaskRepo.listByTask(task.id);
+      const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(task.id);
+      const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(task.id);
       const outgoingHandoffs = allSubtasks.flatMap(candidate => {
         const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
         return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
@@ -484,6 +551,7 @@ export class SubtaskAttemptRunner {
     completionSchemaVersion?: number | null;
     errorCode: string;
     errorDetail: string;
+    failure?: KernelFailure | null;
   }): void {
     this.deps.db.transaction(() => {
       this.receiptRepo.insert(buildReceipt(input));
@@ -522,7 +590,8 @@ function buildReceipt(input: {
   violations?: CompletionContractViolation[];
   errorCode?: string | null;
   errorDetail?: string | null;
-}, completedAt = new Date().toISOString()): ExecutorAttemptReceipt {
+  failure?: KernelFailure | null;
+}, completedAt = new Date().toISOString()): ExecutorAttemptReceiptInsert {
   return {
     attemptId: input.attemptId,
     executionId: input.executionId,
@@ -539,6 +608,7 @@ function buildReceipt(input: {
     verification: { warnings: input.warnings ?? [], violations: input.violations ?? [] },
     errorCode: input.errorCode ?? null,
     errorDetail: input.errorDetail ?? null,
+    failure: input.failure ?? null,
   };
 }
 
@@ -555,4 +625,26 @@ function buildCorrectionPrompt(
     `Violations:\n${JSON.stringify(violations, null, 2)}`,
     `Original response:\n${rawResponse}`,
   ].join('\n\n');
+}
+
+function boundedRecoveryPacket(
+  receipt: ExecutorAttemptReceipt | null,
+  runtime: ExecutorAttemptRuntimeRecord | null,
+): Record<string, unknown> {
+  const packet = {
+    sourceAttemptId: receipt?.attemptId ?? runtime?.attemptId ?? null,
+    failure: receipt ? {
+      terminalState: receipt.terminalState,
+      code: receipt.errorCode,
+      summary: receipt.errorDetail?.slice(0, 1_000) ?? null,
+    } : null,
+    knownProgress: runtime?.progress ?? {},
+    workspaceDelta: runtime?.workspaceDelta ?? {},
+    confirmedCompleted: [] as string[],
+    unknownItems: ['Verify the current workspace and remaining acceptance criteria before making changes.'],
+  };
+  const serialized = JSON.stringify(packet);
+  return serialized.length <= 16_000
+    ? packet
+    : { ...packet, knownProgress: {}, workspaceDelta: {}, truncated: true };
 }

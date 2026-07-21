@@ -6,6 +6,7 @@ import {
   getPlannerExecutorCatalog,
   isBuiltinExecutorName,
   validateBuiltinExecutorDefinitions,
+  deriveRecoverySafety,
   type BuiltinExecutorDefinition,
   type ExecutorAffordanceId,
   type RoutingCapabilityId,
@@ -28,6 +29,13 @@ describe('built-in Executor catalog', () => {
     expect(catalog.every(definition => definition.agentClassDefaults.model === null)).toBe(true);
     expect(catalog.every(definition => definition.agentClassDefaults.runtimeCommand === null)).toBe(true);
     expect(JSON.stringify(catalog)).not.toContain('historicalSuccess');
+  });
+
+  it('derives recovery safety only from canonical Routing Capabilities', () => {
+    expect(deriveRecoverySafety(['current-web-research'])).toBe('read_only');
+    expect(deriveRecoverySafety(['workspace-engineering'])).toBe('workspace_reconcilable');
+    expect(deriveRecoverySafety(['current-web-research', 'workspace-engineering'])).toBe('workspace_reconcilable');
+    expect(deriveRecoverySafety(['unknown-capability'])).toBe('external_non_idempotent');
   });
 
   it('keeps Pi workspace affordances native without exposing them to Planner', () => {

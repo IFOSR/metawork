@@ -12,6 +12,7 @@ function createRecord() {
   };
   const snapshot: KernelSnapshot = {
     schemaVersion: 2, type: 'timer', capacityBlockedAt: null, recheckAfterMs: 1000,
+    nativeContinuationAgentClasses: [],
     capacityAgentClasses: [], executorStatuses: [],
   };
   const decision: KernelDecision = {

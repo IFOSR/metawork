@@ -34,6 +34,11 @@ export interface SubtaskExecutionContext {
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
   completionContract: { marker: typeof COMPLETION_MARKER_V2; schemaVersion: 2 };
+  recovery?: {
+    mode: 'native_session' | 'recovery_packet' | 'fresh';
+    sourceAttemptId: string | null;
+    packet: Record<string, unknown> | null;
+  };
   evidenceTools: {
     availability: 'available' | 'unavailable';
     reason: string;
@@ -63,6 +68,7 @@ export class SubtaskExecutionContextBuilder {
     sessionId: string;
     workspaceContext: WorkspaceContext;
     evidenceToolsAvailable: boolean;
+    recovery?: SubtaskExecutionContext['recovery'];
     evidenceToolBinding?: ExecutionEvidenceToolBinding;
   }): { context: SubtaskExecutionContext; evidenceCapability: ScopedExecutionEvidencePort } {
     this.syncTaskEvidenceCatalog(input.task);
@@ -117,6 +123,7 @@ export class SubtaskExecutionContextBuilder {
           workUnitId: input.workUnitId,
         },
         completionContract: { marker: COMPLETION_MARKER_V2, schemaVersion: 2 },
+        recovery: input.recovery,
         evidenceTools: input.evidenceToolsAvailable
           ? {
               availability: 'available',

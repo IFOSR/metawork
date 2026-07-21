@@ -299,6 +299,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
   }
 
+  supportsContinuation(name: string): boolean {
+    return this.registry.resolve(name)?.supportsContinuation === true;
+  }
+
   async runResponseOnly(agentClassName: string, prompt: string, maxBytes: number) {
     const executor = this.registry.resolve(agentClassName);
     if (!executor?.executeResponseOnly) return null;

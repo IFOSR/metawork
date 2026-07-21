@@ -27,6 +27,7 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -36,6 +37,7 @@ interface FocusContext {
 interface DispatchStableFacts {
   executorStatuses: Extract<KernelSnapshot, { type: 'dispatch' }>['executorStatuses'];
   correctionSupportedAgentClasses: string[];
+  nativeContinuationAgentClasses: string[];
 }
 
 export interface KernelExecutionRuntimeInput {
@@ -128,14 +130,21 @@ export class KernelExecutionRuntime {
       attemptedAgentClasses: [...attemptedAgentClasses],
       executorStatuses: stableFacts.executorStatuses,
       correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
+      nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
       attempts,
       generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
       graphRevision: activeRevision?.revision ?? 1,
       automaticReplansUsed: activeRevision
         ? this.deps.workGraphRevisionRepo.countAutomaticReplans(taskId, activeRevision.generationId)
         : 0,
-      recoverySafety: 'workspace_reconcilable',
-      automaticRecoveryAllowed: true,
+      recoverySafety: deriveRecoverySafety(
+        subtasks.find(subtask => readyFrontier.includes(subtask.id))?.requiredCapabilities ?? [],
+      ),
+      automaticRecoveryAllowed: subtasks.some(subtask => readyFrontier.includes(subtask.id))
+        ? deriveRecoverySafety(
+            subtasks.find(subtask => readyFrontier.includes(subtask.id))?.requiredCapabilities ?? [],
+          ) !== 'external_non_idempotent'
+        : true,
     };
   }
 
@@ -145,6 +154,9 @@ export class KernelExecutionRuntime {
       correctionSupportedAgentClasses: this.deps.agentClassService.listAgentClasses()
         .map(agentClass => agentClass.name)
         .filter(name => this.deps.attemptRunner.supportsResponseOnly(name)),
+      nativeContinuationAgentClasses: this.deps.agentClassService.listAgentClasses()
+        .map(agentClass => agentClass.name)
+        .filter(name => this.deps.attemptRunner.supportsContinuation(name)),
     };
   }
 
@@ -199,6 +211,9 @@ export class KernelExecutionRuntime {
             subtaskId: action.subtaskId,
             agentClassName: action.agentClassName,
             executionMode: input.request.executionMode,
+            attemptKind: action.attemptKind,
+            sourceAttemptId: action.sourceAttemptId,
+            recoveryMode: action.recoveryMode,
             onProgress: input.progressTracker.onProgress,
           });
       this.deps.callbacks.clearRunningExecutorName(action.taskId);
@@ -383,7 +398,8 @@ export class KernelExecutionRuntime {
           type: 'timer',
           capacityBlockedAt: null,
           recheckAfterMs: 0,
-          capacityAgentClasses: [],
+            capacityAgentClasses: [],
+            nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
           executorStatuses: stableFacts.executorStatuses,
         }
       : this.buildDispatchSnapshot(
@@ -523,6 +539,7 @@ export class KernelExecutionRuntime {
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,
             capacityAgentClasses: subtask.preferredAgentClassList,
+            nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
             executorStatuses: stableFacts.executorStatuses,
           }
         : this.buildDispatchSnapshot(task.id, attemptedAgentClasses, 'ready', stableFacts),

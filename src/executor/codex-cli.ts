@@ -7,7 +7,7 @@ import {
   CommandLineExecutorAdapter,
   type CommandLineExecution,
 } from './command-line-adapter.js';
-import { buildCodexNonInteractiveArgs } from './codex-args.js';
+import { buildCodexNonInteractiveArgs, buildCodexResumeArgs } from './codex-args.js';
 import type { ExecutorInput } from './adapter.js';
 import type { ExecutorResult } from '../core/types.js';
 import { runResponseOnlyCli } from './response-only-cli.js';
@@ -15,6 +15,7 @@ import { runResponseOnlyCli } from './response-only-cli.js';
 /** Runs Codex CLI exec with MetaClaw's configured non-interactive argument set. */
 export class CodexCliAdapter extends CommandLineExecutorAdapter {
   readonly name = 'codex-cli';
+  readonly supportsContinuation = true;
 
   protected buildSpawnArgs(prompt: string): string[] {
     return buildCodexNonInteractiveArgs(prompt, { ephemeral: false });
@@ -23,10 +24,18 @@ export class CodexCliAdapter extends CommandLineExecutorAdapter {
   protected prepareExecution(prompt: string, input?: ExecutorInput): CommandLineExecution {
     const captureDirectory = mkdtempSync(join(tmpdir(), 'metaclaw-codex-final-'));
     const finalMessagePath = join(captureDirectory, 'last-message.txt');
-    const args = buildCodexNonInteractiveArgs(prompt, {
-      ephemeral: false,
-      outputLastMessagePath: finalMessagePath,
-    });
+    const continuationToken = input?.recovery?.mode === 'native_session'
+      ? input.recovery.continuationToken
+      : null;
+    const args = continuationToken
+      ? buildCodexResumeArgs(continuationToken, prompt, { outputLastMessagePath: finalMessagePath })
+      : [
+          ...buildCodexNonInteractiveArgs(prompt, {
+            ephemeral: false,
+            outputLastMessagePath: finalMessagePath,
+          }),
+        ];
+    if (!continuationToken) args.splice(args.length - 3, 0, '--json');
     args.splice(args.length - 1, 0, ...codexEvidenceArgs(input));
 
     return {
@@ -45,6 +54,17 @@ export class CodexCliAdapter extends CommandLineExecutorAdapter {
       },
       cleanup: () => rmSync(captureDirectory, { recursive: true, force: true }),
     };
+  }
+
+  protected observeOutputLine(line: string, input: ExecutorInput): void {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type !== 'thread.started') return;
+      const token = event.thread_id ?? event.session_id ?? event.threadId;
+      if (typeof token === 'string' && token.trim()) input.recovery?.onContinuationToken?.(token.trim());
+    } catch {
+      // Non-JSON progress remains available through the common progress parser.
+    }
   }
 
   protected buildSpawnEnv(input?: ExecutorInput): NodeJS.ProcessEnv {

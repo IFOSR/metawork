@@ -11,6 +11,11 @@ export interface ExecutorSkillGovernanceTarget {
 export interface ExecutorInput {
   context: SubtaskExecutionContext;
   onProgress?: (event: ExecutorProgressEvent) => void;
+  recovery?: {
+    mode: 'native_session' | 'recovery_packet' | 'fresh';
+    continuationToken: string | null;
+    onContinuationToken?(token: string): void;
+  };
 }
 
 export interface ExecutorProgressEvent {
@@ -21,6 +26,7 @@ export interface ExecutorProgressEvent {
 
 export interface ExecutorAdapter {
   readonly name: string;
+  readonly supportsContinuation?: boolean;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
   executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
   installSkill?(pkg: import('./skill-package-builder.js').ExecutorSkillPackage): Promise<ExecutorSkillInstallResult>;

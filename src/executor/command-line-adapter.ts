@@ -196,6 +196,8 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
     return buildExecutorContextPrompt(input);
   }
 
+  protected observeOutputLine(_line: string, _input: ExecutorInput): void {}
+
   async isAvailable(): Promise<boolean> {
     try {
       const result = spawnSync('which', [this.config.command]);
@@ -215,6 +217,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
     const pending = lines.pop() ?? '';
 
     for (const line of lines) {
+      this.observeOutputLine(line, input);
       const progress = formatExecutorProgress(line);
       if (progress) {
         input.onProgress?.({ kind: 'log', text: progress });
@@ -225,6 +228,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
   }
 
   private flushProgressBuffer(buffer: string, input: ExecutorInput): void {
+    this.observeOutputLine(buffer, input);
     const progress = formatExecutorProgress(buffer);
     if (progress) {
       input.onProgress?.({ kind: 'log', text: progress });

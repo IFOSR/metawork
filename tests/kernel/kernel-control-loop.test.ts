@@ -74,6 +74,7 @@ describe('KernelControlLoop', () => {
         updatedAt: '2026-07-20T00:00:00.000Z',
       }],
       correctionSupportedAgentClasses: ['codex-cli'],
+      nativeContinuationAgentClasses: ['codex-cli'],
     };
     let persisted: Parameters<KernelDecisionLedger['issue']>[0] | null = null;
     const loop = new KernelControlLoop({

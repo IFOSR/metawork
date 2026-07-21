@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { CompletionContractViolation } from '../execution/completion-protocol.js';
+import type { KernelFailure } from '../core/kernel-failure.js';
+import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
 
 export type ExecutorAttemptTerminalState =
   | 'completed'
@@ -13,6 +15,12 @@ export interface ExecutorAttemptReceipt {
   executionId: string;
   taskId: string;
   subtaskId: string;
+  graphRevision: number;
+  generationId: string;
+  attemptKind: KernelAttemptKind;
+  sourceAttemptId: string | null;
+  failure: KernelFailure | null;
+  recoveryMode: KernelRecoveryMode;
   workUnitId: string;
   agentClassName: string;
   startedAt: string;
@@ -26,17 +34,32 @@ export interface ExecutorAttemptReceipt {
   errorDetail: string | null;
 }
 
+export type ExecutorAttemptReceiptInsert = Omit<
+  ExecutorAttemptReceipt,
+  'graphRevision' | 'generationId' | 'attemptKind' | 'sourceAttemptId' | 'recoveryMode'
+>;
+
 export class ExecutorAttemptReceiptRepo {
   constructor(private readonly db: Database.Database) {}
 
-  insert(receipt: ExecutorAttemptReceipt): void {
+  insert(receipt: ExecutorAttemptReceiptInsert): void {
+    const subtask = this.db.prepare(`
+      SELECT graph_revision, generation_id FROM subtasks WHERE id = ?
+    `).get(receipt.subtaskId) as { graph_revision: number | null; generation_id: string | null } | undefined;
+    const decision = this.db.prepare(`
+      SELECT decision_json FROM kernel_decisions WHERE attempt_id = ?
+    `).get(receipt.attemptId) as { decision_json: string } | undefined;
+    const action = decision
+      ? (JSON.parse(decision.decision_json) as { action?: Record<string, unknown> }).action
+      : null;
     this.db.prepare(`
       INSERT INTO executor_attempt_receipts (
         attempt_id, execution_id, task_id, subtask_id, work_unit_id,
         agent_class_name, started_at, completed_at, terminal_state,
         raw_response, completion_schema_version, parsing_json,
-        verification_json, error_code, error_detail
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        verification_json, error_code, error_detail, graph_revision,
+        generation_id, attempt_kind, source_attempt_id, failure_json, recovery_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       receipt.attemptId,
       receipt.executionId,
@@ -53,6 +76,12 @@ export class ExecutorAttemptReceiptRepo {
       JSON.stringify(receipt.verification),
       receipt.errorCode,
       receipt.errorDetail,
+      subtask?.graph_revision ?? 1,
+      subtask?.generation_id ?? `generation_${receipt.taskId}_1`,
+      typeof action?.attemptKind === 'string' ? action.attemptKind : 'primary',
+      typeof action?.sourceAttemptId === 'string' ? action.sourceAttemptId : null,
+      receipt.failure ? JSON.stringify(receipt.failure) : null,
+      typeof action?.recoveryMode === 'string' ? action.recoveryMode : 'fresh',
     );
   }
 
@@ -72,6 +101,12 @@ export class ExecutorAttemptReceiptRepo {
       executionId: String(row.execution_id),
       taskId: String(row.task_id),
       subtaskId: String(row.subtask_id),
+      graphRevision: Number(row.graph_revision ?? 1),
+      generationId: String(row.generation_id ?? `generation_${String(row.task_id)}_1`),
+      attemptKind: String(row.attempt_kind ?? 'primary') as KernelAttemptKind,
+      sourceAttemptId: row.source_attempt_id == null ? null : String(row.source_attempt_id),
+      failure: row.failure_json == null ? null : JSON.parse(String(row.failure_json)) as KernelFailure,
+      recoveryMode: String(row.recovery_mode ?? 'fresh') as KernelRecoveryMode,
       workUnitId: String(row.work_unit_id),
       agentClassName: String(row.agent_class_name),
       startedAt: String(row.started_at),

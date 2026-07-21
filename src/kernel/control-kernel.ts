@@ -134,6 +134,7 @@ export type KernelSnapshot =
       attemptedAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
       correctionSupportedAgentClasses: string[];
+      nativeContinuationAgentClasses: string[];
       attempts: KernelAttemptFact[];
       generationId: string;
       graphRevision: number;
@@ -147,6 +148,7 @@ export type KernelSnapshot =
       capacityBlockedAt: string | null;
       recheckAfterMs: number;
       capacityAgentClasses: string[];
+      nativeContinuationAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
     }
   | {
@@ -489,7 +491,9 @@ export class ControlKernel {
         attemptId: deterministicAttemptId(event.id, event.subtaskId, event.retry.agentClassName, 'continuation'),
         attemptKind: 'continuation',
         sourceAttemptId: event.retry.sourceAttemptId,
-        recoveryMode: 'native_session',
+        recoveryMode: snapshot.nativeContinuationAgentClasses.includes(event.retry.agentClassName)
+          ? 'native_session'
+          : 'recovery_packet',
       }, 'preferred AgentClass continuation wake authorized');
     }
     if (event.wakeKind !== 'capacity') return decision(event, { type: 'no_op' }, 'availability wake has no eligible work');

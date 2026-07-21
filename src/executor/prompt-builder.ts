@@ -46,10 +46,16 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     `Authorized target paths: ${context.workspaceContext.targetPaths.join(', ') || '(none)'}`,
     `Evidence tool: ${context.evidenceTools.availability} — ${context.evidenceTools.reason}`,
     `Attempt identity: ${JSON.stringify(context.identity)}`,
+    ...(context.recovery && context.recovery.mode !== 'fresh' ? [
+      '',
+      `Recovery mode: ${context.recovery.mode}`,
+      'Inspect current state before continuing. Preserve confirmed work and perform only the remaining work.',
+      `Recovery packet: ${JSON.stringify(context.recovery.packet ?? { sourceAttemptId: context.recovery.sourceAttemptId }, null, 2)}`,
+    ] : []),
     '',
     'Completion protocol:',
     context.completionContract.marker,
-    '{"schemaVersion":1,"subtaskId":"<authorized id>","acceptanceEvidence":[{"key":"<exact acceptance key>","evidence":["..."]}],"artifacts":[],"handoffs":[]}',
+    '{"schemaVersion":2,"status":"completed","subtaskId":"<authorized id>","acceptanceEvidence":[{"key":"<exact acceptance key>","evidence":["..."]}],"artifacts":[],"handoffs":[]}',
     'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
   ];
   return lines.join('\n');
