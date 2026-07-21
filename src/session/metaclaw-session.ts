@@ -51,7 +51,7 @@ import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
+import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -280,6 +280,8 @@ export class MetaclawSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion),
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
+        requestReplan: decision => this.requestKernelReplan(decision),
+        buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
     });
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
@@ -679,16 +681,7 @@ export class MetaclawSession {
       proposalSource: 'initial',
       targetGraphRevision: 1,
     };
-    const snapshot: KernelSnapshot = {
-      schemaVersion: 2,
-      type: 'plan_admission',
-      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
-      runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
-      executorCatalog: context.executorCatalog,
-      executorStatuses: this.kernelExecutorStatusRepo.list(),
-      v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
-      eligibleContextRefKeys: this.buildEligibleContextRefKeys(plan, userInput),
-    };
+    const snapshot = this.buildPlanAdmissionSnapshot(event, context.executorCatalog, userInput);
     const workflow = new DurableKernelWorkflow({
       kernel: this.controlKernel,
       buildSnapshot: () => snapshot,
@@ -698,6 +691,85 @@ export class MetaclawSession {
     });
     await workflow.submit(event);
     return true;
+  }
+
+  private async requestKernelReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
+    const task = this.taskRuntimeService.findTask(decision.action.taskId);
+    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
+    this.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
+    const evidence = this.deps.db.prepare(`
+      SELECT id, title, content FROM task_execution_evidence
+      WHERE task_id = ? AND kind = 'task_evidence'
+      ORDER BY created_at ASC, id ASC
+    `).all(task.id) as Array<{ id: string; title: string; content: string }>;
+    const failures = this.deps.db.prepare(`
+      SELECT attempt_id, agent_class_name, terminal_state, failure_json, error_code, error_detail
+      FROM executor_attempt_receipts
+      WHERE task_id = ? AND graph_revision = ? AND terminal_state <> 'completed'
+      ORDER BY completed_at ASC, attempt_id ASC
+    `).all(task.id, decision.action.sourceRevision) as Array<Record<string, unknown>>;
+    const request = [
+      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Generation: ${decision.action.generationId}`,
+      `Superseded revision: ${decision.action.sourceRevision}`,
+      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
+        evidenceId: item.id,
+        title: item.title,
+        summary: item.content.slice(0, 2_000),
+      })))}`,
+      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
+        attemptId: item.attempt_id,
+        agentClassName: item.agent_class_name,
+        terminalState: item.terminal_state,
+        failure: item.failure_json ? JSON.parse(String(item.failure_json)) : null,
+        code: item.error_code,
+        summary: String(item.error_detail ?? '').slice(0, 1_000),
+      })))}`,
+      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.planningContextBuilder.build({
+      userInput: request,
+      initialContext: { longTermMemories: [], conversationHistory: [] },
+    });
+    const plan = await this.planningAgent.plan(context);
+    return {
+      schemaVersion: 2,
+      type: 'plan_proposed',
+      id: `replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: task.id,
+      proposal: plan,
+      generationId: decision.action.generationId,
+      proposalSource: 'replan',
+      targetGraphRevision: decision.action.sourceRevision + 1,
+    };
+  }
+
+  private buildPlanAdmissionSnapshot(
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    executorCatalog = this.planningContextBuilder.build({ userInput: '' }).executorCatalog,
+    userInput = event.proposal.task.goal ?? '',
+  ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
+    return {
+      schemaVersion: 2,
+      type: 'plan_admission',
+      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
+      runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
+      executorCatalog,
+      executorStatuses: this.kernelExecutorStatusRepo.list(),
+      v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
+      eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
+    };
   }
 
   private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {

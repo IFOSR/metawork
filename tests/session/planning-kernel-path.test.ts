@@ -16,6 +16,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
 import { completionResponse } from '../support/completion-response.js';
+import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 
 function createConfig(): Config {
   return {
@@ -224,6 +225,53 @@ describe('natural-language planning/kernel path', () => {
     expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
     expect(audits.some(audit => audit.action === 'dispatch_attempt')).toBe(true);
     expect(audits.some(audit => audit.action === 'complete_task')).toBe(true);
+  });
+
+  it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {
+    let plannerCalls = 0;
+    const harness = createSession('sess_replan', context => {
+      plannerCalls += 1;
+      if (plannerCalls === 1) return plan();
+      const taskId = context.userInput.match(/Task id: (\S+)/)?.[1] ?? null;
+      return plan({
+        id: 'plan_replan',
+        task: {
+          binding: 'reference', taskId, control: 'none', scope: null, title: '鏅€氬姛鑳?,
+          goal: '瀹炵幇涓€涓櫘閫氬姛鑳?, includeRecentConversationContext: false,
+          priority: { level: 'normal', reason: 'automatic replan' },
+        },
+      });
+    });
+    vi.mocked(harness.executor.execute)
+      .mockImplementationOnce(async input => ({
+        success: true,
+        output: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+          schemaVersion: 2,
+          status: 'failed',
+          subtaskId: input.context.currentSubtask.id,
+          failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
+        })}`,
+        exitCode: 0,
+        durationMs: 10,
+      }))
+      .mockImplementationOnce(async input => ({
+        success: true, output: completionResponse(input, 'replanned work done'), exitCode: 0, durationMs: 10,
+      }));
+
+    await harness.session.submit('瀹炵幇涓€涓櫘閫氬姛鑳?, { awaitAsyncWork: true });
+
+    expect(plannerCalls).toBe(2);
+    expect(harness.executor.execute).toHaveBeenCalledTimes(2);
+    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect(harness.db.prepare(`
+      SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
+    `).all()).toEqual([
+      { revision: 1, status: 'superseded', automatic_replan: 0 },
+      { revision: 2, status: 'completed', automatic_replan: 1 },
+    ]);
+    expect(harness.kernelDecisionRepo.listBySession('sess_replan').map(item => item.action)).toEqual(
+      expect.arrayContaining(['request_replan', 'authorize_task_plan', 'complete_task']),
+    );
   });
 
   it('handles a direct reply without creating a task and audits it', async () => {

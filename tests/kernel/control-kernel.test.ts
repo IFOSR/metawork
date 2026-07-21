@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import { workGraphPlan } from '../support/planning-agent-plans.js';
 
 const event: KernelEvent = {
   schemaVersion: 2,
@@ -56,6 +57,40 @@ describe('ControlKernel', () => {
       eventId: 'event_plan_1',
       action: { type: 'deliver_direct_reply', response: 'Hello' },
       reason: 'direct reply authorized',
+    });
+  });
+
+  it('authorizes a replan as the next revision of the same generation', () => {
+    const proposal = workGraphPlan({
+      goal: 'Finish remaining work',
+      overrides: {
+        task: {
+          binding: 'reference', taskId: 'task_1', control: 'none', scope: null,
+          title: 'Task', goal: 'Finish remaining work', includeRecentConversationContext: false,
+          priority: { level: 'normal', reason: 'automatic replan' },
+        },
+      },
+    });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    const replanEvent: KernelEvent = {
+      ...event,
+      id: 'event_replan_1',
+      taskId: 'task_1',
+      proposal,
+      generationId: 'generation_1',
+      proposalSource: 'replan',
+      targetGraphRevision: 2,
+    };
+    const replanSnapshot: KernelSnapshot = {
+      ...snapshot,
+      tasks: [{ id: 'task_1', status: 'running' }],
+      runningTaskId: 'task_1',
+      v5WorkGraphTaskIds: ['task_1'],
+    };
+
+    expect(new ControlKernel().decide(replanEvent, replanSnapshot).action).toMatchObject({
+      type: 'authorize_task_plan', taskId: 'task_1', generationId: 'generation_1',
+      graphRevision: 2, proposalSource: 'replan',
     });
   });
 

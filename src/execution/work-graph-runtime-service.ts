@@ -116,19 +116,30 @@ export class WorkGraphRuntimeService {
     });
   }
 
+  materializeCompletedEvidence(taskId: string, revision: number): string[] {
+    const ids: string[] = [];
+    for (const subtask of this.subtaskRepo.listByTask(taskId).filter(item =>
+      item.graphRevision === revision && item.status === 'done'
+    )) {
+      const evidenceId = createEvidenceId('task_evidence', `${taskId}_r${revision}_${subtask.id}`);
+      this.evidenceRepo?.upsert({
+        id: evidenceId,
+        taskId,
+        kind: 'task_evidence',
+        sourceId: subtask.id,
+        title: `Completed work: ${subtask.title}`,
+        content: boundedTaskEvidence(subtask),
+        exactOnly: false,
+      });
+      ids.push(evidenceId);
+    }
+    return ids;
+  }
+
   private supersedeActiveRevision(taskId: string, revision: number, existing: Subtask[]): void {
+    this.materializeCompletedEvidence(taskId, revision);
     for (const subtask of existing) {
       if (subtask.status === 'done') {
-        const evidenceId = createEvidenceId('task_evidence', `${taskId}_r${revision}_${subtask.id}`);
-        this.evidenceRepo?.upsert({
-          id: evidenceId,
-          taskId,
-          kind: 'task_evidence',
-          sourceId: subtask.id,
-          title: `Completed work: ${subtask.title}`,
-          content: boundedTaskEvidence(subtask),
-          exactOnly: false,
-        });
         continue;
       }
       if (subtask.status !== 'cancelled') {

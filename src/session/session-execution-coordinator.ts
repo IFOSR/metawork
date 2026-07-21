@@ -81,6 +81,10 @@ export interface KernelExecutionRuntimeDeps {
     }): void;
     setLatestGuidance(scene: string, suggestion: Suggestion): GuidanceState;
     queueProposal(scene: string, proposal: GuidanceProposal): void;
+    requestReplan(decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    }): Promise<KernelEvent>;
+    buildPlanAdmissionSnapshot(event: Extract<KernelEvent, { type: 'plan_proposed' }>): KernelSnapshot;
   };
 }
 
@@ -325,6 +329,37 @@ export class KernelExecutionRuntime {
       });
       return null;
     }
+    if (action.type === 'request_replan') {
+      return this.deps.callbacks.requestReplan(
+        decision as KernelDecision & {
+          action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+        },
+      );
+    }
+    if (action.type === 'authorize_task_plan') {
+      const task = this.deps.taskRuntimeService.findTask(action.taskId);
+      if (!task) throw new Error(`replan Task not found: ${action.taskId}`);
+      const result = this.deps.workGraphRuntimeService.apply({
+        task,
+        userPrompt: input.request.userPrompt,
+        sessionId: this.deps.sessionId,
+        authorizedWorkGraph: action.workGraph,
+        authorization: {
+          decisionId: decision.id,
+          generationId: action.generationId,
+          revision: action.graphRevision,
+          source: action.proposalSource,
+          automaticReplan: action.proposalSource === 'replan',
+        },
+      });
+      if (result.outcome === 'not_executable') throw new Error(`authorized replan could not apply: ${result.reason}`);
+      input.attemptedAgentClasses.clear();
+      return this.eventFromDecision(decision, {
+        type: 'dispatch_requested',
+        taskId: action.taskId,
+        reason: `graph revision ${action.graphRevision} activated`,
+      });
+    }
     if (action.type === 'no_op') return null;
     throw new Error(`Execution Runtime cannot apply ${action.type}`);
   }
@@ -392,8 +427,9 @@ export class KernelExecutionRuntime {
       taskId,
       reason: request.schedulingReason ?? 'authorized execution request',
     };
-    const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'timer_tick'
-      ? {
+    const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'plan_proposed'
+      ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)
+      : event.type === 'timer_tick' ? {
           schemaVersion: 2,
           type: 'timer',
           capacityBlockedAt: null,
@@ -532,8 +568,9 @@ export class KernelExecutionRuntime {
     };
     const workflow = new DurableKernelWorkflow({
       kernel: this.deps.controlKernel,
-      buildSnapshot: event => event.type === 'timer_tick'
-        ? {
+      buildSnapshot: event => event.type === 'plan_proposed'
+        ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)
+        : event.type === 'timer_tick' ? {
             schemaVersion: 2,
             type: 'timer',
             capacityBlockedAt: input.blockedAt,
