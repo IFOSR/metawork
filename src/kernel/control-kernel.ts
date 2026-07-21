@@ -53,6 +53,7 @@ export type KernelEvent =
   | (KernelEventEnvelope & {
       type: 'plan_proposed';
       proposal: KernelPlanProposal;
+      requestText: string;
       generationId: string;
       proposalSource: 'initial' | 'replan';
       targetGraphRevision: number;

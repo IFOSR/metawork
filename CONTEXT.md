@@ -6,7 +6,7 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 Phase 4 is upgrading the active control path to `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, waiting and derived AgentClass availability.
 
-`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v4 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v4 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3 parser, legacy intent route, semantic default, or keyword fallback.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v5 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3/v4 production parser, legacy intent route, semantic default, or keyword fallback.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
@@ -55,7 +55,7 @@ The small interface exposed by a planner work unit: given a planning context, re
 _Avoid_: policy kernel, session intent service, executor
 
 **PlanningAgentPlan**:
-A strict v4 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until a `plan_proposed` event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
+A strict v5 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until a durable `plan_proposed` event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
 _Avoid_: runtime command, task event, execution policy
 
 **ControlKernel**:
@@ -83,7 +83,7 @@ The runtime lifecycle vocabulary for work units: starting, idle, claimed, runnin
 _Avoid_: task state, subtask state
 
 **Work Graph**:
-The sole execution-structure fact for one task: a v4 DAG of capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every edge has one to twelve keyed `text` or `artifact` items; only completed direct-edge handoffs enter downstream context. Runtime consumes one ready node at a time. Concurrency, retry, fallback, and workspace-state handoff are later phases.
+The sole execution-structure fact for one task generation: a v5 revisioned DAG of capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every edge has one to twelve keyed `text` or `artifact` items; only completed direct-edge handoffs and controlled task evidence enter downstream context. Runtime consumes one ready node at a time. Retry, fallback, continuation and one bounded replan are Kernel policy; concurrency remains a later phase.
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:

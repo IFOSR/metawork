@@ -144,6 +144,7 @@ function directReplyEvent(): KernelEvent {
     causationId: null,
     occurredAt: '2026-07-21T00:00:00.000Z',
     sessionId: 'session_1',
+    requestText: 'done',
     generationId: 'generation_event_1',
     proposalSource: 'initial',
     targetGraphRevision: 1,

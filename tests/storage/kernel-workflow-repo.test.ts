@@ -15,6 +15,7 @@ describe('KernelWorkflowRepo', () => {
     const decision = new ControlKernel().decide(event, snapshot);
 
     expect(repo.enqueue(event)).toBe(true);
+    expect(repo.findEvent(event.id)).toEqual(event);
     expect(repo.claimNext(event.occurredAt)).toEqual(event);
     const application = repo.issue(event.id, {
       id: decision.id, schemaVersion: 2, eventId: event.id, eventType: event.type,
@@ -80,6 +81,7 @@ function directReplyEvent(): KernelEvent {
   return {
     schemaVersion: 2, type: 'plan_proposed', id: 'event_1', correlationId: 'correlation_1', causationId: null,
     occurredAt: '2026-07-21T00:00:00.000Z', sessionId: 'session_1',
+    requestText: 'done',
     generationId: 'generation_event_1', proposalSource: 'initial', targetGraphRevision: 1,
     proposal: {
       id: 'plan_1', schemaVersion: 5, action: 'direct_reply', confidence: 1, reason: 'answer',

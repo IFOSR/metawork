@@ -34,6 +34,12 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return this.insertEvent(event, availableAt);
   }
 
+  findEvent(id: string): KernelEvent | null {
+    const row = this.db.prepare('SELECT event_json FROM kernel_events WHERE id = ?')
+      .get(id) as { event_json: string } | undefined;
+    return row ? JSON.parse(row.event_json) as KernelEvent : null;
+  }
+
   claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null {
     if (eventTypes?.length === 0) return null;
     const eventFilter = eventTypes?.length

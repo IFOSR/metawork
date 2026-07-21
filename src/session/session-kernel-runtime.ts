@@ -27,6 +27,7 @@ export interface SessionKernelRuntimeDeps {
     setCurrentTaskId(taskId: string | null): void;
     getCurrentTaskId(): string | null;
     setFocusContext(focus: FocusContext | null): void;
+    resolveRequestText(eventId: string): string;
   };
 }
 
@@ -34,8 +35,13 @@ export interface SessionKernelRuntimeDeps {
 export class SessionKernelRuntime {
   constructor(private readonly deps: SessionKernelRuntimeDeps) {}
 
-  forInput(userInput: string): KernelRuntime {
-    return { apply: decision => this.apply(decision, userInput) };
+  forInput(userInput?: string): KernelRuntime {
+    return {
+      apply: decision => this.apply(
+        decision,
+        userInput ?? this.deps.callbacks.resolveRequestText(decision.eventId),
+      ),
+    };
   }
 
   private async apply(decision: KernelDecision, userInput: string): Promise<KernelEvent | null> {

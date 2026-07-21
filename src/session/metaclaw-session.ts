@@ -60,6 +60,7 @@ import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 
@@ -78,6 +79,10 @@ export interface MetaclawSessionDeps {
   defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
+}
+
+function boundedKernelRequestText(value: string): string {
+  return redactSensitiveText(value).slice(0, 24_000);
 }
 
 function startupOrphanEvent(input: {
@@ -349,6 +354,10 @@ export class MetaclawSession {
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
+        resolveRequestText: eventId => {
+          const event = this.kernelWorkflowRepo.findEvent(eventId);
+          return event?.type === 'plan_proposed' ? event.requestText : '';
+        },
       },
     });
 
@@ -732,6 +741,7 @@ export class MetaclawSession {
       sessionId: this.deps.sessionId,
       taskId: plan.task.taskId ?? undefined,
       proposal: plan,
+      requestText: boundedKernelRequestText(userInput),
       generationId: `generation_${eventId}`,
       proposalSource: 'initial',
       targetGraphRevision: 1,
@@ -809,6 +819,7 @@ export class MetaclawSession {
       sessionId: this.deps.sessionId,
       taskId: task.id,
       proposal: plan,
+      requestText: boundedKernelRequestText(request),
       generationId: decision.action.generationId,
       proposalSource: 'replan',
       targetGraphRevision: decision.action.sourceRevision + 1,
@@ -1200,7 +1211,7 @@ export class MetaclawSession {
         event as Extract<KernelEvent, { type: 'plan_proposed' }>,
       ),
       store: this.kernelWorkflowRepo,
-      runtime: this.sessionKernelRuntime.forInput(''),
+      runtime: this.sessionKernelRuntime.forInput(),
       clock: { now: () => new Date().toISOString() },
       acceptedEventTypes: ['plan_proposed'],
       acceptedActions: [

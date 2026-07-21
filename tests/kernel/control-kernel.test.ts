@@ -11,6 +11,7 @@ const event: KernelEvent = {
   causationId: null,
   occurredAt: '2026-07-20T00:00:00.000Z',
   sessionId: 'session_1',
+  requestText: 'hello',
   generationId: 'generation_event_plan_1',
   proposalSource: 'initial',
   targetGraphRevision: 1,

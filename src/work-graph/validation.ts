@@ -30,7 +30,7 @@ export interface WorkGraphViolation {
   message: string;
 }
 
-/** Pure v4 structural and contract validation shared by Planner, Kernel and Runtime. */
+/** Pure v5 structural and contract validation shared by Planner, Kernel and Runtime. */
 export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): WorkGraphViolation[] {
   const violations: WorkGraphViolation[] = [];
   if (graph.subtasks.length === 0) {

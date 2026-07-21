@@ -34,7 +34,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>single runtime coordinator]
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v4<br/>intent, target, risk,<br/>typed work graph proposal]
+  Planning --> Plan[PlanningAgentPlan v5<br/>intent, target, risk,<br/>revisioned work graph proposal]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Loop[Durable KernelWorkflow<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
@@ -551,7 +551,7 @@ candidate. Docker mounts `planner-codex.env`, `executor-codex.env`, and
 only their assigned provider file, and `docker/entrypoint.sh` renders each config
 template with the base URL from that file.
 
-The hermetic runtime image contains the CLI, Planner MCP, generated v4 schema,
+The hermetic runtime image contains the CLI, Planner MCP, generated v5 schema,
 Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
 Codex/PI configs, and entrypoint are not mounted. Source changes require
 `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, including passwordless SSH and VS Code Remote-SSH setup.
@@ -762,7 +762,7 @@ Every natural-language proposal and deterministic execution entrypoint enters th
 
 ## Planning Agent, Control Kernel, And Work Units
 
-Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v4 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
+Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v5 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
@@ -777,7 +777,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
 
-In the active session path, proposed nodes become persisted v4 `Subtask` records only after a persisted `authorize_task_plan` decision. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; migration v23 adds the unified decision ledger and freezes legacy Planning decisions. `dependencies` is the only topology and typed handoff source. The serial shell executes one Kernel-authorized ready node, injects only completed direct-edge handoffs, and never reruns completed nodes or reparses persisted handoffs.
+In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; v23 adds the unified decision ledger; v24 lifts valid v4 graphs into revision one and adds durable inbox/application/outbox state. `dependencies` is the only topology and typed handoff source. The serial shell executes one Kernel-authorized ready node, injects completed direct-edge handoffs or controlled task evidence, and never reruns completed nodes or reparses persisted handoffs.
 
 `SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 

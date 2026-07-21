@@ -2,7 +2,7 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> Phase 3 架构更新（2026-07-20）：当前控制链已收敛为 `event → snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`。`PolicyKernel`、`TaskAdmissionGate`、`SchedulerEngine`、多 Task queue、preemption 与 parked auto-resume 已退出生产路径。Subtask 独立使用 `awaiting_decision`；timer 只重查 ledger 中的容量阻塞。本文较后位置保留的旧表述是待重写的历史说明，不具有架构权威性；以本段、ADR-0022、英文技术总览与 `CONTEXT.md` 为准。
+> Phase 4 架构更新（2026-07-21）：当前控制链为 `durable event inbox → KernelWorkflow → snapshot → ControlKernel.decide → immutable decision + application → idempotent Runtime apply → normalized event`。SQLite v24 持久化 application、effect outbox、attempt continuation 与 graph revision；retry、fallback、replan 和 AgentClass 可用性只由 Kernel 决定。旧 `KernelControlLoop` 已删除，LangGraph 门控评估未达净删 30% 标准，因此不引入第二套 workflow cursor。
 
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
@@ -68,7 +68,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v4 `PlanningAgentPlan`。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 stdio MCP 按需查询。`PolicyKernel` 负责确定性授权，Runtime 持久化或恢复已授权 v4 图，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v5 `PlanningAgentPlan`。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 stdio MCP 按需查询。`ControlKernel` 负责确定性授权，Runtime 持久化或恢复已授权 v5 graph revision，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
 
 Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
@@ -588,7 +588,7 @@ anyfusion --connect
 
 在 Windows 上，`docker exec -it` 无法为 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流将容器作为 SSH 服务运行，从而为 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。默认 Planner 和执行器为 Codex，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
 
-完整运行镜像内置 CLI、Planner MCP、v4 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
+完整运行镜像内置 CLI、Planner MCP、v5 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
 
 ## 配置
 
@@ -807,14 +807,14 @@ AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 
 ## PlanningAgent、PolicyKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出严格 v4 `PlanningAgentPlan`。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出严格 v5 `PlanningAgentPlan`。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
 `PolicyKernel` 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
 
-Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `planning_decisions` 审计记录，并派发到对话、任务控制展示或 durable task 准备。`WorkGraphRuntimeService` 只持久化或恢复 kernel-approved v4 work graph。`SessionExecutionCoordinator` 只选择一个 ready Subtask 和当前 AgentClass；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 `SubtaskExecutionContext`、evidence capability、一次 Adapter 调用、Completion Protocol 门禁、终态事务与 release。`ExecutionRuntime` 不再接收 Task prompt、全量历史、Task 级 memory bundle、`ExecutionPolicy`、`candidateExecutors` 或 `fallbackChain`。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision，不解释 orphan、retry 或 fallback。`KernelExecutionRuntime` 应用单一高层授权；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 `SubtaskExecutionContext`、evidence capability、一次 Adapter 调用、Completion Protocol 门禁、终态持久化与 release。`ExecutionRuntime` 不接收 Task prompt、全量历史、Task 级 memory bundle、`ExecutionPolicy`、`candidateExecutors` 或 `fallbackChain`。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -822,7 +822,7 @@ Runtime 服务负责应用 kernel decision。`KernelDecisionApplier` 写入 `pla
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `PolicyKernel` accept 或 rewrite 后才会成为持久化 v4 `Subtask` 节点。SQLite v22 把旧 v3 图保存在只读 `subtasks_v3_audit`，非终态旧 Task 必须由用户自然语言触发 v4 replan。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff，不继承祖先或普通 assistant/Executor 历史。每次 Executor 最终响应都必须带 Completion Protocol v1；成功结果剥离机器块并原子写入 receipt、handoff 与 clean result，contract failure 阻断且不自动重试。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 把有效 v4 图提升为 revision 1；自动 replan 保留已完成证据、取消旧 revision 未完成节点并只激活一个新 frontier。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff或受控 task evidence。每次 Executor 最终响应都必须带 Completion Protocol v2；contract failure 只允许一次 response-only correction，不进入普通 retry/fallback。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
