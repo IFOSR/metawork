@@ -44,7 +44,7 @@ function createConfig(): Config {
 }
 
 describe('blocked task user journey', () => {
-  it('lets the user inspect a blocked attempt but does not retry it through /task unblock in Phase 2', async () => {
+  it('lets the user inspect a fail-closed attempt but does not retry unknown work through /task unblock', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
@@ -101,9 +101,9 @@ describe('blocked task user journey', () => {
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('executor_failed requires explicit recovery');
+    expect(blockedTask.dependencies[0]?.description).toBe('unknown requires explicit recovery');
     let output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Execution blocked: executor_failed requires explicit recovery');
+    expect(output).toContain('Execution blocked: unknown requires explicit recovery');
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');

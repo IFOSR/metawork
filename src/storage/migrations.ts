@@ -1092,20 +1092,23 @@ const MIGRATIONS: Migration[] = [
         if (tableExists(db, 'subtasks')) {
           addColumnIfMissing(db, 'subtasks', 'graph_revision', 'INTEGER');
           addColumnIfMissing(db, 'subtasks', 'generation_id', 'TEXT');
-          db.exec(`
-            INSERT OR IGNORE INTO work_graph_revisions (
-              id, task_id, revision, generation_id, authorized_decision_id,
-              proposal_source, automatic_replan, status, created_at, updated_at
-            )
-            SELECT
-              'revision_' || task_id || '_1', task_id, 1,
-              'generation_' || task_id || '_1', NULL, 'initial', 0,
-              CASE WHEN SUM(CASE WHEN status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END) = 0
-                THEN 'completed' ELSE 'active' END,
-              MIN(created_at), MAX(updated_at)
-            FROM subtasks
-            GROUP BY task_id
-          `);
+          if (tableExists(db, 'tasks')) {
+            db.exec(`
+              INSERT OR IGNORE INTO work_graph_revisions (
+                id, task_id, revision, generation_id, authorized_decision_id,
+                proposal_source, automatic_replan, status, created_at, updated_at
+              )
+              SELECT
+                'revision_' || subtasks.task_id || '_1', subtasks.task_id, 1,
+                'generation_' || subtasks.task_id || '_1', NULL, 'initial', 0,
+                CASE WHEN SUM(CASE WHEN subtasks.status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END) = 0
+                  THEN 'completed' ELSE 'active' END,
+                MIN(subtasks.created_at), MAX(subtasks.updated_at)
+              FROM subtasks
+              INNER JOIN tasks ON tasks.id = subtasks.task_id
+              GROUP BY subtasks.task_id
+            `);
+          }
           db.exec(`
             UPDATE subtasks
             SET graph_revision = COALESCE(graph_revision, 1),

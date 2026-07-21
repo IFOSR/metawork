@@ -106,9 +106,8 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json
       FROM kernel_decision_applications application
       JOIN kernel_decisions decision ON decision.id = application.decision_id
-      WHERE application.status IN ('applying', 'pending')${actionFilter}${taskFilter}
-      ORDER BY CASE application.status WHEN 'applying' THEN 0 ELSE 1 END,
-        application.created_at ASC, application.id ASC
+      WHERE application.status = 'pending'${actionFilter}${taskFilter}
+      ORDER BY application.created_at ASC, application.id ASC
     `).all(...(actions ?? []), ...(taskId ? [taskId] : [])) as ApplicationRow[];
     return rows.map(rowToApplication);
   }
@@ -118,7 +117,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       UPDATE kernel_decision_applications
       SET status = 'applying', apply_attempts = apply_attempts + 1,
           applying_at = ?, updated_at = ?
-      WHERE decision_id = ? AND status IN ('pending', 'applying')
+      WHERE decision_id = ? AND status = 'pending'
     `).run(now, now, decisionId);
     const application = this.findApplication(decisionId);
     if (!application || application.status !== 'applying') {
@@ -173,7 +172,12 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
         SET status = 'pending', processing_started_at = NULL, updated_at = created_at
         WHERE status = 'processing'
       `).run().changes;
-      return processed + pending;
+      const applications = this.db.prepare(`
+        UPDATE kernel_decision_applications
+        SET status = 'pending', applying_at = NULL, updated_at = created_at
+        WHERE status = 'applying'
+      `).run().changes;
+      return processed + pending + applications;
     });
     return reconcile();
   }

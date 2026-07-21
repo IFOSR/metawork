@@ -104,7 +104,9 @@ export class DurableKernelWorkflow implements KernelWorkflow {
   constructor(private readonly deps: DurableKernelWorkflowDeps) {}
 
   async submit(event: KernelEvent): Promise<KernelWorkflowResult> {
-    this.deps.store.enqueue(event, event.occurredAt);
+    // submit() is called after the trigger boundary has been reached. Delayed
+    // observations retain their future availability when markApplied inserts them.
+    this.deps.store.enqueue(event, this.deps.clock.now());
     return this.drainSerially();
   }
 

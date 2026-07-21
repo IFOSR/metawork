@@ -40,6 +40,17 @@ function graph(_taskId: string): WorkGraphProposal {
   };
 }
 
+function seedKernelDecision(db: Database.Database, id: string, taskId: string): void {
+  db.prepare(`
+    INSERT INTO kernel_decisions (
+      id, schema_version, event_id, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+      decision_json, action, reason, created_at
+    ) VALUES (?, 2, ?, 'plan_proposed', ?, NULL, 'session_test', ?, NULL, NULL,
+      '{}', '{}', '{}', 'authorize_task_plan', 'test authorization', ?)
+  `).run(id, `event_${id}`, taskId, taskId, now);
+}
+
 describe('WorkGraphRuntimeService', () => {
   function service(db: Database.Database): WorkGraphRuntimeService {
     return new WorkGraphRuntimeService(
@@ -54,6 +65,7 @@ describe('WorkGraphRuntimeService', () => {
     const db = createDb();
     const taskRecord = task();
     new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
     const repo = new SubtaskRepo(db);
     const result = service(db).apply({
       task: taskRecord, userPrompt: 'ignored by graph materialization', authorizedWorkGraph: graph(taskRecord.id),
@@ -88,6 +100,7 @@ describe('WorkGraphRuntimeService', () => {
     const db = createDb();
     const taskRecord = task('task_recover');
     new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
     const repo = new SubtaskRepo(db);
     const runtime = service(db);
     expect(runtime.apply({
@@ -105,6 +118,7 @@ describe('WorkGraphRuntimeService', () => {
     const db = createDb();
     const taskRecord = task('task_reapply');
     new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
     const repo = new SubtaskRepo(db);
     const runtime = service(db);
     const authorization = {
@@ -128,6 +142,7 @@ describe('WorkGraphRuntimeService', () => {
     const db = createDb();
     const taskRecord = task('task_conflict');
     new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
     const runtime = service(db);
     runtime.apply({
       task: taskRecord, userPrompt: 'apply', authorizedWorkGraph: graph(taskRecord.id),
@@ -146,6 +161,8 @@ describe('WorkGraphRuntimeService', () => {
     const db = createDb();
     const taskRecord = task('task_replan');
     new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
+    seedKernelDecision(db, 'decision_replan', taskRecord.id);
     const repo = new SubtaskRepo(db);
     const runtime = service(db);
     const firstGraph: WorkGraphProposal = {

@@ -222,6 +222,8 @@ describe('CommandCatalog', () => {
 /task complete
 /task attach
 /task history
+/task recovery
+/task recover
 /task index rebuild
 /task index search
 /executor list

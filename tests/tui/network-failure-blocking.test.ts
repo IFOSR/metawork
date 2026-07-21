@@ -74,8 +74,8 @@ afterEach(() => {
   inputCapture.handler = undefined;
 });
 
-describe('App network failure blocking', () => {
-  it('moves a task into blocked with an explicit unblock hint after network failure', async () => {
+describe('App recoverable infrastructure failure waiting', () => {
+  it('moves a task into a Kernel-authorized retry wait after network failure', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -89,6 +89,7 @@ describe('App network failure blocking', () => {
         success: false,
         output: '',
         error: '执行器网络连接失败，请检查网络或代理配置',
+        failure: { kind: 'network', scope: 'agent_class', code: 'network_failure', summary: 'network unavailable' },
         exitCode: 1,
         durationMs: 800,
       }),
@@ -121,18 +122,19 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: executor_failed requires explicit recovery') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('executor_failed requires explicit recovery');
-    expect(app.lastFrame()).toContain('Execution blocked: executor_failed requires explicit recovery');
+    expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
+    expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
 
     app.unmount();
     app.cleanup();
   });
 
-  it('moves a task into blocked with an idle-timeout-specific hint after executor inactivity', async () => {
+  it('moves a task into a Kernel-authorized retry wait after executor inactivity', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -146,6 +148,7 @@ describe('App network failure blocking', () => {
         success: false,
         output: '',
         error: '执行器空闲超时，长时间无输出或状态变化，请检查执行器是否卡住',
+        failure: { kind: 'timeout', scope: 'agent_class', code: 'executor_timeout', summary: 'executor idle timeout' },
         exitCode: 1,
         durationMs: 1800,
       }),
@@ -178,12 +181,13 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: executor_failed requires explicit recovery') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('executor_failed requires explicit recovery');
-    expect(app.lastFrame()).toContain('Execution blocked: executor_failed requires explicit recovery');
+    expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
+    expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
 
     app.unmount();
     app.cleanup();

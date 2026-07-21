@@ -38,6 +38,42 @@ describe('DurableKernelWorkflow', () => {
     expect(order).toEqual(['enqueue:event_1', 'applying:decision_event_1', 'apply:decision_event_1', 'applied:decision_event_1']);
     expect(store.issueCount).toBe(1);
   });
+
+  it('does not steal an application that another nested workflow is currently applying', async () => {
+    const store = new MemoryWorkflowStore();
+    const order: string[] = [];
+    const event = directReplyEvent();
+    store.enqueue(event);
+    const snapshot = planSnapshot();
+    const decision = new ControlKernel().decide(event, snapshot);
+    store.issue(event.id, ledgerRecord(event, snapshot, decision));
+    store.markApplying(decision.id, event.occurredAt);
+    order.length = 0;
+
+    const result = await createWorkflow(store, order).submit(event);
+
+    expect(result.decisions).toEqual([]);
+    expect(order).toEqual(['enqueue:event_1']);
+    expect(store.application?.status).toBe('applying');
+  });
+
+  it('requeues interrupted applying work only during explicit recovery', async () => {
+    const store = new MemoryWorkflowStore();
+    const order: string[] = [];
+    const event = directReplyEvent();
+    store.enqueue(event);
+    const snapshot = planSnapshot();
+    const decision = new ControlKernel().decide(event, snapshot);
+    store.issue(event.id, ledgerRecord(event, snapshot, decision));
+    store.markApplying(decision.id, event.occurredAt);
+    order.length = 0;
+
+    const result = await createWorkflow(store, order).recover();
+
+    expect(result.decisions).toEqual([decision]);
+    expect(order).toEqual(['applying:decision_event_1', 'apply:decision_event_1', 'applied:decision_event_1']);
+    expect(store.application?.status).toBe('applied');
+  });
 });
 
 function createWorkflow(store: MemoryWorkflowStore, order: string[]): DurableKernelWorkflow {
@@ -100,7 +136,7 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
   }
 
   listRecoverableApplications(): KernelDecisionApplicationRecord[] {
-    return this.application && ['pending', 'applying'].includes(this.application.status) ? [this.application] : [];
+    return this.application?.status === 'pending' ? [this.application] : [];
   }
 
   markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord {
@@ -123,9 +159,16 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
   }
 
   reconcileProcessing(): number {
-    if (this.eventStatus !== 'processing') return 0;
-    this.eventStatus = this.ledger ? 'processed' : 'pending';
-    return 1;
+    let reconciled = 0;
+    if (this.eventStatus === 'processing') {
+      this.eventStatus = this.ledger ? 'processed' : 'pending';
+      reconciled += 1;
+    }
+    if (this.application?.status === 'applying') {
+      this.application = { ...this.application, status: 'pending' };
+      reconciled += 1;
+    }
+    return reconciled;
   }
 
   countByApplicationStatus(): Record<'pending' | 'applying' | 'applied' | 'uncertain' | 'failed', number> {

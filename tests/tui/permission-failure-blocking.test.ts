@@ -89,6 +89,7 @@ describe('App permission failure blocking', () => {
         success: false,
         output: '',
         error: '执行器权限受限，请确认已授予所需目录访问权限后重试',
+        failure: { kind: 'permission', scope: 'task', code: 'permission_denied', summary: 'workspace permission denied' },
         exitCode: 1,
         durationMs: 900,
       }),
@@ -121,12 +122,12 @@ describe('App permission failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: executor_failed requires explicit recovery') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: permission requires explicit recovery') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('executor_failed requires explicit recovery');
-    expect(app.lastFrame()).toContain('Execution blocked: executor_failed requires explicit recovery');
+    expect(blockedTask.dependencies[0]?.description).toBe('permission requires explicit recovery');
+    expect(app.lastFrame()).toContain('Execution blocked: permission requires explicit recovery');
 
     app.unmount();
     app.cleanup();

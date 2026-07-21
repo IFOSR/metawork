@@ -316,7 +316,7 @@ describe('planner-first executor command acceptance', () => {
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Execution blocked: executor_failed requires explicit recovery');
+    expect(output).toContain('Execution blocked: unknown requires explicit recovery');
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });

@@ -236,8 +236,8 @@ describe('natural-language planning/kernel path', () => {
       return plan({
         id: 'plan_replan',
         task: {
-          binding: 'reference', taskId, control: 'none', scope: null, title: '鏅€氬姛鑳?,
-          goal: '瀹炵幇涓€涓櫘閫氬姛鑳?, includeRecentConversationContext: false,
+          binding: 'reference', taskId, control: 'none', scope: null, title: 'Implement remaining work',
+          goal: 'Implement the remaining work after failure', includeRecentConversationContext: false,
           priority: { level: 'normal', reason: 'automatic replan' },
         },
       });
@@ -258,7 +258,7 @@ describe('natural-language planning/kernel path', () => {
         success: true, output: completionResponse(input, 'replanned work done'), exitCode: 0, durationMs: 10,
       }));
 
-    await harness.session.submit('瀹炵幇涓€涓櫘閫氬姛鑳?, { awaitAsyncWork: true });
+    await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
 
     expect(plannerCalls).toBe(2);
     expect(harness.executor.execute).toHaveBeenCalledTimes(2);
