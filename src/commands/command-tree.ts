@@ -256,6 +256,32 @@ function taskNodes(): CommandNode[] {
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], 'cancel'),
     operation('complete', '完成任务', ['running'], 'done'),
     action({
+      name: 'recovery', summary: '查看任务恢复项', effect: '只读查看 uncertain/failed application 和外部副作用。',
+      usage: '/task recovery <taskId>', arguments: [taskReference('要查看恢复项的任务')],
+      run: async args => ({
+        type: 'directive', content: '',
+        directive: { kind: 'show-task-recovery', taskId: stringArg(args, 'taskId') },
+      }),
+    }),
+    action({
+      name: 'recover', summary: '解决任务恢复项', effect: '只提交 Kernel recovery resolution event，不直接改库。',
+      usage: '/task recover <taskId> <recoveryItemId> <assume-applied|retry>',
+      arguments: [
+        taskReference('要恢复的任务'),
+        text('recoveryItemId', '恢复项 ID'),
+        enumArg('resolution', '解决方式', ['assume-applied', 'retry']),
+      ],
+      run: async args => ({
+        type: 'directive', content: '',
+        directive: {
+          kind: 'resolve-task-recovery',
+          taskId: stringArg(args, 'taskId'),
+          recoveryItemId: stringArg(args, 'recoveryItemId'),
+          resolution: stringArg(args, 'resolution') === 'retry' ? 'retry' : 'assume_applied',
+        },
+      }),
+    }),
+    action({
       name: 'attach', summary: '关联资源到任务', effect: '把一个或多个资源路径持久化到指定任务。',
       usage: '/task attach <taskId> <resource...>',
       arguments: [taskReference('接收资源的任务'), variadic('resources', '资源路径')],

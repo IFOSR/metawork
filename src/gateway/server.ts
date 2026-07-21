@@ -124,7 +124,7 @@ export class MetaclawGatewayServer {
     });
 
     send({ type: 'hello', sessionId });
-    session.initialize({ resumeStartupTasks: false, showDashboard: false });
+    session.initialize({ showDashboard: false });
     session.appendSystemMessage(`→ Gateway session ${sessionId} 已连接`);
 
     const parse = createJsonLineParser<GatewayClientMessage>((message) => {

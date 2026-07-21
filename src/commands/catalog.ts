@@ -29,6 +29,16 @@ export type CommandDirective =
       mode: 'resume-parked' | 'resume-blocked';
       newlyProvidedResources?: string[];
       blockedReason?: string;
+    }
+  | {
+      kind: 'show-task-recovery';
+      taskId: string;
+    }
+  | {
+      kind: 'resolve-task-recovery';
+      taskId: string;
+      recoveryItemId: string;
+      resolution: 'assume_applied' | 'retry';
     };
 
 export type CommandResult =

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
+import type { KernelDecision, KernelDecisionAction, KernelEvent } from '../kernel/control-kernel.js';
 import type {
   KernelApplicationStatus,
   KernelDecisionApplicationRecord,
@@ -34,14 +34,19 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return this.insertEvent(event, availableAt);
   }
 
-  claimNext(now: string): KernelEvent | null {
+  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null {
+    if (eventTypes?.length === 0) return null;
+    const eventFilter = eventTypes?.length
+      ? ` AND event_type IN (${eventTypes.map(() => '?').join(', ')})`
+      : '';
+    const taskFilter = taskId ? ' AND task_id = ?' : '';
     const claim = this.db.transaction(() => {
       const row = this.db.prepare(`
         SELECT id, event_json FROM kernel_events
-        WHERE status = 'pending' AND available_at <= ?
+        WHERE status = 'pending' AND available_at <= ?${eventFilter}${taskFilter}
         ORDER BY available_at ASC, created_at ASC, id ASC
         LIMIT 1
-      `).get(now) as { id: string; event_json: string } | undefined;
+      `).get(now, ...(eventTypes ?? []), ...(taskId ? [taskId] : [])) as { id: string; event_json: string } | undefined;
       if (!row) return null;
       const result = this.db.prepare(`
         UPDATE kernel_events
@@ -85,15 +90,20 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return application;
   }
 
-  listRecoverableApplications(): KernelDecisionApplicationRecord[] {
+  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string): KernelDecisionApplicationRecord[] {
+    if (actions?.length === 0) return [];
+    const actionFilter = actions?.length
+      ? ` AND decision.action IN (${actions.map(() => '?').join(', ')})`
+      : '';
+    const taskFilter = taskId ? ' AND decision.task_id = ?' : '';
     const rows = this.db.prepare(`
       SELECT application.*, decision.decision_json
       FROM kernel_decision_applications application
       JOIN kernel_decisions decision ON decision.id = application.decision_id
-      WHERE application.status IN ('applying', 'pending')
+      WHERE application.status IN ('applying', 'pending')${actionFilter}${taskFilter}
       ORDER BY CASE application.status WHEN 'applying' THEN 0 ELSE 1 END,
         application.created_at ASC, application.id ASC
-    `).all() as ApplicationRow[];
+    `).all(...(actions ?? []), ...(taskId ? [taskId] : [])) as ApplicationRow[];
     return rows.map(rowToApplication);
   }
 
@@ -175,6 +185,38 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     `).all() as Array<{ status: KernelApplicationStatus; count: number }>;
     for (const row of rows) counts[row.status] = row.count;
     return counts;
+  }
+
+  listRecoveryItems(taskId: string): KernelDecisionApplicationRecord[] {
+    const rows = this.db.prepare(`
+      SELECT application.*, decision.decision_json
+      FROM kernel_decision_applications application
+      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      WHERE decision.task_id = ? AND application.status IN ('uncertain', 'failed')
+      ORDER BY application.created_at ASC, application.id ASC
+    `).all(taskId) as ApplicationRow[];
+    return rows.map(rowToApplication);
+  }
+
+  findRecoveryItem(id: string): KernelDecisionApplicationRecord | null {
+    const row = this.db.prepare(`
+      SELECT application.*, decision.decision_json
+      FROM kernel_decision_applications application
+      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      WHERE application.id = ? AND application.status IN ('uncertain', 'failed')
+    `).get(id) as ApplicationRow | undefined;
+    return row ? rowToApplication(row) : null;
+  }
+
+  resolveRecoveryItem(id: string, resolution: 'assume_applied' | 'retry', now: string): void {
+    const nextStatus = resolution === 'assume_applied' ? 'applied' : 'pending';
+    this.db.prepare(`
+      UPDATE kernel_decision_applications
+      SET status = ?, error_summary = NULL,
+          applied_at = CASE WHEN ? = 'applied' THEN ? ELSE applied_at END,
+          updated_at = ?
+      WHERE id = ? AND status IN ('uncertain', 'failed')
+    `).run(nextStatus, nextStatus, now, now, id);
   }
 
   private insertEvent(event: KernelEvent, availableAt: string): boolean {

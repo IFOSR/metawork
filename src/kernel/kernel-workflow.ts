@@ -1,4 +1,4 @@
-import type { KernelDecision, KernelEvent, KernelSnapshot } from './control-kernel.js';
+import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot } from './control-kernel.js';
 import type { KernelDecisionLedgerRecord, KernelDecider, KernelRuntime } from './kernel-control-loop.js';
 
 export type KernelApplicationStatus = 'pending' | 'applying' | 'applied' | 'uncertain' | 'failed';
@@ -36,9 +36,9 @@ export interface KernelWorkflow {
 /** Transactional persistence port. Implementations atomically issue a Decision and create its application. */
 export interface KernelWorkflowStore {
   enqueue(event: KernelEvent, availableAt?: string): boolean;
-  claimNext(now: string): KernelEvent | null;
+  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null;
   issue(eventId: string, record: KernelDecisionLedgerRecord): KernelDecisionApplicationRecord;
-  listRecoverableApplications(): KernelDecisionApplicationRecord[];
+  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string): KernelDecisionApplicationRecord[];
   markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord;
   markApplied(decisionId: string, observation: KernelEvent | null, now: string): void;
   markApplicationFailed(
@@ -61,6 +61,9 @@ export interface DurableKernelWorkflowDeps {
   store: KernelWorkflowStore;
   runtime: KernelRuntime;
   clock: KernelWorkflowClock;
+  acceptedEventTypes?: KernelEvent['type'][];
+  acceptedActions?: KernelDecisionAction['type'][];
+  taskId?: string;
 }
 
 const MAX_DECISIONS_PER_DRAIN = 100;
@@ -101,7 +104,9 @@ export class DurableKernelWorkflow implements KernelWorkflow {
     const decisions: KernelDecision[] = [];
     let handled = 0;
     while (handled < MAX_DECISIONS_PER_DRAIN) {
-      const application = this.deps.store.listRecoverableApplications()[0];
+      const application = this.deps.store.listRecoverableApplications(
+        this.deps.acceptedActions, this.deps.taskId,
+      )[0];
       if (application) {
         decisions.push(application.decision);
         handled += 1;
@@ -110,7 +115,9 @@ export class DurableKernelWorkflow implements KernelWorkflow {
         continue;
       }
 
-      const event = this.deps.store.claimNext(this.deps.clock.now());
+      const event = this.deps.store.claimNext(
+        this.deps.clock.now(), this.deps.acceptedEventTypes, this.deps.taskId,
+      );
       if (!event) break;
       const snapshot = this.deps.buildSnapshot(event);
       const nextDecision = this.deps.kernel.decide(event, snapshot);

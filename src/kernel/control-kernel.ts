@@ -88,6 +88,11 @@ export type KernelEvent =
       sourceDecisionId: string;
       scheduledFor: string;
       retry: { agentClassName: string; sourceAttemptId: string } | null;
+    })
+  | (KernelEventEnvelope & {
+      type: 'recovery_resolution_requested';
+      recoveryItemId: string;
+      resolution: 'assume_applied' | 'retry';
     });
 
 export interface KernelTaskFact {
@@ -150,6 +155,17 @@ export type KernelSnapshot =
       capacityAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
+    }
+  | {
+      schemaVersion: 2;
+      type: 'recovery';
+      task: KernelTaskFact | null;
+      item: {
+        id: string;
+        kind: 'application' | 'effect';
+        status: 'uncertain' | 'failed';
+        retrySafe: boolean;
+      } | null;
     }
   | {
       schemaVersion: 2;
@@ -228,6 +244,8 @@ export class ControlKernel {
         return this.decideContractFailure(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'timer_tick':
         return this.decideTimer(event, snapshot as Extract<KernelSnapshot, { type: 'timer' }>);
+      case 'recovery_resolution_requested':
+        return this.decideRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'recovery' }>);
     }
   }
 
@@ -397,6 +415,9 @@ export class ControlKernel {
     if (event.attemptKind === 'contract_correction') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'response-only correction failed and cannot enter ordinary recovery');
     }
+    if (failure.code === 'startup_orphaned_work') {
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
+    }
     if (failure.kind === 'cancelled' && snapshot.task?.status === 'cancelled') {
       return decision(event, { type: 'no_op' }, 'cancelled Task requires no recovery');
     }
@@ -506,6 +527,27 @@ export class ControlKernel {
       ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: event.subtaskId, agentClassName: candidate }, 'capacity timer recheck authorized')
       : decision(event, { type: 'no_op' }, 'no healthy AgentClass is eligible for capacity probe');
   }
+
+  private decideRecovery(
+    event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'recovery' }>,
+  ): KernelDecision {
+    if (!event.taskId || !snapshot.task || snapshot.task.id !== event.taskId || !snapshot.item) {
+      return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: null }, 'recovery item is missing or stale');
+    }
+    if (snapshot.item.id !== event.recoveryItemId) {
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'recovery item identity mismatch');
+    }
+    if (event.resolution === 'retry' && !snapshot.item.retrySafe) {
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'recovery retry cannot prove idempotency');
+    }
+    return decision(event, {
+      type: 'resolve_recovery',
+      taskId: event.taskId,
+      recoveryItemId: event.recoveryItemId,
+      resolution: event.resolution,
+    }, `manual recovery ${event.resolution} authorized`);
+  }
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
@@ -515,6 +557,7 @@ function decision(event: KernelEvent, action: KernelDecisionAction, reason: stri
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
+  if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
   return snapshot.type === 'dispatch';
 }
 

@@ -208,7 +208,7 @@ async function main() {
       llmBridge,
       notifier,
     });
-    gatewaySession.initialize({ resumeStartupTasks: false, showDashboard: false });
+    gatewaySession.initialize({ showDashboard: false });
     gatewayFeishuBridge = await startFeishuRuntimeBridge(config, gatewaySession);
     gatewayBlockedRecheckTimer = setInterval(() => {
       void gatewaySession.maybeReviewTaskPoolOnTimer().catch(error => {

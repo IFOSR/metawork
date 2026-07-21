@@ -60,6 +60,8 @@ import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import { generateInteractionId } from '../utils/id.js';
+import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -76,6 +78,38 @@ export interface MetaclawSessionDeps {
   defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
+}
+
+function startupOrphanEvent(input: {
+  sessionId: string;
+  task: Task;
+  subtaskId: string;
+  attemptId: string;
+  agentClassName: string;
+  occurredAt: string;
+}): Extract<KernelEvent, { type: 'execution_outcome' }> {
+  return {
+    schemaVersion: 2,
+    type: 'execution_outcome',
+    id: `startup_orphan_${input.attemptId}`,
+    correlationId: input.task.id,
+    causationId: input.attemptId,
+    occurredAt: input.occurredAt,
+    sessionId: input.sessionId,
+    taskId: input.task.id,
+    subtaskId: input.subtaskId,
+    attemptId: input.attemptId,
+    terminalKind: 'failed',
+    agentClassName: input.agentClassName,
+    attemptKind: 'primary',
+    sourceAttemptId: null,
+    failure: {
+      kind: 'heartbeat_lost',
+      scope: 'agent_class',
+      code: 'startup_orphaned_work',
+      summary: 'Metaclaw restarted with orphaned active work; explicit recovery is required',
+    },
+  };
 }
 
 export interface SessionSnapshot {
@@ -110,6 +144,7 @@ export class MetaclawSession {
   };
   private latestGuidance: GuidanceState | null = null;
   private initialized = false;
+  private initialization: Promise<void> | null = null;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
   private runningExecutorNameByTask = new Map<string, string>();
   private lastReminderAt: number | null = null;
@@ -144,9 +179,11 @@ export class MetaclawSession {
   private readonly kernelWorkflowRepo: KernelWorkflowRepo;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
+  private readonly effectOutboxRepo: KernelEffectOutboxRepo;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
+  private readonly attemptRunner: SubtaskAttemptRunner;
   private readonly workspaceTargetService: WorkspaceTargetService;
   private readonly kernelExecutionRuntime: KernelExecutionRuntime;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
@@ -185,6 +222,7 @@ export class MetaclawSession {
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
     this.workGraphRevisionRepo = new WorkGraphRevisionRepo(deps.db);
+    this.effectOutboxRepo = new KernelEffectOutboxRepo(deps.db);
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
@@ -240,7 +278,7 @@ export class MetaclawSession {
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
-    const attemptRunner = new SubtaskAttemptRunner({
+    this.attemptRunner = new SubtaskAttemptRunner({
       db: deps.db,
       sessionId: deps.sessionId,
       taskRuntimeService: this.taskRuntimeService,
@@ -258,10 +296,12 @@ export class MetaclawSession {
       workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
+      effectOutboxRepo: this.effectOutboxRepo,
+      attemptReceiptRepo: new ExecutorAttemptReceiptRepo(deps.db),
       subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
-      attemptRunner,
+      attemptRunner: this.attemptRunner,
       controlKernel: this.controlKernel,
       kernelWorkflowStore: this.kernelWorkflowRepo,
       executionProgressService: this.executionProgressService,
@@ -380,7 +420,7 @@ export class MetaclawSession {
 
     const resumeStartupTasks = options.resumeStartupTasks ?? true;
     const showDashboard = options.showDashboard ?? true;
-    const recoveredRunningTasks = resumeStartupTasks ? this.recoverOrphanedRunningTasks() : [];
+    const recoveredRunningTasks: Task[] = [];
 
     if (showDashboard && this.deps.config.ui.dashboard_on_start) {
       const dashboard = this.deps.orchestration.getDashboard();
@@ -420,6 +460,16 @@ export class MetaclawSession {
     }
 
     this.initialized = true;
+    this.initialization = resumeStartupTasks
+      ? this.recoverDurableStartup().then(recovered => {
+          for (const task of recovered) {
+            this.appendOutput(
+              `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞（由 Kernel 持久恢复收敛）`,
+              `→ 可执行 /task recovery ${task.id} 查看不确定项`,
+            );
+          }
+        })
+      : Promise.resolve();
     this.refreshRuntimeState();
     this.notify();
   }
@@ -428,10 +478,12 @@ export class MetaclawSession {
     rawInput: string,
     options: { awaitAsyncWork?: boolean } = {},
   ): Promise<{ exitRequested: boolean }> {
+    await this.initialization;
     return this.inputController.submit(rawInput, options);
   }
 
   async waitForAsyncWork(): Promise<void> {
+    await this.initialization;
     while (this.backgroundWork.size > 0) {
       await Promise.allSettled(Array.from(this.backgroundWork));
     }
@@ -528,6 +580,9 @@ export class MetaclawSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+      if (await this.kernelExecutionRuntime.recoverDue(task.id, 'timer durable recovery drain')) return true;
+    }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
       return true;
     }
@@ -688,6 +743,11 @@ export class MetaclawSession {
       store: this.kernelWorkflowRepo,
       clock: { now: () => new Date().toISOString() },
       runtime: this.sessionKernelRuntime.forInput(userInput),
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+      ],
     });
     await workflow.submit(event);
     return true;
@@ -930,7 +990,99 @@ export class MetaclawSession {
       }
     }
 
+    if (result.type === 'directive' && result.directive.kind === 'show-task-recovery') {
+      this.appendOutput(this.formatTaskRecovery(result.directive.taskId));
+    }
+
+    if (result.type === 'directive' && result.directive.kind === 'resolve-task-recovery') {
+      await this.resolveTaskRecovery(result.directive);
+    }
+
     return false;
+  }
+
+  private formatTaskRecovery(taskId: string): string {
+    const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const effects = this.effectOutboxRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const items = [...applications, ...effects];
+    return items.length > 0
+      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
+      : `Task #${taskId} has no uncertain or failed recovery items.`;
+  }
+
+  private async resolveTaskRecovery(input: {
+    taskId: string;
+    recoveryItemId: string;
+    resolution: 'assume_applied' | 'retry';
+  }): Promise<void> {
+    const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
+      schemaVersion: 2,
+      type: 'recovery_resolution_requested',
+      id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
+      correlationId: input.taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: input.taskId,
+      recoveryItemId: input.recoveryItemId,
+      resolution: input.resolution,
+    };
+    const workflow = new DurableKernelWorkflow({
+      kernel: this.controlKernel,
+      buildSnapshot: () => this.buildRecoverySnapshot(input.taskId, input.recoveryItemId),
+      store: this.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      runtime: {
+        apply: async decision => {
+          if (decision.action.type === 'resolve_recovery') {
+            const now = new Date().toISOString();
+            if (this.kernelWorkflowRepo.findRecoveryItem(decision.action.recoveryItemId)) {
+              this.kernelWorkflowRepo.resolveRecoveryItem(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            } else {
+              this.effectOutboxRepo.resolve(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            }
+            return null;
+          }
+          if (decision.action.type === 'block_work') {
+            this.appendOutput(`Recovery blocked: ${decision.reason}`);
+            return null;
+          }
+          throw new Error(`manual recovery Runtime cannot apply ${decision.action.type}`);
+        },
+      },
+      acceptedEventTypes: ['recovery_resolution_requested'],
+      acceptedActions: ['resolve_recovery', 'block_work'],
+      taskId: input.taskId,
+    });
+    await workflow.submit(event);
+    this.appendOutput(this.formatTaskRecovery(input.taskId));
+  }
+
+  private buildRecoverySnapshot(
+    taskId: string,
+    recoveryItemId: string,
+  ): Extract<KernelSnapshot, { type: 'recovery' }> {
+    const task = this.taskRuntimeService.findTask(taskId);
+    const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
+    const effect = this.effectOutboxRepo.find(recoveryItemId);
+    return {
+      schemaVersion: 2,
+      type: 'recovery',
+      task: task ? { id: task.id, status: task.status } : null,
+      item: application
+        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: false }
+        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+          ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
+          : null,
+    };
   }
 
   private getCommandContext(): CommandContext {
@@ -1027,99 +1179,84 @@ export class MetaclawSession {
     return this.focusContext ? { ...this.focusContext } : null;
   }
 
-  private recoverOrphanedRunningTasks(): Task[] {
-    const runningTasks = this.taskRuntimeService.listTasksByStatus('running');
-    const recovered: Task[] = [];
-
-    for (const task of runningTasks) {
-      const interruptionReason = 'Metaclaw restarted with orphaned active work; explicit recovery is required';
-      const subtasks = this.subtaskRepo.listByTask(task.id);
-      const orphan = subtasks.find(subtask => subtask.status === 'running' || subtask.status === 'awaiting_decision') ?? null;
-      const occurredAt = new Date().toISOString();
-      const event: KernelEvent = {
-        schemaVersion: 2,
-        type: 'execution_outcome',
-        id: `startup_orphan_${task.id}_${task.updatedAt.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-        correlationId: task.id,
-        causationId: null,
-        occurredAt,
-        sessionId: this.deps.sessionId,
-        taskId: task.id,
-        subtaskId: orphan?.id,
-        terminalKind: 'failed',
-        agentClassName: orphan?.preferredAgentClassList[0] ?? 'unknown',
-        attemptKind: 'primary',
-        sourceAttemptId: null,
-        failure: {
-          kind: 'heartbeat_lost',
-          scope: 'agent_class',
-          code: 'startup_orphaned_work',
-          summary: interruptionReason,
-        },
-      };
-      const snapshot: KernelSnapshot = {
-        schemaVersion: 2,
-        type: 'dispatch',
-        task: { id: task.id, status: task.status },
-        runningTaskId: task.id,
-        graphState: 'ready',
-        subtasks: subtasks.map(subtask => ({
-          id: subtask.id,
-          taskId: subtask.taskId,
-          status: subtask.status,
-          preferredAgentClassList: subtask.preferredAgentClassList,
-        })),
-        readyFrontier: [],
-        attemptedAgentClasses: [],
-        executorStatuses: this.kernelExecutorStatusRepo.list(),
-        correctionSupportedAgentClasses: [],
-        nativeContinuationAgentClasses: [],
-        attempts: [],
-        generationId: `generation_${task.id}_1`,
-        graphRevision: 1,
-        automaticReplansUsed: 1,
-        recoverySafety: 'workspace_reconcilable',
-        automaticRecoveryAllowed: false,
-      };
-      const decision = this.controlKernel.decide(event, snapshot);
-      const issued = this.kernelDecisionRepo.issue({
-        id: decision.id,
-        schemaVersion: 2,
-        eventId: event.id,
-        eventType: event.type,
-        correlationId: event.correlationId,
-        causationId: event.causationId,
-        sessionId: event.sessionId,
-        taskId: task.id,
-        subtaskId: orphan?.id ?? null,
-        attemptId: null,
-        event,
-        snapshot,
-        decision,
-        action: decision.action.type,
-        reason: decision.reason,
-        createdAt: occurredAt,
-      });
-      if (!issued || decision.action.type !== 'block_work') continue;
-      if (orphan && orphan.status !== 'blocked') {
-        this.subtaskRepo.updateStatus(orphan.id, 'blocked', { error: interruptionReason });
-      }
-      this.taskRuntimeService.blockTask(task.id, {
-        taskId: task.id,
-        type: 'manual',
-        description: interruptionReason,
-        status: 'waiting',
-      });
-      this.taskRuntimeService.updateTask(task.id, {
-        lastInterruptionReason: interruptionReason,
-        interruptionCount: task.interruptionCount + 1,
-      });
-      const blockedTask = this.taskRuntimeService.findTask(task.id);
-      if (blockedTask) {
-        recovered.push(blockedTask);
-      }
+  private async recoverDurableStartup(): Promise<Task[]> {
+    const now = new Date().toISOString();
+    this.effectOutboxRepo.reconcileSending(now);
+    this.kernelWorkflowRepo.reconcileProcessing();
+    for (const effect of this.effectOutboxRepo.listPending(now)) {
+      if (effect.effectType !== 'task_completion_notification') continue;
+      await this.effectOutboxRepo.deliver(effect.id, async record => {
+        await this.verificationAndDeliveryService.deliverTaskCompletion(
+          this.notifier,
+          record.payload as unknown as Parameters<VerificationAndDeliveryService['deliverTaskCompletion']>[1],
+        );
+        return effect.id;
+      }, () => new Date().toISOString());
     }
 
+    const planningWorkflow = new DurableKernelWorkflow({
+      kernel: this.controlKernel,
+      buildSnapshot: event => this.buildPlanAdmissionSnapshot(
+        event as Extract<KernelEvent, { type: 'plan_proposed' }>,
+      ),
+      store: this.kernelWorkflowRepo,
+      runtime: this.sessionKernelRuntime.forInput(''),
+      clock: { now: () => new Date().toISOString() },
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+      ],
+    });
+    await planningWorkflow.recover();
+
+    const claimedOrphans = this.workUnitClaimService.reconcileOrphanedClaims();
+    const recovered: Task[] = [];
+    for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+      const activeSubtasks = this.subtaskRepo.listActiveByTask(task.id);
+      const subtasks = activeSubtasks.length > 0 ? activeSubtasks : this.subtaskRepo.listByTask(task.id);
+      const taskClaims = claimedOrphans.filter(workUnit => workUnit.claimedTaskId === task.id);
+      for (const workUnit of taskClaims) {
+        if (!workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
+        this.attemptRunner.landHeartbeatLost({
+          attemptId: workUnit.claimedAttemptId,
+          executionId: `startup_${workUnit.claimedAttemptId}`,
+          taskId: task.id,
+          subtaskId: workUnit.claimedSubtaskId,
+          workUnitId: workUnit.id,
+          agentClassName: workUnit.agentClassName,
+        });
+        this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+          sessionId: this.deps.sessionId,
+          task,
+          subtaskId: workUnit.claimedSubtaskId,
+          attemptId: workUnit.claimedAttemptId,
+          agentClassName: workUnit.agentClassName,
+          occurredAt: now,
+        }));
+      }
+      const recoverable = this.kernelWorkflowRepo.listRecoverableApplications(undefined, task.id);
+      if (taskClaims.length === 0 && recoverable.length === 0) {
+        const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
+        if (orphan) {
+          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+            sessionId: this.deps.sessionId,
+            task,
+            subtaskId: orphan.id,
+            attemptId: `startup_missing_${task.id}_${orphan.id}`,
+            agentClassName: orphan.preferredAgentClassList[0] ?? 'unknown',
+            occurredAt: now,
+          }));
+        }
+      }
+      await this.kernelExecutionRuntime.recoverDue(task.id, 'startup durable recovery');
+      const current = this.taskRuntimeService.findTask(task.id);
+      if (current) recovered.push(current);
+    }
+    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+      if (recovered.some(item => item.id === task.id)) continue;
+      await this.kernelExecutionRuntime.recoverDue(task.id, 'startup due-event drain');
+    }
     return recovered;
   }
 

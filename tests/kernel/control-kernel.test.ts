@@ -114,6 +114,25 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('authorizes explicit recovery resolution but refuses unsafe effect retry', () => {
+    const kernel = new ControlKernel();
+    const recoveryEvent: KernelEvent = {
+      schemaVersion: 2, type: 'recovery_resolution_requested', id: 'recovery_event_1',
+      correlationId: 'task_1', causationId: null, occurredAt: '2026-07-21T00:00:00.000Z',
+      sessionId: 'session_1', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
+    };
+    const unsafe: KernelSnapshot = {
+      schemaVersion: 2, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
+      item: { id: 'effect_1', kind: 'effect', status: 'uncertain', retrySafe: false },
+    };
+    expect(kernel.decide(recoveryEvent, unsafe).action).toEqual({
+      type: 'block_work', taskId: 'task_1', subtaskId: null,
+    });
+    expect(kernel.decide({ ...recoveryEvent, resolution: 'assume_applied' }, unsafe).action).toEqual({
+      type: 'resolve_recovery', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'assume_applied',
+    });
+  });
+
   it('skips a class during derived cooldown and makes it eligible as the next serial probe after cooldown', () => {
     const failures = [0, 1, 2].map(index => ({
       completedAt: `2026-07-20T00:0${2 - index}:00.000Z`,

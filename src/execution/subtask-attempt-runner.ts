@@ -90,6 +90,10 @@ export class SubtaskAttemptRunner {
         rawResponse: '',
         errorCode: 'heartbeat_lost',
         errorDetail: 'WorkUnit lease expired before a terminal observation',
+        failure: {
+          kind: 'heartbeat_lost', scope: 'agent_class', code: 'heartbeat_lost',
+          summary: 'WorkUnit lease expired before a terminal observation',
+        },
       }, now));
       this.deps.subtaskRepo.updateStatus(input.subtaskId, 'awaiting_decision', {
         error: 'WorkUnit heartbeat lost',

@@ -93,6 +93,32 @@ export class WorkUnitClaimService {
     return lost;
   }
 
+  reconcileOrphanedClaims(): WorkUnit[] {
+    const orphaned = this.workUnitRepo.findAll().filter(workUnit =>
+      ['claimed', 'running', 'waiting'].includes(workUnit.state)
+      && workUnit.claimedAttemptId !== null
+    );
+    for (const workUnit of orphaned) {
+      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost');
+      this.recordEvent(
+        workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId,
+        workUnit.claimedAttemptId, 'heartbeat_lost', 'heartbeat_lost',
+        'startup reconciled orphaned WorkUnit claim',
+      );
+      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost', {
+        claimedTaskId: null,
+        claimedSubtaskId: null,
+        claimedAttemptId: null,
+        leaseExpiresAt: null,
+      });
+      this.recordEvent(
+        workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId,
+        workUnit.claimedAttemptId, 'released', 'heartbeat_lost',
+      );
+    }
+    return orphaned;
+  }
+
   private async provisionExecutor(agentClassName: string): Promise<WorkUnit | null> {
     const now = new Date().toISOString();
     const id = `executor-${sanitizeId(agentClassName)}-${generateInteractionId()}`;

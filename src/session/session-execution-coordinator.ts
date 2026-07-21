@@ -28,6 +28,8 @@ import {
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
+import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -44,6 +46,7 @@ export interface KernelExecutionRuntimeInput {
   taskId: string;
   request: QueuedExecutionRequest;
   approvedRecallSelection: unknown;
+  recoveryOnly?: boolean;
 }
 
 export interface KernelExecutionRuntimeDeps {
@@ -55,6 +58,8 @@ export interface KernelExecutionRuntimeDeps {
   workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
   workGraphRevisionRepo: WorkGraphRevisionRepo;
+  effectOutboxRepo: KernelEffectOutboxRepo;
+  attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   subtaskHandoffRepo: SubtaskHandoffRepo;
   taskEventRepo: TaskEventRepo;
   workUnitClaimService: WorkUnitClaimService;
@@ -94,6 +99,25 @@ export class KernelExecutionRuntime {
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+  }
+
+  async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
+    const before = this.deps.taskRuntimeService.findTask(taskId)?.updatedAt ?? null;
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task) return false;
+    await this.execute({
+      taskId,
+      request: {
+        userPrompt: task.goal,
+        contextTaskId: task.id,
+        executionMode: task.status === 'blocked' ? 'resume-blocked' : 'follow-up',
+        origin: 'system',
+        schedulingReason: reason,
+      },
+      approvedRecallSelection: null,
+      recoveryOnly: true,
+    });
+    return this.deps.taskRuntimeService.findTask(taskId)?.updatedAt !== before;
   }
 
   private buildDispatchSnapshot(
@@ -181,6 +205,27 @@ export class KernelExecutionRuntime {
     const { decision } = input;
     const action = decision.action;
     if (action.type === 'dispatch_attempt') {
+      const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(action.attemptId);
+      if (existingReceipt && existingReceipt.terminalState !== 'contract_blocked') {
+        return this.eventFromDecision(decision, {
+          type: 'execution_outcome',
+          taskId: action.taskId,
+          subtaskId: action.subtaskId,
+          attemptId: action.attemptId,
+          terminalKind: existingReceipt.terminalState === 'completed' ? 'completed' : 'failed',
+          agentClassName: existingReceipt.agentClassName,
+          attemptKind: existingReceipt.attemptKind,
+          sourceAttemptId: existingReceipt.sourceAttemptId,
+          failure: existingReceipt.terminalState === 'completed'
+            ? null
+            : existingReceipt.failure ?? {
+                kind: existingReceipt.terminalState === 'heartbeat_lost' ? 'heartbeat_lost' : 'unknown',
+                scope: 'attempt',
+                code: existingReceipt.errorCode ?? 'recovered_attempt_failure',
+                summary: existingReceipt.errorDetail ?? 'Recovered terminal attempt receipt',
+              },
+        });
+      }
       const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
       if (!subtask) throw new Error(`Kernel-authorized Subtask not found: ${action.subtaskId}`);
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
@@ -324,7 +369,7 @@ export class KernelExecutionRuntime {
       );
       if (activeRevision) this.deps.workGraphRevisionRepo.complete(action.taskId, activeRevision.revision, new Date().toISOString());
       await this.completeTask({
-        taskId: action.taskId, executionId: input.executionId, request: input.request, subtasks,
+        taskId: action.taskId, decisionId: decision.id, executionId: input.executionId, request: input.request, subtasks,
         finishExecution: input.finishExecution,
       });
       return null;
@@ -462,9 +507,20 @@ export class KernelExecutionRuntime {
           finishExecution,
         }),
       },
+      acceptedEventTypes: [
+        'dispatch_requested', 'capacity_signal', 'execution_outcome',
+        'handoff_contract_failed', 'timer_tick', 'plan_proposed',
+      ],
+      acceptedActions: [
+        'dispatch_attempt', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
+        'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'authorize_task_plan', 'no_op',
+      ],
+      taskId,
     });
     await this.recoverExpiredAttempts(workflow, attemptFacts);
-    await workflow.submit(initialEvent);
+    if (input.recoveryOnly) await workflow.recover();
+    else await workflow.submit(initialEvent);
   }
 
   private async recoverExpiredAttempts(workflow: KernelWorkflow, attemptFacts: KernelAttemptFact[]): Promise<void> {
@@ -597,6 +653,16 @@ export class KernelExecutionRuntime {
           });
         },
       },
+      acceptedEventTypes: [
+        'dispatch_requested', 'capacity_signal', 'execution_outcome',
+        'handoff_contract_failed', 'timer_tick', 'plan_proposed',
+      ],
+      acceptedActions: [
+        'dispatch_attempt', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
+        'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'authorize_task_plan', 'no_op',
+      ],
+      taskId: task.id,
     });
     await workflow.submit(initialEvent);
     return applied;
@@ -621,6 +687,7 @@ export class KernelExecutionRuntime {
 
   private async completeTask(input: {
     taskId: string;
+    decisionId: string;
     executionId: string;
     request: QueuedExecutionRequest;
     subtasks: Subtask[];
@@ -648,27 +715,8 @@ export class KernelExecutionRuntime {
       ...input.subtasks.map(subtask => `## ${subtask.id}\n${subtask.result}`),
     ].join('\n\n');
 
-    this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
-    this.deps.persistenceService.recordInteraction({
-      taskId: input.taskId,
-      sessionId: this.deps.sessionId,
-      userInput: input.request.userPrompt,
-      systemOutput: cleanAggregate,
-      executorUsed: input.subtasks.length === 1 ? input.subtasks[0]!.preferredAgentClassList[0] ?? 'executor' : 'work-graph',
-    });
-    const completionLines = this.deps.memoryCaptureService.captureCompletionPatterns({
-      userPrompt: input.request.userPrompt,
-      output: memoryAggregate,
-      taskId: input.taskId,
-    }).lines;
-    if (this.deps.taskRuntimeService.findTask(input.taskId)?.status === 'running') {
-      this.deps.taskRuntimeService.transitionTask(input.taskId, 'done');
-    }
-    this.deps.callbacks.setFocusContext({ kind: 'task', taskId: input.taskId });
-    this.deps.callbacks.persistSessionState({ lastFocusedTaskId: input.taskId, lastCompletedTaskId: input.taskId });
-    completionLines.push(displayAggregate);
-
-    void this.deps.verificationAndDeliveryService.deliverTaskCompletion(this.deps.notifier, {
+    const effectId = `effect_${input.decisionId}_task_completion`;
+    const effectPayload = {
       taskId: input.taskId,
       title: task.title,
       summary: cleanAggregate,
@@ -678,9 +726,47 @@ export class KernelExecutionRuntime {
       executionMode: input.request.executionMode,
       origin: input.request.origin ?? 'user',
       recoveryTrigger: input.request.recoveryTrigger,
-    }).then(message => {
-      if (message) this.deps.callbacks.appendOutput(message);
+    };
+    this.deps.effectOutboxRepo.transaction(() => {
+      this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
+      this.deps.persistenceService.recordInteraction({
+        taskId: input.taskId,
+        sessionId: this.deps.sessionId,
+        userInput: input.request.userPrompt,
+        systemOutput: cleanAggregate,
+        executorUsed: input.subtasks.length === 1 ? input.subtasks[0]!.preferredAgentClassList[0] ?? 'executor' : 'work-graph',
+      });
+      if (this.deps.taskRuntimeService.findTask(input.taskId)?.status === 'running') {
+        this.deps.taskRuntimeService.transitionTask(input.taskId, 'done');
+      }
+      const now = new Date().toISOString();
+      this.deps.effectOutboxRepo.enqueue({
+        id: effectId,
+        decisionId: input.decisionId,
+        taskId: input.taskId,
+        effectType: 'task_completion_notification',
+        payload: effectPayload,
+        availableAt: now,
+      });
     });
+    const completionLines = this.deps.memoryCaptureService.captureCompletionPatterns({
+      userPrompt: input.request.userPrompt,
+      output: memoryAggregate,
+      taskId: input.taskId,
+    }).lines;
+    this.deps.callbacks.setFocusContext({ kind: 'task', taskId: input.taskId });
+    this.deps.callbacks.persistSessionState({ lastFocusedTaskId: input.taskId, lastCompletedTaskId: input.taskId });
+    completionLines.push(displayAggregate);
+
+    let deliveryMessage: string | null = null;
+    await this.deps.effectOutboxRepo.deliver(effectId, async () => {
+      deliveryMessage = await this.deps.verificationAndDeliveryService.deliverTaskCompletion(
+        this.deps.notifier,
+        effectPayload,
+      );
+      return effectId;
+    }, () => new Date().toISOString());
+    if (deliveryMessage) this.deps.callbacks.appendOutput(deliveryMessage);
 
     const suggestion = this.deps.orchestration.suggestNext(input.taskId);
     const nextProposal = this.deps.orchestration.suggestNextProposal(input.taskId);
