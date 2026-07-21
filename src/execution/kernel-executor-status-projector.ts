@@ -8,6 +8,7 @@ export class KernelExecutorStatusProjector {
 
   recordExecutionOutcome(input: {
     agentClassName: string;
+    attemptId: string;
     outcome: 'succeeded' | 'failed';
     failure?: KernelFailure | null;
     completedAt?: string;

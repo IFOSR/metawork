@@ -225,6 +225,7 @@ export class KernelExecutionRuntime {
     if (action.type === 'dispatch_attempt') {
       const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(action.attemptId);
       if (existingReceipt && existingReceipt.terminalState !== 'contract_blocked') {
+        this.projectPersistedReceipt(existingReceipt);
         return this.eventFromDecision(decision, {
           type: 'execution_outcome',
           taskId: action.taskId,
@@ -830,9 +831,19 @@ export class KernelExecutionRuntime {
     if (outcome.outcome !== 'completed' && outcome.outcome !== 'executor_failed') return;
     const succeeded = outcome.outcome === 'completed';
     this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
-      agentClassName,
+      agentClassName, attemptId: outcome.attemptId,
       outcome: succeeded ? 'succeeded' : 'failed',
       failure: succeeded ? null : outcome.outcome === 'executor_failed' ? outcome.failure : null,
+    });
+  }
+
+  private projectPersistedReceipt(receipt: import('../storage/executor-attempt-receipt-repo.js').ExecutorAttemptReceipt): void {
+    this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
+      agentClassName: receipt.agentClassName,
+      attemptId: receipt.attemptId,
+      outcome: receipt.terminalState === 'completed' ? 'succeeded' : 'failed',
+      failure: receipt.terminalState === 'completed' ? null : receipt.failure,
+      completedAt: receipt.completedAt,
     });
   }
 

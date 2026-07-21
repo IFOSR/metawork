@@ -4,6 +4,7 @@ export const AGENT_CLASS_HEALTH_VALUES = ['unverified', 'healthy', 'error', 'dis
 export type AgentClassHealth = typeof AGENT_CLASS_HEALTH_VALUES[number];
 
 export interface RecentExecutionAttempt {
+  attemptId?: string;
   completedAt: string;
   outcome: 'succeeded' | 'failed';
   failure: KernelFailure | null;
@@ -20,15 +21,20 @@ export function projectExecutionOutcome(
   current: KernelExecutorStatusProjection | null,
   input: {
     agentClassName: string;
+    attemptId: string;
     outcome: 'succeeded' | 'failed';
     completedAt: string;
     failure?: KernelFailure | null;
   },
 ): KernelExecutorStatusProjection {
+  if (current?.recentAttempts.some(attempt => attempt.attemptId === input.attemptId)) {
+    return current;
+  }
   const failure = input.outcome === 'failed'
     ? kernelFailure(input.failure ?? { kind: 'unknown', scope: 'attempt', code: 'unknown', summary: 'unknown executor failure' })
     : null;
   const attempt: RecentExecutionAttempt = {
+    attemptId: input.attemptId,
     completedAt: input.completedAt,
     outcome: input.outcome,
     failure,
