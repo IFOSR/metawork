@@ -1,0 +1,233 @@
+import type Database from 'better-sqlite3';
+import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
+import type {
+  KernelApplicationStatus,
+  KernelDecisionApplicationRecord,
+  KernelWorkflowStore,
+} from '../kernel/kernel-workflow.js';
+import type { KernelDecisionLedgerRecord } from '../kernel/kernel-control-loop.js';
+import { KernelDecisionRepo } from './kernel-decision-repo.js';
+
+interface ApplicationRow {
+  id: string;
+  decision_id: string;
+  event_id: string;
+  idempotency_key: string;
+  status: KernelApplicationStatus;
+  apply_attempts: number;
+  observation_event_json: string | null;
+  error_summary: string | null;
+  created_at: string;
+  updated_at: string;
+  decision_json: string;
+}
+
+/** SQLite v24 Adapter for the durable KernelWorkflow transaction boundary. */
+export class KernelWorkflowRepo implements KernelWorkflowStore {
+  private readonly decisions: KernelDecisionRepo;
+
+  constructor(private readonly db: Database.Database) {
+    this.decisions = new KernelDecisionRepo(db);
+  }
+
+  enqueue(event: KernelEvent, availableAt = event.occurredAt): boolean {
+    return this.insertEvent(event, availableAt);
+  }
+
+  claimNext(now: string): KernelEvent | null {
+    const claim = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT id, event_json FROM kernel_events
+        WHERE status = 'pending' AND available_at <= ?
+        ORDER BY available_at ASC, created_at ASC, id ASC
+        LIMIT 1
+      `).get(now) as { id: string; event_json: string } | undefined;
+      if (!row) return null;
+      const result = this.db.prepare(`
+        UPDATE kernel_events
+        SET status = 'processing', processing_started_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(now, now, row.id);
+      return result.changes === 1 ? JSON.parse(row.event_json) as KernelEvent : null;
+    });
+    return claim();
+  }
+
+  issue(eventId: string, record: KernelDecisionLedgerRecord): KernelDecisionApplicationRecord {
+    const issueTransaction = this.db.transaction(() => {
+      const source = this.db.prepare('SELECT status FROM kernel_events WHERE id = ?').get(eventId) as { status: string } | undefined;
+      if (!source) throw new Error(`Kernel event not found: ${eventId}`);
+      this.decisions.issue(record);
+      this.db.prepare(`
+        INSERT OR IGNORE INTO kernel_decision_applications (
+          id, decision_id, event_id, idempotency_key, status, apply_attempts,
+          observation_event_id, observation_event_json, error_summary,
+          applying_at, applied_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      `).run(
+        `application_${record.id}`,
+        record.id,
+        eventId,
+        `decision:${record.id}`,
+        record.createdAt,
+        record.createdAt,
+      );
+      this.db.prepare(`
+        UPDATE kernel_events
+        SET status = 'processed', processed_at = ?, processing_started_at = NULL,
+            last_error = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(record.createdAt, record.createdAt, eventId);
+      return this.findApplication(record.id);
+    });
+    const application = issueTransaction();
+    if (!application) throw new Error(`Kernel application was not created: ${record.id}`);
+    return application;
+  }
+
+  listRecoverableApplications(): KernelDecisionApplicationRecord[] {
+    const rows = this.db.prepare(`
+      SELECT application.*, decision.decision_json
+      FROM kernel_decision_applications application
+      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      WHERE application.status IN ('applying', 'pending')
+      ORDER BY CASE application.status WHEN 'applying' THEN 0 ELSE 1 END,
+        application.created_at ASC, application.id ASC
+    `).all() as ApplicationRow[];
+    return rows.map(rowToApplication);
+  }
+
+  markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord {
+    this.db.prepare(`
+      UPDATE kernel_decision_applications
+      SET status = 'applying', apply_attempts = apply_attempts + 1,
+          applying_at = ?, updated_at = ?
+      WHERE decision_id = ? AND status IN ('pending', 'applying')
+    `).run(now, now, decisionId);
+    const application = this.findApplication(decisionId);
+    if (!application || application.status !== 'applying') {
+      throw new Error(`Kernel application is not recoverable: ${decisionId}`);
+    }
+    return application;
+  }
+
+  markApplied(decisionId: string, observation: KernelEvent | null, now: string): void {
+    const complete = this.db.transaction(() => {
+      if (observation) this.insertEvent(observation, observation.occurredAt);
+      const result = this.db.prepare(`
+        UPDATE kernel_decision_applications
+        SET status = 'applied', observation_event_id = ?, observation_event_json = ?,
+            error_summary = NULL, applied_at = ?, updated_at = ?
+        WHERE decision_id = ? AND status = 'applying'
+      `).run(
+        observation?.id ?? null,
+        observation ? JSON.stringify(observation) : null,
+        now,
+        now,
+        decisionId,
+      );
+      if (result.changes !== 1) throw new Error(`Kernel application cannot be completed: ${decisionId}`);
+    });
+    complete();
+  }
+
+  markApplicationFailed(
+    decisionId: string,
+    status: Extract<KernelApplicationStatus, 'uncertain' | 'failed'>,
+    errorSummary: string,
+    now: string,
+  ): void {
+    this.db.prepare(`
+      UPDATE kernel_decision_applications
+      SET status = ?, error_summary = ?, updated_at = ?
+      WHERE decision_id = ? AND status = 'applying'
+    `).run(status, errorSummary, now, decisionId);
+  }
+
+  reconcileProcessing(): number {
+    const reconcile = this.db.transaction(() => {
+      const processed = this.db.prepare(`
+        UPDATE kernel_events
+        SET status = 'processed', processing_started_at = NULL, updated_at = created_at
+        WHERE status = 'processing'
+          AND EXISTS (SELECT 1 FROM kernel_decisions WHERE event_id = kernel_events.id)
+      `).run().changes;
+      const pending = this.db.prepare(`
+        UPDATE kernel_events
+        SET status = 'pending', processing_started_at = NULL, updated_at = created_at
+        WHERE status = 'processing'
+      `).run().changes;
+      return processed + pending;
+    });
+    return reconcile();
+  }
+
+  countByApplicationStatus(): Record<KernelApplicationStatus, number> {
+    const counts: Record<KernelApplicationStatus, number> = {
+      pending: 0,
+      applying: 0,
+      applied: 0,
+      uncertain: 0,
+      failed: 0,
+    };
+    const rows = this.db.prepare(`
+      SELECT status, COUNT(*) AS count FROM kernel_decision_applications GROUP BY status
+    `).all() as Array<{ status: KernelApplicationStatus; count: number }>;
+    for (const row of rows) counts[row.status] = row.count;
+    return counts;
+  }
+
+  private insertEvent(event: KernelEvent, availableAt: string): boolean {
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO kernel_events (
+        id, schema_version, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json,
+        available_at, status, processing_started_at, processed_at,
+        last_error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+    `).run(
+      event.id,
+      event.schemaVersion,
+      event.type,
+      event.correlationId,
+      event.causationId,
+      event.sessionId,
+      event.taskId ?? null,
+      event.subtaskId ?? null,
+      event.attemptId ?? null,
+      JSON.stringify(event),
+      availableAt,
+      event.occurredAt,
+      event.occurredAt,
+    );
+    return result.changes === 1;
+  }
+
+  private findApplication(decisionId: string): KernelDecisionApplicationRecord | null {
+    const row = this.db.prepare(`
+      SELECT application.*, decision.decision_json
+      FROM kernel_decision_applications application
+      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      WHERE application.decision_id = ?
+    `).get(decisionId) as ApplicationRow | undefined;
+    return row ? rowToApplication(row) : null;
+  }
+}
+
+function rowToApplication(row: ApplicationRow): KernelDecisionApplicationRecord {
+  return {
+    id: row.id,
+    decisionId: row.decision_id,
+    eventId: row.event_id,
+    idempotencyKey: row.idempotency_key,
+    status: row.status,
+    applyAttempts: row.apply_attempts,
+    observationEvent: row.observation_event_json
+      ? JSON.parse(row.observation_event_json) as KernelEvent
+      : null,
+    errorSummary: row.error_summary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    decision: JSON.parse(row.decision_json) as KernelDecision,
+  };
+}

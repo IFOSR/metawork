@@ -986,6 +986,181 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 24,
+    up: (db) => {
+      const migrate = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS kernel_events (
+            id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            causation_id TEXT,
+            session_id TEXT NOT NULL,
+            task_id TEXT,
+            subtask_id TEXT,
+            attempt_id TEXT,
+            event_json TEXT NOT NULL,
+            available_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            processing_started_at TEXT,
+            processed_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_kernel_events_drain
+            ON kernel_events(status, available_at, created_at, id);
+          CREATE INDEX IF NOT EXISTS idx_kernel_events_task
+            ON kernel_events(task_id, created_at, id);
+
+          CREATE TABLE IF NOT EXISTS kernel_decision_applications (
+            id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL UNIQUE,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            apply_attempts INTEGER NOT NULL DEFAULT 0,
+            observation_event_id TEXT,
+            observation_event_json TEXT,
+            error_summary TEXT,
+            applying_at TEXT,
+            applied_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id),
+            FOREIGN KEY (event_id) REFERENCES kernel_events(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_kernel_decision_applications_status
+            ON kernel_decision_applications(status, created_at, id);
+
+          CREATE TABLE IF NOT EXISTS kernel_effect_outbox (
+            id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            task_id TEXT,
+            effect_type TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            provider_receipt TEXT,
+            error_summary TEXT,
+            available_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_kernel_effect_outbox_drain
+            ON kernel_effect_outbox(status, available_at, created_at, id);
+
+          CREATE TABLE IF NOT EXISTS executor_attempt_runtime (
+            attempt_id TEXT PRIMARY KEY,
+            source_attempt_id TEXT,
+            continuation_token TEXT,
+            workspace_root TEXT,
+            workspace_baseline_json TEXT NOT NULL DEFAULT '{}',
+            workspace_delta_json TEXT NOT NULL DEFAULT '{}',
+            progress_json TEXT NOT NULL DEFAULT '{}',
+            recovery_safety TEXT NOT NULL,
+            external_idempotency_key TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS work_graph_revisions (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            generation_id TEXT NOT NULL,
+            authorized_decision_id TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, revision),
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id)
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_graph_one_active_revision
+            ON work_graph_revisions(task_id) WHERE status = 'active';
+          CREATE INDEX IF NOT EXISTS idx_work_graph_revisions_generation
+            ON work_graph_revisions(task_id, generation_id, revision);
+        `);
+
+        if (tableExists(db, 'subtasks')) {
+          addColumnIfMissing(db, 'subtasks', 'graph_revision', 'INTEGER');
+          addColumnIfMissing(db, 'subtasks', 'generation_id', 'TEXT');
+          db.exec(`
+            INSERT OR IGNORE INTO work_graph_revisions (
+              id, task_id, revision, generation_id, authorized_decision_id,
+              status, created_at, updated_at
+            )
+            SELECT
+              'revision_' || task_id || '_1', task_id, 1,
+              'generation_' || task_id || '_1', NULL,
+              CASE WHEN SUM(CASE WHEN status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END) = 0
+                THEN 'completed' ELSE 'active' END,
+              MIN(created_at), MAX(updated_at)
+            FROM subtasks
+            GROUP BY task_id
+          `);
+          db.exec(`
+            UPDATE subtasks
+            SET graph_revision = COALESCE(graph_revision, 1),
+                generation_id = COALESCE(generation_id, 'generation_' || task_id || '_1')
+          `);
+        }
+
+        if (tableExists(db, 'executor_attempt_receipts')) {
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'graph_revision', 'INTEGER');
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'generation_id', 'TEXT');
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'attempt_kind', "TEXT NOT NULL DEFAULT 'primary'");
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'source_attempt_id', 'TEXT');
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'failure_json', 'TEXT');
+          addColumnIfMissing(db, 'executor_attempt_receipts', 'recovery_mode', "TEXT NOT NULL DEFAULT 'fresh'");
+          db.exec(`
+            UPDATE executor_attempt_receipts
+            SET graph_revision = COALESCE(graph_revision, 1),
+                generation_id = COALESCE(
+                  generation_id,
+                  'generation_' || task_id || '_1'
+                )
+          `);
+        }
+
+        if (tableExists(db, 'kernel_decisions')) {
+          db.exec(`
+            INSERT OR IGNORE INTO kernel_events (
+              id, schema_version, event_type, correlation_id, causation_id,
+              session_id, task_id, subtask_id, attempt_id, event_json,
+              available_at, status, processing_started_at, processed_at,
+              last_error, created_at, updated_at
+            )
+            SELECT event_id, schema_version, event_type, correlation_id, causation_id,
+              session_id, task_id, subtask_id, attempt_id, event_json,
+              created_at, 'processed', NULL, created_at, NULL, created_at, created_at
+            FROM kernel_decisions
+          `);
+          db.exec(`
+            INSERT OR IGNORE INTO kernel_decision_applications (
+              id, decision_id, event_id, idempotency_key, status, apply_attempts,
+              observation_event_id, observation_event_json, error_summary,
+              applying_at, applied_at, created_at, updated_at
+            )
+            SELECT 'application_' || id, id, event_id, 'decision:' || id,
+              CASE WHEN action = 'no_op' THEN 'applied' ELSE 'uncertain' END,
+              0, NULL, NULL,
+              CASE WHEN action = 'no_op' THEN NULL
+                ELSE 'v23 decision has no durable application proof' END,
+              NULL, CASE WHEN action = 'no_op' THEN created_at ELSE NULL END,
+              created_at, created_at
+            FROM kernel_decisions
+          `);
+        }
+      });
+      migrate();
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {

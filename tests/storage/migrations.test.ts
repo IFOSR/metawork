@@ -71,7 +71,7 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -170,6 +170,30 @@ describe('runMigrations', () => {
       'created_at',
     ]));
 
+    for (const table of [
+      'kernel_events',
+      'kernel_decision_applications',
+      'kernel_effect_outbox',
+      'executor_attempt_runtime',
+      'work_graph_revisions',
+    ]) {
+      expect(db.prepare(`PRAGMA table_info(${table})`).all(), `${table} should exist`).not.toEqual([]);
+    }
+
+    expect(subtaskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
+      'graph_revision',
+      'generation_id',
+    ]));
+    const receiptColumns = db.prepare('PRAGMA table_info(executor_attempt_receipts)').all() as Array<{ name: string }>;
+    expect(receiptColumns.map(column => column.name)).toEqual(expect.arrayContaining([
+      'graph_revision',
+      'generation_id',
+      'attempt_kind',
+      'source_attempt_id',
+      'failure_json',
+      'recovery_mode',
+    ]));
+
     const taskSearchIndexColumns = db.prepare('PRAGMA table_info(task_search_index)').all() as Array<{ name: string }>;
     expect(taskSearchIndexColumns.map(column => column.name)).toEqual(expect.arrayContaining([
       'task_id',
@@ -247,7 +271,7 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT id FROM executor_route_events').all()).toEqual([{ id: 'route-1' }]);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 23 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
   });
 
   it('hard-cuts v20 subtasks through audit tables to an empty v4 graph and parks unfinished tasks', () => {
@@ -310,6 +334,67 @@ describe('runMigrations', () => {
       claimed_subtask_id: null,
       claimed_attempt_id: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 23 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
+  });
+
+  it('lifts an active v4 graph into revision one without replaying v23 decisions', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, created_at, updated_at, resources_json,
+        snapshot_json, dependencies_json, priority_json, injected_prefs_json,
+        last_scheduling_reason, last_interruption_reason, interruption_count, artifacts_json
+      ) VALUES (?, ?, ?, ?, '', ?, ?, '[]', '[]', '[]', '{}', '[]', '', '', 0, '[]')
+    `).run('task_v5', 'Task', 'Goal', 'running', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z');
+    db.prepare(`
+      INSERT INTO subtasks (
+        id, task_id, title, goal, status, dependencies_json, context_refs_json,
+        required_capabilities_json, preferred_agent_class_list_json, expected_output,
+        acceptance_json, risk_level, result, artifacts_json, verification_json,
+        error, created_at, updated_at, graph_revision, generation_id
+      ) VALUES (?, ?, ?, ?, ?, '[]', '[]', '[]', '["codex-cli"]', 'summary',
+        '[]', 'low', '', '[]', '{}', NULL, ?, ?, NULL, NULL)
+    `).run(
+      'subtask_v4', 'task_v5', 'Subtask', 'Remaining work', 'ready',
+      '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z',
+    );
+    db.prepare(`
+      INSERT INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, created_at
+      ) VALUES (?, 1, ?, 'dispatch_requested', ?, NULL, ?, ?, ?, NULL, '{}', '{}', '{}',
+        'dispatch_attempt', 'legacy issued decision', ?)
+    `).run(
+      'decision_v23', 'event_v23', 'correlation_v23', 'session_v23', 'task_v5',
+      'subtask_v4', '2026-07-21T00:00:00.000Z',
+    );
+    db.exec(`
+      DELETE FROM schema_version WHERE version = 24;
+      DELETE FROM kernel_decision_applications;
+      DELETE FROM kernel_events;
+    `);
+
+    runMigrations(db);
+
+    expect(db.prepare(`
+      SELECT revision, generation_id, status FROM work_graph_revisions WHERE task_id = ?
+    `).get('task_v5')).toEqual({
+      revision: 1,
+      generation_id: 'generation_task_v5_1',
+      status: 'active',
+    });
+    expect(db.prepare('SELECT graph_revision, generation_id FROM subtasks WHERE id = ?').get('subtask_v4')).toEqual({
+      graph_revision: 1,
+      generation_id: 'generation_task_v5_1',
+    });
+    expect(db.prepare(`
+      SELECT status, error_summary FROM kernel_decision_applications WHERE decision_id = ?
+    `).get('decision_v23')).toEqual({
+      status: 'uncertain',
+      error_summary: 'v23 decision has no durable application proof',
+    });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
   });
 });
