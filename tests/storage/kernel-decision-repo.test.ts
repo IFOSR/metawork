@@ -12,6 +12,7 @@ function createRecord() {
   };
   const snapshot: KernelSnapshot = {
     schemaVersion: 2, type: 'timer', capacityBlockedAt: null, recheckAfterMs: 1000,
+    task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
     nativeContinuationAgentClasses: [],
     capacityAgentClasses: [], executorStatuses: [],
   };

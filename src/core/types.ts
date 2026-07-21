@@ -187,7 +187,7 @@ export interface WorktreeLease {
 // ─── 阻塞依赖 ───
 export interface Dependency {
   taskId: string;
-  type: 'manual';           // V1 仅支持手动解除
+  type: 'manual' | 'kernel_capacity' | 'kernel_retry' | 'kernel_availability';
   description: string;
   status: 'waiting' | 'resolved';
   createdAt: string;

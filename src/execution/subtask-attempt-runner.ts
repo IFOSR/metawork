@@ -118,7 +118,13 @@ export class SubtaskAttemptRunner {
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const attemptKind = input.attemptKind ?? 'primary';
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
-    if (!task || !subtask || subtask.taskId !== input.taskId || subtask.status !== expectedStatus) {
+    if (
+      !task
+      || task.status !== 'running'
+      || !subtask
+      || subtask.taskId !== input.taskId
+      || subtask.status !== expectedStatus
+    ) {
       return {
         outcome: 'cancelled_or_stale',
         attemptId,

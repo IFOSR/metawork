@@ -350,11 +350,17 @@ export class KernelExecutionRuntime {
       });
     }
     if (action.type === 'wait_for_capacity') {
-      await this.blockTask(action.taskId, `capacity unavailable for Subtask ${action.subtaskId}`, input.finishExecution);
+      await this.blockTask(
+        action.taskId, `capacity unavailable for Subtask ${action.subtaskId}`,
+        input.finishExecution, 'kernel_capacity',
+      );
       return null;
     }
     if (action.type === 'wait_for_retry') {
-      await this.blockTask(action.taskId, `retry scheduled for ${action.resumeAt}`, input.finishExecution);
+      await this.blockTask(
+        action.taskId, `retry scheduled for ${action.resumeAt}`,
+        input.finishExecution, 'kernel_retry',
+      );
       return this.eventFromDecision(decision, {
         type: 'timer_tick',
         taskId: action.taskId,
@@ -502,6 +508,8 @@ export class KernelExecutionRuntime {
       : event.type === 'timer_tick' ? {
           schemaVersion: 2,
           type: 'timer',
+          task: { id: task.id, status: task.status },
+          wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
           capacityBlockedAt: null,
           recheckAfterMs: 0,
             capacityAgentClasses: [],
@@ -654,6 +662,8 @@ export class KernelExecutionRuntime {
         : event.type === 'timer_tick' ? {
             schemaVersion: 2,
             type: 'timer',
+            task: { id: task.id, status: task.status },
+            wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,
             capacityAgentClasses: subtask.preferredAgentClassList,
@@ -697,17 +707,28 @@ export class KernelExecutionRuntime {
     taskId: string,
     reason: string,
     finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
+    dependencyType: import('../core/types.js').Dependency['type'] = 'manual',
   ): Promise<void> {
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       this.deps.taskRuntimeService.blockTask(taskId, {
         taskId,
-        type: 'manual',
+        type: dependencyType,
         description: reason,
         status: 'waiting',
       });
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', reason, {});
     await finishExecution([`Execution blocked: ${reason}`]);
+  }
+
+  private isKernelWakeAuthorized(task: import('../core/types.js').Task, wakeKind: Extract<KernelEvent, { type: 'timer_tick' }>['wakeKind']): boolean {
+    const expectedType = wakeKind === 'retry'
+      ? 'kernel_retry'
+      : wakeKind === 'capacity'
+        ? 'kernel_capacity'
+        : 'kernel_availability';
+    return task.status === 'blocked'
+      && task.dependencies.some(dependency => dependency.status === 'waiting' && dependency.type === expectedType);
   }
 
   private async completeTask(input: {

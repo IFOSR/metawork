@@ -151,6 +151,8 @@ export type KernelSnapshot =
   | {
       schemaVersion: 2;
       type: 'timer';
+      task: KernelTaskFact | null;
+      wakeAuthorized: boolean;
       capacityBlockedAt: string | null;
       recheckAfterMs: number;
       capacityAgentClasses: string[];
@@ -501,6 +503,15 @@ export class ControlKernel {
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
+    if (
+      !event.taskId
+      || !snapshot.task
+      || snapshot.task.id !== event.taskId
+      || snapshot.task.status !== 'blocked'
+      || !snapshot.wakeAuthorized
+    ) {
+      return decision(event, { type: 'no_op' }, 'timer wake is stale or no longer authorized by Task state');
+    }
     if (event.wakeKind === 'retry') {
       if (!event.taskId || !event.subtaskId || !event.retry || Date.parse(event.occurredAt) < Date.parse(event.scheduledFor)) {
         return decision(event, { type: 'no_op' }, 'retry wake is incomplete or early');

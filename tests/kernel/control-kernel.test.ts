@@ -244,6 +244,7 @@ describe('ControlKernel', () => {
     });
     const timerSnapshot: KernelSnapshot = {
       schemaVersion: 2, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
       nativeContinuationAgentClasses: ['codex-cli'],
     };
@@ -251,6 +252,11 @@ describe('ControlKernel', () => {
       type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'codex-cli',
     });
     expect(kernel.decide({ ...timer, id: 'timer_early', occurredAt: '2026-07-20T00:00:59.999Z' }, timerSnapshot).action).toEqual({ type: 'no_op' });
+    expect(kernel.decide({ ...timer, id: 'timer_cancelled' }, {
+      ...timerSnapshot,
+      task: { id: 'task_1', status: 'cancelled' },
+      wakeAuthorized: false,
+    }).action).toEqual({ type: 'no_op' });
   });
 
   it('rejects an execution request for a second active Task and fails closed on mismatched facts', () => {

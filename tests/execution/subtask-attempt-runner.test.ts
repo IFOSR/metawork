@@ -249,6 +249,22 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done' });
   });
 
+  it('does not start a stale fallback after the Task was cancelled', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'source attempt failed' });
+    setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled before retry wake');
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_stale_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
+      recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up',
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
+    expect(setupResult.executionRuntime.run).not.toHaveBeenCalled();
+    expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ state: 'idle' });
+  });
+
   it('publishes only a corrected response from one isolated response-only attempt', async () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({
