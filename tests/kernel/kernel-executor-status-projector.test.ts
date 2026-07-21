@@ -24,15 +24,16 @@ describe('KernelExecutorStatusProjector', () => {
 
     for (let index = 0; index < 4; index += 1) {
       projector.recordExecutionOutcome({
-        agentClassName: 'codex-cli', outcome: 'failed', error: 'network connection timeout',
+        agentClassName: 'codex-cli', outcome: 'failed',
+        failure: { kind: 'network', scope: 'agent_class', code: 'connection_failed', summary: 'network connection timeout' },
         completedAt: `2026-07-16T00:00:0${index}.000Z`,
       });
     }
 
     const projection = repo.findByAgentClassName('codex-cli');
     expect(projection?.classHealth).toBe('unverified');
-    expect(projection?.recentAttempts).toHaveLength(3);
-    expect(projection?.recentAttempts[0]).toMatchObject({ failureKind: 'network' });
+    expect(projection?.recentAttempts).toHaveLength(4);
+    expect(projection?.recentAttempts[0]).toMatchObject({ failure: { kind: 'network', scope: 'agent_class' } });
   });
 
   it('marks confirmed adapter/configuration faults as class errors and success as healthy', () => {
@@ -42,7 +43,10 @@ describe('KernelExecutorStatusProjector', () => {
     const repo = new KernelExecutorStatusRepo(db);
     const projector = new KernelExecutorStatusProjector(repo);
 
-    projector.recordExecutionOutcome({ agentClassName: 'codex-cli', outcome: 'failed', error: 'adapter binding invalid' });
+    projector.recordExecutionOutcome({
+      agentClassName: 'codex-cli', outcome: 'failed',
+      failure: { kind: 'adapter', scope: 'agent_class', code: 'binding_invalid', summary: 'adapter binding invalid' },
+    });
     expect(repo.findByAgentClassName('codex-cli')?.classHealth).toBe('error');
     projector.recordExecutionOutcome({ agentClassName: 'codex-cli', outcome: 'succeeded' });
     expect(repo.findByAgentClassName('codex-cli')?.classHealth).toBe('healthy');

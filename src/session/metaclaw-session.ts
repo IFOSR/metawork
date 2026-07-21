@@ -51,8 +51,9 @@ import { PlanningContextBuilder } from '../planning/planning-context-builder.js'
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
-import { KernelControlLoop } from '../kernel/kernel-control-loop.js';
+import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
+import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
@@ -139,6 +140,7 @@ export class MetaclawSession {
   private readonly planningAgent: PlanningAgent;
   private readonly controlKernel: ControlKernel;
   private readonly kernelDecisionRepo: KernelDecisionRepo;
+  private readonly kernelWorkflowRepo: KernelWorkflowRepo;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
@@ -223,6 +225,7 @@ export class MetaclawSession {
     });
     this.controlKernel = new ControlKernel();
     this.kernelDecisionRepo = new KernelDecisionRepo(deps.db);
+    this.kernelWorkflowRepo = new KernelWorkflowRepo(deps.db);
     this.commandCatalog = createDefaultCommandCatalog();
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
@@ -255,7 +258,7 @@ export class MetaclawSession {
       workUnitClaimService: this.workUnitClaimService,
       attemptRunner,
       controlKernel: this.controlKernel,
-      kernelDecisionRepo: this.kernelDecisionRepo,
+      kernelWorkflowStore: this.kernelWorkflowRepo,
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
@@ -677,13 +680,14 @@ export class MetaclawSession {
       v4WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(plan, userInput),
     };
-    const loop = new KernelControlLoop({
+    const workflow = new DurableKernelWorkflow({
       kernel: this.controlKernel,
       buildSnapshot: () => snapshot,
-      ledger: this.kernelDecisionRepo,
+      store: this.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
       runtime: this.sessionKernelRuntime.forInput(userInput),
     });
-    await loop.run(event);
+    await workflow.submit(event);
     return true;
   }
 

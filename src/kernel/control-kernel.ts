@@ -5,6 +5,7 @@ import { validateWorkGraphStructure } from '../planning/work-graph-structure-rul
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
+import { deriveAgentAvailability } from './agent-availability.js';
 
 export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blocked' | 'done' | 'archived' | 'cancelled';
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
@@ -224,7 +225,7 @@ export class ControlKernel {
     if (invalidRefs.length > 0) {
       return decision(event, { type: 'request_clarification', question: 'The proposed context references are not available for this task.' }, `unqualified context refs: ${invalidRefs.join(', ')}`);
     }
-    const unavailable = unavailableAgentClasses(snapshot.executorStatuses);
+    const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
     const workGraph = {
       ...proposal.workGraph,
       subtasks: proposal.workGraph.subtasks.map(subtask => ({
@@ -262,7 +263,7 @@ export class ControlKernel {
       }
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'no ready Subtask while work remains');
     }
-    const agentClassName = nextUsableAgentClass(subtask, snapshot);
+    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt);
     if (!agentClassName) return decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtask.id }, 'all authorized AgentClasses are unavailable');
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName,
@@ -290,7 +291,7 @@ export class ControlKernel {
     const agentClassName = nextUsableAgentClass(subtask, {
       ...snapshot,
       attemptedAgentClasses: [...snapshot.attemptedAgentClasses, event.agentClassName],
-    });
+    }, event.occurredAt);
     return agentClassName
       ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: subtask.id, agentClassName }, 'try next authorized AgentClass')
       : decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtask.id }, 'authorized AgentClass capacity exhausted');
@@ -307,7 +308,7 @@ export class ControlKernel {
         ? decision(event, { type: 'complete_task', taskId: event.taskId }, 'all Subtasks completed')
         : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'unfinished graph has no ready frontier');
     }
-    const agentClassName = nextUsableAgentClass(next, snapshot);
+    const agentClassName = nextUsableAgentClass(next, snapshot, event.occurredAt);
     if (!agentClassName) return decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: next.id }, 'next Subtask has no available authorized AgentClass');
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: next.id, agentClassName,
@@ -331,7 +332,7 @@ export class ControlKernel {
     if (!event.taskId || !event.subtaskId || !snapshot.capacityBlockedAt) return decision(event, { type: 'no_op' }, 'no capacity block is eligible');
     const elapsed = Date.parse(event.occurredAt) - Date.parse(snapshot.capacityBlockedAt);
     if (!Number.isFinite(elapsed) || elapsed < snapshot.recheckAfterMs) return decision(event, { type: 'no_op' }, 'capacity recheck interval has not elapsed');
-    const unavailable = unavailableAgentClasses(snapshot.executorStatuses);
+    const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
     const candidate = snapshot.capacityAgentClasses.find(name => !unavailable.has(name));
     return candidate
       ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: event.subtaskId, agentClassName: candidate }, 'capacity timer recheck authorized')
@@ -353,8 +354,12 @@ function isStateChanging(proposal: KernelPlanProposal): boolean {
   return proposal.action === 'plan_work_graph' || (proposal.action === 'task_control' && proposal.task.control !== 'status_query');
 }
 
-function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[]): Set<string> {
-  return new Set(statuses.filter(status => status.classHealth === 'disabled' || status.classHealth === 'error').map(status => status.agentClassName));
+function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[], occurredAt: string): Set<string> {
+  return new Set(statuses
+    .filter(status => ['permanently_unavailable', 'temporarily_unavailable'].includes(
+      deriveAgentAvailability(status, occurredAt),
+    ))
+    .map(status => status.agentClassName));
 }
 
 function selectReadySubtask(snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelSubtaskFact | null {
@@ -365,9 +370,13 @@ function selectReadySubtask(snapshot: Extract<KernelSnapshot, { type: 'dispatch'
   return null;
 }
 
-function nextUsableAgentClass(subtask: KernelSubtaskFact, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): string | null {
+function nextUsableAgentClass(
+  subtask: KernelSubtaskFact,
+  snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  occurredAt: string,
+): string | null {
   const attempted = new Set(snapshot.attemptedAgentClasses);
-  const unavailable = unavailableAgentClasses(snapshot.executorStatuses);
+  const unavailable = unavailableAgentClasses(snapshot.executorStatuses, occurredAt);
   return subtask.preferredAgentClassList.find(name => !attempted.has(name) && !unavailable.has(name)) ?? null;
 }
 

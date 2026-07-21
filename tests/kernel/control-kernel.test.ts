@@ -76,6 +76,26 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('skips a class during derived cooldown and makes it eligible as the next serial probe after cooldown', () => {
+    const failures = [0, 1, 2].map(index => ({
+      completedAt: `2026-07-20T00:0${2 - index}:00.000Z`,
+      outcome: 'failed' as const,
+      failure: { kind: 'network' as const, scope: 'agent_class' as const, code: 'network_failed', summary: 'network failed' },
+    }));
+    const cooling = dispatchSnapshot();
+    cooling.executorStatuses = [{
+      agentClassName: 'codex-cli', classHealth: 'healthy', recentAttempts: failures,
+      updatedAt: '2026-07-20T00:02:00.000Z',
+    }];
+
+    expect(new ControlKernel().decide(runtimeEvent({
+      type: 'dispatch_requested', reason: 'cooldown dispatch', occurredAt: '2026-07-20T00:03:00.000Z',
+    }), cooling).action).toMatchObject({ type: 'dispatch_attempt', agentClassName: 'pi-agent' });
+    expect(new ControlKernel().decide(runtimeEvent({
+      type: 'dispatch_requested', reason: 'probe dispatch', occurredAt: '2026-07-20T00:07:00.000Z',
+    }), cooling).action).toMatchObject({ type: 'dispatch_attempt', agentClassName: 'codex-cli' });
+  });
+
   it('blocks failures, continues successes, and completes an exhausted graph', () => {
     const kernel = new ControlKernel();
     expect(kernel.decide(runtimeEvent({

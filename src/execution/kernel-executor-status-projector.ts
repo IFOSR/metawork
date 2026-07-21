@@ -1,5 +1,6 @@
 import { projectExecutionOutcome, type KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import type { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import type { KernelFailure } from '../kernel/kernel-failure.js';
 
 /** Execution-side projector that persists dynamic AgentClass health facts. */
 export class KernelExecutorStatusProjector {
@@ -8,7 +9,7 @@ export class KernelExecutorStatusProjector {
   recordExecutionOutcome(input: {
     agentClassName: string;
     outcome: 'succeeded' | 'failed';
-    error?: string | null;
+    failure?: KernelFailure | null;
     completedAt?: string;
   }): KernelExecutorStatusProjection {
     const projection = projectExecutionOutcome(this.repo.findByAgentClassName(input.agentClassName), {
