@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1～3 已完成
-- **当前激活阶段**：Phase 4——持久恢复、fallback、retry、replan 与 Kernel 派生可用性；[详细实施计划](2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md)实施中
+- **当前状态**：实施中；Phase 1～4 已完成
+- **当前激活阶段**：Phase 5——Partition 模型在串行 Runtime 中落地；Phase 4 [详细实施计划](../archive/plans/2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md)已归档
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -153,6 +153,8 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - 领域契约与 fault matrix 冻结后执行 LangGraph Functional API 门控 spike；只允许替换 workflow cursor/replay implementation。
 
 退出条件：失败、恢复、fallback、候选耗尽、replan 和可用性均由单一控制面决定；主数据库可独立从全部 crash window 恢复；Runtime 不再通过正则、隐藏 retry 或 if-else 私自拍板；生产只保留一条 workflow 路径。
+
+完成记录（2026-07-21）：Kernel contracts v2、Planning/Work Graph v5、SQLite v24 durable inbox/application/outbox、结构化 failure、持久 backoff、Codex continuation、recovery packet、顺序 fallback、一次自动 replan revision、派生 AgentClass availability、人工 uncertain recovery 与 startup reconcile 已交付。旧同步 `KernelControlLoop` 已删除；LangGraph 门控评估未达到 30% 净删除门槛，项目保留单一自研 `DurableKernelWorkflow` 且不引入 LangGraph/checkpointer。`npm run lint`、`npm run build` 和 Docker/Linux 全量回归通过（184 个文件、747 个测试；另有 4 个文件、15 个历史测试跳过），包含持久 retry continuation 集成场景。真实 Linux runtime smoke 通过：Codex Planner 经统一 Kernel workflow 驱动 Codex Executor，在授权 workspace 创建并验证 `smoke-result.md`。实现提交为 `f3b3e66`～`be47bd2` 及 closing commit；Phase 4 计划与 LangGraph 结论已归档，Phase 5 激活。
 
 ### Phase 5：Partition 模型在串行 Runtime 中落地
 

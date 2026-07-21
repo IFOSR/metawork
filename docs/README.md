@@ -35,7 +35,7 @@ The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution C
 ## Active Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
-Phase 4 (durable recovery, fallback, retry, replan and derived availability) is the active roadmap stage. Its [detailed implementation plan](plans/2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md) is in progress.
+Phase 5 (partition identity, enforcement and durable leases in the serial Runtime) is the active roadmap stage. Phase 4's [durable recovery implementation plan](archive/plans/2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md) is complete and archived.
 
 ## Historical Plans
 
@@ -52,7 +52,7 @@ The completed [Phase 3 overall action plan](archive/plans/2026-07-20-phase-3-ker
 ## Operational Notes
 
 - [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Scattered Kernel decision authority is tracked in [kernel-decision-authority-scattered-in-runtime-debt](tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) and is scheduled by the active roadmap. The [LangGraph durable workflow evaluation](tech-debt/langgraph-durable-workflow-adoption-candidates.md) is closed: Phase 4 retained the smaller self-owned workflow because the gated spike could not meet the 30% net-removal threshold. Closed capability and workspace-partition records remain under [archive/tech-debt/](archive/tech-debt/).
+- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Scattered Kernel decision authority is tracked in [kernel-decision-authority-scattered-in-runtime-debt](tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) and is scheduled by the active roadmap. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents
 

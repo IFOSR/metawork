@@ -3,10 +3,26 @@
 ## 计划状态
 
 - **计划日期**：2026-07-21
-- **当前状态**：实施中
-- **完成日期**：未完成
-- **实现提交**：未产生
-- **架构依据**：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md)
+- **当前状态**：已完成并归档
+- **完成日期**：2026-07-21
+- **实现提交**：`f3b3e66`～`be47bd2` 及本次 closing commit
+- **所属路线图**：[Planner、Kernel 与并发调度收敛路线图](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
+- **架构依据**：[ADR-0020](../../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../../adr/0023-durable-kernel-workflow-recovery-and-availability.md)
+
+## 完成交付与验证
+
+Phase 4 已交付唯一的 `KernelWorkflow` 持久控制路径：SQLite v24 durable inbox、不可变 Decision ledger、application 状态、effect outbox、attempt runtime 和 graph revision 共同支持跨进程恢复。Kernel contracts 升级到 v2，Planning/Work Graph 升级到 v5；retry、continuation、fallback、一次自动 replan、派生 AgentClass 可用性、stale wake 失效和人工 uncertain recovery 均由 `ControlKernel` 授权。Codex 原生 session continuation、无原生续跑恢复包、workspace baseline/delta、受控 task evidence 与 response-only correction 保持在 Runtime/Adapter 边界。
+
+实现删除了 Phase 3 `KernelControlLoop`，没有保留双 workflow 路径。LangGraph Functional API 门控评估因净删除量不足 30% 而关闭；主数据库可独立恢复，项目未增加 LangGraph/checkpointer 依赖。恢复期间的 `applying` application 只在显式 startup recovery 中重新排队，普通嵌套 workflow 不会抢占正在应用的 Planning Decision。
+
+验证结果：
+
+- `npm run lint`：通过。
+- `npm run build`：通过并生成 PlanningAgentPlan v5 schema。
+- Docker/Linux 全量测试：184 个测试文件、747 个测试通过，4 个文件/15 个历史场景按既有策略跳过；其中包含持久 retry wake → Codex native continuation → completion 集成测试。
+- 聚焦验证覆盖 v23→v24、v4→v5、capacity timer、结构化 failure、availability、duplicate event/application recovery、outbox uncertain、response-only 子进程清理、replan revision、task evidence、Codex resume 参数和持久 continuation token。
+- LangGraph checkpoint 删除 smoke 不适用：门控 spike 未采用 LangGraph；对应验收由“无 checkpointer 依赖且主库独立 recover”替代。
+- 真实 Linux runtime artifact smoke：通过。正式 runtime image 经 entrypoint 生成隔离的 Planner/Executor `CODEX_HOME`，Codex Planner 经 `KernelWorkflow → ControlKernel → ledger/application` 驱动 Codex Executor，在授权 Task workspace 创建并发布 `smoke-result.md`；宿主侧再次读取并确认其精确内容为 `MetaClaw Phase 4 durable workflow smoke passed.`。Windows host 直接执行仍受仓库已知的 `better-sqlite3` 原生绑定缺失限制，不影响 Linux runtime 验收。
 
 ## 目标与控制链
 
@@ -128,4 +144,3 @@ Canonical Routing Capability 增加 `read_only | workspace_reconcilable | extern
 ## 完成回填要求
 
 完成时更新本节状态、完成日期、实际交付行为、验证命令及 closing commit；同步回填总体路线图和 ADR 索引，归档本计划与 LangGraph 技术债结论，再激活 Phase 5。未完成上述回填前不得宣布 Phase 4 完成。
-

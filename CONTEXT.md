@@ -4,7 +4,7 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-Phase 4 is upgrading the active control path to `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, waiting and derived AgentClass availability.
+Phase 4 completed the active control path `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, waiting and derived AgentClass availability. Phase 5 is now active and adds enforced partition identity and durable leases without enabling concurrency.
 
 `src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v5 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3/v4 production parser, legacy intent route, semantic default, or keyword fallback.
 
