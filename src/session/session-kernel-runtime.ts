@@ -1,5 +1,5 @@
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
-import type { KernelRuntime } from '../kernel/kernel-control-loop.js';
+import type { KernelRuntime } from '../kernel/kernel-workflow.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';

@@ -95,8 +95,21 @@ export class ExecutorAttemptReceiptRepo {
 
   findByAttemptId(attemptId: string): ExecutorAttemptReceipt | null {
     const row = this.db.prepare('SELECT * FROM executor_attempt_receipts WHERE attempt_id = ?').get(attemptId) as Record<string, unknown> | undefined;
-    if (!row) return null;
-    return {
+    return row ? rowToReceipt(row) : null;
+  }
+
+  listByTask(taskId: string): ExecutorAttemptReceipt[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM executor_attempt_receipts
+      WHERE task_id = ?
+      ORDER BY completed_at DESC, attempt_id ASC
+    `).all(taskId) as Record<string, unknown>[];
+    return rows.map(rowToReceipt);
+  }
+}
+
+function rowToReceipt(row: Record<string, unknown>): ExecutorAttemptReceipt {
+  return {
       attemptId: String(row.attempt_id),
       executionId: String(row.execution_id),
       taskId: String(row.task_id),
@@ -118,6 +131,5 @@ export class ExecutorAttemptReceiptRepo {
       verification: JSON.parse(String(row.verification_json)) as ExecutorAttemptReceipt['verification'],
       errorCode: row.error_code == null ? null : String(row.error_code),
       errorDetail: row.error_detail == null ? null : String(row.error_detail),
-    };
-  }
+  };
 }

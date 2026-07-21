@@ -6,7 +6,7 @@ import {
   type KernelWorkflowStore,
 } from '../../src/kernel/kernel-workflow.js';
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
-import type { KernelDecisionLedgerRecord } from '../../src/kernel/kernel-control-loop.js';
+import type { KernelDecisionLedgerRecord } from '../../src/kernel/kernel-workflow.js';
 
 describe('DurableKernelWorkflow', () => {
   it('persists input, issuance, and application before apply', async () => {

@@ -235,6 +235,20 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
+  it('runs a Kernel-authorized fallback from awaiting_decision without treating it as stale', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'source attempt failed' });
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
+      recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up',
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed', attemptId: 'attempt_fallback' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done' });
+  });
+
   it('publishes only a corrected response from one isolated response-only attempt', async () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({

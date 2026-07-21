@@ -135,6 +135,24 @@ export class KernelExecutionRuntime {
     const done = new Set(subtasks.filter(subtask => subtask.status === 'done').map(subtask => subtask.id));
     const handoffs = new Set(this.deps.subtaskHandoffRepo.listByTask(taskId)
       .map(handoff => `${handoff.fromSubtaskId}\u0000${handoff.toSubtaskId}`));
+    const persistedAttempts: KernelAttemptFact[] = this.deps.attemptReceiptRepo.listByTask(taskId)
+      .filter(receipt => receipt.terminalState !== 'contract_blocked')
+      .filter(receipt => !activeRevision || (
+        receipt.generationId === activeRevision.generationId
+        && receipt.graphRevision === activeRevision.revision
+      ))
+      .map(receipt => ({
+        attemptId: receipt.attemptId,
+        agentClassName: receipt.agentClassName,
+        attemptKind: receipt.attemptKind,
+        sourceAttemptId: receipt.sourceAttemptId,
+        terminalKind: receipt.terminalState === 'completed' ? 'completed' : 'failed',
+        failure: receipt.failure,
+        completedAt: receipt.completedAt,
+      }));
+    const attemptFacts = [...new Map(
+      [...attempts, ...persistedAttempts].map(attempt => [attempt.attemptId, attempt]),
+    ).values()];
     const readyFrontier = subtasks.filter(subtask =>
       subtask.status === 'ready'
       && subtask.dependencies.every(dependency =>
@@ -159,7 +177,7 @@ export class KernelExecutionRuntime {
       executorStatuses: stableFacts.executorStatuses,
       correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
       nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
-      attempts,
+      attempts: attemptFacts,
       generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
       graphRevision: activeRevision?.revision ?? 1,
       automaticReplansUsed: activeRevision
@@ -177,13 +195,13 @@ export class KernelExecutionRuntime {
   }
 
   private buildDispatchStableFacts(): DispatchStableFacts {
+    const agentClassNames = this.deps.agentClassService.listAgentClasses()
+      .map(agentClass => agentClass.name);
     return {
       executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
-      correctionSupportedAgentClasses: this.deps.agentClassService.listAgentClasses()
-        .map(agentClass => agentClass.name)
+      correctionSupportedAgentClasses: agentClassNames
         .filter(name => this.deps.attemptRunner.supportsResponseOnly(name)),
-      nativeContinuationAgentClasses: this.deps.agentClassService.listAgentClasses()
-        .map(agentClass => agentClass.name)
+      nativeContinuationAgentClasses: agentClassNames
         .filter(name => this.deps.attemptRunner.supportsContinuation(name)),
     };
   }

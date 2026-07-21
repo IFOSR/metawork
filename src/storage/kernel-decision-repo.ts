@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
-import type { KernelDecisionLedgerRecord } from '../kernel/kernel-control-loop.js';
-export type { KernelDecisionLedgerRecord } from '../kernel/kernel-control-loop.js';
+import type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
+export type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
 
 interface KernelDecisionRow {
   id: string;

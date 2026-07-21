@@ -116,8 +116,14 @@ export class SubtaskAttemptRunner {
     const attemptId = input.attemptId;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
-    if (!task || !subtask || subtask.taskId !== input.taskId || subtask.status !== 'ready') {
-      return { outcome: 'cancelled_or_stale', attemptId, reason: 'Task or ready Subtask no longer matches the authorized attempt' };
+    const attemptKind = input.attemptKind ?? 'primary';
+    const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
+    if (!task || !subtask || subtask.taskId !== input.taskId || subtask.status !== expectedStatus) {
+      return {
+        outcome: 'cancelled_or_stale',
+        attemptId,
+        reason: `Task or ${expectedStatus} Subtask no longer matches the authorized ${attemptKind} attempt`,
+      };
     }
     const claim = await this.deps.workUnitClaimService.claim({
       taskId: input.taskId,

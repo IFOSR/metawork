@@ -1,5 +1,31 @@
 import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot } from './control-kernel.js';
-import type { KernelDecisionLedgerRecord, KernelDecider, KernelRuntime } from './kernel-control-loop.js';
+
+export interface KernelDecisionLedgerRecord {
+  id: string;
+  schemaVersion: 1 | 2;
+  eventId: string;
+  eventType: KernelEvent['type'];
+  correlationId: string;
+  causationId: string | null;
+  sessionId: string;
+  taskId: string | null;
+  subtaskId: string | null;
+  attemptId: string | null;
+  event: KernelEvent;
+  snapshot: KernelSnapshot;
+  decision: KernelDecision;
+  action: KernelDecision['action']['type'];
+  reason: string;
+  createdAt: string;
+}
+
+export interface KernelDecider {
+  decide(event: KernelEvent, snapshot: KernelSnapshot): KernelDecision;
+}
+
+export interface KernelRuntime {
+  apply(decision: KernelDecision): Promise<KernelEvent | null>;
+}
 
 export type KernelApplicationStatus = 'pending' | 'applying' | 'applied' | 'uncertain' | 'failed';
 

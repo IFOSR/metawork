@@ -5,7 +5,7 @@ import type {
   KernelDecisionApplicationRecord,
   KernelWorkflowStore,
 } from '../kernel/kernel-workflow.js';
-import type { KernelDecisionLedgerRecord } from '../kernel/kernel-control-loop.js';
+import type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from './kernel-decision-repo.js';
 
 interface ApplicationRow {
