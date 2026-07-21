@@ -1,4 +1,4 @@
-import { kernelFailure, type KernelFailure } from './kernel-failure.js';
+import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
 
 export const AGENT_CLASS_HEALTH_VALUES = ['unverified', 'healthy', 'error', 'disabled'] as const;
 export type AgentClassHealth = typeof AGENT_CLASS_HEALTH_VALUES[number];

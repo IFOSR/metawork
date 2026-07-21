@@ -1,4 +1,5 @@
 // Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
+import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
 const EXECUTOR_NOISE_PATTERNS = [
   /^OpenAI Codex\b/i,
   /^Claude\b/i,
@@ -79,6 +80,30 @@ export function isRecoverableExecutorFailure(raw?: string): boolean {
   return isNetworkFailure(raw)
     || /(executor idle timeout|executor max duration exceeded|timed out|timeout|执行器调用超时|执行器空闲超时|执行器历史总时长超限)/i.test(raw)
     || isPermissionFailure(raw);
+}
+
+/** Adapter-boundary normalization. Runtime and Kernel never parse error text. */
+export function normalizeExecutorFailure(raw?: string, interrupted = false): KernelFailure {
+  const summary = formatExecutorError(raw) ?? raw ?? 'unknown executor failure';
+  if (interrupted) return kernelFailure({ kind: 'cancelled', scope: 'attempt', code: 'execution_interrupted', summary });
+  if (raw && isNetworkFailure(raw)) return kernelFailure({ kind: 'network', scope: 'agent_class', code: 'network_failure', summary });
+  if (/executor idle timeout|timed out|timeout/i.test(raw ?? '')) {
+    return kernelFailure({ kind: 'timeout', scope: 'agent_class', code: 'executor_timeout', summary });
+  }
+  if (/executor max duration exceeded|resource exhausted|out of memory/i.test(raw ?? '')) {
+    return kernelFailure({ kind: 'infrastructure', scope: 'agent_class', code: 'executor_infrastructure_failure', summary });
+  }
+  if (raw && isPermissionFailure(raw)) return kernelFailure({ kind: 'permission', scope: 'task', code: 'permission_denied', summary });
+  if (/unauthenticated|authentication|invalid api key|unauthorized/i.test(raw ?? '')) {
+    return kernelFailure({ kind: 'authentication', scope: 'agent_class', code: 'authentication_failed', summary });
+  }
+  if (/command not found|enoent|not recognized|configuration|config/i.test(raw ?? '')) {
+    return kernelFailure({ kind: 'configuration', scope: 'agent_class', code: 'executor_configuration_failed', summary });
+  }
+  if (/adapter|unsupported executor|binding/i.test(raw ?? '')) {
+    return kernelFailure({ kind: 'adapter', scope: 'agent_class', code: 'executor_adapter_failed', summary });
+  }
+  return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary });
 }
 
 export function formatExecutorProgress(raw?: string): string | undefined {

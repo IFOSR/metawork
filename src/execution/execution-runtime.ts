@@ -19,6 +19,7 @@ import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
+import type { KernelFailure } from '../core/kernel-failure.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -29,6 +30,7 @@ export interface ExecutionResult {
   executorName: string;
   output: string;
   error: string | null;
+  failure: KernelFailure | null;
   artifacts: string[];
   subtaskResults: SubtaskResult[];
   durationMs: number;
@@ -383,6 +385,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       executorName: input.executor.name,
       output: input.result.output,
       error: input.result.error ?? null,
+      failure: input.result.failure ?? null,
       artifacts: input.subtaskResults.flatMap(result => result.artifacts),
       subtaskResults: input.subtaskResults,
       durationMs: input.result.durationMs,

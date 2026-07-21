@@ -99,13 +99,62 @@ describe('ControlKernel', () => {
   it('blocks failures, continues successes, and completes an exhausted graph', () => {
     const kernel = new ControlKernel();
     expect(kernel.decide(runtimeEvent({
-      type: 'execution_outcome', terminalKind: 'executor_failed', errorCode: 'executor_failed', attemptId: 'attempt_1',
+      type: 'execution_outcome', terminalKind: 'failed', attemptId: 'attempt_1', agentClassName: 'codex-cli',
+      attemptKind: 'primary', sourceAttemptId: null,
+      failure: { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: 'executor failed' },
     }), dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
       type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1',
     });
     expect(kernel.decide(runtimeEvent({
-      type: 'execution_outcome', terminalKind: 'completed', errorCode: null, attemptId: 'attempt_1',
+      type: 'execution_outcome', terminalKind: 'completed', attemptId: 'attempt_1', agentClassName: 'codex-cli',
+      attemptKind: 'primary', sourceAttemptId: null, failure: null,
     }), dispatchSnapshot([], 'done')).action).toEqual({ type: 'complete_task', taskId: 'task_1' });
+  });
+
+  it('waits once for preferred infrastructure recovery, then falls back exactly once per remaining class', () => {
+    const kernel = new ControlKernel();
+    const firstFailure = executionFailure('attempt_1', 'codex-cli', 'primary', 'network');
+    const firstSnapshot = dispatchSnapshot([], 'awaiting_decision');
+    firstSnapshot.attempts = [attemptFact(firstFailure)];
+
+    expect(kernel.decide(firstFailure, firstSnapshot).action).toEqual({
+      type: 'wait_for_retry',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      resumeAt: '2026-07-20T00:00:05.000Z',
+      agentClassName: 'codex-cli',
+      sourceAttemptId: 'attempt_1',
+    });
+
+    const continuedFailure = executionFailure('attempt_2', 'codex-cli', 'continuation', 'network', 'attempt_1');
+    const continuedSnapshot = dispatchSnapshot([], 'awaiting_decision');
+    continuedSnapshot.attempts = [attemptFact(continuedFailure), attemptFact(firstFailure)];
+    expect(kernel.decide(continuedFailure, continuedSnapshot).action).toMatchObject({
+      type: 'dispatch_attempt',
+      agentClassName: 'pi-agent',
+      attemptKind: 'fallback',
+      sourceAttemptId: 'attempt_2',
+      recoveryMode: 'recovery_packet',
+    });
+  });
+
+  it('falls back immediately for task failure and requests only one automatic replan per generation', () => {
+    const kernel = new ControlKernel();
+    const taskFailure = executionFailure('attempt_1', 'codex-cli', 'primary', 'task_failed');
+    const fallbackSnapshot = dispatchSnapshot([], 'awaiting_decision');
+    fallbackSnapshot.attempts = [attemptFact(taskFailure)];
+    expect(kernel.decide(taskFailure, fallbackSnapshot).action).toMatchObject({
+      type: 'dispatch_attempt', agentClassName: 'pi-agent', attemptKind: 'fallback',
+    });
+
+    const fallbackFailure = executionFailure('attempt_2', 'pi-agent', 'fallback', 'task_failed', 'attempt_1');
+    const exhausted = dispatchSnapshot([], 'awaiting_decision');
+    exhausted.attempts = [attemptFact(fallbackFailure), attemptFact(taskFailure)];
+    expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({
+      type: 'request_replan', taskId: 'task_1', generationId: 'generation_task_1_1', sourceRevision: 1,
+    });
+    exhausted.automaticReplansUsed = 1;
+    expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
   it('authorizes exactly one response-only correction and then fails closed', () => {
@@ -125,7 +174,10 @@ describe('ControlKernel', () => {
 
   it('only probes a capacity block after the configured timer interval', () => {
     const kernel = new ControlKernel();
-    const timer = runtimeEvent({ type: 'timer_tick', occurredAt: '2026-07-20T00:01:00.000Z' });
+    const timer = runtimeEvent({
+      type: 'timer_tick', occurredAt: '2026-07-20T00:01:00.000Z', wakeKind: 'capacity',
+      sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
+    });
     const timerSnapshot: KernelSnapshot = {
       schemaVersion: 1, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
@@ -181,5 +233,41 @@ function dispatchSnapshot(
     attemptedAgentClasses,
     executorStatuses: [],
     correctionSupportedAgentClasses: ['codex-cli'],
+    attempts: [],
+    generationId: 'generation_task_1_1',
+    graphRevision: 1,
+    automaticReplansUsed: 0,
+    recoverySafety: 'workspace_reconcilable',
+    automaticRecoveryAllowed: true,
+  };
+}
+
+function executionFailure(
+  attemptId: string,
+  agentClassName: string,
+  attemptKind: 'primary' | 'continuation' | 'fallback',
+  kind: 'network' | 'task_failed',
+  sourceAttemptId: string | null = null,
+): Extract<KernelEvent, { type: 'execution_outcome' }> {
+  return runtimeEvent({
+    type: 'execution_outcome', terminalKind: 'failed', attemptId, agentClassName, attemptKind, sourceAttemptId,
+    failure: {
+      kind,
+      scope: kind === 'task_failed' ? 'task' : 'agent_class',
+      code: `${kind}_failure`,
+      summary: `${kind} failure`,
+    },
+  }) as Extract<KernelEvent, { type: 'execution_outcome' }>;
+}
+
+function attemptFact(event: Extract<KernelEvent, { type: 'execution_outcome' }>) {
+  return {
+    attemptId: event.attemptId!,
+    agentClassName: event.agentClassName,
+    attemptKind: event.attemptKind,
+    sourceAttemptId: event.sourceAttemptId,
+    terminalKind: event.terminalKind,
+    failure: event.failure,
+    completedAt: event.occurredAt,
   };
 }

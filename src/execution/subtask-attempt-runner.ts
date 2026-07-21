@@ -20,6 +20,7 @@ import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
+import type { KernelFailure } from '../core/kernel-failure.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -27,7 +28,7 @@ export type SubtaskAttemptOutcome =
   | { outcome: 'completed'; attemptId: string; output: string; artifacts: string[]; warnings: string[]; executorName: string; durationMs: number }
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
   | { outcome: 'contract_failed'; attemptId: string; workUnitId: string; agentClassName: string; responseBytes: number; receiptCount: number; completionContract: unknown; violations: CompletionContractViolation[] }
-  | { outcome: 'executor_failed'; attemptId: string; error: string }
+  | { outcome: 'executor_failed'; attemptId: string; error: string; failure: KernelFailure }
   | { outcome: 'cancelled_or_stale'; attemptId: string; reason: string };
 
 export interface SubtaskAttemptRunnerDeps {
@@ -159,7 +160,10 @@ export class SubtaskAttemptRunner {
         claim.markFailed(error);
         return execution.status === 'cancelled'
           ? { outcome: 'cancelled_or_stale', attemptId, reason: error }
-          : { outcome: 'executor_failed', attemptId, error };
+          : {
+              outcome: 'executor_failed', attemptId, error,
+              failure: execution.failure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
+            };
       }
 
       const outgoingHandoffs = allSubtasks.flatMap(candidate => {
@@ -288,7 +292,10 @@ export class SubtaskAttemptRunner {
         // Preserve the original attempt exception; the finally block still clears the claim.
       }
       claim.markFailed(message);
-      return { outcome: 'executor_failed', attemptId, error: message };
+      return {
+        outcome: 'executor_failed', attemptId, error: message,
+        failure: { kind: 'unknown', scope: 'attempt', code: 'attempt_exception', summary: message },
+      };
     } finally {
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
@@ -333,7 +340,10 @@ export class SubtaskAttemptRunner {
           terminalState: 'executor_failed', rawResponse: result?.output ?? '', errorCode: 'correction_unavailable', errorDetail: error,
         });
         claim.markFailed(error);
-        return { outcome: 'executor_failed', attemptId: input.attemptId, error };
+        return {
+          outcome: 'executor_failed', attemptId: input.attemptId, error,
+          failure: result?.failure ?? { kind: 'unknown', scope: 'attempt', code: 'correction_unavailable', summary: error },
+        };
       }
       const allSubtasks = this.deps.subtaskRepo.listByTask(task.id);
       const outgoingHandoffs = allSubtasks.flatMap(candidate => {
@@ -405,7 +415,10 @@ export class SubtaskAttemptRunner {
         });
       }
       claim.markFailed(message);
-      return { outcome: 'executor_failed', attemptId: input.attemptId, error: message };
+      return {
+        outcome: 'executor_failed', attemptId: input.attemptId, error: message,
+        failure: { kind: 'unknown', scope: 'attempt', code: 'correction_exception', summary: message },
+      };
     } finally {
       claim.release();
     }

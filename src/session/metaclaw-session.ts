@@ -958,8 +958,16 @@ export class MetaclawSession {
         sessionId: this.deps.sessionId,
         taskId: task.id,
         subtaskId: orphan?.id,
-        terminalKind: 'heartbeat_lost',
-        errorCode: 'startup_orphaned_work',
+        terminalKind: 'failed',
+        agentClassName: orphan?.preferredAgentClassList[0] ?? 'unknown',
+        attemptKind: 'primary',
+        sourceAttemptId: null,
+        failure: {
+          kind: 'heartbeat_lost',
+          scope: 'agent_class',
+          code: 'startup_orphaned_work',
+          summary: interruptionReason,
+        },
       };
       const snapshot: KernelSnapshot = {
         schemaVersion: 1,
@@ -977,6 +985,12 @@ export class MetaclawSession {
         attemptedAgentClasses: [],
         executorStatuses: this.kernelExecutorStatusRepo.list(),
         correctionSupportedAgentClasses: [],
+        attempts: [],
+        generationId: `generation_${task.id}_1`,
+        graphRevision: 1,
+        automaticReplansUsed: 1,
+        recoverySafety: 'workspace_reconcilable',
+        automaticRecoveryAllowed: false,
       };
       const decision = this.controlKernel.decide(event, snapshot);
       const issued = this.kernelDecisionRepo.issue({

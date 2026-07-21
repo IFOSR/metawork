@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { ExecutorAdapter, ExecutorInput } from './adapter.js';
 import type { ExecutorResult } from '../core/types.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
-import { formatExecutorError, formatExecutorProgress } from './error-utils.js';
+import { formatExecutorError, formatExecutorProgress, normalizeExecutorFailure } from './error-utils.js';
 
 export interface CommandLineExecution {
   args: string[];
@@ -48,6 +48,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
         success: false,
         output: '',
         error: formatExecutorError(message) ?? message,
+        failure: normalizeExecutorFailure(message),
         exitCode: 1,
         durationMs: Date.now() - startTime,
       };
@@ -98,6 +99,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
           success: false,
           output: '',
           error: formatExecutorError(message) ?? message,
+          failure: normalizeExecutorFailure(message),
           exitCode: 1,
           durationMs: Date.now() - startTime,
         });
@@ -167,6 +169,10 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
           success,
           output,
           error,
+          failure: success ? undefined : normalizeExecutorFailure(
+            interrupted ? 'execution interrupted' : timeoutReason === 'idle' ? 'executor idle timeout' : stderr,
+            interrupted,
+          ),
           exitCode: code ?? 1,
           durationMs: Date.now() - startTime,
           interrupted,
@@ -178,6 +184,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
           success: false,
           output: '',
           error: formatExecutorError(err.message) ?? err.message,
+          failure: normalizeExecutorFailure(err.message),
           exitCode: 1,
           durationMs: Date.now() - startTime,
         });

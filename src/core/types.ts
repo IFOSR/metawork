@@ -258,6 +258,7 @@ export interface ExecutorResult {
   exitCode: number;
   durationMs: number;
   interrupted?: boolean;
+  failure?: import('./kernel-failure.js').KernelFailure;
 }
 
 // ─── 恢复摘要 ───

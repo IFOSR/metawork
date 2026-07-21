@@ -6,9 +6,13 @@ import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
 import { deriveAgentAvailability } from './agent-availability.js';
+import type { KernelFailure } from '../core/kernel-failure.js';
 
 export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blocked' | 'done' | 'archived' | 'cancelled';
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
+export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction';
+export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
+export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
 
 export interface KernelEventEnvelope {
   schemaVersion: 1;
@@ -53,12 +57,15 @@ export type KernelEvent =
       agentClassName: string;
       available: boolean;
       cycleId: string;
-      attemptKind: 'primary' | 'contract_correction';
+      attemptKind: KernelAttemptKind;
     })
   | (KernelEventEnvelope & {
       type: 'execution_outcome';
-      terminalKind: 'completed' | 'executor_failed' | 'heartbeat_lost' | 'cancelled_or_stale';
-      errorCode: string | null;
+      terminalKind: 'completed' | 'failed';
+      agentClassName: string;
+      attemptKind: KernelAttemptKind;
+      sourceAttemptId: string | null;
+      failure: KernelFailure | null;
     })
   | (KernelEventEnvelope & {
       type: 'handoff_contract_failed';
@@ -69,7 +76,13 @@ export type KernelEvent =
       receiptCount: number;
       responseBytes: number;
     })
-  | (KernelEventEnvelope & { type: 'timer_tick' });
+  | (KernelEventEnvelope & {
+      type: 'timer_tick';
+      wakeKind: 'capacity' | 'retry' | 'availability';
+      sourceDecisionId: string;
+      scheduledFor: string;
+      retry: { agentClassName: string; sourceAttemptId: string } | null;
+    });
 
 export interface KernelTaskFact {
   id: string;
@@ -81,6 +94,16 @@ export interface KernelSubtaskFact {
   taskId: string;
   status: KernelSubtaskStatus;
   preferredAgentClassList: string[];
+}
+
+export interface KernelAttemptFact {
+  attemptId: string;
+  agentClassName: string;
+  attemptKind: KernelAttemptKind;
+  sourceAttemptId: string | null;
+  terminalKind: 'completed' | 'failed';
+  failure: KernelFailure | null;
+  completedAt: string;
 }
 
 export type KernelSnapshot =
@@ -105,6 +128,12 @@ export type KernelSnapshot =
       attemptedAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
       correctionSupportedAgentClasses: string[];
+      attempts: KernelAttemptFact[];
+      generationId: string;
+      graphRevision: number;
+      automaticReplansUsed: number;
+      recoverySafety: KernelRecoverySafety;
+      automaticRecoveryAllowed: boolean;
     }
   | {
       schemaVersion: 1;
@@ -138,10 +167,22 @@ export type KernelDecisionAction =
       subtaskId: string;
       agentClassName: string;
       attemptId: string;
-      attemptKind: 'primary' | 'contract_correction';
+      attemptKind: KernelAttemptKind;
+      sourceAttemptId: string | null;
+      recoveryMode: KernelRecoveryMode;
     }
   | { type: 'probe_capacity'; taskId: string; subtaskId: string; agentClassName: string }
   | { type: 'wait_for_capacity'; taskId: string; subtaskId: string }
+  | {
+      type: 'wait_for_retry';
+      taskId: string;
+      subtaskId: string;
+      resumeAt: string;
+      agentClassName: string;
+      sourceAttemptId: string;
+    }
+  | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
+  | { type: 'resolve_recovery'; taskId: string; recoveryItemId: string; resolution: 'assume_applied' | 'retry' }
   | { type: 'block_work'; taskId: string; subtaskId: string | null }
   | { type: 'park_for_replan'; taskId: string }
   | { type: 'complete_task'; taskId: string };
@@ -268,6 +309,7 @@ export class ControlKernel {
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName,
       attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'primary'), attemptKind: 'primary',
+      sourceAttemptId: null, recoveryMode: 'fresh',
     }, 'dispatch authorized');
   }
 
@@ -279,6 +321,7 @@ export class ControlKernel {
         ? decision(event, {
             type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
             attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'contract_correction'), attemptKind: 'contract_correction',
+            sourceAttemptId: event.attemptId ?? null, recoveryMode: 'fresh',
           }, 'response-only correction capacity confirmed')
         : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id }, 'response-only correction capacity unavailable');
     }
@@ -286,6 +329,7 @@ export class ControlKernel {
       return decision(event, {
         type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
         attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'primary'), attemptKind: 'primary',
+        sourceAttemptId: null, recoveryMode: 'fresh',
       }, 'capacity confirmed');
     }
     const agentClassName = nextUsableAgentClass(subtask, {
@@ -299,8 +343,8 @@ export class ControlKernel {
 
   private decideOutcome(event: Extract<KernelEvent, { type: 'execution_outcome' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
     if (!event.taskId) return decision(event, { type: 'block_work', taskId: '', subtaskId: event.subtaskId ?? null }, 'outcome has no Task');
-    if (event.terminalKind !== 'completed') {
-      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null }, `${event.terminalKind} requires explicit recovery`);
+    if (event.terminalKind === 'failed') {
+      return this.decideFailure(event, snapshot);
     }
     const next = selectReadySubtask(snapshot);
     if (!next) {
@@ -313,7 +357,85 @@ export class ControlKernel {
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: next.id, agentClassName,
       attemptId: deterministicAttemptId(event.id, next.id, agentClassName, 'primary'), attemptKind: 'primary',
+      sourceAttemptId: null, recoveryMode: 'fresh',
     }, 'continue ready frontier');
+  }
+
+  private decideFailure(
+    event: Extract<KernelEvent, { type: 'execution_outcome' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  ): KernelDecision {
+    const taskId = event.taskId!;
+    const subtask = snapshot.subtasks.find(item => item.id === event.subtaskId);
+    const failure = event.failure;
+    if (!subtask || !event.attemptId || !failure) {
+      return decision(event, { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null }, 'failure facts are incomplete');
+    }
+    if (failure.kind === 'cancelled' && snapshot.task?.status === 'cancelled') {
+      return decision(event, { type: 'no_op' }, 'cancelled Task requires no recovery');
+    }
+    if (!snapshot.automaticRecoveryAllowed || snapshot.recoverySafety === 'external_non_idempotent') {
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'automatic recovery cannot prove external effect safety');
+    }
+    if (failure.kind === 'permission' || failure.kind === 'unknown' || failure.kind === 'stale' || failure.kind === 'cancelled') {
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, `${failure.kind} requires explicit recovery`);
+    }
+    const retryable = ['network', 'timeout', 'infrastructure', 'heartbeat_lost'].includes(failure.kind);
+    const isPreferred = subtask.preferredAgentClassList[0] === event.agentClassName;
+    const classAttempts = snapshot.attempts.filter(attempt =>
+      attempt.agentClassName === event.agentClassName && attempt.attemptKind !== 'contract_correction'
+    ).length;
+    if (retryable && isPreferred && classAttempts <= 1) {
+      const delayMs = failure.kind === 'network' ? 5_000 : 30_000;
+      return decision(event, {
+        type: 'wait_for_retry',
+        taskId,
+        subtaskId: subtask.id,
+        resumeAt: addMilliseconds(event.occurredAt, delayMs),
+        agentClassName: event.agentClassName,
+        sourceAttemptId: event.attemptId,
+      }, `preferred AgentClass continuation delayed after ${failure.kind}`);
+    }
+    if (!retryable && ![
+      'authentication', 'configuration', 'adapter', 'capability_mismatch', 'task_failed', 'quality_failed',
+    ].includes(failure.kind)) {
+      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, `${failure.kind} has no safe recovery policy`);
+    }
+    return this.fallbackOrReplan(event, snapshot, subtask);
+  }
+
+  private fallbackOrReplan(
+    event: Extract<KernelEvent, { type: 'execution_outcome' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+    subtask: KernelSubtaskFact,
+  ): KernelDecision {
+    const attempted = new Set(snapshot.attempts
+      .filter(attempt => attempt.attemptKind !== 'contract_correction')
+      .map(attempt => attempt.agentClassName));
+    const agentClassName = nextUsableAgentClass(subtask, {
+      ...snapshot,
+      attemptedAgentClasses: [...new Set([...snapshot.attemptedAgentClasses, ...attempted])],
+    }, event.occurredAt);
+    if (agentClassName) {
+      return decision(event, {
+        type: 'dispatch_attempt',
+        taskId: event.taskId!,
+        subtaskId: subtask.id,
+        agentClassName,
+        attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'fallback'),
+        attemptKind: 'fallback',
+        sourceAttemptId: event.attemptId!,
+        recoveryMode: 'recovery_packet',
+      }, 'next authorized fallback AgentClass selected');
+    }
+    return snapshot.automaticReplansUsed < 1
+      ? decision(event, {
+          type: 'request_replan',
+          taskId: event.taskId!,
+          generationId: snapshot.generationId,
+          sourceRevision: snapshot.graphRevision,
+        }, 'authorized candidates exhausted; one automatic replan is allowed')
+      : decision(event, { type: 'park_for_replan', taskId: event.taskId! }, 'automatic replan budget exhausted');
   }
 
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
@@ -325,10 +447,28 @@ export class ControlKernel {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: event.subtaskId, agentClassName: event.agentClassName,
       attemptId: deterministicAttemptId(event.id, event.subtaskId, event.agentClassName, 'contract_correction'),
       attemptKind: 'contract_correction',
+      sourceAttemptId: event.attemptId ?? null,
+      recoveryMode: 'fresh',
     }, 'one response-only contract correction authorized');
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
+    if (event.wakeKind === 'retry') {
+      if (!event.taskId || !event.subtaskId || !event.retry || Date.parse(event.occurredAt) < Date.parse(event.scheduledFor)) {
+        return decision(event, { type: 'no_op' }, 'retry wake is incomplete or early');
+      }
+      return decision(event, {
+        type: 'dispatch_attempt',
+        taskId: event.taskId,
+        subtaskId: event.subtaskId,
+        agentClassName: event.retry.agentClassName,
+        attemptId: deterministicAttemptId(event.id, event.subtaskId, event.retry.agentClassName, 'continuation'),
+        attemptKind: 'continuation',
+        sourceAttemptId: event.retry.sourceAttemptId,
+        recoveryMode: 'native_session',
+      }, 'preferred AgentClass continuation wake authorized');
+    }
+    if (event.wakeKind !== 'capacity') return decision(event, { type: 'no_op' }, 'availability wake has no eligible work');
     if (!event.taskId || !event.subtaskId || !snapshot.capacityBlockedAt) return decision(event, { type: 'no_op' }, 'no capacity block is eligible');
     const elapsed = Date.parse(event.occurredAt) - Date.parse(snapshot.capacityBlockedAt);
     if (!Number.isFinite(elapsed) || elapsed < snapshot.recheckAfterMs) return decision(event, { type: 'no_op' }, 'capacity recheck interval has not elapsed');
@@ -386,4 +526,11 @@ function deterministicAttemptId(eventId: string, subtaskId: string, agentClassNa
 
 function deterministicTaskId(eventId: string): string {
   return `task_${eventId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function addMilliseconds(value: string, milliseconds: number): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp + milliseconds).toISOString()
+    : value;
 }

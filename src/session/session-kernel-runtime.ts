@@ -1,4 +1,4 @@
-import type { KernelDecision } from '../kernel/control-kernel.js';
+import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import type { KernelRuntime } from '../kernel/kernel-control-loop.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
@@ -38,7 +38,7 @@ export class SessionKernelRuntime {
     return { apply: decision => this.apply(decision, userInput) };
   }
 
-  private async apply(decision: KernelDecision, userInput: string) {
+  private async apply(decision: KernelDecision, userInput: string): Promise<KernelEvent | null> {
     switch (decision.action.type) {
       case 'reject_request':
         this.deps.callbacks.appendOutput(this.deps.presentation.formatKernelRejection(decision.reason));
@@ -76,9 +76,12 @@ export class SessionKernelRuntime {
         return null;
       }
       case 'wait_for_capacity':
+      case 'wait_for_retry':
       case 'probe_capacity':
       case 'dispatch_attempt':
       case 'complete_task':
+      case 'request_replan':
+      case 'resolve_recovery':
         throw new Error(`${decision.action.type} must be applied by the execution Runtime`);
     }
   }

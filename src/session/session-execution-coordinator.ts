@@ -18,7 +18,13 @@ import type { KernelExecutorStatusProjector } from '../execution/kernel-executor
 import type { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import type { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import type { SubtaskAttemptRunner, SubtaskAttemptOutcome } from '../execution/subtask-attempt-runner.js';
-import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
+import {
+  ControlKernel,
+  type KernelAttemptFact,
+  type KernelDecision,
+  type KernelEvent,
+  type KernelSnapshot,
+} from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 
 interface FocusContext {
@@ -87,6 +93,7 @@ export class KernelExecutionRuntime {
     attemptedAgentClasses: Set<string>,
     graphState: 'ready' | 'missing' | 'conflict' = 'ready',
     stableFacts: DispatchStableFacts = this.buildDispatchStableFacts(),
+    attempts: KernelAttemptFact[] = [],
   ): KernelSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const subtasks = this.deps.subtaskRepo.listByTask(taskId);
@@ -116,6 +123,12 @@ export class KernelExecutionRuntime {
       attemptedAgentClasses: [...attemptedAgentClasses],
       executorStatuses: stableFacts.executorStatuses,
       correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
+      attempts,
+      generationId: `generation_${taskId}_1`,
+      graphRevision: 1,
+      automaticReplansUsed: 0,
+      recoverySafety: 'workspace_reconcilable',
+      automaticRecoveryAllowed: true,
     };
   }
 
@@ -139,6 +152,7 @@ export class KernelExecutionRuntime {
       completionContract: unknown;
       violations: Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }>['violations'];
     }>;
+    attemptFacts: KernelAttemptFact[];
     finishExecution(lines: string[], scheduleNext?: boolean): Promise<void>;
   }): Promise<KernelEvent | null> {
     const { decision } = input;
@@ -211,12 +225,31 @@ export class KernelExecutionRuntime {
           executorName: outcome.executorName, taskId: action.taskId, subtaskId: action.subtaskId, output: outcome.output,
         }));
       }
-      return this.eventFromDecision(decision, {
+      const executionEvent = this.eventFromDecision(decision, {
         type: 'execution_outcome', taskId: action.taskId, subtaskId: action.subtaskId,
         attemptId: outcome.attemptId,
-        terminalKind: outcome.outcome === 'completed' ? 'completed' : outcome.outcome,
-        errorCode: outcome.outcome === 'executor_failed' ? 'executor_failed' : outcome.outcome === 'cancelled_or_stale' ? 'cancelled_or_stale' : null,
+        terminalKind: outcome.outcome === 'completed' ? 'completed' : 'failed',
+        agentClassName: action.agentClassName,
+        attemptKind: action.attemptKind,
+        sourceAttemptId: action.sourceAttemptId,
+        failure: outcome.outcome === 'completed'
+          ? null
+          : outcome.outcome === 'executor_failed'
+            ? outcome.failure
+            : { kind: 'stale', scope: 'attempt', code: 'cancelled_or_stale', summary: outcome.reason },
       });
+      if (executionEvent.type === 'execution_outcome') {
+        input.attemptFacts.unshift({
+          attemptId: outcome.attemptId,
+          agentClassName: action.agentClassName,
+          attemptKind: action.attemptKind,
+          sourceAttemptId: action.sourceAttemptId,
+          terminalKind: executionEvent.terminalKind,
+          failure: executionEvent.failure,
+          completedAt: executionEvent.occurredAt,
+        });
+      }
+      return executionEvent;
     }
     if (action.type === 'probe_capacity') {
       input.attemptedAgentClasses.add(action.agentClassName);
@@ -230,6 +263,19 @@ export class KernelExecutionRuntime {
     if (action.type === 'wait_for_capacity') {
       await this.blockTask(action.taskId, `capacity unavailable for Subtask ${action.subtaskId}`, input.finishExecution);
       return null;
+    }
+    if (action.type === 'wait_for_retry') {
+      await this.blockTask(action.taskId, `retry scheduled for ${action.resumeAt}`, input.finishExecution);
+      return this.eventFromDecision(decision, {
+        type: 'timer_tick',
+        taskId: action.taskId,
+        subtaskId: action.subtaskId,
+        occurredAt: action.resumeAt,
+        wakeKind: 'retry',
+        sourceDecisionId: decision.id,
+        scheduledFor: action.resumeAt,
+        retry: { agentClassName: action.agentClassName, sourceAttemptId: action.sourceAttemptId },
+      });
     }
     if (action.type === 'block_work') {
       if (action.subtaskId && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision') {
@@ -305,6 +351,7 @@ export class KernelExecutionRuntime {
       completionContract: unknown;
       violations: Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }>['violations'];
     }>();
+    const attemptFacts: KernelAttemptFact[] = [];
     const stableFacts = this.buildDispatchStableFacts();
     const initialEvent: KernelEvent = {
       schemaVersion: 1,
@@ -317,12 +364,22 @@ export class KernelExecutionRuntime {
       taskId,
       reason: request.schedulingReason ?? 'authorized execution request',
     };
-    const buildSnapshot = (event: KernelEvent): KernelSnapshot => this.buildDispatchSnapshot(
-      event.taskId ?? taskId,
-      attemptedAgentClasses,
-      graphState,
-      stableFacts,
-    );
+    const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'timer_tick'
+      ? {
+          schemaVersion: 1,
+          type: 'timer',
+          capacityBlockedAt: null,
+          recheckAfterMs: 0,
+          capacityAgentClasses: [],
+          executorStatuses: stableFacts.executorStatuses,
+        }
+      : this.buildDispatchSnapshot(
+          event.taskId ?? taskId,
+          attemptedAgentClasses,
+          graphState,
+          stableFacts,
+          attemptFacts,
+        );
     const workflow = new DurableKernelWorkflow({
       kernel: this.deps.controlKernel,
       buildSnapshot,
@@ -336,15 +393,16 @@ export class KernelExecutionRuntime {
           progressTracker,
           attemptedAgentClasses,
           correctionInputs,
+          attemptFacts,
           finishExecution,
         }),
       },
     });
-    await this.recoverExpiredAttempts(workflow);
+    await this.recoverExpiredAttempts(workflow, attemptFacts);
     await workflow.submit(initialEvent);
   }
 
-  private async recoverExpiredAttempts(workflow: KernelWorkflow): Promise<void> {
+  private async recoverExpiredAttempts(workflow: KernelWorkflow, attemptFacts: KernelAttemptFact[]): Promise<void> {
     for (const workUnit of this.deps.workUnitClaimService.sweepExpired()) {
       if (!workUnit.claimedTaskId || !workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
       const task = this.deps.taskRuntimeService.findTask(workUnit.claimedTaskId);
@@ -359,7 +417,7 @@ export class KernelExecutionRuntime {
         agentClassName: workUnit.agentClassName,
       });
       const occurredAt = new Date().toISOString();
-      await workflow.submit({
+      const event: Extract<KernelEvent, { type: 'execution_outcome' }> = {
         schemaVersion: 1,
         type: 'execution_outcome',
         id: `heartbeat_event_${workUnit.claimedAttemptId}`,
@@ -370,9 +428,22 @@ export class KernelExecutionRuntime {
         taskId: task.id,
         subtaskId: subtask.id,
         attemptId: workUnit.claimedAttemptId,
-        terminalKind: 'heartbeat_lost',
-        errorCode: 'heartbeat_lost',
+        terminalKind: 'failed',
+        agentClassName: workUnit.agentClassName,
+        attemptKind: 'primary',
+        sourceAttemptId: null,
+        failure: { kind: 'heartbeat_lost', scope: 'agent_class', code: 'heartbeat_lost', summary: 'WorkUnit heartbeat lost' },
+      };
+      attemptFacts.unshift({
+        attemptId: workUnit.claimedAttemptId,
+        agentClassName: workUnit.agentClassName,
+        attemptKind: 'primary',
+        sourceAttemptId: null,
+        terminalKind: 'failed',
+        failure: event.failure,
+        completedAt: occurredAt,
       });
+      await workflow.submit(event);
       this.recordTaskEvent(task.id, subtask.id, 'work_unit_heartbeat_lost', workUnit.id, {
         workUnitId: workUnit.id,
         attemptId: workUnit.claimedAttemptId,
@@ -425,6 +496,10 @@ export class KernelExecutionRuntime {
       sessionId: this.deps.sessionId,
       taskId: task.id,
       subtaskId: subtask.id,
+      wakeKind: 'capacity',
+      sourceDecisionId: input.blockedDecisionId,
+      scheduledFor: input.occurredAt,
+      retry: null,
     };
     const workflow = new DurableKernelWorkflow({
       kernel: this.deps.controlKernel,
@@ -450,6 +525,7 @@ export class KernelExecutionRuntime {
             progressTracker,
             attemptedAgentClasses,
             correctionInputs,
+            attemptFacts: [],
             finishExecution,
           });
         },
@@ -557,12 +633,7 @@ export class KernelExecutionRuntime {
     this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
       agentClassName,
       outcome: succeeded ? 'succeeded' : 'failed',
-      failure: succeeded ? null : {
-        kind: 'unknown',
-        scope: 'attempt',
-        code: 'legacy_unclassified_executor_failure',
-        summary: outcome.outcome === 'executor_failed' ? outcome.error : 'unknown executor failure',
-      },
+      failure: succeeded ? null : outcome.outcome === 'executor_failed' ? outcome.failure : null,
     });
   }
 
