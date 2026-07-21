@@ -182,6 +182,31 @@ function createRuntime(options: {
 }
 
 describe('ExecutionRuntime', () => {
+  it('returns a class-level configuration failure instead of substituting the default executor', async () => {
+    const defaultExecutor = createExecutor('codex-cli', createResult('must not run'));
+    const runtime = createRuntime({ defaultExecutor });
+    const result = await runtime.run({
+      taskId: 'task_runtime',
+      executionId: 'exec_unbound',
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('unbound-agent'),
+        agentClass: createAgentClass('unbound-agent'),
+        acceptance: [],
+        expectedOutput: 'summary',
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      executorName: 'unbound-agent',
+      failure: { kind: 'configuration', scope: 'agent_class', code: 'executor_adapter_unbound' },
+    });
+    expect(defaultExecutor.execute).not.toHaveBeenCalled();
+  });
+
   it('creates an isolated default executor per run so aborting one task cannot stop another', async () => {
     let resolveFirst!: (result: ExecutorResult) => void;
     let resolveSecond!: (result: ExecutorResult) => void;

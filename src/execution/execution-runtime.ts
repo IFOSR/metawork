@@ -19,7 +19,7 @@ import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
+import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -212,10 +212,6 @@ export class ExecutorRegistry {
     });
   }
 
-  resolveRequired(name: string): ExecutorAdapter {
-    return this.resolve(name) ?? this.deps.defaultExecutor;
-  }
-
   inspect(name: string): ExecutorRegistrationInspection {
     if (name === this.deps.defaultExecutor.name) {
       return { configured: true, bindingSource: 'default', adapterName: name };
@@ -314,7 +310,37 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
-    const executor = this.registry.resolveRequired(input.spec.agentClass.name);
+    const executor = this.registry.resolve(input.spec.agentClass.name);
+    if (!executor) {
+      const summary = `No Executor Adapter is configured for AgentClass ${input.spec.agentClass.name}`;
+      return {
+        taskId: input.taskId,
+        executionId: input.executionId,
+        status: 'failed',
+        executorName: input.spec.agentClass.name,
+        output: '',
+        error: summary,
+        failure: kernelFailure({
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'executor_adapter_unbound',
+          summary,
+        }),
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 0,
+        userPrompt: input.executorInput.context.currentSubtask.goal,
+        preferences: [],
+        context: input.executorInput.context,
+        recovery: { recoverable: false, blockReason: summary },
+        runtime: {
+          attemptedExecutors: [input.spec.agentClass.name],
+          fallbackExecutors: [],
+          fallbackReason: null,
+          fallbackLines: [],
+        },
+      };
+    }
     const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
     this.registerActive(input.taskId, executionToken, input.spec.workUnit.id, executor);
     try {
