@@ -185,6 +185,8 @@ export class MetaclawSession {
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
   private readonly effectOutboxRepo: KernelEffectOutboxRepo;
+  private readonly taskExecutionEvidenceRepo: TaskExecutionEvidenceRepo;
+  private readonly attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
@@ -228,11 +230,13 @@ export class MetaclawSession {
     this.taskEventRepo = new TaskEventRepo(deps.db);
     this.workGraphRevisionRepo = new WorkGraphRevisionRepo(deps.db);
     this.effectOutboxRepo = new KernelEffectOutboxRepo(deps.db);
+    this.taskExecutionEvidenceRepo = new TaskExecutionEvidenceRepo(deps.db);
+    this.attemptReceiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
       this.workGraphRevisionRepo,
-      new TaskExecutionEvidenceRepo(deps.db),
+      this.taskExecutionEvidenceRepo,
     );
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
@@ -302,7 +306,7 @@ export class MetaclawSession {
       subtaskRepo: this.subtaskRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
       effectOutboxRepo: this.effectOutboxRepo,
-      attemptReceiptRepo: new ExecutorAttemptReceiptRepo(deps.db),
+      attemptReceiptRepo: this.attemptReceiptRepo,
       subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
@@ -771,17 +775,20 @@ export class MetaclawSession {
     const task = this.taskRuntimeService.findTask(decision.action.taskId);
     if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
     this.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
-    const evidence = this.deps.db.prepare(`
-      SELECT id, title, content FROM task_execution_evidence
-      WHERE task_id = ? AND kind = 'task_evidence'
-      ORDER BY created_at ASC, id ASC
-    `).all(task.id) as Array<{ id: string; title: string; content: string }>;
-    const failures = this.deps.db.prepare(`
-      SELECT attempt_id, agent_class_name, terminal_state, failure_json, error_code, error_detail
-      FROM executor_attempt_receipts
-      WHERE task_id = ? AND graph_revision = ? AND terminal_state <> 'completed'
-      ORDER BY completed_at ASC, attempt_id ASC
-    `).all(task.id, decision.action.sourceRevision) as Array<Record<string, unknown>>;
+    const evidence = this.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(
+      task.id,
+      decision.action.generationId,
+    );
+    const failures = this.attemptReceiptRepo.listByTask(task.id)
+      .filter(item =>
+        item.generationId === decision.action.generationId
+        && item.graphRevision === decision.action.sourceRevision
+        && item.terminalState !== 'completed'
+      )
+      .sort((left, right) =>
+        left.completedAt.localeCompare(right.completedAt)
+        || left.attemptId.localeCompare(right.attemptId)
+      );
     const request = [
       'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
       `Task id: ${task.id}`,
@@ -795,12 +802,12 @@ export class MetaclawSession {
         summary: item.content.slice(0, 2_000),
       })))}`,
       `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
-        attemptId: item.attempt_id,
-        agentClassName: item.agent_class_name,
-        terminalState: item.terminal_state,
-        failure: item.failure_json ? JSON.parse(String(item.failure_json)) : null,
-        code: item.error_code,
-        summary: String(item.error_detail ?? '').slice(0, 1_000),
+        attemptId: item.attemptId,
+        agentClassName: item.agentClassName,
+        terminalState: item.terminalState,
+        failure: item.failure,
+        code: item.errorCode,
+        summary: String(item.errorDetail ?? '').slice(0, 1_000),
       })))}`,
       'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
     ].join('\n\n').slice(0, 24_000);
@@ -828,7 +835,7 @@ export class MetaclawSession {
 
   private buildPlanAdmissionSnapshot(
     event: Extract<KernelEvent, { type: 'plan_proposed' }>,
-    executorCatalog = this.planningContextBuilder.build({ userInput: '' }).executorCatalog,
+    executorCatalog = this.planningContextBuilder.getExecutorCatalog(),
     userInput = event.proposal.task.goal ?? '',
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
     return {

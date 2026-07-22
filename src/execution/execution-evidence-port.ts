@@ -43,6 +43,15 @@ interface EvidenceRow {
   created_at: string;
 }
 
+export interface TaskEvidenceRecord {
+  id: string;
+  taskId: string;
+  sourceId: string;
+  title: string;
+  content: string;
+  createdAt: string;
+}
+
 export class TaskExecutionEvidenceRepo {
   constructor(private readonly db: Database.Database) {}
 
@@ -87,6 +96,36 @@ export class TaskExecutionEvidenceRepo {
       WHERE task_id = ? AND exact_only = 0
       ORDER BY created_at ASC, id ASC
     `).all(taskId) as EvidenceRow[];
+  }
+
+  listTaskEvidenceByGeneration(taskId: string, generationId: string): TaskEvidenceRecord[] {
+    const rows = this.db.prepare(`
+      SELECT evidence.id, evidence.task_id, evidence.source_id, evidence.title,
+        evidence.content, evidence.created_at
+      FROM task_execution_evidence evidence
+      INNER JOIN subtasks subtask
+        ON subtask.id = evidence.source_id
+       AND subtask.task_id = evidence.task_id
+      WHERE evidence.task_id = ?
+        AND evidence.kind = 'task_evidence'
+        AND subtask.generation_id = ?
+      ORDER BY evidence.created_at ASC, evidence.id ASC
+    `).all(taskId, generationId) as Array<{
+      id: string;
+      task_id: string;
+      source_id: string;
+      title: string;
+      content: string;
+      created_at: string;
+    }>;
+    return rows.map(row => ({
+      id: row.id,
+      taskId: row.task_id,
+      sourceId: row.source_id,
+      title: row.title,
+      content: row.content,
+      createdAt: row.created_at,
+    }));
   }
 
   materializeInteraction(input: {

@@ -17,6 +17,9 @@ import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
 import { completionResponse } from '../support/completion-response.js';
 import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
+import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
+import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
+import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
 
 function createConfig(): Config {
   return {
@@ -109,6 +112,41 @@ function createSession(
   });
   session.initialize({ resumeStartupTasks: false });
   return { db, session, taskRepo, memoryEngine, executor, kernelDecisionRepo: new KernelDecisionRepo(db), sessionId };
+}
+
+function seedPriorGenerationEvidence(db: Database.Database, taskId: string): void {
+  const now = '2026-07-20T00:00:00.000Z';
+  new SubtaskRepo(db).upsert({
+    id: 'subtask_prior_generation',
+    taskId,
+    graphRevision: 99,
+    generationId: 'generation_prior',
+    title: 'Prior generation work',
+    goal: 'Prior generation work',
+    status: 'done',
+    dependencies: [],
+    contextRefs: [],
+    requiredCapabilities: ['workspace-engineering'],
+    preferredAgentClassList: ['codex-cli'],
+    expectedOutput: 'historical result',
+    acceptance: [],
+    riskLevel: 'low',
+    result: 'must not leak into the current generation',
+    artifacts: [],
+    verification: { warnings: [], completionSchemaVersion: 2 },
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  new TaskExecutionEvidenceRepo(db).upsert({
+    id: 'evidence_prior_generation',
+    taskId,
+    kind: 'task_evidence',
+    sourceId: 'subtask_prior_generation',
+    title: 'Prior generation evidence',
+    content: 'must not leak into the current generation',
+    createdAt: now,
+  });
 }
 
 // Behavior-first coverage of the PlanningAgent -> PolicyKernel -> Runtime seam.
@@ -229,9 +267,12 @@ describe('natural-language planning/kernel path', () => {
 
   it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {
     let plannerCalls = 0;
+    let replanRequest = '';
+    const contextBuild = vi.spyOn(PlanningContextBuilder.prototype, 'build');
     const harness = createSession('sess_replan', context => {
       plannerCalls += 1;
       if (plannerCalls === 1) return plan();
+      replanRequest = context.userInput;
       const taskId = context.userInput.match(/Task id: (\S+)/)?.[1] ?? null;
       return plan({
         id: 'plan_replan',
@@ -243,24 +284,32 @@ describe('natural-language planning/kernel path', () => {
       });
     });
     vi.mocked(harness.executor.execute)
-      .mockImplementationOnce(async input => ({
-        success: true,
-        output: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-          schemaVersion: 2,
-          status: 'failed',
-          subtaskId: input.context.currentSubtask.id,
-          failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
-        })}`,
-        exitCode: 0,
-        durationMs: 10,
-      }))
+      .mockImplementationOnce(async input => {
+        seedPriorGenerationEvidence(harness.db, input.context.identity.taskId);
+        return {
+          success: true,
+          output: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+            schemaVersion: 2,
+            status: 'failed',
+            subtaskId: input.context.currentSubtask.id,
+            failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
+          })}`,
+          exitCode: 0,
+          durationMs: 10,
+        };
+      })
       .mockImplementationOnce(async input => ({
         success: true, output: completionResponse(input, 'replanned work done'), exitCode: 0, durationMs: 10,
       }));
 
     await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
 
+    const contextBuildCalls = contextBuild.mock.calls.length;
+    contextBuild.mockRestore();
     expect(plannerCalls).toBe(2);
+    expect(replanRequest).not.toContain('evidence_prior_generation');
+    expect(replanRequest).not.toContain('must not leak into the current generation');
+    expect(contextBuildCalls).toBe(2);
     expect(harness.executor.execute).toHaveBeenCalledTimes(2);
     expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
     expect(harness.db.prepare(`

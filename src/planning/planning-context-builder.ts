@@ -10,6 +10,10 @@ export interface PlanningContextBuilderDeps {
 export class PlanningContextBuilder {
   constructor(private readonly deps: PlanningContextBuilderDeps) {}
 
+  getExecutorCatalog(): PlanningContext['executorCatalog'] {
+    return getPlannerExecutorCatalog();
+  }
+
   build(input: {
     userInput: string;
     initialContext?: PlanningContext['initialContext'];
@@ -29,7 +33,7 @@ export class PlanningContextBuilder {
         allowFileModification: true,
         allowExternalGateway: true,
       },
-      executorCatalog: getPlannerExecutorCatalog(),
+      executorCatalog: this.getExecutorCatalog(),
       timeoutMs: this.deps.getTimeoutMs(),
     };
   }
