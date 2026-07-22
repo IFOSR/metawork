@@ -4,6 +4,22 @@ import type { KernelDecisionApplicationRecord, KernelWorkflowStore } from '../..
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
+  it('reads the Task only once before draining due recovery work', async () => {
+    const task = {
+      id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked', updatedAt: '2026-07-22T00:00:00.000Z',
+    };
+    const findTask = vi.fn().mockReturnValue(task);
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: { findTask },
+      taskEventRepo: {},
+    } as never);
+    vi.spyOn(runtime, 'execute').mockResolvedValue();
+
+    await runtime.recoverDue(task.id);
+
+    expect(findTask).toHaveBeenCalledTimes(2);
+  });
+
   it('resolves loop-stable executor facts only once per execution', async () => {
     const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
     const subtask = {

@@ -102,9 +102,9 @@ export class KernelExecutionRuntime {
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
-    const before = this.deps.taskRuntimeService.findTask(taskId)?.updatedAt ?? null;
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return false;
+    const before = task.updatedAt;
     await this.execute({
       taskId,
       request: {
