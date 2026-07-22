@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/session/session-execution-coordinator.js';
 import type { KernelDecisionApplicationRecord, KernelWorkflowStore } from '../../src/kernel/kernel-workflow.js';
-import type { KernelEvent } from '../../src/kernel/control-kernel.js';
+import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
   it('resolves loop-stable executor facts only once per execution', async () => {
@@ -64,6 +64,72 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     expect(supportsResponseOnly).toHaveBeenCalledTimes(1);
     expect(supportsContinuation).toHaveBeenCalledTimes(1);
     expect(recordExecutionOutcome).not.toHaveBeenCalled();
+  });
+
+  it('derives recovery safety from the failed Subtask instead of the ready frontier', () => {
+    const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
+    const subtask = {
+      id: 'subtask_external', taskId: task.id, title: 'External write', goal: 'Publish once',
+      status: 'awaiting_decision',
+      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['unknown-capability'],
+    };
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue(task), getCurrentRunningTask: vi.fn().mockReturnValue(task),
+      },
+      subtaskRepo: { listByTask: vi.fn().mockReturnValue([subtask]) },
+      subtaskHandoffRepo: { listByTask: vi.fn().mockReturnValue([]) },
+      attemptReceiptRepo: { listByTask: vi.fn().mockReturnValue([]) },
+      workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
+      taskEventRepo: {},
+    } as never);
+    const snapshot = (runtime as unknown as {
+      buildDispatchSnapshot(
+        taskId: string,
+        attemptedAgentClasses: Set<string>,
+        graphState: 'ready',
+        stableFacts: {
+          executorStatuses: []; correctionSupportedAgentClasses: []; nativeContinuationAgentClasses: [];
+        },
+        attempts: [],
+        recoverySubtaskId: string,
+      ): KernelSnapshot;
+    }).buildDispatchSnapshot(
+      task.id,
+      new Set(),
+      'ready',
+      { executorStatuses: [], correctionSupportedAgentClasses: [], nativeContinuationAgentClasses: [] },
+      [],
+      subtask.id,
+    );
+
+    expect(snapshot).toMatchObject({
+      type: 'dispatch',
+      recoverySafety: 'external_non_idempotent',
+      automaticRecoveryAllowed: false,
+    });
+    const decision = new ControlKernel().decide({
+      schemaVersion: 2,
+      type: 'execution_outcome',
+      id: 'event_external_failure',
+      correlationId: 'task_1',
+      causationId: 'attempt_1',
+      occurredAt: '2026-07-22T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: task.id,
+      subtaskId: subtask.id,
+      attemptId: 'attempt_1',
+      terminalKind: 'failed',
+      agentClassName: 'codex-cli',
+      attemptKind: 'primary',
+      sourceAttemptId: null,
+      failure: {
+        kind: 'network', scope: 'agent_class', code: 'network_failure', summary: 'network unavailable',
+      },
+    }, snapshot);
+    expect(decision.action).toEqual({
+      type: 'block_work', taskId: task.id, subtaskId: subtask.id,
+    });
   });
 });
 

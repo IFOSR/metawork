@@ -126,6 +126,7 @@ export class KernelExecutionRuntime {
     graphState: 'ready' | 'missing' | 'conflict' = 'ready',
     stableFacts: DispatchStableFacts = this.buildDispatchStableFacts(),
     attempts: KernelAttemptFact[] = [],
+    recoverySubtaskId: string | null = null,
   ): KernelSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const activeRevision = this.deps.workGraphRevisionRepo.findActive(taskId);
@@ -160,6 +161,10 @@ export class KernelExecutionRuntime {
         && handoffs.has(`${dependency.fromSubtaskId}\u0000${subtask.id}`)
       )
     ).map(subtask => subtask.id);
+    const recoverySubtask = recoverySubtaskId
+      ? subtasks.find(subtask => subtask.id === recoverySubtaskId)
+      : subtasks.find(subtask => readyFrontier.includes(subtask.id));
+    const recoverySafety = deriveRecoverySafety(recoverySubtask?.requiredCapabilities ?? []);
     return {
       schemaVersion: 2,
       type: 'dispatch',
@@ -183,13 +188,9 @@ export class KernelExecutionRuntime {
       automaticReplansUsed: activeRevision
         ? this.deps.workGraphRevisionRepo.countAutomaticReplans(taskId, activeRevision.generationId)
         : 0,
-      recoverySafety: deriveRecoverySafety(
-        subtasks.find(subtask => readyFrontier.includes(subtask.id))?.requiredCapabilities ?? [],
-      ),
-      automaticRecoveryAllowed: subtasks.some(subtask => readyFrontier.includes(subtask.id))
-        ? deriveRecoverySafety(
-            subtasks.find(subtask => readyFrontier.includes(subtask.id))?.requiredCapabilities ?? [],
-          ) !== 'external_non_idempotent'
+      recoverySafety,
+      automaticRecoveryAllowed: recoverySubtask
+        ? recoverySafety !== 'external_non_idempotent'
         : true,
     };
   }
@@ -523,6 +524,7 @@ export class KernelExecutionRuntime {
           graphState,
           stableFacts,
           attemptFacts,
+          event.type === 'execution_outcome' ? event.subtaskId : null,
         );
     const workflow = new DurableKernelWorkflow({
       kernel: this.deps.controlKernel,

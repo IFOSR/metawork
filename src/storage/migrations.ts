@@ -1161,6 +1161,22 @@ const MIGRATIONS: Migration[] = [
               created_at, created_at
             FROM kernel_decisions
           `);
+          if (tableExists(db, 'tasks')) {
+            db.exec(`
+              UPDATE kernel_decision_applications
+              SET status = 'applied',
+                  error_summary = NULL,
+                  applied_at = created_at,
+                  updated_at = created_at
+              WHERE decision_id IN (
+                SELECT kernel_decisions.id
+                FROM kernel_decisions
+                INNER JOIN tasks ON tasks.id = kernel_decisions.task_id
+                WHERE kernel_decisions.action = 'complete_task'
+                  AND tasks.status = 'done'
+              )
+            `);
+          }
         }
       });
       migrate();

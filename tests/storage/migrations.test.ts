@@ -370,6 +370,27 @@ describe('runMigrations', () => {
       'decision_v23', 'event_v23', 'correlation_v23', 'session_v23', 'task_v5',
       'subtask_v4', '2026-07-21T00:00:00.000Z',
     );
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, created_at, updated_at, resources_json,
+        snapshot_json, dependencies_json, priority_json, injected_prefs_json,
+        last_scheduling_reason, last_interruption_reason, interruption_count, artifacts_json
+      ) VALUES (?, ?, ?, ?, '', ?, ?, '[]', '[]', '[]', '{}', '[]', '', '', 0, '[]')
+    `).run(
+      'task_done', 'Completed Task', 'Completed Goal', 'done',
+      '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z',
+    );
+    db.prepare(`
+      INSERT INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, created_at
+      ) VALUES (?, 1, ?, 'execution_outcome', ?, NULL, ?, ?, NULL, NULL, '{}', '{}', '{}',
+        'complete_task', 'legacy completed task', ?)
+    `).run(
+      'decision_v23_complete', 'event_v23_complete', 'correlation_v23_complete',
+      'session_v23', 'task_done', '2026-07-21T00:00:00.000Z',
+    );
     db.exec(`
       DELETE FROM schema_version WHERE version = 24;
       DELETE FROM kernel_decision_applications;
@@ -394,6 +415,12 @@ describe('runMigrations', () => {
     `).get('decision_v23')).toEqual({
       status: 'uncertain',
       error_summary: 'v23 decision has no durable application proof',
+    });
+    expect(db.prepare(`
+      SELECT status, error_summary FROM kernel_decision_applications WHERE decision_id = ?
+    `).get('decision_v23_complete')).toEqual({
+      status: 'applied',
+      error_summary: null,
     });
     expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
   });
