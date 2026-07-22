@@ -16,6 +16,24 @@ export interface ExecutorInput {
     continuationToken: string | null;
     onContinuationToken?(token: string): void;
   };
+  sandbox?: {
+    attemptId: string;
+    taskId: string;
+    generationId: string;
+    subtaskId: string;
+    workUnitId: string;
+    leaseToken: string;
+    idempotencyKey: string;
+    workspacePath: string;
+    workspaceId: string;
+    sourcePath: string;
+    inputsPath: string;
+    handoffsPath: string;
+    gitMetadataPath: string | null;
+    controlNetwork: string;
+    capabilityBinding: { mcpUrl: string; jsonUrl: string; bearerToken: string } | null;
+    onContainerCreated?(containerId: string): void;
+  };
 }
 
 export interface ExecutorProgressEvent {

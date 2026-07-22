@@ -125,7 +125,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       automaticRecoveryAllowed: false,
     });
     const decision = new ControlKernel().decide({
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'execution_outcome',
       id: 'event_external_failure',
       correlationId: 'task_1',

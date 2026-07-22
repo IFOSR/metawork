@@ -1,0 +1,66 @@
+# ADR-0024: Resource Partition, Sandboxed Attempts And Runtime Elevation
+
+- **Status**: Accepted
+- **Date**: 2026-07-22
+- **Scope**: Phase 5 resource identity, persistent workspace, resource leases, per-attempt Docker sandbox, runtime capability elevation and recovery
+- **Amends**: ADR-0021, ADR-0023
+- **Governed by**: ADR-0020
+
+## Context
+
+Phase 4 made authorization and recovery durable but still runs Executor adapters as host child processes, gives them the process working directory, and validates artifacts mainly after execution. The historical `worktree_leases` table has no production consumer and does not express attempt ownership, access mode, partition identity, wait relationships or crash-safe sandbox lifecycle. Enabling concurrency on this base would make conflicts and external effects nondeterministic.
+
+Requiring Planner to predict concrete paths, network targets, secrets and external objects would also move runtime facts into the semantic planning seam. Most such needs appear only while an Executor is working. Phase 5 therefore needs a final resource model and a runtime approval boundary without creating a second strategic interpreter.
+
+## Decision
+
+### Resource authority
+
+MetaClaw introduces an independent pure Resource Model. `PartitionIdentity` is a discriminated union for repository, worktree, mount-relative path, logical resource and external object. It owns canonical keys, read/write overlap and conflict rules plus grant/lease invariants. It owns neither scheduling nor filesystem operations.
+
+Planner continues to propose delivery capabilities through Work Graph v5 and does not enumerate concrete resource claims. Runtime derives a bounded default claim from the Kernel-visible AgentClass permission profile, Task-bound resources and persistent workspace identity. An Executor that needs more submits a structured capability request. This explicitly replaces the roadmap shorthand that said Planner itself would enumerate resource claims.
+
+ControlKernel remains the only strategic authority. Kernel v3 may grant a bounded capability, deny it and let the Executor continue with the reason, or deny it and escalate the reason to Planner. Unknown or fuzzy requests fail closed. Kernel reads no repository, clock, Docker state, raw stderr or host path; Runtime supplies normalized versioned facts.
+
+### Container-short, workspace-durable execution
+
+Every execution attempt uses a new disposable Docker container. Every Task generation + Subtask owns a persistent workspace record and immutable checkpoints. Retry and fallback create new containers and may resume only the authorized workspace state. A paused container is retained only during bounded automatic Kernel/Planner review; waiting for a user or replan checkpoints the workspace, terminates the attempt, destroys the container and releases active leases.
+
+The original repository, Task evidence and dependency inputs are read-only. The private workspace and `/tmp` are writable. Git executions use a MetaClaw-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
+
+Attempt containers are non-root with read-only root filesystem, dropped Linux capabilities, no-new-privileges, bounded CPU/memory/PIDs/logs, no host namespaces/devices/Docker socket, and no direct ungoverned egress. The trusted Runtime uses a Docker Engine adapter to create sibling containers; attempt containers never receive the Engine endpoint.
+
+Provider credentials also remain in the trusted Runtime. Each attempt receives only a random attempt-scoped token and a fixed internal model-gateway URL; the gateway binds the token to the configured provider endpoint and process lifetime. Canonical Codex keeps its own nested `workspace-write` sandbox and non-interactive fail-closed approval policy. Because that nested Linux sandbox requires user-namespace syscalls, the Docker adapter may add `seccomp=unconfined` only for the pinned canonical Codex attempt image; non-root UID, read-only rootfs, dropped capabilities, no-new-privileges, internal networking and all mount boundaries remain mandatory. No custom image inherits this exception.
+
+### Default profiles and elevation
+
+Default authority is an AgentClass fact, not a Planner field. Canonical definitions own immutable execution image and permission profile bindings. Custom AgentClasses must provide a resolvable immutable image and controlled profile; missing or drifted images are configuration failures and never fall back to host execution. Permission details are excluded from the Planner-safe catalog.
+
+The capability request protocol is deliberately small: capability, resource, operation, reason and suggested once/attempt scope. Runtime canonicalizes and binds identity. Read/network grants are attempt-bound with policy TTL/use/byte budgets; secrets, external mutations and repository promotions are one-shot. Stable fingerprints make request, Decision, grant and external effect handling idempotent.
+
+External mutation is always mediated by a Runtime capability proxy and effect outbox. Approval never grants a container direct host write. Platform escape, Docker socket/device/host namespace access, proxy bypass, system credential probing, cross-Task access and persistent security weakening are non-overridable denials. Business-side destructive actions may proceed only with an exact durable user authorization and a one-shot mediated effect.
+
+### User authorization
+
+PlanningAgentPlan v6 adds only an authorization-resolution action for a pending exact request; Work Graph remains v5. Planner may interpret an ordinary-language approve/deny response but cannot change the request target or scope. Deterministic commands and connector actions produce the same `permission_resolution_received` event. User input records an authorization fact; ControlKernel still issues the final bounded grant.
+
+### Persistence and recovery
+
+SQLite v25 separates resource leases/waits, workspace/checkpoints/content references, permission requests/grants/user authorizations and attempt sandbox lifecycle. The old unused worktree lease shape becomes legacy audit. Resource and WorkUnit leases are attempt-bound, heartbeat-driven and idempotent. Startup reconciles database facts with Docker labels before accepting input and converts missing/orphaned/paused containers into normalized facts for the durable Kernel workflow.
+
+Phase 5 remains serial. Partition conflicts and wait relationships are exercised now so Phase 6 may derive concurrent dispatch without changing identity, authorization or recovery semantics.
+
+## Ownership And Dependencies
+
+- Resource Model owns pure identity, overlap, conflict and lease/grant invariants.
+- Routing/AgentClass catalog owns controlled default permission profiles and image bindings.
+- ControlKernel owns grant/deny/escalate, partition wait and recovery policy through the single `decide` seam.
+- Execution Runtime owns workspace, lease application, Docker lifecycle, capability broker, checkpoint and normalized observations.
+- Storage, Docker, Git/CAS and external providers implement ports owned by Resource/Execution.
+- Session, Commands, TUI and Gateway submit events and project status; they never write grants or leases directly.
+
+Kernel may not depend on Docker, Storage, Session, Planning implementation or raw paths. Runtime may not infer permission from stderr or widen a grant. Executor adapters may not run on the host or directly mutate external systems.
+
+## Consequences
+
+Executor work becomes reproducible and recoverable across short-lived containers while large workspace contents stay outside SQLite. Permission interruptions are auditable Kernel events rather than hidden Adapter prompts. Planner remains focused on semantic decomposition and is involved only when an otherwise valid request lacks explicit authority. Custom Executor registration becomes stricter because an image and permission profile are mandatory. Docker becomes a prerequisite for executable work, but non-executing product paths remain available without it.

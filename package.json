@@ -6,11 +6,12 @@
   "license": "Apache-2.0",
   "bin": {
     "anyfusion": "./dist/index.js",
-    "metaclaw": "./dist/index.js"
+    "metaclaw": "./dist/index.js",
+    "request_capability": "./dist/capability-request-cli.js"
   },
   "scripts": {
     "dev": "tsup --watch",
-    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v5.schema.json",
+    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v6.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",

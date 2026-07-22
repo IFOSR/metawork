@@ -46,6 +46,10 @@ SQLite schema v22 renames the previous production table to read-only `subtasks_v
 
 Phase 2 stays serial. Phase 3 introduces a `handoff_contract_failed` Kernel event carrying attempt, Subtask, WorkUnit, authorized completion contract, and all violations; it may authorize exactly one same-AgentClass correction attempt with precise trailer feedback. A second failure blocks without fallback or backoff. Phase 4 owns general retry/fallback/backoff/circuit-breaker state. Phase 5 introduces partition leases and a versioned `workspace_state` handoff rather than reserving an untyped placeholder now.
 
+### Phase 5 amendment (2026-07-22)
+
+ADR-0024 delivers the deferred workspace contract. Each Task generation + Subtask now owns a persistent workspace whose immutable checkpoint manifest is the versioned `workspace_state`. A downstream Subtask may compose state only from its completed direct dependencies; Runtime must block a conflict and submit a normalized Kernel fact rather than absorb sibling or user-working-tree state implicitly. Git workspace state identifies the MetaClaw-managed commit/branch/diff facts, while non-Git state identifies the workspace URI, checkpoint and content-addressed objects. Large bodies remain outside SQLite.
+
 ## Consequences
 
 - Existing non-terminal v3 graphs cannot be executed under the new handoff contract and must be parked for natural-language replanning.

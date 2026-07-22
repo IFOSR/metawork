@@ -1,4 +1,7 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
@@ -13,10 +16,19 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { Subtask } from '../../src/core/types.js';
+import { WorkspaceStore } from '../../src/execution/workspace-store.js';
+import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
+import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
+import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
+import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
+import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
+import { buildDefaultResourceClaims } from '../../src/resource/index.js';
+import type { AttemptSandboxPort } from '../../src/execution/attempt-sandbox.js';
 
 function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
-    id, taskId: 'task_phase2', title: id, goal: `complete ${id}`, status: 'ready',
+    id, taskId: 'task_phase2', graphRevision: 1, generationId: 'generation_phase2',
+    title: id, goal: `complete ${id}`, status: 'ready',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
     preferredAgentClassList: ['codex-cli'], expectedOutput: 'summary',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
@@ -68,6 +80,15 @@ function setup(rawResponse: string) {
     supportsResponseOnly: vi.fn().mockReturnValue(true),
     runResponseOnly: vi.fn(),
   };
+  const attemptSandbox: AttemptSandboxPort = {
+    resolveImage: vi.fn(), create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
+    pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), remove: vi.fn(), listManaged: vi.fn(),
+  } as unknown as AttemptSandboxPort;
+  const fixtureRoot = `/tmp/metaclaw-phase2-attempt-runner/${randomUUID()}`;
+  const sourceRoot = join(fixtureRoot, 'source');
+  mkdirSync(sourceRoot, { recursive: true });
+  writeFileSync(join(sourceRoot, 'README.md'), 'fixture\n');
+  const workspaceStore = new WorkspaceStore(join(fixtureRoot, 'store'));
   const runner = new SubtaskAttemptRunner({
     db,
     sessionId: 'session_1',
@@ -76,8 +97,22 @@ function setup(rawResponse: string) {
     workUnitClaimService: new WorkUnitClaimService(workUnitRepo),
     executionRuntime: executionRuntime as never,
     agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
+    workspaceStore,
+    attemptSandbox,
+    resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
+    permissionRepository: new SqlitePermissionRepository(db),
+    kernelWorkflowStore: new KernelWorkflowRepo(db),
+    workspaceRepository: new SqliteWorkspaceRepository(db),
+    sourceRoot,
+    seedSource: false,
+    controlNetwork: 'metaclaw-control',
   });
-  return { db, runner, taskRuntimeService, subtaskRepo, workUnitRepo, executionRuntime, a, b };
+  const defaultResourceGrant = buildDefaultResourceClaims({
+    workspaceId: `workspace-task_phase2-${a.generationId}-${a.id}`,
+    sourceMountId: 'source-task_phase2', inputsMountId: 'inputs-task_phase2', handoffsMountId: 'handoffs-task_phase2',
+    gitMetadataMountId: 'git-task_phase2',
+  });
+  return { db, runner, taskRuntimeService, subtaskRepo, workUnitRepo, executionRuntime, a, b, defaultResourceGrant };
 }
 
 function validResponse(): string {
@@ -97,7 +132,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'completed', output: 'A completed.' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done', result: 'A completed.' });
@@ -115,7 +150,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome.outcome).toBe('contract_failed');
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
@@ -149,7 +184,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
@@ -208,7 +243,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'contract_failed' });
     expect(outcome.outcome === 'contract_failed' ? outcome.violations : []).toContainEqual(expect.objectContaining({
@@ -224,7 +259,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'executor_failed', error: 'progress callback failed' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision' });
@@ -242,7 +277,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
       recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'completed', attemptId: 'attempt_fallback' });
@@ -257,7 +292,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_stale_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
       recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
@@ -269,7 +304,7 @@ describe('SubtaskAttemptRunner', () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh',
+      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(first.outcome).toBe('contract_failed');
     if (first.outcome !== 'contract_failed') return;

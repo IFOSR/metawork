@@ -44,6 +44,10 @@ export class AgentClassService {
     return this.agentClassRepo.findByName(name);
   }
 
+  setResolvedImageId(name: string, imageId: string): void {
+    this.agentClassRepo.setResolvedImageId(name, imageId);
+  }
+
   upsert(agentClass: AgentClass): void {
     if (isBuiltinExecutorName(agentClass.name)) {
       throw new Error(`Cannot overwrite canonical Executor AgentClass: ${agentClass.name}`);

@@ -22,6 +22,7 @@ describe('PlanningContextBuilder', () => {
         allowFileModification: true,
         allowExternalGateway: true,
       },
+      pendingAuthorizationRequest: null,
       executorCatalog: getPlannerExecutorCatalog(),
       timeoutMs: 5_000,
     });

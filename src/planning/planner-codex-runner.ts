@@ -46,7 +46,7 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
       ?? join(process.env.METACLAW_HOME ?? tmpdir(), 'codex', 'planner');
     const schemaPath = this.deps.schemaPath
       ?? process.env.METACLAW_PLANNER_SCHEMA_PATH
-      ?? '/opt/metaclaw/schema/planning-agent-plan-v5.schema.json';
+      ?? '/opt/metaclaw/schema/planning-agent-plan-v6.schema.json';
     const cwd = this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? tmpdir();
     const plannerEnv = buildEnvFromFile(
       this.deps.envFile ?? process.env.METACLAW_PLANNER_ENV_FILE,

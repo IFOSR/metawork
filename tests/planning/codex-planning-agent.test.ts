@@ -17,6 +17,7 @@ function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
       allowFileModification: true,
       allowExternalGateway: true,
     },
+    pendingAuthorizationRequest: null,
     executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 5_000,
     ...overrides,
@@ -35,7 +36,7 @@ function runner(run: (prompt: string) => Promise<string>) {
 
 const VALID_PLAN = JSON.stringify({
   id: 'plan_1',
-  schemaVersion: 5,
+  schemaVersion: 6,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: '需要执行',
@@ -52,6 +53,7 @@ const VALID_PLAN = JSON.stringify({
     priority: { level: 'high', reason: '用户要求优先完成' },
   },
   risk: { level: 'medium', requiresConfirmation: false, reasons: [] },
+  authorizationResolution: null,
   workGraph: {
     reason: '单步执行',
     subtasks: [{
@@ -106,7 +108,7 @@ describe('CodexPlanningAgent', () => {
     const agent = new CodexPlanningAgent({ runner: runner(async () => VALID_PLAN) });
     const result = await agent.plan(context());
 
-    expect(result.schemaVersion).toBe(5);
+    expect(result.schemaVersion).toBe(6);
     expect(result.task.priority).toEqual({ level: 'high', reason: '用户要求优先完成' });
     expect(result.workGraph?.subtasks[0]?.id).toBe('impl');
     expect(validatePlanningAgentPlan(result, getPlannerExecutorCatalog())).toEqual({ valid: true, errors: [] });

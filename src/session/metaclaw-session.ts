@@ -1,5 +1,6 @@
 // Session facade that wires MetaClaw's task OS modules and exposes the user-facing session snapshot.
 import type Database from 'better-sqlite3';
+import { resolve } from 'node:path';
 import type {
   Config,
   GuidanceActionType,
@@ -31,10 +32,21 @@ import { AgentClassService } from '../executor/agent-class-service.js';
 import { ExecutorAdminService } from '../executor/executor-admin-service.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
-import { WorkspaceTargetService } from '../execution/workspace-target-service.js';
+import { WorkspaceStore } from '../execution/workspace-store.js';
+import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
+import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
+import { ResourceLeaseService } from '../execution/resource-lease-service.js';
+import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
+import { SqlitePermissionRepository } from '../storage/permission-repo.js';
+import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
+import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
+import { resolveMetaclawDir } from '../utils/paths.js';
+import { PermissionWorkflowService } from '../execution/permission-workflow-service.js';
+import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
+import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
-import { KernelExecutionRuntime } from './session-execution-coordinator.js';
+import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
 import { type QueuedExecutionRequest } from './session-helpers.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -94,7 +106,7 @@ function startupOrphanEvent(input: {
   occurredAt: string;
 }): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     type: 'execution_outcome',
     id: `startup_orphan_${input.attemptId}`,
     correlationId: input.task.id,
@@ -191,7 +203,13 @@ export class MetaclawSession {
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
   private readonly attemptRunner: SubtaskAttemptRunner;
-  private readonly workspaceTargetService: WorkspaceTargetService;
+  private readonly workspaceStore: WorkspaceStore;
+  private readonly workspaceRetentionService: WorkspaceRetentionService;
+  private workspaceRetentionSweep: Promise<void> | null = null;
+  private readonly attemptSandbox: DockerCliAttemptSandboxAdapter;
+  private readonly permissionRepository: SqlitePermissionRepository;
+  private readonly attemptSandboxRepository: SqliteAttemptSandboxRepository;
+  private readonly workspaceRepository: SqliteWorkspaceRepository;
   private readonly kernelExecutionRuntime: KernelExecutionRuntime;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
   private readonly sessionKernelRuntime: SessionKernelRuntime;
@@ -209,12 +227,23 @@ export class MetaclawSession {
       defaultExecutorName: deps.executor.name,
       availableCommands: deps.availableExecutorCommands,
     });
+    this.attemptSandbox = new DockerCliAttemptSandboxAdapter();
+    this.permissionRepository = new SqlitePermissionRepository(deps.db);
+    this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
+    this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
+    this.workspaceStore = new WorkspaceStore(resolve(resolveMetaclawDir(), 'workspace-store'));
+    this.workspaceRetentionService = new WorkspaceRetentionService(
+      this.workspaceRepository,
+      this.workspaceStore,
+    );
     const executorRegistry = new ExecutorRegistry({
-      db: deps.db,
       config: deps.config,
       defaultExecutor: deps.executor,
       defaultExecutorFactory: deps.defaultExecutorFactory,
       executorFactory: deps.executorFactory,
+      agentClassLookup: this.agentClassService,
+      attemptSandbox: this.attemptSandbox,
+      attemptSandboxRepository: this.attemptSandboxRepository,
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
@@ -244,7 +273,6 @@ export class MetaclawSession {
       name => this.executionRuntime.isExecutorAvailable(name),
     );
     this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
-    this.workspaceTargetService = new WorkspaceTargetService();
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
@@ -295,6 +323,15 @@ export class MetaclawSession {
       workUnitClaimService: this.workUnitClaimService,
       executionRuntime: this.executionRuntime,
       agentClassService: this.agentClassService,
+      workspaceStore: this.workspaceStore,
+      attemptSandbox: this.attemptSandbox,
+      resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db)),
+      permissionRepository: this.permissionRepository,
+      kernelWorkflowStore: this.kernelWorkflowRepo,
+      workspaceRepository: this.workspaceRepository,
+      sourceRoot: process.cwd(),
+      seedSource: process.env.NODE_ENV !== 'test',
+      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
@@ -345,6 +382,7 @@ export class MetaclawSession {
       },
     });
     this.sessionKernelRuntime = new SessionKernelRuntime({
+      sessionId: deps.sessionId,
       taskRuntimeService: this.taskRuntimeService,
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
@@ -732,11 +770,23 @@ export class MetaclawSession {
       userInput,
       topK: this.deps.config.orchestration.top_k_preferences,
     });
-    const context = this.planningContextBuilder.build({ userInput, initialContext });
+    const pendingPermission = this.permissionRepository.findOldestPending();
+    const context = this.planningContextBuilder.build({
+      userInput,
+      initialContext,
+      pendingAuthorizationRequest: pendingPermission ? {
+        requestId: pendingPermission.request.id,
+        taskId: pendingPermission.request.taskId,
+        capability: pendingPermission.request.capability,
+        resource: pendingPermission.request.resource,
+        operation: pendingPermission.request.operation,
+        reason: pendingPermission.request.reason,
+      } : null,
+    });
     const plan = await this.planningAgent.plan(context);
     const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'plan_proposed',
       id: eventId,
       correlationId: plan.id,
@@ -761,9 +811,18 @@ export class MetaclawSession {
       acceptedActions: [
         'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
         'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+        'record_permission_resolution',
       ],
     });
     await workflow.submit(event);
+    if (plan.action === 'authorization_resolution' && plan.authorizationResolution) {
+      await this.resolvePermission({
+        requestId: plan.authorizationResolution.requestId,
+        resolution: plan.authorizationResolution.resolution,
+        source: 'planner',
+        plannerPlanId: plan.id,
+      });
+    }
     return true;
   }
 
@@ -817,7 +876,7 @@ export class MetaclawSession {
     });
     const plan = await this.planningAgent.plan(context);
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'plan_proposed',
       id: `replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -839,7 +898,7 @@ export class MetaclawSession {
     userInput = event.proposal.task.goal ?? '',
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
@@ -847,6 +906,10 @@ export class MetaclawSession {
       executorStatuses: this.kernelExecutorStatusRepo.list(),
       v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
+      pendingAuthorizationRequest: (() => {
+        const pending = this.permissionRepository.findOldestPending();
+        return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
+      })(),
     };
   }
 
@@ -922,6 +985,8 @@ export class MetaclawSession {
 
   private refreshRuntimeState(): void {
     const tasks = this.taskRuntimeService.listTasks();
+    this.workspaceRetentionService.reconcileTaskStatuses(tasks);
+    this.triggerWorkspaceRetentionSweep();
     const runningTask = tasks.find(task => task.status === 'running') ?? null;
     const schedulerState: RuntimeState = {
       runningTaskId: runningTask?.id ?? null,
@@ -1016,7 +1081,76 @@ export class MetaclawSession {
       await this.resolveTaskRecovery(result.directive);
     }
 
+    if (result.type === 'directive' && result.directive.kind === 'resolve-permission') {
+      await this.resolvePermission(result.directive);
+    }
+
     return false;
+  }
+
+  private triggerWorkspaceRetentionSweep(): void {
+    if (this.workspaceRetentionSweep) return;
+    const sweep = this.workspaceRetentionService.sweepDue()
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        this.workspaceRetentionSweep = null;
+      });
+    this.workspaceRetentionSweep = sweep;
+    this.trackBackgroundWork(sweep);
+  }
+
+  private async resolvePermission(input: {
+    requestId: string;
+    resolution: 'approve' | 'deny';
+    source?: 'command' | 'button' | 'planner';
+    plannerPlanId?: string | null;
+  }): Promise<void> {
+    const record = this.permissionRepository.findRequest(input.requestId);
+    if (!record) throw new Error(`permission request not found: ${input.requestId}`);
+    const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
+    const workspaceId = sandbox?.workspaceId
+      ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
+    const workflow = new PermissionWorkflowService({
+      context: {
+        sessionId: this.deps.sessionId,
+        taskId: record.request.taskId,
+        generationId: record.request.generationId,
+        subtaskId: record.request.subtaskId,
+        attemptId: record.request.attemptId,
+        agentClassName: record.request.agentClassName,
+        permissionProfileId: record.request.permissionProfileId,
+        containerId: sandbox?.containerId ?? '',
+        workspaceId,
+        checkpointId: null,
+      },
+      repository: this.permissionRepository,
+      resolver: new RegisteredCapabilityResourceResolver(new Map()),
+      sandbox: this.attemptSandbox,
+      workflowStore: this.kernelWorkflowRepo,
+      kernel: this.controlKernel,
+      rules: [],
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async ({ request }) => {
+          const task = this.taskRuntimeService.findTask(record.request.taskId);
+          if (!task || !request) return;
+          await this.prepareTaskExecution(task.id, {
+            userPrompt: task.goal,
+            contextTaskId: task.id,
+            executionMode: 'resume-blocked',
+            schedulingReason: `permission ${input.requestId} approved; recover persistent workspace`,
+          });
+        },
+      },
+    });
+    await workflow.resolve({
+      requestId: input.requestId,
+      resolution: input.resolution,
+      source: input.source ?? 'command',
+      plannerPlanId: input.plannerPlanId ?? null,
+    });
   }
 
   private formatTaskRecovery(taskId: string): string {
@@ -1038,7 +1172,7 @@ export class MetaclawSession {
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
     const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'recovery_resolution_requested',
       id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
       correlationId: input.taskId,
@@ -1092,7 +1226,7 @@ export class MetaclawSession {
     const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
     const effect = this.effectOutboxRepo.find(recoveryItemId);
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
       item: application
@@ -1199,6 +1333,67 @@ export class MetaclawSession {
 
   private async recoverDurableStartup(): Promise<Task[]> {
     const now = new Date().toISOString();
+    const sandboxLossAttemptIds = new Set<string>();
+    try {
+      const checkpointIds = new Map<string, string | null>();
+      const reconciliation = await new AttemptSandboxReconciler(
+        this.attemptSandbox,
+        this.attemptSandboxRepository,
+      ).reconcile({
+        checkpoint: async record => {
+          const persisted = this.workspaceRepository.find(record.workspaceId);
+          if (!persisted) {
+            checkpointIds.set(record.attemptId, null);
+            return;
+          }
+          const workspace = await this.workspaceStore.ensureWorkspace({
+            taskId: persisted.taskId,
+            generationId: persisted.generationId,
+            subtaskId: persisted.subtaskId,
+          }, persisted.kind);
+          const checkpoint = await this.workspaceStore.createCheckpoint(workspace, {
+            reason: 'failure', attemptId: record.attemptId, now,
+          });
+          this.workspaceRepository.recordCheckpoint({
+            id: checkpoint.id,
+            workspaceId: workspace.id,
+            attemptId: record.attemptId,
+            reason: 'failure',
+            manifestUri: checkpoint.manifestUri,
+            manifestHash: checkpoint.manifestHash,
+            manifestSize: checkpoint.manifestSize,
+            createdAt: checkpoint.manifest.createdAt,
+            objects: checkpoint.manifest.entries.flatMap(entry => (
+              entry.type === 'file' && entry.hash && entry.objectUri
+                ? [{ hash: entry.hash, uri: entry.objectUri, size: entry.size, mediaType: null }]
+                : []
+            )),
+          });
+          checkpointIds.set(record.attemptId, checkpoint.id);
+        },
+      });
+      for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
+        if (sandboxLossAttemptIds.has(record.attemptId)) continue;
+        sandboxLossAttemptIds.add(record.attemptId);
+        this.kernelWorkflowRepo.enqueue({
+          schemaVersion: 3,
+          type: 'sandbox_lost',
+          id: `sandbox_lost_${record.attemptId}`,
+          correlationId: record.taskId,
+          causationId: record.attemptId,
+          occurredAt: now,
+          sessionId: this.deps.sessionId,
+          taskId: record.taskId,
+          subtaskId: record.subtaskId,
+          attemptId: record.attemptId,
+          containerId: record.containerId,
+          workspaceId: record.workspaceId,
+          checkpointId: checkpointIds.get(record.attemptId) ?? null,
+        });
+      }
+    } catch {
+      // Docker can be unavailable while planning/query/direct-reply paths remain usable.
+    }
     this.effectOutboxRepo.reconcileSending(now);
     this.kernelWorkflowRepo.reconcileProcessing();
     for (const effect of this.effectOutboxRepo.listPending(now)) {
@@ -1244,14 +1439,16 @@ export class MetaclawSession {
           workUnitId: workUnit.id,
           agentClassName: workUnit.agentClassName,
         });
-        this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
-          sessionId: this.deps.sessionId,
-          task,
-          subtaskId: workUnit.claimedSubtaskId,
-          attemptId: workUnit.claimedAttemptId,
-          agentClassName: workUnit.agentClassName,
-          occurredAt: now,
-        }));
+        if (!sandboxLossAttemptIds.has(workUnit.claimedAttemptId)) {
+          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+            sessionId: this.deps.sessionId,
+            task,
+            subtaskId: workUnit.claimedSubtaskId,
+            attemptId: workUnit.claimedAttemptId,
+            agentClassName: workUnit.agentClassName,
+            occurredAt: now,
+          }));
+        }
       }
       if (taskClaims.length === 0 && !this.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
         const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));

@@ -38,7 +38,7 @@ AnyFusion 是位于人员、企业协作入口与 Agent Runtime 之间的本地�
 | **策略治理的规划链路** | 自然语言规划与执行授权严格分离：Planner 提案，Control Kernel 决策，Runtime 只执行已授权的副作用。 |
 | **依赖感知工作图** | 复杂目标被表达为显式 DAG，包含验收标准、类型化依赖、受限上下文，以及工作单元之间可持久化的 handoff contract。 |
 | **多垂类 Agent 编排** | 基于能力的路由将 Subtask 映射到有序 AgentClass 候选，包括 Codex、Pi、Hermes 或企业自定义垂类 Agent，而不是把调度策略散落在 Prompt 中。 |
-| **隔离执行边界** | 每个 Agent 只获得一个明确任务、必要证据和直接依赖输出，不会无边界继承整段对话或重复执行兄弟节点工作。 |
+| **隔离执行边界** | 每个 attempt 都运行在非 root 的短命 Docker sandbox 中，输入只读、私有 workspace 持久；越界操作必须经过明确、受限且由 Kernel 决定的运行时提权。 |
 | **验收、证据与审计** | 结构化完成协议在结果暴露或交付前记录验收证据、产物、handoff、attempt receipt 与审计事件。 |
 | **业务记忆与多端交付** | 已确认偏好、任务历史、语义检索、终端工作流、Gateway 和飞书交付均连接至同一份持久任务状态。 |
 
@@ -76,7 +76,7 @@ flowchart LR
 2. **Control Kernel 基于显式 Runtime 事实作出确定性策略决策。**
 3. **Runtime 执行受限决策，并把规范化结果反馈给下一轮决策。**
 
-当前工作图已经能够表达独立分支、垂类 Agent 分工和类型化依赖交付。Preview 版本仍有意串行执行就绪 Subtask，待资源分区、持久租约、冲突检测和崩溃安全的并发分发完成后，再开启安全异步并行。这保证了当前实现不会用不可靠的“表面并行”替代最终并发模型。
+当前工作图已经能够表达独立分支、垂类 Agent 分工和类型化依赖交付。资源分区、持久租约、持久 workspace、短命 attempt sandbox 与崩溃恢复已经启用；Preview 版本仍有意串行执行就绪 Subtask，Phase 6 将在这些已强制执行的基础上开启安全异步并行。
 
 ## 快速开始
 
@@ -117,6 +117,7 @@ AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证
 | 资源 | 内容 |
 | --- | --- |
 | [技术总览](docs/current/technical-overview.zh-CN.md) | Runtime 架构、运行环境、模块和实现细节 |
+| [运行时安全](docs/current/phase-5-runtime-security.md) | Attempt sandbox、持久 workspace、镜像 profile、Engine 拓扑和运行时提权 |
 | [架构决策](docs/adr/README.md) | 已接受的系统边界和权威设计决策 |
 | [并发收敛路线图](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | 控制平面、资源分区、故障恢复和并发调度计划 |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | 当前版本范围、部署状态和已知限制 |

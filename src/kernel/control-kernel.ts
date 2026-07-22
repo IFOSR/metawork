@@ -1,12 +1,19 @@
 import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import { validateWorkGraphStructure } from '../planning/work-graph-structure-rules.js';
+import { validateWorkGraph as validateWorkGraphStructure } from '../work-graph/index.js';
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
 import { deriveAgentAvailability } from './agent-availability.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
+import {
+  evaluateCapabilityRequest,
+  type CapabilityGrant,
+  type NormalizedCapabilityRequest,
+  type PermissionRule,
+  type ResourceClaim,
+} from '../resource/index.js';
 
 export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blocked' | 'done' | 'archived' | 'cancelled';
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
@@ -15,7 +22,7 @@ export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
 export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
 
 export interface KernelEventEnvelope {
-  schemaVersion: 2;
+  schemaVersion: 3;
   id: string;
   correlationId: string;
   causationId: string | null;
@@ -28,8 +35,8 @@ export interface KernelEventEnvelope {
 
 export interface KernelPlanProposal {
   id: string;
-  schemaVersion: 5;
-  action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'no_action';
+  schemaVersion: 6;
+  action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'authorization_resolution' | 'no_action';
   confidence: number;
   reason: string;
   clarificationQuestion: string | null;
@@ -45,6 +52,7 @@ export interface KernelPlanProposal {
     priority: { level: 'normal' | 'high' | 'urgent'; reason: string } | null;
   };
   risk: { level: 'low' | 'medium' | 'high'; requiresConfirmation: boolean; reasons: string[] };
+  authorizationResolution: { requestId: string; resolution: 'approve' | 'deny' } | null;
   workGraph: WorkGraphProposal | null;
   source: string;
 }
@@ -94,6 +102,28 @@ export type KernelEvent =
       type: 'recovery_resolution_requested';
       recoveryItemId: string;
       resolution: 'assume_applied' | 'retry';
+    })
+  | (KernelEventEnvelope & {
+      type: 'permission_requested';
+      request: NormalizedCapabilityRequest;
+    })
+  | (KernelEventEnvelope & {
+      type: 'permission_resolution_received';
+      requestId: string;
+      resolution: 'approve' | 'deny';
+      source: 'command' | 'button' | 'planner';
+      plannerPlanId: string | null;
+    })
+  | (KernelEventEnvelope & {
+      type: 'partition_conflict_observed';
+      claims: ResourceClaim[];
+      conflictingLeaseIds: string[];
+    })
+  | (KernelEventEnvelope & {
+      type: 'sandbox_lost';
+      containerId: string | null;
+      workspaceId: string;
+      checkpointId: string | null;
     });
 
 export interface KernelTaskFact {
@@ -120,7 +150,7 @@ export interface KernelAttemptFact {
 
 export type KernelSnapshot =
   | {
-      schemaVersion: 2;
+      schemaVersion: 3;
       type: 'plan_admission';
       tasks: KernelTaskFact[];
       runningTaskId: string | null;
@@ -128,9 +158,10 @@ export type KernelSnapshot =
       executorStatuses: KernelExecutorStatusProjection[];
       v5WorkGraphTaskIds: string[];
       eligibleContextRefKeys: string[];
+      pendingAuthorizationRequest: { requestId: string; taskId: string } | null;
     }
   | {
-      schemaVersion: 2;
+      schemaVersion: 3;
       type: 'dispatch';
       task: KernelTaskFact | null;
       runningTaskId: string | null;
@@ -147,9 +178,10 @@ export type KernelSnapshot =
       automaticReplansUsed: number;
       recoverySafety: KernelRecoverySafety;
       automaticRecoveryAllowed: boolean;
+      defaultResourceGrant: ResourceClaim[];
     }
   | {
-      schemaVersion: 2;
+      schemaVersion: 3;
       type: 'timer';
       task: KernelTaskFact | null;
       wakeAuthorized: boolean;
@@ -158,9 +190,10 @@ export type KernelSnapshot =
       capacityAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
+      defaultResourceGrant: ResourceClaim[];
     }
   | {
-      schemaVersion: 2;
+      schemaVersion: 3;
       type: 'recovery';
       task: KernelTaskFact | null;
       item: {
@@ -171,9 +204,37 @@ export type KernelSnapshot =
       } | null;
     }
   | {
-      schemaVersion: 2;
+      schemaVersion: 3;
       type: 'invalid';
       reason: string;
+    }
+  | {
+      schemaVersion: 3;
+      type: 'permission';
+      request: NormalizedCapabilityRequest | null;
+      requestStatus: 'pending' | 'granted' | 'denied' | 'expired' | null;
+      rules: PermissionRule[];
+      currentGrants: CapabilityGrant[];
+      userAuthorizationFingerprints: string[];
+      previouslyDeniedFingerprints: string[];
+      attemptActive: boolean;
+      workspaceId: string | null;
+      checkpointId: string | null;
+    }
+  | {
+      schemaVersion: 3;
+      type: 'partition';
+      conflictConfirmed: boolean;
+      workspaceId: string | null;
+      checkpointId: string | null;
+    }
+  | {
+      schemaVersion: 3;
+      type: 'sandbox_recovery';
+      workspaceExists: boolean;
+      workspaceId: string | null;
+      checkpointId: string | null;
+      activeLeaseIds: string[];
     };
 
 export type KernelDecisionAction =
@@ -200,6 +261,7 @@ export type KernelDecisionAction =
       attemptKind: KernelAttemptKind;
       sourceAttemptId: string | null;
       recoveryMode: KernelRecoveryMode;
+      defaultResourceGrant: ResourceClaim[];
     }
   | { type: 'probe_capacity'; taskId: string; subtaskId: string; agentClassName: string }
   | { type: 'wait_for_capacity'; taskId: string; subtaskId: string }
@@ -215,10 +277,41 @@ export type KernelDecisionAction =
   | { type: 'resolve_recovery'; taskId: string; recoveryItemId: string; resolution: 'assume_applied' | 'retry' }
   | { type: 'block_work'; taskId: string; subtaskId: string | null }
   | { type: 'park_for_replan'; taskId: string }
-  | { type: 'complete_task'; taskId: string };
+  | { type: 'complete_task'; taskId: string }
+  | {
+      type: 'record_permission_resolution';
+      taskId: string;
+      requestId: string;
+      resolution: 'approve' | 'deny';
+      plannerPlanId: string;
+    }
+  | {
+      type: 'grant_capability';
+      requestId: string;
+      limits: CapabilityGrant['limits'];
+      ruleId: string;
+      authorization: { receivedEventId: string; resolution: 'approve'; source: 'command' | 'button' | 'planner'; plannerPlanId: string | null } | null;
+    }
+  | {
+      type: 'deny_capability';
+      requestId: string;
+      notifyPlanner: false;
+      authorization: { receivedEventId: string; resolution: 'deny'; source: 'command' | 'button' | 'planner'; plannerPlanId: string | null } | null;
+    }
+  | { type: 'escalate_capability'; requestId: string; notifyPlanner: true }
+  | { type: 'wait_for_partition'; taskId: string; subtaskId: string; conflictingLeaseIds: string[] }
+  | {
+      type: 'recover_workspace_attempt';
+      taskId: string;
+      subtaskId: string;
+      workspaceId: string;
+      checkpointId: string | null;
+      requestId: string | null;
+      authorization: { receivedEventId: string; resolution: 'approve'; source: 'command' | 'button' | 'planner'; plannerPlanId: string | null } | null;
+    };
 
 export interface KernelDecision {
-  schemaVersion: 2;
+  schemaVersion: 3;
   id: string;
   eventId: string;
   action: KernelDecisionAction;
@@ -249,6 +342,13 @@ export class ControlKernel {
         return this.decideTimer(event, snapshot as Extract<KernelSnapshot, { type: 'timer' }>);
       case 'recovery_resolution_requested':
         return this.decideRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'recovery' }>);
+      case 'permission_requested':
+      case 'permission_resolution_received':
+        return this.decidePermission(event, snapshot as Extract<KernelSnapshot, { type: 'permission' }>);
+      case 'partition_conflict_observed':
+        return this.decidePartitionConflict(event, snapshot as Extract<KernelSnapshot, { type: 'partition' }>);
+      case 'sandbox_lost':
+        return this.decideSandboxRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'sandbox_recovery' }>);
     }
   }
 
@@ -257,7 +357,11 @@ export class ControlKernel {
     snapshot: Extract<KernelSnapshot, { type: 'plan_admission' }>,
   ): KernelDecision {
     const proposal = event.proposal;
-    const validation = validatePlanningAgentPlan(proposal as PlanningAgentPlan, snapshot.executorCatalog);
+    const validation = validatePlanningAgentPlan(
+      proposal as PlanningAgentPlan,
+      snapshot.executorCatalog,
+      snapshot.pendingAuthorizationRequest,
+    );
     if (!validation.valid) return decision(event, { type: 'reject_request' }, `invalid PlanningAgentPlan: ${validation.errors.join('; ')}`);
     if (isStateChanging(proposal) && proposal.risk.requiresConfirmation) {
       return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? '该操作存在较高风险，请明确确认是否继续执行。' }, 'risk confirmation required');
@@ -272,6 +376,19 @@ export class ControlKernel {
       return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? 'Please clarify your request.' }, proposal.reason);
     }
     if (proposal.action === 'no_action') return decision(event, { type: 'no_op' }, 'no runtime action required');
+    if (proposal.action === 'authorization_resolution') {
+      const resolution = proposal.authorizationResolution;
+      if (!resolution || !snapshot.pendingAuthorizationRequest || resolution.requestId !== snapshot.pendingAuthorizationRequest.requestId) {
+        return decision(event, { type: 'reject_request' }, 'authorization resolution does not match the pending request');
+      }
+      return decision(event, {
+        type: 'record_permission_resolution',
+        taskId: snapshot.pendingAuthorizationRequest.taskId,
+        requestId: resolution.requestId,
+        resolution: resolution.resolution,
+        plannerPlanId: proposal.id,
+      }, 'Planner interpretation of exact authorization response accepted');
+    }
     if (proposal.task.taskId && !snapshot.tasks.some(task => task.id === proposal.task.taskId)) {
       return decision(event, { type: 'reject_request' }, `task not found: ${proposal.task.taskId}`);
     }
@@ -353,7 +470,7 @@ export class ControlKernel {
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName,
       attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'primary'), attemptKind: 'primary',
-      sourceAttemptId: null, recoveryMode: 'fresh',
+      sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
     }, 'dispatch authorized');
   }
 
@@ -365,7 +482,7 @@ export class ControlKernel {
         ? decision(event, {
             type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
             attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'contract_correction'), attemptKind: 'contract_correction',
-            sourceAttemptId: event.attemptId ?? null, recoveryMode: 'fresh',
+            sourceAttemptId: event.attemptId ?? null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
           }, 'response-only correction capacity confirmed')
         : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id }, 'response-only correction capacity unavailable');
     }
@@ -373,7 +490,7 @@ export class ControlKernel {
       return decision(event, {
         type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
         attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'primary'), attemptKind: 'primary',
-        sourceAttemptId: null, recoveryMode: 'fresh',
+        sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
       }, 'capacity confirmed');
     }
     const agentClassName = nextUsableAgentClass(subtask, {
@@ -401,7 +518,7 @@ export class ControlKernel {
     return decision(event, {
       type: 'dispatch_attempt', taskId: event.taskId, subtaskId: next.id, agentClassName,
       attemptId: deterministicAttemptId(event.id, next.id, agentClassName, 'primary'), attemptKind: 'primary',
-      sourceAttemptId: null, recoveryMode: 'fresh',
+      sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
     }, 'continue ready frontier');
   }
 
@@ -476,6 +593,7 @@ export class ControlKernel {
         attemptKind: 'fallback',
         sourceAttemptId: event.attemptId!,
         recoveryMode: 'recovery_packet',
+        defaultResourceGrant: snapshot.defaultResourceGrant,
       }, 'next authorized fallback AgentClass selected');
     }
     return snapshot.automaticReplansUsed < 1
@@ -499,6 +617,7 @@ export class ControlKernel {
       attemptKind: 'contract_correction',
       sourceAttemptId: event.attemptId ?? null,
       recoveryMode: 'fresh',
+      defaultResourceGrant: snapshot.defaultResourceGrant,
     }, 'one response-only contract correction authorized');
   }
 
@@ -527,6 +646,7 @@ export class ControlKernel {
         recoveryMode: snapshot.nativeContinuationAgentClasses.includes(event.retry.agentClassName)
           ? 'native_session'
           : 'recovery_packet',
+        defaultResourceGrant: snapshot.defaultResourceGrant,
       }, 'preferred AgentClass continuation wake authorized');
     }
     if (event.wakeKind !== 'capacity') return decision(event, { type: 'no_op' }, 'availability wake has no eligible work');
@@ -560,16 +680,138 @@ export class ControlKernel {
       resolution: event.resolution,
     }, `manual recovery ${event.resolution} authorized`);
   }
+
+  private decidePermission(
+    event: Extract<KernelEvent, { type: 'permission_requested' | 'permission_resolution_received' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'permission' }>,
+  ): KernelDecision {
+    const request = snapshot.request;
+    if (!request || request.taskId !== event.taskId || request.subtaskId !== event.subtaskId) {
+      return decision(event, { type: 'deny_capability', requestId: request?.id ?? '', notifyPlanner: false, authorization: null }, 'permission request identity mismatch');
+    }
+    if (event.type === 'permission_resolution_received' && event.requestId !== request.id) {
+      return decision(event, { type: 'deny_capability', requestId: event.requestId, notifyPlanner: false, authorization: null }, 'permission resolution request ID mismatch');
+    }
+    if (snapshot.requestStatus !== 'pending') {
+      const existing = snapshot.currentGrants.find(grant => grant.requestId === request.id);
+      if (existing && snapshot.requestStatus === 'granted') {
+        return decision(event, {
+          type: 'grant_capability',
+          requestId: request.id,
+          limits: existing.limits,
+          ruleId: 'existing_grant',
+          authorization: null,
+        }, 'duplicate request returns the existing grant');
+      }
+      return decision(event, { type: 'deny_capability', requestId: request.id, notifyPlanner: false, authorization: null }, `permission request is ${snapshot.requestStatus ?? 'missing'}`);
+    }
+    if (event.type === 'permission_resolution_received' && event.resolution === 'deny') {
+      return decision(event, {
+        type: 'deny_capability',
+        requestId: request.id,
+        notifyPlanner: false,
+        authorization: {
+          receivedEventId: event.id,
+          resolution: 'deny',
+          source: event.source,
+          plannerPlanId: event.plannerPlanId,
+        },
+      }, 'user denied the exact capability request');
+    }
+    if (event.type === 'permission_resolution_received' && !snapshot.attemptActive) {
+      if (!snapshot.workspaceId) {
+        return decision(event, { type: 'deny_capability', requestId: request.id, notifyPlanner: false, authorization: null }, 'approved request has no recoverable workspace');
+      }
+      return decision(event, {
+        type: 'recover_workspace_attempt',
+        taskId: request.taskId,
+        subtaskId: request.subtaskId,
+        workspaceId: snapshot.workspaceId,
+        checkpointId: snapshot.checkpointId,
+        requestId: request.id,
+        authorization: {
+          receivedEventId: event.id,
+          resolution: 'approve',
+          source: event.source,
+          plannerPlanId: event.plannerPlanId,
+        },
+      }, 'user authorization recorded; a fresh recovery attempt must receive a new bounded grant');
+    }
+    const authorizationFingerprints = event.type === 'permission_resolution_received'
+      ? [...new Set([...snapshot.userAuthorizationFingerprints, request.fingerprint])]
+      : snapshot.userAuthorizationFingerprints;
+    const result = evaluateCapabilityRequest({
+      request,
+      rules: snapshot.rules,
+      now: event.occurredAt,
+      previouslyDeniedFingerprints: snapshot.previouslyDeniedFingerprints,
+      userAuthorizationFingerprints: authorizationFingerprints,
+    });
+    if (result.type === 'grant_capability') {
+      return decision(event, {
+        type: 'grant_capability',
+        requestId: request.id,
+        limits: result.limits,
+        ruleId: result.ruleId,
+        authorization: event.type === 'permission_resolution_received' ? {
+          receivedEventId: event.id,
+          resolution: 'approve',
+          source: event.source,
+          plannerPlanId: event.plannerPlanId,
+        } : null,
+      }, result.reason);
+    }
+    if (result.type === 'escalate_capability') {
+      return decision(event, { type: 'escalate_capability', requestId: request.id, notifyPlanner: true }, result.reason);
+    }
+    return decision(event, { type: 'deny_capability', requestId: request.id, notifyPlanner: false, authorization: null }, result.reason);
+  }
+
+  private decidePartitionConflict(
+    event: Extract<KernelEvent, { type: 'partition_conflict_observed' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'partition' }>,
+  ): KernelDecision {
+    if (!event.taskId || !event.subtaskId || !snapshot.conflictConfirmed || event.conflictingLeaseIds.length === 0) {
+      return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'partition conflict facts are incomplete');
+    }
+    return decision(event, {
+      type: 'wait_for_partition',
+      taskId: event.taskId,
+      subtaskId: event.subtaskId,
+      conflictingLeaseIds: [...new Set(event.conflictingLeaseIds)].sort(),
+    }, 'conflicting resource lease requires Kernel wait');
+  }
+
+  private decideSandboxRecovery(
+    event: Extract<KernelEvent, { type: 'sandbox_lost' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'sandbox_recovery' }>,
+  ): KernelDecision {
+    if (!event.taskId || !event.subtaskId || !snapshot.workspaceExists || snapshot.workspaceId !== event.workspaceId) {
+      return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'sandbox loss has no recoverable workspace');
+    }
+    return decision(event, {
+      type: 'recover_workspace_attempt',
+      taskId: event.taskId,
+      subtaskId: event.subtaskId,
+      workspaceId: event.workspaceId,
+      checkpointId: snapshot.checkpointId,
+      requestId: null,
+      authorization: null,
+    }, 'lost sandbox will be replaced by a fresh attempt using the persistent workspace');
+  }
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
-  return { schemaVersion: 2, id: `decision_${event.id}`, eventId: event.id, action, reason };
+  return { schemaVersion: 3, id: `decision_${event.id}`, eventId: event.id, action, reason };
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
+  if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
+  if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';
+  if (event.type === 'sandbox_lost') return snapshot.type === 'sandbox_recovery';
   return snapshot.type === 'dispatch';
 }
 

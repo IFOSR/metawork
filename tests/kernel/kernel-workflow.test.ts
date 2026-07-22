@@ -180,7 +180,7 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
 
 function directReplyEvent(): KernelEvent {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     type: 'plan_proposed',
     id: 'event_1',
     correlationId: 'correlation_1',
@@ -192,24 +192,24 @@ function directReplyEvent(): KernelEvent {
     proposalSource: 'initial',
     targetGraphRevision: 1,
     proposal: {
-      id: 'plan_1', schemaVersion: 5, action: 'direct_reply', confidence: 1, reason: 'answer',
+      id: 'plan_1', schemaVersion: 6, action: 'direct_reply', confidence: 1, reason: 'answer',
       clarificationQuestion: null, response: { directReply: 'done' },
       task: { binding: 'none', taskId: null, control: 'none', scope: null, title: null, goal: null, includeRecentConversationContext: false, priority: null },
-      risk: { level: 'low', requiresConfirmation: false, reasons: [] }, workGraph: null, source: 'codex-planner',
+      risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null, workGraph: null, source: 'codex-planner',
     },
   };
 }
 
 function planSnapshot(): KernelSnapshot {
   return {
-    schemaVersion: 2, type: 'plan_admission', tasks: [], runningTaskId: null,
-    executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [],
+    schemaVersion: 3, type: 'plan_admission', tasks: [], runningTaskId: null,
+    executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
   };
 }
 
 function ledgerRecord(event: KernelEvent, snapshot: KernelSnapshot, decision: KernelDecision): KernelDecisionLedgerRecord {
   return {
-    id: decision.id, schemaVersion: 2, eventId: event.id, eventType: event.type,
+    id: decision.id, schemaVersion: 3, eventId: event.id, eventType: event.type,
     correlationId: event.correlationId, causationId: event.causationId, sessionId: event.sessionId,
     taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
     action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,

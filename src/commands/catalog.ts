@@ -39,6 +39,11 @@ export type CommandDirective =
       taskId: string;
       recoveryItemId: string;
       resolution: 'assume_applied' | 'retry';
+    }
+  | {
+      kind: 'resolve-permission';
+      requestId: string;
+      resolution: 'approve' | 'deny';
     };
 
 export type CommandResult =

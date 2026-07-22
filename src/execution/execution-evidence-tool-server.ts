@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -15,10 +15,13 @@ export interface ExecutionEvidenceToolBinding {
 export class ExecutionEvidenceToolServer {
   private readonly bearerToken = randomBytes(32).toString('base64url');
   private readonly mcp = new McpServer({ name: 'metaclaw-execution-evidence', version: '1.0.0' });
-  private readonly transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  private readonly transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
   private readonly server = createServer((request, response) => { void this.handle(request, response); });
 
-  constructor(private readonly port: ExecutionEvidencePort) {
+  constructor(
+    private readonly port: ExecutionEvidencePort,
+    private readonly options: { bindHost?: string; advertisedHost?: string } = {},
+  ) {
     this.mcp.registerTool('evidence_list', {
       description: 'List user evidence authorized for this Task and attempt.',
       inputSchema: { cursor: z.string().optional(), limit: z.number().int().optional() },
@@ -37,14 +40,16 @@ export class ExecutionEvidenceToolServer {
     await this.mcp.connect(this.transport);
     await new Promise<void>((resolve, reject) => {
       this.server.once('error', reject);
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(0, this.options.bindHost ?? '0.0.0.0', () => {
         this.server.off('error', reject);
         resolve();
       });
     });
     const address = this.server.address();
     if (!address || typeof address === 'string') throw new Error('evidence tool server did not bind a TCP port');
-    const base = `http://127.0.0.1:${address.port}`;
+    const advertisedHost = this.options.advertisedHost
+      ?? (process.env.NODE_ENV === 'test' ? '127.0.0.1' : 'metaclaw-control');
+    const base = `http://${advertisedHost}:${address.port}`;
     return { mcpUrl: `${base}/mcp`, jsonUrl: `${base}/evidence`, bearerToken: this.bearerToken };
   }
 

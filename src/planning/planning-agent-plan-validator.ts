@@ -13,6 +13,7 @@ const TASK_PRIORITIES = new Set(['normal', 'high', 'urgent']);
 export function validatePlanningAgentPlan(
   value: unknown,
   executorCatalog: PlannerExecutorCatalog,
+  pendingAuthorizationRequest: { requestId: string; taskId: string } | null = null,
 ): PlanningAgentPlanValidationResult {
   const parsed = PlanningAgentPlanSchema.safeParse(value);
   if (!parsed.success) {
@@ -29,6 +30,7 @@ export function validatePlanningAgentPlan(
   validateActionSemantics(plan, errors);
   validateTaskControlScope(plan, errors);
   validateTaskPriority(plan, errors);
+  validateAuthorizationResolution(plan, pendingAuthorizationRequest, errors);
 
   if (plan.workGraph) {
     errors.push(...validateWorkGraph(plan.workGraph).map(
@@ -38,6 +40,24 @@ export function validatePlanningAgentPlan(
   }
 
   return { valid: errors.length === 0, errors: errors.sort() };
+}
+
+function validateAuthorizationResolution(
+  plan: PlanningAgentPlan,
+  pending: { requestId: string; taskId: string } | null,
+  errors: string[],
+): void {
+  if (plan.action !== 'authorization_resolution') return;
+  if (!pending) {
+    errors.push('authorization_resolution requires a pending authorization request');
+    return;
+  }
+  if (plan.authorizationResolution?.requestId !== pending.requestId) {
+    errors.push('authorization_resolution requestId must exactly match the pending request');
+  }
+  if (plan.task.binding !== 'reference' || plan.task.taskId !== pending.taskId) {
+    errors.push('authorization_resolution must reference the pending request Task');
+  }
 }
 
 function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): void {

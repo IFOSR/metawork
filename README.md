@@ -38,7 +38,7 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
 | **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
 | **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
-| **Isolated execution** | Every agent receives one bounded assignment, the required evidence, and direct dependency outputs—not an uncontrolled copy of the entire conversation or sibling work. |
+| **Isolated execution** | Every attempt runs in a disposable non-root Docker sandbox with read-only inputs and a persistent private workspace; runtime elevation is explicit, bounded, and Kernel-authorized. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
 | **Operational memory and delivery** | Confirmed preferences, task history, semantic retrieval, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
@@ -76,7 +76,7 @@ Three boundaries keep the workflow governable:
 2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
 3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
 
-Work graphs already model independent branches, specialist assignments, and typed dependency delivery. The current preview deliberately serializes ready-subtask execution while resource partitioning, durable leases, conflict detection, and crash-safe concurrent dispatch are completed. This preserves the final concurrency model without claiming unsafe parallelism prematurely.
+Work graphs already model independent branches, specialist assignments, and typed dependency delivery. Resource partitioning, durable leases, persistent workspaces, short-lived attempt sandboxes and crash recovery are active. The current preview still deliberately serializes ready-subtask execution; Phase 6 will use those enforced foundations for safe asynchronous dispatch.
 
 ## Quick Start
 
@@ -117,6 +117,7 @@ AnyFusion is not presented as Production Ready. The preview is intended to valid
 | Resource | Purpose |
 | --- | --- |
 | [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Attempt sandboxes, persistent workspaces, image profiles, Engine topology, and runtime elevation |
 | [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
 | [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |

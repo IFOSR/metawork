@@ -33,7 +33,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 5,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -50,6 +50,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       priority: { level: 'normal', reason: 'test priority' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: {
       reason: 'single executor work graph',
       subtasks: [{

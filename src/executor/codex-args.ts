@@ -10,8 +10,10 @@ export function buildCodexNonInteractiveArgs(
 ): string[] {
   return [
     'exec',
-    '--dangerously-bypass-approvals-and-sandbox',
-    '--dangerously-bypass-hook-trust',
+    '--sandbox',
+    'workspace-write',
+    '-c',
+    'approval_policy="never"',
     '--skip-git-repo-check',
     ...((options.ephemeral ?? true) ? ['--ephemeral'] : []),
     ...(options.outputLastMessagePath
@@ -31,8 +33,10 @@ export function buildCodexResumeArgs(
   return [
     'exec',
     'resume',
-    '--dangerously-bypass-approvals-and-sandbox',
-    '--dangerously-bypass-hook-trust',
+    '--sandbox',
+    'workspace-write',
+    '-c',
+    'approval_policy="never"',
     '--skip-git-repo-check',
     '--json',
     ...(options.outputLastMessagePath ? ['--output-last-message', options.outputLastMessagePath] : []),

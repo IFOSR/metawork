@@ -78,6 +78,15 @@ export class WorkUnitClaimService {
     return Boolean(await this.provisionExecutor(agentClassName));
   }
 
+  isClaimCurrent(workUnitId: string, attemptId: string, requiredState?: WorkUnit['state']): boolean {
+    const workUnit = this.workUnitRepo.findById(workUnitId);
+    return Boolean(
+      workUnit
+      && workUnit.claimedAttemptId === attemptId
+      && (!requiredState || workUnit.state === requiredState),
+    );
+  }
+
   sweepExpired(now = new Date()): WorkUnit[] {
     const lost = this.workUnitRepo.markHeartbeatLost(now.toISOString());
     for (const workUnit of lost) {

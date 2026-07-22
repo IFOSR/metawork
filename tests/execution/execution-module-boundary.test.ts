@@ -53,10 +53,11 @@ describe('execution module architecture boundaries', () => {
     expect(coreFileExists('src/core/execution-progress-service.ts')).toBe(false);
   });
 
-  it('keeps workspace target preparation implementation in src/execution and out of core', () => {
-    const implementationSource = readSource('src/execution/workspace-target-service.ts');
+  it('keeps persistent workspace implementation in src/execution and removes the legacy target service', () => {
+    const implementationSource = readSource('src/execution/workspace-store.ts');
 
-    expect(implementationSource).toContain('export class WorkspaceTargetService');
+    expect(implementationSource).toContain('export class WorkspaceStore');
+    expect(coreFileExists('src/execution/workspace-target-service.ts')).toBe(false);
     expect(coreFileExists('src/core/workspace-target-service.ts')).toBe(false);
   });
 });

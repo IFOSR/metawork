@@ -138,6 +138,11 @@ describe('App execution indicator', () => {
 
     expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
 
+    for (let attempt = 0; attempt < 100 && !executionInput; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(executionInput).toBeDefined();
+
     deferred.resolve({
       success: true,
       output: completionResponse(executionInput!, '执行完成'),

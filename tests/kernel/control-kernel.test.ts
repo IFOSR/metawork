@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
+import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
 const event: KernelEvent = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   type: 'plan_proposed',
   id: 'event_plan_1',
   correlationId: 'request_1',
@@ -17,7 +18,7 @@ const event: KernelEvent = {
   targetGraphRevision: 1,
   proposal: {
     id: 'plan_1',
-    schemaVersion: 5,
+    schemaVersion: 6,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -28,13 +29,14 @@ const event: KernelEvent = {
       includeRecentConversationContext: false, priority: null,
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: null,
     source: 'codex-planner',
   },
 };
 
 const snapshot: KernelSnapshot = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
@@ -42,6 +44,7 @@ const snapshot: KernelSnapshot = {
   executorStatuses: [],
   v5WorkGraphTaskIds: [],
   eligibleContextRefKeys: [],
+  pendingAuthorizationRequest: null,
 };
 
 describe('ControlKernel', () => {
@@ -53,7 +56,7 @@ describe('ControlKernel', () => {
 
     expect(first).toEqual(second);
     expect(first).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: 'decision_event_plan_1',
       eventId: 'event_plan_1',
       action: { type: 'deliver_direct_reply', response: 'Hello' },
@@ -118,12 +121,12 @@ describe('ControlKernel', () => {
   it('authorizes explicit recovery resolution but refuses unsafe effect retry', () => {
     const kernel = new ControlKernel();
     const recoveryEvent: KernelEvent = {
-      schemaVersion: 2, type: 'recovery_resolution_requested', id: 'recovery_event_1',
+      schemaVersion: 3, type: 'recovery_resolution_requested', id: 'recovery_event_1',
       correlationId: 'task_1', causationId: null, occurredAt: '2026-07-21T00:00:00.000Z',
       sessionId: 'session_1', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
     };
     const unsafe: KernelSnapshot = {
-      schemaVersion: 2, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
+      schemaVersion: 3, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
       item: { id: 'effect_1', kind: 'effect', status: 'uncertain', retrySafe: false },
     };
     expect(kernel.decide(recoveryEvent, unsafe).action).toEqual({
@@ -243,10 +246,11 @@ describe('ControlKernel', () => {
       sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
     });
     const timerSnapshot: KernelSnapshot = {
-      schemaVersion: 2, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      schemaVersion: 3, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
       nativeContinuationAgentClasses: ['codex-cli'],
+      defaultResourceGrant: [],
     };
     expect(kernel.decide(timer, timerSnapshot).action).toEqual({
       type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'codex-cli',
@@ -265,16 +269,89 @@ describe('ControlKernel', () => {
       ...dispatchSnapshot(), runningTaskId: 'task_other',
     }).action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1' });
     expect(kernel.decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
-      schemaVersion: 2, type: 'invalid', reason: 'corrupt snapshot',
+      schemaVersion: 3, type: 'invalid', reason: 'corrupt snapshot',
     }).action.type).toBe('block_work');
   });
+
+  it('decides grant, deny, and Planner escalation from explicit permission facts', () => {
+    const kernel = new ControlKernel();
+    const request = permissionRequest();
+    const permissionEvent = runtimeEvent({ type: 'permission_requested', attemptId: request.attemptId, request });
+    const base: Extract<KernelSnapshot, { type: 'permission' }> = {
+      schemaVersion: 3, type: 'permission', request, requestStatus: 'pending', currentGrants: [],
+      rules: [], userAuthorizationFingerprints: [], previouslyDeniedFingerprints: [], attemptActive: true,
+      workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
+    };
+    expect(kernel.decide(permissionEvent, {
+      ...base,
+      rules: [{ id: 'allow-example', effect: 'allow', capability: 'network_target', operation: 'GET', partition: request.partition, reason: 'approved public endpoint' }],
+    }).action).toMatchObject({ type: 'grant_capability', requestId: request.id, ruleId: 'allow-example' });
+    expect(kernel.decide({
+      ...permissionEvent, id: 'hard-deny', request: { ...request, operation: 'bypass_egress_proxy' },
+    }, { ...base, request: { ...request, operation: 'bypass_egress_proxy' } }).action).toMatchObject({
+      type: 'deny_capability', notifyPlanner: false,
+    });
+    const secret = permissionRequest({ capability: 'sealed_secret', operation: 'use', resource: 'secret:deploy' });
+    expect(kernel.decide(
+      { ...permissionEvent, id: 'secret-event', request: secret },
+      { ...base, request: secret },
+    ).action).toMatchObject({ type: 'escalate_capability', notifyPlanner: true });
+  });
+
+  it('records exact approval as recovery when the old attempt is gone', () => {
+    const request = permissionRequest({ capability: 'repository_promotion', operation: 'push' });
+    const resolution = runtimeEvent({
+      type: 'permission_resolution_received', attemptId: request.attemptId, requestId: request.id,
+      resolution: 'approve', source: 'command', plannerPlanId: null,
+    });
+    const decision = new ControlKernel().decide(resolution, {
+      schemaVersion: 3, type: 'permission', request, requestStatus: 'pending', rules: [], currentGrants: [],
+      userAuthorizationFingerprints: [], previouslyDeniedFingerprints: [], attemptActive: false,
+      workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
+    });
+    expect(decision.action).toMatchObject({
+      type: 'recover_workspace_attempt', requestId: request.id, workspaceId: 'workspace-1',
+      authorization: { resolution: 'approve', source: 'command' },
+    });
+  });
+
+  it('turns partition conflicts into waits and sandbox loss into workspace recovery', () => {
+    const kernel = new ControlKernel();
+    expect(kernel.decide(runtimeEvent({
+      type: 'partition_conflict_observed', attemptId: 'attempt-1', claims: [], conflictingLeaseIds: ['lease-1'],
+    }), {
+      schemaVersion: 3, type: 'partition', conflictConfirmed: true, workspaceId: 'workspace-1', checkpointId: null,
+    }).action).toEqual({
+      type: 'wait_for_partition', taskId: 'task_1', subtaskId: 'subtask_1', conflictingLeaseIds: ['lease-1'],
+    });
+    expect(kernel.decide(runtimeEvent({
+      type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
+      workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
+    }), {
+      schemaVersion: 3, type: 'sandbox_recovery', workspaceExists: true,
+      workspaceId: 'workspace-1', checkpointId: 'checkpoint-1', activeLeaseIds: [],
+    }).action).toMatchObject({ type: 'recover_workspace_attempt', workspaceId: 'workspace-1' });
+  });
 });
+
+function permissionRequest(overrides: Partial<NormalizedCapabilityRequest> = {}): NormalizedCapabilityRequest {
+  const request: NormalizedCapabilityRequest = {
+    id: 'permission-1', fingerprint: '', taskId: 'task_1', generationId: 'generation_task_1_1',
+    subtaskId: 'subtask_1', attemptId: 'attempt-1', agentClassName: 'codex-cli',
+    permissionProfileId: 'workspace-engineering', capability: 'network_target', resource: 'https://example.com/data',
+    partition: { kind: 'external_object', provider: 'https', account: 'public', collection: 'example.com', objectId: '443/data' },
+    operation: 'GET', reason: 'read public task input', suggestedScope: 'attempt', distinctRequestOrdinal: 1,
+    ...overrides,
+  };
+  request.fingerprint = capabilityRequestFingerprint(request);
+  return request;
+}
 
 function runtimeEvent<T extends Omit<KernelEvent, keyof import('../../src/kernel/control-kernel.js').KernelEventEnvelope | 'schemaVersion' | 'id' | 'correlationId' | 'causationId' | 'occurredAt' | 'sessionId'>>(
   value: T,
 ): KernelEvent {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: `event_${value.type}`,
     correlationId: 'correlation_1',
     causationId: null,
@@ -291,7 +368,7 @@ function dispatchSnapshot(
   status: 'ready' | 'awaiting_decision' | 'done' = 'ready',
 ): Extract<KernelSnapshot, { type: 'dispatch' }> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     type: 'dispatch',
     task: { id: 'task_1', status: 'running' },
     runningTaskId: 'task_1',
@@ -311,6 +388,7 @@ function dispatchSnapshot(
     automaticReplansUsed: 0,
     recoverySafety: 'workspace_reconcilable',
     automaticRecoveryAllowed: true,
+    defaultResourceGrant: [],
   };
 }
 

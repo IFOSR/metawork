@@ -37,6 +37,10 @@ Replan creates a new graph revision within the same generation. Completed facts 
 
 External effects use an outbox. Unknown delivery without provider idempotency becomes `uncertain` and requires a Kernel-authorized Task recovery command; it is never blindly resent.
 
+### Phase 5 amendment (2026-07-22)
+
+Kernel contract v3 extends the same durable workflow with `permission_requested`, `permission_resolution_received`, `partition_conflict_observed` and `sandbox_lost`. Permission grants/denials/escalations, partition waits and workspace-attempt recovery are Decision actions, not Runtime policy. Runtime persists and checkpoints before pausing or destroying an attempt; duplicate request/event/apply identities reuse the prior Decision, grant, lease or outbox effect. Startup reconciles Docker labels with SQLite before accepting input and converts missing or leftover sandboxes into normalized events. ADR-0024 owns the detailed resource, workspace and elevation contracts.
+
 ## LangGraph Boundary
 
 LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.
@@ -55,4 +59,4 @@ The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replacea
 
 ## Consequences
 
-Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan and availability become auditable Kernel actions. The hard schema cut requires coordinated migration and replacement of every manual issue/apply path. Phase 4 remains serial; partition/lease enforcement and multi-Task concurrency remain Phase 5 and Phase 6 respectively.
+Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan, availability, permission, partition waiting and sandbox recovery are auditable Kernel actions. The hard schema cuts require coordinated migration and replacement of every manual issue/apply path. Phase 5 remains serial; multi-Task and concurrent-frontier scheduling remain Phase 6.

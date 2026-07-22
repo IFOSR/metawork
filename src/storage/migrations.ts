@@ -1182,6 +1182,236 @@ const MIGRATIONS: Migration[] = [
       migrate();
     },
   },
+  {
+    version: 25,
+    up: (db) => {
+      const migrate = db.transaction(() => {
+        if (tableExists(db, 'agent_classes')) {
+          addColumnIfMissing(db, 'agent_classes', 'execution_image_ref', 'TEXT');
+          addColumnIfMissing(db, 'agent_classes', 'resolved_image_id', 'TEXT');
+          addColumnIfMissing(db, 'agent_classes', 'permission_profile_id', 'TEXT');
+        }
+
+        if (tableExists(db, 'worktree_leases') && !tableExists(db, 'worktree_leases_legacy_audit')) {
+          db.exec('ALTER TABLE worktree_leases RENAME TO worktree_leases_legacy_audit');
+        }
+        if (tableExists(db, 'worktree_leases_legacy_audit')) {
+          db.exec(`
+            DROP INDEX IF EXISTS idx_worktree_leases_active;
+            CREATE INDEX IF NOT EXISTS idx_worktree_leases_legacy_audit_task
+              ON worktree_leases_legacy_audit(task_id, created_at);
+            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_insert
+            BEFORE INSERT ON worktree_leases_legacy_audit BEGIN
+              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_update
+            BEFORE UPDATE ON worktree_leases_legacy_audit BEGIN
+              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_delete
+            BEFORE DELETE ON worktree_leases_legacy_audit BEGIN
+              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
+            END;
+          `);
+        }
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS resource_leases (
+            id TEXT PRIMARY KEY,
+            partition_key TEXT NOT NULL,
+            partition_json TEXT NOT NULL,
+            access_mode TEXT NOT NULL CHECK(access_mode IN ('read', 'write')),
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            work_unit_id TEXT NOT NULL,
+            lease_token TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            released_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
+            FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_resource_leases_active
+            ON resource_leases(released_at, expires_at, partition_key);
+          CREATE INDEX IF NOT EXISTS idx_resource_leases_attempt
+            ON resource_leases(attempt_id, released_at);
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_leases_identity
+            ON resource_leases(attempt_id, lease_token, partition_key, access_mode);
+
+          CREATE TABLE IF NOT EXISTS resource_waits (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            partition_key TEXT NOT NULL,
+            partition_json TEXT NOT NULL,
+            access_mode TEXT NOT NULL CHECK(access_mode IN ('read', 'write')),
+            conflicting_lease_ids_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'waiting',
+            requested_at TEXT NOT NULL,
+            resolved_at TEXT,
+            UNIQUE(attempt_id, partition_key, access_mode)
+          );
+          CREATE INDEX IF NOT EXISTS idx_resource_waits_status
+            ON resource_waits(status, requested_at);
+
+          CREATE TABLE IF NOT EXISTS workspace_records (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'directory')),
+            root_uri TEXT NOT NULL,
+            baseline_json TEXT NOT NULL DEFAULT '{}',
+            managed_repository_uri TEXT,
+            managed_branch TEXT,
+            head_commit TEXT,
+            current_checkpoint_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            cleanup_after TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, generation_id, subtask_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
+            ON workspace_records(status, cleanup_after);
+
+          CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            attempt_id TEXT,
+            reason TEXT NOT NULL CHECK(reason IN ('attempt_start', 'explicit', 'permission_suspended', 'success', 'failure', 'cancelled')),
+            manifest_uri TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            manifest_size INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (workspace_id) REFERENCES workspace_records(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_workspace
+            ON workspace_checkpoints(workspace_id, created_at);
+          CREATE TRIGGER IF NOT EXISTS workspace_checkpoints_immutable_update
+          BEFORE UPDATE ON workspace_checkpoints BEGIN
+            SELECT RAISE(ABORT, 'workspace checkpoints are immutable');
+          END;
+          CREATE TABLE IF NOT EXISTS workspace_objects (
+            content_hash TEXT PRIMARY KEY,
+            object_uri TEXT NOT NULL UNIQUE,
+            size_bytes INTEGER NOT NULL,
+            media_type TEXT,
+            reference_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_referenced_at TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS workspace_checkpoint_objects (
+            checkpoint_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            PRIMARY KEY(checkpoint_id, content_hash),
+            FOREIGN KEY(checkpoint_id) REFERENCES workspace_checkpoints(id) ON DELETE CASCADE,
+            FOREIGN KEY(content_hash) REFERENCES workspace_objects(content_hash)
+          );
+
+          CREATE TABLE IF NOT EXISTS permission_requests (
+            id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            agent_class_name TEXT NOT NULL,
+            permission_profile_id TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            resource_text TEXT NOT NULL,
+            partition_key TEXT NOT NULL,
+            partition_json TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            suggested_scope TEXT NOT NULL CHECK(suggested_scope IN ('once', 'attempt')),
+            distinct_request_ordinal INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            decision_id TEXT,
+            decision_reason TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            UNIQUE(attempt_id, fingerprint)
+          );
+          CREATE INDEX IF NOT EXISTS idx_permission_requests_pending
+            ON permission_requests(status, task_id, created_at);
+
+          CREATE TABLE IF NOT EXISTS permission_grants (
+            id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL UNIQUE,
+            fingerprint TEXT NOT NULL,
+            decision_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            partition_key TEXT NOT NULL,
+            partition_json TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            grant_scope TEXT NOT NULL CHECK(grant_scope IN ('once', 'attempt')),
+            expires_at TEXT NOT NULL,
+            max_calls INTEGER NOT NULL,
+            calls_used INTEGER NOT NULL DEFAULT 0,
+            max_bytes INTEGER NOT NULL,
+            bytes_used INTEGER NOT NULL DEFAULT 0,
+            revoked_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (request_id) REFERENCES permission_requests(id),
+            FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_permission_grants_attempt
+            ON permission_grants(attempt_id, expires_at, revoked_at);
+
+          CREATE TABLE IF NOT EXISTS user_authorizations (
+            id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            resolution TEXT NOT NULL CHECK(resolution IN ('approve', 'deny')),
+            source TEXT NOT NULL,
+            planner_plan_id TEXT,
+            received_event_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            UNIQUE(request_id, received_event_id),
+            FOREIGN KEY (request_id) REFERENCES permission_requests(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_user_authorizations_request
+            ON user_authorizations(request_id, created_at);
+
+          CREATE TABLE IF NOT EXISTS attempt_sandboxes (
+            attempt_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            work_unit_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            container_id TEXT NOT NULL UNIQUE,
+            image_ref TEXT NOT NULL,
+            image_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            lease_token TEXT NOT NULL,
+            labels_json TEXT NOT NULL,
+            exit_code INTEGER,
+            result_collected_at TEXT,
+            cleanup_status TEXT,
+            cleanup_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (workspace_id) REFERENCES workspace_records(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_attempt_sandboxes_status
+            ON attempt_sandboxes(status, updated_at);
+        `);
+      });
+      migrate();
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -1245,4 +1475,7 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, 'agent_classes', 'skills_json', "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, 'agent_classes', 'mcp_servers_json', "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, 'agent_classes', 'plugins_json', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, 'agent_classes', 'execution_image_ref', 'TEXT');
+  addColumnIfMissing(db, 'agent_classes', 'resolved_image_id', 'TEXT');
+  addColumnIfMissing(db, 'agent_classes', 'permission_profile_id', 'TEXT');
 }

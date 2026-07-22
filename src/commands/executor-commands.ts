@@ -1,4 +1,5 @@
 import type { AgentClass, AgentClassRiskLevel } from '../core/types.js';
+import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { isBuiltinExecutorName } from '../executor/builtin-executor-catalog.js';
@@ -26,6 +27,12 @@ function buildAgentClassFromArgs(
   existing?: AgentClass | null,
 ): AgentClass {
   const risk = (parseScalarArg(args, '--risk') ?? existing?.riskLevel ?? 'medium') as AgentClassRiskLevel;
+  const permissionProfileId = (parseScalarArg(args, '--permission-profile')
+    ?? existing?.permissionProfileId
+    ?? null) as PermissionProfileId | null;
+  if (permissionProfileId && !PERMISSION_PROFILE_IDS.includes(permissionProfileId)) {
+    throw new Error(`Unknown permission profile: ${permissionProfileId}`);
+  }
   return {
     name,
     kind: 'executor',
@@ -51,6 +58,9 @@ function buildAgentClassFromArgs(
     runtimeCommand: parseScalarArg(args, '--command') ?? existing?.runtimeCommand ?? null,
     runtimeArgs: parseScalarArg(args, '--args') ? parseRuntimeArgs(parseScalarArg(args, '--args')) : existing?.runtimeArgs ?? [],
     runtimeCheckCommand: parseScalarArg(args, '--check') ?? existing?.runtimeCheckCommand ?? null,
+    executionImageRef: parseScalarArg(args, '--image') ?? existing?.executionImageRef ?? null,
+    resolvedImageId: parseScalarArg(args, '--image-id') ?? existing?.resolvedImageId ?? null,
+    permissionProfileId,
     projectUrl: parseScalarArg(args, '--project-url') ?? existing?.projectUrl ?? null,
   };
 }
@@ -83,7 +93,7 @@ export const executorCommand: CommandHandler = {
             'Enter the AgentClass registration wizard with /executor register wizard',
             '',
             'One-line usage:',
-            '/executor register <name> --command <cmd> --args "exec --prompt {prompt}" --check "<cmd> --version" [--project-url <url>] [--domains a,b] [--capabilities a,b]',
+            '/executor register <name> --image <ref> --image-id <sha256:id> --permission-profile restricted-custom --command <cmd> --args "exec --prompt {prompt}" [--domains a,b] [--capabilities a,b]',
           ].join('\n'),
         };
       }
@@ -97,7 +107,14 @@ export const executorCommand: CommandHandler = {
       if (isBuiltinExecutorName(name)) {
         return { type: 'text', content: `Cannot register or update canonical Executor AgentClass: ${name}` };
       }
-      agentClassRepo.upsert(buildAgentClassFromArgs(name, optionArgs, agentClassRepo.findByName(name)));
+      const agentClass = buildAgentClassFromArgs(name, optionArgs, agentClassRepo.findByName(name));
+      if (!agentClass.executionImageRef || !agentClass.resolvedImageId || !agentClass.permissionProfileId) {
+        return { type: 'text', content: 'Custom Executor requires --image, --image-id and --permission-profile.' };
+      }
+      if (!/^sha256:[a-f0-9]{64}$/u.test(agentClass.resolvedImageId)) {
+        return { type: 'text', content: 'Custom Executor --image-id must be an immutable sha256:<64 hex> image ID.' };
+      }
+      agentClassRepo.upsert(agentClass);
       return {
         type: 'text',
         content: action === 'register'

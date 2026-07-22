@@ -8,7 +8,7 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 5,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -25,6 +25,7 @@ function outputPlan() {
       priority: { level: 'normal', reason: 'normal scheduling' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: {
       reason: 'single implementation delivery',
       subtasks: [{

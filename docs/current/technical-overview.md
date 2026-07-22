@@ -10,12 +10,12 @@ It is built for teams who need agents to do more than answer the current turn. A
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
-- Enforces one active top-level task while Phase 4 replaces the synchronous loop with a durable serial `KernelWorkflow`.
+- Enforces one active top-level task through a durable serial `KernelWorkflow`; Phase 5 adds resource partitions and sandboxed attempts without enabling Phase 6 concurrency.
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
-- Validates every Subtask through Completion Protocol v1, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
+- Validates every Subtask through Completion Protocol v2, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
 - Recalls only clearly applicable preferences and task memory; uncertain recall is skipped by default so Feishu and unattended executors never wait for confirmation.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
@@ -34,7 +34,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>single runtime coordinator]
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v5<br/>intent, target, risk,<br/>revisioned work graph proposal]
+  Planning --> Plan[PlanningAgentPlan v6<br/>intent, target, risk,<br/>v5 graph or authorization resolution]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Loop[Durable KernelWorkflow<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
@@ -47,8 +47,8 @@ flowchart LR
   GraphRuntime --> Graph[Work Graph<br/>persisted Subtasks]
   Graph --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
-  Context --> Executors[ExecutionRuntime<br/>Codex, Pi, Hermes, custom CLI]
-  Executors --> Verify[Completion Protocol v1<br/>evidence, handoffs, artifacts]
+  Context --> Executors[ExecutionRuntime<br/>one disposable Docker attempt]
+  Executors --> Verify[Completion Protocol v2<br/>evidence, handoffs, artifacts]
   Verify --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
@@ -58,7 +58,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become `dispatch_requested`; attempts return capacity, structured outcome or contract facts. `ControlKernel` validates Planning admission, selects the ready Subtask and ordered AgentClass, and remains the sole authority for recovery, retry, fallback, replan and derived availability. Phase 4 persists input before drain and makes Runtime application idempotent by Decision ID; Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, selects the ready Subtask and ordered AgentClass, and remains the sole authority for recovery, retry, fallback, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
@@ -95,7 +95,7 @@ flowchart LR
   WorkGraph --> Ready[Ready Subtask<br/>direct dependency handoffs satisfied]
   Ready --> Attempt[SubtaskAttemptRunner<br/>claim, context, one adapter call]
   Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v1<br/>validate and persist atomically]
+  Run --> Verify[Completion Protocol v2<br/>validate and persist atomically]
   Verify --> Done{Pass?}
   Done -->|yes| Result[Done with artifacts]
   Done -->|no| Blocked[Blocked with recovery hint]
@@ -321,7 +321,7 @@ AnyFusion does not vendor the downstream executor CLIs. Install the ones you wan
 Installed executors are runtime workers that AnyFusion can assign subtasks to. A registered executor now has three parts:
 
 - The `AgentClass`: domains, capabilities, risk level, input/output types, use-case hints, route-intent affinity, and runtime defaults.
-- The runtime binding: local command, non-interactive arguments, install check command, and optional project URL.
+- The runtime binding: immutable Docker image ID, controlled permission profile, in-container command/arguments, install check command, and optional project URL.
 - At least one executor `WorkUnit`: a concrete idle runtime slot that can claim one ready subtask at a time.
 
 Use the guided registration flow when you are not sure what to fill in:
@@ -336,6 +336,9 @@ One-line registration is also supported:
 
 ```bash
 /executor register research-bot \
+  --image registry.example/research-bot:1.2.3 \
+  --image-id sha256:<64-hex-digest> \
+  --permission-profile restricted-custom \
   --command research-bot \
   --args "run --prompt {prompt}" \
   --check "research-bot --version" \
@@ -344,9 +347,9 @@ One-line registration is also supported:
   --capabilities research,report_generation
 ```
 
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, AnyFusion appends the prompt as the final argument. Static capabilities remain in AgentClass. When Runtime needs a new instance it runs the configured check; failure creates a failed WorkUnit and tries the next approved candidate without mutating AgentClass metadata.
+`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, AnyFusion appends the prompt as the final argument. The image ID must match the referenced image and the permission profile must be one of the controlled profiles. A missing binding or changed tag fails closed until the class is explicitly updated; there is no host-process fallback. Static routing capabilities remain separate and Planner-safe.
 
-`codex-cli` and `pi-agent` are owned completely by the canonical built-in definitions. Startup force-converges every persisted static AgentClass field for those names, and normal registration APIs reject attempts to overwrite or delete them. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability display metadata is irreversibly replaced by the controlled Routing Capability IDs (`workspace-engineering` / `current-web-research`); this is intentional. Non-canonical Executor capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. A missing non-canonical default receives only an empty-capability, unclassified record. The legacy `executor_profiles` table is removed at schema version 20.
+`codex-cli` and `pi-agent` are owned completely by canonical definitions. Startup force-converges every persisted static field, immutable image binding and permission profile for those names, and normal registration APIs reject overwrite or deletion. Non-canonical capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. Historical custom classes without image/profile bindings remain visible for audit but are non-executable.
 
 Executor extension contract:
 
@@ -551,10 +554,10 @@ candidate. Docker mounts `planner-codex.env`, `executor-codex.env`, and
 only their assigned provider file, and `docker/entrypoint.sh` renders each config
 template with the base URL from that file.
 
-The hermetic runtime image contains the CLI, Planner MCP, generated v5 schema,
+The hermetic runtime image contains the CLI, Planner MCP, generated v6 schema,
 Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
 Codex/PI configs, and entrypoint are not mounted. Source changes require
-`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, including passwordless SSH and VS Code Remote-SSH setup.
+`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Executor attempts are sibling containers created through a trusted Engine endpoint. They mount source, inputs, handoffs and `.git` read-only, mount only their private `/workspace` read-write, use a tmpfs `/tmp`, and never receive the Docker socket or provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
 
 ## Configuration
 
@@ -762,12 +765,12 @@ Every natural-language proposal and deterministic execution entrypoint enters th
 
 ## Planning Agent, Control Kernel, And Work Units
 
-Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v5 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed.
+Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated Codex runner produces a strict v6 `PlanningAgentPlan` and queries bounded read-only MCP tools when evidence is needed. Work Graph remains v5; v6 adds only exact pending-request authorization resolution and does not add resource claims.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. It validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides dispatch, capacity handling, execution landing, timer rechecks and contract correction without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and the decision ID and attempt authorization are deterministic from the event.
+`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v3 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides dispatch, capacity handling, execution landing, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and the decision ID and attempt authorization are deterministic from the event.
 
 `DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles processing/application state before accepting input. `planning_decisions_legacy_audit` is read-only history; Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph/frontier facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `SubtaskAttemptRunner` executes the exact authorized attempt, persists receipts/handoffs/results, releases its WorkUnit, and reports a normalized event.
 
@@ -777,11 +780,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs, same-layer preferred-class conflicts, and mergeable same-AgentClass single chains.
 
-In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; v23 adds the unified decision ledger; v24 lifts valid v4 graphs into revision one and adds durable inbox/application/outbox state. `dependencies` is the only topology and typed handoff source. The serial shell executes one Kernel-authorized ready node, injects completed direct-edge handoffs or controlled task evidence, and never reruns completed nodes or reparses persisted handoffs.
+In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; v23 adds the unified decision ledger; v24 adds durable inbox/application/outbox and graph revisions; v25 adds resource, workspace, permission and sandbox records. `dependencies` is the only topology and typed handoff source. The serial shell executes one Kernel-authorized ready node, injects completed direct-edge handoffs, their versioned `workspace_state`, or controlled task evidence, and never absorbs sibling state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v1. `SubtaskAttemptRunner` strips the machine envelope, checks exact acceptance and outgoing-edge contracts, budgets, patch/artifact gates, realpath containment, and direct-edge aggregate limits. Success atomically persists the terminal receipt, immutable normalized handoffs, clean Subtask body, artifacts, warnings, and `done`. A non-success attempt atomically persists its terminal receipt and `awaiting_decision`, then releases its WorkUnit before the Kernel chooses the next state. The first contract failure may receive one same-AgentClass response-only correction in an empty read-only workspace with no normal context, evidence or tools; only the corrected response can be published. A second failure blocks. General retry/fallback, durable unapplied-decision recovery, resource partitioning and concurrent dispatch remain later roadmap phases.
+Every Executor response must end with Completion Protocol v2. `SubtaskAttemptRunner` strips the machine envelope, checks exact acceptance and outgoing-edge contracts, budgets, patch/artifact gates, realpath containment, and direct-edge aggregate limits. Success atomically persists the terminal receipt, immutable normalized handoffs, clean Subtask body, artifacts, workspace state and `done`; Git outputs are committed only to a MetaClaw-managed task branch. A non-success attempt checkpoints the persistent workspace before Kernel recovery policy selects a new disposable container or blocks. General retry/fallback, durable application recovery, resource partitions and permission elevation are active; concurrent dispatch remains Phase 6.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 
@@ -818,7 +821,7 @@ Skill strengths:
 
 Skill tradeoffs:
 
-- Bound by the host executor's tools, permissions, context, and model.
+- Bound by the Executor image, permission profile, scoped context and model gateway.
 - Cannot make an unavailable CLI, private API, browser, file permission, or enterprise integration appear by itself.
 - Usually improves execution quality rather than expanding the runtime boundary.
 

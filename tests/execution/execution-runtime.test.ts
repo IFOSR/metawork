@@ -346,7 +346,7 @@ describe('ExecutionRuntime', () => {
     expect(codex.execute).not.toHaveBeenCalled();
   });
 
-  it('resolves custom executor runtime agent classes through the registry', () => {
+  it('does not bypass the AgentClass lookup port for custom runtime commands', () => {
     const db = createDb();
     new AgentClassRepo(db).upsert({
       ...createAgentClass('research-bot'),
@@ -365,8 +365,12 @@ describe('ExecutionRuntime', () => {
 
     const executor = registry.resolve('research-bot');
 
-    expect(executor?.name).toBe('research-bot');
-    expect(executor?.constructor.name).toBe('CustomCliExecutorAdapter');
+    expect(executor).toBeNull();
+    expect(registry.inspect('research-bot')).toEqual({
+      configured: false,
+      bindingSource: 'unbound',
+      adapterName: null,
+    });
   });
 
   it('resolves registered adapter factories without editing runtime branching logic', () => {

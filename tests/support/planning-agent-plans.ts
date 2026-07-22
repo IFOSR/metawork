@@ -16,7 +16,7 @@ import type { ContextRef } from '../../src/work-graph/index.js';
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 5,
+    schemaVersion: 6,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
@@ -33,6 +33,7 @@ function basePlan(): PlanningAgentPlan {
       priority: null,
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: null,
     source: 'codex-planner',
   };

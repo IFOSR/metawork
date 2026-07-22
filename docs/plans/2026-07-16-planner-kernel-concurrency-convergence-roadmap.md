@@ -3,8 +3,8 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1～4 已完成
-- **当前激活阶段**：Phase 5——Partition 模型在串行 Runtime 中落地；Phase 4 [详细实施计划](../archive/plans/2026-07-21-phase-4-durable-recovery-fallback-availability-detailed-implementation-plan.md)已归档
+- **当前状态**：实施中；Phase 1～5 已完成
+- **当前激活阶段**：Phase 6——异步并发调度；Phase 5 [详细实施计划](../archive/plans/2026-07-22-phase-5-resource-partition-sandbox-elevation-detailed-implementation-plan.md)已归档
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -164,13 +164,15 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 - 通过 ADR 固定 repository/worktree/path/logical resource/external object 的 partition identity。
 - 定义 read/write access、父子路径覆盖、通配资源和外部对象冲突规则。
-- Planner 提出资源 claim，Kernel 授权，Runtime 在执行范围和文件操作侧强制落实。
+- Planner 只提出交付能力，不枚举资源 claim；Runtime 根据 AgentClass permission profile、Task 资源绑定和 workspace identity 构造默认资源事实，Executor 对越界操作发起结构化请求，Kernel 唯一决定 grant、deny 或 escalate。
 - 建立持久租约：owner、Task/Subtask/attempt、lease、heartbeat、等待关系和幂等 claim/release。
 - 建立进程退出、WorkUnit 丢失、租约过期、取消和残留工作树的恢复清理规则。
-- 明确何时创建独立 worktree/临时目录，以及产物如何归属和回收。
+- 每个 attempt 创建独立短命 Docker sandbox；每个 Task generation + Subtask 保存持久 workspace、关键 checkpoint 和产物/CAS 清单。Git 成果只提交到 MetaClaw 托管分支。
 - 本阶段仍然串行执行，但 partition 字段必须真实参与授权和范围限制，不得只是未来占位符。
 
 退出条件：partition key、冲突检测、持久租约、崩溃恢复和隔离机制均有 ADR、迁移和容器测试；并发尚未开启。
+
+完成记录（2026-07-22）：ADR-0024、Resource Model、AgentClass immutable image/profile、SQLite v25、PlanningAgentPlan v6、Kernel v3、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability elevation、精确用户授权和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Executor 只对越界操作请求能力，Kernel 唯一决定 grant/deny/escalate。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（195 个文件、780 个测试通过；5 个文件、16 个测试跳过）、真实 Docker sandbox 集成测试和 `npm run smoke:anyfusion` 均通过。实现提交待 closing commit 回填；Phase 5 计划已归档，Phase 6 激活。
 
 ### Phase 6：异步并发调度
 

@@ -1,5 +1,7 @@
-import { resolve } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { mkdir, readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
@@ -29,6 +31,17 @@ import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '.
 import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
 import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
 import { captureWorkspaceState, deriveWorkspaceDelta, type WorkspaceState } from './workspace-change-tracker.js';
+import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from './workspace-store.js';
+import type { AttemptSandboxPort } from './attempt-sandbox.js';
+import type { ResourceClaim } from '../resource/index.js';
+import type { ResourceLeaseService } from './resource-lease-service.js';
+import { RegisteredCapabilityResourceResolver } from './capability-resource-resolver.js';
+import { PermissionWorkflowService } from './permission-workflow-service.js';
+import { CapabilityRequestToolServer } from './capability-request-tool-server.js';
+import type { PermissionRepositoryPort } from '../resource/index.js';
+import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import type { WorkspaceRepositoryPort } from './repositories.js';
+import { ManagedGitWorkspaceService, type ManagedGitWorkspace } from './managed-git-workspace.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -37,6 +50,7 @@ export type SubtaskAttemptOutcome =
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
   | { outcome: 'contract_failed'; attemptId: string; workUnitId: string; agentClassName: string; responseBytes: number; receiptCount: number; completionContract: unknown; violations: CompletionContractViolation[] }
   | { outcome: 'executor_failed'; attemptId: string; error: string; failure: KernelFailure }
+  | { outcome: 'partition_conflict'; attemptId: string; claims: ResourceClaim[]; conflictingLeaseIds: string[] }
   | { outcome: 'cancelled_or_stale'; attemptId: string; reason: string };
 
 export interface SubtaskAttemptRunnerDeps {
@@ -44,9 +58,18 @@ export interface SubtaskAttemptRunnerDeps {
   sessionId: string;
   taskRuntimeService: TaskRuntimeService;
   subtaskRepo: SubtaskRepo;
-  workUnitClaimService: WorkUnitClaimService;
+  workUnitClaimService: Pick<WorkUnitClaimService, 'claim' | 'isClaimCurrent'>;
   executionRuntime: ExecutionRuntime;
   agentClassService: AgentClassService;
+  workspaceStore: WorkspaceStore;
+  attemptSandbox: AttemptSandboxPort;
+  resourceLeaseService: ResourceLeaseService;
+  permissionRepository: PermissionRepositoryPort;
+  kernelWorkflowStore: KernelWorkflowStore;
+  workspaceRepository: WorkspaceRepositoryPort;
+  sourceRoot: string;
+  seedSource?: boolean;
+  controlNetwork: string;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -55,12 +78,14 @@ export class SubtaskAttemptRunner {
   private readonly receiptRepo: ExecutorAttemptReceiptRepo;
   private readonly handoffRepo: SubtaskHandoffRepo;
   private readonly attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
+  private readonly managedGitWorkspace: ManagedGitWorkspaceService;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db);
     this.receiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
     this.attemptRuntimeRepo = new ExecutorAttemptRuntimeRepo(deps.db);
+    this.managedGitWorkspace = new ManagedGitWorkspaceService(deps.workspaceStore);
   }
 
   supportsResponseOnly(agentClassName: string): boolean {
@@ -111,6 +136,7 @@ export class SubtaskAttemptRunner {
     attemptKind?: KernelAttemptKind;
     sourceAttemptId?: string | null;
     recoveryMode?: KernelRecoveryMode;
+    defaultResourceGrant: ResourceClaim[];
     onProgress?: ProgressCallback;
   }): Promise<SubtaskAttemptOutcome> {
     const attemptId = input.attemptId;
@@ -138,11 +164,39 @@ export class SubtaskAttemptRunner {
     });
     if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName: input.agentClassName };
 
+    const leaseToken = `attempt_lease_${randomUUID()}`;
+    const resourceClaim = this.deps.resourceLeaseService.claim({
+      taskId: input.taskId,
+      generationId: subtask.generationId,
+      subtaskId: subtask.id,
+      attemptId,
+      workUnitId: claim.workUnit.id,
+      claims: input.defaultResourceGrant,
+      leaseToken,
+    });
+    if (resourceClaim.type === 'conflict') {
+      claim.release();
+      return {
+        outcome: 'partition_conflict',
+        attemptId,
+        claims: input.defaultResourceGrant,
+        conflictingLeaseIds: resourceClaim.conflictingLeases.map(lease => lease.id),
+      };
+    }
+
     const startedAt = new Date().toISOString();
     let rawResponse = '';
     let evidenceCapability: { revoke(): void } | null = null;
     let evidenceToolServer: ExecutionEvidenceToolServer | null = null;
     let workspaceBaseline: WorkspaceState | null = null;
+    let workspace: WorkspaceHandle | null = null;
+    let gitWorkspace: ManagedGitWorkspace | null = null;
+    let capabilityToolServer: CapabilityRequestToolServer | null = null;
+    let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
+    const heartbeat = setInterval(() => {
+      claim.heartbeat();
+      this.deps.resourceLeaseService.heartbeat(attemptId, leaseToken);
+    }, 20_000);
     try {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
@@ -153,9 +207,69 @@ export class SubtaskAttemptRunner {
       }
       const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(input.taskId);
       const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(input.taskId);
-      const targetPath = resolve(process.cwd(), 'metaclaw-tasks', task.id);
-      mkdirSync(targetPath, { recursive: true });
-      workspaceBaseline = captureWorkspaceState(process.cwd());
+      const workspaceIdentity = {
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+      };
+      gitWorkspace = await this.managedGitWorkspace.ensure(workspaceIdentity, this.deps.sourceRoot);
+      workspace = gitWorkspace ?? await this.deps.workspaceStore.ensureWorkspace(workspaceIdentity, 'directory');
+      if (gitWorkspace && subtask.dependencies.length > 0) {
+        const dependencyCommits = subtask.dependencies.map(dependency => {
+          const state = this.deps.workspaceRepository.findByIdentity(
+            task.id, subtask.generationId, dependency.fromSubtaskId,
+          );
+          if (!state?.headCommit) throw new Error(`missing direct dependency workspace_state: ${dependency.fromSubtaskId}`);
+          return state.headCommit;
+        });
+        await this.managedGitWorkspace.applyDependencyStates(gitWorkspace, dependencyCommits);
+      }
+      const workspaceNow = new Date().toISOString();
+      this.deps.workspaceRepository.upsert({
+        id: workspace.id,
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        kind: workspace.kind,
+        rootUri: pathToFileURL(workspace.rootPath).href,
+        baseline: gitWorkspace ? {
+          sourceCommit: gitWorkspace.sourceCommit,
+          baselineCommit: gitWorkspace.baselineCommit,
+          sourceDiffHash: gitWorkspace.sourceDiffHash,
+        } : {},
+        managedRepositoryUri: gitWorkspace ? pathToFileURL(gitWorkspace.repositoryPath).href : null,
+        managedBranch: gitWorkspace?.branch ?? null,
+        headCommit: gitWorkspace?.baselineCommit ?? null,
+        currentCheckpointId: null,
+        status: 'active',
+        cleanupAfter: null,
+        createdAt: workspaceNow,
+        updatedAt: workspaceNow,
+      });
+      if (!gitWorkspace && this.deps.seedSource !== false && (await readdir(workspace.filesPath)).length === 0) {
+        await this.deps.workspaceStore.seedDirectory(workspace, this.deps.sourceRoot);
+      }
+      await mkdir(join(workspace.filesPath, '.metaclaw', 'results'), { recursive: true });
+      await this.deps.workspaceStore.prepareForSandbox(workspace);
+      const inputsPath = join(workspace.rootPath, 'inputs');
+      const handoffsPath = join(workspace.rootPath, 'handoffs');
+      await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
+      const startCheckpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
+        reason: 'attempt_start', attemptId,
+      });
+      this.deps.workspaceRepository.recordCheckpoint({
+        id: startCheckpoint.id,
+        workspaceId: workspace.id,
+        attemptId,
+        reason: 'attempt_start',
+        manifestUri: startCheckpoint.manifestUri,
+        manifestHash: startCheckpoint.manifestHash,
+        manifestSize: startCheckpoint.manifestSize,
+        createdAt: startCheckpoint.manifest.createdAt,
+        objects: checkpointObjects(startCheckpoint),
+      });
+      const targetPath = workspace.filesPath;
+      workspaceBaseline = captureWorkspaceState(workspace.filesPath);
       const sourceRuntime = input.sourceAttemptId
         ? this.attemptRuntimeRepo.find(input.sourceAttemptId)
         : null;
@@ -168,7 +282,7 @@ export class SubtaskAttemptRunner {
       this.attemptRuntimeRepo.start({
         attemptId,
         sourceAttemptId: input.sourceAttemptId ?? null,
-        workspaceRoot: process.cwd(),
+        workspaceRoot: workspace.filesPath,
         workspaceBaseline: { ...workspaceBaseline },
         recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
         now: startedAt,
@@ -184,7 +298,7 @@ export class SubtaskAttemptRunner {
         sessionId: this.deps.sessionId,
         workspaceContext: {
           allowFilesystem: true,
-          workingDirectory: process.cwd(),
+          workingDirectory: workspace.filesPath,
           targetPaths: [targetPath],
         },
         evidenceToolsAvailable,
@@ -196,15 +310,86 @@ export class SubtaskAttemptRunner {
       });
       evidenceCapability = built.evidenceCapability;
       if (evidenceToolsAvailable) {
-        evidenceToolServer = new ExecutionEvidenceToolServer(built.evidenceCapability);
+        evidenceToolServer = new ExecutionEvidenceToolServer(built.evidenceCapability, {
+          advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
+        });
         built.context.evidenceTools.binding = await evidenceToolServer.start();
       }
+      const capabilityContext = {
+        sessionId: this.deps.sessionId,
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        attemptId,
+        agentClassName: agentClass.name,
+        permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom' as const,
+        containerId: '',
+        workspaceId: workspace.id,
+        checkpointId: null as string | null,
+      };
+      const resourceRegistrations = new Map(task.resources.map((resource, index) => [
+        resource,
+        { kind: 'path' as const, mountId: `inputs-${task.id}`, normalizedRelativePath: `resource-${index}` },
+      ]));
+      const permissionWorkflow = new PermissionWorkflowService({
+        context: capabilityContext,
+        repository: this.deps.permissionRepository,
+        resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
+        sandbox: this.deps.attemptSandbox,
+        workflowStore: this.deps.kernelWorkflowStore,
+        rules: [],
+        hooks: {
+          checkpoint: async reason => {
+            if (!workspace) return null;
+            const checkpoint = await this.deps.workspaceStore.createCheckpoint(workspace, { reason, attemptId });
+            this.deps.workspaceRepository.recordCheckpoint({
+              id: checkpoint.id,
+              workspaceId: workspace.id,
+              attemptId,
+              reason,
+              manifestUri: checkpoint.manifestUri,
+              manifestHash: checkpoint.manifestHash,
+              manifestSize: checkpoint.manifestSize,
+              createdAt: checkpoint.manifest.createdAt,
+              objects: checkpointObjects(checkpoint),
+            });
+            return checkpoint.id;
+          },
+          onEscalation: async request => {
+            claim.markWaiting(`permission request ${request.id} requires Planner or user review`);
+            if (capabilityContext.containerId) await this.deps.attemptSandbox.stop(capabilityContext.containerId);
+          },
+          onRecoveryAuthorized: async () => undefined,
+        },
+      });
+      capabilityToolServer = new CapabilityRequestToolServer(permissionWorkflow, {
+        advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
+      });
+      const capabilityBinding = await capabilityToolServer.start();
       const execution = await this.deps.executionRuntime.run({
         taskId: input.taskId,
         executionId: input.executionId,
         spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, expectedOutput: subtask.expectedOutput },
         executorInput: {
           context: built.context,
+          sandbox: {
+            attemptId,
+            taskId: task.id,
+            generationId: subtask.generationId,
+            subtaskId: subtask.id,
+            workUnitId: claim.workUnit.id,
+            leaseToken,
+            idempotencyKey: `dispatch:${attemptId}`,
+            workspacePath: workspace.filesPath,
+            workspaceId: workspace.id,
+            sourcePath: this.deps.sourceRoot,
+            inputsPath,
+            handoffsPath,
+            gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
+            controlNetwork: this.deps.controlNetwork,
+            capabilityBinding,
+            onContainerCreated: containerId => { capabilityContext.containerId = containerId; },
+          },
           recovery: {
             mode: recoveryMode,
             continuationToken: sourceRuntime?.continuationToken ?? null,
@@ -224,19 +409,28 @@ export class SubtaskAttemptRunner {
       rawResponse = execution.output;
       if (execution.status !== 'success') {
         const error = execution.error ?? 'Executor failed without an error message';
+        const pendingPermission = this.deps.permissionRepository.findPendingForTask(task.id);
+        const executionFailure = pendingPermission?.request.attemptId === attemptId
+          ? {
+              kind: 'permission' as const,
+              scope: 'attempt' as const,
+              code: 'permission_escalated',
+              summary: `permission request ${pendingPermission.request.id} requires Planner or user review`,
+            }
+          : execution.failure;
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
           terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
           errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
-          failure: execution.failure,
+          failure: executionFailure,
         });
         claim.markFailed(error);
         return execution.status === 'cancelled'
           ? { outcome: 'cancelled_or_stale', attemptId, reason: error }
           : {
               outcome: 'executor_failed', attemptId, error,
-              failure: execution.failure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
+              failure: executionFailure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
             };
       }
 
@@ -329,6 +523,12 @@ export class SubtaskAttemptRunner {
       }
 
       const completedAt = new Date().toISOString();
+      const managedCommit = gitWorkspace
+        ? await this.managedGitWorkspace.commit(
+            gitWorkspace,
+            `feat: capture ${subtask.id} result`,
+          )
+        : null;
       this.deps.db.transaction(() => {
         this.receiptRepo.insert(buildReceipt({
           attemptId,
@@ -361,6 +561,30 @@ export class SubtaskAttemptRunner {
           error: null,
         });
       })();
+      if (managedCommit && workspace) {
+        this.deps.workspaceRepository.upsert({
+          id: workspace.id,
+          taskId: task.id,
+          generationId: subtask.generationId,
+          subtaskId: subtask.id,
+          kind: 'git',
+          rootUri: pathToFileURL(workspace.rootPath).href,
+          baseline: {
+            sourceCommit: gitWorkspace!.sourceCommit,
+            baselineCommit: gitWorkspace!.baselineCommit,
+            sourceDiffHash: gitWorkspace!.sourceDiffHash,
+          },
+          managedRepositoryUri: pathToFileURL(gitWorkspace!.repositoryPath).href,
+          managedBranch: managedCommit.branch,
+          headCommit: managedCommit.commit,
+          currentCheckpointId: null,
+          status: 'done',
+          cleanupAfter: null,
+          createdAt: completedAt,
+          updatedAt: completedAt,
+        });
+      }
+      finalCheckpointReason = 'success';
       return {
         outcome: 'completed',
         attemptId,
@@ -387,15 +611,39 @@ export class SubtaskAttemptRunner {
         failure: { kind: 'unknown', scope: 'attempt', code: 'attempt_exception', summary: message },
       };
     } finally {
-      if (workspaceBaseline) {
+      clearInterval(heartbeat);
+      if (workspace) {
+        try {
+          const checkpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
+            reason: finalCheckpointReason,
+            attemptId,
+          });
+          this.deps.workspaceRepository.recordCheckpoint({
+            id: checkpoint.id,
+            workspaceId: workspace.id,
+            attemptId,
+            reason: finalCheckpointReason,
+            manifestUri: checkpoint.manifestUri,
+            manifestHash: checkpoint.manifestHash,
+            manifestSize: checkpoint.manifestSize,
+            createdAt: checkpoint.manifest.createdAt,
+            objects: checkpointObjects(checkpoint),
+          });
+        } catch {
+          // The terminal receipt remains authoritative; checkpoint recovery is best effort here.
+        }
+      }
+      if (workspaceBaseline && workspace) {
         this.attemptRuntimeRepo.recordWorkspaceDelta(
           attemptId,
-          deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(process.cwd())),
+          deriveWorkspaceDelta(workspaceBaseline, captureWorkspaceState(workspace.filesPath)),
           new Date().toISOString(),
         );
       }
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
+      await capabilityToolServer?.close();
+      this.deps.resourceLeaseService.release(attemptId, leaseToken);
       claim.release();
     }
   }
@@ -540,18 +788,13 @@ export class SubtaskAttemptRunner {
   private isStillCurrent(taskId: string, subtaskId: string, attemptId: string, workUnitId: string): boolean {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const subtask = this.deps.subtaskRepo.findById(subtaskId);
-    const workUnit = this.deps.db.prepare(`SELECT state, claimed_attempt_id FROM work_units WHERE id = ?`)
-      .get(workUnitId) as { state: string; claimed_attempt_id: string | null } | undefined;
     return task?.status === 'running'
       && subtask?.status === 'running'
-      && workUnit?.state === 'running'
-      && workUnit.claimed_attempt_id === attemptId;
+      && this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId, 'running');
   }
 
   private isAttemptClaimCurrent(attemptId: string, workUnitId: string): boolean {
-    const workUnit = this.deps.db.prepare(`SELECT claimed_attempt_id FROM work_units WHERE id = ?`)
-      .get(workUnitId) as { claimed_attempt_id: string | null } | undefined;
-    return workUnit?.claimed_attempt_id === attemptId;
+    return this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId);
   }
 
   private persistNonSuccess(input: {
@@ -589,6 +832,14 @@ function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV2['ite
     }
   }
   return { textCharacters, artifactPaths };
+}
+
+function checkpointObjects(checkpoint: StoredWorkspaceCheckpoint) {
+  return checkpoint.manifest.entries.flatMap(entry => (
+    entry.type === 'file' && entry.hash && entry.objectUri
+      ? [{ hash: entry.hash, uri: entry.objectUri, size: entry.size, mediaType: null }]
+      : []
+  ));
 }
 
 function buildReceipt(input: {

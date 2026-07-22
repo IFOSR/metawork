@@ -7,6 +7,7 @@ const ACTION_VALUES = [
   'clarification',
   'task_control',
   'plan_work_graph',
+  'authorization_resolution',
   'no_action',
 ] as const;
 const TASK_BINDING_VALUES = ['new', 'reference', 'none'] as const;
@@ -99,9 +100,14 @@ const WorkGraphSchema = z.object({
   subtasks: z.array(SubtaskSchema).min(1),
 }).strict();
 
+const AuthorizationResolutionSchema = z.object({
+  requestId: z.string().trim().min(1),
+  resolution: z.enum(['approve', 'deny']),
+}).strict();
+
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(5),
+  schemaVersion: z.literal(6),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
@@ -109,6 +115,7 @@ const PlanShapeSchema = z.object({
   response: ResponseSchema,
   task: TaskSchema,
   risk: RiskSchema,
+  authorizationResolution: AuthorizationResolutionSchema.nullable(),
   workGraph: WorkGraphSchema.nullable(),
   source: z.literal(PLANNER_SOURCE),
 }).strict().superRefine((plan, context) => {
@@ -117,6 +124,12 @@ const PlanShapeSchema = z.object({
   }
   if (plan.action !== 'plan_work_graph' && plan.workGraph !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['workGraph'], message: 'non-work-graph actions require null workGraph' });
+  }
+  if (plan.action === 'authorization_resolution' && plan.authorizationResolution === null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['authorizationResolution'], message: 'authorization_resolution requires authorizationResolution' });
+  }
+  if (plan.action !== 'authorization_resolution' && plan.authorizationResolution !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['authorizationResolution'], message: 'non-authorization actions require null authorizationResolution' });
   }
 });
 

@@ -74,7 +74,8 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const smoke = await loadSmokeScript();
     const script = smoke.buildScenarioScript('artifact');
 
-    expect(script).toContain('authorized Task target directory');
+    expect(script).toContain('Runtime will provide the exact authorized target directory');
+    expect(script).toContain('do not ask me for a path');
     expect(script).not.toContain('in the current directory');
   });
 });

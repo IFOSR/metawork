@@ -29,6 +29,9 @@ describe('agent class admin and planner dispatch services', () => {
 
     expect(service.startWizard().join('\n')).toContain('Executor AgentClass name');
     await service.handlePendingWizardInput('research-bot');
+    await service.handlePendingWizardInput('registry.example/research-bot:1.0.0');
+    await service.handlePendingWizardInput(`sha256:${'a'.repeat(64)}`);
+    await service.handlePendingWizardInput('restricted-custom');
     await service.handlePendingWizardInput('manual');
     await service.handlePendingWizardInput('research-bot');
     await service.handlePendingWizardInput('run --prompt {prompt}');
@@ -68,6 +71,9 @@ describe('agent class admin and planner dispatch services', () => {
 
     service.startWizard();
     await service.handlePendingWizardInput('research-bot');
+    await service.handlePendingWizardInput('registry.example/research-bot:1.0.0');
+    await service.handlePendingWizardInput(`sha256:${'b'.repeat(64)}`);
+    await service.handlePendingWizardInput('restricted-custom');
     await service.handlePendingWizardInput('url');
     const result = await service.handlePendingWizardInput('https://github.com/acme/research-bot');
 

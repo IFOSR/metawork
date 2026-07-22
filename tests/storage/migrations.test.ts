@@ -71,7 +71,14 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+    for (const table of [
+      'resource_leases', 'resource_waits', 'workspace_records', 'workspace_checkpoints',
+      'workspace_objects', 'workspace_checkpoint_objects', 'permission_requests', 'permission_grants',
+      'user_authorizations', 'attempt_sandboxes',
+    ]) {
+      expect(db.prepare(`PRAGMA table_info(${table})`).all().length).toBeGreaterThan(0);
+    }
 
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
     expect(taskColumns.map(column => column.name)).toEqual(expect.arrayContaining([
@@ -271,7 +278,7 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT id FROM executor_route_events').all()).toEqual([{ id: 'route-1' }]);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
   });
 
   it('hard-cuts v20 subtasks through audit tables to an empty v4 graph and parks unfinished tasks', () => {
@@ -334,7 +341,7 @@ describe('runMigrations', () => {
       claimed_subtask_id: null,
       claimed_attempt_id: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
   });
 
   it('lifts an active v4 graph into revision one without replaying v23 decisions', () => {
@@ -392,7 +399,7 @@ describe('runMigrations', () => {
       'session_v23', 'task_done', '2026-07-21T00:00:00.000Z',
     );
     db.exec(`
-      DELETE FROM schema_version WHERE version = 24;
+      DELETE FROM schema_version WHERE version IN (24, 25);
       DELETE FROM kernel_decision_applications;
       DELETE FROM kernel_events;
     `);
@@ -422,6 +429,6 @@ describe('runMigrations', () => {
       status: 'applied',
       error_summary: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 24 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
   });
 });

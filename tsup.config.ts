@@ -1,7 +1,13 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/planner-mcp.ts', 'src/generate-planner-schema.ts'],
+  entry: [
+    'src/index.ts',
+    'src/planner-mcp.ts',
+    'src/generate-planner-schema.ts',
+    'src/capability-request-cli.ts',
+    'src/emit-pi-attempt-extension.ts',
+  ],
   format: ['esm'],
   target: 'node20',
   outDir: 'dist',

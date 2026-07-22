@@ -1,5 +1,7 @@
 node_modules
-dist
+dist/*
+!dist/capability-request-cli.js
+!dist/pi-attempt-tools.ts
 coverage
 projects
 metaclaw-tasks

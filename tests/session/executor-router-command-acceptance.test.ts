@@ -80,6 +80,9 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit('/executor register wizard');
     await session.submit('research-bot');
+    await session.submit('registry.example/research-bot:1.0.0');
+    await session.submit(`sha256:${'a'.repeat(64)}`);
+    await session.submit('restricted-custom');
     await session.submit('manual');
     await session.submit('research-bot');
     await session.submit('run --prompt {prompt}');
@@ -132,7 +135,7 @@ describe('planner-first executor command acceptance', () => {
     const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_agent_class_register_oneline' });
 
     session.initialize();
-    await session.submit('/executor register research-bot --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation');
+    await session.submit(`/executor register research-bot --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} --permission-profile restricted-custom --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation`);
 
     const row = db.prepare('SELECT runtime_args_json, runtime_check_command FROM agent_classes WHERE name = ?').get('research-bot') as {
       runtime_args_json: string;

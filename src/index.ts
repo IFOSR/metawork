@@ -147,11 +147,10 @@ async function main() {
   });
   const executor = defaultExecutorFactory();
 
-  // 8. 检查执行器可用性
-  if (!(await executor.isAvailable())) {
-    console.error(`错误：未找到 ${config.executor.command} 命令。请先安装对应执行器。`);
-    process.exit(1);
-  }
+  // 8. Executor availability is resolved from the verified attempt image at
+  // dispatch time. Startup must keep direct reply/query/planning available
+  // when Docker is unavailable and let Kernel surface a configuration block
+  // only for work that actually requires execution.
 
   // 9. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;

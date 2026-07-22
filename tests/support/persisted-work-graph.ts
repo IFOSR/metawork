@@ -4,6 +4,7 @@ import {
   createEvidenceId,
   TaskExecutionEvidenceRepo,
 } from '../../src/execution/execution-evidence-port.js';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 
 /** Seed an already-authorized v4 graph for tests whose subject is resume behavior. */
 export function seedPersistedV3WorkGraph(
@@ -24,6 +25,8 @@ export function seedPersistedV3WorkGraph(
   new SubtaskRepo(db).upsert({
     id: `${taskId}_execute`,
     taskId,
+    graphRevision: 1,
+    generationId: `generation_${taskId}_1`,
     title,
     goal: title,
     status: 'ready',
@@ -38,6 +41,17 @@ export function seedPersistedV3WorkGraph(
     artifacts: [],
     verification: { warnings: [], completionSchemaVersion: null },
     error: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  new WorkGraphRevisionRepo(db).activate({
+    id: `work_graph_${taskId}_1`,
+    taskId,
+    revision: 1,
+    generationId: `generation_${taskId}_1`,
+    authorizedDecisionId: null,
+    proposalSource: 'initial',
+    automaticReplan: false,
     createdAt: now,
     updatedAt: now,
   });

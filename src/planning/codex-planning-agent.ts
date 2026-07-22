@@ -109,7 +109,7 @@ export class CodexPlanningAgent implements PlanningAgent {
   private safeClarification(reason: string): PlanningAgentPlan {
     return {
       id: `plan_${generateInteractionId()}`,
-      schemaVersion: 5,
+      schemaVersion: 6,
       action: 'clarification',
       confidence: 0,
       reason,
@@ -126,6 +126,7 @@ export class CodexPlanningAgent implements PlanningAgent {
         priority: null,
       },
       risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+      authorizationResolution: null,
       workGraph: null,
       source: PLANNER_SOURCE,
     };
@@ -140,15 +141,17 @@ export class CodexPlanningAgent implements PlanningAgent {
       '你是 MetaClaw 的 PlanningAgent。自然语言语义、任务目标、恢复目标、风险、优先级、任务拆分和 AgentClass 选择都由你判断。',
       '需要历史、任务状态或执行器事实时主动调用 metaclaw_planner MCP；不得猜测 taskId、阻塞状态或 AgentClass。',
       '静态执行器目录已在上下文 executorCatalog 中提供；不要通过 MCP 查询能力目录。只有需要创建工作图且近期健康事实会影响候选顺序时才查询执行器状态。证据不足时返回 clarification。',
-      '只返回严格符合 PlanningAgentPlan v5 的 JSON，不要返回 Markdown、解释、v2/v3/v4 execution 对象或旧 executor summary 字段。',
+      '只返回严格符合 PlanningAgentPlan v6 的 JSON，不要返回 Markdown、解释、v2/v3/v4 execution 对象或旧 executor summary 字段。',
       '每个 Subtask 必须声明 dependencies（每条边含非空 requiredItems）、contextRefs 和结构化 acceptance。禁止 dependsOn 与纯排序边。',
       '',
       '约束：',
-      '- action: direct_reply | clarification | task_control | plan_work_graph | no_action。',
+      '- action: direct_reply | clarification | task_control | plan_work_graph | authorization_resolution | no_action。',
+      '- 只有 pendingAuthorizationRequest 非空时，才能用 authorization_resolution 解释用户对该精确 requestId 的 approve/deny；不得改写 target、scope、operation 或 capability。',
       '- direct_reply 必须在 response.directReply 填写最终用户可见答案；runtime 不再二次执行，空 directReply 会被拒绝。',
       '- 只有 plan_work_graph 携带非空 workGraph；其他 action 必须令 workGraph=null。',
       '- resume_task/recover_blocked 必须选择明确 taskId、binding=reference，并先查询事实；它们只能运行已持久化的 v5 active revision，不能为 v2/v3/v4 audit 自动生成语义新图。',
       '- plan_work_graph 只在受控 Routing Capability 交接处拆节点。单个 workspace-engineering 交付不得按实现、文档、PDF、验证等步骤拆分，必须由 codex-cli 一次完成。',
+      '- 初始请求本身如需作为 Executor 上下文，只使用 {kind:"current_user_input"}；MetaClaw 管理的未来 workspace 不属于 task_resource，不得为它编造 locator、interactionId 或绝对路径。没有额外证据时 contextRefs 可以为空。',
       '- 当前研究后修改代码的场景使用 pi-agent -> codex-cli；若目录中出现覆盖能力并集的单一 canonical AgentClass，则必须合并为单节点。',
       '- requiredCapabilities 非空；preferredAgentClassList 必须完整列出覆盖节点全部能力的所有 canonical AgentClass，第一项为 preferred，其余按 fallback 顺序。',
       '- 同一最长依赖路径派生层内不能重复第一首选 AgentClass；合并节点或选择另一完整覆盖的第一首选。',
@@ -164,6 +167,7 @@ export class CodexPlanningAgent implements PlanningAgent {
       `Initial long-term memory and conversation history: ${JSON.stringify(context.initialContext)}`,
       `请求身份：${JSON.stringify(context.request)}`,
       `授权边界：${JSON.stringify(context.permissions)}`,
+      `待确认授权请求：${JSON.stringify(context.pendingAuthorizationRequest)}`,
       `静态执行器目录：${JSON.stringify(context.executorCatalog)}`,
       '',
       `结构示例：${JSON.stringify(PLAN_SCHEMA_EXAMPLE)}`,
@@ -172,7 +176,7 @@ export class CodexPlanningAgent implements PlanningAgent {
 
   private buildRepairPrompt(context: PlanningContext, errors: string[]): string {
     return [
-      '上一次 PlanningAgentPlan 未通过校验，请修正全部错误，只返回完整严格的 v5 JSON：',
+      '上一次 PlanningAgentPlan 未通过校验，请修正全部错误，只返回完整严格的 v6 JSON：',
       ...errors.map(error => `- ${error}`),
       '',
       this.buildPrompt(context),
@@ -188,7 +192,7 @@ export function createDefaultPlanningAgent(
 
 const PLAN_SCHEMA_EXAMPLE = {
   id: 'plan_generated_id',
-  schemaVersion: 5,
+  schemaVersion: 6,
   action: 'direct_reply',
   confidence: 0.9,
   reason: 'answer without state change',
@@ -205,6 +209,7 @@ const PLAN_SCHEMA_EXAMPLE = {
     priority: null,
   },
   risk: { level: 'low|medium|high', requiresConfirmation: false, reasons: [] },
+  authorizationResolution: null,
   workGraph: null,
   source: PLANNER_SOURCE,
 };

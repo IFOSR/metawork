@@ -24,7 +24,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
 function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 5,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -41,6 +41,7 @@ function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
       priority: { level: 'normal', reason: 'normal scheduling' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: { reason: 'capability-minimal work graph', subtasks },
     source: 'codex-planner',
   };

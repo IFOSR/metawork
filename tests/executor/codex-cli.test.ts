@@ -14,7 +14,9 @@ describe('CodexCliAdapter', () => {
 
   it('builds an explicit resume invocation and captures the persisted thread id', () => {
     const args = buildCodexResumeArgs('019f-thread', 'continue', { outputLastMessagePath: 'last.txt' });
-    expect(args.slice(0, 3)).toEqual(['exec', 'resume', '--dangerously-bypass-approvals-and-sandbox']);
+    expect(args.slice(0, 6)).toEqual(['exec', 'resume', '--sandbox', 'workspace-write', '-c', 'approval_policy="never"']);
+    expect(args).toContain('never');
+    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(args).toContain('019f-thread');
     expect(args).toContain('--json');
 

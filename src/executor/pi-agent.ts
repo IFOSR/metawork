@@ -16,7 +16,7 @@ const PI_RESEARCH_SYSTEM_PROMPT = [
   'When online verification is required but all web access fails, explicitly state the network limitation and do not present stale knowledge as verified fact.',
 ].join('\n');
 
-const PI_WEB_EXTENSION_SOURCE = String.raw`
+export const PI_WEB_EXTENSION_SOURCE = String.raw`
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";

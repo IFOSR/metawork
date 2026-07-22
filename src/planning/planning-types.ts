@@ -8,6 +8,7 @@ export type PlanningAction =
   | 'clarification'
   | 'task_control'
   | 'plan_work_graph'
+  | 'authorization_resolution'
   | 'no_action';
 
 // Planning vocabulary shared across the PlanningAgent path. These string unions
@@ -28,7 +29,7 @@ export type { WorkGraphProposal };
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 5;
+  schemaVersion: 6;
   action: PlanningAction;
   confidence: number;
   reason: string;
@@ -54,6 +55,10 @@ export interface PlanningAgentPlan {
     requiresConfirmation: boolean;
     reasons: string[];
   };
+  authorizationResolution: {
+    requestId: string;
+    resolution: 'approve' | 'deny';
+  } | null;
   workGraph: WorkGraphProposal | null;
   source: string;
 }
@@ -84,6 +89,14 @@ export interface PlanningContext {
     allowFileModification: boolean;
     allowExternalGateway: boolean;
   };
+  pendingAuthorizationRequest: {
+    requestId: string;
+    taskId: string;
+    capability: string;
+    resource: string;
+    operation: string;
+    reason: string;
+  } | null;
   executorCatalog: PlannerExecutorCatalog;
   timeoutMs: number;
 }

@@ -24,6 +24,7 @@ function context(): PlanningContext {
       allowFileModification: true,
       allowExternalGateway: false,
     },
+    pendingAuthorizationRequest: null,
     executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 1_234,
   };

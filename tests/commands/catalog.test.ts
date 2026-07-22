@@ -108,9 +108,10 @@ describe('CommandCatalog', () => {
       label: '/executor',
       replacement: { start: 0, end: 1, text: '/executor' },
     });
-    expect(root.suggestions.find(item => item.value === 'config')).toMatchObject({
+    const configRoot = catalog.complete({ text: '/con', cursor: 4, context });
+    expect(configRoot.suggestions.find(item => item.value === 'config')).toMatchObject({
       label: '/config',
-      replacement: { start: 0, end: 1, text: '/config' },
+      replacement: { start: 0, end: 4, text: '/config' },
     });
 
     const executor = catalog.complete({ text: '/executor ', cursor: 10, context });
@@ -141,7 +142,7 @@ describe('CommandCatalog', () => {
       replacement: { start: 16, end: 16, text: 'approve' },
     });
 
-    for (const completion of [root, executor, learning, register, patch]) {
+    for (const completion of [root, configRoot, executor, learning, register, patch]) {
       for (const suggestion of completion.suggestions) {
         if (suggestion.value === suggestion.label.replace(/^\//, '')) {
           expect(suggestion.label).toBe(suggestion.replacement.text);
@@ -232,6 +233,8 @@ describe('CommandCatalog', () => {
 /executor register wizard
 /executor unregister
 /executor feedback
+/permission approve
+/permission deny
 /memory list
 /memory search
 /memory add

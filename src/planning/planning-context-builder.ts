@@ -17,6 +17,7 @@ export class PlanningContextBuilder {
   build(input: {
     userInput: string;
     initialContext?: PlanningContext['initialContext'];
+    pendingAuthorizationRequest?: PlanningContext['pendingAuthorizationRequest'];
   }): PlanningContext {
     return {
       userInput: input.userInput,
@@ -33,6 +34,7 @@ export class PlanningContextBuilder {
         allowFileModification: true,
         allowExternalGateway: true,
       },
+      pendingAuthorizationRequest: input.pendingAuthorizationRequest ?? null,
       executorCatalog: this.getExecutorCatalog(),
       timeoutMs: this.deps.getTimeoutMs(),
     };

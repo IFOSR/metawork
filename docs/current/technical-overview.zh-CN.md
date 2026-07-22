@@ -2,7 +2,7 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> Phase 4 架构更新（2026-07-21）：当前控制链为 `durable event inbox → KernelWorkflow → snapshot → ControlKernel.decide → immutable decision + application → idempotent Runtime apply → normalized event`。SQLite v24 持久化 application、effect outbox、attempt continuation 与 graph revision；retry、fallback、replan 和 AgentClass 可用性只由 Kernel 决定。旧 `KernelControlLoop` 已删除，LangGraph 门控评估未达净删 30% 标准，因此不引入第二套 workflow cursor。
+> Phase 5 架构更新（2026-07-22）：当前控制链为 `durable event inbox → KernelWorkflow → snapshot → ControlKernel.decide → immutable decision + application → idempotent Runtime apply → normalized event`。SQLite v25 增加资源租约、持久 workspace/checkpoint/CAS 元数据、permission request/grant/user authorization 和短命 sandbox 生命周期；每个 Executor attempt 使用独立 Docker 容器，Task generation + Subtask workspace 跨 attempt 保留。PlanningAgentPlan 为 v6、Work Graph 仍为 v5、Kernel contract 为 v3；并发仍留在 Phase 6。
 
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
@@ -37,8 +37,8 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>统一 runtime 协调层]
   Session --> MemoryFast[显式记忆和偏好快路]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan<br/>意图、目标、候选、<br/>work graph proposal]
-  Plan --> Kernel[PolicyKernel<br/>schema、状态、冲突、<br/>executor 可用性]
+  Planning --> Plan[PlanningAgentPlan v6<br/>意图、目标、候选、<br/>v5 graph 或授权确认]
+  Plan --> Kernel[ControlKernel v3<br/>schema、状态、资源、<br/>permission 与恢复]
   Kernel --> Decision{KernelDecision}
   Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
@@ -53,7 +53,7 @@ flowchart LR
   Graph --> Attempt[SubtaskAttemptRunner<br/>一个 attempt、一个 WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
-  Executors --> Verify[Completion Protocol v1<br/>验收、handoff、产物]
+  Executors --> Verify[Completion Protocol v2<br/>验收、handoff、产物]
   Verify --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
@@ -68,7 +68,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v5 `PlanningAgentPlan`。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 stdio MCP 按需查询。`ControlKernel` 负责确定性授权，Runtime 持久化或恢复已授权 v5 graph revision，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。v6 只增加对既有精确 permission request 的 approve/deny 解释；Work Graph 继续使用 v5，Planner 不枚举资源 claim。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 MCP 按需查询。`ControlKernel` 负责确定性授权，Runtime 持久化或恢复已授权 graph/workspace state，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
 
 Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
@@ -78,7 +78,7 @@ Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge
 flowchart LR
   Input[用户提问] --> Planning[PlanningAgent]
   Planning --> Plan[PlanningAgentPlan<br/>direct_reply]
-  Plan --> Kernel[PolicyKernel]
+  Plan --> Kernel[ControlKernel]
   Kernel --> Decision[KernelDecision<br/>direct_reply]
   Decision --> Runtime[KernelDecisionApplier]
   Runtime --> Deliver[deliverDirectReply<br/>交付 plan.response.directReply]
@@ -95,7 +95,7 @@ flowchart LR
 flowchart LR
   Input[用户要求执行工作] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
-  Proposal --> Kernel[PolicyKernel<br/>授权或重写]
+  Proposal --> Kernel[ControlKernel<br/>授权或重写]
   Kernel --> Decision[KernelDecision<br/>plan_work_graph]
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>创建或绑定任务]
@@ -105,7 +105,7 @@ flowchart LR
   WorkGraph --> Ready[Ready Subtask<br/>直接依赖 handoff 已满足]
   Ready --> Attempt[SubtaskAttemptRunner<br/>claim、context、单次 adapter 调用]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v1<br/>验证并原子持久化]
+  Run --> Verify[Completion Protocol v2<br/>验证并原子持久化]
   Verify --> Done{是否通过？}
   Done -->|是| Result[完成并记录产物]
   Done -->|否| Blocked[阻塞并给出恢复提示]
@@ -113,7 +113,7 @@ flowchart LR
 
 这就是 Task OS 路径。任务状态、恢复上下文、policy authorization、subtask 状态、work-unit lease、产物捕获和验收都在这里发生。第一版生产路径保持一个已接纳的顶层任务，并在该任务内部按依赖顺序串行推进 ready subtasks。
 
-当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务会被 `PolicyKernel` 拒绝，并给出可见提示，直到当前任务完成或取消。Slash command 和确定性执行入口仍使用既有 task-admission gate。这样可以在 PlanningAgent、PolicyKernel 和 work-unit 生命周期管理加固期间保持用户路径可预测。
+当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成或取消。所有执行入口进入同一 Kernel event seam；Phase 6 才会启用多 Task 或并发 frontier。
 
 ### 飞书和进度展示路径
 
@@ -329,7 +329,7 @@ AnyFusion 不内置下游执行器 CLI。你需要自己安装要使用的执行
 Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
 
 - `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
-- 运行绑定：本机命令、非交互参数、安装检测命令和可选项目地址。
+- 运行绑定：不可变 Docker image ID、受控 permission profile、容器内命令/参数、安装检测命令和可选项目地址。
 - 至少一个 executor `WorkUnit`：一个具体的空闲 runtime slot，一次 claim 一个 ready subtask。
 
 如果不确定具体该填什么，使用问答式注册向导：
@@ -344,6 +344,9 @@ Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册
 
 ```bash
 /executor register research-bot \
+  --image registry.example/research-bot:1.2.3 \
+  --image-id sha256:<64-hex-digest> \
+  --permission-profile restricted-custom \
   --command research-bot \
   --args "run --prompt {prompt}" \
   --check "research-bot --version" \
@@ -352,9 +355,9 @@ Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册
   --capabilities research,report_generation
 ```
 
-`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，AnyFusion 会把 prompt 追加为最后一个参数。调度到自定义 Executor 前，AnyFusion 会先执行配置的检测命令；检测失败时会把该 agent class 标记为 `unavailable`。不可用的 agent class 不会进入 planner candidates；如果没有可 claim 的 executor work unit，任务会进入 blocked 并给出恢复提示，而不是静默改派默认 executor。
+`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，AnyFusion 会把 prompt 追加为最后一个参数。image ID 必须匹配引用镜像，permission profile 必须来自受控目录。缺少绑定、镜像标签漂移或 profile 无效都会 fail closed；不存在宿主进程 fallback。路由 capability 仍与权限事实分离，不把权限细节暴露给 Planner。
 
-`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态 AgentClass 字段强制收敛到 canonical 内容，常规注册接口也拒绝覆盖或删除它们。升级后的首次启动会不可逆地用受控 Routing Capability ID（`workspace-engineering` / `current-web-research`）替换旧的细粒度 capability 展示元数据，这是严格收敛的预期行为。非 canonical Executor 的 capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺失的非 canonical 默认类仅以空 capability 的未分类记录补齐。遗留 `executor_profiles` 表在 schema version 20 被删除。
+`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态字段、不可变镜像绑定和 permission profile 强制收敛，常规注册接口也拒绝覆盖或删除。非 canonical capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺少 image/profile 的历史自定义类保留审计记录但不可执行。
 
 Executor 扩展契约：
 
@@ -514,7 +517,7 @@ Skill 的优势：
 
 Skill 的限制：
 
-- 受限于宿主 Executor 的工具、权限、上下文和模型。
+- 受限于 Executor 镜像、permission profile、受控上下文和 model gateway。
 - 不能凭空获得不存在的 CLI、私有 API、浏览器能力、文件权限或企业系统集成。
 - 通常提升执行质量，而不是扩展 runtime 边界。
 
@@ -588,7 +591,7 @@ anyfusion --connect
 
 在 Windows 上，`docker exec -it` 无法为 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流将容器作为 SSH 服务运行，从而为 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。默认 Planner 和执行器为 Codex，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
 
-完整运行镜像内置 CLI、Planner MCP、v5 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。
+完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。Executor attempt 由可信 Runtime 经 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 
@@ -801,18 +804,18 @@ AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 - 材料、权限、授权和访问类阻塞不会自动解除，必须等用户补充输入或显式 unblock。
 - 未 ready 的任务不会自动执行。
 
-当一个顶层任务正在运行时，`PolicyKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口仍经过 `TaskAdmissionGate`。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
+当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
 这样既防止排队任务浪费算力，又保证任务安全。单个已接纳的顶层任务内部仍然可以存在多个 subtasks；当前 dispatcher 会按依赖满足情况串行推进 ready subtasks。
 
-## PlanningAgent、PolicyKernel 和 Work Unit
+## PlanningAgent、ControlKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，也有只读 shell（grep/cat/ls）直接读代码库文件回答代码问题——只读沙箱放行读、拒绝一切写（Linux 上需要建容器时一次性授予 `--security-opt seccomp=unconfined`），并产出严格 v5 `PlanningAgentPlan`。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出严格 v6 `PlanningAgentPlan`。Work Graph 仍为 v5；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`PolicyKernel` 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
+`ControlKernel` v3 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求，也唯一决定 permission grant/deny/escalate、partition wait 和 sandbox recovery。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
 
 `DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision，不解释 orphan、retry 或 fallback。`KernelExecutionRuntime` 应用单一高层授权；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 `SubtaskExecutionContext`、evidence capability、一次 Adapter 调用、Completion Protocol 门禁、终态持久化与 release。`ExecutionRuntime` 不接收 Task prompt、全量历史、Task 级 memory bundle、`ExecutionPolicy`、`candidateExecutors` 或 `fallbackChain`。
 
@@ -822,7 +825,7 @@ AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 把有效 v4 图提升为 revision 1；自动 replan 保留已完成证据、取消旧 revision 未完成节点并只激活一个新 frontier。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff或受控 task evidence。每次 Executor 最终响应都必须带 Completion Protocol v2；contract failure 只允许一次 response-only correction，不进入普通 retry/fallback。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox 记录。自动 replan 保留已完成证据，取消旧 revision 未完成节点并只激活一个新 frontier。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff、版本化 `workspace_state` 或受控 task evidence，不隐式吸收 sibling 状态。每次 Executor 最终响应都必须带 Completion Protocol v2。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
@@ -915,12 +918,13 @@ src/
 ├── guidance/       # 主动引导、任务信号、引导策略和仪表盘编排
 ├── integrations/   # 外部集成辅助能力，例如 Markdown preview
 ├── intent/         # 内联资源归一化和非路由意图/材料辅助函数
-├── kernel/         # 纯 PolicyKernel，负责 PlanningAgentPlan 授权
+├── kernel/         # 纯 ControlKernel，负责 PlanningAgentPlan 与 Runtime event 授权
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 记忆捕获、召回、召回审查、偏好、上下文 bundle 和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
 ├── planning/       # PlanningAgent 接口（CodexPlanningAgent）、context builder、plan schema/词汇、校验
-├── session/        # Session 协调、PlanningAgent/PolicyKernel wiring、decision application
+├── resource/       # Partition identity、冲突、permission profile 与 bounded grant 纯规则
+├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影
 ├── storage/        # SQLite migrations 和 repositories
 ├── task/           # 任务状态机、runtime、调度、恢复规划、排序、语义/embedding 检索
 ├── tui/            # Ink 终端 UI

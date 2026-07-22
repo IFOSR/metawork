@@ -285,7 +285,8 @@ describe('scripted session', () => {
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
     expect((doneTask as any)?.artifacts).toHaveLength(1);
-    expect((doneTask as any)?.artifacts[0]).toBe(resolve(process.cwd(), 'metaclaw-tasks', doneTask!.id, 'artifact-note.md'));
+    expect((doneTask as any)?.artifacts[0]).toContain('/workspace-store/workspaces/');
+    expect((doneTask as any)?.artifacts[0]).toContain('/files/artifact-note.md');
   });
 
   it('shows file-task Executor final output once and does not repeat it in completion', async () => {

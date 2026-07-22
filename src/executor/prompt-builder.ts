@@ -11,6 +11,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '- Execute only currentSubtask.goal.',
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
     '- Dependency data is available only through incomingHandoffs.',
+    '- Work only within the default mounted boundary. If an operation outside it is required, call request_capability with one exact resource and operation; never work around a denial.',
     '- Finish with non-empty Markdown followed by exactly one completion marker and strict JSON until EOF.',
     '',
     `Task background: #${context.taskBackground.id} ${context.taskBackground.title}`,
@@ -56,6 +57,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     'Completion protocol:',
     context.completionContract.marker,
     '{"schemaVersion":2,"status":"completed","subtaskId":"<authorized id>","acceptanceEvidence":[{"key":"<exact acceptance key>","evidence":["..."]}],"artifacts":[],"handoffs":[]}',
+    'artifacts MUST be a JSON array of absolute path strings only (for example ["/workspace/result.md"]); never emit artifact objects.',
     'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
   ];
   return lines.join('\n');

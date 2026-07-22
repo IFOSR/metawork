@@ -22,6 +22,9 @@ interface AgentClassRow {
   runtime_command: string | null;
   runtime_args_json: string;
   runtime_check_command: string | null;
+  execution_image_ref: string | null;
+  resolved_image_id: string | null;
+  permission_profile_id: AgentClass['permissionProfileId'];
   project_url: string | null;
   created_at: string;
   updated_at: string;
@@ -57,6 +60,9 @@ function rowToAgentClass(row: AgentClassRow): AgentClass {
     runtimeCommand: row.runtime_command,
     runtimeArgs: parseList(row.runtime_args_json),
     runtimeCheckCommand: row.runtime_check_command,
+    executionImageRef: row.execution_image_ref,
+    resolvedImageId: row.resolved_image_id,
+    permissionProfileId: row.permission_profile_id,
     projectUrl: row.project_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -74,8 +80,9 @@ export class AgentClassRepo {
         strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
         intent_affinity_json, risk_level, harness, model,
         skills_json, mcp_servers_json, plugins_json, runtime_command, runtime_args_json,
-        runtime_check_command, project_url, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        runtime_check_command, execution_image_ref, resolved_image_id,
+        permission_profile_id, project_url, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         kind = excluded.kind,
         domains_json = excluded.domains_json,
@@ -96,6 +103,9 @@ export class AgentClassRepo {
         runtime_command = excluded.runtime_command,
         runtime_args_json = excluded.runtime_args_json,
         runtime_check_command = excluded.runtime_check_command,
+        execution_image_ref = excluded.execution_image_ref,
+        resolved_image_id = excluded.resolved_image_id,
+        permission_profile_id = excluded.permission_profile_id,
         project_url = excluded.project_url,
         updated_at = excluded.updated_at
     `).run(
@@ -119,6 +129,9 @@ export class AgentClassRepo {
       agentClass.runtimeCommand,
       JSON.stringify(agentClass.runtimeArgs),
       agentClass.runtimeCheckCommand,
+      agentClass.executionImageRef ?? null,
+      agentClass.resolvedImageId ?? null,
+      agentClass.permissionProfileId ?? null,
       agentClass.projectUrl,
       agentClass.createdAt ?? now,
       now,
@@ -138,6 +151,12 @@ export class AgentClassRepo {
   findByName(name: string): AgentClass | null {
     const row = this.db.prepare('SELECT * FROM agent_classes WHERE name = ?').get(name) as AgentClassRow | undefined;
     return row ? rowToAgentClass(row) : null;
+  }
+
+  setResolvedImageId(name: string, imageId: string): void {
+    this.db.prepare(`
+      UPDATE agent_classes SET resolved_image_id = ?, updated_at = ? WHERE name = ?
+    `).run(imageId, new Date().toISOString(), name);
   }
 
   delete(name: string): boolean {

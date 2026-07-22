@@ -14,6 +14,7 @@ interface FocusContext {
 }
 
 export interface SessionKernelRuntimeDeps {
+  sessionId: string;
   taskRuntimeService: TaskRuntimeService;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
@@ -66,6 +67,8 @@ export class SessionKernelRuntime {
       case 'authorize_task_plan':
         await this.applyTaskPlan(decision, userInput);
         return null;
+      case 'record_permission_resolution':
+        return null;
       case 'block_work': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
         if (task?.status === 'running') {
@@ -88,6 +91,11 @@ export class SessionKernelRuntime {
       case 'complete_task':
       case 'request_replan':
       case 'resolve_recovery':
+      case 'grant_capability':
+      case 'deny_capability':
+      case 'escalate_capability':
+      case 'wait_for_partition':
+      case 'recover_workspace_attempt':
         throw new Error(`${decision.action.type} must be applied by the execution Runtime`);
     }
   }

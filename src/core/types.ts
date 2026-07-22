@@ -93,6 +93,9 @@ export interface AgentClass {
   runtimeCommand: string | null;
   runtimeArgs: string[];
   runtimeCheckCommand: string | null;
+  executionImageRef: string | null;
+  resolvedImageId: string | null;
+  permissionProfileId: 'workspace-engineering' | 'public-web-research' | 'restricted-custom' | null;
   projectUrl: string | null;
   createdAt?: string;
   updatedAt?: string;

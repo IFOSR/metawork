@@ -32,6 +32,9 @@ function plannerClass(): AgentClass {
     runtimeCommand: null,
     runtimeArgs: [],
     runtimeCheckCommand: null,
+    executionImageRef: null,
+    resolvedImageId: null,
+    permissionProfileId: null,
     projectUrl: null,
   };
 }
@@ -58,13 +61,26 @@ function unclassifiedExecutorClass(name: string): AgentClass {
     runtimeCommand: null,
     runtimeArgs: [],
     runtimeCheckCommand: null,
+    executionImageRef: null,
+    resolvedImageId: null,
+    permissionProfileId: null,
     projectUrl: null,
   };
 }
 
 function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
-  const { createdAt: _existingCreatedAt, updatedAt: _existingUpdatedAt, ...existingStatic } = existing;
-  const { createdAt: _canonicalCreatedAt, updatedAt: _canonicalUpdatedAt, ...canonicalStatic } = canonical;
+  const {
+    createdAt: _existingCreatedAt,
+    updatedAt: _existingUpdatedAt,
+    resolvedImageId: _existingResolvedImageId,
+    ...existingStatic
+  } = existing;
+  const {
+    createdAt: _canonicalCreatedAt,
+    updatedAt: _canonicalUpdatedAt,
+    resolvedImageId: _canonicalResolvedImageId,
+    ...canonicalStatic
+  } = canonical;
   return isDeepStrictEqual(existingStatic, canonicalStatic);
 }
 
@@ -78,7 +94,13 @@ export function seedDefaultAgentClasses(
   for (const canonical of canonicalAgentClasses) {
     const existing = agentClassRepo.findByName(canonical.name);
     if (!existing || !hasCanonicalStaticFields(existing, canonical)) {
-      agentClassRepo.upsert({ ...canonical, createdAt: existing?.createdAt });
+      agentClassRepo.upsert({
+        ...canonical,
+        resolvedImageId: existing?.executionImageRef === canonical.executionImageRef
+          ? existing.resolvedImageId
+          : null,
+        createdAt: existing?.createdAt,
+      });
     }
   }
   if (!agentClassRepo.findByName(input.defaultExecutorName)) {

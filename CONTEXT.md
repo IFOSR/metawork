@@ -4,19 +4,19 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-Phase 4 completed the active control path `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, waiting and derived AgentClass availability. Phase 5 is now active and adds enforced partition identity and durable leases without enabling concurrency.
+Phase 5 completed the serial control and resource-safety baseline. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. Every Executor attempt runs in a fresh Docker sandbox while its Task-generation/Subtask workspace persists across attempts. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, partition waiting, permission grant/deny/escalation and sandbox recovery. Phase 6 may add concurrency without changing these identities or authority boundaries.
 
-`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v5 structured output, and catalog-aware validation. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no v3/v4 production parser, legacy intent route, semantic default, or keyword fallback.
+`src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v6 structured output, and catalog-aware validation. v6 adds only exact pending-request `authorization_resolution`; Work Graph remains v5 and Planner does not enumerate resource claims. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no earlier-schema production parser, legacy intent route, semantic default, or keyword fallback.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. Success atomically commits receipt, handoff, result and `done`; every non-success atomically commits a terminal receipt and `awaiting_decision`. It releases the WorkUnit before returning a normalized Kernel event. A first completion-contract failure may receive one response-only correction on the same AgentClass; the isolated correction has no normal Subtask context, evidence tools or writable workspace.
 
-Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. `awaiting_decision` remains a Subtask-only state; startup recovery must reach a safe quiescent point before Session or Gateway accepts input.
+Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. Phase 5's v25 persistence archives the unused worktree-lease shape and adds resource leases/waits, workspace/checkpoint/CAS metadata, permission requests/grants/user authorizations, attempt sandboxes and AgentClass image/profile bindings. `awaiting_decision` remains a Subtask-only state; startup recovery must reach a safe quiescent point before Session or Gateway accepts input.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
-Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions. A missing non-canonical configured default is materialized as an unclassified AgentClass with no routing capabilities, while an existing non-canonical class is not rewritten. On the first startup after this convergence change, legacy fine-grained Codex/Pi capability metadata is irreversibly replaced by the controlled Routing Capability IDs. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. The retired `executor_profiles` table is removed by migration v20.
+Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions, including immutable execution image and permission profile bindings. A missing non-canonical configured default is materialized as an unclassified, non-executable AgentClass, while an existing non-canonical class is not rewritten. Custom classes without a valid image ID and permission profile remain audit-visible but fail closed. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. There is no production host-process Executor fallback.
 
 When touching dispatch, update focused behavior tests around `ControlKernel`, `DurableKernelWorkflow`, the decision/application ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
 
@@ -55,7 +55,7 @@ The small interface exposed by a planner work unit: given a planning context, re
 _Avoid_: policy kernel, session intent service, executor
 
 **PlanningAgentPlan**:
-A strict v5 proposal from the PlanningAgent describing intent, target, task control, risk, confidence, clarification needs, and either one non-empty work graph for `plan_work_graph` or `null` for every other action. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled capabilities, and ordered AgentClass preferences. A plan is not executable until a durable `plan_proposed` event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
+A strict v6 proposal from the PlanningAgent describing intent, target, task control, risk, confidence and clarification needs. It contains one non-empty v5 work graph only for `plan_work_graph`, or an exact approve/deny resolution only for a pending `authorization_resolution`; all other action-specific fields are null. Work-graph nodes use structured dependencies, typed context references, keyed acceptance criteria, controlled delivery capabilities and ordered AgentClass preferences. A plan is not executable until its durable event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
 _Avoid_: runtime command, task event, execution policy
 
 **ControlKernel**:
@@ -91,7 +91,7 @@ The only Executor input contract: Task background, the current operational Subta
 _Avoid_: Task prompt passthrough, conversation history, task-level memory bundle, sibling goals
 
 **Completion Protocol**:
-The required final Executor response contract: non-empty clean Markdown followed by exactly one `metaclaw:completion:v1` strict JSON envelope. Runtime validates acceptance evidence, exact handoffs, budgets, and artifact containment, then strips the envelope from every user-facing and memory-facing result.
+The required final Executor response contract: non-empty clean Markdown followed by exactly one `metaclaw:completion:v2` strict JSON envelope. Runtime validates acceptance evidence, exact handoffs, budgets, and artifact containment, then strips the envelope from every user-facing and memory-facing result.
 _Avoid_: best-effort trailer, inferred handoff, visible machine block
 
 **Execution Evidence**:
@@ -150,10 +150,14 @@ _Avoid_: preferred AgentClass, race, parallel candidates, unplanned platform rer
 The strength of post-execution validation: none, compile, test, or review.
 _Avoid_: quality gate, acceptance check, validator
 
-**Worktree Isolation**:
-The mechanism for running parallel executor work units without mutual file interference. Each parallel or isolated execution receives a dedicated git worktree. The service boundary exists, but true parallel worktree execution is not the first-version active path.
-_Avoid_: workspace lock, file locking, sandbox
+**Persistent Workspace**:
+The private Task-generation/Subtask working state that survives disposable attempt containers. Git work uses MetaClaw-managed worktrees and branches; non-Git work uses a managed directory, immutable checkpoint manifests and content-addressed objects. Downstream nodes consume only versioned direct-dependency `workspace_state`.
+_Avoid_: attempt container, user repository, unversioned sibling directory
 
-**Worktree Lease**:
-The runtime claim that one work unit currently owns a specific worktree for one subtask. A lease has an owner, heartbeat, expiry, and release path so crashed executions can be detected and the worktree can be made available again.
-_Avoid_: permanent workspace ownership, executor identity, static work directory assignment
+**Resource Lease**:
+The attempt-bound claim over one normalized repository, worktree, mount-relative path, logical resource or external object. It records read/write access, owner, heartbeat, expiry, release and wait relationships; overlapping claims conflict whenever either side writes.
+_Avoid_: permanent workspace ownership, WorkUnit identity, host absolute path
+
+**Capability Request**:
+An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v3 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization.
+_Avoid_: Planner resource claim, stderr parsing, broad permission prompt

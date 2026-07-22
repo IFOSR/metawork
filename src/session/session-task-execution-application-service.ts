@@ -3,7 +3,7 @@ import type { ExecutionRecallSelection } from '../memory/memory-context-service.
 import type { GuidanceActionType, Task } from '../core/types.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
-import type { KernelExecutionRuntime } from './session-execution-coordinator.js';
+import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 
 export interface SessionTaskExecutionApplicationDeps {

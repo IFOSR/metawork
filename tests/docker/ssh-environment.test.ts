@@ -37,7 +37,7 @@ describe('SSH login environment', () => {
             METACLAW_HOME: '/test/data/metaclaw',
             METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
             METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v5.schema.json',
+            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
             METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
           },
         },
@@ -51,7 +51,7 @@ describe('SSH login environment', () => {
         METACLAW_HOME: '/test/data/metaclaw',
         METACLAW_PLANNER_CODEX_HOME: '/test/codex/planner',
         METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v5.schema.json',
+        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
         METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
       });
       const persisted = Object.fromEntries(readEnvironmentFile(environmentPath));
