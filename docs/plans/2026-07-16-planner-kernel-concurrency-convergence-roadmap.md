@@ -172,7 +172,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 退出条件：partition key、冲突检测、持久租约、崩溃恢复和隔离机制均有 ADR、迁移和容器测试；并发尚未开启。
 
-完成记录（2026-07-22）：ADR-0024、Resource Model、AgentClass immutable image/profile、SQLite v25、PlanningAgentPlan v6、Kernel v3、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability elevation、精确用户授权和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Executor 只对越界操作请求能力，Kernel 唯一决定 grant/deny/escalate。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（195 个文件、780 个测试通过；5 个文件、16 个测试跳过）、真实 Docker sandbox 集成测试和 `npm run smoke:anyfusion` 均通过。实现提交待 closing commit 回填；Phase 5 计划已归档，Phase 6 激活。
+完成记录（2026-07-22）：ADR-0024、Resource Model、AgentClass immutable image/profile、SQLite v25、PlanningAgentPlan v6、Kernel v3、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability elevation、精确用户授权和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Executor 只对越界操作请求能力，Kernel 唯一决定 grant/deny/escalate。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（195 个文件、780 个测试通过；5 个文件、16 个测试跳过）、真实 Docker sandbox 集成测试和 `npm run smoke:anyfusion` 均通过。实现提交为 `aae3d64`；Phase 5 计划已归档，Phase 6 激活。
 
 ### Phase 6：异步并发调度
 

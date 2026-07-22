@@ -5,7 +5,7 @@
 - **计划日期**：2026-07-22
 - **当前状态**：已完成并归档
 - **完成日期**：2026-07-22
-- **实现提交**：待 closing commit 回填
+- **实现提交**：`aae3d64`；本次文档回填由紧随其后的 closing commit 完成
 - **所属路线图**：[Planner、Kernel 与并发调度收敛路线图](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
 - **架构依据**：[ADR-0020](../../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0023](../../adr/0023-durable-kernel-workflow-recovery-and-availability.md)、[ADR-0024](../../adr/0024-resource-partition-sandbox-and-runtime-elevation.md)
 
