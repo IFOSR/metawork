@@ -4,7 +4,10 @@ import type { CapabilityResourceResolverPort } from './capability-resource-resol
 import {
   capabilityRequestFingerprint,
   type CapabilityRequestInput,
+  type CapabilityUseInput,
+  type CapabilityUseResult,
   type NormalizedCapabilityRequest,
+  type PermissionRequestRecord,
   type PermissionRepositoryPort,
   type PermissionRule,
 } from '../resource/index.js';
@@ -48,7 +51,12 @@ export class PermissionWorkflowService {
     clock?: { now(): string };
   }) {}
 
-  async request(input: CapabilityRequestInput): Promise<{ requestId: string; status: string; reason: string | null }> {
+  async request(input: CapabilityRequestInput): Promise<{
+    requestId: string;
+    grantId: string | null;
+    status: string;
+    reason: string | null;
+  }> {
     const now = this.now();
     const ordinal = this.deps.repository.countDistinctForAttempt(this.deps.context.attemptId) + 1;
     const request: NormalizedCapabilityRequest = {
@@ -66,12 +74,15 @@ export class PermissionWorkflowService {
     };
     request.fingerprint = capabilityRequestFingerprint(request);
     const record = this.deps.repository.createRequest(request, now);
-    if (record.status !== 'pending') {
-      return { requestId: record.request.id, status: record.status, reason: record.decisionReason };
-    }
-    const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
-    this.deps.context.checkpointId = checkpointId;
+    if (record.status !== 'pending') return this.requestResult(record);
     await this.deps.sandbox.pause(this.deps.context.containerId);
+    try {
+      const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
+      this.deps.context.checkpointId = checkpointId;
+    } catch (error) {
+      await this.resumeIfPresent().catch(() => undefined);
+      throw error;
+    }
     const event: Extract<KernelEvent, { type: 'permission_requested' }> = {
       schemaVersion: 3,
       type: 'permission_requested',
@@ -87,10 +98,38 @@ export class PermissionWorkflowService {
     };
     const result = await this.workflow().submit(event);
     const latest = this.deps.repository.findRequest(record.request.id);
+    if (latest) return this.requestResult(latest);
     return {
       requestId: record.request.id,
-      status: latest?.status ?? (result.pendingRecovery > 0 ? 'uncertain' : 'pending'),
-      reason: latest?.decisionReason ?? null,
+      grantId: null,
+      status: result.pendingRecovery > 0 ? 'uncertain' : 'pending',
+      reason: null,
+    };
+  }
+
+  use(input: CapabilityUseInput): CapabilityUseResult {
+    const bytes = Buffer.byteLength(input.payload, 'utf8');
+    const grant = this.deps.repository.consumeGrant(
+      input.grantId,
+      this.deps.context.attemptId,
+      bytes,
+      this.now(),
+    );
+    if (!grant) {
+      return {
+        status: 'denied',
+        grantId: input.grantId,
+        reason: 'grant is expired, exhausted, revoked, or belongs to another attempt',
+      };
+    }
+    return {
+      status: 'consumed',
+      grantId: grant.id,
+      callsUsed: grant.callsUsed,
+      bytesUsed: grant.bytesUsed,
+      remainingCalls: grant.limits.maxCalls - grant.callsUsed,
+      remainingBytes: grant.limits.maxBytes - grant.bytesUsed,
+      expiresAt: grant.limits.expiresAt,
     };
   }
 
@@ -213,6 +252,24 @@ export class PermissionWorkflowService {
   private async resumeIfPresent(): Promise<void> {
     const sandbox = await this.deps.sandbox.inspect(this.deps.context.containerId);
     if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.containerId);
+  }
+
+  private requestResult(record: PermissionRequestRecord): {
+    requestId: string;
+    grantId: string | null;
+    status: string;
+    reason: string | null;
+  } {
+    const grant = record.status === 'granted'
+      ? this.deps.repository.listGrants(record.request.attemptId)
+        .find(item => item.requestId === record.request.id) ?? null
+      : null;
+    return {
+      requestId: record.request.id,
+      grantId: grant?.id ?? null,
+      status: record.status,
+      reason: record.decisionReason,
+    };
   }
 
   private now(): string {

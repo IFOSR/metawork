@@ -7,7 +7,8 @@
   "bin": {
     "anyfusion": "./dist/index.js",
     "metaclaw": "./dist/index.js",
-    "request_capability": "./dist/capability-request-cli.js"
+    "request_capability": "./dist/capability-request-cli.js",
+    "use_capability": "./dist/capability-use-cli.js"
   },
   "scripts": {
     "dev": "tsup --watch",

@@ -53,7 +53,7 @@ describe('permission policy', () => {
     expect(evaluateCapabilityRequest({ request: req, now: '2026-07-22T00:00:00.000Z', rules: [], previouslyDeniedFingerprints: [], userAuthorizationFingerprints: [] }))
       .toMatchObject({ type: 'escalate_capability' });
     expect(evaluateCapabilityRequest({ request: req, now: '2026-07-22T00:00:00.000Z', rules: [], previouslyDeniedFingerprints: [], userAuthorizationFingerprints: [req.fingerprint] }))
-      .toMatchObject({ type: 'grant_capability', limits: { maxCalls: 1 } });
+      .toMatchObject({ type: 'grant_capability', limits: { maxCalls: 1, maxBytes: 1024 * 1024 } });
   });
 
   test('escalates after eight distinct requests', () => {

@@ -43,6 +43,7 @@ import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import { PermissionWorkflowService } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
+import { buildPermissionRules } from '../resource/index.js';
 import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
@@ -1111,6 +1112,11 @@ export class MetaclawSession {
     const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
     const workspaceId = sandbox?.workspaceId
       ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
+    const task = this.taskRuntimeService.findTask(record.request.taskId);
+    const resourceRegistrations = new Map((task?.resources ?? []).map((resource, index) => [
+      resource,
+      { kind: 'path' as const, mountId: `inputs-${record.request.taskId}`, normalizedRelativePath: `resource-${index}` },
+    ]));
     const workflow = new PermissionWorkflowService({
       context: {
         sessionId: this.deps.sessionId,
@@ -1125,16 +1131,18 @@ export class MetaclawSession {
         checkpointId: null,
       },
       repository: this.permissionRepository,
-      resolver: new RegisteredCapabilityResourceResolver(new Map()),
+      resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
       sandbox: this.attemptSandbox,
       workflowStore: this.kernelWorkflowRepo,
       kernel: this.controlKernel,
-      rules: [],
+      rules: buildPermissionRules({
+        permissionProfileId: record.request.permissionProfileId,
+        additionalReadPartitions: resourceRegistrations.values(),
+      }),
       hooks: {
         checkpoint: async () => null,
         onEscalation: async () => undefined,
         onRecoveryAuthorized: async ({ request }) => {
-          const task = this.taskRuntimeService.findTask(record.request.taskId);
           if (!task || !request) return;
           await this.prepareTaskExecution(task.id, {
             userPrompt: task.goal,

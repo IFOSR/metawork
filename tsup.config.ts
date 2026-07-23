@@ -6,6 +6,7 @@ export default defineConfig({
     'src/planner-mcp.ts',
     'src/generate-planner-schema.ts',
     'src/capability-request-cli.ts',
+    'src/capability-use-cli.ts',
     'src/emit-pi-attempt-extension.ts',
   ],
   format: ['esm'],

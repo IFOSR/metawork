@@ -33,12 +33,15 @@ import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-ke
 import { captureWorkspaceState, deriveWorkspaceDelta, type WorkspaceState } from './workspace-change-tracker.js';
 import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from './workspace-store.js';
 import type { AttemptSandboxPort } from './attempt-sandbox.js';
-import type { ResourceClaim } from '../resource/index.js';
+import {
+  buildPermissionRules,
+  type PermissionRepositoryPort,
+  type ResourceClaim,
+} from '../resource/index.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import { RegisteredCapabilityResourceResolver } from './capability-resource-resolver.js';
 import { PermissionWorkflowService } from './permission-workflow-service.js';
 import { CapabilityRequestToolServer } from './capability-request-tool-server.js';
-import type { PermissionRepositoryPort } from '../resource/index.js';
 import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import { ManagedGitWorkspaceService, type ManagedGitWorkspace } from './managed-git-workspace.js';
@@ -337,7 +340,10 @@ export class SubtaskAttemptRunner {
         resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
         sandbox: this.deps.attemptSandbox,
         workflowStore: this.deps.kernelWorkflowStore,
-        rules: [],
+        rules: buildPermissionRules({
+          permissionProfileId: capabilityContext.permissionProfileId,
+          additionalReadPartitions: resourceRegistrations.values(),
+        }),
         hooks: {
           checkpoint: async reason => {
             if (!workspace) return null;

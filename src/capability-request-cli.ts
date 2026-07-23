@@ -1,3 +1,5 @@
+export {};
+
 const endpoint = process.env.METACLAW_CAPABILITY_URL;
 const token = process.env.METACLAW_CAPABILITY_TOKEN;
 

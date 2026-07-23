@@ -330,4 +330,93 @@ describe('SubtaskAttemptRunner', () => {
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done', result: 'A completed.' });
   });
+
+  it('wires exact Task resource rules into the production permission workflow', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.db.prepare('UPDATE tasks SET resources_json = ? WHERE id = ?')
+      .run(JSON.stringify(['report.pdf']), 'task_phase2');
+    let permissionResult: { status: string; grantId: string | null } | null = null;
+    setupResult.executionRuntime.run.mockImplementationOnce(async (invocation: any) => {
+      const binding = invocation.executorInput.sandbox.capabilityBinding;
+      const response = await fetch(binding.jsonUrl, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${binding.bearerToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          capability: 'additional_read_resource', resource: 'report.pdf', operation: 'read',
+          reason: 'inspect the Task-provided report', suggestedScope: 'once',
+        }),
+      });
+      permissionResult = await response.json() as { status: string; grantId: string | null };
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+        output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+
+    const previousControlHost = process.env.METACLAW_CONTROL_HOST;
+    process.env.METACLAW_CONTROL_HOST = '127.0.0.1';
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_registered_read', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    }).finally(() => {
+      if (previousControlHost === undefined) delete process.env.METACLAW_CONTROL_HOST;
+      else process.env.METACLAW_CONTROL_HOST = previousControlHost;
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(permissionResult).toMatchObject({ status: 'granted' });
+    expect(permissionResult?.grantId).toMatch(/^permission_grant_/u);
+  });
+
+  it('wires public network rules only for the public-web-research AgentClass profile', async () => {
+    const setupResult = setup(validResponse());
+    new AgentClassRepo(setupResult.db).upsert(
+      getBuiltinExecutorAgentClasses().find(item => item.name === 'pi-agent')!,
+    );
+    setupResult.workUnitRepo.upsert({
+      id: 'executor-pi', agentClassName: 'pi-agent', agentClassKind: 'executor', state: 'idle',
+      claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+      heartbeatAt: null, leaseExpiresAt: null,
+      createdAt: '2026-07-23T00:00:00.000Z', updatedAt: '2026-07-23T00:00:00.000Z',
+    });
+    let permissionResult: { status: string; grantId: string | null } | null = null;
+    setupResult.executionRuntime.run.mockImplementationOnce(async (invocation: any) => {
+      const binding = invocation.executorInput.sandbox.capabilityBinding;
+      const response = await fetch(binding.jsonUrl, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${binding.bearerToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          capability: 'network_target', resource: 'https://example.com/reports/latest', operation: 'fetch',
+          reason: 'retrieve a public source', suggestedScope: 'attempt',
+        }),
+      });
+      permissionResult = await response.json() as { status: string; grantId: string | null };
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'pi-agent',
+        output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+
+    const previousControlHost = process.env.METACLAW_CONTROL_HOST;
+    process.env.METACLAW_CONTROL_HOST = '127.0.0.1';
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_public_network', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, agentClassName: 'pi-agent', executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    }).finally(() => {
+      if (previousControlHost === undefined) delete process.env.METACLAW_CONTROL_HOST;
+      else process.env.METACLAW_CONTROL_HOST = previousControlHost;
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(permissionResult).toMatchObject({ status: 'granted' });
+    expect(permissionResult?.grantId).toMatch(/^permission_grant_/u);
+  });
 });

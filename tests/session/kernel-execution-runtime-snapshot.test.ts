@@ -147,6 +147,104 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       type: 'block_work', taskId: task.id, subtaskId: subtask.id,
     });
   });
+
+  it('binds a chained dispatch grant to the next ready Subtask', async () => {
+    const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
+    const completed = {
+      id: 'subtask_a', taskId: task.id, title: 'A', goal: 'Finish A', status: 'ready',
+      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['workspace-engineering'],
+    };
+    const next = {
+      id: 'subtask_b', taskId: task.id, title: 'B', goal: 'Run B', status: 'ready',
+      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['workspace-engineering'],
+    };
+    const snapshots: KernelSnapshot[] = [];
+    const controlKernel = {
+      decide: vi.fn().mockImplementation((event: KernelEvent, snapshot: KernelSnapshot) => {
+        snapshots.push(snapshot);
+        if (event.type === 'dispatch_requested') {
+          return {
+            schemaVersion: 1, id: 'decision_dispatch_a', eventId: event.id,
+            reason: 'dispatch A', createdAt: event.occurredAt,
+            action: {
+              type: 'dispatch_attempt', taskId: task.id, subtaskId: completed.id,
+              agentClassName: 'codex-cli', attemptId: 'attempt_a', attemptKind: 'primary',
+              sourceAttemptId: null, recoveryMode: 'fresh',
+              defaultResourceGrant: snapshot.type === 'dispatch' ? snapshot.defaultResourceGrant : [],
+            },
+          };
+        }
+        return {
+          schemaVersion: 1, id: 'decision_stop', eventId: event.id,
+          reason: 'captured chained snapshot', createdAt: event.occurredAt,
+          action: { type: 'no_op' },
+        };
+      }),
+    };
+    const subtaskLists = [
+      [completed],
+      [{ ...completed, status: 'done' }, next],
+    ];
+    const runtime = new KernelExecutionRuntime({
+      sessionId: 'session_1',
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue(task), getCurrentRunningTask: vi.fn().mockReturnValue(task),
+        attachResource: vi.fn(), transitionTask: vi.fn(),
+      },
+      workGraphRuntimeService: { apply: vi.fn().mockReturnValue({ outcome: 'recovered' }) },
+      subtaskRepo: {
+        listByTask: vi.fn().mockImplementation(() => subtaskLists.shift() ?? [{ ...completed, status: 'done' }, next]),
+        findById: vi.fn().mockReturnValue(completed),
+      },
+      subtaskHandoffRepo: { listByTask: vi.fn().mockReturnValue([]) },
+      attemptReceiptRepo: {
+        listByTask: vi.fn().mockReturnValue([]), findByAttemptId: vi.fn().mockReturnValue(null),
+      },
+      workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
+      workUnitClaimService: { sweepExpired: vi.fn().mockReturnValue([]) },
+      attemptRunner: {
+        supportsResponseOnly: vi.fn().mockReturnValue(false),
+        supportsContinuation: vi.fn().mockReturnValue(false),
+        run: vi.fn().mockResolvedValue({
+          outcome: 'completed', attemptId: 'attempt_a', output: 'done', artifacts: [], warnings: [],
+          executorName: 'codex-cli', durationMs: 1,
+        }),
+      },
+      controlKernel,
+      kernelWorkflowStore: inMemoryWorkflowStore(),
+      executionProgressService: { createTracker: vi.fn().mockReturnValue({ onProgress: vi.fn() }) },
+      kernelExecutorStatusProjector: { list: vi.fn().mockReturnValue([]), recordExecutionOutcome: vi.fn() },
+      agentClassService: { listAgentClasses: vi.fn().mockReturnValue([{ name: 'codex-cli' }]) },
+      taskEventRepo: { insert: vi.fn() },
+      callbacks: {
+        appendOutput: vi.fn(), refreshRuntimeState: vi.fn(), appendTaskQueueSnapshot: vi.fn(),
+        setFocusContext: vi.fn(), setRunningExecutorName: vi.fn(), clearRunningExecutorName: vi.fn(),
+        persistSessionState: vi.fn(), setLatestGuidance: vi.fn(), queueProposal: vi.fn(),
+      },
+      presentation: {
+        formatExecutorDispatch: vi.fn().mockReturnValue([]),
+        formatExecutorFinalResult: vi.fn().mockReturnValue('done'),
+      },
+    } as never);
+
+    await runtime.execute({
+      taskId: task.id,
+      request: { userPrompt: task.goal, contextTaskId: task.id, executionMode: 'new', origin: 'user' },
+      approvedRecallSelection: null,
+    });
+
+    const chainedSnapshot = snapshots[1];
+    expect(chainedSnapshot).toMatchObject({ type: 'dispatch' });
+    if (chainedSnapshot?.type !== 'dispatch') throw new Error('missing chained dispatch snapshot');
+    expect(chainedSnapshot.defaultResourceGrant).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        partition: expect.objectContaining({
+          kind: 'path', mountId: 'workspace-task_1-generation_task_1_1-subtask_b',
+        }),
+        access: 'write',
+      }),
+    ]));
+  });
 });
 
 function inMemoryWorkflowStore(): KernelWorkflowStore {

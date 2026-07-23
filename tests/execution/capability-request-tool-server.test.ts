@@ -5,10 +5,15 @@ import { CapabilityRequestToolServer } from '../../src/execution/capability-requ
 describe('CapabilityRequestToolServer', () => {
   it('supports a complete authenticated MCP session and forwards the bounded request', async () => {
     const received: unknown[] = [];
+    const uses: unknown[] = [];
     const server = new CapabilityRequestToolServer({
       async request(input) {
         received.push(input);
-        return { disposition: 'deny_capability', reason: 'test policy' };
+        return { disposition: 'grant_capability', grantId: 'grant_1' };
+      },
+      use(input) {
+        uses.push(input);
+        return { status: 'consumed', grantId: input.grantId };
       },
     }, { advertisedHost: '127.0.0.1' });
     const binding = await server.start();
@@ -18,7 +23,9 @@ describe('CapabilityRequestToolServer', () => {
     });
     try {
       await client.connect(transport);
-      expect((await client.listTools()).tools.map(tool => tool.name)).toContain('request_capability');
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+        'request_capability', 'use_capability',
+      ]));
       const result = await client.callTool({
         name: 'request_capability',
         arguments: {
@@ -37,6 +44,12 @@ describe('CapabilityRequestToolServer', () => {
         reason: 'inspect the supplied report',
         suggestedScope: 'once',
       }]);
+      const useResult = await client.callTool({
+        name: 'use_capability',
+        arguments: { grantId: 'grant_1', payload: '\u03c0' },
+      });
+      expect(useResult.isError).not.toBe(true);
+      expect(uses).toEqual([{ grantId: 'grant_1', payload: '\u03c0' }]);
     } finally {
       await client.close().catch(() => undefined);
       await server.close();

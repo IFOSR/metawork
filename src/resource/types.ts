@@ -87,6 +87,27 @@ export interface CapabilityGrant {
   revokedAt: string | null;
 }
 
+export interface CapabilityUseInput {
+  grantId: string;
+  payload: string;
+}
+
+export type CapabilityUseResult =
+  | {
+      status: 'consumed';
+      grantId: string;
+      callsUsed: number;
+      bytesUsed: number;
+      remainingCalls: number;
+      remainingBytes: number;
+      expiresAt: string;
+    }
+  | {
+      status: 'denied';
+      grantId: string;
+      reason: string;
+    };
+
 export interface PermissionRule {
   id: string;
   effect: 'allow' | 'deny' | 'escalate';

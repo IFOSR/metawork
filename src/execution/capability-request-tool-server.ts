@@ -6,16 +6,19 @@ import { z } from 'zod';
 import {
   CONTROLLED_CAPABILITIES,
   type CapabilityRequestInput,
+  type CapabilityUseInput,
 } from '../resource/index.js';
 
 export interface CapabilityRequestToolBinding {
   mcpUrl: string;
   jsonUrl: string;
+  useUrl: string;
   bearerToken: string;
 }
 
 export interface CapabilityRequestHandler {
   request(input: CapabilityRequestInput): Promise<unknown>;
+  use(input: CapabilityUseInput): Promise<unknown> | unknown;
 }
 
 const RequestSchema = z.object({
@@ -24,6 +27,14 @@ const RequestSchema = z.object({
   operation: z.string().trim().min(1).max(128),
   reason: z.string().trim().min(1).max(1000),
   suggestedScope: z.enum(['once', 'attempt']),
+}).strict();
+
+const CAPABILITY_REQUEST_MAX_BYTES = 64 * 1024;
+const CAPABILITY_USE_MAX_BYTES = 1024 * 1024;
+
+const UseSchema = z.object({
+  grantId: z.string().trim().min(1).max(256),
+  payload: z.string().min(1).max(CAPABILITY_USE_MAX_BYTES),
 }).strict();
 
 export class CapabilityRequestToolServer {
@@ -46,6 +57,13 @@ export class CapabilityRequestToolServer {
         suggestedScope: z.enum(['once', 'attempt']),
       },
     }, async input => toolResult(await this.handler.request(RequestSchema.parse(input))));
+    this.mcp.registerTool('use_capability', {
+      description: 'Consume one bounded use of an already granted capability. Supply the exact broker-mediated operation payload; request_capability alone never authorizes direct access.',
+      inputSchema: {
+        grantId: z.string(),
+        payload: z.string(),
+      },
+    }, async input => toolResult(await this.handler.use(UseSchema.parse(input))));
   }
 
   async start(): Promise<CapabilityRequestToolBinding> {
@@ -62,7 +80,12 @@ export class CapabilityRequestToolServer {
     const host = this.options.advertisedHost
       ?? (process.env.NODE_ENV === 'test' ? '127.0.0.1' : 'metaclaw-control');
     const base = `http://${host}:${address.port}`;
-    return { mcpUrl: `${base}/mcp`, jsonUrl: `${base}/capability`, bearerToken: this.bearerToken };
+    return {
+      mcpUrl: `${base}/mcp`,
+      jsonUrl: `${base}/capability`,
+      useUrl: `${base}/capability/use`,
+      bearerToken: this.bearerToken,
+    };
   }
 
   async close(): Promise<void> {
@@ -80,12 +103,17 @@ export class CapabilityRequestToolServer {
       await this.transport.handleRequest(request, response);
       return;
     }
-    if (pathname !== '/capability' || request.method !== 'POST') {
+    if (request.method !== 'POST' || !['/capability', '/capability/use'].includes(pathname)) {
       sendJson(response, 404, { error: 'not_found' });
       return;
     }
     try {
-      const input = RequestSchema.parse(await readJson(request));
+      if (pathname === '/capability/use') {
+        const input = UseSchema.parse(await readJson(request, CAPABILITY_USE_MAX_BYTES + 64 * 1024));
+        sendJson(response, 200, await this.handler.use(input));
+        return;
+      }
+      const input = RequestSchema.parse(await readJson(request, CAPABILITY_REQUEST_MAX_BYTES));
       sendJson(response, 200, await this.handler.request(input));
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -97,13 +125,16 @@ function toolResult(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
 }
 
-function readJson(request: IncomingMessage): Promise<unknown> {
+function readJson(request: IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let body = '';
     request.setEncoding('utf8');
     request.on('data', chunk => {
       body += chunk;
-      if (Buffer.byteLength(body, 'utf8') > 64 * 1024) reject(new Error('capability_request_too_large'));
+      if (Buffer.byteLength(body, 'utf8') > maxBytes) {
+        reject(new Error('capability_request_too_large'));
+        request.destroy();
+      }
     });
     request.on('end', () => {
       try {

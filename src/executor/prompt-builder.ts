@@ -12,6 +12,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
     '- Dependency data is available only through incomingHandoffs.',
     '- Work only within the default mounted boundary. If an operation outside it is required, call request_capability with one exact resource and operation; never work around a denial.',
+    '- A granted request returns a grantId. Every broker-mediated use must call use_capability with that grantId and the exact operation payload so Runtime can enforce TTL, call, and byte budgets. A grant never permits direct access.',
     '- Finish with non-empty Markdown followed by exactly one completion marker and strict JSON until EOF.',
     '',
     `Task background: #${context.taskBackground.id} ${context.taskBackground.title}`,

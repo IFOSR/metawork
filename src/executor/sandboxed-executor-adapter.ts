@@ -13,11 +13,11 @@ import { AttemptModelGatewayServer } from '../execution/attempt-model-gateway.js
 const EXECUTOR_PROVIDER_ENV_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_BASE_URL',
-  'DEEPSEEK_API_KEY',
-  'GOOGLE_GENERATIVE_AI_API_KEY',
-  'OPENROUTER_API_KEY',
+  'PI_SKIP_VERSION_CHECK',
+  'PI_TELEMETRY',
+] as const;
+
+const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
   'PI_SKIP_VERSION_CHECK',
   'PI_TELEMETRY',
 ] as const;
@@ -68,17 +68,21 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       const providerEnvironment = this.providerEnvironment();
       const upstreamBaseUrl = providerEnvironment.OPENAI_BASE_URL;
       const upstreamApiKey = providerEnvironment.OPENAI_API_KEY;
-      const sandboxProviderEnvironment = { ...providerEnvironment };
-      if (upstreamBaseUrl && upstreamApiKey) {
-        modelGateway = new AttemptModelGatewayServer({
-          upstreamBaseUrl,
-          upstreamApiKey,
-          advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
-        });
-        const gateway = await modelGateway.start();
-        sandboxProviderEnvironment.OPENAI_BASE_URL = gateway.baseUrl;
-        sandboxProviderEnvironment.OPENAI_API_KEY = gateway.apiKey;
+      if (!upstreamBaseUrl || !upstreamApiKey) {
+        throw new Error('attempt model gateway requires OPENAI_BASE_URL and OPENAI_API_KEY');
       }
+      const sandboxProviderEnvironment = Object.fromEntries(SANDBOX_SAFE_PROVIDER_ENV_KEYS.flatMap(key => {
+        const value = providerEnvironment[key];
+        return value ? [[key, value]] : [];
+      }));
+      modelGateway = new AttemptModelGatewayServer({
+        upstreamBaseUrl,
+        upstreamApiKey,
+        advertisedHost: process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
+      });
+      const gateway = await modelGateway.start();
+      sandboxProviderEnvironment.OPENAI_BASE_URL = gateway.baseUrl;
+      sandboxProviderEnvironment.OPENAI_API_KEY = gateway.apiKey;
       const record = await this.sandbox.create({
         attemptId: binding.attemptId,
         taskId: binding.taskId,
@@ -96,6 +100,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
           METACLAW_ATTEMPT_ID: binding.attemptId,
           METACLAW_CAPABILITY_MCP_URL: binding.capabilityBinding?.mcpUrl ?? '',
           METACLAW_CAPABILITY_URL: binding.capabilityBinding?.jsonUrl ?? '',
+          METACLAW_CAPABILITY_USE_URL: binding.capabilityBinding?.useUrl ?? '',
           METACLAW_CAPABILITY_TOKEN: binding.capabilityBinding?.bearerToken ?? '',
           METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',

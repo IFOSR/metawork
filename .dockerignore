@@ -1,6 +1,7 @@
 node_modules
 dist/*
 !dist/capability-request-cli.js
+!dist/capability-use-cli.js
 !dist/pi-attempt-tools.ts
 coverage
 projects

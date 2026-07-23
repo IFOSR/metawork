@@ -592,7 +592,9 @@ export class KernelExecutionRuntime {
           graphState,
           stableFacts,
           attemptFacts,
-          event.type === 'execution_outcome' ? event.subtaskId : null,
+          event.type === 'execution_outcome'
+            ? event.terminalKind === 'failed' ? event.subtaskId : null
+            : event.type === 'handoff_contract_failed' ? event.subtaskId : null,
         );
     const workflow = new DurableKernelWorkflow({
       kernel: this.deps.controlKernel,

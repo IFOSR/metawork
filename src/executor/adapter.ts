@@ -31,7 +31,7 @@ export interface ExecutorInput {
     handoffsPath: string;
     gitMetadataPath: string | null;
     controlNetwork: string;
-    capabilityBinding: { mcpUrl: string; jsonUrl: string; bearerToken: string } | null;
+    capabilityBinding: { mcpUrl: string; jsonUrl: string; useUrl: string; bearerToken: string } | null;
     onContainerCreated?(containerId: string): void;
   };
 }

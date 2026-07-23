@@ -77,7 +77,7 @@ export function defaultGrantLimits(request: NormalizedCapabilityRequest, now: st
   return {
     expiresAt: new Date(issuedAt + (readOrNetwork ? 15 : 5) * 60_000).toISOString(),
     maxCalls: readOrNetwork ? 100 : 1,
-    maxBytes: readOrNetwork ? 100 * 1024 * 1024 : 0,
+    maxBytes: readOrNetwork ? 100 * 1024 * 1024 : 1024 * 1024,
   };
 }
 

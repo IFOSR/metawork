@@ -159,5 +159,9 @@ The attempt-bound claim over one normalized repository, worktree, mount-relative
 _Avoid_: permanent workspace ownership, WorkUnit identity, host absolute path
 
 **Capability Request**:
-An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v3 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization.
+An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v3 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization. A granted request returns an opaque grant ID but does not itself widen sandbox authority. Runtime supplies versioned explicit rules: exact Task-registered read partitions, plus normalized public HTTP(S) targets only for the public-web-research profile; secrets and mutations are never profile-allowed.
 _Avoid_: Planner resource claim, stderr parsing, broad permission prompt
+
+**Capability Use**:
+One attempt-bound, broker-mediated consumption of a previously granted capability. The Executor supplies the exact operation payload; trusted Runtime measures its UTF-8 size and atomically enforces attempt identity, expiry, call and byte budgets before a controlled adapter may act.
+_Avoid_: direct external access, caller-declared byte count, reusable host credential
