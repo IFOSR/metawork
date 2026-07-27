@@ -9,7 +9,7 @@
 
 ## 总体判断
 
-Planner / PolicyKernel 前的生产主路径已经基本不再用自然语言关键字做意图路由。  
+Planner / ControlKernel 前的生产主路径已经基本不再用自然语言关键字做意图路由。  
 `RuleHintsProvider`、`filterDurableTasks`、优先级/风险/继续/恢复/清空范围等旧关键词助手，在 `src/planning/`、`src/kernel/`、`src/intent/` 中未再发现。
 
 仍残留的关键字语义推断，主要集中在：

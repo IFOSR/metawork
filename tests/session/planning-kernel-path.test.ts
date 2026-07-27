@@ -150,7 +150,7 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
   });
 }
 
-// Behavior-first coverage of the PlanningAgent -> PolicyKernel -> Runtime seam.
+// Behavior-first coverage of the PlanningAgent -> ControlKernel -> Runtime seam.
 // Rather than grepping the session source for symbol names, these assert the
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
@@ -415,7 +415,7 @@ describe('natural-language planning/kernel path', () => {
 
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('当前请求未通过执行校验，请调整请求后重试。');
-    expect(output).not.toContain('PolicyKernel rejected request');
+    expect(output).not.toContain('ControlKernel rejected request');
     expect(output).not.toContain('no available executor agent class');
     const [audit] = harness.kernelDecisionRepo.listBySession('sess_reject_executor');
     expect(audit?.reason).toContain('preferredAgentClassList');

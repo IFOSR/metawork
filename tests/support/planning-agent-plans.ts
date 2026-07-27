@@ -10,7 +10,7 @@ import type { ContextRef } from '../../src/work-graph/index.js';
 
 // Test-only builders for PlanningAgentPlan. Full-stack/acceptance tests inject a
 // PlanningAgent whose plan() returns one of these, exercising the real
-// session -> PolicyKernel -> Runtime path with a deterministic plan instead of a
+// session -> ControlKernel -> Runtime path with a deterministic plan instead of a
 // mocked legacy IntentOrchestrator/llmBridge routing decision.
 
 function basePlan(): PlanningAgentPlan {

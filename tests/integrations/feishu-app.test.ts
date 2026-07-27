@@ -3059,7 +3059,7 @@ describe('Feishu app helpers', () => {
     expect(progress).toContain('【Executor: codex-cli｜派发准备】');
     expect(progress).toContain('→ Executor: codex-cli 将处理该任务');
     expect(progress).not.toContain('PlanningAgent:');
-    expect(progress).not.toContain('PolicyKernel:');
+    expect(progress).not.toContain('ControlKernel:');
     expect(progress).not.toContain('Runtime:');
     expect(formatFeishuReply(outputLines)).toBe('最终答案');
   });

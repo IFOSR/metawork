@@ -227,6 +227,23 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 因此该技术债不再作为独立 active debt 维护，归档后由本路线图的 Phase 5～6 追踪关闭。
 
+## 八之二、Kernel 决策权技术债覆盖确认
+
+本路线图完整接管已归档的 [Kernel 决策权散落 Runtime 技术债](../archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md)，对应关系如下：
+
+| 原技术债事项 | 本路线图阶段 | 关闭情况 |
+| --- | --- | --- |
+| 单一决策入口 `decide(event, snapshot)` | Phase 3 | 已关闭（ADR-0022） |
+| 执行失败事实规范化与策略分离 | Phase 3、Phase 4 | 已关闭（`KernelFailure` taxonomy） |
+| 定时恢复策略上收 | Phase 3、Phase 4 | 已关闭（timer 只发事件） |
+| 失败后按候选清单顺序 fallback | Phase 4 | 已关闭（ADR-0023） |
+| replan / 回传 Planner 触发条件与上限 | Phase 4 | 已关闭（每 generation 一次 revision） |
+| retry cap 与熔断 | Phase 4 | 已关闭（attempt cap + 派生可用性） |
+| 应急细分（写库、容量、heartbeat_lost 等） | Phase 4、Phase 5 | 已关闭（结构化 failure + 资源/沙箱事件） |
+| 目录与命名收敛 | Phase 3、Phase 5 | 已关闭（`ControlKernel`；admission gate / decision applier 已删除） |
+
+该技术债于 2026-07-27 复核后归档，退出条件 1～5 全部满足；剩余的并发调度不属于该债范围，仍由 Phase 6 追踪。
+
 ## 九、总体完成条件
 
 只有同时满足以下条件，才能将本路线图标记完成：

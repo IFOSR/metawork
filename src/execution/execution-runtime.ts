@@ -26,6 +26,8 @@ import type { AttemptSandboxRepositoryPort } from './repositories.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
+// Recovery strategy is not represented here: the Adapter emits a structured
+// KernelFailure and ControlKernel alone decides retry, fallback, replan or block.
 export interface ExecutionResult {
   taskId: string;
   executionId: string;
@@ -40,16 +42,6 @@ export interface ExecutionResult {
   userPrompt: string;
   preferences: ResolvedPreference[];
   context: SubtaskExecutionContext;
-  recovery: {
-    recoverable: boolean;
-    blockReason: string | null;
-  };
-  runtime: {
-    attemptedExecutors: string[];
-    fallbackExecutors: string[];
-    fallbackReason: string | null;
-    fallbackLines: string[];
-  };
 }
 
 export interface ExecutorRegistryDeps {
@@ -90,10 +82,6 @@ function withLongResearchTimeoutDefaults<T extends AdapterFactoryConfig>(config:
     timeout: Math.max(config.timeout, 900),
     maxDuration: Math.max(config.maxDuration ?? 0, 7200),
   };
-}
-
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values.filter(Boolean)));
 }
 
 /** Registers built-in executor adapter factories and maps runtime command aliases to adapter names. */
@@ -405,13 +393,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         userPrompt: input.executorInput.context.currentSubtask.goal,
         preferences: [],
         context: input.executorInput.context,
-        recovery: { recoverable: false, blockReason: summary },
-        runtime: {
-          attemptedExecutors: [input.spec.agentClass.name],
-          fallbackExecutors: [],
-          fallbackReason: null,
-          fallbackLines: [],
-        },
       };
     }
     const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
@@ -427,12 +408,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         executor,
         result,
         subtaskResults: [],
-        runtime: {
-          attemptedExecutors: [executor.name],
-          fallbackExecutors: [],
-          fallbackReason: null,
-          fallbackLines: [],
-        },
       });
     } finally {
       this.clearActive(input.taskId, executionToken);
@@ -477,7 +452,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     executor: ExecutorAdapter;
     result: ExecutorResult;
     subtaskResults: SubtaskResult[];
-    runtime: ExecutionResult['runtime'];
   }): ExecutionResult {
     return {
       taskId: input.input.taskId,
@@ -495,11 +469,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       userPrompt: input.input.executorInput.context.currentSubtask.goal,
       preferences: [],
       context: input.input.executorInput.context,
-      recovery: {
-        recoverable: Boolean(input.result.error),
-        blockReason: input.result.error ?? null,
-      },
-      runtime: input.runtime,
     };
   }
 

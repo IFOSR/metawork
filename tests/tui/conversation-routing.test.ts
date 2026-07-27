@@ -129,7 +129,7 @@ describe('App conversation routing', () => {
     expect(app.lastFrame()).not.toContain('已识别普通对话');
     expect(app.lastFrame()).not.toContain('执行策略：直接回答，不创建任务');
     expect(app.lastFrame()).not.toContain('PlanningAgent:');
-    expect(app.lastFrame()).not.toContain('PolicyKernel:');
+    expect(app.lastFrame()).not.toContain('ControlKernel:');
 
     app.unmount();
     app.cleanup();

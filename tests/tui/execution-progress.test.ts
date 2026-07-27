@@ -137,7 +137,7 @@ describe('App execution progress', () => {
     expect(app.lastFrame()).not.toContain('已创建：');
     expect(app.lastFrame()).not.toContain('执行准备：');
     expect(app.lastFrame()).not.toContain('PlanningAgent:');
-    expect(app.lastFrame()).not.toContain('PolicyKernel:');
+    expect(app.lastFrame()).not.toContain('ControlKernel:');
     expect(app.lastFrame()).not.toContain('Runtime:');
     expect(app.lastFrame()).not.toContain('[Planner: dispatch]');
     expect(app.lastFrame()).not.toContain('Work Unit ');

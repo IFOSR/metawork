@@ -1,11 +1,11 @@
 ---
 status: accepted
-amended_by: ADR-0020
+amended_by: ADR-0020, ADR-0022
 ---
 
 # Single active task admission gate (deliberate, current scope)
 
-> Architecture alignment (2026-07-17): the single-active-top-level-Task constraint remains accepted. `TaskAdmissionGate` in Session is the current implementation, not the final policy owner; roadmap Phase 3 moves admission authority behind the unified Control Kernel decision seam while Application Shell only applies the decision.
+> Architecture alignment (2026-07-27): the single-active-top-level-Task constraint remains accepted, but the `TaskAdmissionGate` implementation below is historical. Roadmap Phase 3 delivered admission authority behind the unified `ControlKernel.decide(event, snapshot)` seam and deleted `src/session/task-admission-gate.ts`; Application Shell only applies the resulting decision. Read the Decision section below as the origin of the product constraint, not as the current code path.
 
 ## Context
 
@@ -23,6 +23,8 @@ deliberately narrow the runtime to **one active top-level task at a time** for
 now. This is a scope decision, not a discovery of a bug.
 
 ## Decision
+
+> Historical implementation (superseded by ADR-0022). The rule survives; `TaskAdmissionGate` does not.
 
 1. Introduce `TaskAdmissionGate` (`src/session/task-admission-gate.ts`) as the
    single intake boundary. While a top-level task is running it:

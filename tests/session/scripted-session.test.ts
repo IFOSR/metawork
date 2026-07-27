@@ -180,7 +180,7 @@ describe('scripted session', () => {
     expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
     expect(output).not.toContain('已识别可执行任务');
     expect(output).not.toContain('PlanningAgent:');
-    expect(output).not.toContain('PolicyKernel:');
+    expect(output).not.toContain('ControlKernel:');
     expect(output).not.toContain('Runtime:');
     expect(output).not.toContain('[Planner: dispatch]');
     expect(output).not.toContain('Work Unit ');

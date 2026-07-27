@@ -22,7 +22,7 @@ Use the [ADR authority index](adr/README.md) before opening individual decisions
 Key recent ADRs:
 
 - [ADR-0011: Single Active Task Admission Gate](adr/0011-single-active-task-admission-gate.md)
-- [ADR-0014: PlanningAgent / PolicyKernel Boundary](adr/0014-planning-agent-policy-kernel-boundary.md)
+- [ADR-0014: PlanningAgent / Control Kernel Boundary](adr/0014-planning-agent-policy-kernel-boundary.md)
 - [ADR-0015: Planner-Owned Semantics And Tool-Mediated Context](adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
 - [ADR-0017: Kernel Executor Status Projection](adr/0017-kernel-executor-status-projection.md)
 - [ADR-0018: Supported Routing Contracts And Unified Executor Definitions](adr/0018-supported-routing-contracts-and-unified-executor-definitions.md)
@@ -56,7 +56,7 @@ The completed [Phase 5 implementation plan](archive/plans/2026-07-22-phase-5-res
 ## Operational Notes
 
 - [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). Scattered Kernel decision authority is tracked in [kernel-decision-authority-scattered-in-runtime-debt](tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) and is scheduled by the active roadmap. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
+- [Tech Debt](tech-debt/): active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). Remaining natural-language keyword inference after planner semantic tightening is tracked in [nl-keyword-semantic-inference-debt](tech-debt/nl-keyword-semantic-inference-debt.md). The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents
 

@@ -6,20 +6,22 @@ MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, w
 
 Key areas are organized by responsibility:
 
-- `src/core/` is intentionally narrow and contains shared primitives, the generic memory/ranking LLM bridge, and capability classes.
-- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), the dedicated Codex planner runner, the read-only Planner MCP server, minimal planning context construction, plan types/vocabulary, and plan validation.
-- `src/kernel/` owns pure `PolicyKernel` authorization for `PlanningAgentPlan` decisions. It validates, rewrites, rejects, or clarifies, but does not write storage or call executors.
-- `src/session/` coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/PolicyKernel wiring, kernel decision application, task admission for deterministic paths, and persistence.
-- `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
+- `src/core/` is intentionally narrow and contains shared primitives, the generic memory/ranking LLM bridge, and the shared `KernelFailure` fact.
+- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), the dedicated Codex planner runner, the read-only Planner MCP server, minimal planning context construction, plan types/vocabulary, and plan validation. Planning only proposes.
+- `src/kernel/` owns the pure `ControlKernel`, which exposes a single `decide(event, snapshot)` seam. It is the sole authority for plan admission, dispatch, capacity, execution failure recovery, retry/fallback/replan, derived AgentClass availability, permission grant/deny/escalation, partition waiting, and sandbox recovery. It reads no clock, repository, adapter, or raw log, and performs no side effects.
+- `src/work-graph/` owns the shared work graph types and pure structural validation consumed by Planning, Kernel, and Execution.
+- `src/session/` is Application Shell: it coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/ControlKernel wiring, and persistence. It triggers the kernel workflow and projects output; it never interprets outcomes strategically.
+- `src/task/` owns task state, runtime, ranking, and semantic retrieval.
 - `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
-- `src/execution/` owns execution runtime, work graph application/recovery, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
-- `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
+- `src/execution/` owns side effects only: the durable kernel execution runtime, work graph materialization/recovery, work-unit claiming, subtask attempt running, per-attempt sandboxes, workspaces, aggregation, and progress.
+- `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages. Adapters normalize raw errors into structured `KernelFailure` facts; they do not decide recovery.
+- `src/resource/` owns resource partition identity, claims, permission rules, and capability-request evaluation.
 - `src/guidance/`, `src/learning/`, `src/intent/`, and `src/delivery/` own their named domains.
-- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, planner run/tool-call audits, and events.
+- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, the kernel decision ledger, durable inbox/application/outbox, resources, workspaces, planner run/tool-call audits, and events. Storage is an adapter and owns no policy.
 - `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
 - `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.
 
-Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current PlanningAgent/PolicyKernel/work-unit vocabulary and migration context live in `CONTEXT.md`.
+Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current PlanningAgent/ControlKernel/work-unit vocabulary and migration context live in `CONTEXT.md`.
 
 For deeper current architecture context, read `docs/current/technical-overview.md`. Use `docs/README.md` as the docs map before opening older dated planning documents. Before architecture or roadmap changes, read `docs/adr/README.md` and ADR-0020; do not treat `docs/archive/adr/` as current implementation authority.
 

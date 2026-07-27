@@ -2,9 +2,11 @@
 
 ## Status
 
-Accepted; amended by ADR-0019 and ADR-0020.
+Accepted; amended by ADR-0019, ADR-0020 and ADR-0022.
 
-ADR-0020 retains the `PlanningAgent -> Control Kernel -> Runtime` chain and expands the Kernel from plan-only authorization to the single strategic control-plane seam. The `authorizeDirectReply` shortcut below documents current implementation history, but is superseded as the target Interface: Phase 3 routes all Kernel-owned decisions through unified `decide(event, snapshot)` rather than preserving a second public Kernel entry.
+The `PlanningAgent -> Control Kernel -> Runtime` chain remains current. Everything below that describes a *plan-only* Kernel is historical: ADR-0022 replaced `PolicyKernel` with `ControlKernel` and its single `decide(event, snapshot)` seam, which now also owns dispatch, capacity, execution failure recovery, retry/fallback/replan, permission and partition decisions. Read `PolicyKernel` in this document as the historical name of that seam.
+
+Alignment note (2026-07-27): the `authorizeDirectReply` shortcut described below no longer exists. Phase 3 routed direct reply through the unified seam as `deliver_direct_reply`, and Phase 3–5 closed the Future Work items marked below.
 
 ## Context
 
@@ -47,10 +49,10 @@ The current product behavior remains one active top-level Task and serial Subtas
 
 - ~~Replace the internal semantic adapter with a real Codex CLI planner adapter.~~ Done: `CodexPlanningAgent` emits `PlanningAgentPlan` (with multi-subtask DAG work graphs) directly from Codex CLI; the `IntentOrchestrator` semantic adapter is no longer on the planning path.
 - Fold memory/preference policy into a kernel-compatible decision path.
-- Add error-type-driven automatic retry and recovery.
-- Add urgent preemption and conflict-task parking.
+- ~~Add error-type-driven automatic retry and recovery.~~ Done in Phase 4 (ADR-0023): structured `KernelFailure` taxonomy, durable backoff, continuation, ordered fallback and derived availability.
+- ~~Add urgent preemption and conflict-task parking.~~ Superseded: preemption and multi-Task queueing were deliberately removed by ADR-0022 and are redesigned in roadmap Phase 6.
 - Add elastic work-unit spawn and capacity management.
-- Add parallel subtask dispatch with real worktree lease enforcement.
+- Add parallel subtask dispatch with real worktree lease enforcement. Phase 5 (ADR-0024) delivered partitions, persistent workspaces and durable leases; concurrent dispatch itself remains Phase 6.
 
 All lossy legacy-compat shims tracked in
 [docs/archive/tech-debt/legacy-compat-layers.md](../archive/tech-debt/legacy-compat-layers.md) have been

@@ -311,8 +311,6 @@ describe('ExecutionRuntime', () => {
 
     expect(result.executorName).toBe('deepseek-tui');
     expect(result.output).toBe('deepseek ok');
-    expect(result.runtime.attemptedExecutors).toEqual(['deepseek-tui']);
-    expect(result.runtime.fallbackExecutors).toEqual([]);
     expect(deepseek.execute).toHaveBeenCalledTimes(1);
   });
 
@@ -340,8 +338,6 @@ describe('ExecutionRuntime', () => {
 
     expect(result.status).toBe('failed');
     expect(result.executorName).toBe('pi-agent');
-    expect(result.runtime.attemptedExecutors).toEqual(['pi-agent']);
-    expect(result.runtime.fallbackExecutors).toEqual([]);
     expect(pi.execute).toHaveBeenCalledTimes(1);
     expect(codex.execute).not.toHaveBeenCalled();
   });
