@@ -2,7 +2,7 @@ import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot 
 
 export interface KernelDecisionLedgerRecord {
   id: string;
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   eventId: string;
   eventType: KernelEvent['type'];
   correlationId: string;
@@ -187,7 +187,7 @@ function ledgerRecord(
 ): KernelDecisionLedgerRecord {
   return {
     id: nextDecision.id,
-    schemaVersion: 3,
+    schemaVersion: 4,
     eventId: event.id,
     eventType: event.type,
     correlationId: event.correlationId,
@@ -214,7 +214,9 @@ function decisionSubtaskId(decision: KernelDecision): string | null {
 }
 
 function decisionAttemptId(decision: KernelDecision): string | null {
-  return decision.action.type === 'dispatch_attempt' ? decision.action.attemptId : null;
+  return decision.action.type === 'dispatch_batch' && decision.action.items.length === 1
+    ? decision.action.items[0]!.attemptId
+    : null;
 }
 
 function boundedError(error: unknown): string {

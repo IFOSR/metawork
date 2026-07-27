@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { validateWorkGraph, type WorkGraphSubtask } from '../../src/work-graph/index.js';
+import {
+  deriveRunnableFrontier,
+  validateWorkGraph,
+  type WorkGraphRuntimeFact,
+  type WorkGraphSubtask,
+} from '../../src/work-graph/index.js';
 
 function subtask(
   id: string,
@@ -44,14 +49,10 @@ describe('Work Graph v4 structural rules', () => {
     }));
   });
 
-  it('rejects duplicate preferred AgentClasses in the same derived execution layer', () => {
+  it('allows a reentrant AgentClass to own multiple nodes in one runnable layer', () => {
     expect(validateWorkGraph({
       subtasks: [subtask('root'), subtask('left', [edge('root')]), subtask('right', [edge('root')])],
-    })).toContainEqual(expect.objectContaining({
-      code: 'same_layer_preferred_conflict',
-      subtaskIds: ['left', 'right'],
-      message: 'derived layer 1 assigns preferred AgentClass codex-cli more than once: left, right',
-    }));
+    })).toEqual([]);
   });
 
   it.each([
@@ -134,3 +135,48 @@ describe('Work Graph v4 structural rules', () => {
       .toEqual(expect.arrayContaining(['dependency_cycle', 'missing_entry_node']));
   });
 });
+
+describe('Work Graph v5 runnable frontier', () => {
+  it('returns every dependency-satisfied node in stable topology, authorization, and id order', () => {
+    const subtasks = [
+      subtask('root-a', [], ['pi-agent']),
+      subtask('root-b'),
+      subtask('later-z', [edge('root-a')], ['pi-agent']),
+      subtask('later-a', [edge('root-b')]),
+    ];
+    const facts: WorkGraphRuntimeFact[] = [
+      runtimeFact('root-a', 'done'),
+      runtimeFact('root-b', 'done'),
+      runtimeFact('later-z', 'ready', 1),
+      runtimeFact('later-a', 'ready', 0),
+    ];
+
+    expect(deriveRunnableFrontier({ subtasks }, facts)).toEqual(['later-a', 'later-z']);
+  });
+
+  it('does not expose awaiting-integration dependencies or a Subtask with pending dispatch', () => {
+    const subtasks = [
+      subtask('published'),
+      subtask('candidate', [], ['pi-agent']),
+      subtask('downstream', [edge('candidate')]),
+      subtask('independent', [edge('published')], ['pi-agent']),
+    ];
+    const facts: WorkGraphRuntimeFact[] = [
+      runtimeFact('published', 'done'),
+      runtimeFact('candidate', 'awaiting_integration'),
+      runtimeFact('downstream', 'ready'),
+      runtimeFact('independent', 'ready', null, true),
+    ];
+
+    expect(deriveRunnableFrontier({ subtasks }, facts)).toEqual([]);
+  });
+});
+
+function runtimeFact(
+  subtaskId: string,
+  status: WorkGraphRuntimeFact['status'],
+  firstDispatchOrder: number | null = null,
+  hasPendingOrActiveAttempt = false,
+): WorkGraphRuntimeFact {
+  return { subtaskId, status, firstDispatchOrder, hasPendingOrActiveAttempt };
+}

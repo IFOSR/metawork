@@ -87,9 +87,10 @@ export class SessionKernelRuntime {
       case 'wait_for_capacity':
       case 'wait_for_retry':
       case 'probe_capacity':
-      case 'dispatch_attempt':
+      case 'dispatch_batch':
       case 'complete_task':
       case 'request_replan':
+      case 'request_merge_replan':
       case 'resolve_recovery':
       case 'grant_capability':
       case 'deny_capability':

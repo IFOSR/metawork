@@ -1,5 +1,5 @@
-import { resolve, join } from 'node:path';
-import { mkdir, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -27,9 +27,14 @@ import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
+import type { Subtask } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
 import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
-import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
+import type {
+  KernelAttemptKind,
+  KernelAttemptPayload,
+  KernelRecoveryMode,
+} from '../kernel/control-kernel.js';
 import { captureWorkspaceState, deriveWorkspaceDelta, type WorkspaceState } from './workspace-change-tracker.js';
 import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from './workspace-store.js';
 import type { AttemptSandboxPort } from './attempt-sandbox.js';
@@ -45,6 +50,11 @@ import { CapabilityRequestToolServer } from './capability-request-tool-server.js
 import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import { ManagedGitWorkspaceService, type ManagedGitWorkspace } from './managed-git-workspace.js';
+import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import {
+  WorkspacePublicationRepo,
+  type WorkspacePublicationCompletion,
+} from '../storage/workspace-publication-repo.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -71,7 +81,6 @@ export interface SubtaskAttemptRunnerDeps {
   kernelWorkflowStore: KernelWorkflowStore;
   workspaceRepository: WorkspaceRepositoryPort;
   sourceRoot: string;
-  seedSource?: boolean;
   controlNetwork: string;
 }
 
@@ -82,6 +91,8 @@ export class SubtaskAttemptRunner {
   private readonly handoffRepo: SubtaskHandoffRepo;
   private readonly attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
   private readonly managedGitWorkspace: ManagedGitWorkspaceService;
+  private readonly dispatchItemRepo: KernelDispatchItemRepo;
+  private readonly publicationRepo: WorkspacePublicationRepo;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db);
@@ -89,6 +100,8 @@ export class SubtaskAttemptRunner {
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
     this.attemptRuntimeRepo = new ExecutorAttemptRuntimeRepo(deps.db);
     this.managedGitWorkspace = new ManagedGitWorkspaceService(deps.workspaceStore);
+    this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
+    this.publicationRepo = new WorkspacePublicationRepo(deps.db);
   }
 
   supportsResponseOnly(agentClassName: string): boolean {
@@ -137,6 +150,7 @@ export class SubtaskAttemptRunner {
     agentClassName: string;
     executionMode: ExecutionMode;
     attemptKind?: KernelAttemptKind;
+    attemptPayload?: KernelAttemptPayload;
     sourceAttemptId?: string | null;
     recoveryMode?: KernelRecoveryMode;
     defaultResourceGrant: ResourceClaim[];
@@ -194,6 +208,12 @@ export class SubtaskAttemptRunner {
     let workspaceBaseline: WorkspaceState | null = null;
     let workspace: WorkspaceHandle | null = null;
     let gitWorkspace: ManagedGitWorkspace | null = null;
+    let mergeRepair: {
+      publicationId: string;
+      conflictChainId: string;
+      conflictingPaths: string[];
+      filePolicy: Record<string, 'text' | 'binary'>;
+    } | null = null;
     let capabilityToolServer: CapabilityRequestToolServer | null = null;
     let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
     const heartbeat = setInterval(() => {
@@ -202,6 +222,17 @@ export class SubtaskAttemptRunner {
     }, 20_000);
     try {
       claim.startAttempt();
+      if (attemptKind === 'merge_repair') {
+        if (input.attemptPayload?.protocol !== 'metaclaw:merge-repair:v1') {
+          throw new Error('merge repair attempt is missing metaclaw:merge-repair:v1 payload');
+        }
+        if (!this.publicationRepo.recordRepairAttempt(
+          input.attemptPayload.publicationId,
+          new Date().toISOString(),
+        )) {
+          throw new Error(`merge repair budget or publication state is stale: ${input.attemptPayload.publicationId}`);
+        }
+      }
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
       const agentClass = this.deps.agentClassService.listAgentClasses().find(item => item.name === input.agentClassName);
@@ -216,8 +247,8 @@ export class SubtaskAttemptRunner {
         subtaskId: subtask.id,
       };
       gitWorkspace = await this.managedGitWorkspace.ensure(workspaceIdentity, this.deps.sourceRoot);
-      workspace = gitWorkspace ?? await this.deps.workspaceStore.ensureWorkspace(workspaceIdentity, 'directory');
-      if (gitWorkspace && subtask.dependencies.length > 0) {
+      workspace = gitWorkspace;
+      if (subtask.dependencies.length > 0) {
         const dependencyCommits = subtask.dependencies.map(dependency => {
           const state = this.deps.workspaceRepository.findByIdentity(
             task.id, subtask.generationId, dependency.fromSubtaskId,
@@ -226,6 +257,38 @@ export class SubtaskAttemptRunner {
           return state.headCommit;
         });
         await this.managedGitWorkspace.applyDependencyStates(gitWorkspace, dependencyCommits);
+      }
+      if (attemptKind === 'merge_repair') {
+        const payload = input.attemptPayload;
+        if (payload?.protocol !== 'metaclaw:merge-repair:v1') {
+          throw new Error('merge repair payload changed after authorization');
+        }
+        const publication = this.publicationRepo.find(payload.publicationId);
+        if (!publication || publication.status !== 'conflicted') {
+          throw new Error(`merge repair publication is no longer conflicted: ${payload.publicationId}`);
+        }
+        const integrationWorkspace = await this.managedGitWorkspace.ensure({
+          taskId: task.id,
+          generationId: subtask.generationId,
+          subtaskId: '__integration__',
+        }, this.deps.sourceRoot);
+        const description = await this.managedGitWorkspace.describeCandidate(
+          integrationWorkspace,
+          publication.candidateCommit,
+        );
+        const preparation = await this.managedGitWorkspace.prepareMergeRepair({
+          candidateWorkspace: gitWorkspace,
+          integrationWorkspace,
+          candidateCommit: publication.candidateCommit,
+          expectedConflictPaths: payload.conflictingPaths,
+          filePolicy: description.filePolicy,
+        });
+        mergeRepair = {
+          publicationId: payload.publicationId,
+          conflictChainId: payload.conflictChainId,
+          conflictingPaths: preparation.conflictPaths,
+          filePolicy: preparation.filePolicy,
+        };
       }
       const workspaceNow = new Date().toISOString();
       this.deps.workspaceRepository.upsert({
@@ -249,9 +312,6 @@ export class SubtaskAttemptRunner {
         createdAt: workspaceNow,
         updatedAt: workspaceNow,
       });
-      if (!gitWorkspace && this.deps.seedSource !== false && (await readdir(workspace.filesPath)).length === 0) {
-        await this.deps.workspaceStore.seedDirectory(workspace, this.deps.sourceRoot);
-      }
       await mkdir(join(workspace.filesPath, '.metaclaw', 'results'), { recursive: true });
       await this.deps.workspaceStore.prepareForSandbox(workspace);
       const inputsPath = join(workspace.rootPath, 'inputs');
@@ -305,6 +365,20 @@ export class SubtaskAttemptRunner {
           targetPaths: [targetPath],
         },
         evidenceToolsAvailable,
+        currentSubtaskOverride: mergeRepair ? {
+          title: `Repair merge conflicts for ${subtask.title}`,
+          goal: buildMergeRepairGoal(
+            subtask.goal,
+            mergeRepair.conflictingPaths,
+            gitWorkspace.filesPath,
+          ),
+          expectedOutput: 'patch',
+        } : undefined,
+        completionContractOverride: mergeRepair ? {
+          marker: '---METACLAW-MERGE-REPAIR---',
+          protocol: 'metaclaw:merge-repair:v1',
+          allowedPaths: mergeRepair.conflictingPaths,
+        } : undefined,
         recovery: {
           mode: recoveryMode,
           sourceAttemptId: input.sourceAttemptId ?? null,
@@ -394,7 +468,10 @@ export class SubtaskAttemptRunner {
             gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
             controlNetwork: this.deps.controlNetwork,
             capabilityBinding,
-            onContainerCreated: containerId => { capabilityContext.containerId = containerId; },
+            onContainerCreated: containerId => {
+              capabilityContext.containerId = containerId;
+              this.dispatchItemRepo.markSandbox(attemptId, containerId, new Date().toISOString());
+            },
           },
           recovery: {
             mode: recoveryMode,
@@ -431,6 +508,13 @@ export class SubtaskAttemptRunner {
           errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
           failure: executionFailure,
         });
+        if (mergeRepair) {
+          this.publicationRepo.recordRepairFailure(
+            mergeRepair.publicationId,
+            error,
+            new Date().toISOString(),
+          );
+        }
         claim.markFailed(error);
         return execution.status === 'cancelled'
           ? { outcome: 'cancelled_or_stale', attemptId, reason: error }
@@ -438,6 +522,59 @@ export class SubtaskAttemptRunner {
               outcome: 'executor_failed', attemptId, error,
               failure: executionFailure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
             };
+      }
+
+      if (mergeRepair) {
+        const report = parseMergeRepairReport(rawResponse);
+        const repairedCommit = await this.managedGitWorkspace.commitMergeRepair({
+          workspace: gitWorkspace,
+          allowedPaths: mergeRepair.conflictingPaths,
+          filePolicy: mergeRepair.filePolicy,
+          reportedResolvedPaths: report.resolvedPaths,
+        });
+        const completedAt = new Date().toISOString();
+        this.deps.db.transaction(() => {
+          this.receiptRepo.insert(buildReceipt({
+            attemptId,
+            executionId: input.executionId,
+            taskId: task.id,
+            subtaskId: subtask.id,
+            workUnitId: claim.workUnit.id,
+            agentClassName: agentClass.name,
+            startedAt,
+            terminalState: 'completed',
+            rawResponse,
+          }, completedAt));
+          this.publicationRepo.markPendingAfterRepair(
+            mergeRepair!.publicationId,
+            repairedCommit.commit,
+            completedAt,
+          );
+          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', { error: null });
+        })();
+        const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
+          task.id,
+          subtask.generationId,
+          subtask.id,
+        );
+        if (workspaceRecord) {
+          this.deps.workspaceRepository.upsert({
+            ...workspaceRecord,
+            headCommit: repairedCommit.commit,
+            status: 'active',
+            updatedAt: completedAt,
+          });
+        }
+        finalCheckpointReason = 'success';
+        return {
+          outcome: 'completed',
+          attemptId,
+          output: report.verificationSummary,
+          artifacts: [],
+          warnings: [],
+          executorName: execution.executorName,
+          durationMs: execution.durationMs,
+        };
       }
 
       const outgoingHandoffs = allSubtasks.flatMap(candidate => {
@@ -529,12 +666,18 @@ export class SubtaskAttemptRunner {
       }
 
       const completedAt = new Date().toISOString();
-      const managedCommit = gitWorkspace
-        ? await this.managedGitWorkspace.commit(
-            gitWorkspace,
-            `feat: capture ${subtask.id} result`,
-          )
-        : null;
+      const managedCommit = await this.managedGitWorkspace.commit(
+        gitWorkspace,
+        `feat: capture ${subtask.id} result`,
+      );
+      const dispatchItem = this.dispatchItemRepo.find(attemptId);
+      const publicationCompletion: WorkspacePublicationCompletion = {
+        body: completion.body,
+        artifacts: completion.normalizedArtifacts,
+        warnings: completion.warnings,
+        handoffs: completedEnvelope.handoffs,
+        completionSchemaVersion: 2,
+      };
       this.deps.db.transaction(() => {
         this.receiptRepo.insert(buildReceipt({
           attemptId,
@@ -549,25 +692,24 @@ export class SubtaskAttemptRunner {
           completionSchemaVersion: 2,
           warnings: completion.warnings,
         }, completedAt));
-        for (const handoff of completedEnvelope.handoffs) {
-          this.handoffRepo.insert({
-            taskId: task.id,
-            fromSubtaskId: subtask.id,
-            toSubtaskId: handoff.toSubtaskId,
-            attemptId,
-            items: handoff.items,
-            completionSchemaVersion: 2,
-            createdAt: completedAt,
-          });
-        }
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'done', {
-          result: completion.body,
-          artifacts: completion.normalizedArtifacts,
-          verification: { warnings: completion.warnings, completionSchemaVersion: 2 },
+        this.publicationRepo.insertCandidate({
+          id: `publication_${attemptId}`,
+          taskId: task.id,
+          generationId: subtask.generationId,
+          subtaskId: subtask.id,
+          sourceAttemptId: attemptId,
+          agentClassName: agentClass.name,
+          candidateCommit: managedCommit.commit,
+          completion: publicationCompletion,
+          topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
+          firstDispatchOrder: dispatchItem?.batchOrder ?? 0,
+          createdAt: completedAt,
+        });
+        this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', {
           error: null,
         });
       })();
-      if (managedCommit && workspace) {
+      if (workspace) {
         this.deps.workspaceRepository.upsert({
           id: workspace.id,
           taskId: task.id,
@@ -584,7 +726,7 @@ export class SubtaskAttemptRunner {
           managedBranch: managedCommit.branch,
           headCommit: managedCommit.commit,
           currentCheckpointId: null,
-          status: 'done',
+          status: 'active',
           cleanupAfter: null,
           createdAt: completedAt,
           updatedAt: completedAt,
@@ -602,6 +744,13 @@ export class SubtaskAttemptRunner {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (mergeRepair) {
+        this.publicationRepo.recordRepairFailure(
+          mergeRepair.publicationId,
+          message,
+          new Date().toISOString(),
+        );
+      }
       try {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
@@ -702,13 +851,18 @@ export class SubtaskAttemptRunner {
         const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
         return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
       });
-      const targetPath = resolve(process.cwd(), 'metaclaw-tasks', task.id);
+      const gitWorkspace = await this.managedGitWorkspace.ensure({
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+      }, this.deps.sourceRoot);
+      const targetPath = gitWorkspace.filesPath;
       const completion = validateCompletionProtocol({
         rawResponse: result.output,
         subtask,
         outgoingHandoffs,
         targetPaths: [targetPath],
-        cwd: process.cwd(),
+        cwd: gitWorkspace.filesPath,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
@@ -750,23 +904,53 @@ export class SubtaskAttemptRunner {
       }
       const completedEnvelope = completion.envelope;
       const completedAt = new Date().toISOString();
+      const managedCommit = await this.managedGitWorkspace.commit(
+        gitWorkspace,
+        `feat: capture corrected ${subtask.id} result`,
+      );
+      const dispatchItem = this.dispatchItemRepo.find(input.attemptId);
       this.deps.db.transaction(() => {
         this.receiptRepo.insert(buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
           terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 2, warnings: completion.warnings,
         }, completedAt));
-        for (const handoff of completedEnvelope.handoffs) {
-          this.handoffRepo.insert({
-            taskId: task.id, fromSubtaskId: subtask.id, toSubtaskId: handoff.toSubtaskId,
-            attemptId: input.attemptId, items: handoff.items, completionSchemaVersion: 2, createdAt: completedAt,
-          });
-        }
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'done', {
-          result: completion.body, artifacts: completion.normalizedArtifacts,
-          verification: { warnings: completion.warnings, completionSchemaVersion: 2 }, error: null,
+        this.publicationRepo.insertCandidate({
+          id: `publication_${input.attemptId}`,
+          taskId: task.id,
+          generationId: subtask.generationId,
+          subtaskId: subtask.id,
+          sourceAttemptId: input.attemptId,
+          agentClassName: input.agentClassName,
+          candidateCommit: managedCommit.commit,
+          completion: {
+            body: completion.body,
+            artifacts: completion.normalizedArtifacts,
+            warnings: completion.warnings,
+            handoffs: completedEnvelope.handoffs,
+            completionSchemaVersion: 2,
+          },
+          topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
+          firstDispatchOrder: dispatchItem?.batchOrder ?? 0,
+          createdAt: completedAt,
+        });
+        this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', {
+          error: null,
         });
       })();
+      const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
+        task.id,
+        subtask.generationId,
+        subtask.id,
+      );
+      if (workspaceRecord) {
+        this.deps.workspaceRepository.upsert({
+          ...workspaceRecord,
+          headCommit: managedCommit.commit,
+          status: 'active',
+          updatedAt: completedAt,
+        });
+      }
       return {
         outcome: 'completed', attemptId: input.attemptId, output: completion.body,
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
@@ -838,6 +1022,84 @@ function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV2['ite
     }
   }
   return { textCharacters, artifactPaths };
+}
+
+function deriveTopologyLayer(subtaskId: string, subtasks: Subtask[]): number {
+  const byId = new Map(subtasks.map(subtask => [subtask.id, subtask]));
+  const memo = new Map<string, number>();
+  const visiting = new Set<string>();
+  const visit = (id: string): number => {
+    const cached = memo.get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(id)) throw new Error(`cyclic Subtask dependency while deriving topology layer: ${id}`);
+    visiting.add(id);
+    const subtask = byId.get(id);
+    const layer = subtask
+      ? subtask.dependencies.reduce((maximum, dependency) => (
+          Math.max(maximum, visit(dependency.fromSubtaskId) + 1)
+        ), 0)
+      : 0;
+    visiting.delete(id);
+    memo.set(id, layer);
+    return layer;
+  };
+  return visit(subtaskId);
+}
+
+function buildMergeRepairGoal(
+  originalGoal: string,
+  conflictingPaths: string[],
+  workspacePath: string,
+): string {
+  return [
+    'Resolve only the authorized Git merge conflicts. Do not change the original acceptance criteria, handoffs, or unrelated paths.',
+    `Original Subtask goal (context only): ${originalGoal}`,
+    `Writable conflict paths: ${conflictingPaths.join(', ')}`,
+    `Read-only base/ours/theirs materials: ${join(workspacePath, '.metaclaw', 'merge-repair')}`,
+    'For binary conflicts, regenerate exactly one target file from the supplied read-only versions.',
+    'Runtime owns Git operations. Do not run git merge, git add, git commit, checkout, reset, or edit .git.',
+    'Finish with Markdown followed by exactly one ---METACLAW-MERGE-REPAIR--- trailer.',
+    'The trailer JSON must be {"protocol":"metaclaw:merge-repair:v1","resolvedPaths":["..."],"verification":{"summary":"..."}}.',
+  ].join('\n');
+}
+
+function parseMergeRepairReport(rawResponse: string): {
+  resolvedPaths: string[];
+  verificationSummary: string;
+} {
+  const marker = '---METACLAW-MERGE-REPAIR---';
+  const markerIndex = rawResponse.lastIndexOf(marker);
+  if (markerIndex < 0 || rawResponse.indexOf(marker) !== markerIndex) {
+    throw new Error('merge repair response must contain exactly one protocol trailer');
+  }
+  const payloadText = rawResponse.slice(markerIndex + marker.length).trim();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch {
+    throw new Error('merge repair trailer is not valid JSON');
+  }
+  if (!payload || typeof payload !== 'object') throw new Error('merge repair trailer must be an object');
+  const record = payload as Record<string, unknown>;
+  if (record.protocol !== 'metaclaw:merge-repair:v1') {
+    throw new Error('merge repair trailer protocol is invalid');
+  }
+  if (!Array.isArray(record.resolvedPaths)
+    || record.resolvedPaths.some(path => typeof path !== 'string' || path.length === 0)) {
+    throw new Error('merge repair trailer resolvedPaths must contain non-empty strings');
+  }
+  const verification = record.verification;
+  if (!verification || typeof verification !== 'object') {
+    throw new Error('merge repair trailer verification is required');
+  }
+  const summary = (verification as Record<string, unknown>).summary;
+  if (typeof summary !== 'string' || summary.trim().length === 0) {
+    throw new Error('merge repair verification.summary must be non-empty');
+  }
+  return {
+    resolvedPaths: record.resolvedPaths as string[],
+    verificationSummary: summary.trim(),
+  };
 }
 
 function checkpointObjects(checkpoint: StoredWorkspaceCheckpoint) {

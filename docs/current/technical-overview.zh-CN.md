@@ -2,7 +2,7 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> Phase 5 架构更新（2026-07-22）：当前控制链为 `durable event inbox → KernelWorkflow → snapshot → ControlKernel.decide → immutable decision + application → idempotent Runtime apply → normalized event`。SQLite v25 增加资源租约、持久 workspace/checkpoint/CAS 元数据、permission request/grant/user authorization 和短命 sandbox 生命周期；每个 Executor attempt 使用独立 Docker 容器，Task generation + Subtask workspace 跨 attempt 保留。PlanningAgentPlan 为 v6、Work Graph 仍为 v5、Kernel contract 为 v3；并发仍留在 Phase 6。
+> Phase 6 上架构更新（2026-07-27）：`KernelWorkflow` 继续串行完成 event、Kernel v4 Decision 和 application，但 `dispatch_batch` 会持久化多个 child item，由 attempt supervisor 在单一活跃顶层 Task 内并行启动最多四个隔离 attempt。SQLite v26 增加 dispatch item、候选 publication 和不可变 merge audit；所有新文件任务统一使用内部 Git，只有 publication 成功后才原子发布 Subtask 完成事实。Phase 6 下仅补多 Task 候选、公平性和 admission hard cut。
 
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
@@ -13,7 +13,7 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 持久任务状态：created、ready、running、parked、blocked、done、archived、cancelled。
 - 中断后通过 resume context 继续，不从头重做。
 - timer 仅重查由 decision ledger 标记的容量阻塞；普通执行失败不自动恢复。
-- 当前串行 Kernel 直接授权唯一 ready Subtask，不运行多 Task 优先级调度。
+- Kernel v4 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
 - 当前强制单一活跃顶层任务，避免 ControlKernel 与 work-unit dispatch 加固期间出现多任务并存的歧义。
 - 通过本地 SQLite FTS 索引检索历史任务，并结合混合召回恢复相关上下文。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
@@ -38,7 +38,7 @@ flowchart LR
   Session --> MemoryFast[显式记忆和偏好快路]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v6<br/>意图、目标、候选、<br/>v5 graph 或授权确认]
-  Plan --> Kernel[ControlKernel v3<br/>schema、状态、资源、<br/>permission 与恢复]
+  Plan --> Kernel[ControlKernel v4<br/>frontier、batch、资源、<br/>permission 与恢复]
   Kernel --> Decision{KernelDecision}
   Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
@@ -47,14 +47,17 @@ flowchart LR
   Decision -->|reject/no_action| Stop[不执行<br/>保留状态]
 
   Runtime --> TaskOS[Task OS<br/>TaskRuntimeService 和 Scheduler]
-  TaskOS --> ExecCoord[SessionExecutionCoordinator<br/>串行 ready-node 外壳]
+  TaskOS --> ExecCoord[KernelExecutionRuntime<br/>构造 scheduling snapshot]
   ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>应用已授权 work graph]
   GraphRuntime --> Graph[Work Graph<br/>持久化 Subtasks]
-  Graph --> Attempt[SubtaskAttemptRunner<br/>一个 attempt、一个 WorkUnit]
+  Graph --> Frontier[纯 runnable frontier<br/>依赖与 publication 事实]
+  Frontier --> Batch[dispatch_batch<br/>持久 child items]
+  Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
-  Executors --> Verify[Completion Protocol v2<br/>验收、handoff、产物]
-  Verify --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
+  Executors --> Verify[Completion Protocol v2<br/>receipt 与 candidate commit]
+  Verify --> Publish[Git publication gate<br/>稳定顺序集成]
+  Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
   Control --> Delivery
@@ -68,7 +71,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。v6 只增加对既有精确 permission request 的 approve/deny 解释；Work Graph 继续使用 v5，Planner 不枚举资源 claim。启动 context 保持最小；任务、会话、runtime、executor 与迁移审计事实通过只读 MCP 按需查询。`ControlKernel` 负责确定性授权，Runtime 持久化或恢复已授权 graph/workspace state，再由 `SubtaskAttemptRunner` 串行执行一个 ready Subtask。
+所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
 Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
@@ -102,18 +105,20 @@ flowchart LR
   Task --> Scheduler[SchedulerEngine<br/>准备度、优先级、空闲恢复]
   Scheduler --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>持久化 Subtasks]
-  WorkGraph --> Ready[Ready Subtask<br/>直接依赖 handoff 已满足]
-  Ready --> Attempt[SubtaskAttemptRunner<br/>claim、context、单次 adapter 调用]
+  WorkGraph --> Ready[Runnable frontier<br/>直接依赖已发布]
+  Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
+  Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v2<br/>验证并原子持久化]
-  Verify --> Done{是否通过？}
-  Done -->|是| Result[完成并记录产物]
-  Done -->|否| Blocked[阻塞并给出恢复提示]
+  Run --> Verify[Completion Protocol v2<br/>receipt 与 candidate]
+  Verify --> Publish[Git publication gate]
+  Publish --> Done{是否集成？}
+  Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
+  Done -->|冲突| Repair[Kernel 授权原 AgentClass repair]
 ```
 
-这就是 Task OS 路径。任务状态、恢复上下文、policy authorization、subtask 状态、work-unit lease、产物捕获和验收都在这里发生。第一版生产路径保持一个已接纳的顶层任务，并在该任务内部按依赖顺序串行推进 ready subtasks。
+这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0011 仍保持一个已接纳的顶层任务，但该 Task 内互不依赖的 Subtasks 已可并行。
 
-当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成或取消。所有执行入口进入同一 Kernel event seam；Phase 6 才会启用多 Task 或并发 frontier。
+当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成或取消。Phase 6 下将增加多 Task candidate、公平性、饥饿保护和 admission hard cut，不重写 Phase 6 上的 frontier、batch、supervisor 或 publication seam。
 
 ### 飞书和进度展示路径
 
@@ -791,22 +796,13 @@ HybridTaskRetriever 会综合多种信号：
 
 隐式召回会排除当前任务，避免任务第一次执行时把自己召回成历史记忆。不确定记忆不会被盲目注入；飞书和无人值守 executor 流程不会因为等待记忆确认而卡住。
 
-## 调度和优先级模型
+## 单 Task 并发调度模型
 
-AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
-
-- 新任务按紧急度、准备度、连续性收益、下游影响和搁置时间评分。
-- 紧急度来自结构化语义判断，不靠关键词匹配。
-- 满足条件的 parked 任务会在系统空闲时自动恢复。
-- 语义紧急的 parked 任务会排在普通 parked 任务前面。
-- 任务池看护会周期性展示 blocked / parked 任务，以及缺失条件或下一步。
-- 可恢复的执行器故障会被定时复查；执行器恢复可用后，任务会重新进入调度。
-- 材料、权限、授权和访问类阻塞不会自动解除，必须等用户补充输入或显式 unblock。
-- 未 ready 的任务不会自动执行。
+AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v4 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
 
 当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
-这样既防止排队任务浪费算力，又保证任务安全。单个已接纳的顶层任务内部仍然可以存在多个 subtasks；当前 dispatcher 会按依赖满足情况串行推进 ready subtasks。
+单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命容器一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
 
 ## PlanningAgent、ControlKernel 和 Work Unit
 
@@ -815,9 +811,9 @@ AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`ControlKernel` v3 验证 schema、priority、confidence、task status、单活跃任务冲突、显式恢复目标、task-control scope、AgentClass 目录成员和确认要求，也唯一决定 permission grant/deny/escalate、partition wait 和 sandbox recovery。实时健康只来自 WorkUnit；遗留 `availability` 列不再读写。
+`ControlKernel` v4 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision，不解释 orphan、retry 或 fallback。`KernelExecutionRuntime` 应用单一高层授权；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 `SubtaskExecutionContext`、evidence capability、一次 Adapter 调用、Completion Protocol 门禁、终态持久化与 release。`ExecutionRuntime` 不接收 Task prompt、全量历史、Task 级 memory bundle、`ExecutionPolicy`、`candidateExecutors` 或 `fallbackChain`。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -825,7 +821,7 @@ AnyFusion 当前使用单一活跃顶层任务，前面有一个调度器。
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox 记录。自动 replan 保留已完成证据，取消旧 revision 未完成节点并只激活一个新 frontier。串行外壳只执行一个 ready node；下游只接收已完成直接依赖的不可变 handoff、版本化 `workspace_state` 或受控 task evidence，不隐式吸收 sibling 状态。每次 Executor 最终响应都必须带 Completion Protocol v2。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox，v26 增加 dispatch item、workspace publication 和不可变 merge attempt。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

@@ -25,7 +25,7 @@ function createConfig(): Config {
   return {
     version: 1,
     executor: { command: 'codex', timeout: 60_000 },
-    orchestration: { reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
+    orchestration: { max_concurrent_attempts: 4, reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
     ui: { language: 'zh-CN', dashboard_on_start: false },
   };
 }
@@ -74,6 +74,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
 function createSession(
   sessionId: string,
   planningPlan: PlanningAgentPlan | ((context: PlanningContext) => PlanningAgentPlan | Promise<PlanningAgentPlan>),
+  executorOverride?: ExecutorAdapter,
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -81,7 +82,7 @@ function createSession(
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
   const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-  const executor: ExecutorAdapter = {
+  const executor: ExecutorAdapter = executorOverride ?? {
     name: 'codex-cli',
     execute: vi.fn().mockImplementation(async input => ({
       success: true, output: completionResponse(input, 'done'), exitCode: 0, durationMs: 10,
@@ -262,8 +263,160 @@ describe('natural-language planning/kernel path', () => {
 
     const audits = harness.kernelDecisionRepo.listBySession('sess_durable');
     expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
-    expect(audits.some(audit => audit.action === 'dispatch_attempt')).toBe(true);
+    expect(audits.some(audit => audit.action === 'dispatch_batch')).toBe(true);
     expect(audits.some(audit => audit.action === 'complete_task')).toBe(true);
+  });
+
+  it('runs independent frontier items concurrently and publishes them in stable dispatch order', async () => {
+    let running = 0;
+    let maximumRunning = 0;
+    const release = new Map<string, () => void>();
+    let notifyBothStarted!: () => void;
+    const bothStarted = new Promise<void>(resolve => {
+      notifyBothStarted = resolve;
+    });
+    let notifyOneFinished!: () => void;
+    const oneFinished = new Promise<void>(resolve => {
+      notifyOneFinished = resolve;
+    });
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn().mockImplementation(async input => {
+        running += 1;
+        maximumRunning = Math.max(maximumRunning, running);
+        if (release.size === 1) notifyBothStarted();
+        await new Promise<void>(resolve => {
+          release.set(input.context.currentSubtask.id, resolve);
+          if (release.size === 2) notifyBothStarted();
+        });
+        running -= 1;
+        if (running === 1) notifyOneFinished();
+        return {
+          success: true,
+          output: completionResponse(input, `${input.context.currentSubtask.id} done`),
+          exitCode: 0,
+          durationMs: 10,
+        };
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const harness = createSession('sess_concurrent_frontier', plan({
+      workGraph: {
+        reason: 'two independent implementation units',
+        subtasks: [
+          {
+            id: 'subtask_a',
+            title: 'Implement A',
+            goal: 'Implement A',
+            dependencies: [],
+            contextRefs: [{ kind: 'current_user_input' }],
+            requiredCapabilities: ['workspace-engineering'],
+            preferredAgentClassList: ['codex-cli'],
+            expectedOutput: 'summary',
+            acceptance: [{
+              key: 'a_done',
+              description: 'A is complete.',
+              requiredEvidence: ['completion result'],
+            }],
+            riskLevel: 'low',
+          },
+          {
+            id: 'subtask_b',
+            title: 'Implement B',
+            goal: 'Implement B',
+            dependencies: [],
+            contextRefs: [{ kind: 'current_user_input' }],
+            requiredCapabilities: ['workspace-engineering'],
+            preferredAgentClassList: ['codex-cli'],
+            expectedOutput: 'summary',
+            acceptance: [{
+              key: 'b_done',
+              description: 'B is complete.',
+              requiredEvidence: ['completion result'],
+            }],
+            riskLevel: 'low',
+          },
+        ],
+      },
+    }), executor);
+
+    const submission = harness.session.submit('Implement A and B', { awaitAsyncWork: true });
+    await Promise.race([
+      bothStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(JSON.stringify({
+        dispatchItems: harness.db.prepare(`
+          SELECT subtask_id, status, batch_order, error_summary
+          FROM kernel_dispatch_items ORDER BY batch_order
+        `).all(),
+        subtasks: harness.db.prepare(`
+          SELECT id, status, error FROM subtasks ORDER BY id
+        `).all(),
+        workUnits: harness.db.prepare(`
+          SELECT id, agent_class_name, state, claimed_subtask_id
+          FROM work_units ORDER BY id
+        `).all(),
+        receipts: harness.db.prepare(`
+          SELECT subtask_id, terminal_state, error_code, error_detail, failure_json
+          FROM executor_attempt_receipts ORDER BY completed_at
+        `).all(),
+        workUnitEvents: harness.db.prepare(`
+          SELECT work_unit_id, subtask_id, event_type, state, message
+          FROM work_unit_events ORDER BY created_at
+        `).all(),
+        resourceWaits: harness.db.prepare(`
+          SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
+        `).all(),
+        output: harness.session.getSnapshot().output,
+      }))), 2_000)),
+    ]);
+    expect(maximumRunning).toBe(2);
+
+    const releaseSubtask = (authoredId: string) => {
+      const item = [...release.entries()].find(([runtimeId]) => runtimeId.endsWith(`_${authoredId}`));
+      expect(item).toBeDefined();
+      item?.[1]();
+    };
+    releaseSubtask('subtask_b');
+    await oneFinished;
+    expect(running).toBe(1);
+    releaseSubtask('subtask_a');
+    await submission;
+
+    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect((harness.db.prepare(`
+      SELECT subtask_id, status, batch_order
+      FROM kernel_dispatch_items
+      ORDER BY batch_order ASC
+    `).all() as Array<{ subtask_id: string; status: string; batch_order: number }>).map(item => ({
+      ...item,
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
+      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
+    ]);
+    expect((harness.db.prepare(`
+      SELECT subtask_id, status, first_dispatch_order
+      FROM workspace_publications
+      ORDER BY first_dispatch_order ASC
+    `).all() as Array<{ subtask_id: string; status: string; first_dispatch_order: number }>).map(item => ({
+      ...item,
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
+    ]);
+    expect((harness.db.prepare(`
+      SELECT publication.subtask_id
+      FROM workspace_merge_attempts AS merge_attempt
+      JOIN workspace_publications AS publication ON publication.id = merge_attempt.publication_id
+      ORDER BY merge_attempt.rowid ASC
+    `).all() as Array<{ subtask_id: string }>).map(item => ({
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a' },
+      { subtask_id: 'subtask_b' },
+    ]);
   });
 
   it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {

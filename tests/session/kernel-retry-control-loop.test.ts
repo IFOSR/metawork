@@ -48,6 +48,7 @@ describe('Kernel durable retry control loop', () => {
       version: 1,
       executor: { command: 'codex', timeout: 60_000 },
       orchestration: {
+        max_concurrent_attempts: 4,
         reminder_enabled: false,
         reminder_throttle: 3_600,
         top_k_preferences: 5,

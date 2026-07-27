@@ -583,6 +583,7 @@ describe('Feishu app helpers', () => {
           max_duration: 3600,
         },
         orchestration: {
+          max_concurrent_attempts: 4,
           reminder_enabled: true,
           reminder_throttle: 300,
           top_k_preferences: 5,

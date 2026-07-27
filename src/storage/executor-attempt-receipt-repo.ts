@@ -46,12 +46,15 @@ export class ExecutorAttemptReceiptRepo {
     const subtask = this.db.prepare(`
       SELECT graph_revision, generation_id FROM subtasks WHERE id = ?
     `).get(receipt.subtaskId) as { graph_revision: number | null; generation_id: string | null } | undefined;
-    const decision = this.db.prepare(`
-      SELECT decision_json FROM kernel_decisions WHERE attempt_id = ?
-    `).get(receipt.attemptId) as { decision_json: string } | undefined;
-    const action = decision
-      ? (JSON.parse(decision.decision_json) as { action?: Record<string, unknown> }).action
-      : null;
+    const dispatchItem = this.db.prepare(`
+      SELECT attempt_kind, source_attempt_id, recovery_mode
+      FROM kernel_dispatch_items
+      WHERE attempt_id = ?
+    `).get(receipt.attemptId) as {
+      attempt_kind: KernelAttemptKind;
+      source_attempt_id: string | null;
+      recovery_mode: KernelRecoveryMode;
+    } | undefined;
     this.db.prepare(`
       INSERT INTO executor_attempt_receipts (
         attempt_id, execution_id, task_id, subtask_id, work_unit_id,
@@ -78,10 +81,10 @@ export class ExecutorAttemptReceiptRepo {
       receipt.errorDetail,
       subtask?.graph_revision ?? 1,
       subtask?.generation_id ?? `generation_${receipt.taskId}_1`,
-      typeof action?.attemptKind === 'string' ? action.attemptKind : 'primary',
-      typeof action?.sourceAttemptId === 'string' ? action.sourceAttemptId : null,
+      dispatchItem?.attempt_kind ?? 'primary',
+      dispatchItem?.source_attempt_id ?? null,
       receipt.failure ? JSON.stringify(receipt.failure) : null,
-      typeof action?.recoveryMode === 'string' ? action.recoveryMode : 'fresh',
+      dispatchItem?.recovery_mode ?? 'fresh',
     );
   }
 

@@ -71,11 +71,12 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
-    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+    expect(versions.map(row => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]);
     for (const table of [
       'resource_leases', 'resource_waits', 'workspace_records', 'workspace_checkpoints',
       'workspace_objects', 'workspace_checkpoint_objects', 'permission_requests', 'permission_grants',
       'user_authorizations', 'attempt_sandboxes',
+      'kernel_dispatch_items', 'workspace_publications', 'workspace_merge_attempts',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all().length).toBeGreaterThan(0);
     }
@@ -278,7 +279,7 @@ describe('runMigrations', () => {
     ]);
     expect(db.prepare('SELECT id FROM executor_route_events').all()).toEqual([{ id: 'route-1' }]);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 26 });
   });
 
   it('hard-cuts v20 subtasks through audit tables to an empty v4 graph and parks unfinished tasks', () => {
@@ -341,7 +342,7 @@ describe('runMigrations', () => {
       claimed_subtask_id: null,
       claimed_attempt_id: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 26 });
   });
 
   it('lifts an active v4 graph into revision one without replaying v23 decisions', () => {
@@ -399,7 +400,7 @@ describe('runMigrations', () => {
       'session_v23', 'task_done', '2026-07-21T00:00:00.000Z',
     );
     db.exec(`
-      DELETE FROM schema_version WHERE version IN (24, 25);
+      DELETE FROM schema_version WHERE version IN (24, 25, 26);
       DELETE FROM kernel_decision_applications;
       DELETE FROM kernel_events;
     `);
@@ -429,6 +430,79 @@ describe('runMigrations', () => {
       status: 'applied',
       error_summary: null,
     });
-    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 25 });
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 26 });
+  });
+
+  it('creates v26 dispatch, publication, and immutable merge audit tables', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, created_at, updated_at, resources_json,
+        snapshot_json, dependencies_json, priority_json, injected_prefs_json,
+        last_scheduling_reason, last_interruption_reason, interruption_count, artifacts_json
+      ) VALUES ('task_v26', 'Task', 'Goal', 'running', '', ?, ?, '[]', '[]', '[]', '{}', '[]', '', '', 0, '[]')
+    `).run('2026-07-27T00:00:00.000Z', '2026-07-27T00:00:00.000Z');
+    db.prepare(`
+      INSERT INTO subtasks (
+        id, task_id, title, goal, status, dependencies_json, context_refs_json,
+        required_capabilities_json, preferred_agent_class_list_json, expected_output,
+        acceptance_json, risk_level, result, artifacts_json, verification_json,
+        error, created_at, updated_at, graph_revision, generation_id
+      ) VALUES ('subtask_v26', 'task_v26', 'Subtask', 'Goal', 'ready', '[]', '[]',
+        '[]', '["codex-cli"]', 'patch', '[]', 'low', '', '[]', '{}', NULL, ?, ?, 1, 'generation_v26')
+    `).run('2026-07-27T00:00:00.000Z', '2026-07-27T00:00:00.000Z');
+
+    const insertDispatch = db.prepare(`
+      INSERT INTO kernel_dispatch_items (
+        attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+        agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+        resource_grant_json, status, created_at, updated_at
+      ) VALUES (?, 'decision_v26', ?, 'task_v26', 'generation_v26', 'subtask_v26',
+        'codex-cli', 'primary', NULL, 'fresh', '[]', ?, ?, ?)
+    `);
+    insertDispatch.run(
+      'attempt_pending', 0, 'pending_launch',
+      '2026-07-27T00:00:00.000Z', '2026-07-27T00:00:00.000Z',
+    );
+    expect(() => insertDispatch.run(
+      'attempt_duplicate', 1, 'running',
+      '2026-07-27T00:00:01.000Z', '2026-07-27T00:00:01.000Z',
+    )).toThrow();
+    db.prepare(`
+      UPDATE kernel_dispatch_items SET status = 'terminal' WHERE attempt_id = 'attempt_pending'
+    `).run();
+    expect(() => insertDispatch.run(
+      'attempt_next', 2, 'pending_launch',
+      '2026-07-27T00:00:02.000Z', '2026-07-27T00:00:02.000Z',
+    )).not.toThrow();
+
+    db.prepare(`
+      INSERT INTO workspace_publications (
+        id, task_id, generation_id, subtask_id, source_attempt_id, agent_class_name,
+        candidate_commit, original_completion_json, topology_layer, first_dispatch_order,
+        status, created_at, updated_at
+      ) VALUES (
+        'publication_v26', 'task_v26', 'generation_v26', 'subtask_v26',
+        'attempt_pending', 'codex-cli', 'candidate_commit', '{}', 0, 0,
+        'conflicted', ?, ?
+      )
+    `).run('2026-07-27T00:00:03.000Z', '2026-07-27T00:00:03.000Z');
+    db.prepare(`
+      INSERT INTO workspace_merge_attempts (
+        id, publication_id, decision_id, attempt_id, ordinal, attempt_kind,
+        base_commit, ours_commit, theirs_commit, conflict_paths_json,
+        file_policy_json, result, created_at
+      ) VALUES (
+        'merge_v26', 'publication_v26', 'decision_v26', 'attempt_next', 1, 'repair',
+        'base', 'ours', 'theirs', '["src/shared.ts"]', '{"src/shared.ts":"text"}',
+        'conflicted', ?
+      )
+    `).run('2026-07-27T00:00:04.000Z');
+    expect(() => db.prepare(`
+      UPDATE workspace_merge_attempts SET result = 'integrated' WHERE id = 'merge_v26'
+    `).run()).toThrow('workspace_merge_attempts are immutable');
+
+    expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 26 });
   });
 });

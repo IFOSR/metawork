@@ -10,6 +10,7 @@ function baseConfig(): Config {
       timeout: 300,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 300,
       top_k_preferences: 5,

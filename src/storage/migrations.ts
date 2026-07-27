@@ -1412,6 +1412,123 @@ const MIGRATIONS: Migration[] = [
       migrate();
     },
   },
+  {
+    version: 26,
+    up: (db) => {
+      const migrate = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS kernel_dispatch_items (
+            attempt_id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            batch_order INTEGER NOT NULL,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            agent_class_name TEXT NOT NULL,
+            attempt_kind TEXT NOT NULL CHECK(attempt_kind IN (
+              'primary', 'continuation', 'fallback', 'contract_correction', 'merge_repair'
+            )),
+            source_attempt_id TEXT,
+            recovery_mode TEXT NOT NULL CHECK(recovery_mode IN (
+              'native_session', 'recovery_packet', 'fresh'
+            )),
+            attempt_payload_json TEXT NOT NULL DEFAULT 'null',
+            resource_grant_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK(status IN (
+              'pending_launch', 'launching', 'running', 'terminal', 'cancelled', 'uncertain'
+            )),
+            work_unit_id TEXT,
+            sandbox_container_id TEXT,
+            launch_started_at TEXT,
+            terminal_at TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_kernel_dispatch_items_supervisor
+            ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
+          CREATE INDEX IF NOT EXISTS idx_kernel_dispatch_items_task
+            ON kernel_dispatch_items(task_id, status, batch_order);
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_kernel_dispatch_one_active_subtask
+            ON kernel_dispatch_items(task_id, generation_id, subtask_id)
+            WHERE status IN ('pending_launch', 'launching', 'running');
+
+          CREATE TABLE IF NOT EXISTS workspace_publications (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            source_attempt_id TEXT NOT NULL,
+            agent_class_name TEXT NOT NULL,
+            candidate_commit TEXT NOT NULL,
+            original_completion_json TEXT NOT NULL,
+            topology_layer INTEGER NOT NULL,
+            first_dispatch_order INTEGER NOT NULL,
+            repair_attempts_used INTEGER NOT NULL DEFAULT 0,
+            conflict_replans_used INTEGER NOT NULL DEFAULT 0,
+            conflict_chain_id TEXT,
+            integration_commit TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+              'pending', 'applying', 'conflicted', 'integrated', 'parked', 'uncertain'
+            )),
+            applying_at TEXT,
+            integrated_at TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, generation_id, subtask_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_workspace_publications_apply
+            ON workspace_publications(task_id, generation_id, status, topology_layer, first_dispatch_order, subtask_id);
+
+          CREATE TABLE IF NOT EXISTS workspace_merge_attempts (
+            id TEXT PRIMARY KEY,
+            publication_id TEXT NOT NULL,
+            decision_id TEXT NOT NULL,
+            attempt_id TEXT,
+            ordinal INTEGER NOT NULL,
+            attempt_kind TEXT NOT NULL CHECK(attempt_kind IN ('automatic', 'repair')),
+            base_commit TEXT NOT NULL,
+            ours_commit TEXT NOT NULL,
+            theirs_commit TEXT NOT NULL,
+            conflict_paths_json TEXT NOT NULL DEFAULT '[]',
+            file_policy_json TEXT NOT NULL DEFAULT '{}',
+            result TEXT NOT NULL CHECK(result IN ('integrated', 'conflicted', 'failed', 'uncertain')),
+            integration_commit TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(publication_id, ordinal),
+            FOREIGN KEY (publication_id) REFERENCES workspace_publications(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_workspace_merge_attempts_publication
+            ON workspace_merge_attempts(publication_id, ordinal);
+          CREATE TRIGGER IF NOT EXISTS workspace_merge_attempts_immutable_update
+          BEFORE UPDATE ON workspace_merge_attempts BEGIN
+            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
+          END;
+          CREATE TRIGGER IF NOT EXISTS workspace_merge_attempts_immutable_delete
+          BEFORE DELETE ON workspace_merge_attempts BEGIN
+            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
+          END;
+        `);
+
+        if (tableExists(db, 'kernel_decision_applications')) {
+          db.exec(`
+            UPDATE kernel_decision_applications
+            SET status = 'uncertain',
+                error_summary = 'pre-v4 application requires startup reconciliation',
+                updated_at = created_at
+            WHERE status IN ('pending', 'applying')
+          `);
+        }
+      });
+      migrate();
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {

@@ -33,7 +33,13 @@ export interface SubtaskExecutionContext {
   outOfScopeSiblings: Array<{ id: string; title: string }>;
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
-  completionContract: { marker: typeof COMPLETION_MARKER_V2; schemaVersion: 2 };
+  completionContract:
+    | { marker: typeof COMPLETION_MARKER_V2; schemaVersion: 2 }
+    | {
+        marker: '---METACLAW-MERGE-REPAIR---';
+        protocol: 'metaclaw:merge-repair:v1';
+        allowedPaths: string[];
+      };
   recovery?: {
     mode: 'native_session' | 'recovery_packet' | 'fresh';
     sourceAttemptId: string | null;
@@ -68,6 +74,8 @@ export class SubtaskExecutionContextBuilder {
     sessionId: string;
     workspaceContext: WorkspaceContext;
     evidenceToolsAvailable: boolean;
+    currentSubtaskOverride?: Partial<SubtaskExecutionContext['currentSubtask']>;
+    completionContractOverride?: SubtaskExecutionContext['completionContract'];
     recovery?: SubtaskExecutionContext['recovery'];
     evidenceToolBinding?: ExecutionEvidenceToolBinding;
   }): { context: SubtaskExecutionContext; evidenceCapability: ScopedExecutionEvidencePort } {
@@ -107,6 +115,7 @@ export class SubtaskExecutionContextBuilder {
           goal: input.subtask.goal,
           expectedOutput: input.subtask.expectedOutput,
           acceptance: input.subtask.acceptance,
+          ...input.currentSubtaskOverride,
         },
         incomingHandoffs,
         outgoingHandoffRequirements,
@@ -122,7 +131,8 @@ export class SubtaskExecutionContextBuilder {
           attemptId: input.attemptId,
           workUnitId: input.workUnitId,
         },
-        completionContract: { marker: COMPLETION_MARKER_V2, schemaVersion: 2 },
+        completionContract: input.completionContractOverride
+          ?? { marker: COMPLETION_MARKER_V2, schemaVersion: 2 },
         recovery: input.recovery,
         evidenceTools: input.evidenceToolsAvailable
           ? {

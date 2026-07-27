@@ -21,6 +21,7 @@ export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 export const SubtaskStatus = {
   READY: 'ready',
   RUNNING: 'running',
+  AWAITING_INTEGRATION: 'awaiting_integration',
   AWAITING_DECISION: 'awaiting_decision',
   BLOCKED: 'blocked',
   DONE: 'done',
@@ -586,6 +587,7 @@ export interface Config {
     top_k_preferences: number;
     blocked_recheck_enabled?: boolean;
     blocked_recheck_interval?: number;
+    max_concurrent_attempts: number;
   };
   ui: {
     language: string;

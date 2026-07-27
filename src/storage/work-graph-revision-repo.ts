@@ -8,7 +8,7 @@ export interface WorkGraphRevisionRecord {
   revision: number;
   generationId: string;
   authorizedDecisionId: string | null;
-  proposalSource: 'initial' | 'replan';
+  proposalSource: 'initial' | 'replan' | 'conflict_replan';
   automaticReplan: boolean;
   status: WorkGraphRevisionStatus;
   createdAt: string;
@@ -21,7 +21,7 @@ interface RevisionRow {
   revision: number;
   generation_id: string;
   authorized_decision_id: string | null;
-  proposal_source: 'initial' | 'replan';
+  proposal_source: 'initial' | 'replan' | 'conflict_replan';
   automatic_replan: number;
   status: WorkGraphRevisionStatus;
   created_at: string;

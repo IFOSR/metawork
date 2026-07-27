@@ -4,15 +4,15 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-Phase 5 completed the serial control and resource-safety baseline. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> idempotent Runtime apply -> normalized observation inbox`. Every Executor attempt runs in a fresh Docker sandbox while its Task-generation/Subtask workspace persists across attempts. The isolated Codex `PlanningAgent` still owns natural-language semantics; Planning and Runtime facts enter the same versioned Kernel event seam. `ControlKernel` remains the only strategic authority for retry, fallback, replan, partition waiting, permission grant/deny/escalation and sandbox recovery. Phase 6 may add concurrency without changing these identities or authority boundaries.
+Phase 6A completed the single-Task concurrency and Git-publication baseline. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` still serializes authorization and application, while up to four child attempts may run asynchronously inside the one active top-level Task. Every attempt runs in a fresh Docker sandbox; its Task-generation/Subtask Git worktree persists across retry, fallback, takeover and merge repair. The isolated Codex `PlanningAgent` owns natural-language semantics, `ControlKernel` owns scheduling and recovery policy, and Execution owns WorkUnit claims, leases, containers and Git side effects. Phase 6B may widen the scheduling candidate set to multiple Tasks without replacing these seams.
 
 `src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v6 structured output, and catalog-aware validation. v6 adds only exact pending-request `authorization_resolution`; Work Graph remains v5 and Planner does not enumerate resource claims. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no earlier-schema production parser, legacy intent route, semantic default, or keyword fallback.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
-`src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. Success atomically commits receipt, handoff, result and `done`; every non-success atomically commits a terminal receipt and `awaiting_decision`. It releases the WorkUnit before returning a normalized Kernel event. A first completion-contract failure may receive one response-only correction on the same AgentClass; the isolated correction has no normal Subtask context, evidence tools or writable workspace.
+`src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
 
-Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. Phase 5's v25 persistence archives the unused worktree-lease shape and adds resource leases/waits, workspace/checkpoint/CAS metadata, permission requests/grants/user authorizations, attempt sandboxes and AgentClass image/profile bindings. `awaiting_decision` remains a Subtask-only state; startup recovery must reach a safe quiescent point before Session or Gateway accepts input.
+Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. Phase 5's v25 persistence adds resource leases/waits, workspace/checkpoint/CAS metadata, permission requests/grants/user authorizations, attempt sandboxes and AgentClass image/profile bindings. Phase 6A's v26 adds durable `kernel_dispatch_items`, candidate `workspace_publications` and immutable `workspace_merge_attempts`; it fails closed legacy nonterminal Kernel v3 applications rather than running two contracts. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery must reconcile applications, child items, sandbox records and publication state before accepting input.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
@@ -23,11 +23,11 @@ When touching dispatch, update focused behavior tests around `ControlKernel`, `D
 ## Routing Language
 
 **Task**:
-A durable top-level unit of user work. Phase 3 admits at most one active top-level Task while a Task may contain multiple Subtasks.
+A durable top-level unit of user work. ADR-0011 still admits at most one active top-level Task, while Phase 6A allows independent Subtasks inside it to execute concurrently.
 _Avoid_: request, prompt, executor run, browser tab
 
 **Subtask**:
-A decomposed piece of work inside a Task, planned so it can be claimed and executed by one WorkUnit at a time. Its lifecycle is `ready | running | awaiting_decision | blocked | done | cancelled`.
+A decomposed piece of work inside a Task, planned so it can have at most one pending/active attempt at a time. Its lifecycle is `ready | running | awaiting_integration | awaiting_decision | blocked | done | cancelled`.
 _Avoid_: work unit, executor instance, raw prompt
 
 **Task State**:
@@ -59,7 +59,7 @@ A strict v6 proposal from the PlanningAgent describing intent, target, task cont
 _Avoid_: runtime command, task event, execution policy
 
 **ControlKernel**:
-The pure deterministic decision module for Planning, dispatch, capacity, execution outcome, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
+The pure deterministic v4 decision module for Planning, frontier batch dispatch, capacity, execution outcome, publication conflict, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
 _Avoid_: planning agent, runtime applier, executor router
 
 **KernelDecision**:
@@ -83,7 +83,7 @@ The runtime lifecycle vocabulary for work units: starting, idle, claimed, runnin
 _Avoid_: task state, subtask state
 
 **Work Graph**:
-The sole execution-structure fact for one task generation: a v5 revisioned DAG of capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every edge has one to twelve keyed `text` or `artifact` items; only completed direct-edge handoffs and controlled task evidence enter downstream context. Runtime consumes one ready node at a time. Retry, fallback, continuation and one bounded replan are Kernel policy; concurrency remains a later phase.
+The sole execution-structure fact for one task generation: a v5 revisioned DAG of capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every edge has one to twelve keyed `text` or `artifact` items; only published direct-edge handoffs and controlled task evidence enter downstream context. A pure function derives the runnable frontier without persisting an execution layer. Kernel may authorize up to four independent nodes in one deterministic batch; retry, fallback, continuation, merge repair and bounded replans remain Kernel policy.
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:
@@ -99,7 +99,7 @@ The attempt-bound, Task-scoped read-only port for eligible user input, user mate
 _Avoid_: conversation transcript, cross-task search, dependency output channel
 
 **Attempt Receipt**:
-The immutable terminal audit for one Task/Subtask/attempt/WorkUnit/AgentClass invocation, including raw response and parsing/verification facts. Phase 2 receipts do not contain retry, fallback, backoff, or workspace-state policy.
+The immutable terminal audit for one Task/Subtask/attempt/WorkUnit/AgentClass invocation, including attempt kind, provenance, raw response and parsing/verification facts. A successful receipt proves candidate production, not publication or Subtask completion.
 _Avoid_: retry state machine, user-visible result, mutable handoff
 
 **Work Unit Event**:
@@ -151,7 +151,7 @@ The strength of post-execution validation: none, compile, test, or review.
 _Avoid_: quality gate, acceptance check, validator
 
 **Persistent Workspace**:
-The private Task-generation/Subtask working state that survives disposable attempt containers. Git work uses MetaClaw-managed worktrees and branches; non-Git work uses a managed directory, immutable checkpoint manifests and content-addressed objects. Downstream nodes consume only versioned direct-dependency `workspace_state`.
+The private `(taskId, generationId, subtaskId)` Git worktree that survives disposable attempt containers. Git sources are cloned into an internal bare repository; non-Git sources are imported as an immutable initial commit into the same shape. Checkpoint/CAS material supplements Git recovery but is not a second merge authority. Downstream nodes merge only published direct-dependency ancestry.
 _Avoid_: attempt container, user repository, unversioned sibling directory
 
 **Resource Lease**:
@@ -159,7 +159,7 @@ The attempt-bound claim over one normalized repository, worktree, mount-relative
 _Avoid_: permanent workspace ownership, WorkUnit identity, host absolute path
 
 **Capability Request**:
-An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v3 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization. A granted request returns an opaque grant ID but does not itself widen sandbox authority. Runtime supplies versioned explicit rules: exact Task-registered read partitions, plus normalized public HTTP(S) targets only for the public-web-research profile; secrets and mutations are never profile-allowed.
+An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v4 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization. A granted request returns an opaque grant ID but does not itself widen sandbox authority. Runtime supplies versioned explicit rules: exact Task-registered read partitions, plus normalized public HTTP(S) targets only for the public-web-research profile; secrets and mutations are never profile-allowed.
 _Avoid_: Planner resource claim, stderr parsing, broad permission prompt
 
 **Capability Use**:

@@ -52,7 +52,7 @@ export interface ExecutorAdapter {
   disableSkill?(target: ExecutorSkillGovernanceTarget): Promise<ExecutorSkillInstallResult>;
   deprecateSkill?(target: ExecutorSkillGovernanceTarget): Promise<ExecutorSkillInstallResult>;
   isAvailable(): Promise<boolean>;
-  abort(): void;
+  abort(attemptId?: string): void;
 }
 
 export interface ExecutorSkillInstallResult {

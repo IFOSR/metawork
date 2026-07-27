@@ -142,7 +142,10 @@ export class WorkspaceStore {
       const info = await lstat(path);
       if (info.isSymbolicLink()) throw new Error(`sandbox workspace rejects symlink: ${path}`);
       if (process.platform !== 'win32') await chown(path, uid, gid);
-      await chmod(path, info.isDirectory() ? 0o770 : 0o660);
+      const mode = info.isDirectory()
+        ? 0o770
+        : (info.mode & 0o111) !== 0 ? 0o770 : 0o660;
+      await chmod(path, mode);
       if (!info.isDirectory()) return;
       const children = await readdir(path, { withFileTypes: true });
       for (const child of children) {

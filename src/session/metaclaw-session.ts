@@ -36,6 +36,7 @@ import { WorkspaceStore } from '../execution/workspace-store.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
+import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
@@ -68,6 +69,8 @@ import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapsh
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
+import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
@@ -92,6 +95,7 @@ export interface MetaclawSessionDeps {
   defaultExecutorFactory?: () => ExecutorAdapter;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
+  sourceRoot?: string;
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -107,7 +111,7 @@ function startupOrphanEvent(input: {
   occurredAt: string;
 }): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     type: 'execution_outcome',
     id: `startup_orphan_${input.attemptId}`,
     correlationId: input.task.id,
@@ -164,7 +168,11 @@ export class MetaclawSession {
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
-  private runningExecutorNameByTask = new Map<string, string>();
+  private runningExecutorsByAttempt = new Map<string, {
+    taskId: string;
+    subtaskId: string;
+    name: string;
+  }>();
   private lastReminderAt: number | null = null;
   private lastReminderFingerprint: string | null = null;
   private lastTaskPoolWatchdogReminderAt: number | null = null;
@@ -316,6 +324,12 @@ export class MetaclawSession {
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
+    const sourceRoot = deps.sourceRoot
+      ?? (process.env.NODE_ENV === 'test'
+        ? resolve(process.cwd(), 'tests', 'fixtures', 'workspace-source')
+        : process.cwd());
+    const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
+    const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.attemptRunner = new SubtaskAttemptRunner({
       db: deps.db,
       sessionId: deps.sessionId,
@@ -326,12 +340,11 @@ export class MetaclawSession {
       agentClassService: this.agentClassService,
       workspaceStore: this.workspaceStore,
       attemptSandbox: this.attemptSandbox,
-      resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db)),
+      resourceLeaseService,
       permissionRepository: this.permissionRepository,
       kernelWorkflowStore: this.kernelWorkflowRepo,
       workspaceRepository: this.workspaceRepository,
-      sourceRoot: process.cwd(),
-      seedSource: process.env.NODE_ENV !== 'test',
+      sourceRoot,
       controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
@@ -351,6 +364,20 @@ export class MetaclawSession {
       attemptRunner: this.attemptRunner,
       controlKernel: this.controlKernel,
       kernelWorkflowStore: this.kernelWorkflowRepo,
+      dispatchItemRepo,
+      maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
+      publicationWorker: new WorkspacePublicationWorker({
+        db: deps.db,
+        sessionId: deps.sessionId,
+        sourceRoot,
+        workspaceStore: this.workspaceStore,
+        workspaceRepository: this.workspaceRepository,
+        subtaskRepo: this.subtaskRepo,
+        attemptReceiptRepo: this.attemptReceiptRepo,
+        resourceLeaseService,
+        dispatchItemRepo,
+      }),
+      publicationRepo: new WorkspacePublicationRepo(deps.db),
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
@@ -362,12 +389,15 @@ export class MetaclawSession {
         refreshRuntimeState: () => this.refreshRuntimeState(),
         appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
         setFocusContext: focus => this.setFocusContext(focus),
-        setRunningExecutorName: (taskId, name) => this.setRunningExecutorName(taskId, name),
-        clearRunningExecutorName: taskId => this.clearRunningExecutorName(taskId),
+        setRunningExecutorName: (taskId, subtaskId, attemptId, name) => (
+          this.setRunningExecutorName(taskId, subtaskId, attemptId, name)
+        ),
+        clearRunningExecutorName: (taskId, attemptId) => this.clearRunningExecutorName(taskId, attemptId),
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion),
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
         requestReplan: decision => this.requestKernelReplan(decision),
+        requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
     });
@@ -787,7 +817,7 @@ export class MetaclawSession {
     const plan = await this.planningAgent.plan(context);
     const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'plan_proposed',
       id: eventId,
       correlationId: plan.id,
@@ -877,7 +907,7 @@ export class MetaclawSession {
     });
     const plan = await this.planningAgent.plan(context);
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'plan_proposed',
       id: `replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -893,13 +923,54 @@ export class MetaclawSession {
     };
   }
 
+  private async requestKernelMergeReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+    const task = this.taskRuntimeService.findTask(decision.action.taskId);
+    const revision = this.workGraphRevisionRepo.findActive(decision.action.taskId);
+    if (!task || !revision) return null;
+    const request = [
+      'Replan only the remaining semantic work after a Git publication conflict.',
+      'Do not create a dedicated conflict-resolution Subtask.',
+      'Return plan_work_graph bound to the exact existing Task and preserve completed facts.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Conflicted Subtask id: ${decision.action.subtaskId}`,
+      `Publication id: ${decision.action.publicationId}`,
+      `Conflict chain id: ${decision.action.conflictChainId}`,
+      'The revised remaining work must let the original delivery intent publish without choosing or silently overwriting a conflicting version.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.planningContextBuilder.build({
+      userInput: request,
+      initialContext: { longTermMemories: [], conversationHistory: [] },
+    });
+    const plan = await this.planningAgent.plan(context);
+    return {
+      schemaVersion: 4,
+      type: 'plan_proposed',
+      id: `merge_replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: task.id,
+      proposal: plan,
+      requestText: boundedKernelRequestText(request),
+      generationId: revision.generationId,
+      proposalSource: 'conflict_replan',
+      targetGraphRevision: revision.revision + 1,
+    };
+  }
+
   private buildPlanAdmissionSnapshot(
     event: Extract<KernelEvent, { type: 'plan_proposed' }>,
     executorCatalog = this.planningContextBuilder.getExecutorCatalog(),
     userInput = event.proposal.task.goal ?? '',
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
@@ -1000,7 +1071,7 @@ export class MetaclawSession {
     this.runtimeState = {
       ...schedulerState,
       runningExecutorName: schedulerState.runningTaskId
-        ? this.runningExecutorNameByTask.get(schedulerState.runningTaskId) ?? null
+        ? this.formatRunningExecutors(schedulerState.runningTaskId)
         : null,
     };
     this.notify();
@@ -1180,7 +1251,7 @@ export class MetaclawSession {
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
     const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'recovery_resolution_requested',
       id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
       correlationId: input.taskId,
@@ -1234,7 +1305,7 @@ export class MetaclawSession {
     const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
     const effect = this.effectOutboxRepo.find(recoveryItemId);
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
       item: application
@@ -1383,8 +1454,13 @@ export class MetaclawSession {
       for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
         if (sandboxLossAttemptIds.has(record.attemptId)) continue;
         sandboxLossAttemptIds.add(record.attemptId);
+        new KernelDispatchItemRepo(this.deps.db).markUncertain(
+          record.attemptId,
+          `sandbox ${record.containerId} was reconciled during startup`,
+          now,
+        );
         this.kernelWorkflowRepo.enqueue({
-          schemaVersion: 3,
+          schemaVersion: 4,
           type: 'sandbox_lost',
           id: `sandbox_lost_${record.attemptId}`,
           correlationId: record.taskId,
@@ -1482,16 +1558,41 @@ export class MetaclawSession {
     return recovered;
   }
 
-  private setRunningExecutorName(taskId: string, name: string): void {
-    this.runningExecutorNameByTask.set(taskId, name);
-    this.runtimeState = { ...this.runtimeState, lastEvent: `Kernel dispatched ${name} for ${taskId}` };
+  private setRunningExecutorName(
+    taskId: string,
+    subtaskId: string,
+    attemptId: string,
+    name: string,
+  ): void {
+    this.runningExecutorsByAttempt.set(attemptId, { taskId, subtaskId, name });
+    this.runtimeState = {
+      ...this.runtimeState,
+      lastEvent: `Kernel dispatched ${name} for ${taskId}/${subtaskId}/${attemptId}`,
+    };
     this.refreshRuntimeState();
   }
 
-  private clearRunningExecutorName(taskId: string): void {
-    this.runningExecutorNameByTask.delete(taskId);
+  private clearRunningExecutorName(taskId: string, attemptId?: string): void {
+    if (attemptId) {
+      this.runningExecutorsByAttempt.delete(attemptId);
+    } else {
+      for (const [activeAttemptId, active] of this.runningExecutorsByAttempt) {
+        if (active.taskId === taskId) this.runningExecutorsByAttempt.delete(activeAttemptId);
+      }
+    }
     this.runtimeState = { ...this.runtimeState, lastEvent: `Kernel execution settled for ${taskId}` };
     this.refreshRuntimeState();
+  }
+
+  private formatRunningExecutors(taskId: string): string | null {
+    const names = [...this.runningExecutorsByAttempt.values()]
+      .filter(active => active.taskId === taskId)
+      .map(active => active.name)
+      .sort();
+    if (names.length === 0) return null;
+    const counts = new Map<string, number>();
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+    return [...counts].map(([name, count]) => count === 1 ? name : `${name} ×${count}`).join(', ');
   }
 
   private trackBackgroundWork(work: Promise<void>): void {

@@ -40,6 +40,22 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return row ? JSON.parse(row.event_json) as KernelEvent : null;
   }
 
+  listCapacitySignals(
+    taskId: string,
+    cycleId: string,
+  ): Array<Extract<KernelEvent, { type: 'capacity_signal' }>> {
+    const rows = this.db.prepare(`
+      SELECT event_json FROM kernel_events
+      WHERE task_id = ? AND event_type = 'capacity_signal'
+      ORDER BY created_at ASC, id ASC
+    `).all(taskId) as Array<{ event_json: string }>;
+    return rows
+      .map(row => JSON.parse(row.event_json) as KernelEvent)
+      .filter((event): event is Extract<KernelEvent, { type: 'capacity_signal' }> => (
+        event.type === 'capacity_signal' && event.cycleId === cycleId
+      ));
+  }
+
   claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null {
     if (eventTypes?.length === 0) return null;
     const eventFilter = eventTypes?.length

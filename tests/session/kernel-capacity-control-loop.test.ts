@@ -39,6 +39,7 @@ describe('Kernel capacity control loop', () => {
       orchestration: {
         reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5,
         blocked_recheck_enabled: true, blocked_recheck_interval: 5,
+        max_concurrent_attempts: 4,
       },
       ui: { language: 'zh-CN', dashboard_on_start: false },
     };
@@ -76,6 +77,6 @@ describe('Kernel capacity control loop', () => {
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
-      .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_attempt' }, { action: 'complete_task' }]));
+      .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_batch' }, { action: 'complete_task' }]));
   });
 });

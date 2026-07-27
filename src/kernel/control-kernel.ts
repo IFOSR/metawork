@@ -16,13 +16,27 @@ import {
 } from '../resource/index.js';
 
 export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blocked' | 'done' | 'archived' | 'cancelled';
-export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
-export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction';
+export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_integration' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
+export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
 export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
 export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
+export type KernelDispatchItemStatus = 'pending_launch' | 'launching' | 'running' | 'terminal' | 'cancelled' | 'uncertain';
+export type KernelAttemptPayload =
+  | {
+      protocol: 'completion-correction-v2';
+      completionContract: unknown;
+      violations: Array<{ code: string; path: string; message: string }>;
+    }
+  | {
+      protocol: 'metaclaw:merge-repair:v1';
+      publicationId: string;
+      conflictChainId: string;
+      conflictingPaths: string[];
+    }
+  | null;
 
 export interface KernelEventEnvelope {
-  schemaVersion: 3;
+  schemaVersion: 4;
   id: string;
   correlationId: string;
   causationId: string | null;
@@ -63,7 +77,7 @@ export type KernelEvent =
       proposal: KernelPlanProposal;
       requestText: string;
       generationId: string;
-      proposalSource: 'initial' | 'replan';
+      proposalSource: 'initial' | 'replan' | 'conflict_replan';
       targetGraphRevision: number;
     })
   | (KernelEventEnvelope & { type: 'dispatch_requested'; reason: string })
@@ -73,6 +87,7 @@ export type KernelEvent =
       available: boolean;
       cycleId: string;
       attemptKind: KernelAttemptKind;
+      attemptPayload: KernelAttemptPayload;
     })
   | (KernelEventEnvelope & {
       type: 'execution_outcome';
@@ -124,6 +139,16 @@ export type KernelEvent =
       containerId: string | null;
       workspaceId: string;
       checkpointId: string | null;
+    })
+  | (KernelEventEnvelope & {
+      type: 'merge_conflict_observed';
+      publicationId: string;
+      conflictChainId: string;
+      agentClassName: string;
+      sourceAttemptId: string;
+      repairAttemptsUsed: number;
+      conflictReplansUsed: number;
+      conflictingPaths: string[];
     });
 
 export interface KernelTaskFact {
@@ -140,6 +165,7 @@ export interface KernelSubtaskFact {
 
 export interface KernelAttemptFact {
   attemptId: string;
+  subtaskId: string;
   agentClassName: string;
   attemptKind: KernelAttemptKind;
   sourceAttemptId: string | null;
@@ -148,9 +174,16 @@ export interface KernelAttemptFact {
   completedAt: string;
 }
 
+export interface KernelDispatchItemFact {
+  attemptId: string;
+  subtaskId: string;
+  status: KernelDispatchItemStatus;
+  order: number;
+}
+
 export type KernelSnapshot =
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'plan_admission';
       tasks: KernelTaskFact[];
       runningTaskId: string | null;
@@ -161,14 +194,18 @@ export type KernelSnapshot =
       pendingAuthorizationRequest: { requestId: string; taskId: string } | null;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'dispatch';
       task: KernelTaskFact | null;
       runningTaskId: string | null;
       graphState: 'ready' | 'missing' | 'conflict';
       subtasks: KernelSubtaskFact[];
-      readyFrontier: string[];
-      attemptedAgentClasses: string[];
+      frontier: string[];
+      dispatchItems: KernelDispatchItemFact[];
+      maxConcurrentAttempts: number;
+      availableSlots: number;
+      resourceConflictSubtaskIds: string[];
+      capacityProbeAgentClasses: Record<string, string[]>;
       executorStatuses: KernelExecutorStatusProjection[];
       correctionSupportedAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
@@ -178,10 +215,10 @@ export type KernelSnapshot =
       automaticReplansUsed: number;
       recoverySafety: KernelRecoverySafety;
       automaticRecoveryAllowed: boolean;
-      defaultResourceGrant: ResourceClaim[];
+      resourceGrantsBySubtask: Record<string, ResourceClaim[]>;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'timer';
       task: KernelTaskFact | null;
       wakeAuthorized: boolean;
@@ -193,7 +230,7 @@ export type KernelSnapshot =
       defaultResourceGrant: ResourceClaim[];
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'recovery';
       task: KernelTaskFact | null;
       item: {
@@ -204,12 +241,12 @@ export type KernelSnapshot =
       } | null;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'invalid';
       reason: string;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'permission';
       request: NormalizedCapabilityRequest | null;
       requestStatus: 'pending' | 'granted' | 'denied' | 'expired' | null;
@@ -222,14 +259,14 @@ export type KernelSnapshot =
       checkpointId: string | null;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'partition';
       conflictConfirmed: boolean;
       workspaceId: string | null;
       checkpointId: string | null;
     }
   | {
-      schemaVersion: 3;
+      schemaVersion: 4;
       type: 'sandbox_recovery';
       workspaceExists: boolean;
       workspaceId: string | null;
@@ -249,19 +286,23 @@ export type KernelDecisionAction =
       workGraph: WorkGraphProposal;
       generationId: string;
       graphRevision: number;
-      proposalSource: 'initial' | 'replan';
+      proposalSource: 'initial' | 'replan' | 'conflict_replan';
     }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
-      type: 'dispatch_attempt';
+      type: 'dispatch_batch';
       taskId: string;
-      subtaskId: string;
-      agentClassName: string;
-      attemptId: string;
-      attemptKind: KernelAttemptKind;
-      sourceAttemptId: string | null;
-      recoveryMode: KernelRecoveryMode;
-      defaultResourceGrant: ResourceClaim[];
+      items: Array<{
+        subtaskId: string;
+        agentClassName: string;
+        attemptId: string;
+        attemptKind: KernelAttemptKind;
+        sourceAttemptId: string | null;
+        recoveryMode: KernelRecoveryMode;
+        defaultResourceGrant: ResourceClaim[];
+        order: number;
+        attemptPayload: KernelAttemptPayload;
+      }>;
     }
   | { type: 'probe_capacity'; taskId: string; subtaskId: string; agentClassName: string }
   | { type: 'wait_for_capacity'; taskId: string; subtaskId: string }
@@ -274,6 +315,13 @@ export type KernelDecisionAction =
       sourceAttemptId: string;
     }
   | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
+  | {
+      type: 'request_merge_replan';
+      taskId: string;
+      subtaskId: string;
+      publicationId: string;
+      conflictChainId: string;
+    }
   | { type: 'resolve_recovery'; taskId: string; recoveryItemId: string; resolution: 'assume_applied' | 'retry' }
   | { type: 'block_work'; taskId: string; subtaskId: string | null }
   | { type: 'park_for_replan'; taskId: string }
@@ -311,7 +359,7 @@ export type KernelDecisionAction =
     };
 
 export interface KernelDecision {
-  schemaVersion: 3;
+  schemaVersion: 4;
   id: string;
   eventId: string;
   action: KernelDecisionAction;
@@ -349,6 +397,8 @@ export class ControlKernel {
         return this.decidePartitionConflict(event, snapshot as Extract<KernelSnapshot, { type: 'partition' }>);
       case 'sandbox_lost':
         return this.decideSandboxRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'sandbox_recovery' }>);
+      case 'merge_conflict_observed':
+        return this.decideMergeConflict(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
     }
   }
 
@@ -408,7 +458,7 @@ export class ControlKernel {
     if (event.proposalSource === 'initial' && event.targetGraphRevision !== 1) {
       return decision(event, { type: 'reject_request' }, 'initial plan must authorize graph revision 1');
     }
-    if (event.proposalSource === 'replan' && (!proposal.task.taskId || event.targetGraphRevision < 2)) {
+    if (event.proposalSource !== 'initial' && (!proposal.task.taskId || event.targetGraphRevision < 2)) {
       return decision(event, { type: 'reject_request' }, 'replan must target an existing Task and a later revision');
     }
     if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId) {
@@ -458,45 +508,50 @@ export class ControlKernel {
     if (snapshot.runningTaskId && snapshot.runningTaskId !== event.taskId) {
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null }, `single-active Task constraint: ${snapshot.runningTaskId}`);
     }
-    const subtask = selectReadySubtask(snapshot);
-    if (!subtask) {
+    const subtasks = selectDispatchableSubtasks(snapshot);
+    if (subtasks.length === 0) {
       if (snapshot.subtasks.length > 0 && snapshot.subtasks.every(item => item.status === 'done')) {
         return decision(event, { type: 'complete_task', taskId: event.taskId }, 'all Subtasks completed');
       }
-      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'no ready Subtask while work remains');
+      if (snapshot.dispatchItems.some(item => isPendingOrActiveDispatch(item.status))
+        || snapshot.subtasks.some(item => item.status === 'running' || item.status === 'awaiting_integration')) {
+        return decision(event, { type: 'no_op' }, 'work is already executing or awaiting publication');
+      }
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'no runnable Subtask while work remains');
     }
-    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt);
-    if (!agentClassName) return decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtask.id }, 'all authorized AgentClasses are unavailable');
-    return decision(event, {
-      type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName,
-      attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'primary'), attemptKind: 'primary',
-      sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
-    }, 'dispatch authorized');
+    const items = dispatchBatchItems(event, snapshot, subtasks);
+    if (items.length === 0) {
+      return decision(event, {
+        type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtasks[0]!.id,
+      }, 'all runnable Subtasks lack an available authorized AgentClass');
+    }
+    return decision(event, { type: 'dispatch_batch', taskId: event.taskId, items }, 'dispatch batch authorized');
   }
 
   private decideCapacity(event: Extract<KernelEvent, { type: 'capacity_signal' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
-    const subtask = snapshot.subtasks.find(item => item.id === event.subtaskId) ?? selectReadySubtask(snapshot);
+    const subtask = snapshot.subtasks.find(item => item.id === event.subtaskId) ?? selectDispatchableSubtasks(snapshot)[0];
     if (!event.taskId || !subtask) return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'capacity signal has no ready work');
     if (event.attemptKind === 'contract_correction') {
       return event.available
-        ? decision(event, {
-            type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
-            attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'contract_correction'), attemptKind: 'contract_correction',
-            sourceAttemptId: event.attemptId ?? null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
-          }, 'response-only correction capacity confirmed')
+        ? decision(event, singleDispatchBatch(
+            event, event.taskId, subtask.id, event.agentClassName, 'contract_correction',
+            event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, subtask.id),
+            event.attemptPayload,
+          ), 'response-only correction capacity confirmed')
         : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id }, 'response-only correction capacity unavailable');
     }
     if (event.available) {
-      return decision(event, {
-        type: 'dispatch_attempt', taskId: event.taskId, subtaskId: subtask.id, agentClassName: event.agentClassName,
-        attemptId: deterministicAttemptId(event.id, subtask.id, event.agentClassName, 'primary'), attemptKind: 'primary',
-        sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
-      }, 'capacity confirmed');
+      return decision(event, singleDispatchBatch(
+        event, event.taskId, subtask.id, event.agentClassName, 'primary',
+        null, 'fresh', resourceGrantForSubtask(snapshot, subtask.id),
+        null,
+      ), 'capacity confirmed');
     }
-    const agentClassName = nextUsableAgentClass(subtask, {
-      ...snapshot,
-      attemptedAgentClasses: [...snapshot.attemptedAgentClasses, event.agentClassName],
-    }, event.occurredAt);
+    const attempted = new Set([
+      ...(snapshot.capacityProbeAgentClasses[subtask.id] ?? []),
+      event.agentClassName,
+    ]);
+    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt, attempted);
     return agentClassName
       ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: subtask.id, agentClassName }, 'try next authorized AgentClass')
       : decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtask.id }, 'authorized AgentClass capacity exhausted');
@@ -507,19 +562,7 @@ export class ControlKernel {
     if (event.terminalKind === 'failed') {
       return this.decideFailure(event, snapshot);
     }
-    const next = selectReadySubtask(snapshot);
-    if (!next) {
-      return snapshot.subtasks.every(item => item.status === 'done')
-        ? decision(event, { type: 'complete_task', taskId: event.taskId }, 'all Subtasks completed')
-        : decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'unfinished graph has no ready frontier');
-    }
-    const agentClassName = nextUsableAgentClass(next, snapshot, event.occurredAt);
-    if (!agentClassName) return decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: next.id }, 'next Subtask has no available authorized AgentClass');
-    return decision(event, {
-      type: 'dispatch_attempt', taskId: event.taskId, subtaskId: next.id, agentClassName,
-      attemptId: deterministicAttemptId(event.id, next.id, agentClassName, 'primary'), attemptKind: 'primary',
-      sourceAttemptId: null, recoveryMode: 'fresh', defaultResourceGrant: snapshot.defaultResourceGrant,
-    }, 'continue ready frontier');
+    return this.decideDispatch(event, snapshot);
   }
 
   private decideFailure(
@@ -550,6 +593,8 @@ export class ControlKernel {
     const retryable = ['network', 'timeout', 'infrastructure', 'heartbeat_lost'].includes(failure.kind);
     const isPreferred = subtask.preferredAgentClassList[0] === event.agentClassName;
     const classAttempts = snapshot.attempts.filter(attempt =>
+      attempt.subtaskId === subtask.id
+      &&
       attempt.agentClassName === event.agentClassName && attempt.attemptKind !== 'contract_correction'
     ).length;
     if (retryable && isPreferred && classAttempts <= 1) {
@@ -577,24 +622,15 @@ export class ControlKernel {
     subtask: KernelSubtaskFact,
   ): KernelDecision {
     const attempted = new Set(snapshot.attempts
-      .filter(attempt => attempt.attemptKind !== 'contract_correction')
+      .filter(attempt => attempt.subtaskId === subtask.id && attempt.attemptKind !== 'contract_correction')
       .map(attempt => attempt.agentClassName));
-    const agentClassName = nextUsableAgentClass(subtask, {
-      ...snapshot,
-      attemptedAgentClasses: [...new Set([...snapshot.attemptedAgentClasses, ...attempted])],
-    }, event.occurredAt);
+    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt, attempted);
     if (agentClassName) {
-      return decision(event, {
-        type: 'dispatch_attempt',
-        taskId: event.taskId!,
-        subtaskId: subtask.id,
-        agentClassName,
-        attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'fallback'),
-        attemptKind: 'fallback',
-        sourceAttemptId: event.attemptId!,
-        recoveryMode: 'recovery_packet',
-        defaultResourceGrant: snapshot.defaultResourceGrant,
-      }, 'next authorized fallback AgentClass selected');
+      return decision(event, singleDispatchBatch(
+        event, event.taskId!, subtask.id, agentClassName, 'fallback',
+        event.attemptId!, 'recovery_packet', resourceGrantForSubtask(snapshot, subtask.id),
+        null,
+      ), 'next authorized fallback AgentClass selected');
     }
     return snapshot.automaticReplansUsed < 1
       ? decision(event, {
@@ -611,14 +647,15 @@ export class ControlKernel {
     if (event.receiptCount !== 1 || event.responseBytes > MAX_CORRECTION_INPUT_BYTES || !snapshot.correctionSupportedAgentClasses.includes(event.agentClassName)) {
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId }, 'response-only correction is unavailable or already exhausted');
     }
-    return decision(event, {
-      type: 'dispatch_attempt', taskId: event.taskId, subtaskId: event.subtaskId, agentClassName: event.agentClassName,
-      attemptId: deterministicAttemptId(event.id, event.subtaskId, event.agentClassName, 'contract_correction'),
-      attemptKind: 'contract_correction',
-      sourceAttemptId: event.attemptId ?? null,
-      recoveryMode: 'fresh',
-      defaultResourceGrant: snapshot.defaultResourceGrant,
-    }, 'one response-only contract correction authorized');
+    return decision(event, singleDispatchBatch(
+      event, event.taskId, event.subtaskId, event.agentClassName, 'contract_correction',
+      event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, event.subtaskId),
+      {
+        protocol: 'completion-correction-v2',
+        completionContract: event.contract,
+        violations: event.violations,
+      },
+    ), 'one response-only contract correction authorized');
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
@@ -635,19 +672,19 @@ export class ControlKernel {
       if (!event.taskId || !event.subtaskId || !event.retry || Date.parse(event.occurredAt) < Date.parse(event.scheduledFor)) {
         return decision(event, { type: 'no_op' }, 'retry wake is incomplete or early');
       }
-      return decision(event, {
-        type: 'dispatch_attempt',
-        taskId: event.taskId,
-        subtaskId: event.subtaskId,
-        agentClassName: event.retry.agentClassName,
-        attemptId: deterministicAttemptId(event.id, event.subtaskId, event.retry.agentClassName, 'continuation'),
-        attemptKind: 'continuation',
-        sourceAttemptId: event.retry.sourceAttemptId,
-        recoveryMode: snapshot.nativeContinuationAgentClasses.includes(event.retry.agentClassName)
+      return decision(event, singleDispatchBatch(
+        event,
+        event.taskId,
+        event.subtaskId,
+        event.retry.agentClassName,
+        'continuation',
+        event.retry.sourceAttemptId,
+        snapshot.nativeContinuationAgentClasses.includes(event.retry.agentClassName)
           ? 'native_session'
           : 'recovery_packet',
-        defaultResourceGrant: snapshot.defaultResourceGrant,
-      }, 'preferred AgentClass continuation wake authorized');
+        snapshot.defaultResourceGrant,
+        null,
+      ), 'preferred AgentClass continuation wake authorized');
     }
     if (event.wakeKind !== 'capacity') return decision(event, { type: 'no_op' }, 'availability wake has no eligible work');
     if (!event.taskId || !event.subtaskId || !snapshot.capacityBlockedAt) return decision(event, { type: 'no_op' }, 'no capacity block is eligible');
@@ -799,10 +836,58 @@ export class ControlKernel {
       authorization: null,
     }, 'lost sandbox will be replaced by a fresh attempt using the persistent workspace');
   }
+
+  private decideMergeConflict(
+    event: Extract<KernelEvent, { type: 'merge_conflict_observed' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  ): KernelDecision {
+    if (!event.taskId || !event.subtaskId || event.conflictingPaths.length === 0) {
+      return decision(event, {
+        type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null,
+      }, 'merge conflict facts are incomplete');
+    }
+    if (event.repairAttemptsUsed < 3) {
+      if (snapshot.availableSlots <= 0) {
+        return decision(event, {
+          type: 'wait_for_capacity', taskId: event.taskId, subtaskId: event.subtaskId,
+        }, 'merge repair is waiting for an attempt slot');
+      }
+      return decision(event, singleDispatchBatch(
+        event,
+        event.taskId,
+        event.subtaskId,
+        event.agentClassName,
+        'merge_repair',
+        event.sourceAttemptId,
+        snapshot.nativeContinuationAgentClasses.includes(event.agentClassName)
+          ? 'native_session'
+          : 'recovery_packet',
+        resourceGrantForSubtask(snapshot, event.subtaskId),
+        {
+          protocol: 'metaclaw:merge-repair:v1',
+          publicationId: event.publicationId,
+          conflictChainId: event.conflictChainId,
+          conflictingPaths: [...event.conflictingPaths].sort(),
+        },
+      ), `merge repair ${event.repairAttemptsUsed + 1} of 3 authorized`);
+    }
+    if (event.conflictReplansUsed < 1) {
+      return decision(event, {
+        type: 'request_merge_replan',
+        taskId: event.taskId,
+        subtaskId: event.subtaskId,
+        publicationId: event.publicationId,
+        conflictChainId: event.conflictChainId,
+      }, 'three merge repairs failed; one conflict replan is authorized');
+    }
+    return decision(event, {
+      type: 'park_for_replan', taskId: event.taskId,
+    }, 'merge repair and conflict replan budgets are exhausted');
+  }
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
-  return { schemaVersion: 3, id: `decision_${event.id}`, eventId: event.id, action, reason };
+  return { schemaVersion: 4, id: `decision_${event.id}`, eventId: event.id, action, reason };
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
@@ -827,22 +912,96 @@ function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[], occ
     .map(status => status.agentClassName));
 }
 
-function selectReadySubtask(snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelSubtaskFact | null {
-  for (const id of snapshot.readyFrontier) {
-    const subtask = snapshot.subtasks.find(item => item.id === id && item.status === 'ready');
-    if (subtask) return subtask;
-  }
-  return null;
+function selectDispatchableSubtasks(
+  snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+): KernelSubtaskFact[] {
+  const activeSubtaskIds = new Set(snapshot.dispatchItems
+    .filter(item => isPendingOrActiveDispatch(item.status))
+    .map(item => item.subtaskId));
+  const conflictingSubtaskIds = new Set(snapshot.resourceConflictSubtaskIds);
+  const slotCount = Math.max(0, Math.min(snapshot.availableSlots, snapshot.maxConcurrentAttempts));
+  return snapshot.frontier
+    .map(id => snapshot.subtasks.find(item => item.id === id && item.status === 'ready'))
+    .filter((subtask): subtask is KernelSubtaskFact => Boolean(
+      subtask
+      && !activeSubtaskIds.has(subtask.id)
+      && !conflictingSubtaskIds.has(subtask.id),
+    ))
+    .slice(0, slotCount);
 }
 
 function nextUsableAgentClass(
   subtask: KernelSubtaskFact,
   snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
   occurredAt: string,
+  attemptedAgentClasses: ReadonlySet<string> = new Set(),
 ): string | null {
-  const attempted = new Set(snapshot.attemptedAgentClasses);
   const unavailable = unavailableAgentClasses(snapshot.executorStatuses, occurredAt);
-  return subtask.preferredAgentClassList.find(name => !attempted.has(name) && !unavailable.has(name)) ?? null;
+  return subtask.preferredAgentClassList.find(name =>
+    !attemptedAgentClasses.has(name) && !unavailable.has(name)
+  ) ?? null;
+}
+
+function resourceGrantForSubtask(
+  snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  subtaskId: string,
+): ResourceClaim[] {
+  return snapshot.resourceGrantsBySubtask[subtaskId] ?? [];
+}
+
+function dispatchBatchItems(
+  event: KernelEvent,
+  snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  subtasks: readonly KernelSubtaskFact[],
+): Extract<KernelDecisionAction, { type: 'dispatch_batch' }>['items'] {
+  const firstOrder = snapshot.dispatchItems.reduce((maximum, item) => Math.max(maximum, item.order), -1) + 1;
+  return subtasks.flatMap((subtask, index) => {
+    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt);
+    if (!agentClassName) return [];
+    return [{
+      subtaskId: subtask.id,
+      agentClassName,
+      attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'primary'),
+      attemptKind: 'primary' as const,
+      sourceAttemptId: null,
+      recoveryMode: 'fresh' as const,
+      defaultResourceGrant: resourceGrantForSubtask(snapshot, subtask.id),
+      order: firstOrder + index,
+      attemptPayload: null,
+    }];
+  });
+}
+
+function singleDispatchBatch(
+  event: KernelEvent,
+  taskId: string,
+  subtaskId: string,
+  agentClassName: string,
+  attemptKind: KernelAttemptKind,
+  sourceAttemptId: string | null,
+  recoveryMode: KernelRecoveryMode,
+  defaultResourceGrant: ResourceClaim[],
+  attemptPayload: KernelAttemptPayload,
+): Extract<KernelDecisionAction, { type: 'dispatch_batch' }> {
+  return {
+    type: 'dispatch_batch',
+    taskId,
+    items: [{
+      subtaskId,
+      agentClassName,
+      attemptId: deterministicAttemptId(event.id, subtaskId, agentClassName, attemptKind),
+      attemptKind,
+      sourceAttemptId,
+      recoveryMode,
+      defaultResourceGrant,
+      order: 0,
+      attemptPayload,
+    }],
+  };
+}
+
+function isPendingOrActiveDispatch(status: KernelDispatchItemStatus): boolean {
+  return status === 'pending_launch' || status === 'launching' || status === 'running';
 }
 
 function deterministicAttemptId(eventId: string, subtaskId: string, agentClassName: string, kind: string): string {

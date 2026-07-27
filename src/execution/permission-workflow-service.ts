@@ -84,7 +84,7 @@ export class PermissionWorkflowService {
       throw error;
     }
     const event: Extract<KernelEvent, { type: 'permission_requested' }> = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'permission_requested',
       id: `permission_event_${record.request.id}`,
       correlationId: record.request.id,
@@ -148,7 +148,7 @@ export class PermissionWorkflowService {
       throw new Error('permission request has expired and must be reissued precisely');
     }
     await this.workflow().submit({
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'permission_resolution_received',
       id: `permission_resolution_${input.requestId}_${input.resolution}`,
       correlationId: input.requestId,
@@ -184,7 +184,7 @@ export class PermissionWorkflowService {
       : event.type === 'permission_resolution_received' ? event.requestId : '';
     const record = this.deps.repository.findRequest(requestId);
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'permission',
       request: record?.request ?? null,
       requestStatus: record?.status === 'escalated' ? 'pending' : record?.status ?? null,

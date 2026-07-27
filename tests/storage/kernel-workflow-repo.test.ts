@@ -18,7 +18,7 @@ describe('KernelWorkflowRepo', () => {
     expect(repo.findEvent(event.id)).toEqual(event);
     expect(repo.claimNext(event.occurredAt)).toEqual(event);
     const application = repo.issue(event.id, {
-      id: decision.id, schemaVersion: 3, eventId: event.id, eventType: event.type,
+      id: decision.id, schemaVersion: 4, eventId: event.id, eventType: event.type,
       correlationId: event.correlationId, causationId: null, sessionId: event.sessionId,
       taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
       action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,
@@ -54,7 +54,7 @@ describe('KernelWorkflowRepo', () => {
     repo.enqueue(event);
     repo.claimNext(event.occurredAt);
     repo.issue(event.id, {
-      id: decision.id, schemaVersion: 3, eventId: event.id, eventType: event.type,
+      id: decision.id, schemaVersion: 4, eventId: event.id, eventType: event.type,
       correlationId: event.correlationId, causationId: null, sessionId: event.sessionId,
       taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
       action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,
@@ -79,7 +79,7 @@ describe('KernelWorkflowRepo', () => {
 
 function directReplyEvent(): KernelEvent {
   return {
-    schemaVersion: 3, type: 'plan_proposed', id: 'event_1', correlationId: 'correlation_1', causationId: null,
+    schemaVersion: 4, type: 'plan_proposed', id: 'event_1', correlationId: 'correlation_1', causationId: null,
     occurredAt: '2026-07-21T00:00:00.000Z', sessionId: 'session_1',
     requestText: 'done',
     generationId: 'generation_event_1', proposalSource: 'initial', targetGraphRevision: 1,
@@ -94,7 +94,7 @@ function directReplyEvent(): KernelEvent {
 
 function planSnapshot(): KernelSnapshot {
   return {
-    schemaVersion: 3, type: 'plan_admission', tasks: [], runningTaskId: null,
+    schemaVersion: 4, type: 'plan_admission', tasks: [], runningTaskId: null,
     executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
   };
 }

@@ -26,7 +26,7 @@ function createConfig(): Config {
   return {
     version: 1,
     executor: { command: 'codex', timeout: 60_000 },
-    orchestration: { reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
+    orchestration: { max_concurrent_attempts: 4, reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
     ui: { language: 'zh-CN', dashboard_on_start: false },
   };
 }

@@ -68,6 +68,58 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it('runs the same AgentClass concurrently and aborts only the requested attempt', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-sandbox-concurrency-'));
+    const envFile = join(directory, 'executor-pi.env');
+    writeFileSync(envFile, [
+      'OPENAI_API_KEY=provider-secret',
+      'OPENAI_BASE_URL=https://provider.invalid/v1',
+    ].join('\n'));
+    vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    const waitResolvers = new Map<string, (exitCode: number) => void>();
+    const create = vi.fn(async (input: CreateAttemptSandboxInput) => ({
+      containerId: `container_${input.attemptId}`,
+      imageId: 'sha256:pi',
+      status: 'created' as const,
+      exitCode: null,
+      labels: {},
+    }));
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const sandbox: AttemptSandboxPort = {
+      resolveImage: vi.fn().mockResolvedValue('sha256:pi'),
+      create,
+      start: vi.fn().mockResolvedValue(undefined),
+      wait: vi.fn((containerId: string) => new Promise<number>(resolve => {
+        waitResolvers.set(containerId, resolve);
+      })),
+      logs: vi.fn().mockResolvedValue('completed'),
+      pause: vi.fn().mockResolvedValue(undefined),
+      resume: vi.fn().mockResolvedValue(undefined),
+      inspect: vi.fn().mockResolvedValue(null),
+      stop,
+      remove: vi.fn().mockResolvedValue(undefined),
+      listManaged: vi.fn().mockResolvedValue([]),
+    };
+    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+
+    try {
+      const first = adapter.execute(executorInput(directory, 'attempt_1', 'subtask_1'));
+      const second = adapter.execute(executorInput(directory, 'attempt_2', 'subtask_2'));
+      await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+
+      adapter.abort('attempt_1');
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(stop).toHaveBeenCalledWith('container_attempt_1');
+      waitResolvers.get('container_attempt_1')?.(0);
+      waitResolvers.get('container_attempt_2')?.(0);
+      await Promise.all([first, second]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 function agentClass(): AgentClass {
@@ -99,27 +151,31 @@ function sandboxPort(): { sandbox: AttemptSandboxPort; create: ReturnType<typeof
   };
 }
 
-function executorInput(root: string) {
+function executorInput(
+  root: string,
+  attemptId = 'attempt_1',
+  subtaskId = 'subtask_1',
+) {
   return {
     context: {
       taskBackground: { id: 'task_1', title: 'Task', goal: 'Research', instruction: 'background_only' as const },
       currentSubtask: {
-        id: 'subtask_1', title: 'Research', goal: 'Research', expectedOutput: 'summary' as const,
+        id: subtaskId, title: 'Research', goal: 'Research', expectedOutput: 'summary' as const,
         acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       },
       incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
       workspaceContext: { allowFilesystem: true, workingDirectory: root, targetPaths: [] },
       identity: {
-        executionId: 'exec_1', taskId: 'task_1', subtaskId: 'subtask_1',
-        attemptId: 'attempt_1', workUnitId: 'work_unit_1',
+        executionId: 'exec_1', taskId: 'task_1', subtaskId,
+        attemptId, workUnitId: `work_unit_${attemptId}`,
       },
       completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'test' },
     },
     sandbox: {
-      attemptId: 'attempt_1', taskId: 'task_1', generationId: 'generation_1', subtaskId: 'subtask_1',
-      workUnitId: 'work_unit_1', leaseToken: 'lease_1', idempotencyKey: 'attempt:1',
-      workspacePath: join(root, 'workspace'), workspaceId: 'workspace_1', sourcePath: join(root, 'source'),
+      attemptId, taskId: 'task_1', generationId: 'generation_1', subtaskId,
+      workUnitId: `work_unit_${attemptId}`, leaseToken: `lease_${attemptId}`, idempotencyKey: `attempt:${attemptId}`,
+      workspacePath: join(root, `workspace-${attemptId}`), workspaceId: `workspace_${subtaskId}`, sourcePath: join(root, 'source'),
       inputsPath: join(root, 'inputs'), handoffsPath: join(root, 'handoffs'), gitMetadataPath: null,
       controlNetwork: 'metaclaw-control', capabilityBinding: null,
     },

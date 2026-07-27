@@ -21,6 +21,7 @@ const DEFAULT_CONFIG: Config = {
     top_k_preferences: 5,
     blocked_recheck_enabled: true,
     blocked_recheck_interval: 60,
+    max_concurrent_attempts: 4,
   },
   ui: {
     language: 'zh-CN',
@@ -149,11 +150,22 @@ export function loadConfig(configPath: string): Config {
         },
       },
     };
-    return migrateLegacyFeishuToGatewayConfig(mergedConfig);
+    return validateConfig(migrateLegacyFeishuToGatewayConfig(mergedConfig));
   } catch (error) {
+    if (error instanceof InvalidConfigError) throw error;
     console.error(`配置文件加载失败: ${resolvedConfigPath}`, error);
     return DEFAULT_CONFIG;
   }
+}
+
+class InvalidConfigError extends Error {}
+
+function validateConfig(config: Config): Config {
+  if (!Number.isInteger(config.orchestration.max_concurrent_attempts)
+    || config.orchestration.max_concurrent_attempts <= 0) {
+    throw new InvalidConfigError('max_concurrent_attempts must be a positive integer');
+  }
+  return config;
 }
 
 /**

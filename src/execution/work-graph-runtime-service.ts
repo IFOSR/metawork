@@ -11,7 +11,7 @@ export interface WorkGraphAuthorization {
   decisionId: string;
   generationId: string;
   revision: number;
-  source: 'initial' | 'replan';
+  source: 'initial' | 'replan' | 'conflict_replan';
   automaticReplan: boolean;
 }
 

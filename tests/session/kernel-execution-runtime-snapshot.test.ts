@@ -1,17 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/session/session-execution-coordinator.js';
-import type { KernelDecisionApplicationRecord, KernelWorkflowStore } from '../../src/kernel/kernel-workflow.js';
-import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
+import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
-  it('reads the Task only once before draining due recovery work', async () => {
+  it('reads the Task before and after durable recovery', async () => {
     const task = {
-      id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked', updatedAt: '2026-07-22T00:00:00.000Z',
+      id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked',
+      updatedAt: '2026-07-22T00:00:00.000Z',
     };
     const findTask = vi.fn().mockReturnValue(task);
     const runtime = new KernelExecutionRuntime({
       taskRuntimeService: { findTask },
       taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
     } as never);
     vi.spyOn(runtime, 'execute').mockResolvedValue();
 
@@ -20,99 +22,48 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     expect(findTask).toHaveBeenCalledTimes(2);
   });
 
-  it('resolves loop-stable executor facts only once per execution', async () => {
-    const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
-    const subtask = {
-      id: 'subtask_1', taskId: task.id, title: 'Subtask', goal: 'Goal', status: 'ready',
-      dependencies: [], preferredAgentClassList: ['codex-cli'],
-    };
-    const listStatuses = vi.fn().mockReturnValue([]);
-    const recordExecutionOutcome = vi.fn();
-    const listAgentClasses = vi.fn().mockReturnValue([{ name: 'codex-cli' }]);
-    const supportsResponseOnly = vi.fn().mockReturnValue(true);
-    const supportsContinuation = vi.fn().mockReturnValue(true);
-    const decisions = [
-      { schemaVersion: 1, id: 'decision_1', eventId: 'dispatch_event', reason: 'dispatch', action: {
-        type: 'dispatch_attempt', taskId: task.id, subtaskId: subtask.id, agentClassName: 'codex-cli',
-        attemptId: 'attempt_1', attemptKind: 'primary',
-      } },
-      { schemaVersion: 1, id: 'decision_2', eventId: 'capacity_event', reason: 'stop', action: { type: 'no_op' } },
-    ];
-    const kernelWorkflowStore = inMemoryWorkflowStore();
-    const runtime = new KernelExecutionRuntime({
-      sessionId: 'session_1',
-      taskRuntimeService: {
-        findTask: vi.fn().mockReturnValue(task), getCurrentRunningTask: vi.fn().mockReturnValue(task),
-        attachResource: vi.fn(), transitionTask: vi.fn(),
-      },
-      workGraphRuntimeService: { apply: vi.fn().mockReturnValue({ outcome: 'recovered' }) },
-      subtaskRepo: { listByTask: vi.fn().mockReturnValue([subtask]), findById: vi.fn().mockReturnValue(subtask) },
-      subtaskHandoffRepo: { listByTask: vi.fn().mockReturnValue([]) },
-      attemptReceiptRepo: { listByTask: vi.fn().mockReturnValue([]) },
-      workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
-      workUnitClaimService: { sweepExpired: vi.fn().mockReturnValue([]) },
-      attemptRunner: {
-        supportsResponseOnly, supportsContinuation,
-        run: vi.fn().mockResolvedValue({ outcome: 'capacity_unavailable', agentClassName: 'codex-cli' }),
-      },
-      controlKernel: { decide: vi.fn().mockImplementation(() => decisions.shift()) },
-      kernelWorkflowStore,
-      executionProgressService: { createTracker: vi.fn().mockReturnValue({ onProgress: vi.fn() }) },
-      kernelExecutorStatusProjector: { list: listStatuses, recordExecutionOutcome },
-      agentClassService: { listAgentClasses },
-      taskEventRepo: {},
-      callbacks: {
-        appendOutput: vi.fn(), refreshRuntimeState: vi.fn(), appendTaskQueueSnapshot: vi.fn(),
-        setFocusContext: vi.fn(), setRunningExecutorName: vi.fn(), clearRunningExecutorName: vi.fn(),
-        persistSessionState: vi.fn(), setLatestGuidance: vi.fn(), queueProposal: vi.fn(),
-      },
-      presentation: { formatExecutorDispatch: vi.fn().mockReturnValue([]) },
-    } as never);
-
-    await runtime.execute({
-      taskId: task.id,
-      request: { userPrompt: task.goal, contextTaskId: task.id, executionMode: 'new', origin: 'user' },
-      approvedRecallSelection: null,
-    });
-
-    expect(listStatuses).toHaveBeenCalledTimes(1);
-    expect(listAgentClasses).toHaveBeenCalledTimes(1);
-    expect(supportsResponseOnly).toHaveBeenCalledTimes(1);
-    expect(supportsContinuation).toHaveBeenCalledTimes(1);
-    expect(recordExecutionOutcome).not.toHaveBeenCalled();
-  });
-
   it('derives recovery safety from the failed Subtask instead of the ready frontier', () => {
     const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
     const subtask = {
-      id: 'subtask_external', taskId: task.id, title: 'External write', goal: 'Publish once',
+      id: 'subtask_external',
+      taskId: task.id,
+      title: 'External write',
+      goal: 'Publish once',
       status: 'awaiting_decision',
-      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['unknown-capability'],
+      dependencies: [],
+      preferredAgentClassList: ['codex-cli'],
+      requiredCapabilities: ['unknown-capability'],
     };
     const runtime = new KernelExecutionRuntime({
       taskRuntimeService: {
-        findTask: vi.fn().mockReturnValue(task), getCurrentRunningTask: vi.fn().mockReturnValue(task),
+        findTask: vi.fn().mockReturnValue(task),
+        getCurrentRunningTask: vi.fn().mockReturnValue(task),
       },
-      subtaskRepo: { listByTask: vi.fn().mockReturnValue([subtask]) },
+      subtaskRepo: {
+        listByTask: vi.fn().mockReturnValue([subtask]),
+        listActiveByTask: vi.fn().mockReturnValue([]),
+      },
       subtaskHandoffRepo: { listByTask: vi.fn().mockReturnValue([]) },
       attemptReceiptRepo: { listByTask: vi.fn().mockReturnValue([]) },
       workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
+      dispatchItemRepo: { listByTask: vi.fn().mockReturnValue([]) },
+      maxConcurrentAttempts: 4,
       taskEventRepo: {},
     } as never);
     const snapshot = (runtime as unknown as {
       buildDispatchSnapshot(
         taskId: string,
-        attemptedAgentClasses: Set<string>,
         graphState: 'ready',
         stableFacts: {
-          executorStatuses: []; correctionSupportedAgentClasses: []; nativeContinuationAgentClasses: [];
+          executorStatuses: [];
+          correctionSupportedAgentClasses: [];
+          nativeContinuationAgentClasses: [];
         },
         attempts: [],
         recoverySubtaskId: string,
       ): KernelSnapshot;
     }).buildDispatchSnapshot(
       task.id,
-      new Set(),
       'ready',
       { executorStatuses: [], correctionSupportedAgentClasses: [], nativeContinuationAgentClasses: [] },
       [],
@@ -125,7 +76,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       automaticRecoveryAllowed: false,
     });
     const decision = new ControlKernel().decide({
-      schemaVersion: 3,
+      schemaVersion: 4,
       type: 'execution_outcome',
       id: 'event_external_failure',
       correlationId: 'task_1',
@@ -140,149 +91,16 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       attemptKind: 'primary',
       sourceAttemptId: null,
       failure: {
-        kind: 'network', scope: 'agent_class', code: 'network_failure', summary: 'network unavailable',
+        kind: 'network',
+        scope: 'agent_class',
+        code: 'network_failure',
+        summary: 'network unavailable',
       },
     }, snapshot);
     expect(decision.action).toEqual({
-      type: 'block_work', taskId: task.id, subtaskId: subtask.id,
-    });
-  });
-
-  it('binds a chained dispatch grant to the next ready Subtask', async () => {
-    const task = { id: 'task_1', title: 'Task', goal: 'Goal', status: 'running' };
-    const completed = {
-      id: 'subtask_a', taskId: task.id, title: 'A', goal: 'Finish A', status: 'ready',
-      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['workspace-engineering'],
-    };
-    const next = {
-      id: 'subtask_b', taskId: task.id, title: 'B', goal: 'Run B', status: 'ready',
-      dependencies: [], preferredAgentClassList: ['codex-cli'], requiredCapabilities: ['workspace-engineering'],
-    };
-    const snapshots: KernelSnapshot[] = [];
-    const controlKernel = {
-      decide: vi.fn().mockImplementation((event: KernelEvent, snapshot: KernelSnapshot) => {
-        snapshots.push(snapshot);
-        if (event.type === 'dispatch_requested') {
-          return {
-            schemaVersion: 1, id: 'decision_dispatch_a', eventId: event.id,
-            reason: 'dispatch A', createdAt: event.occurredAt,
-            action: {
-              type: 'dispatch_attempt', taskId: task.id, subtaskId: completed.id,
-              agentClassName: 'codex-cli', attemptId: 'attempt_a', attemptKind: 'primary',
-              sourceAttemptId: null, recoveryMode: 'fresh',
-              defaultResourceGrant: snapshot.type === 'dispatch' ? snapshot.defaultResourceGrant : [],
-            },
-          };
-        }
-        return {
-          schemaVersion: 1, id: 'decision_stop', eventId: event.id,
-          reason: 'captured chained snapshot', createdAt: event.occurredAt,
-          action: { type: 'no_op' },
-        };
-      }),
-    };
-    const subtaskLists = [
-      [completed],
-      [{ ...completed, status: 'done' }, next],
-    ];
-    const runtime = new KernelExecutionRuntime({
-      sessionId: 'session_1',
-      taskRuntimeService: {
-        findTask: vi.fn().mockReturnValue(task), getCurrentRunningTask: vi.fn().mockReturnValue(task),
-        attachResource: vi.fn(), transitionTask: vi.fn(),
-      },
-      workGraphRuntimeService: { apply: vi.fn().mockReturnValue({ outcome: 'recovered' }) },
-      subtaskRepo: {
-        listByTask: vi.fn().mockImplementation(() => subtaskLists.shift() ?? [{ ...completed, status: 'done' }, next]),
-        findById: vi.fn().mockReturnValue(completed),
-      },
-      subtaskHandoffRepo: { listByTask: vi.fn().mockReturnValue([]) },
-      attemptReceiptRepo: {
-        listByTask: vi.fn().mockReturnValue([]), findByAttemptId: vi.fn().mockReturnValue(null),
-      },
-      workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
-      workUnitClaimService: { sweepExpired: vi.fn().mockReturnValue([]) },
-      attemptRunner: {
-        supportsResponseOnly: vi.fn().mockReturnValue(false),
-        supportsContinuation: vi.fn().mockReturnValue(false),
-        run: vi.fn().mockResolvedValue({
-          outcome: 'completed', attemptId: 'attempt_a', output: 'done', artifacts: [], warnings: [],
-          executorName: 'codex-cli', durationMs: 1,
-        }),
-      },
-      controlKernel,
-      kernelWorkflowStore: inMemoryWorkflowStore(),
-      executionProgressService: { createTracker: vi.fn().mockReturnValue({ onProgress: vi.fn() }) },
-      kernelExecutorStatusProjector: { list: vi.fn().mockReturnValue([]), recordExecutionOutcome: vi.fn() },
-      agentClassService: { listAgentClasses: vi.fn().mockReturnValue([{ name: 'codex-cli' }]) },
-      taskEventRepo: { insert: vi.fn() },
-      callbacks: {
-        appendOutput: vi.fn(), refreshRuntimeState: vi.fn(), appendTaskQueueSnapshot: vi.fn(),
-        setFocusContext: vi.fn(), setRunningExecutorName: vi.fn(), clearRunningExecutorName: vi.fn(),
-        persistSessionState: vi.fn(), setLatestGuidance: vi.fn(), queueProposal: vi.fn(),
-      },
-      presentation: {
-        formatExecutorDispatch: vi.fn().mockReturnValue([]),
-        formatExecutorFinalResult: vi.fn().mockReturnValue('done'),
-      },
-    } as never);
-
-    await runtime.execute({
+      type: 'block_work',
       taskId: task.id,
-      request: { userPrompt: task.goal, contextTaskId: task.id, executionMode: 'new', origin: 'user' },
-      approvedRecallSelection: null,
+      subtaskId: subtask.id,
     });
-
-    const chainedSnapshot = snapshots[1];
-    expect(chainedSnapshot).toMatchObject({ type: 'dispatch' });
-    if (chainedSnapshot?.type !== 'dispatch') throw new Error('missing chained dispatch snapshot');
-    expect(chainedSnapshot.defaultResourceGrant).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        partition: expect.objectContaining({
-          kind: 'path', mountId: 'workspace-task_1-generation_task_1_1-subtask_b',
-        }),
-        access: 'write',
-      }),
-    ]));
   });
 });
-
-function inMemoryWorkflowStore(): KernelWorkflowStore {
-  let event: KernelEvent | null = null;
-  let application: KernelDecisionApplicationRecord | null = null;
-  return {
-    enqueue(next) { event ??= next; return true; },
-    claimNext() { const next = event; event = null; return next; },
-    issue(_eventId, record) {
-      application = {
-        id: `application_${record.id}`, decisionId: record.id, eventId: record.eventId,
-        idempotencyKey: `decision:${record.id}`, status: 'pending', applyAttempts: 0,
-        observationEvent: null, errorSummary: null, createdAt: record.createdAt,
-        updatedAt: record.createdAt, decision: record.decision,
-      };
-      return application;
-    },
-    listRecoverableApplications() {
-      return application && (application.status === 'pending' || application.status === 'applying')
-        ? [application]
-        : [];
-    },
-    markApplying() {
-      if (!application) throw new Error('missing application');
-      application = { ...application, status: 'applying', applyAttempts: application.applyAttempts + 1 };
-      return application;
-    },
-    markApplied(_decisionId, observation) {
-      if (!application) throw new Error('missing application');
-      application = { ...application, status: 'applied', observationEvent: observation };
-      if (observation) event = observation;
-    },
-    markApplicationFailed() {},
-    reconcileProcessing() { return 0; },
-    countByApplicationStatus() {
-      const counts = { pending: 0, applying: 0, applied: 0, uncertain: 0, failed: 0 };
-      if (application) counts[application.status] += 1;
-      return counts;
-    },
-  };
-}

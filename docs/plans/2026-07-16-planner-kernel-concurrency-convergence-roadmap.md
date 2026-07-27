@@ -3,8 +3,9 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1～5 已完成
-- **当前激活阶段**：Phase 6——异步并发调度；Phase 5 [详细实施计划](../archive/plans/2026-07-22-phase-5-resource-partition-sandbox-elevation-detailed-implementation-plan.md)已归档
+- **当前状态**：实施中；Phase 1～5 与 Phase 6 上已完成
+- **当前激活阶段**：Phase 6 下详细规划——多 Task 候选、公平性、跨 Task 取消/恢复与 ADR-0011 hard cut
+- **最近交付阶段**：Phase 6 上 [详细实施计划](2026-07-27-phase-6a-single-task-concurrency-and-git-integration.md)；单 Task frontier/batch、异步 attempt、Git publication 与真实 provider smoke 已交付
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
@@ -90,7 +91,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - 每个 Subtask 只保留一个有序 `preferredAgentClassList`；首项是 preferred，其余是 fallback。
 - 删除或由工作图派生现有重复的 hint、candidate 和顶层 executor summary 字段，避免多份路由事实。
 - 建立纯工作图规则模块，由 Planner validator 和 Kernel 共同消费。
-- 规则至少覆盖：唯一 ID、依赖存在、DAG、起始节点、派生执行层、同层首选 AgentClass 不重复、同 AgentClass 无分叉单链合并，以及能力覆盖。
+- 规则至少覆盖：唯一 ID、依赖存在、DAG、起始节点、派生拓扑、同 AgentClass 无分叉单链合并，以及能力覆盖。Phase 6 上完成 Adapter attempt 可重入后，同一 frontier 可以由同一 AgentClass 的不同 WorkUnit 并行承接。
 - Kernel 使用 canonical capability definitions 校验候选，不把数据库自由文本 capability 视为内置类认证依据。
 - Runtime 继续串行消费通过授权的 DAG，不在本阶段启用并发。
 
@@ -176,19 +177,33 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 ### Phase 6：异步并发调度
 
-目标：在已验证的 DAG、Kernel 和 partition 模型上启用安全并发。
+目标：在已验证的 DAG、Kernel 和 partition 模型上启用安全并发，并分成两个可独立审查的 hard cut。
+
+#### Phase 6 上：单 Task 并发与 Git publication
 
 执行方向：
 
 - 从 DAG 动态推导 runnable frontier，不增加 Planner 输出的 execution layer。
-- Kernel 根据依赖、AgentClass 偏好、动态健康、capacity 和 partition lease 选择可同时 dispatch 的集合。
-- 同层 Subtask 遵守首选 AgentClass 唯一和 partition 无冲突约束。
-- Runtime 并发 claim/run，但继续保证一个 Subtask 只有一个 active attempt。
-- 实现跨 Task 等待、公平性、饥饿保护、取消传播和任务关闭时的租约释放。
-- 实现无冲突产物聚合、同文件冲突处理、dependency handoff 和最终结果的确定性合并。
-- 覆盖进程崩溃、租约过期、重复唤醒和部分成功后的恢复。
+- Kernel v4 根据依赖、AgentClass 健康、capacity、资源事实和空闲 slot 一次授权确定性的 `dispatch_batch`。
+- Runtime 持久化 child dispatch item，并发 claim/run；同一 Subtask 仍最多一个 pending/active attempt。
+- Executor Adapter 以 attempt ID 可重入，精确取消一个 attempt；Task 取消枚举其 active attempts。
+- 所有新文件任务统一导入内部 Git；Subtask 拥有持久 worktree，attempt/WorkUnit/容器保持短命。
+- candidate 经稳定 publication gate 才发布 completion facts；依赖合成使用完整 Git ancestry。
+- 文本允许三方合并，二进制路径独占且不自动合并；冲突返回原 AgentClass 最多 repair 三次，再独立 conflict replan 一次，仍失败则 park。
+- 覆盖 batch、sandbox、candidate、publication、conflict 和 repair crash window。
 
-退出条件：并发行为通过容器级竞争测试；相同 partition 不会并发写入；无冲突节点可以并行；结果和恢复行为确定且可审计。
+完成记录（2026-07-27）：ADR-0025、纯 `deriveRunnableFrontier`、Kernel v4、SQLite v26、durable dispatch supervisor、attempt-reentrant Adapter、内部 Git generation/worktree、完整 dependency ancestry、`awaiting_integration` publication gate、文本/二进制策略和 bounded conflict repair 已交付。真实 Session 回归验证两个同 AgentClass sibling attempt 重叠运行，并在故意反转完成顺序后仍按首次授权顺序发布；显式 Docker 集成验证两个隔离容器真实重叠；generation Git 初始化和每个 Subtask resource grant 已收敛为并发安全。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（199 个文件、806 个测试通过；5 个文件、17 个测试按环境门控跳过）与 Docker 内真实 Codex Planner→Kernel→Runtime→Executor artifact smoke 均通过。Phase 6 上正式完成，ADR-0011 继续有效，Phase 6 下将复用本阶段调度与 publication 路径完成多 Task hard cut。
+
+#### Phase 6 下：多 Task 候选与公平性
+
+待规划范围：
+
+- 将 v4 scheduling snapshot 从单一 active Task 扩展为多个 Task candidate。
+- 在协作式、非强制抢占模型下增加优先级、公平性、饥饿保护、跨 Task 等待和 parked recovery。
+- 保持 Phase 6 上的 frontier、dispatch item、attempt supervisor、resource lease 和 publication 路径不变。
+- 完成多 Task admission hard cut 后归档 ADR-0011。
+
+Phase 6 总退出条件：Phase 6 上的单 Task 并发/集成已满足；剩余条件仅为 Phase 6 下的多 Task 候选、公平性、跨 Task 取消/恢复和 ADR-0011 归档。届时本路线图总体完成。
 
 ## 六、无临时兼容层策略
 

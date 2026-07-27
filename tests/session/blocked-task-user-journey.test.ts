@@ -30,6 +30,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -118,7 +119,7 @@ describe('blocked task user journey', () => {
 
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);
-    expect(output).toContain('no ready Subtask while work remains');
+    expect(output).toContain('no runnable Subtask while work remains');
     expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
     expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();
   });

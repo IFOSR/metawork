@@ -76,4 +76,61 @@ suite('Docker attempt sandbox integration', () => {
     expect(inspect.Mounts.find((mount: { Destination: string }) => mount.Destination === '/workspace/.git')?.RW).toBe(false);
     await sandbox.remove(record.containerId);
   });
+
+  it('runs two isolated attempt containers concurrently without sharing workspaces', async () => {
+    const sandbox = new DockerCliAttemptSandboxAdapter();
+    const imageRef = process.env.METACLAW_TEST_ATTEMPT_IMAGE ?? 'metaclaw-executor-codex:phase5';
+    const imageId = await sandbox.resolveImage(imageRef);
+    const records = await Promise.all(['a', 'b'].map(async suffix => {
+      const attemptRoot = join(root, `parallel-${suffix}`);
+      const workspace = join(attemptRoot, 'workspace');
+      const source = join(attemptRoot, 'source');
+      const inputs = join(attemptRoot, 'inputs');
+      const handoffs = join(attemptRoot, 'handoffs');
+      const gitMetadata = join(attemptRoot, 'git-metadata');
+      await Promise.all([workspace, source, inputs, handoffs, gitMetadata]
+        .map(path => mkdir(path, { recursive: true })));
+      const record = await sandbox.create({
+        attemptId: `parallel-attempt-${suffix}`,
+        taskId: 'parallel-task',
+        generationId: 'generation-1',
+        subtaskId: `subtask-${suffix}`,
+        workUnitId: `worker-${suffix}`,
+        leaseToken: `lease-${suffix}`,
+        idempotencyKey: `parallel-${suffix}`,
+        imageRef,
+        resolvedImageId: imageId,
+        command: '/bin/sh',
+        args: ['-c', `echo ${suffix}-started > /workspace/result.txt; sleep 2; echo ${suffix}-finished >> /workspace/result.txt`],
+        environment: {},
+        mounts: [
+          { source: workspace, target: '/workspace', mode: 'rw' },
+          { source, target: '/source', mode: 'ro' },
+          { source: inputs, target: '/inputs', mode: 'ro' },
+          { source: handoffs, target: '/handoffs', mode: 'ro' },
+          { source: gitMetadata, target: '/workspace/.git', mode: 'ro' },
+        ],
+        controlNetwork: network,
+        egressMode: 'disabled',
+        limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
+      });
+      return { suffix, workspace, record };
+    }));
+
+    try {
+      await Promise.all(records.map(item => sandbox.start(item.record.containerId)));
+      const running = await Promise.all(records.map(item => sandbox.inspect(item.record.containerId)));
+      expect(running.map(item => item?.status)).toEqual(['running', 'running']);
+      expect(await Promise.all(records.map(item => sandbox.wait(item.record.containerId)))).toEqual([0, 0]);
+      for (const item of records) {
+        expect(await readFile(join(item.workspace, 'result.txt'), 'utf8'))
+          .toBe(`${item.suffix}-started\n${item.suffix}-finished\n`);
+      }
+    } finally {
+      await Promise.all(records.map(async item => {
+        await sandbox.stop(item.record.containerId).catch(() => undefined);
+        await sandbox.remove(item.record.containerId).catch(() => undefined);
+      }));
+    }
+  });
 });

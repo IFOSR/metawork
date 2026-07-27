@@ -104,7 +104,6 @@ function setup(rawResponse: string) {
     kernelWorkflowStore: new KernelWorkflowRepo(db),
     workspaceRepository: new SqliteWorkspaceRepository(db),
     sourceRoot,
-    seedSource: false,
     controlNetwork: 'metaclaw-control',
   });
   const defaultResourceGrant = buildDefaultResourceClaims({
@@ -127,7 +126,7 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
-  it('atomically commits clean body, receipt and immutable handoff then releases the claim', async () => {
+  it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
     const setupResult = setup(validResponse());
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
@@ -135,11 +134,21 @@ describe('SubtaskAttemptRunner', () => {
       agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'completed', output: 'A completed.' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done', result: 'A completed.' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'awaiting_integration',
+      result: '',
+    });
     expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
       .toMatchObject({ terminal_state: 'completed', raw_response: validResponse() });
-    expect(setupResult.db.prepare('SELECT from_subtask_id, to_subtask_id FROM subtask_handoffs').get())
-      .toEqual({ from_subtask_id: setupResult.a.id, to_subtask_id: setupResult.b.id });
+    expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get())
+      .toEqual({ count: 0 });
+    expect(setupResult.db.prepare(`
+      SELECT subtask_id, source_attempt_id, status FROM workspace_publications
+    `).get()).toEqual({
+      subtask_id: setupResult.a.id,
+      source_attempt_id: 'attempt_1',
+      status: 'pending',
+    });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'idle', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
@@ -281,7 +290,9 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     expect(outcome).toMatchObject({ outcome: 'completed', attemptId: 'attempt_fallback' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'awaiting_integration',
+    });
   });
 
   it('does not start a stale fallback after the Task was cancelled', async () => {
@@ -300,7 +311,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ state: 'idle' });
   });
 
-  it('publishes only a corrected response from one isolated response-only attempt', async () => {
+  it('stages only a corrected response from one isolated response-only attempt', async () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
@@ -328,7 +339,13 @@ describe('SubtaskAttemptRunner', () => {
       { attempt_id: 'attempt_primary', terminal_state: 'contract_blocked', raw_response: 'first malformed response' },
       { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: validResponse() },
     ]));
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done', result: 'A completed.' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'awaiting_integration',
+      result: '',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT source_attempt_id, status FROM workspace_publications
+    `).get()).toEqual({ source_attempt_id: 'attempt_correction', status: 'pending' });
   });
 
   it('wires exact Task resource rules into the production permission workflow', async () => {

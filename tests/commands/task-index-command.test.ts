@@ -23,6 +23,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,

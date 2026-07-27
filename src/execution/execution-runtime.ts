@@ -340,7 +340,11 @@ export interface SubtaskExecutionSpec {
 
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
 export class ExecutionRuntime implements ActiveExecutionControl {
-  private readonly activeByTask = new Map<string, Map<string, { workUnitId: string; executor: ExecutorAdapter }>>();
+  private readonly activeByTask = new Map<string, Map<string, {
+    attemptId: string;
+    workUnitId: string;
+    executor: ExecutorAdapter;
+  }>>();
   private executionTokenSequence = 0;
 
   constructor(
@@ -396,7 +400,13 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       };
     }
     const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
-    this.registerActive(input.taskId, executionToken, input.spec.workUnit.id, executor);
+    this.registerActive(
+      input.taskId,
+      executionToken,
+      input.executorInput.context.identity.attemptId,
+      input.spec.workUnit.id,
+      executor,
+    );
     try {
       const result = await this.executeOnce(
         executor,
@@ -414,15 +424,24 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     }
   }
 
+  abortAttempt(taskId: string, attemptId: string): boolean {
+    const active = this.activeByTask.get(taskId);
+    const entry = active
+      ? [...active.values()].find(candidate => candidate.attemptId === attemptId)
+      : null;
+    if (!entry) return false;
+    entry.executor.abort(attemptId);
+    return true;
+  }
+
   abortTask(taskId: string): number {
     const active = this.activeByTask.get(taskId);
     if (!active || active.size === 0) {
       return 0;
     }
 
-    const executors = Array.from(new Set(Array.from(active.values()).map(entry => entry.executor)));
-    for (const executor of executors) {
-      executor.abort();
+    for (const entry of active.values()) {
+      entry.executor.abort(entry.attemptId);
     }
     return active.size;
   }
@@ -430,11 +449,12 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   private registerActive(
     taskId: string,
     executionToken: string,
+    attemptId: string,
     workUnitId: string,
     executor: ExecutorAdapter,
   ): void {
     const active = this.activeByTask.get(taskId) ?? new Map();
-    active.set(executionToken, { workUnitId, executor });
+    active.set(executionToken, { attemptId, workUnitId, executor });
     this.activeByTask.set(taskId, active);
   }
 

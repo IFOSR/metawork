@@ -19,6 +19,25 @@ describe('loadConfig defaults', () => {
     expect(config.executor.max_duration).toBe(3600);
   });
 
+  it('defaults global attempt concurrency to four', () => {
+    expect(loadConfig('/path/that/does/not/exist.yaml').orchestration.max_concurrent_attempts).toBe(4);
+  });
+
+  it.each(['0', '-1', '1.5', 'many'])(
+    'fails startup for invalid max_concurrent_attempts value %s',
+    value => {
+      const dir = mkdtempSync(resolve(tmpdir(), 'metaclaw-config-concurrency-'));
+      const configPath = resolve(dir, 'config.yaml');
+      writeFileSync(configPath, [
+        'orchestration:',
+        `  max_concurrent_attempts: ${value}`,
+        '',
+      ].join('\n'));
+
+      expect(() => loadConfig(configPath)).toThrow('max_concurrent_attempts must be a positive integer');
+    },
+  );
+
   it('disables Feishu notifications by default', () => {
     const config = loadConfig('/path/that/does/not/exist.yaml');
 

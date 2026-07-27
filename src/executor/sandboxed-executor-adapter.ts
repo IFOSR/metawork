@@ -25,7 +25,7 @@ const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
 export class SandboxedExecutorAdapter implements ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation = false;
-  private activeContainerId: string | null = null;
+  private readonly activeContainers = new Map<string, string>();
 
   constructor(
     private readonly agentClass: AgentClass,
@@ -146,7 +146,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         createdAt,
         updatedAt: createdAt,
       });
-      this.activeContainerId = record.containerId;
+      this.activeContainers.set(binding.attemptId, record.containerId);
       binding.onContainerCreated?.(record.containerId);
       input.onProgress?.({ kind: 'status', text: `sandbox ${record.containerId.slice(0, 12)} started` });
       await this.sandbox.start(record.containerId);
@@ -166,7 +166,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       }
       await this.sandbox.remove(record.containerId);
       this.repository?.update(binding.attemptId, { status: 'removed', cleanupStatus: 'removed', updatedAt: new Date().toISOString() });
-      this.activeContainerId = null;
+      this.activeContainers.delete(binding.attemptId);
       await modelGateway?.close();
       modelGateway = null;
       return exitCode === 0 && output
@@ -175,10 +175,11 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       let cleanupError: string | null = null;
-      if (this.activeContainerId) {
+      const activeContainerId = this.activeContainers.get(binding.attemptId) ?? null;
+      if (activeContainerId) {
         try {
-          await this.sandbox.stop(this.activeContainerId);
-          await this.sandbox.remove(this.activeContainerId);
+          await this.sandbox.stop(activeContainerId);
+          await this.sandbox.remove(activeContainerId);
           this.repository?.update(binding.attemptId, {
             status: 'removed', cleanupStatus: 'removed', cleanupError: null, updatedAt: new Date().toISOString(),
           });
@@ -186,12 +187,12 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
           cleanupError = cleanup instanceof Error ? cleanup.message : String(cleanup);
         }
       }
-      if (cleanupError || !this.activeContainerId) {
+      if (cleanupError || !activeContainerId) {
         this.repository?.update(binding.attemptId, {
           cleanupStatus: 'failed', cleanupError: cleanupError ?? message, updatedAt: new Date().toISOString(),
         });
       }
-      this.activeContainerId = null;
+      this.activeContainers.delete(binding.attemptId);
       await modelGateway?.close().catch(() => undefined);
       return failed(message, 'sandbox_configuration_failure', startedAt);
     }
@@ -206,8 +207,13 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     }
   }
 
-  abort(): void {
-    if (this.activeContainerId) void this.sandbox.stop(this.activeContainerId).catch(() => undefined);
+  abort(attemptId?: string): void {
+    const containerIds = attemptId
+      ? [this.activeContainers.get(attemptId)].filter((id): id is string => Boolean(id))
+      : [...this.activeContainers.values()];
+    for (const containerId of containerIds) {
+      void this.sandbox.stop(containerId).catch(() => undefined);
+    }
   }
 
   private commandAndArgs(prompt: string, outputPath: string, input: ExecutorInput): { command: string; args: string[] } {

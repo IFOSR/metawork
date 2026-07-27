@@ -8,6 +8,11 @@ export type {
   WorkGraphSubtask,
 } from './types.js';
 export {
+  deriveRunnableFrontier,
+  type WorkGraphRuntimeFact,
+  type WorkGraphRuntimeStatus,
+} from './frontier.js';
+export {
   contextRefKey,
   validateWorkGraph,
   WORK_GRAPH_KEY_PATTERN,

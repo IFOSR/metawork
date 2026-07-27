@@ -15,8 +15,10 @@ export interface CommandLineExecution {
 /** Base class for command-line executor adapters that run prompts through a child process. */
 export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
   abstract readonly name: string;
-  private process: ChildProcess | null = null;
-  private abortRequested = false;
+  private readonly activeProcesses = new Map<string, {
+    process: ChildProcess | null;
+    abortRequested: boolean;
+  }>();
 
   constructor(protected config: { command: string; timeout: number; maxDuration?: number; workspaceRoot?: string }) {}
 
@@ -38,12 +40,26 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     const contextPrompt = this.buildContextPrompt(input);
     const startTime = Date.now();
+    const attemptId = input.context.identity.attemptId;
+    if (this.activeProcesses.has(attemptId)) {
+      return {
+        success: false,
+        output: '',
+        error: `attempt is already active: ${attemptId}`,
+        failure: normalizeExecutorFailure(`attempt is already active: ${attemptId}`),
+        exitCode: 1,
+        durationMs: 0,
+      };
+    }
+    const active = { process: null as ChildProcess | null, abortRequested: false };
+    this.activeProcesses.set(attemptId, active);
     let execution: CommandLineExecution;
 
     try {
       execution = this.prepareExecution(contextPrompt, input);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.activeProcesses.delete(attemptId);
       return {
         success: false,
         output: '',
@@ -55,7 +71,6 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
     }
 
     return new Promise((resolve) => {
-      this.abortRequested = false;
       input.onProgress?.({ kind: 'status', text: `已启动 ${this.name} 执行器` });
       let stdout = '';
       let stderr = '';
@@ -82,13 +97,12 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
         } catch {
           // Cleanup is best effort and must not replace the execution result.
         }
-        this.process = null;
-        this.abortRequested = false;
+        this.activeProcesses.delete(attemptId);
         resolve(result);
       };
 
       try {
-        this.process = spawn(this.config.command, execution.args, {
+        active.process = spawn(this.config.command, execution.args, {
           cwd: this.config.workspaceRoot ?? process.cwd(),
           stdio: ['ignore', 'pipe', 'pipe'],
           env: this.buildSpawnEnv(input),
@@ -109,13 +123,13 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
       const idleTimeoutMs = Math.max(this.config.timeout, 1) * 1000;
 
       const terminateForIdleTimeout = () => {
-        if (!this.process || this.abortRequested || timeoutReason) {
+        if (!active.process || active.abortRequested || timeoutReason) {
           return;
         }
         timeoutReason = 'idle';
-        this.process.kill('SIGTERM');
+        active.process.kill('SIGTERM');
         forceKillTimer = setTimeout(() => {
-          this.process?.kill('SIGKILL');
+          active.process?.kill('SIGKILL');
         }, 5_000);
       };
 
@@ -126,7 +140,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
 
       resetIdleTimer();
 
-      this.process.stdout?.on('data', (chunk: Buffer) => {
+      active.process.stdout?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         if (execution.captureStdout) {
           stdout += text;
@@ -134,17 +148,17 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
         resetIdleTimer();
         stdoutBuffer = this.emitProgressLines(stdoutBuffer + text, input);
       });
-      this.process.stderr?.on('data', (chunk: Buffer) => {
+      active.process.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         stderr += text;
         resetIdleTimer();
         stderrBuffer = this.emitProgressLines(stderrBuffer + text, input);
       });
 
-      this.process.on('close', (code) => {
+      active.process.on('close', (code) => {
         this.flushProgressBuffer(stdoutBuffer, input);
         this.flushProgressBuffer(stderrBuffer, input);
-        const interrupted = this.abortRequested;
+        const interrupted = active.abortRequested;
         let success = !interrupted && !timeoutReason && code === 0;
         let output = '';
         let error = success
@@ -179,7 +193,7 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
         });
       });
 
-      this.process.on('error', (err) => {
+      active.process.on('error', (err) => {
         complete({
           success: false,
           output: '',
@@ -207,9 +221,17 @@ export abstract class CommandLineExecutorAdapter implements ExecutorAdapter {
     }
   }
 
-  abort(): void {
-    this.abortRequested = true;
-    this.process?.kill('SIGTERM');
+  abort(attemptId?: string): void {
+    const targets = attemptId
+      ? [this.activeProcesses.get(attemptId)].filter((item): item is {
+          process: ChildProcess | null;
+          abortRequested: boolean;
+        } => Boolean(item))
+      : [...this.activeProcesses.values()];
+    for (const target of targets) {
+      target.abortRequested = true;
+      target.process?.kill('SIGTERM');
+    }
   }
 
   private emitProgressLines(buffer: string, input: ExecutorInput): string {
