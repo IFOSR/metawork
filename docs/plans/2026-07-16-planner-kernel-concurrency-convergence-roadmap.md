@@ -38,7 +38,7 @@ Canonical definitions 已经是 Codex/Pi 静态路由能力、Planner catalog、
 
 `dependencies` 已完全替换 `dependsOn`，同时作为 DAG 拓扑与 keyed `text`/`artifact` delivery contract 的唯一事实源。独立 `src/work-graph/` 提供 Planning、Kernel 和 Execution 共享的类型与纯校验；Runtime 只注入已完成直接入边的不可变 handoff，不继承祖先结果。
 
-当前生产图为严格 v4，Executor 响应通过 Completion Protocol v1 精确交付 acceptance evidence、artifacts 和 outgoing handoffs。SQLite v22 保留只读 v3 audit 并 park 非终态旧图；只有用户自然语言可触发 v4 replan。
+当前生产图为严格 v5，Executor 响应通过 Completion Protocol 精确交付 acceptance evidence、artifacts 和 outgoing handoffs。未发布版本最终只接受新安装 SQLite v27 与 Kernel v4，不再保留旧图双读或旧数据库升级路径。
 
 ### 2.3 Kernel 控制面已统一
 
@@ -173,7 +173,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 退出条件：partition key、冲突检测、持久租约、崩溃恢复和隔离机制均有 ADR、迁移和容器测试；并发尚未开启。
 
-完成记录（2026-07-22）：ADR-0024、Resource Model、AgentClass immutable image/profile、SQLite v25、PlanningAgentPlan v6、Kernel v3、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability elevation、精确用户授权和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Executor 只对越界操作请求能力，Kernel 唯一决定 grant/deny/escalate。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（195 个文件、780 个测试通过；5 个文件、16 个测试跳过）、真实 Docker sandbox 集成测试和 `npm run smoke:anyfusion` 均通过。实现提交为 `aae3d64`；Phase 5 计划已归档，Phase 6 激活。
+完成记录（2026-07-22；2026-07-28 收缩承诺）：ADR-0024、Resource Model、AgentClass immutable image/profile、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability request/grant/use 审计预算和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Kernel 唯一决定 grant/deny/escalate。Phase 5 产品保证明确收缩为 sandbox profile + 审计预算，不宣称所有文件、网络或外部动作均有细粒度 Runtime broker enforcement。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。实现提交为 `aae3d64`；Phase 5 计划已归档，Phase 6 激活。
 
 ### Phase 6：单 Task 异步并发与可靠性收口
 
@@ -205,7 +205,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - 多个耗尽恢复预算的 Subtask 合并为同一 generation ordinary replan；旧图静止后 Planner 只调用一次，取消或失效的 quiescence token 拒绝晚到 plan。
 - `complete_task` 在 dispatch、publication、sandbox、WorkUnit、lease、receipt、replan 和 Kernel application 残留全部清零前不得将 Task 置为 `done`。
 
-完成记录（2026-07-28）：ADR-0026、纯 `deriveCancellationClosure`、SQLite v27、durable cancellation coordinator、显式 Subtask cancellation/partial acceptance、publication cancellation fence、generation replan coalescing/token CAS 和严格完成门已交付。Phase 6 的最终能力定义为“单顶层 Task 内按 DAG 并发执行、隔离 attempt、Git 成果集成、可恢复的异步执行”。ADR-0011 保持有效，不归档。完整验证与提交记录见 [Phase 6 最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)。
+完成记录（2026-07-28）：ADR-0026、纯 `deriveCancellationClosure`、SQLite v27、durable cancellation coordinator、显式 Subtask cancellation/partial acceptance、publication cancellation fence、generation replan coalescing/token CAS 和严格完成门已交付。最终可靠性复核又把 attempt receipt、Subtask 状态、dispatch terminal 与 Kernel outcome/inbox 封入同一 SQLite 事务，外部 cleanup 改为可重放 supervisor；Docker/Git/持久状态无法证明安全时进入 recovery-blocked，并保留 claim/lease。未发布版本同时 hard cut 到新安装 v27 + Kernel v4，删除旧 schema 双读、旧 dispatch API 和纯 compatibility factory/re-export。Phase 6 的最终能力定义为“单顶层 Task 内按 DAG 并发执行、隔离 attempt、Git 成果集成、可恢复的异步执行”。ADR-0011 保持有效，不归档。完整验证与提交记录见 [Phase 6 最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)。
 
 Phase 6 总退出条件已满足。未来若需要多顶层 Task，必须从 [多顶层 Task 调度未来路线图](future-multi-task-scheduling-roadmap.md) 单独启动，不重新解释本路线图的完成状态。
 

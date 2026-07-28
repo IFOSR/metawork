@@ -17,6 +17,10 @@ Phase 6 ends with one admitted top-level Task. Within that Task, the Work Graph 
 
 The final Phase 6 implementation must close whole-Task cancellation, cascading cancellation of every non-terminal Subtask and dispatch/publication item, exact attempt abort, late-outcome fencing, multi-attempt crash recovery, and the invariant that a Task cannot become `done` while dispatch, publication, sandbox, WorkUnit or resource-lease state remains active or uncertain. Task cancellation retains audit and recovery material but cannot publish new completion facts.
 
+An attempt becomes terminal only when its immutable receipt, Subtask transition, terminal dispatch item and Kernel outcome inbox event commit in one SQLite transaction. Container, WorkUnit and resource-lease cleanup follows as an idempotent replayable supervisor step. If Docker, Git or persistent facts cannot prove reconciliation is safe, MetaClaw enters recovery-blocked mode: status and diagnostics remain available, but no attempt starts and no unproven claim or lease is released.
+
+Because the product is unreleased, the closing implementation accepts only the current Kernel v4 contract and a fresh SQLite v27 database. Earlier Kernel/schema dual reads, legacy dispatch entrypoints and compatibility-only executor/session facades are not part of the initial product contract.
+
 Multi-top-level-Task admission, priority, fairness, starvation protection, queueing, preemption and cross-Task recovery are deferred to a future independent roadmap. They must reuse the durable dispatch/publication seams when eventually introduced, but are not Phase 6 acceptance conditions. ADR-0011 therefore remains accepted and is not archived.
 
 ## Consequences

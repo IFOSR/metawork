@@ -14,7 +14,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -91,7 +91,7 @@ describe('App unblock scheduling', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -159,7 +159,7 @@ describe('App unblock scheduling', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {

@@ -157,6 +157,44 @@ describe('WorkGraphRuntimeService', () => {
     });
   });
 
+  it('applies one Kernel-authorized conflict replan as the next revision', () => {
+    const db = createDb();
+    const taskRecord = task('task_conflict_replan');
+    new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
+    seedKernelDecision(db, 'decision_conflict_replan', taskRecord.id);
+    const runtime = service(db);
+    runtime.apply({
+      task: taskRecord,
+      userPrompt: 'initial',
+      authorizedWorkGraph: graph(taskRecord.id),
+      authorization: {
+        decisionId: 'decision_initial',
+        generationId: 'generation_1',
+        revision: 1,
+        source: 'initial',
+        automaticReplan: false,
+      },
+    });
+
+    expect(runtime.apply({
+      task: taskRecord,
+      userPrompt: 'resolve publication conflict',
+      authorizedWorkGraph: graph(taskRecord.id),
+      authorization: {
+        decisionId: 'decision_conflict_replan',
+        generationId: 'generation_1',
+        revision: 2,
+        source: 'conflict_replan',
+        automaticReplan: false,
+      },
+    })).toMatchObject({ outcome: 'applied' });
+    expect(new WorkGraphRevisionRepo(db).findActive(taskRecord.id)).toMatchObject({
+      revision: 2,
+      proposalSource: 'conflict_replan',
+    });
+  });
+
   it('supersedes unfinished work and exposes completed work as immutable task evidence', () => {
     const db = createDb();
     const taskRecord = task('task_replan');

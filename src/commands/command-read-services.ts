@@ -3,7 +3,6 @@ import type { WorkUnitEvent } from '../core/types.js';
 import type { ExecutorRegistrationInspection } from '../execution/execution-runtime.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
-import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 
@@ -53,7 +52,6 @@ type TaskHistoryEntry =
 export class CommandReadServices {
   private readonly agentClasses: AgentClassRepo;
   private readonly kernelDecisions: KernelDecisionRepo;
-  private readonly legacyPlanningDecisions: PlanningDecisionRepo;
   private readonly taskEvents: TaskEventRepo;
   private readonly workUnits: WorkUnitRepo;
 
@@ -63,7 +61,6 @@ export class CommandReadServices {
   ) {
     this.agentClasses = new AgentClassRepo(db);
     this.kernelDecisions = new KernelDecisionRepo(db);
-    this.legacyPlanningDecisions = new PlanningDecisionRepo(db);
     this.taskEvents = new TaskEventRepo(db);
     this.workUnits = new WorkUnitRepo(db);
   }
@@ -168,10 +165,8 @@ export class CommandReadServices {
         decision: { plan, runtimeAction: record.action } as Record<string, unknown>,
       };
     });
-    const decisions = [
-      ...this.legacyPlanningDecisions.listByTask(taskId),
-      ...kernelDecisions,
-    ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const decisions = kernelDecisions
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     const workUnitEvents = collapseWorkUnitHeartbeats(
       this.workUnits.listEventsByTask(taskId).filter(event => FEEDBACK_WORK_UNIT_EVENTS.has(event.eventType)),
     );

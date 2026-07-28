@@ -1,16 +1,9 @@
 import type Database from 'better-sqlite3';
 
-interface Migration {
-  version: number;
-  up: string | ((db: Database.Database) => void);
-}
+const CURRENT_SCHEMA_VERSION = 27;
 
-const MIGRATIONS: Migration[] = [
-  {
-    version: 1,
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS tasks (
+const CURRENT_SCHEMA_SQL = `
+CREATE TABLE tasks (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
           goal TEXT,
@@ -23,9 +16,9 @@ const MIGRATIONS: Migration[] = [
           injected_prefs_json TEXT DEFAULT '[]',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
-        );
+        , last_scheduling_reason TEXT DEFAULT '', last_interruption_reason TEXT DEFAULT '', interruption_count INTEGER DEFAULT 0, artifacts_json TEXT DEFAULT '[]');
 
-        CREATE TABLE IF NOT EXISTS preferences (
+CREATE TABLE preferences (
           id TEXT PRIMARY KEY,
           type TEXT NOT NULL,
           scope TEXT NOT NULL,
@@ -41,7 +34,7 @@ const MIGRATIONS: Migration[] = [
           confirmed_at TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS preference_usage (
+CREATE TABLE preference_usage (
           id TEXT PRIMARY KEY,
           preference_id TEXT NOT NULL,
           task_id TEXT NOT NULL,
@@ -51,7 +44,7 @@ const MIGRATIONS: Migration[] = [
           FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
 
-        CREATE TABLE IF NOT EXISTS observations (
+CREATE TABLE observations (
           id TEXT PRIMARY KEY,
           pattern TEXT NOT NULL,
           occurrence_count INTEGER DEFAULT 1,
@@ -61,54 +54,16 @@ const MIGRATIONS: Migration[] = [
           promoted_to_preference_id TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS interactions (
+CREATE TABLE interactions (
           id TEXT PRIMARY KEY,
           task_id TEXT,
           user_input TEXT,
           system_output TEXT,
           executor_used TEXT,
           created_at TEXT NOT NULL
-        );
+        , session_id TEXT);
 
-        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-        CREATE INDEX IF NOT EXISTS idx_preferences_scope ON preferences(scope);
-        CREATE INDEX IF NOT EXISTS idx_preferences_status ON preferences(status);
-        CREATE INDEX IF NOT EXISTS idx_observations_pattern ON observations(pattern);
-      `);
-      addColumnIfMissing(db, 'tasks', 'snapshot_json', "TEXT DEFAULT '[]'");
-      addColumnIfMissing(db, 'tasks', 'dependencies_json', "TEXT DEFAULT '[]'");
-      addColumnIfMissing(db, 'tasks', 'priority_json', 'TEXT');
-      addColumnIfMissing(db, 'tasks', 'injected_prefs_json', "TEXT DEFAULT '[]'");
-    },
-  },
-  {
-    version: 2,
-    up: (db) => {
-      addColumnIfMissing(db, 'interactions', 'session_id', 'TEXT');
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_interactions_task ON interactions(task_id, created_at);
-      `);
-    },
-  },
-  {
-    version: 3,
-    up: (db) => {
-      addColumnIfMissing(db, 'tasks', 'last_scheduling_reason', "TEXT DEFAULT ''");
-      addColumnIfMissing(db, 'tasks', 'last_interruption_reason', "TEXT DEFAULT ''");
-      addColumnIfMissing(db, 'tasks', 'interruption_count', 'INTEGER DEFAULT 0');
-    },
-  },
-  {
-    version: 4,
-    up: (db) => {
-      addColumnIfMissing(db, 'tasks', 'artifacts_json', "TEXT DEFAULT '[]'");
-    },
-  },
-  {
-    version: 5,
-    up: `
-      CREATE TABLE IF NOT EXISTS guidance_events (
+CREATE TABLE guidance_events (
         id TEXT PRIMARY KEY,
         trigger TEXT NOT NULL,
         task_id TEXT,
@@ -123,7 +78,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS task_relations (
+CREATE TABLE task_relations (
         id TEXT PRIMARY KEY,
         source_task_id TEXT NOT NULL,
         target_task_id TEXT NOT NULL,
@@ -131,7 +86,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS task_memory_embeddings (
+CREATE TABLE task_memory_embeddings (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
         memory_kind TEXT NOT NULL,
@@ -145,7 +100,7 @@ const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS preference_embeddings (
+CREATE TABLE preference_embeddings (
         id TEXT PRIMARY KEY,
         preference_id TEXT NOT NULL,
         provider TEXT NOT NULL,
@@ -157,7 +112,7 @@ const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS memory_recall_events (
+CREATE TABLE memory_recall_events (
         id TEXT PRIMARY KEY,
         task_id TEXT,
         query_text TEXT NOT NULL,
@@ -169,7 +124,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS recall_review_policies (
+CREATE TABLE recall_review_policies (
         id TEXT PRIMARY KEY,
         policy_type TEXT NOT NULL,
         scope TEXT,
@@ -180,32 +135,15 @@ const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_guidance_events_task ON guidance_events(task_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_task_relations_source ON task_relations(source_task_id, relation_type);
-      CREATE INDEX IF NOT EXISTS idx_task_relations_target ON task_relations(target_task_id, relation_type);
-      CREATE INDEX IF NOT EXISTS idx_task_memory_embeddings_task ON task_memory_embeddings(task_id, memory_kind);
-      CREATE INDEX IF NOT EXISTS idx_preference_embeddings_preference ON preference_embeddings(preference_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_recall_events_task ON memory_recall_events(task_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_recall_review_policies_lookup
-        ON recall_review_policies(policy_type, scope, subject, proposal_type);
-    `,
-  },
-  {
-    version: 6,
-    up: `
-      CREATE TABLE IF NOT EXISTS session_state (
+CREATE TABLE session_state (
         id TEXT PRIMARY KEY,
         last_focused_task_id TEXT,
         last_completed_task_id TEXT,
         last_session_id TEXT,
         updated_at TEXT NOT NULL
       );
-    `,
-  },
-  {
-    version: 7,
-    up: `
-      CREATE TABLE IF NOT EXISTS recall_feedback (
+
+CREATE TABLE recall_feedback (
         id TEXT PRIMARY KEY,
         audit_id TEXT,
         query_task_id TEXT,
@@ -216,16 +154,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_recall_feedback_target
-        ON recall_feedback(target_kind, target_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_recall_feedback_audit
-        ON recall_feedback(audit_id, created_at);
-    `,
-  },
-  {
-    version: 8,
-    up: `
-      CREATE TABLE IF NOT EXISTS reflection_events (
+CREATE TABLE reflection_events (
         id TEXT PRIMARY KEY,
         source_type TEXT NOT NULL,
         source_id TEXT,
@@ -235,7 +164,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS learning_candidates (
+CREATE TABLE learning_candidates (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -251,20 +180,7 @@ const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_reflection_events_task
-        ON reflection_events(task_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_reflection_events_source
-        ON reflection_events(source_type, source_id);
-      CREATE INDEX IF NOT EXISTS idx_learning_candidates_status
-        ON learning_candidates(status, created_at);
-      CREATE INDEX IF NOT EXISTS idx_learning_candidates_source_task
-        ON learning_candidates(source_task_id, created_at);
-    `,
-  },
-  {
-    version: 9,
-    up: `
-      CREATE TABLE IF NOT EXISTS executor_skill_usage_events (
+CREATE TABLE executor_skill_usage_events (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
         execution_id TEXT NOT NULL,
@@ -277,18 +193,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_skill_usage_events_task
-        ON executor_skill_usage_events(task_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_skill_usage_events_execution
-        ON executor_skill_usage_events(execution_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_skill_usage_events_skill
-        ON executor_skill_usage_events(skill_name, event_type, created_at);
-    `,
-  },
-  {
-    version: 10,
-    up: `
-      CREATE TABLE IF NOT EXISTS executor_skill_install_events (
+CREATE TABLE executor_skill_install_events (
         id TEXT PRIMARY KEY,
         candidate_id TEXT NOT NULL,
         package_id TEXT,
@@ -299,16 +204,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_skill_install_events_candidate
-        ON executor_skill_install_events(candidate_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_skill_install_events_executor
-        ON executor_skill_install_events(executor_name, status, created_at);
-    `,
-  },
-  {
-    version: 11,
-    up: `
-      CREATE TABLE IF NOT EXISTS task_memory_cards (
+CREATE TABLE task_memory_cards (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
@@ -325,12 +221,7 @@ const MIGRATIONS: Migration[] = [
         updated_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_task_memory_cards_task
-        ON task_memory_cards(task_id, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_task_memory_cards_source_candidate
-        ON task_memory_cards(source_candidate_id);
-
-      CREATE TABLE IF NOT EXISTS skill_effect_summaries (
+CREATE TABLE skill_effect_summaries (
         id TEXT PRIMARY KEY,
         executor_name TEXT NOT NULL,
         skill_name TEXT NOT NULL,
@@ -348,16 +239,7 @@ const MIGRATIONS: Migration[] = [
         UNIQUE(executor_name, skill_name, skill_version_key)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_skill_effect_summaries_skill
-        ON skill_effect_summaries(skill_name, skill_version_key, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_skill_effect_summaries_executor
-        ON skill_effect_summaries(executor_name, used_count, updated_at);
-    `,
-  },
-  {
-    version: 12,
-    up: `
-      CREATE TABLE IF NOT EXISTS memory_audit_events (
+CREATE TABLE memory_audit_events (
         id TEXT PRIMARY KEY,
         task_id TEXT,
         memory_id TEXT NOT NULL,
@@ -369,40 +251,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_memory_audit_events_memory
-        ON memory_audit_events(memory_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_memory_audit_events_task
-        ON memory_audit_events(task_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_memory_audit_events_action
-        ON memory_audit_events(action, created_at);
-    `,
-  },
-  {
-    version: 13,
-    up: `
-      CREATE TABLE IF NOT EXISTS executor_profiles (
-        name TEXT PRIMARY KEY,
-        domains_json TEXT NOT NULL DEFAULT '[]',
-        capabilities_json TEXT NOT NULL DEFAULT '[]',
-        input_types_json TEXT NOT NULL DEFAULT '[]',
-        output_types_json TEXT NOT NULL DEFAULT '[]',
-        strengths_json TEXT NOT NULL DEFAULT '[]',
-        weaknesses_json TEXT NOT NULL DEFAULT '[]',
-        primary_use_cases_json TEXT NOT NULL DEFAULT '[]',
-        avoid_use_cases_json TEXT NOT NULL DEFAULT '[]',
-        intent_affinity_json TEXT NOT NULL DEFAULT '{}',
-        risk_level TEXT NOT NULL DEFAULT 'medium',
-        availability TEXT NOT NULL DEFAULT 'available',
-        historical_success REAL NOT NULL DEFAULT 0.5,
-        runtime_command TEXT,
-        runtime_args_json TEXT NOT NULL DEFAULT '[]',
-        runtime_check_command TEXT,
-        project_url TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS executor_route_events (
+CREATE TABLE executor_route_events (
         id TEXT PRIMARY KEY,
         task_id TEXT,
         user_input TEXT NOT NULL,
@@ -418,16 +267,7 @@ const MIGRATIONS: Migration[] = [
         created_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_executor_route_events_executor
-        ON executor_route_events(selected_executor, created_at);
-      CREATE INDEX IF NOT EXISTS idx_executor_route_events_task
-        ON executor_route_events(task_id, created_at);
-    `,
-  },
-  {
-    version: 14,
-    up: `
-      CREATE VIRTUAL TABLE IF NOT EXISTS task_search_index USING fts5(
+CREATE VIRTUAL TABLE task_search_index USING fts5(
         task_id UNINDEXED,
         source_kind UNINDEXED,
         source_id UNINDEXED,
@@ -439,40 +279,7 @@ const MIGRATIONS: Migration[] = [
         tokenize = 'trigram'
       );
 
-      CREATE TRIGGER IF NOT EXISTS trg_task_search_index_interactions_insert
-      AFTER INSERT ON interactions
-      WHEN NEW.task_id IS NOT NULL
-      BEGIN
-        DELETE FROM task_search_index
-          WHERE source_kind = 'interaction' AND source_id = NEW.id;
-        INSERT INTO task_search_index (
-          task_id, source_kind, source_id, title, body, tags, created_at, updated_at
-        ) VALUES (
-          NEW.task_id,
-          'interaction',
-          NEW.id,
-          '',
-          substr(COALESCE(NEW.user_input, '') || char(10) || COALESCE(NEW.system_output, ''), 1, 4000),
-          'interaction',
-          NEW.created_at,
-          NEW.created_at
-        );
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS trg_task_search_index_interactions_delete
-      AFTER DELETE ON interactions
-      WHEN OLD.task_id IS NOT NULL
-      BEGIN
-        DELETE FROM task_search_index
-          WHERE source_kind = 'interaction' AND source_id = OLD.id;
-      END;
-    `,
-  },
-  {
-    version: 15,
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS agent_classes (
+CREATE TABLE agent_classes (
           name TEXT PRIMARY KEY,
           kind TEXT NOT NULL DEFAULT 'executor',
           domains_json TEXT NOT NULL DEFAULT '[]',
@@ -486,7 +293,6 @@ const MIGRATIONS: Migration[] = [
           intent_affinity_json TEXT NOT NULL DEFAULT '{}',
           risk_level TEXT NOT NULL DEFAULT 'medium',
           availability TEXT NOT NULL DEFAULT 'available',
-          historical_success REAL NOT NULL DEFAULT 0.5,
           harness TEXT,
           model TEXT,
           skills_json TEXT NOT NULL DEFAULT '[]',
@@ -498,29 +304,9 @@ const MIGRATIONS: Migration[] = [
           project_url TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
-        );
+        , execution_image_ref TEXT, resolved_image_id TEXT, permission_profile_id TEXT);
 
-        CREATE TABLE IF NOT EXISTS subtasks (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          title TEXT NOT NULL,
-          goal TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'created',
-          depends_on_json TEXT NOT NULL DEFAULT '[]',
-          required_agent_class_kind TEXT NOT NULL DEFAULT 'executor',
-          agent_class_hint TEXT,
-          candidate_agent_classes_json TEXT NOT NULL DEFAULT '[]',
-          expected_output TEXT NOT NULL DEFAULT 'summary',
-          acceptance_json TEXT NOT NULL DEFAULT '[]',
-          risk_level TEXT NOT NULL DEFAULT 'medium',
-          result TEXT NOT NULL DEFAULT '',
-          error TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (task_id) REFERENCES tasks(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS task_events (
+CREATE TABLE task_events (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
           subtask_id TEXT,
@@ -531,7 +317,7 @@ const MIGRATIONS: Migration[] = [
           FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
 
-        CREATE TABLE IF NOT EXISTS work_units (
+CREATE TABLE work_units (
           id TEXT PRIMARY KEY,
           agent_class_name TEXT NOT NULL,
           agent_class_kind TEXT NOT NULL,
@@ -541,11 +327,11 @@ const MIGRATIONS: Migration[] = [
           heartbeat_at TEXT,
           lease_expires_at TEXT,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, claimed_attempt_id TEXT,
           FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
         );
 
-        CREATE TABLE IF NOT EXISTS work_unit_events (
+CREATE TABLE work_unit_events (
           id TEXT PRIMARY KEY,
           work_unit_id TEXT NOT NULL,
           task_id TEXT,
@@ -554,75 +340,11 @@ const MIGRATIONS: Migration[] = [
           state TEXT,
           message TEXT NOT NULL DEFAULT '',
           payload_json TEXT NOT NULL DEFAULT '{}',
-          created_at TEXT NOT NULL,
+          created_at TEXT NOT NULL, attempt_id TEXT,
           FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
         );
 
-        CREATE TABLE IF NOT EXISTS worktree_leases (
-          id TEXT PRIMARY KEY,
-          worktree_path TEXT NOT NULL,
-          work_unit_id TEXT NOT NULL,
-          task_id TEXT NOT NULL,
-          subtask_id TEXT NOT NULL,
-          heartbeat_at TEXT NOT NULL,
-          expires_at TEXT NOT NULL,
-          released_at TEXT,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_work_units_state ON work_units(agent_class_kind, state, updated_at);
-        CREATE INDEX IF NOT EXISTS idx_work_unit_events_unit ON work_unit_events(work_unit_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_worktree_leases_active ON worktree_leases(worktree_path, released_at, expires_at);
-      `);
-
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT OR IGNORE INTO agent_classes (
-          name, kind, domains_json, capabilities_json, input_types_json, output_types_json,
-          strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
-          intent_affinity_json, risk_level, availability, historical_success,
-          runtime_command, runtime_args_json, runtime_check_command, project_url,
-          harness, model, skills_json, mcp_servers_json, plugins_json, created_at, updated_at
-        )
-        SELECT
-          name, 'executor', domains_json, capabilities_json, input_types_json, output_types_json,
-          strengths_json, weaknesses_json, primary_use_cases_json, avoid_use_cases_json,
-          intent_affinity_json, risk_level, availability, historical_success,
-          runtime_command, runtime_args_json, runtime_check_command, project_url,
-          NULL, NULL, '[]', '[]', '[]', ?, ?
-        FROM executor_profiles
-      `).run(now, now);
-    },
-  },
-  {
-    version: 16,
-    up: `
-      CREATE TABLE IF NOT EXISTS planning_decisions (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        request_id TEXT NOT NULL,
-        task_id TEXT,
-        user_input TEXT NOT NULL,
-        plan_json TEXT NOT NULL,
-        decision_json TEXT NOT NULL,
-        outcome TEXT NOT NULL,
-        reason TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_planning_decisions_session
-        ON planning_decisions(session_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_planning_decisions_task
-        ON planning_decisions(task_id, created_at);
-    `,
-  },
-  {
-    version: 17,
-    up: `
-      CREATE TABLE IF NOT EXISTS planner_runs (
+CREATE TABLE planner_runs (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         request_source TEXT NOT NULL,
@@ -634,7 +356,7 @@ const MIGRATIONS: Migration[] = [
         completed_at TEXT
       );
 
-      CREATE TABLE IF NOT EXISTS planner_tool_calls (
+CREATE TABLE planner_tool_calls (
         id TEXT PRIMARY KEY,
         planner_run_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
@@ -646,134 +368,15 @@ const MIGRATIONS: Migration[] = [
         FOREIGN KEY (planner_run_id) REFERENCES planner_runs(id)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_planner_runs_session
-        ON planner_runs(session_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_planner_tool_calls_run
-        ON planner_tool_calls(planner_run_id, sequence);
-    `,
-  },
-  {
-    version: 18,
-    up: `
-      CREATE TABLE IF NOT EXISTS kernel_executor_status (
+CREATE TABLE kernel_executor_status (
         agent_class_name TEXT PRIMARY KEY,
         class_health TEXT NOT NULL DEFAULT 'unverified',
         recent_attempts_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL,
         FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
       );
-    `,
-  },
-  {
-    version: 19,
-    up: (db) => {
-      dropColumnIfExists(db, 'agent_classes', 'historical_success');
-      dropColumnIfExists(db, 'executor_profiles', 'historical_success');
-    },
-  },
-  {
-    version: 20,
-    up: 'DROP TABLE IF EXISTS executor_profiles;',
-  },
-  {
-    version: 21,
-    up: (db) => {
-      // Some historical tests intentionally construct partial schemas. A real
-      // v20 database always has subtasks, but the migration remains safe when
-      // that production table is absent.
-      if (!tableExists(db, 'subtasks')) return;
 
-      const now = new Date().toISOString();
-      db.exec('DROP INDEX IF EXISTS idx_subtasks_task;');
-      db.exec('ALTER TABLE subtasks RENAME TO subtasks_v2_audit;');
-      db.exec(`
-        CREATE TABLE subtasks (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          title TEXT NOT NULL,
-          goal TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'created',
-          depends_on_json TEXT NOT NULL DEFAULT '[]',
-          required_capabilities_json TEXT NOT NULL,
-          preferred_agent_class_list_json TEXT NOT NULL,
-          expected_output TEXT NOT NULL DEFAULT 'summary',
-          acceptance_json TEXT NOT NULL DEFAULT '[]',
-          risk_level TEXT NOT NULL DEFAULT 'medium',
-          result TEXT NOT NULL DEFAULT '',
-          error TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (task_id) REFERENCES tasks(id)
-        );
-        CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
-
-        CREATE TRIGGER subtasks_v2_audit_read_only_insert
-        BEFORE INSERT ON subtasks_v2_audit BEGIN
-          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
-        END;
-        CREATE TRIGGER subtasks_v2_audit_read_only_update
-        BEFORE UPDATE ON subtasks_v2_audit BEGIN
-          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
-        END;
-        CREATE TRIGGER subtasks_v2_audit_read_only_delete
-        BEFORE DELETE ON subtasks_v2_audit BEGIN
-          SELECT RAISE(ABORT, 'subtasks_v2_audit is read-only');
-        END;
-      `);
-
-      if (tableExists(db, 'tasks') && columnExists(db, 'tasks', 'last_interruption_reason')) {
-        db.prepare(`
-          UPDATE tasks
-          SET status = 'parked',
-              last_interruption_reason = ?,
-              updated_at = ?
-          WHERE id IN (SELECT DISTINCT task_id FROM subtasks_v2_audit)
-            AND status NOT IN ('done', 'archived', 'cancelled')
-        `).run(
-          'work graph schema upgraded to v3; continue with natural language to replan',
-          now,
-        );
-      }
-
-      if (
-        tableExists(db, 'work_units')
-        && columnExists(db, 'work_units', 'claimed_subtask_id')
-        && columnExists(db, 'work_units', 'state')
-      ) {
-        db.prepare(`
-          UPDATE work_units
-          SET state = 'heartbeat_lost', updated_at = ?
-          WHERE state IN ('claimed', 'running', 'waiting')
-            AND claimed_subtask_id IN (SELECT id FROM subtasks_v2_audit)
-        `).run(now);
-      }
-    },
-  },
-  {
-    version: 22,
-    up: (db) => {
-      const now = new Date().toISOString();
-      if (tableExists(db, 'subtasks')) {
-        db.exec('DROP INDEX IF EXISTS idx_subtasks_task;');
-        db.exec('ALTER TABLE subtasks RENAME TO subtasks_v3_audit;');
-        db.exec(`
-          CREATE TRIGGER subtasks_v3_audit_read_only_insert
-          BEFORE INSERT ON subtasks_v3_audit BEGIN
-            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
-          END;
-          CREATE TRIGGER subtasks_v3_audit_read_only_update
-          BEFORE UPDATE ON subtasks_v3_audit BEGIN
-            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
-          END;
-          CREATE TRIGGER subtasks_v3_audit_read_only_delete
-          BEFORE DELETE ON subtasks_v3_audit BEGIN
-            SELECT RAISE(ABORT, 'subtasks_v3_audit is read-only');
-          END;
-        `);
-      }
-
-      db.exec(`
-        CREATE TABLE subtasks (
+CREATE TABLE subtasks (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
           title TEXT NOT NULL,
@@ -791,12 +394,11 @@ const MIGRATIONS: Migration[] = [
           verification_json TEXT NOT NULL DEFAULT '{}',
           error TEXT,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, graph_revision INTEGER, generation_id TEXT,
           FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
-        CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
 
-        CREATE TABLE subtask_handoffs (
+CREATE TABLE subtask_handoffs (
           task_id TEXT NOT NULL,
           from_subtask_id TEXT NOT NULL,
           to_subtask_id TEXT NOT NULL,
@@ -809,17 +411,8 @@ const MIGRATIONS: Migration[] = [
           FOREIGN KEY (from_subtask_id) REFERENCES subtasks(id),
           FOREIGN KEY (to_subtask_id) REFERENCES subtasks(id)
         );
-        CREATE INDEX idx_subtask_handoffs_to ON subtask_handoffs(task_id, to_subtask_id);
-        CREATE TRIGGER subtask_handoffs_immutable_update
-        BEFORE UPDATE ON subtask_handoffs BEGIN
-          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
-        END;
-        CREATE TRIGGER subtask_handoffs_immutable_delete
-        BEFORE DELETE ON subtask_handoffs BEGIN
-          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
-        END;
 
-        CREATE TABLE executor_attempt_receipts (
+CREATE TABLE executor_attempt_receipts (
           attempt_id TEXT PRIMARY KEY,
           execution_id TEXT NOT NULL,
           task_id TEXT NOT NULL,
@@ -834,23 +427,13 @@ const MIGRATIONS: Migration[] = [
           parsing_json TEXT NOT NULL DEFAULT '{}',
           verification_json TEXT NOT NULL DEFAULT '{}',
           error_code TEXT,
-          error_detail TEXT,
+          error_detail TEXT, graph_revision INTEGER, generation_id TEXT, attempt_kind TEXT NOT NULL DEFAULT 'primary', source_attempt_id TEXT, failure_json TEXT, recovery_mode TEXT NOT NULL DEFAULT 'fresh',
           FOREIGN KEY (task_id) REFERENCES tasks(id),
           FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
           FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
         );
-        CREATE INDEX idx_executor_attempt_receipts_subtask
-          ON executor_attempt_receipts(task_id, subtask_id, completed_at);
-        CREATE TRIGGER executor_attempt_receipts_immutable_update
-        BEFORE UPDATE ON executor_attempt_receipts BEGIN
-          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
-        END;
-        CREATE TRIGGER executor_attempt_receipts_immutable_delete
-        BEFORE DELETE ON executor_attempt_receipts BEGIN
-          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
-        END;
 
-        CREATE TABLE task_execution_evidence (
+CREATE TABLE task_execution_evidence (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
           kind TEXT NOT NULL,
@@ -861,105 +444,8 @@ const MIGRATIONS: Migration[] = [
           created_at TEXT NOT NULL,
           FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
-        CREATE INDEX idx_task_execution_evidence_task
-          ON task_execution_evidence(task_id, created_at, id);
-      `);
 
-      if (tableExists(db, 'work_units')) {
-        addColumnIfMissing(db, 'work_units', 'state', "TEXT NOT NULL DEFAULT 'idle'");
-        addColumnIfMissing(db, 'work_units', 'claimed_task_id', 'TEXT');
-        addColumnIfMissing(db, 'work_units', 'claimed_subtask_id', 'TEXT');
-        addColumnIfMissing(db, 'work_units', 'claimed_attempt_id', 'TEXT');
-        addColumnIfMissing(db, 'work_units', 'lease_expires_at', 'TEXT');
-        addColumnIfMissing(db, 'work_units', 'updated_at', "TEXT NOT NULL DEFAULT ''");
-        db.exec(`
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_units_one_active_attempt_per_subtask
-          ON work_units(claimed_subtask_id)
-          WHERE claimed_subtask_id IS NOT NULL AND state IN ('claimed', 'running', 'waiting');
-        `);
-      }
-      if (tableExists(db, 'work_unit_events')) {
-        addColumnIfMissing(db, 'work_unit_events', 'attempt_id', 'TEXT');
-      }
-
-      if (tableExists(db, 'tasks') && tableExists(db, 'subtasks_v3_audit')) {
-        const auditedTaskIds = tableExists(db, 'subtasks_v2_audit')
-          ? `SELECT DISTINCT task_id FROM subtasks_v3_audit
-             UNION
-             SELECT DISTINCT task_id FROM subtasks_v2_audit`
-          : 'SELECT DISTINCT task_id FROM subtasks_v3_audit';
-        db.prepare(`
-          UPDATE tasks
-          SET status = 'parked',
-              last_interruption_reason = ?,
-              updated_at = ?
-          WHERE id IN (${auditedTaskIds})
-            AND status NOT IN ('done', 'archived', 'cancelled')
-        `).run(
-          'work graph schema upgraded to v4; continue with natural language to replan',
-          now,
-        );
-      }
-      if (tableExists(db, 'work_units')) {
-        db.prepare(`
-          UPDATE work_units
-          SET state = 'heartbeat_lost',
-              claimed_task_id = NULL,
-              claimed_subtask_id = NULL,
-              claimed_attempt_id = NULL,
-              lease_expires_at = NULL,
-              updated_at = ?
-          WHERE state IN ('claimed', 'running', 'waiting')
-             OR claimed_task_id IS NOT NULL
-             OR claimed_subtask_id IS NOT NULL
-             OR claimed_attempt_id IS NOT NULL
-        `).run(now);
-      }
-    },
-  },
-  {
-    version: 23,
-    up: (db) => {
-      if (tableExists(db, 'planning_decisions') && !tableExists(db, 'planning_decisions_legacy_audit')) {
-        db.exec('ALTER TABLE planning_decisions RENAME TO planning_decisions_legacy_audit');
-      }
-      if (!tableExists(db, 'planning_decisions_legacy_audit')) {
-        db.exec(`
-          CREATE TABLE planning_decisions_legacy_audit (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            request_id TEXT NOT NULL,
-            task_id TEXT,
-            user_input TEXT NOT NULL,
-            plan_json TEXT NOT NULL,
-            decision_json TEXT NOT NULL,
-            outcome TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            created_at TEXT NOT NULL
-          )
-        `);
-      }
-      db.exec(`
-        DROP INDEX IF EXISTS idx_planning_decisions_session;
-        DROP INDEX IF EXISTS idx_planning_decisions_task;
-        CREATE INDEX IF NOT EXISTS idx_planning_decisions_legacy_session
-          ON planning_decisions_legacy_audit(session_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_planning_decisions_legacy_task
-          ON planning_decisions_legacy_audit(task_id, created_at);
-        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_insert
-        BEFORE INSERT ON planning_decisions_legacy_audit BEGIN
-          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
-        END;
-        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_update
-        BEFORE UPDATE ON planning_decisions_legacy_audit BEGIN
-          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
-        END;
-        CREATE TRIGGER IF NOT EXISTS planning_decisions_legacy_immutable_delete
-        BEFORE DELETE ON planning_decisions_legacy_audit BEGIN
-          SELECT RAISE(ABORT, 'planning_decisions_legacy_audit is read-only');
-        END;
-
-        CREATE TABLE IF NOT EXISTS kernel_decisions (
+CREATE TABLE kernel_decisions (
           id TEXT PRIMARY KEY,
           schema_version INTEGER NOT NULL,
           event_id TEXT NOT NULL UNIQUE,
@@ -977,21 +463,8 @@ const MIGRATIONS: Migration[] = [
           reason TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
-        CREATE INDEX idx_kernel_decisions_session
-          ON kernel_decisions(session_id, created_at, id);
-        CREATE INDEX idx_kernel_decisions_task
-          ON kernel_decisions(task_id, created_at, id);
-        CREATE INDEX idx_kernel_decisions_correlation
-          ON kernel_decisions(correlation_id, created_at, id);
-      `);
-    },
-  },
-  {
-    version: 24,
-    up: (db) => {
-      const migrate = db.transaction(() => {
-        db.exec(`
-          CREATE TABLE IF NOT EXISTS kernel_events (
+
+CREATE TABLE kernel_events (
             id TEXT PRIMARY KEY,
             schema_version INTEGER NOT NULL,
             event_type TEXT NOT NULL,
@@ -1010,12 +483,8 @@ const MIGRATIONS: Migration[] = [
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
           );
-          CREATE INDEX IF NOT EXISTS idx_kernel_events_drain
-            ON kernel_events(status, available_at, created_at, id);
-          CREATE INDEX IF NOT EXISTS idx_kernel_events_task
-            ON kernel_events(task_id, created_at, id);
 
-          CREATE TABLE IF NOT EXISTS kernel_decision_applications (
+CREATE TABLE kernel_decision_applications (
             id TEXT PRIMARY KEY,
             decision_id TEXT NOT NULL UNIQUE,
             event_id TEXT NOT NULL UNIQUE,
@@ -1032,10 +501,8 @@ const MIGRATIONS: Migration[] = [
             FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id),
             FOREIGN KEY (event_id) REFERENCES kernel_events(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_kernel_decision_applications_status
-            ON kernel_decision_applications(status, created_at, id);
 
-          CREATE TABLE IF NOT EXISTS kernel_effect_outbox (
+CREATE TABLE kernel_effect_outbox (
             id TEXT PRIMARY KEY,
             decision_id TEXT NOT NULL,
             task_id TEXT,
@@ -1051,10 +518,8 @@ const MIGRATIONS: Migration[] = [
             updated_at TEXT NOT NULL,
             FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_kernel_effect_outbox_drain
-            ON kernel_effect_outbox(status, available_at, created_at, id);
 
-          CREATE TABLE IF NOT EXISTS executor_attempt_runtime (
+CREATE TABLE executor_attempt_runtime (
             attempt_id TEXT PRIMARY KEY,
             source_attempt_id TEXT,
             continuation_token TEXT,
@@ -1068,7 +533,7 @@ const MIGRATIONS: Migration[] = [
             updated_at TEXT NOT NULL
           );
 
-          CREATE TABLE IF NOT EXISTS work_graph_revisions (
+CREATE TABLE work_graph_revisions (
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             revision INTEGER NOT NULL,
@@ -1078,145 +543,13 @@ const MIGRATIONS: Migration[] = [
             automatic_replan INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, completion_kind TEXT CHECK(completion_kind IN ('full', 'partial_accepted')),
             UNIQUE(task_id, revision),
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id)
           );
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_graph_one_active_revision
-            ON work_graph_revisions(task_id) WHERE status = 'active';
-          CREATE INDEX IF NOT EXISTS idx_work_graph_revisions_generation
-            ON work_graph_revisions(task_id, generation_id, revision);
-        `);
 
-        if (tableExists(db, 'subtasks')) {
-          addColumnIfMissing(db, 'subtasks', 'graph_revision', 'INTEGER');
-          addColumnIfMissing(db, 'subtasks', 'generation_id', 'TEXT');
-          if (tableExists(db, 'tasks')) {
-            db.exec(`
-              INSERT OR IGNORE INTO work_graph_revisions (
-                id, task_id, revision, generation_id, authorized_decision_id,
-                proposal_source, automatic_replan, status, created_at, updated_at
-              )
-              SELECT
-                'revision_' || subtasks.task_id || '_1', subtasks.task_id, 1,
-                'generation_' || subtasks.task_id || '_1', NULL, 'initial', 0,
-                CASE WHEN SUM(CASE WHEN subtasks.status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END) = 0
-                  THEN 'completed' ELSE 'active' END,
-                MIN(subtasks.created_at), MAX(subtasks.updated_at)
-              FROM subtasks
-              INNER JOIN tasks ON tasks.id = subtasks.task_id
-              GROUP BY subtasks.task_id
-            `);
-          }
-          db.exec(`
-            UPDATE subtasks
-            SET graph_revision = COALESCE(graph_revision, 1),
-                generation_id = COALESCE(generation_id, 'generation_' || task_id || '_1')
-          `);
-        }
-
-        if (tableExists(db, 'executor_attempt_receipts')) {
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'graph_revision', 'INTEGER');
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'generation_id', 'TEXT');
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'attempt_kind', "TEXT NOT NULL DEFAULT 'primary'");
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'source_attempt_id', 'TEXT');
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'failure_json', 'TEXT');
-          addColumnIfMissing(db, 'executor_attempt_receipts', 'recovery_mode', "TEXT NOT NULL DEFAULT 'fresh'");
-          db.exec(`
-            UPDATE executor_attempt_receipts
-            SET graph_revision = COALESCE(graph_revision, 1),
-                generation_id = COALESCE(
-                  generation_id,
-                  'generation_' || task_id || '_1'
-                )
-          `);
-        }
-
-        if (tableExists(db, 'kernel_decisions')) {
-          db.exec(`
-            INSERT OR IGNORE INTO kernel_events (
-              id, schema_version, event_type, correlation_id, causation_id,
-              session_id, task_id, subtask_id, attempt_id, event_json,
-              available_at, status, processing_started_at, processed_at,
-              last_error, created_at, updated_at
-            )
-            SELECT event_id, schema_version, event_type, correlation_id, causation_id,
-              session_id, task_id, subtask_id, attempt_id, event_json,
-              created_at, 'processed', NULL, created_at, NULL, created_at, created_at
-            FROM kernel_decisions
-          `);
-          db.exec(`
-            INSERT OR IGNORE INTO kernel_decision_applications (
-              id, decision_id, event_id, idempotency_key, status, apply_attempts,
-              observation_event_id, observation_event_json, error_summary,
-              applying_at, applied_at, created_at, updated_at
-            )
-            SELECT 'application_' || id, id, event_id, 'decision:' || id,
-              CASE WHEN action = 'no_op' THEN 'applied' ELSE 'uncertain' END,
-              0, NULL, NULL,
-              CASE WHEN action = 'no_op' THEN NULL
-                ELSE 'v23 decision has no durable application proof' END,
-              NULL, CASE WHEN action = 'no_op' THEN created_at ELSE NULL END,
-              created_at, created_at
-            FROM kernel_decisions
-          `);
-          if (tableExists(db, 'tasks')) {
-            db.exec(`
-              UPDATE kernel_decision_applications
-              SET status = 'applied',
-                  error_summary = NULL,
-                  applied_at = created_at,
-                  updated_at = created_at
-              WHERE decision_id IN (
-                SELECT kernel_decisions.id
-                FROM kernel_decisions
-                INNER JOIN tasks ON tasks.id = kernel_decisions.task_id
-                WHERE kernel_decisions.action = 'complete_task'
-                  AND tasks.status = 'done'
-              )
-            `);
-          }
-        }
-      });
-      migrate();
-    },
-  },
-  {
-    version: 25,
-    up: (db) => {
-      const migrate = db.transaction(() => {
-        if (tableExists(db, 'agent_classes')) {
-          addColumnIfMissing(db, 'agent_classes', 'execution_image_ref', 'TEXT');
-          addColumnIfMissing(db, 'agent_classes', 'resolved_image_id', 'TEXT');
-          addColumnIfMissing(db, 'agent_classes', 'permission_profile_id', 'TEXT');
-        }
-
-        if (tableExists(db, 'worktree_leases') && !tableExists(db, 'worktree_leases_legacy_audit')) {
-          db.exec('ALTER TABLE worktree_leases RENAME TO worktree_leases_legacy_audit');
-        }
-        if (tableExists(db, 'worktree_leases_legacy_audit')) {
-          db.exec(`
-            DROP INDEX IF EXISTS idx_worktree_leases_active;
-            CREATE INDEX IF NOT EXISTS idx_worktree_leases_legacy_audit_task
-              ON worktree_leases_legacy_audit(task_id, created_at);
-            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_insert
-            BEFORE INSERT ON worktree_leases_legacy_audit BEGIN
-              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
-            END;
-            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_update
-            BEFORE UPDATE ON worktree_leases_legacy_audit BEGIN
-              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
-            END;
-            CREATE TRIGGER IF NOT EXISTS worktree_leases_legacy_immutable_delete
-            BEFORE DELETE ON worktree_leases_legacy_audit BEGIN
-              SELECT RAISE(ABORT, 'worktree_leases_legacy_audit is read-only');
-            END;
-          `);
-        }
-
-        db.exec(`
-          CREATE TABLE IF NOT EXISTS resource_leases (
+CREATE TABLE resource_leases (
             id TEXT PRIMARY KEY,
             partition_key TEXT NOT NULL,
             partition_json TEXT NOT NULL,
@@ -1230,19 +563,13 @@ const MIGRATIONS: Migration[] = [
             heartbeat_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             released_at TEXT,
-            created_at TEXT NOT NULL,
+            created_at TEXT NOT NULL, revocation_requested_at TEXT, revocation_reason TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
             FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_resource_leases_active
-            ON resource_leases(released_at, expires_at, partition_key);
-          CREATE INDEX IF NOT EXISTS idx_resource_leases_attempt
-            ON resource_leases(attempt_id, released_at);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_leases_identity
-            ON resource_leases(attempt_id, lease_token, partition_key, access_mode);
 
-          CREATE TABLE IF NOT EXISTS resource_waits (
+CREATE TABLE resource_waits (
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
@@ -1257,10 +584,8 @@ const MIGRATIONS: Migration[] = [
             resolved_at TEXT,
             UNIQUE(attempt_id, partition_key, access_mode)
           );
-          CREATE INDEX IF NOT EXISTS idx_resource_waits_status
-            ON resource_waits(status, requested_at);
 
-          CREATE TABLE IF NOT EXISTS workspace_records (
+CREATE TABLE workspace_records (
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
@@ -1278,10 +603,8 @@ const MIGRATIONS: Migration[] = [
             updated_at TEXT NOT NULL,
             UNIQUE(task_id, generation_id, subtask_id)
           );
-          CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
-            ON workspace_records(status, cleanup_after);
 
-          CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+CREATE TABLE workspace_checkpoints (
             id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL,
             attempt_id TEXT,
@@ -1292,13 +615,8 @@ const MIGRATIONS: Migration[] = [
             created_at TEXT NOT NULL,
             FOREIGN KEY (workspace_id) REFERENCES workspace_records(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_workspace
-            ON workspace_checkpoints(workspace_id, created_at);
-          CREATE TRIGGER IF NOT EXISTS workspace_checkpoints_immutable_update
-          BEFORE UPDATE ON workspace_checkpoints BEGIN
-            SELECT RAISE(ABORT, 'workspace checkpoints are immutable');
-          END;
-          CREATE TABLE IF NOT EXISTS workspace_objects (
+
+CREATE TABLE workspace_objects (
             content_hash TEXT PRIMARY KEY,
             object_uri TEXT NOT NULL UNIQUE,
             size_bytes INTEGER NOT NULL,
@@ -1307,7 +625,8 @@ const MIGRATIONS: Migration[] = [
             created_at TEXT NOT NULL,
             last_referenced_at TEXT NOT NULL
           );
-          CREATE TABLE IF NOT EXISTS workspace_checkpoint_objects (
+
+CREATE TABLE workspace_checkpoint_objects (
             checkpoint_id TEXT NOT NULL,
             content_hash TEXT NOT NULL,
             PRIMARY KEY(checkpoint_id, content_hash),
@@ -1315,7 +634,7 @@ const MIGRATIONS: Migration[] = [
             FOREIGN KEY(content_hash) REFERENCES workspace_objects(content_hash)
           );
 
-          CREATE TABLE IF NOT EXISTS permission_requests (
+CREATE TABLE permission_requests (
             id TEXT PRIMARY KEY,
             fingerprint TEXT NOT NULL,
             task_id TEXT NOT NULL,
@@ -1339,10 +658,8 @@ const MIGRATIONS: Migration[] = [
             resolved_at TEXT,
             UNIQUE(attempt_id, fingerprint)
           );
-          CREATE INDEX IF NOT EXISTS idx_permission_requests_pending
-            ON permission_requests(status, task_id, created_at);
 
-          CREATE TABLE IF NOT EXISTS permission_grants (
+CREATE TABLE permission_grants (
             id TEXT PRIMARY KEY,
             request_id TEXT NOT NULL UNIQUE,
             fingerprint TEXT NOT NULL,
@@ -1365,10 +682,8 @@ const MIGRATIONS: Migration[] = [
             FOREIGN KEY (request_id) REFERENCES permission_requests(id),
             FOREIGN KEY (decision_id) REFERENCES kernel_decisions(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_permission_grants_attempt
-            ON permission_grants(attempt_id, expires_at, revoked_at);
 
-          CREATE TABLE IF NOT EXISTS user_authorizations (
+CREATE TABLE user_authorizations (
             id TEXT PRIMARY KEY,
             request_id TEXT NOT NULL,
             fingerprint TEXT NOT NULL,
@@ -1381,10 +696,8 @@ const MIGRATIONS: Migration[] = [
             UNIQUE(request_id, received_event_id),
             FOREIGN KEY (request_id) REFERENCES permission_requests(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_user_authorizations_request
-            ON user_authorizations(request_id, created_at);
 
-          CREATE TABLE IF NOT EXISTS attempt_sandboxes (
+CREATE TABLE attempt_sandboxes (
             attempt_id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
@@ -1405,87 +718,8 @@ const MIGRATIONS: Migration[] = [
             updated_at TEXT NOT NULL,
             FOREIGN KEY (workspace_id) REFERENCES workspace_records(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_attempt_sandboxes_status
-            ON attempt_sandboxes(status, updated_at);
-        `);
-      });
-      migrate();
-    },
-  },
-  {
-    version: 26,
-    up: (db) => {
-      const migrate = db.transaction(() => {
-        db.exec(`
-          CREATE TABLE IF NOT EXISTS kernel_dispatch_items (
-            attempt_id TEXT PRIMARY KEY,
-            decision_id TEXT NOT NULL,
-            batch_order INTEGER NOT NULL,
-            task_id TEXT NOT NULL,
-            generation_id TEXT NOT NULL,
-            subtask_id TEXT NOT NULL,
-            agent_class_name TEXT NOT NULL,
-            attempt_kind TEXT NOT NULL CHECK(attempt_kind IN (
-              'primary', 'continuation', 'fallback', 'contract_correction', 'merge_repair'
-            )),
-            source_attempt_id TEXT,
-            recovery_mode TEXT NOT NULL CHECK(recovery_mode IN (
-              'native_session', 'recovery_packet', 'fresh'
-            )),
-            attempt_payload_json TEXT NOT NULL DEFAULT 'null',
-            resource_grant_json TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL CHECK(status IN (
-              'pending_launch', 'launching', 'running', 'terminal', 'cancelled', 'uncertain'
-            )),
-            work_unit_id TEXT,
-            sandbox_container_id TEXT,
-            launch_started_at TEXT,
-            terminal_at TEXT,
-            error_summary TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (task_id) REFERENCES tasks(id),
-            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
-          );
-          CREATE INDEX IF NOT EXISTS idx_kernel_dispatch_items_supervisor
-            ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
-          CREATE INDEX IF NOT EXISTS idx_kernel_dispatch_items_task
-            ON kernel_dispatch_items(task_id, status, batch_order);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_kernel_dispatch_one_active_subtask
-            ON kernel_dispatch_items(task_id, generation_id, subtask_id)
-            WHERE status IN ('pending_launch', 'launching', 'running');
 
-          CREATE TABLE IF NOT EXISTS workspace_publications (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            generation_id TEXT NOT NULL,
-            subtask_id TEXT NOT NULL,
-            source_attempt_id TEXT NOT NULL,
-            agent_class_name TEXT NOT NULL,
-            candidate_commit TEXT NOT NULL,
-            original_completion_json TEXT NOT NULL,
-            topology_layer INTEGER NOT NULL,
-            first_dispatch_order INTEGER NOT NULL,
-            repair_attempts_used INTEGER NOT NULL DEFAULT 0,
-            conflict_replans_used INTEGER NOT NULL DEFAULT 0,
-            conflict_chain_id TEXT,
-            integration_commit TEXT,
-            status TEXT NOT NULL CHECK(status IN (
-              'pending', 'applying', 'conflicted', 'integrated', 'parked', 'uncertain'
-            )),
-            applying_at TEXT,
-            integrated_at TEXT,
-            error_summary TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(task_id, generation_id, subtask_id),
-            FOREIGN KEY (task_id) REFERENCES tasks(id),
-            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
-          );
-          CREATE INDEX IF NOT EXISTS idx_workspace_publications_apply
-            ON workspace_publications(task_id, generation_id, status, topology_layer, first_dispatch_order, subtask_id);
-
-          CREATE TABLE IF NOT EXISTS workspace_merge_attempts (
+CREATE TABLE workspace_merge_attempts (
             id TEXT PRIMARY KEY,
             publication_id TEXT NOT NULL,
             decision_id TEXT NOT NULL,
@@ -1504,39 +738,8 @@ const MIGRATIONS: Migration[] = [
             UNIQUE(publication_id, ordinal),
             FOREIGN KEY (publication_id) REFERENCES workspace_publications(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_workspace_merge_attempts_publication
-            ON workspace_merge_attempts(publication_id, ordinal);
-          CREATE TRIGGER IF NOT EXISTS workspace_merge_attempts_immutable_update
-          BEFORE UPDATE ON workspace_merge_attempts BEGIN
-            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
-          END;
-          CREATE TRIGGER IF NOT EXISTS workspace_merge_attempts_immutable_delete
-          BEFORE DELETE ON workspace_merge_attempts BEGIN
-            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
-          END;
-        `);
 
-        if (tableExists(db, 'kernel_decision_applications')) {
-          db.exec(`
-            UPDATE kernel_decision_applications
-            SET status = 'uncertain',
-                error_summary = 'pre-v4 application requires startup reconciliation',
-                updated_at = created_at
-            WHERE status IN ('pending', 'applying')
-          `);
-        }
-      });
-      migrate();
-    },
-  },
-  {
-    version: 27,
-    up: (db) => {
-      const migrate = db.transaction(() => {
-        db.exec(`
-          DROP TABLE IF EXISTS kernel_dispatch_items_v27;
-          DROP TABLE IF EXISTS workspace_publications_v27;
-          CREATE TABLE kernel_dispatch_items_v27 (
+CREATE TABLE "kernel_dispatch_items" (
             attempt_id TEXT PRIMARY KEY,
             decision_id TEXT NOT NULL,
             batch_order INTEGER NOT NULL,
@@ -1570,31 +773,8 @@ const MIGRATIONS: Migration[] = [
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
           );
-          INSERT INTO kernel_dispatch_items_v27 (
-            attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
-            agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
-            attempt_payload_json, resource_grant_json, status, work_unit_id,
-            sandbox_container_id, launch_started_at, terminal_at, error_summary,
-            created_at, updated_at
-          )
-          SELECT
-            attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
-            agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
-            attempt_payload_json, resource_grant_json, status, work_unit_id,
-            sandbox_container_id, launch_started_at, terminal_at, error_summary,
-            created_at, updated_at
-          FROM kernel_dispatch_items;
-          DROP TABLE kernel_dispatch_items;
-          ALTER TABLE kernel_dispatch_items_v27 RENAME TO kernel_dispatch_items;
-          CREATE INDEX idx_kernel_dispatch_items_supervisor
-            ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
-          CREATE INDEX idx_kernel_dispatch_items_task
-            ON kernel_dispatch_items(task_id, status, batch_order);
-          CREATE UNIQUE INDEX idx_kernel_dispatch_one_active_subtask
-            ON kernel_dispatch_items(task_id, generation_id, subtask_id)
-            WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling');
 
-          CREATE TABLE workspace_publications_v27 (
+CREATE TABLE "workspace_publications" (
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
@@ -1626,29 +806,8 @@ const MIGRATIONS: Migration[] = [
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
           );
-          INSERT INTO workspace_publications_v27 (
-            id, task_id, generation_id, subtask_id, source_attempt_id,
-            agent_class_name, candidate_commit, original_completion_json,
-            topology_layer, first_dispatch_order, repair_attempts_used,
-            conflict_replans_used, conflict_chain_id, integration_commit,
-            status, applying_at, integrated_at, error_summary, created_at, updated_at
-          )
-          SELECT
-            id, task_id, generation_id, subtask_id, source_attempt_id,
-            agent_class_name, candidate_commit, original_completion_json,
-            topology_layer, first_dispatch_order, repair_attempts_used,
-            conflict_replans_used, conflict_chain_id, integration_commit,
-            status, applying_at, integrated_at, error_summary, created_at, updated_at
-          FROM workspace_publications;
-          DROP TABLE workspace_publications;
-          ALTER TABLE workspace_publications_v27 RENAME TO workspace_publications;
-          CREATE INDEX idx_workspace_publications_apply
-            ON workspace_publications(
-              task_id, generation_id, status, topology_layer,
-              first_dispatch_order, subtask_id
-            );
 
-          CREATE TABLE IF NOT EXISTS generation_replan_requests (
+CREATE TABLE generation_replan_requests (
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
@@ -1669,36 +828,265 @@ const MIGRATIONS: Migration[] = [
             UNIQUE(task_id, generation_id, source_revision),
             FOREIGN KEY (task_id) REFERENCES tasks(id)
           );
-          CREATE INDEX IF NOT EXISTS idx_generation_replan_requests_status
-            ON generation_replan_requests(status, created_at, id);
-          CREATE INDEX IF NOT EXISTS idx_generation_replan_requests_task
-            ON generation_replan_requests(task_id, generation_id, status);
-        `);
-        addColumnIfMissing(
-          db,
-          'resource_leases',
-          'revocation_requested_at',
-          'TEXT',
-        );
-        addColumnIfMissing(db, 'resource_leases', 'revocation_reason', 'TEXT');
-        addColumnIfMissing(
-          db,
-          'work_graph_revisions',
-          'completion_kind',
-          "TEXT CHECK(completion_kind IN ('full', 'partial_accepted'))",
-        );
-      });
 
-      const foreignKeys = Number(db.pragma('foreign_keys', { simple: true })) === 1;
-      db.pragma('foreign_keys = OFF');
-      try {
-        migrate();
-      } finally {
-        db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
-      }
-    },
-  },
-];
+CREATE INDEX idx_tasks_status ON tasks(status);
+
+CREATE INDEX idx_preferences_scope ON preferences(scope);
+
+CREATE INDEX idx_preferences_status ON preferences(status);
+
+CREATE INDEX idx_observations_pattern ON observations(pattern);
+
+CREATE INDEX idx_interactions_session ON interactions(session_id, created_at);
+
+CREATE INDEX idx_interactions_task ON interactions(task_id, created_at);
+
+CREATE INDEX idx_guidance_events_task ON guidance_events(task_id, created_at);
+
+CREATE INDEX idx_task_relations_source ON task_relations(source_task_id, relation_type);
+
+CREATE INDEX idx_task_relations_target ON task_relations(target_task_id, relation_type);
+
+CREATE INDEX idx_task_memory_embeddings_task ON task_memory_embeddings(task_id, memory_kind);
+
+CREATE INDEX idx_preference_embeddings_preference ON preference_embeddings(preference_id);
+
+CREATE INDEX idx_memory_recall_events_task ON memory_recall_events(task_id, created_at);
+
+CREATE INDEX idx_recall_review_policies_lookup
+        ON recall_review_policies(policy_type, scope, subject, proposal_type);
+
+CREATE INDEX idx_recall_feedback_target
+        ON recall_feedback(target_kind, target_id, created_at);
+
+CREATE INDEX idx_recall_feedback_audit
+        ON recall_feedback(audit_id, created_at);
+
+CREATE INDEX idx_reflection_events_task
+        ON reflection_events(task_id, created_at);
+
+CREATE INDEX idx_reflection_events_source
+        ON reflection_events(source_type, source_id);
+
+CREATE INDEX idx_learning_candidates_status
+        ON learning_candidates(status, created_at);
+
+CREATE INDEX idx_learning_candidates_source_task
+        ON learning_candidates(source_task_id, created_at);
+
+CREATE INDEX idx_skill_usage_events_task
+        ON executor_skill_usage_events(task_id, created_at);
+
+CREATE INDEX idx_skill_usage_events_execution
+        ON executor_skill_usage_events(execution_id, created_at);
+
+CREATE INDEX idx_skill_usage_events_skill
+        ON executor_skill_usage_events(skill_name, event_type, created_at);
+
+CREATE INDEX idx_skill_install_events_candidate
+        ON executor_skill_install_events(candidate_id, created_at);
+
+CREATE INDEX idx_skill_install_events_executor
+        ON executor_skill_install_events(executor_name, status, created_at);
+
+CREATE INDEX idx_task_memory_cards_task
+        ON task_memory_cards(task_id, updated_at);
+
+CREATE INDEX idx_task_memory_cards_source_candidate
+        ON task_memory_cards(source_candidate_id);
+
+CREATE INDEX idx_skill_effect_summaries_skill
+        ON skill_effect_summaries(skill_name, skill_version_key, updated_at);
+
+CREATE INDEX idx_skill_effect_summaries_executor
+        ON skill_effect_summaries(executor_name, used_count, updated_at);
+
+CREATE INDEX idx_memory_audit_events_memory
+        ON memory_audit_events(memory_id, created_at);
+
+CREATE INDEX idx_memory_audit_events_task
+        ON memory_audit_events(task_id, created_at);
+
+CREATE INDEX idx_memory_audit_events_action
+        ON memory_audit_events(action, created_at);
+
+CREATE INDEX idx_executor_route_events_executor
+        ON executor_route_events(selected_executor, created_at);
+
+CREATE INDEX idx_executor_route_events_task
+        ON executor_route_events(task_id, created_at);
+
+CREATE INDEX idx_task_events_task ON task_events(task_id, created_at);
+
+CREATE INDEX idx_work_units_state ON work_units(agent_class_kind, state, updated_at);
+
+CREATE INDEX idx_work_unit_events_unit ON work_unit_events(work_unit_id, created_at);
+
+CREATE INDEX idx_planner_runs_session
+        ON planner_runs(session_id, created_at);
+
+CREATE INDEX idx_planner_tool_calls_run
+        ON planner_tool_calls(planner_run_id, sequence);
+
+CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
+
+CREATE INDEX idx_subtask_handoffs_to ON subtask_handoffs(task_id, to_subtask_id);
+
+CREATE INDEX idx_executor_attempt_receipts_subtask
+          ON executor_attempt_receipts(task_id, subtask_id, completed_at);
+
+CREATE INDEX idx_task_execution_evidence_task
+          ON task_execution_evidence(task_id, created_at, id);
+
+CREATE UNIQUE INDEX idx_work_units_one_active_attempt_per_subtask
+          ON work_units(claimed_subtask_id)
+          WHERE claimed_subtask_id IS NOT NULL AND state IN ('claimed', 'running', 'waiting');
+
+CREATE INDEX idx_kernel_decisions_session
+          ON kernel_decisions(session_id, created_at, id);
+
+CREATE INDEX idx_kernel_decisions_task
+          ON kernel_decisions(task_id, created_at, id);
+
+CREATE INDEX idx_kernel_decisions_correlation
+          ON kernel_decisions(correlation_id, created_at, id);
+
+CREATE INDEX idx_kernel_events_drain
+            ON kernel_events(status, available_at, created_at, id);
+
+CREATE INDEX idx_kernel_events_task
+            ON kernel_events(task_id, created_at, id);
+
+CREATE INDEX idx_kernel_decision_applications_status
+            ON kernel_decision_applications(status, created_at, id);
+
+CREATE INDEX idx_kernel_effect_outbox_drain
+            ON kernel_effect_outbox(status, available_at, created_at, id);
+
+CREATE UNIQUE INDEX idx_work_graph_one_active_revision
+            ON work_graph_revisions(task_id) WHERE status = 'active';
+
+CREATE INDEX idx_work_graph_revisions_generation
+            ON work_graph_revisions(task_id, generation_id, revision);
+
+CREATE INDEX idx_resource_leases_active
+            ON resource_leases(released_at, expires_at, partition_key);
+
+CREATE INDEX idx_resource_leases_attempt
+            ON resource_leases(attempt_id, released_at);
+
+CREATE UNIQUE INDEX idx_resource_leases_identity
+            ON resource_leases(attempt_id, lease_token, partition_key, access_mode);
+
+CREATE INDEX idx_resource_waits_status
+            ON resource_waits(status, requested_at);
+
+CREATE INDEX idx_workspace_records_retention
+            ON workspace_records(status, cleanup_after);
+
+CREATE INDEX idx_workspace_checkpoints_workspace
+            ON workspace_checkpoints(workspace_id, created_at);
+
+CREATE INDEX idx_permission_requests_pending
+            ON permission_requests(status, task_id, created_at);
+
+CREATE INDEX idx_permission_grants_attempt
+            ON permission_grants(attempt_id, expires_at, revoked_at);
+
+CREATE INDEX idx_user_authorizations_request
+            ON user_authorizations(request_id, created_at);
+
+CREATE INDEX idx_attempt_sandboxes_status
+            ON attempt_sandboxes(status, updated_at);
+
+CREATE INDEX idx_workspace_merge_attempts_publication
+            ON workspace_merge_attempts(publication_id, ordinal);
+
+CREATE INDEX idx_kernel_dispatch_items_supervisor
+            ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
+
+CREATE INDEX idx_kernel_dispatch_items_task
+            ON kernel_dispatch_items(task_id, status, batch_order);
+
+CREATE UNIQUE INDEX idx_kernel_dispatch_one_active_subtask
+            ON kernel_dispatch_items(task_id, generation_id, subtask_id)
+            WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling');
+
+CREATE INDEX idx_workspace_publications_apply
+            ON workspace_publications(
+              task_id, generation_id, status, topology_layer,
+              first_dispatch_order, subtask_id
+            );
+
+CREATE INDEX idx_generation_replan_requests_status
+            ON generation_replan_requests(status, created_at, id);
+
+CREATE INDEX idx_generation_replan_requests_task
+            ON generation_replan_requests(task_id, generation_id, status);
+
+CREATE TRIGGER trg_task_search_index_interactions_insert
+      AFTER INSERT ON interactions
+      WHEN NEW.task_id IS NOT NULL
+      BEGIN
+        DELETE FROM task_search_index
+          WHERE source_kind = 'interaction' AND source_id = NEW.id;
+        INSERT INTO task_search_index (
+          task_id, source_kind, source_id, title, body, tags, created_at, updated_at
+        ) VALUES (
+          NEW.task_id,
+          'interaction',
+          NEW.id,
+          '',
+          substr(COALESCE(NEW.user_input, '') || char(10) || COALESCE(NEW.system_output, ''), 1, 4000),
+          'interaction',
+          NEW.created_at,
+          NEW.created_at
+        );
+      END;
+
+CREATE TRIGGER trg_task_search_index_interactions_delete
+      AFTER DELETE ON interactions
+      WHEN OLD.task_id IS NOT NULL
+      BEGIN
+        DELETE FROM task_search_index
+          WHERE source_kind = 'interaction' AND source_id = OLD.id;
+      END;
+
+CREATE TRIGGER subtask_handoffs_immutable_update
+        BEFORE UPDATE ON subtask_handoffs BEGIN
+          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
+        END;
+
+CREATE TRIGGER subtask_handoffs_immutable_delete
+        BEFORE DELETE ON subtask_handoffs BEGIN
+          SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
+        END;
+
+CREATE TRIGGER executor_attempt_receipts_immutable_update
+        BEFORE UPDATE ON executor_attempt_receipts BEGIN
+          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+        END;
+
+CREATE TRIGGER executor_attempt_receipts_immutable_delete
+        BEFORE DELETE ON executor_attempt_receipts BEGIN
+          SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+        END;
+
+CREATE TRIGGER workspace_checkpoints_immutable_update
+          BEFORE UPDATE ON workspace_checkpoints BEGIN
+            SELECT RAISE(ABORT, 'workspace checkpoints are immutable');
+          END;
+
+CREATE TRIGGER workspace_merge_attempts_immutable_update
+          BEFORE UPDATE ON workspace_merge_attempts BEGIN
+            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
+          END;
+
+CREATE TRIGGER workspace_merge_attempts_immutable_delete
+          BEFORE DELETE ON workspace_merge_attempts BEGIN
+            SELECT RAISE(ABORT, 'workspace_merge_attempts are immutable');
+          END;
+`;
 
 function tableExists(db: Database.Database, table: string): boolean {
   const row = db.prepare(`
@@ -1707,61 +1095,43 @@ function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(row);
 }
 
-function columnExists(db: Database.Database, table: string, column: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  return rows.some(row => row.name === column);
-}
-
-function addColumnIfMissing(db: Database.Database, table: string, column: string, definition: string): void {
-  if (columnExists(db, table, column)) {
-    return;
-  }
-
-  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function dropColumnIfExists(db: Database.Database, table: string, column: string): void {
-  if (!columnExists(db, table, column)) {
-    return;
-  }
-
-  db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
-}
-
-function runMigration(db: Database.Database, migration: Migration): void {
-  if (typeof migration.up === 'string') {
-    db.exec(migration.up);
-    return;
-  }
-
-  migration.up(db);
-}
-
 /**
- * 运行数据库迁移
+ * Creates the only supported pre-release schema.
+ *
+ * MetaClaw has not shipped a compatible database format yet. Existing
+ * pre-release databases fail closed instead of running upgrade or dual-read
+ * paths; callers must create a fresh database.
  */
 export function runMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`);
-
-  const result = db.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number | null };
-  const currentVersion = result?.v ?? 0;
-
-  for (const migration of MIGRATIONS) {
-    if (migration.version > currentVersion) {
-      runMigration(db, migration);
-      db.prepare('INSERT OR IGNORE INTO schema_version (version) VALUES (?)').run(migration.version);
+  if (tableExists(db, 'schema_version')) {
+    const versions = db.prepare(
+      'SELECT version FROM schema_version ORDER BY version',
+    ).all() as Array<{ version: number }>;
+    if (versions.length === 1 && versions[0]?.version === CURRENT_SCHEMA_VERSION) {
+      return;
     }
+    const found = versions.map(row => row.version).join(', ') || 'empty';
+    throw new Error(
+      `unsupported pre-release SQLite schema (${found}); create a fresh database for schema ${CURRENT_SCHEMA_VERSION}`,
+    );
   }
 
-  addColumnIfMissing(db, 'executor_route_events', 'primary_intent', "TEXT NOT NULL DEFAULT 'general'");
-  addColumnIfMissing(db, 'executor_route_events', 'matched_boundary_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'executor_route_events', 'rejected_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'agent_classes', 'harness', 'TEXT');
-  addColumnIfMissing(db, 'agent_classes', 'model', 'TEXT');
-  addColumnIfMissing(db, 'agent_classes', 'skills_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'agent_classes', 'mcp_servers_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'agent_classes', 'plugins_json', "TEXT NOT NULL DEFAULT '[]'");
-  addColumnIfMissing(db, 'agent_classes', 'execution_image_ref', 'TEXT');
-  addColumnIfMissing(db, 'agent_classes', 'resolved_image_id', 'TEXT');
-  addColumnIfMissing(db, 'agent_classes', 'permission_profile_id', 'TEXT');
+  const existing = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    ORDER BY name
+  `).all() as Array<{ name: string }>;
+  if (existing.length > 0) {
+    throw new Error(
+      `unsupported pre-release SQLite database without schema_version (${existing.map(row => row.name).join(', ')})`,
+    );
+  }
+
+  db.transaction(() => {
+    db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
+    db.exec(CURRENT_SCHEMA_SQL);
+    db.prepare('INSERT INTO schema_version (version) VALUES (?)')
+      .run(CURRENT_SCHEMA_VERSION);
+  })();
 }

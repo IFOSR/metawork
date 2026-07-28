@@ -13,7 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
@@ -148,7 +148,7 @@ describe('Round 2 guidance acceptance', () => {
     }));
 
     const task = taskEngine.create({ title: '恢复网络失败任务', goal: '继续执行网络恢复后的任务' });
-    seedPersistedV3WorkGraph(db, task.id, task.title);
+    seedPersistedWorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.block(task.id, {
@@ -182,7 +182,7 @@ describe('Round 2 guidance acceptance', () => {
     }), notifier);
 
     const task = taskEngine.create({ title: '后台恢复任务', goal: '继续执行后台恢复任务' });
-    seedPersistedV3WorkGraph(db, task.id, task.title);
+    seedPersistedWorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.block(task.id, {
@@ -266,7 +266,7 @@ describe('Round 2 guidance acceptance', () => {
     }));
 
     const task = taskEngine.create({ title: '被抢占任务', goal: '继续完成被抢占任务' });
-    seedPersistedV3WorkGraph(db, task.id, task.title);
+    seedPersistedWorkGraph(db, task.id, task.title);
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
     taskEngine.park(task.id, '被更高优先级任务抢占：临时任务', {
@@ -344,7 +344,7 @@ describe('Round 2 guidance acceptance', () => {
     }));
 
     const task = taskEngine.create({ title: 'Phoenix 周报', goal: '整理 Phoenix 周报' });
-    seedPersistedV3WorkGraph(db, task.id, task.title);
+    seedPersistedWorkGraph(db, task.id, task.title);
     taskRepo.update(task.id, {
       status: 'parked',
       summary: '已整理风险栏目，待补经营数据',

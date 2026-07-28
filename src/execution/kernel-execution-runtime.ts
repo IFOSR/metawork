@@ -136,6 +136,7 @@ export interface KernelExecutionRuntimeDeps {
 export class KernelExecutionRuntime {
   private readonly taskEvents: TaskEventRecorder;
   private readonly attemptSupervisor: AttemptSupervisor;
+  private readonly cancellationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
@@ -255,12 +256,6 @@ export class KernelExecutionRuntime {
               controlError = 'partial acceptance Subtask facts changed before application';
               return null;
             }
-            this.deps.workGraphRevisionRepo.complete(
-              action.taskId,
-              action.graphRevision,
-              new Date().toISOString(),
-              'partial_accepted',
-            );
             const task = this.deps.taskRuntimeService.findTask(action.taskId)!;
             await this.completeTask({
               taskId: action.taskId,
@@ -276,6 +271,10 @@ export class KernelExecutionRuntime {
               subtasks: done,
               cancelledSubtasks: cancelled,
               completionKind: 'partial_accepted',
+              revisionCompletion: {
+                revision: action.graphRevision,
+                completionKind: 'partial_accepted',
+              },
               finishExecution: async lines => {
                 this.deps.callbacks.appendOutput(...lines);
                 this.deps.callbacks.refreshRuntimeState();
@@ -322,9 +321,31 @@ export class KernelExecutionRuntime {
       await this.attemptSupervisor.drain(taskId);
       await this.deps.cancellationCoordinator.recover(taskId);
       this.deps.callbacks.refreshRuntimeState();
+      this.clearCancellationRetry(taskId);
+      const remainingTaskId = this.deps.cancellationCoordinator.findCleanupTaskId();
+      if (remainingTaskId) this.scheduleCancellationRetry(remainingTaskId);
     } catch {
-      // The durable cancelling rows retain capacity and startup recovery retries cleanup.
+      // Durable cancelling rows retain capacity while the same process and startup
+      // recovery both retry cleanup.
+      this.scheduleCancellationRetry(taskId);
     }
+  }
+
+  private scheduleCancellationRetry(taskId: string): void {
+    if (this.cancellationRetryTimers.has(taskId)) return;
+    const timer = setTimeout(() => {
+      this.cancellationRetryTimers.delete(taskId);
+      void this.drainCancellation(taskId);
+    }, 1_000);
+    timer.unref?.();
+    this.cancellationRetryTimers.set(taskId, timer);
+  }
+
+  private clearCancellationRetry(taskId: string): void {
+    const timer = this.cancellationRetryTimers.get(taskId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.cancellationRetryTimers.delete(taskId);
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
@@ -655,9 +676,12 @@ export class KernelExecutionRuntime {
         subtask.status === 'done'
         && (!activeRevision || subtask.generationId === activeRevision.generationId)
       );
-      if (activeRevision) this.deps.workGraphRevisionRepo.complete(action.taskId, activeRevision.revision, new Date().toISOString());
       await this.completeTask({
         taskId: action.taskId, decisionId: decision.id, executionId: input.executionId, request: input.request, subtasks,
+        revisionCompletion: activeRevision ? {
+          revision: activeRevision.revision,
+          completionKind: 'full',
+        } : undefined,
         finishExecution: input.finishExecution,
       });
       return null;
@@ -698,9 +722,10 @@ export class KernelExecutionRuntime {
             action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
           },
         );
-        if (!this.deps.generationReplanRepo.markSubmitted(
+        if (!this.deps.generationReplanRepo.submitPlan(
           request.id,
           token,
+          event,
           new Date().toISOString(),
         )) {
           return null;
@@ -1372,6 +1397,10 @@ export class KernelExecutionRuntime {
     subtasks: Subtask[];
     cancelledSubtasks?: Subtask[];
     completionKind?: 'full' | 'partial_accepted';
+    revisionCompletion?: {
+      revision: number;
+      completionKind: 'full' | 'partial_accepted';
+    };
     finishExecution(lines: string[]): Promise<void>;
   }): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(input.taskId)!;
@@ -1418,6 +1447,14 @@ export class KernelExecutionRuntime {
       cancelledSubtaskIds: cancelledSubtasks.map(subtask => subtask.id),
     };
     this.deps.effectOutboxRepo.transaction(() => {
+      if (input.revisionCompletion) {
+        this.deps.workGraphRevisionRepo.complete(
+          input.taskId,
+          input.revisionCompletion.revision,
+          new Date().toISOString(),
+          input.revisionCompletion.completionKind,
+        );
+      }
       this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
       this.deps.persistenceService.recordInteraction({
         taskId: input.taskId,

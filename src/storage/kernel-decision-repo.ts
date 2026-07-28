@@ -5,7 +5,7 @@ export type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
 
 interface KernelDecisionRow {
   id: string;
-  schema_version: 1 | 2;
+  schema_version: number;
   event_id: string;
   event_type: KernelEvent['type'];
   correlation_id: string;
@@ -84,9 +84,13 @@ export class KernelDecisionRepo {
 }
 
 function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
+  assertCurrentSchema(row.schema_version, 'decision');
+  const event = parseCurrentKernelValue<KernelEvent>(row.event_json, 'event');
+  const snapshot = parseCurrentKernelValue<KernelSnapshot>(row.snapshot_json, 'snapshot');
+  const decision = parseCurrentKernelValue<KernelDecision>(row.decision_json, 'decision');
   return {
     id: row.id,
-    schemaVersion: row.schema_version,
+    schemaVersion: 4,
     eventId: row.event_id,
     eventType: row.event_type,
     correlationId: row.correlation_id,
@@ -95,11 +99,36 @@ function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
     taskId: row.task_id,
     subtaskId: row.subtask_id,
     attemptId: row.attempt_id,
-    event: JSON.parse(row.event_json) as KernelEvent,
-    snapshot: JSON.parse(row.snapshot_json) as KernelSnapshot,
-    decision: JSON.parse(row.decision_json) as KernelDecision,
+    event,
+    snapshot,
+    decision,
     action: row.action,
     reason: row.reason,
     createdAt: row.created_at,
   };
+}
+
+function assertCurrentSchema(schemaVersion: number, kind: string): asserts schemaVersion is 4 {
+  if (schemaVersion !== 4) {
+    throw new Error(`unsupported Kernel ${kind} schema version ${schemaVersion}`);
+  }
+}
+
+function parseCurrentKernelValue<T extends { schemaVersion: 4 }>(
+  raw: string,
+  kind: string,
+): T {
+  const value: unknown = JSON.parse(raw);
+  if (
+    typeof value !== 'object'
+    || value === null
+    || !('schemaVersion' in value)
+    || value.schemaVersion !== 4
+  ) {
+    const version = typeof value === 'object' && value !== null && 'schemaVersion' in value
+      ? String(value.schemaVersion)
+      : 'missing';
+    throw new Error(`unsupported Kernel ${kind} schema version ${version}`);
+  }
+  return value as T;
 }

@@ -66,7 +66,7 @@ ready -> running -> awaiting_integration -> done
 - `workspace_publications`：保存 candidate commit、原 completion payload、稳定顺序、repair/replan 预算和最终 integration commit。
 - `workspace_merge_attempts`：不可变保存 base/ours/theirs、冲突路径、文件策略、Kernel Decision 和结果。
 
-v3 Kernel applied ledger 继续作为审计。升级不运行双契约；遗留 pending/processing application 在 startup reconciliation 中 fail closed 并转换为 v4 scheduling/recovery event。
+本阶段交付时 v3 Kernel applied ledger 曾保留审计。Phase 6 最终收口已对未发布版本执行 hard cut：当前只接受新安装 SQLite v27 与 Kernel v4，旧 ledger、旧 schema 和升级路径不再属于生产契约。
 
 ## Git 工作区与发布
 

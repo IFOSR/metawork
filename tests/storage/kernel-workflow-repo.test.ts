@@ -75,6 +75,25 @@ describe('KernelWorkflowRepo', () => {
     expect(repo.claimNext(event.occurredAt)).toEqual(observation);
     expect(repo.claimNext(event.occurredAt)).toBeNull();
   });
+
+  it('fails closed without claiming an event outside the unique v4 contract', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const repo = new KernelWorkflowRepo(db);
+    const event = directReplyEvent();
+    repo.enqueue(event);
+    db.prepare(`
+      UPDATE kernel_events
+      SET schema_version = 3,
+          event_json = json_set(event_json, '$.schemaVersion', 3)
+      WHERE id = ?
+    `).run(event.id);
+
+    expect(() => repo.claimNext(event.occurredAt))
+      .toThrow('unsupported Kernel event schema version 3');
+    expect(db.prepare('SELECT status FROM kernel_events WHERE id = ?').get(event.id))
+      .toEqual({ status: 'pending' });
+  });
 });
 
 function directReplyEvent(): KernelEvent {

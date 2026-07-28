@@ -55,6 +55,7 @@ import {
   WorkspacePublicationRepo,
   type WorkspacePublicationCompletion,
 } from '../storage/workspace-publication-repo.js';
+import { AttemptTerminalService } from './attempt-terminal-service.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -93,6 +94,7 @@ export class SubtaskAttemptRunner {
   private readonly managedGitWorkspace: ManagedGitWorkspaceService;
   private readonly dispatchItemRepo: KernelDispatchItemRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
+  private readonly terminalService: AttemptTerminalService;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db);
@@ -102,6 +104,7 @@ export class SubtaskAttemptRunner {
     this.managedGitWorkspace = new ManagedGitWorkspaceService(deps.workspaceStore);
     this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
+    this.terminalService = new AttemptTerminalService(deps.db);
   }
 
   supportsResponseOnly(agentClassName: string): boolean {
@@ -122,24 +125,49 @@ export class SubtaskAttemptRunner {
   }): void {
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     if (!subtask || subtask.status === 'done' || this.receiptRepo.findByAttemptId(input.attemptId)) return;
+    const dispatch = this.dispatchItemRepo.find(input.attemptId);
+    if (!dispatch) {
+      throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
+    }
     const now = new Date().toISOString();
-    this.deps.db.transaction(() => {
-      this.receiptRepo.insert(buildReceipt({
+    const failure = {
+      kind: 'heartbeat_lost' as const,
+      scope: 'agent_class' as const,
+      code: 'heartbeat_lost',
+      summary: 'WorkUnit lease expired before a terminal observation',
+    };
+    this.terminalService.land({
+      receipt: buildReceipt({
         ...input,
         startedAt: now,
         terminalState: 'heartbeat_lost',
         rawResponse: '',
         errorCode: 'heartbeat_lost',
         errorDetail: 'WorkUnit lease expired before a terminal observation',
-        failure: {
-          kind: 'heartbeat_lost', scope: 'agent_class', code: 'heartbeat_lost',
-          summary: 'WorkUnit lease expired before a terminal observation',
-        },
-      }, now));
-      this.deps.subtaskRepo.updateStatus(input.subtaskId, 'awaiting_decision', {
-        error: 'WorkUnit heartbeat lost',
-      });
-    })();
+        failure,
+      }, now),
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_decision',
+      subtaskError: 'WorkUnit heartbeat lost',
+      event: {
+        schemaVersion: 4,
+        type: 'execution_outcome',
+        id: `event_${dispatch.attemptId}_execution_outcome`,
+        correlationId: dispatch.decisionId,
+        causationId: dispatch.decisionId,
+        occurredAt: now,
+        sessionId: this.deps.sessionId,
+        taskId: dispatch.taskId,
+        subtaskId: dispatch.subtaskId,
+        attemptId: dispatch.attemptId,
+        terminalKind: 'failed',
+        agentClassName: dispatch.agentClassName,
+        attemptKind: dispatch.attemptKind,
+        sourceAttemptId: dispatch.sourceAttemptId,
+        failure,
+      },
+      now,
+    });
   }
 
   async run(input: {
@@ -533,8 +561,12 @@ export class SubtaskAttemptRunner {
           reportedResolvedPaths: report.resolvedPaths,
         });
         const completedAt = new Date().toISOString();
-        this.deps.db.transaction(() => {
-          this.receiptRepo.insert(buildReceipt({
+        const dispatchItem = this.dispatchItemRepo.find(attemptId);
+        if (!dispatchItem) {
+          throw new Error(`authorized dispatch item not found: ${attemptId}`);
+        }
+        const landing = this.terminalService.land({
+          receipt: buildReceipt({
             attemptId,
             executionId: input.executionId,
             taskId: task.id,
@@ -544,14 +576,41 @@ export class SubtaskAttemptRunner {
             startedAt,
             terminalState: 'completed',
             rawResponse,
-          }, completedAt));
-          this.publicationRepo.markPendingAfterRepair(
-            mergeRepair!.publicationId,
-            repairedCommit.commit,
-            completedAt,
-          );
-          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', { error: null });
-        })();
+          }, completedAt),
+          expectedSubtaskStatus: 'running',
+          nextSubtaskStatus: 'awaiting_integration',
+          subtaskError: null,
+          repairPublication: {
+            publicationId: mergeRepair.publicationId,
+            candidateCommit: repairedCommit.commit,
+          },
+          event: {
+            schemaVersion: 4,
+            type: 'execution_outcome',
+            id: `event_${dispatchItem.attemptId}_execution_outcome`,
+            correlationId: dispatchItem.decisionId,
+            causationId: dispatchItem.decisionId,
+            occurredAt: completedAt,
+            sessionId: this.deps.sessionId,
+            taskId: dispatchItem.taskId,
+            subtaskId: dispatchItem.subtaskId,
+            attemptId: dispatchItem.attemptId,
+            terminalKind: 'completed',
+            agentClassName: dispatchItem.agentClassName,
+            attemptKind: dispatchItem.attemptKind,
+            sourceAttemptId: dispatchItem.sourceAttemptId,
+            failure: null,
+          },
+          now: completedAt,
+        });
+        if (landing.cancellationWon) {
+          finalCheckpointReason = 'cancelled';
+          return {
+            outcome: 'cancelled_or_stale',
+            attemptId,
+            reason: 'Cancellation fence won before merge-repair terminal landing',
+          };
+        }
         const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
           task.id,
           subtask.generationId,
@@ -560,7 +619,7 @@ export class SubtaskAttemptRunner {
         if (workspaceRecord) {
           this.deps.workspaceRepository.upsert({
             ...workspaceRecord,
-            headCommit: repairedCommit.commit,
+            headCommit: repairedCommit.workspaceCommit,
             status: 'active',
             updatedAt: completedAt,
           });
@@ -594,33 +653,23 @@ export class SubtaskAttemptRunner {
       });
       if (!completion.ok) {
         const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
-        const transaction = this.deps.db.transaction(() => {
-          this.receiptRepo.insert(buildReceipt({
-            attemptId,
-            executionId: input.executionId,
-            taskId: task.id,
-            subtaskId: subtask.id,
-            workUnitId: claim.workUnit.id,
-            agentClassName: agentClass.name,
-            startedAt,
-            terminalState: 'contract_blocked',
-            rawResponse,
-            completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
-            violations: completion.violations,
-            errorCode: completion.violations[0]?.code ?? 'completion_malformed',
-            errorDetail: detail,
-          }));
-          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
-        });
-        transaction();
-        claim.markFailed(detail);
-        return {
-          outcome: 'contract_failed', attemptId, workUnitId: claim.workUnit.id, agentClassName: agentClass.name,
-          responseBytes: Buffer.byteLength(rawResponse, 'utf8'),
-          receiptCount: this.receiptRepo.countByTerminal(task.id, subtask.id, 'contract_blocked'),
-          completionContract: built.context.completionContract,
+        const contractOutcome = this.landContractFailure({
+          attemptId,
+          executionId: input.executionId,
+          taskId: task.id,
+          subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id,
+          agentClassName: agentClass.name,
+          startedAt,
+          rawResponse,
+          completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
           violations: completion.violations,
-        };
+          errorCode: completion.violations[0]?.code ?? 'completion_malformed',
+          errorDetail: detail,
+          completionContract: built.context.completionContract,
+        });
+        claim.markFailed(detail);
+        return contractOutcome;
       }
       if (completion.envelope.status === 'failed') {
         const failure = completion.envelope.failure;
@@ -641,24 +690,19 @@ export class SubtaskAttemptRunner {
 
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
         const detail = 'Task, Subtask, or WorkUnit claim changed before commit';
-        this.deps.db.transaction(() => {
-          this.receiptRepo.insert(buildReceipt({
-            attemptId,
-            executionId: input.executionId,
-            taskId: task.id,
-            subtaskId: subtask.id,
-            workUnitId: claim.workUnit.id,
-            agentClassName: agentClass.name,
-            startedAt,
-            terminalState: 'cancelled_or_stale',
-            rawResponse,
-            errorCode: 'attempt_stale',
-            errorDetail: detail,
-          }));
-          if (this.deps.subtaskRepo.findById(subtask.id)?.status === 'running') {
-            this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
-          }
-        })();
+        this.persistNonSuccess({
+          attemptId,
+          executionId: input.executionId,
+          taskId: task.id,
+          subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id,
+          agentClassName: agentClass.name,
+          startedAt,
+          terminalState: 'cancelled_or_stale',
+          rawResponse,
+          errorCode: 'attempt_stale',
+          errorDetail: detail,
+        });
         if (this.isAttemptClaimCurrent(attemptId, claim.workUnit.id)) {
           claim.markFailed(detail);
         }
@@ -678,8 +722,11 @@ export class SubtaskAttemptRunner {
         handoffs: completedEnvelope.handoffs,
         completionSchemaVersion: 2,
       };
-      this.deps.db.transaction(() => {
-        this.receiptRepo.insert(buildReceipt({
+      if (!dispatchItem) {
+        throw new Error(`authorized dispatch item not found: ${attemptId}`);
+      }
+      const landing = this.terminalService.land({
+        receipt: buildReceipt({
           attemptId,
           executionId: input.executionId,
           taskId: task.id,
@@ -691,8 +738,11 @@ export class SubtaskAttemptRunner {
           rawResponse,
           completionSchemaVersion: 2,
           warnings: completion.warnings,
-        }, completedAt));
-        this.publicationRepo.insertCandidate({
+        }, completedAt),
+        expectedSubtaskStatus: 'running',
+        nextSubtaskStatus: 'awaiting_integration',
+        subtaskError: null,
+        publication: {
           id: `publication_${attemptId}`,
           taskId: task.id,
           generationId: subtask.generationId,
@@ -702,13 +752,36 @@ export class SubtaskAttemptRunner {
           candidateCommit: managedCommit.commit,
           completion: publicationCompletion,
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
-          firstDispatchOrder: dispatchItem?.batchOrder ?? 0,
+          firstDispatchOrder: dispatchItem.batchOrder,
           createdAt: completedAt,
-        });
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', {
-          error: null,
-        });
-      })();
+        },
+        event: {
+          schemaVersion: 4,
+          type: 'execution_outcome',
+          id: `event_${dispatchItem.attemptId}_execution_outcome`,
+          correlationId: dispatchItem.decisionId,
+          causationId: dispatchItem.decisionId,
+          occurredAt: completedAt,
+          sessionId: this.deps.sessionId,
+          taskId: dispatchItem.taskId,
+          subtaskId: dispatchItem.subtaskId,
+          attemptId: dispatchItem.attemptId,
+          terminalKind: 'completed',
+          agentClassName: dispatchItem.agentClassName,
+          attemptKind: dispatchItem.attemptKind,
+          sourceAttemptId: dispatchItem.sourceAttemptId,
+          failure: null,
+        },
+        now: completedAt,
+      });
+      if (landing.cancellationWon) {
+        finalCheckpointReason = 'cancelled';
+        return {
+          outcome: 'cancelled_or_stale',
+          attemptId,
+          reason: 'Cancellation fence won before attempt terminal landing',
+        };
+      }
       if (workspace) {
         this.deps.workspaceRepository.upsert({
           id: workspace.id,
@@ -751,14 +824,12 @@ export class SubtaskAttemptRunner {
           new Date().toISOString(),
         );
       }
-      try {
+      if (!this.receiptRepo.findByAttemptId(attemptId)) {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse, errorCode: 'attempt_exception', errorDetail: message,
         });
-      } catch {
-        // Preserve the original attempt exception; the finally block still clears the claim.
       }
       claim.markFailed(message);
       return {
@@ -798,8 +869,10 @@ export class SubtaskAttemptRunner {
       evidenceCapability?.revoke();
       await evidenceToolServer?.close();
       await capabilityToolServer?.close();
-      this.deps.resourceLeaseService.release(attemptId, leaseToken);
-      claim.release();
+      if (this.hasSealedTerminal(attemptId)) {
+        this.deps.resourceLeaseService.release(attemptId, leaseToken);
+        claim.release();
+      }
     }
   }
 
@@ -870,23 +943,23 @@ export class SubtaskAttemptRunner {
       });
       if (!completion.ok) {
         const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
-        this.deps.db.transaction(() => {
-          this.receiptRepo.insert(buildReceipt({
-            attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-            workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
-            terminalState: 'contract_blocked', rawResponse: result.output,
-            completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
-            violations: completion.violations, errorCode: completion.violations[0]?.code ?? 'completion_malformed', errorDetail: detail,
-          }));
-          this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_decision', { error: detail });
-        })();
+        const contractOutcome = this.landContractFailure({
+          attemptId: input.attemptId,
+          executionId: input.executionId,
+          taskId: task.id,
+          subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id,
+          agentClassName: input.agentClassName,
+          startedAt,
+          rawResponse: result.output,
+          completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
+          violations: completion.violations,
+          errorCode: completion.violations[0]?.code ?? 'completion_malformed',
+          errorDetail: detail,
+          completionContract: input.completionContract,
+        });
         claim.markFailed(detail);
-        return {
-          outcome: 'contract_failed', attemptId: input.attemptId, workUnitId: claim.workUnit.id,
-          agentClassName: input.agentClassName, responseBytes: Buffer.byteLength(result.output, 'utf8'),
-          receiptCount: this.receiptRepo.countByTerminal(task.id, subtask.id, 'contract_blocked'),
-          completionContract: input.completionContract, violations: completion.violations,
-        };
+        return contractOutcome;
       }
       if (completion.envelope.status === 'failed') {
         const failure = completion.envelope.failure;
@@ -909,13 +982,19 @@ export class SubtaskAttemptRunner {
         `feat: capture corrected ${subtask.id} result`,
       );
       const dispatchItem = this.dispatchItemRepo.find(input.attemptId);
-      this.deps.db.transaction(() => {
-        this.receiptRepo.insert(buildReceipt({
+      if (!dispatchItem) {
+        throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
+      }
+      const landing = this.terminalService.land({
+        receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
           terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 2, warnings: completion.warnings,
-        }, completedAt));
-        this.publicationRepo.insertCandidate({
+        }, completedAt),
+        expectedSubtaskStatus: 'running',
+        nextSubtaskStatus: 'awaiting_integration',
+        subtaskError: null,
+        publication: {
           id: `publication_${input.attemptId}`,
           taskId: task.id,
           generationId: subtask.generationId,
@@ -931,13 +1010,35 @@ export class SubtaskAttemptRunner {
             completionSchemaVersion: 2,
           },
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
-          firstDispatchOrder: dispatchItem?.batchOrder ?? 0,
+          firstDispatchOrder: dispatchItem.batchOrder,
           createdAt: completedAt,
-        });
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'awaiting_integration', {
-          error: null,
-        });
-      })();
+        },
+        event: {
+          schemaVersion: 4,
+          type: 'execution_outcome',
+          id: `event_${dispatchItem.attemptId}_execution_outcome`,
+          correlationId: dispatchItem.decisionId,
+          causationId: dispatchItem.decisionId,
+          occurredAt: completedAt,
+          sessionId: this.deps.sessionId,
+          taskId: dispatchItem.taskId,
+          subtaskId: dispatchItem.subtaskId,
+          attemptId: dispatchItem.attemptId,
+          terminalKind: 'completed',
+          agentClassName: dispatchItem.agentClassName,
+          attemptKind: dispatchItem.attemptKind,
+          sourceAttemptId: dispatchItem.sourceAttemptId,
+          failure: null,
+        },
+        now: completedAt,
+      });
+      if (landing.cancellationWon) {
+        return {
+          outcome: 'cancelled_or_stale',
+          attemptId: input.attemptId,
+          reason: 'Cancellation fence won before correction terminal landing',
+        };
+      }
       const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
         task.id,
         subtask.generationId,
@@ -971,7 +1072,9 @@ export class SubtaskAttemptRunner {
         failure: { kind: 'unknown', scope: 'attempt', code: 'correction_exception', summary: message },
       };
     } finally {
-      claim.release();
+      if (this.hasSealedTerminal(input.attemptId)) {
+        claim.release();
+      }
     }
   }
 
@@ -985,6 +1088,78 @@ export class SubtaskAttemptRunner {
 
   private isAttemptClaimCurrent(attemptId: string, workUnitId: string): boolean {
     return this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId);
+  }
+
+  private hasSealedTerminal(attemptId: string): boolean {
+    if (!this.receiptRepo.findByAttemptId(attemptId)) return false;
+    const dispatch = this.dispatchItemRepo.find(attemptId);
+    return Boolean(dispatch && ['terminal', 'cancelled'].includes(dispatch.status));
+  }
+
+  private landContractFailure(input: {
+    attemptId: string;
+    executionId: string;
+    taskId: string;
+    subtaskId: string;
+    workUnitId: string;
+    agentClassName: string;
+    startedAt: string;
+    rawResponse: string;
+    completionSchemaVersion: number | null;
+    violations: CompletionContractViolation[];
+    errorCode: string;
+    errorDetail: string;
+    completionContract: unknown;
+  }): Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }> {
+    const dispatch = this.dispatchItemRepo.find(input.attemptId);
+    if (!dispatch) {
+      throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
+    }
+    const now = new Date().toISOString();
+    const receiptCount = this.receiptRepo.countByTerminal(
+      input.taskId,
+      input.subtaskId,
+      'contract_blocked',
+    ) + 1;
+    const responseBytes = Buffer.byteLength(input.rawResponse, 'utf8');
+    this.terminalService.land({
+      receipt: buildReceipt({
+        ...input,
+        terminalState: 'contract_blocked',
+      }, now),
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_decision',
+      subtaskError: input.errorDetail,
+      event: {
+        schemaVersion: 4,
+        type: 'handoff_contract_failed',
+        id: `event_${dispatch.attemptId}_handoff_contract_failed`,
+        correlationId: dispatch.decisionId,
+        causationId: dispatch.decisionId,
+        occurredAt: now,
+        sessionId: this.deps.sessionId,
+        taskId: dispatch.taskId,
+        subtaskId: dispatch.subtaskId,
+        attemptId: dispatch.attemptId,
+        workUnitId: input.workUnitId,
+        agentClassName: input.agentClassName,
+        contract: input.completionContract as never,
+        violations: input.violations,
+        receiptCount,
+        responseBytes,
+      },
+      now,
+    });
+    return {
+      outcome: 'contract_failed',
+      attemptId: input.attemptId,
+      workUnitId: input.workUnitId,
+      agentClassName: input.agentClassName,
+      responseBytes,
+      receiptCount,
+      completionContract: input.completionContract,
+      violations: input.violations,
+    };
   }
 
   private persistNonSuccess(input: {
@@ -1002,10 +1177,48 @@ export class SubtaskAttemptRunner {
     errorDetail: string;
     failure?: KernelFailure | null;
   }): void {
-    this.deps.db.transaction(() => {
-      this.receiptRepo.insert(buildReceipt(input));
-      this.deps.subtaskRepo.updateStatus(input.subtaskId, 'awaiting_decision', { error: input.errorDetail });
-    })();
+    const dispatch = this.dispatchItemRepo.find(input.attemptId);
+    if (!dispatch) {
+      throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
+    }
+    const now = new Date().toISOString();
+    const failure = input.terminalState === 'cancelled_or_stale'
+      ? {
+          kind: 'stale' as const,
+          scope: 'attempt' as const,
+          code: input.errorCode,
+          summary: input.errorDetail,
+        }
+      : input.failure ?? {
+          kind: 'unknown' as const,
+          scope: 'attempt' as const,
+          code: input.errorCode,
+          summary: input.errorDetail,
+        };
+    this.terminalService.land({
+      receipt: buildReceipt(input, now),
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_decision',
+      subtaskError: input.errorDetail,
+      event: {
+        schemaVersion: 4,
+        type: 'execution_outcome',
+        id: `event_${dispatch.attemptId}_execution_outcome`,
+        correlationId: dispatch.decisionId,
+        causationId: dispatch.decisionId,
+        occurredAt: now,
+        sessionId: this.deps.sessionId,
+        taskId: dispatch.taskId,
+        subtaskId: dispatch.subtaskId,
+        attemptId: dispatch.attemptId,
+        terminalKind: 'failed',
+        agentClassName: dispatch.agentClassName,
+        attemptKind: dispatch.attemptKind,
+        sourceAttemptId: dispatch.sourceAttemptId,
+        failure,
+      },
+      now,
+    });
   }
 }
 

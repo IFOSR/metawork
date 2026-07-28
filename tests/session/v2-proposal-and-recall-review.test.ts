@@ -13,7 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
@@ -74,7 +74,7 @@ describe('V2 proposal flow', () => {
       title: 'Phoenix 周报整理',
       goal: '继续整理 Phoenix 周报并补齐经营数据',
     });
-    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
+    seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
     taskRepo.update(parkedTask.id, {
       status: 'parked',
       summary: '已整理风险栏目，待补经营数据',

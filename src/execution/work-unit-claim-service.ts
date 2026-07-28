@@ -118,30 +118,45 @@ export class WorkUnitClaimService {
     );
   }
 
-  reconcileOrphanedClaims(): WorkUnit[] {
-    const orphaned = this.workUnitRepo.findAll().filter(workUnit =>
+  listOrphanedClaims(): WorkUnit[] {
+    return this.workUnitRepo.findAll().filter(workUnit =>
       ['claimed', 'running', 'waiting'].includes(workUnit.state)
       && workUnit.claimedAttemptId !== null
     );
-    for (const workUnit of orphaned) {
-      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost');
-      this.recordEvent(
-        workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId,
-        workUnit.claimedAttemptId, 'heartbeat_lost', 'heartbeat_lost',
-        'startup reconciled orphaned WorkUnit claim',
-      );
-      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost', {
-        claimedTaskId: null,
-        claimedSubtaskId: null,
-        claimedAttemptId: null,
-        leaseExpiresAt: null,
-      });
-      this.recordEvent(
-        workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId,
-        workUnit.claimedAttemptId, 'released', 'heartbeat_lost',
-      );
+  }
+
+  releaseReconciledClaim(input: {
+    workUnitId: string;
+    taskId: string;
+    subtaskId: string;
+    attemptId: string;
+  }): void {
+    const existing = this.workUnitRepo.findById(input.workUnitId);
+    if (
+      !existing
+      || existing.claimedTaskId !== input.taskId
+      || existing.claimedSubtaskId !== input.subtaskId
+      || existing.claimedAttemptId !== input.attemptId
+    ) {
+      this.releaseOrphanedAttempt(input);
+      return;
     }
-    return orphaned;
+    this.workUnitRepo.updateState(existing.id, 'heartbeat_lost', {
+      claimedTaskId: input.taskId,
+      claimedSubtaskId: input.subtaskId,
+      claimedAttemptId: input.attemptId,
+      leaseExpiresAt: null,
+    });
+    this.recordEvent(
+      existing.id,
+      input.taskId,
+      input.subtaskId,
+      input.attemptId,
+      'heartbeat_lost',
+      'heartbeat_lost',
+      'startup reconciled orphaned WorkUnit claim after terminal facts were sealed',
+    );
+    this.releaseOrphanedAttempt(input);
   }
 
   private async provisionExecutor(agentClassName: string): Promise<WorkUnit | null> {

@@ -40,13 +40,20 @@ describe('KernelDecisionRepo', () => {
     expect(repo.findByEventId(record.eventId)).toMatchObject({ id: record.id, action: 'no_op' });
   });
 
-  it('preserves legacy planning audit rows and rejects writes', () => {
+  it('fails closed when a persisted Decision is not the unique v4 contract', () => {
     const db = new Database(':memory:');
     runMigrations(db);
-    expect(() => db.prepare(`
-      INSERT INTO planning_decisions_legacy_audit
-      (id, session_id, request_id, task_id, user_input, plan_json, decision_json, outcome, reason, created_at)
-      VALUES ('x', 's', 'r', NULL, '', '{}', '{}', 'accept', '', '')
-    `).run()).toThrow(/read-only/);
+    const repo = new KernelDecisionRepo(db);
+    const record = createRecord();
+    repo.insertIfAbsent(record);
+    db.prepare(`
+      UPDATE kernel_decisions
+      SET schema_version = 3,
+          decision_json = json_set(decision_json, '$.schemaVersion', 3)
+      WHERE id = ?
+    `).run(record.id);
+
+    expect(() => repo.findByEventId(record.eventId))
+      .toThrow('unsupported Kernel decision schema version 3');
   });
 });

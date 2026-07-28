@@ -1439,76 +1439,109 @@ export class MetaclawSession {
   private async recoverDurableStartup(): Promise<Task[]> {
     const now = new Date().toISOString();
     const sandboxLossAttemptIds = new Set<string>();
+    const claimedOrphans = this.workUnitClaimService.listOrphanedClaims();
+    const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
+    const requiresAttemptReconciliation = claimedOrphans.length > 0
+      || this.attemptSandboxRepository.listActive().length > 0
+      || this.taskRuntimeService.listTasksByStatus('running').some(task =>
+        dispatchItems.listByTask(task.id).some(item =>
+          ['launching', 'running', 'cancelling', 'uncertain'].includes(item.status)
+        )
+      );
+    let recoveryBlockedReason: string | null = null;
     try {
-      const checkpointIds = new Map<string, string | null>();
-      const reconciliation = await new AttemptSandboxReconciler(
-        this.attemptSandbox,
-        this.attemptSandboxRepository,
-      ).reconcile({
-        checkpoint: async record => {
-          const persisted = this.workspaceRepository.find(record.workspaceId);
-          if (!persisted) {
-            checkpointIds.set(record.attemptId, null);
-            return;
-          }
-          const workspace = await this.workspaceStore.ensureWorkspace({
-            taskId: persisted.taskId,
-            generationId: persisted.generationId,
-            subtaskId: persisted.subtaskId,
-          }, persisted.kind);
-          const checkpoint = await this.workspaceStore.createCheckpoint(workspace, {
-            reason: 'failure', attemptId: record.attemptId, now,
-          });
-          this.workspaceRepository.recordCheckpoint({
-            id: checkpoint.id,
-            workspaceId: workspace.id,
-            attemptId: record.attemptId,
-            reason: 'failure',
-            manifestUri: checkpoint.manifestUri,
-            manifestHash: checkpoint.manifestHash,
-            manifestSize: checkpoint.manifestSize,
-            createdAt: checkpoint.manifest.createdAt,
-            objects: checkpoint.manifest.entries.flatMap(entry => (
-              entry.type === 'file' && entry.hash && entry.objectUri
-                ? [{ hash: entry.hash, uri: entry.objectUri, size: entry.size, mediaType: null }]
-                : []
-            )),
-          });
-          checkpointIds.set(record.attemptId, checkpoint.id);
-        },
-      });
-      for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
-        if (sandboxLossAttemptIds.has(record.attemptId)) continue;
-        sandboxLossAttemptIds.add(record.attemptId);
-        const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
-        const dispatchItem = dispatchItems.find(record.attemptId);
-        if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
-          continue;
-        }
-        dispatchItems.markUncertain(
-          record.attemptId,
-          `sandbox ${record.containerId} was reconciled during startup`,
-          now,
-        );
-        this.kernelWorkflowRepo.enqueue({
-          schemaVersion: 4,
-          type: 'sandbox_lost',
-          id: `sandbox_lost_${record.attemptId}`,
-          correlationId: record.taskId,
-          causationId: record.attemptId,
-          occurredAt: now,
-          sessionId: this.deps.sessionId,
-          taskId: record.taskId,
-          subtaskId: record.subtaskId,
-          attemptId: record.attemptId,
-          containerId: record.containerId,
-          workspaceId: record.workspaceId,
-          checkpointId: checkpointIds.get(record.attemptId) ?? null,
+      if (requiresAttemptReconciliation) {
+        const checkpointIds = new Map<string, string | null>();
+        const reconciliation = await new AttemptSandboxReconciler(
+          this.attemptSandbox,
+          this.attemptSandboxRepository,
+        ).reconcile({
+          checkpoint: async record => {
+            const persisted = this.workspaceRepository.find(record.workspaceId);
+            if (!persisted) {
+              checkpointIds.set(record.attemptId, null);
+              return;
+            }
+            const workspace = await this.workspaceStore.ensureWorkspace({
+              taskId: persisted.taskId,
+              generationId: persisted.generationId,
+              subtaskId: persisted.subtaskId,
+            }, persisted.kind);
+            const checkpoint = await this.workspaceStore.createCheckpoint(workspace, {
+              reason: 'failure', attemptId: record.attemptId, now,
+            });
+            this.workspaceRepository.recordCheckpoint({
+              id: checkpoint.id,
+              workspaceId: workspace.id,
+              attemptId: record.attemptId,
+              reason: 'failure',
+              manifestUri: checkpoint.manifestUri,
+              manifestHash: checkpoint.manifestHash,
+              manifestSize: checkpoint.manifestSize,
+              createdAt: checkpoint.manifest.createdAt,
+              objects: checkpoint.manifest.entries.flatMap(entry => (
+                entry.type === 'file' && entry.hash && entry.objectUri
+                  ? [{ hash: entry.hash, uri: entry.objectUri, size: entry.size, mediaType: null }]
+                  : []
+              )),
+            });
+            checkpointIds.set(record.attemptId, checkpoint.id);
+          },
         });
+        for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
+          if (sandboxLossAttemptIds.has(record.attemptId)) continue;
+          sandboxLossAttemptIds.add(record.attemptId);
+          const dispatchItem = dispatchItems.find(record.attemptId);
+          if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
+            continue;
+          }
+          dispatchItems.markUncertain(
+            record.attemptId,
+            `sandbox ${record.containerId} was reconciled during startup`,
+            now,
+          );
+          this.kernelWorkflowRepo.enqueue({
+            schemaVersion: 4,
+            type: 'sandbox_lost',
+            id: `sandbox_lost_${record.attemptId}`,
+            correlationId: record.taskId,
+            causationId: record.attemptId,
+            occurredAt: now,
+            sessionId: this.deps.sessionId,
+            taskId: record.taskId,
+            subtaskId: record.subtaskId,
+            attemptId: record.attemptId,
+            containerId: record.containerId,
+            workspaceId: record.workspaceId,
+            checkpointId: checkpointIds.get(record.attemptId) ?? null,
+          });
+        }
       }
       await this.kernelExecutionRuntime.recoverCancellations();
-    } catch {
-      // Docker can be unavailable while planning/query/direct-reply paths remain usable.
+    } catch (error) {
+      recoveryBlockedReason = error instanceof Error ? error.message : String(error);
+    }
+    if (recoveryBlockedReason) {
+      const blocked: Task[] = [];
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+        try {
+          this.taskRuntimeService.blockTask(task.id, {
+            taskId: task.id,
+            type: 'manual',
+            description: `startup recovery blocked: ${recoveryBlockedReason}`,
+            status: 'waiting',
+          });
+        } catch {
+          // Keep the in-memory recovery fence even if persistence is unavailable.
+        }
+        const current = this.taskRuntimeService.findTask(task.id);
+        if (current) blocked.push(current);
+      }
+      this.appendOutput(
+        `恢复阻塞：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
+        '已保留现有 sandbox、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
+      );
+      return blocked;
     }
     this.effectOutboxRepo.reconcileSending(now);
     this.kernelWorkflowRepo.reconcileProcessing();
@@ -1539,9 +1572,12 @@ export class MetaclawSession {
     });
     await planningWorkflow.recover();
 
-    const claimedOrphans = this.workUnitClaimService.reconcileOrphanedClaims();
+    const reconciledLeases = new ResourceLeaseService(
+      new SqliteResourceLeaseRepository(this.deps.db),
+    );
     const recovered: Task[] = [];
-    for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+    try {
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
       const activeSubtasks = this.subtaskRepo.listActiveByTask(task.id);
       const subtasks = activeSubtasks.length > 0 ? activeSubtasks : this.subtaskRepo.listByTask(task.id);
       const taskClaims = claimedOrphans.filter(workUnit => workUnit.claimedTaskId === task.id);
@@ -1554,6 +1590,13 @@ export class MetaclawSession {
           subtaskId: workUnit.claimedSubtaskId,
           workUnitId: workUnit.id,
           agentClassName: workUnit.agentClassName,
+        });
+        reconciledLeases.releaseReconciledAttempt(workUnit.claimedAttemptId, now);
+        this.workUnitClaimService.releaseReconciledClaim({
+          workUnitId: workUnit.id,
+          taskId: task.id,
+          subtaskId: workUnit.claimedSubtaskId,
+          attemptId: workUnit.claimedAttemptId,
         });
         if (!sandboxLossAttemptIds.has(workUnit.claimedAttemptId)) {
           this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
@@ -1582,6 +1625,29 @@ export class MetaclawSession {
       await this.kernelExecutionRuntime.recoverDue(task.id, 'startup durable recovery');
       const current = this.taskRuntimeService.findTask(task.id);
       if (current) recovered.push(current);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const blocked: Task[] = [];
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+        try {
+          this.taskRuntimeService.blockTask(task.id, {
+            taskId: task.id,
+            type: 'manual',
+            description: `startup recovery blocked: ${reason}`,
+            status: 'waiting',
+          });
+        } catch {
+          // Preserve durable attempt ownership if even the diagnostic Task update fails.
+        }
+        const current = this.taskRuntimeService.findTask(task.id);
+        if (current) blocked.push(current);
+      }
+      this.appendOutput(
+        `恢复阻塞：无法安全封口 attempt terminal 事实（${reason}）。`,
+        '已保留尚未安全封口的 WorkUnit claim 与 resource lease；修复持久状态后可重试启动恢复。',
+      );
+      return blocked;
     }
     for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
       if (recovered.some(item => item.id === task.id)) continue;

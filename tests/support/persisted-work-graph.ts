@@ -6,8 +6,8 @@ import {
 } from '../../src/execution/execution-evidence-port.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 
-/** Seed an already-authorized v4 graph for tests whose subject is resume behavior. */
-export function seedPersistedV3WorkGraph(
+/** Seed the current already-authorized Work Graph contract for resume tests. */
+export function seedPersistedWorkGraph(
   db: Database.Database,
   taskId: string,
   title = 'Resume persisted work',

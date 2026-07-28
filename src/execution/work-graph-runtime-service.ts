@@ -56,7 +56,10 @@ export class WorkGraphRuntimeService {
         if (authorization.revision === activeRevision.revision) {
           return { outcome: 'recovered', workGraph: proposedGraph, subtasks: existing };
         }
-        if (authorization.source !== 'replan' || authorization.revision !== activeRevision.revision + 1) {
+        if (
+          !['replan', 'conflict_replan'].includes(authorization.source)
+          || authorization.revision !== activeRevision.revision + 1
+        ) {
           return { outcome: 'not_executable', reason: 'revision_conflict' };
         }
       } else if (authorization.revision !== 1 || authorization.source !== 'initial') {

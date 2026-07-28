@@ -33,6 +33,10 @@ export interface ManagedGitCommit {
   changedPaths: string[];
 }
 
+export interface ManagedGitRepairCommit extends ManagedGitCommit {
+  workspaceCommit: string;
+}
+
 export interface ManagedGitCandidateDescription {
   baseCommit: string;
   oursCommit: string;
@@ -348,7 +352,7 @@ export class ManagedGitWorkspaceService {
     allowedPaths: string[];
     filePolicy: Record<string, 'text' | 'binary'>;
     reportedResolvedPaths: string[];
-  }): Promise<ManagedGitCommit> {
+  }): Promise<ManagedGitRepairCommit> {
     const allowed = [...new Set(input.allowedPaths)].sort();
     const reported = [...new Set(input.reportedResolvedPaths)].sort();
     if (allowed.join('\0') !== reported.join('\0')) {
@@ -376,9 +380,39 @@ export class ManagedGitWorkspaceService {
       '-C', input.workspace.filesPath, 'diff', '--name-only', '--diff-filter=U',
     ]));
     if (unmerged.length > 0) throw new Error(`merge repair left unmerged entries: ${unmerged.join(', ')}`);
+    const originalCandidateCommit = await git([
+      '-C', input.workspace.filesPath, 'rev-parse', 'HEAD',
+    ]);
     await git(['-C', input.workspace.filesPath, 'commit', '--no-edit']);
     const commit = await git(['-C', input.workspace.filesPath, 'rev-parse', 'HEAD']);
-    return { branch: input.workspace.branch, commit, changedPaths: allowed };
+    await git([
+      '-C', input.workspace.filesPath, 'update-ref',
+      `refs/metaclaw/publications/${commit}`, commit,
+    ]);
+
+    await git(['-C', input.workspace.filesPath, 'reset', '--hard', originalCandidateCommit]);
+    for (const path of allowed) {
+      const existsInRepair = await git([
+        '-C', input.workspace.filesPath, 'cat-file', '-e', `${commit}:${path}`,
+      ]).then(() => true).catch(() => false);
+      if (existsInRepair) {
+        await git(['-C', input.workspace.filesPath, 'checkout', commit, '--', path]);
+      } else {
+        await git(['-C', input.workspace.filesPath, 'rm', '--ignore-unmatch', '--', path]);
+      }
+    }
+    await git(['-C', input.workspace.filesPath, 'add', '-A', '--', ...allowed]);
+    await git([
+      '-C', input.workspace.filesPath, 'commit', '--allow-empty',
+      '-m', 'fix: project merge repair without integration ancestry',
+    ]);
+    const workspaceCommit = await git(['-C', input.workspace.filesPath, 'rev-parse', 'HEAD']);
+    return {
+      branch: input.workspace.branch,
+      commit,
+      workspaceCommit,
+      changedPaths: allowed,
+    };
   }
 
   private async importPlainSource(sourceRoot: string, repositoryPath: string): Promise<void> {

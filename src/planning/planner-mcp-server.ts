@@ -61,33 +61,8 @@ export class PlannerDataReader {
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
     const latest = snapshots.at(-1) ?? null;
-    const v4SubtaskCount = Number((this.db.prepare(
-      'SELECT COUNT(*) AS count FROM subtasks WHERE task_id = ?',
-    ).get(taskId) as { count: number }).count);
-    const auditTable = v4SubtaskCount === 0
-      ? (tableExists(this.db, 'subtasks_v3_audit')
-          ? 'subtasks_v3_audit'
-          : tableExists(this.db, 'subtasks_v2_audit') ? 'subtasks_v2_audit' : null)
-      : null;
-    const legacySubtasks = auditTable
-      ? (this.db.prepare(`
-          SELECT id, title, goal, status, result, error
-          FROM ${auditTable} WHERE task_id = ?
-          ORDER BY created_at ASC LIMIT ?
-        `).all(taskId, 8) as Array<Record<string, unknown>>).map(legacy => ({
-          id: legacy.id,
-          title: truncateText(String(legacy.title ?? ''), 160),
-          goal: truncateText(String(legacy.goal ?? ''), 320),
-          status: legacy.status,
-          result: truncateText(String(legacy.result ?? ''), 500),
-          error: legacy.error === null ? null : truncateText(String(legacy.error ?? ''), 320),
-        }))
-      : [];
     return {
       found: true,
-      requiresWorkGraphReplan: v4SubtaskCount === 0 && legacySubtasks.length > 0,
-      auditSchemaVersion: auditTable === 'subtasks_v3_audit' ? 3 : auditTable === 'subtasks_v2_audit' ? 2 : null,
-      auditSubtasks: legacySubtasks,
       task: {
         id: row.id,
         title: truncateText(String(row.title ?? ''), 200),
@@ -123,15 +98,8 @@ export class PlannerDataReader {
       FROM kernel_decisions WHERE session_id = ? AND event_type = 'plan_proposed'
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
-    const legacyDecisions = this.db.prepare(`
-      SELECT id, task_id, plan_json, decision_json, outcome, reason, created_at
-      FROM planning_decisions_legacy_audit WHERE session_id = ?
-      ORDER BY created_at DESC LIMIT ?
-    `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
-    const recentPlanningDecisions = [
-      ...decisions.map(row => ({ kind: 'kernel' as const, row })),
-      ...legacyDecisions.map(row => ({ kind: 'legacy' as const, row })),
-    ].sort((left, right) => String(left.row.created_at).localeCompare(String(right.row.created_at)))
+    const recentPlanningDecisions = decisions
+      .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
       .slice(-Math.min(5, bounded));
     return {
       sessionId: this.sessionId,
@@ -143,11 +111,9 @@ export class PlannerDataReader {
         executorUsed: row.executor_used,
         createdAt: row.created_at,
       })),
-      recentPlanningDecisions: recentPlanningDecisions.map(({ kind, row }) => {
-        const event = kind === 'kernel' ? safeJson<Record<string, unknown>>(row.event_json, {}) : {};
-        const plan = kind === 'kernel'
-          ? isRecord(event.proposal) ? event.proposal : {}
-          : safeJson<Record<string, unknown>>(row.plan_json, {});
+      recentPlanningDecisions: recentPlanningDecisions.map(row => {
+        const event = safeJson<Record<string, unknown>>(row.event_json, {});
+        const plan = isRecord(event.proposal) ? event.proposal : {};
         const task = isRecord(plan.task) ? plan.task : {};
         const risk = isRecord(plan.risk) ? plan.risk : {};
         return {
@@ -156,9 +122,8 @@ export class PlannerDataReader {
           action: plan.action,
           control: task.control,
           targetTaskId: task.taskId,
-          outcome: kind === 'kernel' ? 'issued' : row.outcome,
-          kernelAction: kind === 'kernel' ? row.action : null,
-          legacyAudit: kind === 'legacy',
+          outcome: 'issued',
+          kernelAction: row.action,
           riskRequiresConfirmation: risk.requiresConfirmation === true,
           reason: truncateText(String(row.reason ?? ''), 320),
           createdAt: row.created_at,
@@ -288,12 +253,6 @@ function boundedLimit(limit?: number): number {
 function safeJson<T>(value: unknown, fallback: T): T {
   if (typeof value !== 'string' || !value) return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
-}
-
-function tableExists(db: Database.Database, table: string): boolean {
-  return Boolean(db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(table));
 }
 
 function sanitizeSnapshot(snapshot: Record<string, unknown>) {

@@ -98,6 +98,45 @@ describe('ManagedGitWorkspaceService', () => {
     await expect(readFile(join(source, '.git'), 'utf8')).rejects.toThrow();
   });
 
+  it('never auto-merges a concurrently modified binary-policy path even when its bytes look textual', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-binary-policy-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const store = new WorkspaceStore(join(root, 'store'));
+    await exec('git', ['init', source]);
+    await git(source, 'config', 'user.name', 'Test User');
+    await git(source, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(source, 'report.pdf'), 'title: base\nfooter: base\n');
+    await git(source, 'add', '.');
+    await git(source, 'commit', '-m', 'base');
+
+    const service = new ManagedGitWorkspaceService(store);
+    const integration = await service.ensure({
+      taskId: 'task-binary', generationId: 'gen', subtaskId: '__integration__',
+    }, source);
+    const first = await service.ensure({
+      taskId: 'task-binary', generationId: 'gen', subtaskId: 'first',
+    }, source);
+    const second = await service.ensure({
+      taskId: 'task-binary', generationId: 'gen', subtaskId: 'second',
+    }, source);
+    await writeFile(join(first.filesPath, 'report.pdf'), 'title: first\nfooter: base\n');
+    const firstCommit = await service.commit(first, 'feat: first binary candidate');
+    await writeFile(join(second.filesPath, 'report.pdf'), 'title: base\nfooter: second\n');
+    const secondCommit = await service.commit(second, 'feat: second binary candidate');
+
+    await expect(service.mergeCandidate(integration, firstCommit.commit)).resolves.toMatchObject({
+      type: 'integrated',
+    });
+    await expect(service.mergeCandidate(integration, secondCommit.commit)).resolves.toMatchObject({
+      type: 'conflicted',
+      conflictPaths: ['report.pdf'],
+      filePolicy: { 'report.pdf': 'binary' },
+    });
+    expect((await readFile(join(integration.filesPath, 'report.pdf'), 'utf8')).replaceAll('\r\n', '\n'))
+      .toBe('title: first\nfooter: base\n');
+  });
+
   it('classifies text and binary conflicts and accepts a scoped repair merge', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-repair-'));
     roots.push(root);
@@ -160,6 +199,15 @@ describe('ManagedGitWorkspaceService', () => {
       filePolicy: conflict.filePolicy,
       reportedResolvedPaths: ['shared.txt', 'asset.bin'],
     });
+    expect(repaired.workspaceCommit).toMatch(/^[0-9a-f]{40}$/u);
+    expect(await git(second.filesPath, 'rev-parse', 'HEAD')).toBe(repaired.workspaceCommit);
+    await expect(git(
+      second.filesPath,
+      'merge-base',
+      '--is-ancestor',
+      firstCommit.commit,
+      repaired.workspaceCommit,
+    )).rejects.toThrow();
     const integrated = await service.mergeCandidate(integration, repaired.commit);
 
     expect(integrated.type).toBe('integrated');

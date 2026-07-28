@@ -364,6 +364,8 @@ Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册
 
 `codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态字段、不可变镜像绑定和 permission profile 强制收敛，常规注册接口也拒绝覆盖或删除。非 canonical capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺少 image/profile 的历史自定义类保留审计记录但不可执行。
 
+Phase 5 的权限产品边界是 sandbox profile 加持久 request/grant/use 审计预算。`use_capability` 会原子消费 attempt identity、expiry、调用次数和字节预算，但它不是通用 operation broker，也不证明每个原生文件、网络或外部动作都经过细粒度中介。当前实际强制边界仍是容器 mount、egress profile 和 resource lease。
+
 Executor 扩展契约：
 
 必需的路由字段：
@@ -824,7 +826,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox，v26 增加 dispatch item、workspace publication 和不可变 merge attempt，v27 增加 cancellation cleanup、lease revocation、generation replan request 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v27 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 一次包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

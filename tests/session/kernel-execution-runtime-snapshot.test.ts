@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { KernelExecutionRuntime } from '../../src/session/session-execution-coordinator.js';
+import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
@@ -107,5 +107,41 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       taskId: task.id,
       subtaskId: subtask.id,
     });
+  });
+
+  it('retries durable cancellation cleanup in-process after a transient failure', async () => {
+    vi.useFakeTimers();
+    const recover = vi.fn()
+      .mockRejectedValueOnce(new Error('Docker temporarily unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const findCleanupTaskId = vi.fn().mockReturnValue(null);
+    const refreshRuntimeState = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      taskEventRepo: {},
+      dispatchItemRepo: {
+        listPending: vi.fn().mockReturnValue([]),
+      },
+      maxConcurrentAttempts: 4,
+      cancellationCoordinator: {
+        recover,
+        findCleanupTaskId,
+      },
+      callbacks: { refreshRuntimeState },
+    } as never);
+
+    try {
+      await (runtime as unknown as {
+        drainCancellation(taskId: string): Promise<void>;
+      }).drainCancellation('task_cancel');
+      expect(recover).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(recover).toHaveBeenCalledTimes(2);
+      expect(findCleanupTaskId).toHaveBeenCalled();
+      expect(refreshRuntimeState).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

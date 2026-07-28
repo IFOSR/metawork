@@ -45,6 +45,10 @@ export class ResourceLeaseService {
     return this.repository.releaseAttempt(attemptId, leaseToken, now);
   }
 
+  releaseReconciledAttempt(attemptId: string, now = new Date().toISOString()): number {
+    return this.repository.releaseReconciledAttempt(attemptId, now);
+  }
+
   requestRevocation(input: {
     taskId: string;
     generationId: string | null;

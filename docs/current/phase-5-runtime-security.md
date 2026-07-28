@@ -58,15 +58,15 @@ Historical custom classes without the image/profile triplet remain visible for a
 - Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
 - Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
 
-## Runtime permission flow
+## Runtime permission and audit flow
 
 Default profile operations do not request permission. An Executor calls `request_capability` only for a concrete out-of-profile operation. Runtime canonicalizes and persists the request, pauses the attempt, checkpoints the now-quiescent workspace, and submits `permission_requested` to the durable Kernel workflow. The Kernel returns grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are attempt-bound and budgeted; user authorization is a durable fact from `/permission approve|deny <requestId>`, a gateway action, or a precise Planner interpretation.
 
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S); the egress proxy remains the network enforcement boundary. No profile rule permits secrets, external mutation or repository promotion.
+The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S); the egress proxy and container profile remain the network enforcement boundary. No profile rule permits secrets, external mutation or repository promotion.
 
-A granted response includes a `grantId`, but the request alone changes no sandbox authority. Every controlled use goes back through the attempt-bound `use_capability` MCP tool or CLI with the exact operation payload. Runtime measures the UTF-8 payload bytes and atomically consumes the grant before a controlled adapter may act, enforcing attempt identity, expiry, call count and byte count together. Read/network grants retain the 100-call/100-MiB budget; one-shot secret, external mutation, repository promotion and logical operations allow one control payload up to 1 MiB. Budget rejection fails closed, and direct access remains unavailable.
+A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
 
-Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied. External mutations and repository promotion require exact one-shot authorization and must be implemented by a controlled provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
+This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
 
 ## Verification
 
@@ -75,8 +75,10 @@ npm run lint
 npm run build
 docker build -f Dockerfile.test -t metaclaw-test .
 docker run --rm metaclaw-test
-METACLAW_RUN_DOCKER_INTEGRATION=true npx vitest run tests/integration/docker-attempt-sandbox.integration.test.ts
-npm run smoke:anyfusion
+# Run the Docker integration test from a control container with the Engine
+# socket and an explicit host-path map.
+# Run the real-task smoke from metaclaw-runtime:phase5 with
+# METACLAW_SMOKE_IN_DOCKER=true and the three docker/*.env files mounted read-only.
 ```
 
-The integration and smoke commands require the canonical attempt images and a trusted local Docker Engine. The smoke path starts a trusted control-plane container, then verifies Planner → Kernel → disposable Executor attempt → scoped model gateway → persistent workspace/artifact → container cleanup. The attempt itself never receives the Engine socket.
+The integration and smoke commands require the canonical attempt images and a trusted local Docker Engine. Both test bodies run inside a trusted control-plane container; the host only performs Docker orchestration. The smoke verifies Planner → Kernel → disposable Executor attempt → scoped model gateway → persistent workspace/artifact → container cleanup. The attempt itself never receives the Engine socket.

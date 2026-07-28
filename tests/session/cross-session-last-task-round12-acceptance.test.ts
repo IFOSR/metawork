@@ -13,7 +13,7 @@ import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
 
 function createTestDb() {
@@ -151,7 +151,7 @@ describe('cross-session last-task continuation', () => {
       title: '历史未完成调研',
       goal: '继续历史未完成调研',
     });
-    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
+    seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
     taskEngine.park(parkedTask.id, '等待继续', {

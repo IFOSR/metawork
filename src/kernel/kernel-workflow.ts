@@ -2,7 +2,7 @@ import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot 
 
 export interface KernelDecisionLedgerRecord {
   id: string;
-  schemaVersion: 1 | 2 | 3 | 4;
+  schemaVersion: 4;
   eventId: string;
   eventType: KernelEvent['type'];
   correlationId: string;

@@ -46,6 +46,11 @@ ADR-0011 继续有效。多顶层 Task admission、优先级、公平性和饥�
   对账 sandbox 后释放 WorkUnit、lease 和 capacity，并在启动时幂等恢复。
 - publication final transaction 重新校验取消栅栏；已经生成但未发布的 Git
   commit 仅留作审计，不发布 handoff/result/workspace state，也不自动 reset。
+- attempt receipt、Subtask 状态、dispatch terminal 与 Kernel outcome inbox
+  在同一 SQLite 事务中封口；容器、WorkUnit 和 lease 清理由 supervisor
+  随后幂等重放。
+- Docker、Git 或持久事实无法证明安全时进入 recovery-blocked：状态和诊断仍
+  可用，但不启动 attempt，也不释放无法证明已停止的 claim/lease。
 
 ### 用户控制与完成门
 
@@ -71,12 +76,22 @@ ADR-0011 继续有效。多顶层 Task admission、优先级、公平性和饥�
 - Kernel v4 已统一授权整 Task 取消、原子 Subtask 下游闭包取消、显式部分
   接受和 generation ordinary replan；取消后的晚到 outcome 为 `no_op`。
 - SQLite v27 已交付 dispatch/publication `cancelling/cancelled`、lease revocation、
-  generation replan request 和 revision completion kind，并通过空库、升级与重放迁移。
+  generation replan request 和 revision completion kind。未发布版本已压平为
+  唯一 fresh-install v27 baseline；旧 schema 和无 schema 标记的非空数据库
+  原样拒绝，不维护升级或双读路径。
+- attempt terminal 现在一次事务提交不可变 receipt、Subtask transition、
+  dispatch terminal 和 Kernel outcome inbox；事务失败时四类事实全部回滚，
+  且 runner 保留 WorkUnit/resource lease 等待恢复对账。
 - cancellation coordinator 先提交持久栅栏，再等待 active launch/run 收束、精确
   停止 sandbox、释放 WorkUnit/lease/capacity；启动恢复先以 Docker labels 对账，
   避免 container-start crash window 提前释放资源。
+- recovery-blocked 只在存在 attempt ownership 或 container crash window 时
+  探测 Docker；对账失败会阻止新 attempt 并保留 ownership，普通无 attempt 的
+  running Task 不会因 Docker CLI 不可用而误阻塞。
 - publication final transaction 已加入取消栅栏；merge 后取消只记录 observed
   integration commit，不发布 result、handoff、artifact 或 workspace completion。
+- merge-repair publication commit 保留 integration ancestry，但写回 Subtask
+  workspace 的 projection commit 不再携带 sibling/integration ancestry。
 - 多个失败会合并为同一 generation replan；Planner 只在 quiescence 后调用，
   exact token CAS 会拒绝取消后的晚到 plan。
 - `/task <taskId> subtask cancel <subtaskId...>` 与
@@ -85,21 +100,28 @@ ADR-0011 继续有效。多顶层 Task admission、优先级、公平性和饥�
 - 完成门会检查 dispatch、publication、sandbox、WorkUnit、resource lease、
   attempt receipt、generation replan 和未落定 Kernel application；显式
   `partial_accepted` 是唯一非全 `done` 完成路径。
-- `CONTEXT.md`、中英文技术总览、`ISSUES.md`、Phase 6 上计划、文档地图和
-  07-16 路线图已同步；ADR-0011 保持有效，多 Task 调度移入未来独立路线图。
+- Phase 5 产品承诺已收缩为 sandbox profile + 授权审计预算，不再宣称通用
+  capability broker 或每个原生操作的细粒度 enforcement。
+- Kernel v3/v4 双读、legacy Planning/Subtask audit、旧 dispatch API、纯
+  compatibility session re-export 和 Executor factory 已 hard cut。
+- `CONTEXT.md`、中英文技术总览、ADR-0024/0026、Phase 6 上计划和 07-16
+  路线图已同步；ADR-0011 保持有效，多 Task 调度移入未来独立路线图。
 
 验证：
 
 - 宿主机 `npm run lint` 通过。
 - 宿主机 `npm run build` 通过。
 - `docker build -f Dockerfile.test -t metaclaw-test .` 通过。
-- `docker run --rm metaclaw-test npm test` 通过：202 个测试文件、817 个测试
+- `docker run --rm metaclaw-test npm test` 通过：203 个测试文件、821 个测试
   通过；5 个文件、17 个既有环境/未来范围测试跳过。
+- 容器内真实 Docker sandbox integration 通过：只读 source/inputs/handoffs/
+  `.git`、可写私有 workspace、无 Docker socket、两个隔离 attempt 真实重叠。
 - canonical 容器 CLI 验证通过：Codex `0.144.1`、Pi `0.80.2`。
-- Docker real-task smoke 重试后通过；真实 Codex
+- Docker real-task smoke 通过；真实 Codex
   Planner → Kernel → isolated Executor → Git publication 生成并验证
-  `smoke-result.md`。smoke 未在宿主 Runtime 执行，宿主 wrapper 只负责 Docker
-  镜像和控制容器编排。
+  `smoke-result.md`。smoke Runtime 完整运行在 Docker 控制容器中，并复用
+  `docker/planner-codex.env`、`docker/executor-codex.env` 与
+  `docker/executor-pi.env`；宿主只执行 Docker 编排命令。
 
 07-16 路线图的七项总体完成条件全部关闭。多顶层 Task admission、优先级、
 公平性和饥饿保护不计入本路线图完成条件。

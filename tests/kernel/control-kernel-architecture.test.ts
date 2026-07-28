@@ -13,7 +13,7 @@ describe('ControlKernel architecture', () => {
     const runtimeSources = [
       'src/execution/execution-runtime.ts',
       'src/execution/subtask-attempt-runner.ts',
-      'src/session/session-execution-coordinator.ts',
+      'src/execution/kernel-execution-runtime.ts',
       'src/session/session-kernel-runtime.ts',
     ].map(path => readFileSync(path, 'utf8')).join('\n');
     expect(runtimeSources).not.toMatch(/PlanningAgentPlan|planning-types|planning-agent/);

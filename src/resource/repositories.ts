@@ -58,6 +58,7 @@ export interface ResourceLeaseRepositoryPort {
   claim(input: ClaimResourceLeasesInput): ClaimResourceLeasesResult;
   heartbeat(attemptId: string, leaseToken: string, now: string, expiresAt: string): number;
   releaseAttempt(attemptId: string, leaseToken: string, releasedAt: string): number;
+  releaseReconciledAttempt(attemptId: string, releasedAt: string): number;
   findActive(now: string): ResourceLeaseRecord[];
   findWaits(attemptId: string): ResourceWaitRecord[];
   requestRevocation?(

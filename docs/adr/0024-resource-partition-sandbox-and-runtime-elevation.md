@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-22
-- **Scope**: Phase 5 resource identity, persistent workspace, resource leases, per-attempt Docker sandbox, runtime capability elevation and recovery
+- **Scope**: Phase 5 resource identity, persistent workspace, resource leases, per-attempt Docker sandbox, permission audit budgets and recovery
 - **Amends**: ADR-0021, ADR-0023
 - **Governed by**: ADR-0020
 
@@ -32,15 +32,15 @@ Attempt containers are non-root with read-only root filesystem, dropped Linux ca
 
 Provider credentials also remain in the trusted Runtime. Each attempt receives only a random attempt-scoped token and a fixed internal model-gateway URL; the gateway binds the token to the configured provider endpoint and process lifetime. Canonical Codex keeps its own nested `workspace-write` sandbox and non-interactive fail-closed approval policy. Because that nested Linux sandbox requires user-namespace syscalls, the Docker adapter may add `seccomp=unconfined` only for the pinned canonical Codex attempt image; non-root UID, read-only rootfs, dropped capabilities, no-new-privileges, internal networking and all mount boundaries remain mandatory. No custom image inherits this exception.
 
-### Default profiles and elevation
+### Default profiles and permission audit
 
 Default authority is an AgentClass fact, not a Planner field. Canonical definitions own immutable execution image and permission profile bindings. Custom AgentClasses must provide a resolvable immutable image and controlled profile; missing or drifted images are configuration failures and never fall back to host execution. Permission details are excluded from the Planner-safe catalog.
 
-Runtime materializes a versioned explicit rule set from that profile and the current Task bindings. `permission-profile-v1` permits additional reads only for exact Task-registered partitions, and permits normalized public HTTP(S) targets only for `public-web-research`. The other profiles receive no network allow rule. No profile rule grants secrets, external mutation or repository promotion; those continue to require exact user authorization.
+Runtime materializes a versioned explicit rule set from that profile and the current Task bindings. `permission-profile-v1` permits additional-read requests only for exact Task-registered partitions, and permits normalized public HTTP(S) target requests only for `public-web-research`. The other profiles receive no network allow rule. No profile rule approves secrets, external mutation or repository promotion.
 
-The capability request protocol is deliberately small: capability, resource, operation, reason and suggested once/attempt scope. Runtime canonicalizes and binds identity. Read/network grants are attempt-bound with policy TTL/use/byte budgets; secrets, external mutations and repository promotions are one-shot. A granted request returns an opaque grant ID but does not itself widen sandbox authority. Each controlled use supplies its exact payload to the Runtime broker, which measures bytes and atomically consumes attempt identity, TTL, call and byte limits before a controlled adapter may act. Stable fingerprints make request, Decision, grant and external effect handling idempotent.
+The capability request protocol is deliberately small: capability, resource, operation, reason and suggested once/attempt scope. Runtime canonicalizes and binds identity. Read/network grants are attempt-bound with policy TTL/use/byte budgets; sensitive requests remain one-shot. A granted request returns an opaque grant ID but does not itself widen sandbox authority. `use_capability` records and atomically consumes attempt identity, TTL, call and byte budgets for the supplied operation payload. Stable fingerprints make request, Decision, grant and budget consumption idempotent.
 
-External mutation is always mediated by a Runtime capability proxy and effect outbox. Approval never grants a container direct host write. Platform escape, Docker socket/device/host namespace access, proxy bypass, system credential probing, cross-Task access and persistent security weakening are non-overridable denials. Business-side destructive actions may proceed only with an exact durable user authorization and a one-shot mediated effect.
+The initial product guarantee ends at the sandbox profile and this authorization/audit budget. It does not claim operation-specific broker mediation or fine-grained Runtime enforcement for every file, network or external mutation. In particular, consuming a grant is not proof that an arbitrary native tool operation was mediated. Platform escape, Docker socket/device/host namespace access, proxy bypass, system credential probing, cross-Task access and persistent security weakening remain non-overridable denials at the sandbox/profile boundary. A future provider adapter may add a separately specified mediated effect, but this ADR does not treat such an adapter as generally implemented.
 
 ### User authorization
 
@@ -57,7 +57,7 @@ Phase 5 remains serial. Partition conflicts and wait relationships are exercised
 - Resource Model owns pure identity, overlap, conflict and lease/grant invariants.
 - Routing/AgentClass catalog owns controlled default permission profiles and image bindings.
 - ControlKernel owns grant/deny/escalate, partition wait and recovery policy through the single `decide` seam.
-- Execution Runtime owns workspace, lease application, Docker lifecycle, capability broker, checkpoint and normalized observations.
+- Execution Runtime owns workspace, lease application, Docker lifecycle, permission request/audit-budget handling, checkpoint and normalized observations.
 - Storage, Docker, Git/CAS and external providers implement ports owned by Resource/Execution.
 - Session, Commands, TUI and Gateway submit events and project status; they never write grants or leases directly.
 
@@ -65,4 +65,4 @@ Kernel may not depend on Docker, Storage, Session, Planning implementation or ra
 
 ## Consequences
 
-Executor work becomes reproducible and recoverable across short-lived containers while large workspace contents stay outside SQLite. Permission interruptions are auditable Kernel events rather than hidden Adapter prompts. Planner remains focused on semantic decomposition and is involved only when an otherwise valid request lacks explicit authority. Custom Executor registration becomes stricter because an image and permission profile are mandatory. Docker becomes a prerequisite for executable work, but non-executing product paths remain available without it.
+Executor work becomes reproducible and recoverable across short-lived containers while large workspace contents stay outside SQLite. Permission interruptions and budget consumption are auditable Kernel facts rather than hidden Adapter prompts. Fine-grained mediation remains outside the product claim until an operation-specific adapter is implemented and tested. Planner remains focused on semantic decomposition and is involved only when an otherwise valid request lacks explicit authority. Custom Executor registration becomes stricter because an image and permission profile are mandatory. Docker becomes a prerequisite for executable work, but non-executing product paths remain available without it.

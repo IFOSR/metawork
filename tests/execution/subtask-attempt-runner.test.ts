@@ -24,6 +24,7 @@ import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 import type { AttemptSandboxPort } from '../../src/execution/attempt-sandbox.js';
+import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 
 function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -89,7 +90,7 @@ function setup(rawResponse: string) {
   mkdirSync(sourceRoot, { recursive: true });
   writeFileSync(join(sourceRoot, 'README.md'), 'fixture\n');
   const workspaceStore = new WorkspaceStore(join(fixtureRoot, 'store'));
-  const runner = new SubtaskAttemptRunner({
+  const attemptRunner = new SubtaskAttemptRunner({
     db,
     sessionId: 'session_1',
     taskRuntimeService,
@@ -111,7 +112,103 @@ function setup(rawResponse: string) {
     sourceMountId: 'source-task_phase2', inputsMountId: 'inputs-task_phase2', handoffsMountId: 'handoffs-task_phase2',
     gitMetadataMountId: 'git-task_phase2',
   });
-  return { db, runner, taskRuntimeService, subtaskRepo, workUnitRepo, executionRuntime, a, b, defaultResourceGrant };
+  const dispatchItems = new KernelDispatchItemRepo(db);
+  const authorize = (input: {
+    attemptId: string;
+    attemptKind?: 'primary' | 'retry' | 'fallback' | 'contract_correction' | 'merge_repair';
+    sourceAttemptId?: string | null;
+    recoveryMode?: 'fresh' | 'native_session' | 'recovery_packet';
+    attemptPayload?: Parameters<SubtaskAttemptRunner['run']>[0]['attemptPayload'];
+  }) => {
+    if (dispatchItems.find(input.attemptId)) return;
+    const now = '2026-07-28T00:00:00.000Z';
+    dispatchItems.insertBatch({
+      schemaVersion: 4,
+      id: `decision_${input.attemptId}`,
+      eventId: `dispatch_${input.attemptId}`,
+      reason: 'test dispatch authorization',
+      action: {
+        type: 'dispatch_batch',
+        taskId: 'task_phase2',
+        items: [{
+          order: 0,
+          subtaskId: a.id,
+          attemptId: input.attemptId,
+          agentClassName: 'codex-cli',
+          attemptKind: input.attemptKind ?? 'primary',
+          sourceAttemptId: input.sourceAttemptId ?? null,
+          recoveryMode: input.recoveryMode ?? 'fresh',
+          attemptPayload: input.attemptPayload ?? null,
+          defaultResourceGrant,
+        }],
+      },
+    }, a.generationId, now);
+    if (dispatchItems.claimPending(input.attemptId, now)) {
+      dispatchItems.markRunning(input.attemptId, null, now);
+    }
+  };
+  const runner = {
+    run: async (input: Parameters<SubtaskAttemptRunner['run']>[0]) => {
+      authorize(input);
+      return attemptRunner.run(input);
+    },
+    runCorrection: async (input: Parameters<SubtaskAttemptRunner['runCorrection']>[0]) => {
+      authorize({
+        ...input,
+        attemptKind: 'contract_correction',
+        recoveryMode: 'fresh',
+        attemptPayload: {
+          protocol: 'completion-correction-v2',
+          completionContract: input.completionContract as never,
+          violations: input.violations,
+        },
+      });
+      return attemptRunner.runCorrection(input);
+    },
+  };
+  return {
+    db,
+    runner,
+    taskRuntimeService,
+    subtaskRepo,
+    workUnitRepo,
+    executionRuntime,
+    dispatchItems,
+    workflow: new KernelWorkflowRepo(db),
+    a,
+    b,
+    defaultResourceGrant,
+  };
+}
+
+function authorizeRunningAttempt(
+  setupResult: ReturnType<typeof setup>,
+  attemptId: string,
+): void {
+  const now = '2026-07-28T00:00:00.000Z';
+  setupResult.dispatchItems.insertBatch({
+    schemaVersion: 4,
+    id: `decision_${attemptId}`,
+    eventId: `dispatch_${attemptId}`,
+    reason: 'test dispatch authorization',
+    action: {
+      type: 'dispatch_batch',
+      taskId: 'task_phase2',
+      items: [{
+        order: 0,
+        subtaskId: setupResult.a.id,
+        attemptId,
+        agentClassName: 'codex-cli',
+        attemptKind: 'primary',
+        sourceAttemptId: null,
+        recoveryMode: 'fresh',
+        attemptPayload: null,
+        defaultResourceGrant: setupResult.defaultResourceGrant,
+      }],
+    },
+  }, setupResult.a.generationId, now);
+  expect(setupResult.dispatchItems.claimPending(attemptId, now)).not.toBeNull();
+  expect(setupResult.dispatchItems.markRunning(attemptId, null, now)).toBe(true);
 }
 
 function validResponse(): string {
@@ -149,6 +246,12 @@ describe('SubtaskAttemptRunner', () => {
       source_attempt_id: 'attempt_1',
       status: 'pending',
     });
+    expect(setupResult.dispatchItems.find('attempt_1')?.status).toBe('terminal');
+    expect(setupResult.workflow.findEvent('event_attempt_1_execution_outcome')).toMatchObject({
+      type: 'execution_outcome',
+      terminalKind: 'completed',
+      attemptId: 'attempt_1',
+    });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'idle', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
@@ -184,6 +287,9 @@ describe('SubtaskAttemptRunner', () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockImplementationOnce(async () => {
       setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled while executor was running');
+      setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'cancelled', {
+        error: 'cancelled while executor was running',
+      });
       return {
         taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
         output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
@@ -199,7 +305,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
     expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'cancelled' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_decision', error: 'Task, Subtask, or WorkUnit claim changed before commit',
+      status: 'cancelled', error: 'cancelled while executor was running',
     });
     expect(setupResult.db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get())
       .toEqual({ terminal_state: 'cancelled_or_stale', error_code: 'attempt_stale' });
@@ -215,6 +321,50 @@ describe('SubtaskAttemptRunner', () => {
       { event_type: 'failed', state: 'failed', attempt_id: outcome.attemptId },
       { event_type: 'released', state: 'failed', attempt_id: outcome.attemptId },
     ]);
+  });
+
+  it('does not resurrect a cancelled Subtask when the running Executor reports cancellation', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.executionRuntime.run.mockImplementationOnce(async () => {
+      setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled while executor was running');
+      setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'cancelled', {
+        error: 'cancelled while executor was running',
+      });
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_1',
+        status: 'cancelled',
+        executorName: 'codex-cli',
+        output: '',
+        error: 'attempt cancelled',
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_cancelled',
+      executionId: 'exec_1',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli',
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'cancelled',
+      error: 'cancelled while executor was running',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT terminal_state, error_code FROM executor_attempt_receipts
+      WHERE attempt_id = 'attempt_cancelled'
+    `).get()).toEqual({
+      terminal_state: 'cancelled_or_stale',
+      error_code: 'attempt_cancelled',
+    });
   });
 
   it('blocks a handoff that would exceed the downstream aggregate budget', async () => {
@@ -277,6 +427,72 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
+  });
+
+  it('lands receipt, Subtask state, dispatch terminal and Kernel outcome inbox together', async () => {
+    const setupResult = setup(validResponse());
+    authorizeRunningAttempt(setupResult, 'attempt_atomic_terminal');
+    setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('executor process crashed'));
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_atomic_terminal',
+      executionId: 'exec_atomic_terminal',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli',
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'executor_failed' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_decision');
+    expect(setupResult.dispatchItems.find('attempt_atomic_terminal')?.status).toBe('terminal');
+    expect(setupResult.workflow.findEvent(
+      'event_attempt_atomic_terminal_execution_outcome',
+    )).toMatchObject({
+      type: 'execution_outcome',
+      attemptId: 'attempt_atomic_terminal',
+      terminalKind: 'failed',
+    });
+  });
+
+  it('keeps attempt ownership for reconciliation when terminal sealing fails', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.db.exec(`
+      CREATE TRIGGER reject_runner_terminal_outcome
+      BEFORE INSERT ON kernel_events
+      WHEN NEW.id = 'event_attempt_terminal_blocked_execution_outcome'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected runner terminal seal failure');
+      END
+    `);
+
+    await expect(setupResult.runner.run({
+      attemptId: 'attempt_terminal_blocked',
+      executionId: 'exec_terminal_blocked',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      agentClassName: 'codex-cli',
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    })).rejects.toThrow('injected runner terminal seal failure');
+
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('running');
+    expect(setupResult.dispatchItems.find('attempt_terminal_blocked')?.status).toBe('running');
+    expect(setupResult.db.prepare(`
+      SELECT COUNT(*) AS count FROM executor_attempt_receipts
+      WHERE attempt_id = 'attempt_terminal_blocked'
+    `).get()).toEqual({ count: 0 });
+    expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
+      state: 'running',
+      claimedTaskId: 'task_phase2',
+      claimedSubtaskId: setupResult.a.id,
+      claimedAttemptId: 'attempt_terminal_blocked',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT COUNT(*) AS count FROM resource_leases
+      WHERE attempt_id = 'attempt_terminal_blocked' AND released_at IS NULL
+    `).get()).toEqual({ count: setupResult.defaultResourceGrant.length });
   });
 
   it('runs a Kernel-authorized fallback from awaiting_decision without treating it as stale', async () => {

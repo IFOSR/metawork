@@ -169,6 +169,13 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     `).run(releasedAt, attemptId, leaseToken).changes;
   }
 
+  releaseReconciledAttempt(attemptId: string, releasedAt: string): number {
+    return this.db.prepare(`
+      UPDATE resource_leases SET released_at = ?
+      WHERE attempt_id = ? AND released_at IS NULL
+    `).run(releasedAt, attemptId).changes;
+  }
+
   findActive(now: string): ResourceLeaseRecord[] {
     return (this.db.prepare(`
       SELECT * FROM resource_leases

@@ -195,7 +195,7 @@ export class KernelDispatchItemRepo {
       this.db.prepare(`
         UPDATE kernel_dispatch_items
         SET status = 'terminal', terminal_at = ?, error_summary = ?, updated_at = ?
-        WHERE attempt_id = ? AND status IN ('launching', 'running')
+        WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
       `).run(now, errorSummary, now, attemptId);
     });
     finish();
@@ -284,10 +284,6 @@ export class KernelDispatchItemRepo {
           updated_at = ?
       WHERE attempt_id = ? AND status = 'cancelling'
     `).run(now, now, errorSummary, now, attemptId);
-  }
-
-  cancelTask(taskId: string, now: string, decisionId = `legacy_cancel_${taskId}`): number {
-    return this.requestCancellation({ taskId, decisionId, now }).length;
   }
 
   hasBlockingResidue(taskId: string, generationId?: string): boolean {

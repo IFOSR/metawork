@@ -12,8 +12,17 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
+import { DockerCliAttemptSandboxAdapter } from '../../src/execution/docker-cli-attempt-sandbox-adapter.js';
+import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
+import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
+import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
+import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
+import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
+import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
+import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -52,7 +61,7 @@ describe('session startup running-task reconciliation', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const runningTask = taskEngine.create({ title: '长时间调研任务', goal: '继续调研产业链' });
-    seedPersistedV3WorkGraph(db, runningTask.id, runningTask.goal);
+    seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
     taskEngine.transition(runningTask.id, 'ready');
     taskEngine.transition(runningTask.id, 'running');
     taskRepo.update(runningTask.id, {
@@ -76,6 +85,10 @@ describe('session startup running-task reconciliation', () => {
       rankInteractions: vi.fn(),
     } as unknown as LlmBridge;
 
+    const dockerAvailable = vi.spyOn(
+      DockerCliAttemptSandboxAdapter.prototype,
+      'listManaged',
+    ).mockRejectedValue(new Error('Docker must not be consulted without attempt ownership'));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -89,14 +102,223 @@ describe('session startup running-task reconciliation', () => {
       executorFactory: () => executor,
     });
 
-    session.initialize();
-    await session.waitForAsyncWork();
+    try {
+      session.initialize();
+      await session.waitForAsyncWork();
+    } finally {
+      dockerAvailable.mockRestore();
+    }
     const snapshot = session.getSnapshot();
 
+    expect(dockerAvailable).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
     expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
       .toEqual({ action: 'block_work' });
+  });
+
+  it('enters recovery-blocked mode without releasing claims when Docker reconciliation fails', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-recovery-blocked');
+    const runningTask = taskEngine.create({
+      title: 'Recovery blocked',
+      goal: 'Preserve ownership until Docker can be inspected',
+    });
+    seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
+    taskEngine.transition(runningTask.id, 'ready');
+    taskEngine.transition(runningTask.id, 'running');
+    new AgentClassRepo(db).upsert(
+      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+    );
+    const workUnits = new WorkUnitRepo(db);
+    workUnits.upsert({
+      id: 'executor-recovery-blocked',
+      agentClassName: 'codex-cli',
+      agentClassKind: 'executor',
+      state: 'running',
+      claimedTaskId: runningTask.id,
+      claimedSubtaskId: `${runningTask.id}_execute`,
+      claimedAttemptId: 'attempt-recovery-blocked',
+      heartbeatAt: '2026-07-28T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-28T00:10:00.000Z',
+      createdAt: '2026-07-28T00:00:00.000Z',
+      updatedAt: '2026-07-28T00:00:00.000Z',
+    });
+    const dockerFailure = vi.spyOn(
+      DockerCliAttemptSandboxAdapter.prototype,
+      'listManaged',
+    ).mockRejectedValue(new Error('Docker daemon unavailable'));
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const session = new MetaclawSession({
+      taskEngine,
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+      orchestration: new OrchestrationEngine(taskEngine),
+      executor,
+      db,
+      config: createConfig(),
+      sessionId: 'sess_recovery_blocked',
+      contextRecaller: new ContextRecaller(db),
+      llmBridge: {
+        resolveRoute: vi.fn(),
+        resolveIntent: vi.fn(),
+        rankInteractions: vi.fn(),
+      } as unknown as LlmBridge,
+      executorFactory: () => executor,
+    });
+
+    try {
+      session.initialize();
+      await session.waitForAsyncWork();
+    } finally {
+      dockerFailure.mockRestore();
+    }
+
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(workUnits.findById('executor-recovery-blocked')).toMatchObject({
+      state: 'running',
+      claimedTaskId: runningTask.id,
+      claimedSubtaskId: `${runningTask.id}_execute`,
+      claimedAttemptId: 'attempt-recovery-blocked',
+    });
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(session.getSnapshot().output.join('\n')).toContain('恢复阻塞');
+  });
+
+  it('does not release a reconciled claim or lease before terminal facts are durably sealed', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-terminal-seal-blocked');
+    const runningTask = taskEngine.create({
+      title: 'Terminal seal blocked',
+      goal: 'Preserve ownership when terminal persistence fails',
+    });
+    seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
+    taskEngine.transition(runningTask.id, 'ready');
+    taskEngine.transition(runningTask.id, 'running');
+    const subtaskRepo = new SubtaskRepo(db);
+    const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
+    subtaskRepo.updateStatus(subtask.id, 'running');
+    new AgentClassRepo(db).upsert(
+      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+    );
+    const attemptId = 'attempt-terminal-seal-blocked';
+    const workUnitId = 'executor-terminal-seal-blocked';
+    const workUnits = new WorkUnitRepo(db);
+    workUnits.upsert({
+      id: workUnitId,
+      agentClassName: 'codex-cli',
+      agentClassKind: 'executor',
+      state: 'running',
+      claimedTaskId: runningTask.id,
+      claimedSubtaskId: subtask.id,
+      claimedAttemptId: attemptId,
+      heartbeatAt: '2099-01-01T00:00:00.000Z',
+      leaseExpiresAt: '2099-01-01T00:10:00.000Z',
+      createdAt: '2026-07-28T00:00:00.000Z',
+      updatedAt: '2026-07-28T00:00:00.000Z',
+    });
+    const resourceGrant = buildDefaultResourceClaims({
+      workspaceId: `workspace-${runningTask.id}-${subtask.generationId}-${subtask.id}`,
+      sourceMountId: `source-${runningTask.id}`,
+      inputsMountId: `inputs-${runningTask.id}`,
+      handoffsMountId: `handoffs-${runningTask.id}`,
+      gitMetadataMountId: `git-${runningTask.id}`,
+    });
+    const leaseRepository = new SqliteResourceLeaseRepository(db);
+    new ResourceLeaseService(leaseRepository).claim({
+      taskId: runningTask.id,
+      generationId: subtask.generationId,
+      subtaskId: subtask.id,
+      attemptId,
+      workUnitId,
+      claims: resourceGrant,
+      leaseToken: 'lease-terminal-seal-blocked',
+      now: '2099-01-01T00:00:00.000Z',
+    });
+    new KernelDispatchItemRepo(db).insertBatch({
+      schemaVersion: 4,
+      id: 'decision-terminal-seal-blocked',
+      eventId: 'event-dispatch-terminal-seal-blocked',
+      reason: 'persisted authorized attempt',
+      action: {
+        type: 'dispatch_batch',
+        taskId: runningTask.id,
+        items: [{
+          order: 0,
+          subtaskId: subtask.id,
+          attemptId,
+          agentClassName: 'codex-cli',
+          attemptKind: 'primary',
+          sourceAttemptId: null,
+          recoveryMode: 'fresh',
+          attemptPayload: null,
+          defaultResourceGrant: resourceGrant,
+        }],
+      },
+    }, subtask.generationId, '2026-07-28T00:00:00.000Z');
+    const dispatch = new KernelDispatchItemRepo(db);
+    dispatch.claimPending(attemptId, '2026-07-28T00:00:00.000Z');
+    dispatch.markRunning(attemptId, null, '2026-07-28T00:00:00.000Z');
+    db.exec(`
+      CREATE TRIGGER reject_reconciled_terminal_receipt
+      BEFORE INSERT ON executor_attempt_receipts
+      WHEN NEW.attempt_id = 'attempt-terminal-seal-blocked'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected terminal seal failure');
+      END
+    `);
+    const dockerAvailable = vi.spyOn(
+      DockerCliAttemptSandboxAdapter.prototype,
+      'listManaged',
+    ).mockResolvedValue([]);
+    const executor: ExecutorAdapter = {
+      name: 'codex-cli',
+      execute: vi.fn(),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      abort: vi.fn(),
+    };
+    const session = new MetaclawSession({
+      taskEngine,
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+      orchestration: new OrchestrationEngine(taskEngine),
+      executor,
+      db,
+      config: createConfig(),
+      sessionId: 'sess_terminal_seal_blocked',
+      contextRecaller: new ContextRecaller(db),
+      llmBridge: {
+        resolveRoute: vi.fn(),
+        resolveIntent: vi.fn(),
+        rankInteractions: vi.fn(),
+      } as unknown as LlmBridge,
+      executorFactory: () => executor,
+    });
+
+    try {
+      session.initialize();
+      await expect(session.waitForAsyncWork()).resolves.toBeUndefined();
+    } finally {
+      dockerAvailable.mockRestore();
+    }
+
+    expect(workUnits.findById(workUnitId)).toMatchObject({
+      state: 'running',
+      claimedTaskId: runningTask.id,
+      claimedSubtaskId: subtask.id,
+      claimedAttemptId: attemptId,
+    });
+    const activeLeases = leaseRepository.findActive('2026-07-28T00:00:00.000Z');
+    expect(activeLeases).toHaveLength(resourceGrant.length);
+    expect(activeLeases.every(lease => lease.attemptId === attemptId && lease.releasedAt === null)).toBe(true);
+    expect(dispatch.find(attemptId)?.status).toBe('running');
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(session.getSnapshot().output.join('\n')).toContain('恢复阻塞');
   });
 });

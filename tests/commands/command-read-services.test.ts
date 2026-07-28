@@ -149,12 +149,12 @@ describe('command fact queries', () => {
         id, schema_version, event_id, event_type, correlation_id, causation_id,
         session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
         decision_json, action, reason, created_at
-      ) VALUES (?, 1, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, 4, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
     `).run(
       'decision-1', 'event-1', 'request-1', 'session-feedback', task.id,
-      JSON.stringify({ schemaVersion: 1, type: 'plan_proposed', id: 'event-1', correlationId: 'request-1', causationId: null, occurredAt: '2026-07-14T10:00:00.000Z', sessionId: 'session-feedback', taskId: task.id, proposal: proposedPlan }),
-      JSON.stringify({ schemaVersion: 1, type: 'plan_admission' }),
-      JSON.stringify({ schemaVersion: 1, id: 'decision-1', eventId: 'event-1', action: { type: 'authorize_task_plan', taskId: task.id, task: {}, workGraph: approvedPlan.workGraph }, reason: 'approved' }),
+      JSON.stringify({ schemaVersion: 4, type: 'plan_proposed', id: 'event-1', correlationId: 'request-1', causationId: null, occurredAt: '2026-07-14T10:00:00.000Z', sessionId: 'session-feedback', taskId: task.id, proposal: proposedPlan }),
+      JSON.stringify({ schemaVersion: 4, type: 'plan_admission' }),
+      JSON.stringify({ schemaVersion: 4, id: 'decision-1', eventId: 'event-1', action: { type: 'authorize_task_plan', taskId: task.id, task: {}, workGraph: approvedPlan.workGraph }, reason: 'approved' }),
       'authorize_task_plan', 'approved', '2026-07-14T10:00:00.000Z',
     );
     const workUnitRepo = new WorkUnitRepo(db);
