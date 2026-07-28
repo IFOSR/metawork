@@ -30,7 +30,7 @@ Pre-attempt capacity failure creates no attempt receipt. The Kernel may authoriz
 
 The first completion-contract failure may authorize one response-only correction on the same AgentClass. Correction receives only the original response, full contract, all structured violations and exact trailer format, under a bounded input size and an enforceable no-tools/read-only profile. It does not re-execute the Subtask. A second failure, unsupported profile or oversized input blocks deterministically.
 
-The existing multi-Task queue, priority/preemption and parked auto-resume production policies are removed. ADR-0011's single-active top-level Task constraint remains. Those capabilities are redesigned in Phase 6 after Kernel, partition and lease foundations exist.
+The existing multi-Task queue, priority/preemption and parked auto-resume production policies are removed. ADR-0011's single-active top-level Task constraint remains. Multi-Task scheduling is deferred to a future independent roadmap; it is not part of Phase 6's final scope (ADR-0026).
 
 ## Ownership And Dependencies
 

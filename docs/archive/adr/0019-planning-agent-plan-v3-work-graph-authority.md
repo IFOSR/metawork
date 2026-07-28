@@ -1,11 +1,11 @@
 # ADR-0019: PlanningAgentPlan v3 And Work Graph Authority
 
-- Status: Accepted
+- Status: Historical; superseded by ADR-0021 and ADR-0023, with module ownership governed by ADR-0020
 - Date: 2026-07-16
 - Scope: PlanningAgent, Control Kernel, v3 Subtask persistence, and serial work-graph runtime
 - Architecture: ADR-0020 assigns the shared graph contract/rules to Work Graph and forbids Execution Runtime from depending on Planning implementation details
 
-> Alignment note (2026-07-27): this ADR remains authority for v3 historical and migration context only; ADR-0021 governs the current strict v4 graph. Two migration statements below are closed — the Kernel named `PolicyKernel` here is now `ControlKernel` (ADR-0022), and the shared graph rules have moved out of `src/planning/` into the independent `src/work-graph/` module.
+> Alignment note (2026-07-28): this ADR is archived v3 and migration context only. ADR-0021 introduced the v4 graph and Subtask contract; ADR-0023 carries the later v5 durable-workflow evolution; ADR-0020 governs module ownership. The Kernel named `PolicyKernel` here is now `ControlKernel` (ADR-0022), and shared graph rules live in the independent `src/work-graph/` module.
 
 ## Context
 

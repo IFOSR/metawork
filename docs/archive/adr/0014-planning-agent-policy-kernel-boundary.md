@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted; amended by ADR-0019, ADR-0020 and ADR-0022.
+Historical; fully absorbed by ADR-0015, ADR-0020 and ADR-0022.
 
-The `PlanningAgent -> Control Kernel -> Runtime` chain remains current. Everything below that describes a *plan-only* Kernel is historical: ADR-0022 replaced `PolicyKernel` with `ControlKernel` and its single `decide(event, snapshot)` seam, which now also owns dispatch, capacity, execution failure recovery, retry/fallback/replan, permission and partition decisions. Read `PolicyKernel` in this document as the historical name of that seam.
+The `PlanningAgent -> Control Kernel -> Runtime` chain remains current, but its semantic boundary is now governed by ADR-0015, its module ownership by ADR-0020, and its unified decision interface by ADR-0022. Everything below is historical context: ADR-0022 replaced `PolicyKernel` with `ControlKernel` and its single `decide(event, snapshot)` seam, which now also owns dispatch, capacity, execution failure recovery, retry/fallback/replan, permission and partition decisions. Read `PolicyKernel` in this document as the historical name of that seam.
 
 Alignment note (2026-07-27): the `authorizeDirectReply` shortcut described below no longer exists. Phase 3 routed direct reply through the unified seam as `deliver_direct_reply`, and Phase 3–5 closed the Future Work items marked below.
 

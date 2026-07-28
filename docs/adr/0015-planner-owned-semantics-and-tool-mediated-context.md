@@ -1,6 +1,6 @@
 ---
 status: accepted
-amended_by: ADR-0017, ADR-0018, ADR-0019, ADR-0020
+amended_by: ADR-0017, ADR-0018, ADR-0020, ADR-0021, ADR-0022, ADR-0023
 ---
 
 # Planner-Owned Semantics And Tool-Mediated Context
@@ -15,7 +15,7 @@ These overlaps made the same request answerable by several conflicting mechanism
 
 ## Decision
 
-All natural-language semantic interpretation belongs to the Codex `PlanningAgent`. Code may still parse deterministic syntax: slash commands, explicit IDs, paths, URLs, and attachments. ADR-0019 owns the current strict PlanningAgentPlan v3 schema and generated output contract; this ADR does not define a parallel plan version or semantic defaults.
+All natural-language semantic interpretation belongs to the Codex `PlanningAgent`. Code may still parse deterministic syntax: slash commands, explicit IDs, paths, URLs, and attachments. ADR-0021 and ADR-0023 own the current Work Graph/Planning contract and durable evolution; this ADR does not define a parallel plan version or semantic defaults.
 
 The Planner runs through a dedicated Codex runner with an isolated `CODEX_HOME`, the `metaclaw-planner` core Skill, structured output, JSONL event parsing, an ephemeral read-only sandbox, and a dedicated read-only stdio MCP. Planner and executor Codex configuration and Skills are not shared. Planner failure, timeout, invalid output after one repair, or MCP unavailability fails closed to clarification; no keyword routing fallback is allowed.
 
@@ -33,7 +33,7 @@ The runtime image contains compiled application and Planner MCP entry points, th
 
 - This ADR supersedes ADR-0014's exception that natural-language memory/preference capture fast paths may bypass PlanningAgent. Explicit `/memory add` remains deterministic; natural-language “remember” input is planned normally.
 - This ADR superseded the historical ADR-0013 fixed `planner-1` plus `executor-1` pool. `planner-1` may represent the in-process planner slot, but executor WorkUnits are created and probed on demand.
-- ADR-0014 remains authoritative for the PlanningAgent/Kernel/Runtime chain. ADR-0019 and ADR-0020 are the current authorities for Task/Subtask/AgentClass/WorkUnit vocabulary and ownership, and ADR-0022 is the current authority for the Kernel decision Interface.
+- ADR-0020 is authoritative for the PlanningAgent/Kernel/Runtime module chain and vocabulary ownership; ADR-0022 is authoritative for the Kernel decision Interface. ADR-0021 and ADR-0023 govern the current Work Graph and durable execution contracts.
 
 ## Consequences
 

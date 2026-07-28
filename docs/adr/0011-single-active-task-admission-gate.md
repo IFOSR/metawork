@@ -52,8 +52,8 @@ now. This is a scope decision, not a discovery of a bug.
 - **Queueing, preemption, and auto-resume of a *second* task are intentionally
   disabled.** The single active task may still contain multiple subtasks on
   different executors (see CONTEXT.md "Single Active Task") — the restriction is
-  on *top-level* task intake. It does not authorize intra-task parallelism;
-  Runtime remains serial until the convergence roadmap explicitly enables it.
+  on *top-level* task intake. Independent Subtasks inside that Task may run
+  concurrently under ADR-0025; they do not weaken this admission constraint.
 - The following pre-existing acceptance cases encode the *old* multi-task
   behavior (queue / preempt / multi-task resume). They are **kept but
   `it.skip`-ped**, not deleted, because multi-task scheduling is expected to

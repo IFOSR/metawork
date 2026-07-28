@@ -129,16 +129,16 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing C
 
 ## Existing ADR Alignment
 
-- 已归档的 ADR-0001～ADR-0010 描述 `ExecutionPolicy`、`CapabilityClass`、Semantic Router 和 LLM 三信号 dispatch 等历史架构，统一由 ADR-0014、ADR-0018、ADR-0019 和本 ADR 取代。
+- 已归档的 ADR-0001～ADR-0010 描述 `ExecutionPolicy`、`CapabilityClass`、Semantic Router 和 LLM 三信号 dispatch 等历史架构，统一由 ADR-0015、ADR-0018、ADR-0021、ADR-0023 和本 ADR 取代。
 - ADR-0011 的单活跃顶层 Task 产品约束继续有效；Session `TaskAdmissionGate` 已在 Phase 3 删除，admission 决策已归 Control Kernel。
-- 已归档 ADR-0012 的持久 Task/Subtask/WorkUnit 事实和 Session-as-projection 规则已吸收到 ADR-0019；工作图验证归 Work Graph/Kernel，资源授权归 Kernel，副作用归 Runtime。
-- 已归档 ADR-0013 的 Task/Subtask/AgentClass/WorkUnit 词汇由 ADR-0019/本 ADR 接管；“Planner 是 dispatch owner”被“Planner 提案、Kernel 决策”取代。
-- ADR-0014 的 PlanningAgent/Kernel/Runtime 主链继续有效；`direct_reply` 专用 Kernel 入口已在 Phase 3 删除，统一 `decide` seam 已落地（ADR-0022）。
+- 已归档 ADR-0012 的持久 Task/Subtask/WorkUnit 事实和 Session-as-projection 规则已吸收到 ADR-0021/ADR-0023；工作图验证归 Work Graph/Kernel，资源授权归 Kernel，副作用归 Runtime。
+- 已归档 ADR-0013 的 Task/Subtask/AgentClass/WorkUnit 词汇由 ADR-0020/ADR-0021/ADR-0023 接管；“Planner 是 dispatch owner”被“Planner 提案、Kernel 决策”取代。
+- 已归档 ADR-0014 的 PlanningAgent/Kernel/Runtime 主链由 ADR-0015、ADR-0020 和 ADR-0022 吸收；`direct_reply` 专用 Kernel 入口已在 Phase 3 删除，统一 `decide` seam 已落地。
 - ADR-0015 的 Planner 语义所有权、隔离 runner 和只读上下文继续有效；v2 schema、WorkUnit-only health、Runtime 战略 fallback 和 direct-reply 特例由后续 ADR 取代。
-- 已归档 ADR-0016 的静态 catalog 注入与版本规则已吸收到 ADR-0018；v3 最终契约以 ADR-0019 为准，共享图规则的逻辑 owner 由本 ADR 明确为 Work Graph。
-- ADR-0017 的状态投影词汇和 Planner-safe 读取继续有效；持久化写入不属于纯 Kernel，v3 偏好列表与 fallback 行为以 ADR-0019 和本路线图为准。
+- 已归档 ADR-0016 的静态 catalog 注入与版本规则已吸收到 ADR-0018；当前图契约由 ADR-0021/ADR-0023 定义，共享图规则的逻辑 owner 由本 ADR 明确为 Work Graph。
+- ADR-0017 的状态投影词汇和 Planner-safe 读取继续有效；持久化写入不属于纯 Kernel，当前偏好列表与 fallback 行为以 ADR-0023 和本路线图为准。
 - ADR-0018 的 canonical built-in definitions 和 Routing Capability 继续有效，并构成 Routing Catalog 模块的当前实现基础。
-- ADR-0019 的 v3 工作图权威、Planner/Kernel 双重认证和 Runtime 无 fallback 图继续有效；本 ADR 只明确其模块归属与依赖方向。
+- 已归档 ADR-0019 记录 v3 工作图与审计迁移；当前 Planner/Kernel 认证和 Runtime 不得合成 fallback 图的规则由 ADR-0021/ADR-0023 及本 ADR 共同约束。
 
 ## Not Decided Here
 

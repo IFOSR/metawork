@@ -7,6 +7,8 @@
 - **Preserves**: ADR-0011
 - **Governed by**: ADR-0020
 
+> Scope alignment (2026-07-28): ADR-0026 makes this single-Task path the final Phase 6 scope. Multi-Task admission, priority, fairness and starvation protection are deferred to a future independent roadmap; they do not amend this dispatch/publication seam.
+
 ## Context
 
 Phase 5 established durable workspaces, per-attempt sandboxes, partition leases and a single durable Kernel workflow, but production still dispatches one Subtask at a time. Attempt success also publishes completion facts immediately, and dependency workspace composition cherry-picks commits. Enabling concurrency on that path would couple outcome timing to result order, expose downstream work before integration, and make same-path writes unsafe.
@@ -21,7 +23,7 @@ Work Graph v5 remains the only dependency structure and does not gain execution 
 
 ControlKernel contract v4 receives a scheduling snapshot containing the frontier, pending and active dispatch items, bounded AgentClass availability, normalized resource conflicts, `maxConcurrentAttempts` and free slots. Its `dispatch_batch` Decision authorizes a deterministic ordered set of items. Each item fixes its attempt identity, AgentClass, resource grant, attempt kind and order.
 
-Phase 6A supplies only the active Task as a scheduling candidate. ADR-0011 remains in force. Phase 6B may widen the candidate set and add fairness without changing the v4 batch/apply/supervisor seam.
+Only the active Task is a scheduling candidate. ADR-0011 remains in force. Multi-Task admission, priority, fairness and starvation protection are deliberately deferred to a future independent roadmap without changing the v4 batch/apply/supervisor seam.
 
 ### Durable asynchronous application
 
@@ -63,7 +65,7 @@ The global `maxConcurrentAttempts` default is four and must be a positive intege
 
 ## Deferred Work
 
-Database-aware semantic snapshots, active databases and WAL/journal/log/cache/data directories, and Git LFS are deferred. LFS may later change storage transport but cannot make binary files semantically mergeable.
+Database-aware semantic snapshots, active databases and WAL/journal/log/cache/data directories, and Git LFS are deferred. LFS may later change storage transport but cannot make binary files semantically mergeable. Multi-Task scheduling, priority, fairness and starvation protection are likewise deferred; ADR-0026 confirms they are outside final Phase 6 scope.
 
 ## Consequences
 

@@ -1,6 +1,6 @@
 # ADR-0018: Supported Routing Contracts and Unified Executor Definitions
 
-- Status: Accepted; v3 deferral superseded by ADR-0019; module ownership clarified by ADR-0020
+- Status: Accepted; historical v3 deferral superseded by ADR-0021 and ADR-0023; module ownership clarified by ADR-0020
 - Date: 2026-07-16
 - Scope: static built-in Executor capability definitions only
 
@@ -18,12 +18,12 @@ The static catalog is versioned and carries definition provenance. Planner and K
 
 For each Subtask, Planner produces one ordered Preferred AgentClass List: the first item is preferred and the remaining items form the fallback chain. The Kernel rechecks the planned list against registered classes and current status before execution, while Runtime attempts the approved order according to existing behavior. (2026-07-27: the deferred automatic cross-class fallback policy was delivered in Phase 4 — ADR-0023 gives `ControlKernel` sole authority to select the next AgentClass after a runtime failure.)
 
-PlanningAgentPlan v3, capability-driven candidate derivation, work-graph merge rules, parallel Subtasks and asynchronous scheduling are not decided by this ADR. ADR-0019 now governs the implemented v3 graph contract, while this ADR remains authoritative for static catalog definitions, startup projection and version/provenance rules. The remaining accepted catalog content from ADR-0016 is incorporated here; ADR-0016 is historical.
+PlanningAgentPlan and Work Graph wire versions, capability-driven candidate derivation, merge rules, parallel Subtasks and asynchronous scheduling are not decided by this ADR. ADR-0021 and ADR-0023 govern the current graph and durable-workflow contracts, while this ADR remains authoritative for static catalog definitions, startup projection and version/provenance rules. The remaining accepted catalog content from ADR-0016 is incorporated here; ADR-0016 is historical.
 
 ## Consequences
 
 - Pi keeps its native file and shell tools while research remains its preferred supported route.
 - Static capability facts cannot drift independently across Planner projection, Seeder and Adapter binding.
 - `list_executor_status` remains authoritative for dynamic class health, not for static capability definitions.
-- ADR-0019 supersedes the former `candidateAgentClasses` wire-format allowance: v3 uses `requiredCapabilities` and `preferredAgentClassList` only.
+- The current Work Graph contract supersedes the former `candidateAgentClasses` wire-format allowance: executable nodes use controlled requirements and ordered `preferredAgentClassList` values.
 - Custom Executor rows are preserved, but their free-form capability strings do not automatically become controlled built-in Routing Capabilities.

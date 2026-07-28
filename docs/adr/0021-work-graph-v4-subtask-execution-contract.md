@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-17
 - Scope: Work Graph contract, Subtask execution context, dependency handoff, completion protocol, execution evidence, and minimal attempt audit
-- Affects: ADR-0019 and ADR-0020
-- Amendment: supersedes ADR-0019's v3 plan/work-graph wire contract; ADR-0019 remains historical authority for the v3 audit migration
+- Affects: ADR-0020
+- Amendment: supersedes ADR-0019's v3 plan/work-graph wire contract; ADR-0019 is archived migration context
 
 ## Context
 

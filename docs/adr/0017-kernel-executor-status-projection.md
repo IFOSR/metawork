@@ -1,6 +1,6 @@
 # ADR-0017: Kernel Executor Status Projection
 
-- Status: Accepted; amended by ADR-0019 and ADR-0020
+- Status: Accepted; module ownership clarified by ADR-0020 and recovery policy amended by ADR-0023
 - Date: 2026-07-16
 - Scope: static Planner executor catalog and Kernel-owned dynamic executor-status projection
 
