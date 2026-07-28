@@ -44,4 +44,38 @@ export class ResourceLeaseService {
   release(attemptId: string, leaseToken: string, now = new Date().toISOString()): number {
     return this.repository.releaseAttempt(attemptId, leaseToken, now);
   }
+
+  requestRevocation(input: {
+    taskId: string;
+    generationId: string | null;
+    subtaskIds: readonly string[] | null;
+    reason: string;
+    now?: string;
+  }): number {
+    return this.repository.requestRevocation?.(
+      input.taskId,
+      input.generationId,
+      input.subtaskIds,
+      input.reason,
+      input.now ?? new Date().toISOString(),
+    ) ?? 0;
+  }
+
+  cancelWaits(input: {
+    taskId: string;
+    generationId: string | null;
+    subtaskIds: readonly string[] | null;
+    now?: string;
+  }): number {
+    return this.repository.cancelWaits?.(
+      input.taskId,
+      input.generationId,
+      input.subtaskIds,
+      input.now ?? new Date().toISOString(),
+    ) ?? 0;
+  }
+
+  releaseRevokedAttempt(attemptId: string, now = new Date().toISOString()): number {
+    return this.repository.releaseRevokedAttempt?.(attemptId, now) ?? 0;
+  }
 }

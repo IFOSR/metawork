@@ -18,6 +18,8 @@ export interface ResourceLeaseRecord extends ResourceClaim {
   heartbeatAt: string;
   expiresAt: string;
   releasedAt: string | null;
+  revocationRequestedAt?: string | null;
+  revocationReason?: string | null;
   createdAt: string;
 }
 
@@ -58,6 +60,20 @@ export interface ResourceLeaseRepositoryPort {
   releaseAttempt(attemptId: string, leaseToken: string, releasedAt: string): number;
   findActive(now: string): ResourceLeaseRecord[];
   findWaits(attemptId: string): ResourceWaitRecord[];
+  requestRevocation?(
+    taskId: string,
+    generationId: string | null,
+    subtaskIds: readonly string[] | null,
+    reason: string,
+    now: string,
+  ): number;
+  cancelWaits?(
+    taskId: string,
+    generationId: string | null,
+    subtaskIds: readonly string[] | null,
+    now: string,
+  ): number;
+  releaseRevokedAttempt?(attemptId: string, now: string): number;
 }
 
 export type PermissionRequestStatus = 'pending' | 'granted' | 'denied' | 'escalated' | 'expired';

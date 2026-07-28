@@ -13,6 +13,7 @@ import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
+import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 
 export interface IntegratedWorkspacePublication {
   type: 'integrated';
@@ -31,9 +32,18 @@ export interface ConflictedWorkspacePublication {
   event: Extract<KernelEvent, { type: 'merge_conflict_observed' }>;
 }
 
+export interface CancelledWorkspacePublication {
+  type: 'cancelled';
+  publicationId: string;
+  taskId: string;
+  subtaskId: string;
+  observedIntegrationCommit: string | null;
+}
+
 export type WorkspacePublicationOutcome =
   | IntegratedWorkspacePublication
-  | ConflictedWorkspacePublication;
+  | ConflictedWorkspacePublication
+  | CancelledWorkspacePublication;
 
 export interface WorkspacePublicationWorkerDeps {
   db: Database.Database;
@@ -45,6 +55,7 @@ export interface WorkspacePublicationWorkerDeps {
   attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   resourceLeaseService: ResourceLeaseService;
   dispatchItemRepo: KernelDispatchItemRepo;
+  taskRuntimeService: TaskRuntimeService;
 }
 
 /**
@@ -129,6 +140,29 @@ export class WorkspacePublicationWorker {
   private async publish(
     publication: WorkspacePublicationRecord,
   ): Promise<WorkspacePublicationOutcome | null> {
+    const task = this.deps.taskRuntimeService.findTask(publication.taskId);
+    const subtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+    if (
+      !task
+      || task.status === 'cancelled'
+      || !subtask
+      || subtask.status === 'cancelled'
+    ) {
+      this.publications.requestCancellation({
+        taskId: publication.taskId,
+        generationId: publication.generationId,
+        subtaskIds: [publication.subtaskId],
+        decisionId: `publication_fence_${publication.id}`,
+        now: new Date().toISOString(),
+      });
+      return {
+        type: 'cancelled',
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        observedIntegrationCommit: null,
+      };
+    }
     const applyingAt = new Date().toISOString();
     if (!this.publications.markApplying(publication.id, applyingAt)) return null;
     const integrationWorkspace = await this.git.ensure({
@@ -189,7 +223,38 @@ export class WorkspacePublicationWorker {
       if (merged.type === 'conflicted') {
         const conflictChainId = publication.conflictChainId ?? `conflict_${publication.id}`;
         const summary = `merge conflict: ${merged.conflictPaths.join(', ')}`;
+        let cancelled = false;
         this.deps.db.transaction(() => {
+          const currentPublication = this.publications.find(publication.id);
+          const currentTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+          const currentSubtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+          if (
+            currentPublication?.status === 'cancelling'
+            || currentPublication?.status === 'cancelled'
+            || currentTask?.status === 'cancelled'
+            || currentSubtask?.status === 'cancelled'
+          ) {
+            cancelled = true;
+            this.publications.recordMergeAttempt({
+              id: auditId,
+              publicationId: publication.id,
+              decisionId,
+              attemptId: null,
+              ordinal,
+              attemptKind: ordinal === 1 ? 'automatic' : 'repair',
+              baseCommit: merged.baseCommit,
+              oursCommit: merged.oursCommit,
+              theirsCommit: merged.theirsCommit,
+              conflictPaths: merged.conflictPaths,
+              filePolicy: merged.filePolicy,
+              result: 'failed',
+              integrationCommit: null,
+              errorSummary: 'merge conflict observed after cancellation fence',
+              createdAt: now,
+            });
+            this.publications.markCancelled(publication.id, null, now);
+            return;
+          }
           this.publications.recordMergeAttempt({
             id: auditId,
             publicationId: publication.id,
@@ -212,6 +277,15 @@ export class WorkspacePublicationWorker {
             error: summary,
           });
         })();
+        if (cancelled) {
+          return {
+            type: 'cancelled',
+            publicationId: publication.id,
+            taskId: publication.taskId,
+            subtaskId: publication.subtaskId,
+            observedIntegrationCommit: null,
+          };
+        }
         return {
           type: 'conflicted',
           event: {
@@ -240,7 +314,38 @@ export class WorkspacePublicationWorker {
         publication.generationId,
         publication.subtaskId,
       );
+      let cancelled = false;
       this.deps.db.transaction(() => {
+        const currentPublication = this.publications.find(publication.id);
+        const currentTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+        const currentSubtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+        if (
+          currentPublication?.status === 'cancelling'
+          || currentPublication?.status === 'cancelled'
+          || currentTask?.status === 'cancelled'
+          || currentSubtask?.status === 'cancelled'
+        ) {
+          cancelled = true;
+          this.publications.recordMergeAttempt({
+            id: auditId,
+            publicationId: publication.id,
+            decisionId,
+            attemptId: ordinal === 1 ? null : publication.sourceAttemptId,
+            ordinal,
+            attemptKind: ordinal === 1 ? 'automatic' : 'repair',
+            baseCommit: merged.baseCommit,
+            oursCommit: merged.oursCommit,
+            theirsCommit: merged.theirsCommit,
+            conflictPaths: [],
+            filePolicy: merged.filePolicy,
+            result: 'failed',
+            integrationCommit: merged.integrationCommit,
+            errorSummary: 'integration commit observed after cancellation fence; result not published',
+            createdAt: now,
+          });
+          this.publications.markCancelled(publication.id, merged.integrationCommit, now);
+          return;
+        }
         this.publications.recordMergeAttempt({
           id: auditId,
           publicationId: publication.id,
@@ -287,6 +392,15 @@ export class WorkspacePublicationWorker {
           });
         }
       })();
+      if (cancelled) {
+        return {
+          type: 'cancelled',
+          publicationId: publication.id,
+          taskId: publication.taskId,
+          subtaskId: publication.subtaskId,
+          observedIntegrationCommit: merged.integrationCommit,
+        };
+      }
       return {
         type: 'integrated',
         publicationId: publication.id,

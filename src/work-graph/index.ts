@@ -8,6 +8,13 @@ export type {
   WorkGraphSubtask,
 } from './types.js';
 export {
+  deriveCancellationClosure,
+  type CancellationGraph,
+  type CancellationClosureResult,
+  type WorkGraphCancellationFact,
+  type WorkGraphCancellationStatus,
+} from './cancellation.js';
+export {
   deriveRunnableFrontier,
   type WorkGraphRuntimeFact,
   type WorkGraphRuntimeStatus,

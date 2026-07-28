@@ -5,6 +5,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
+import type { TaskControlPort } from './task-control-port.js';
 
 export interface CommandContext {
   taskEngine: TaskEngine;
@@ -12,6 +13,7 @@ export interface CommandContext {
   orchestration: OrchestrationEngine;
   executor: ExecutorAdapter;
   activeExecutions?: ActiveExecutionControl;
+  taskControl: TaskControlPort;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;

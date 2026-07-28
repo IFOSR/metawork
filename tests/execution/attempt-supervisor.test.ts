@@ -5,6 +5,7 @@ import type { KernelDispatchItemRecord } from '../../src/storage/kernel-dispatch
 
 class MemoryDispatchItems {
   readonly records = new Map<string, KernelDispatchItemRecord>();
+  readonly cancelBeforeRunning = new Set<string>();
 
   insertBatch(
     decision: KernelDecision & {
@@ -61,10 +62,16 @@ class MemoryDispatchItems {
     return record;
   }
 
-  markRunning(attemptId: string, _workUnitId: string | null, now: string): void {
+  markRunning(attemptId: string, _workUnitId: string | null, now: string): boolean {
     const record = this.records.get(attemptId)!;
+    if (this.cancelBeforeRunning.has(attemptId)) {
+      record.status = 'cancelling';
+      record.updatedAt = now;
+      return false;
+    }
     record.status = 'running';
     record.updatedAt = now;
+    return true;
   }
 
   markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
@@ -167,5 +174,31 @@ describe('AttemptSupervisor', () => {
     expect(repository.records.get('attempt-a')?.status).toBe('uncertain');
     expect(repository.records.get('attempt-b')?.status).toBe('terminal');
     expect(repository.records.get('attempt-c')?.status).toBe('terminal');
+  });
+
+  it('does not launch an item when the cancellation fence wins after claim', async () => {
+    const repository = new MemoryDispatchItems();
+    repository.cancelBeforeRunning.add('attempt-a');
+    const supervisor = new AttemptSupervisor(repository, 1);
+    const launched: string[] = [];
+
+    supervisor.enqueue({
+      ...batchDecision(),
+      action: {
+        ...batchDecision().action,
+        items: [batchDecision().action.items[0]!],
+      },
+    }, 'generation-1', {
+      run: async item => {
+        launched.push(item.attemptId);
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+    await supervisor.drain('task-1');
+
+    expect(launched).toEqual([]);
+    expect(repository.records.get('attempt-a')?.status).toBe('cancelling');
   });
 });

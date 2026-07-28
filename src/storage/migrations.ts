@@ -1529,6 +1529,175 @@ const MIGRATIONS: Migration[] = [
       migrate();
     },
   },
+  {
+    version: 27,
+    up: (db) => {
+      const migrate = db.transaction(() => {
+        db.exec(`
+          DROP TABLE IF EXISTS kernel_dispatch_items_v27;
+          DROP TABLE IF EXISTS workspace_publications_v27;
+          CREATE TABLE kernel_dispatch_items_v27 (
+            attempt_id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            batch_order INTEGER NOT NULL,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            agent_class_name TEXT NOT NULL,
+            attempt_kind TEXT NOT NULL CHECK(attempt_kind IN (
+              'primary', 'continuation', 'fallback', 'contract_correction', 'merge_repair'
+            )),
+            source_attempt_id TEXT,
+            recovery_mode TEXT NOT NULL CHECK(recovery_mode IN (
+              'native_session', 'recovery_packet', 'fresh'
+            )),
+            attempt_payload_json TEXT NOT NULL DEFAULT 'null',
+            resource_grant_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK(status IN (
+              'pending_launch', 'launching', 'running', 'cancelling',
+              'terminal', 'cancelled', 'uncertain'
+            )),
+            work_unit_id TEXT,
+            sandbox_container_id TEXT,
+            launch_started_at TEXT,
+            terminal_at TEXT,
+            cancellation_decision_id TEXT,
+            cancel_requested_at TEXT,
+            cancelled_at TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
+          );
+          INSERT INTO kernel_dispatch_items_v27 (
+            attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+            agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+            attempt_payload_json, resource_grant_json, status, work_unit_id,
+            sandbox_container_id, launch_started_at, terminal_at, error_summary,
+            created_at, updated_at
+          )
+          SELECT
+            attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+            agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+            attempt_payload_json, resource_grant_json, status, work_unit_id,
+            sandbox_container_id, launch_started_at, terminal_at, error_summary,
+            created_at, updated_at
+          FROM kernel_dispatch_items;
+          DROP TABLE kernel_dispatch_items;
+          ALTER TABLE kernel_dispatch_items_v27 RENAME TO kernel_dispatch_items;
+          CREATE INDEX idx_kernel_dispatch_items_supervisor
+            ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
+          CREATE INDEX idx_kernel_dispatch_items_task
+            ON kernel_dispatch_items(task_id, status, batch_order);
+          CREATE UNIQUE INDEX idx_kernel_dispatch_one_active_subtask
+            ON kernel_dispatch_items(task_id, generation_id, subtask_id)
+            WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling');
+
+          CREATE TABLE workspace_publications_v27 (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            source_attempt_id TEXT NOT NULL,
+            agent_class_name TEXT NOT NULL,
+            candidate_commit TEXT NOT NULL,
+            original_completion_json TEXT NOT NULL,
+            topology_layer INTEGER NOT NULL,
+            first_dispatch_order INTEGER NOT NULL,
+            repair_attempts_used INTEGER NOT NULL DEFAULT 0,
+            conflict_replans_used INTEGER NOT NULL DEFAULT 0,
+            conflict_chain_id TEXT,
+            integration_commit TEXT,
+            observed_integration_commit TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+              'pending', 'applying', 'conflicted', 'integrated', 'parked',
+              'cancelling', 'cancelled', 'uncertain'
+            )),
+            applying_at TEXT,
+            integrated_at TEXT,
+            cancellation_decision_id TEXT,
+            cancel_requested_at TEXT,
+            cancelled_at TEXT,
+            error_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, generation_id, subtask_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
+          );
+          INSERT INTO workspace_publications_v27 (
+            id, task_id, generation_id, subtask_id, source_attempt_id,
+            agent_class_name, candidate_commit, original_completion_json,
+            topology_layer, first_dispatch_order, repair_attempts_used,
+            conflict_replans_used, conflict_chain_id, integration_commit,
+            status, applying_at, integrated_at, error_summary, created_at, updated_at
+          )
+          SELECT
+            id, task_id, generation_id, subtask_id, source_attempt_id,
+            agent_class_name, candidate_commit, original_completion_json,
+            topology_layer, first_dispatch_order, repair_attempts_used,
+            conflict_replans_used, conflict_chain_id, integration_commit,
+            status, applying_at, integrated_at, error_summary, created_at, updated_at
+          FROM workspace_publications;
+          DROP TABLE workspace_publications;
+          ALTER TABLE workspace_publications_v27 RENAME TO workspace_publications;
+          CREATE INDEX idx_workspace_publications_apply
+            ON workspace_publications(
+              task_id, generation_id, status, topology_layer,
+              first_dispatch_order, subtask_id
+            );
+
+          CREATE TABLE IF NOT EXISTS generation_replan_requests (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            source_revision INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+              'pending_quiescence', 'planning', 'submitted',
+              'resolved', 'cancelled', 'failed'
+            )),
+            trigger_decision_id TEXT NOT NULL,
+            quiescence_token TEXT,
+            error_summary TEXT,
+            planning_started_at TEXT,
+            submitted_at TEXT,
+            resolved_at TEXT,
+            cancelled_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, generation_id, source_revision),
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_generation_replan_requests_status
+            ON generation_replan_requests(status, created_at, id);
+          CREATE INDEX IF NOT EXISTS idx_generation_replan_requests_task
+            ON generation_replan_requests(task_id, generation_id, status);
+        `);
+        addColumnIfMissing(
+          db,
+          'resource_leases',
+          'revocation_requested_at',
+          'TEXT',
+        );
+        addColumnIfMissing(db, 'resource_leases', 'revocation_reason', 'TEXT');
+        addColumnIfMissing(
+          db,
+          'work_graph_revisions',
+          'completion_kind',
+          "TEXT CHECK(completion_kind IN ('full', 'partial_accepted'))",
+        );
+      });
+
+      const foreignKeys = Number(db.pragma('foreign_keys', { simple: true })) === 1;
+      db.pragma('foreign_keys = OFF');
+      try {
+        migrate();
+      } finally {
+        db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+      }
+    },
+  },
 ];
 
 function tableExists(db: Database.Database, table: string): boolean {

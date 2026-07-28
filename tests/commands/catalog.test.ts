@@ -221,6 +221,8 @@ describe('CommandCatalog', () => {
 /task unblock
 /task cancel
 /task complete
+/task subtask-cancel
+/task accept-partial
 /task attach
 /task history
 /task recovery

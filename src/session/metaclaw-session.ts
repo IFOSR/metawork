@@ -71,6 +71,8 @@ import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
@@ -330,6 +332,23 @@ export class MetaclawSession {
         : process.cwd());
     const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
     const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
+    const publicationRepo = new WorkspacePublicationRepo(deps.db);
+    const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
+    const cancellationCoordinator = new TaskCancellationCoordinator({
+      db: deps.db,
+      taskRuntimeService: this.taskRuntimeService,
+      subtaskRepo: this.subtaskRepo,
+      taskEventRepo: this.taskEventRepo,
+      workGraphRevisionRepo: this.workGraphRevisionRepo,
+      dispatchItemRepo,
+      publicationRepo,
+      generationReplanRepo,
+      resourceLeaseService,
+      workUnitClaimService: this.workUnitClaimService,
+      activeExecutions: this.executionRuntime,
+      attemptSandbox: this.attemptSandbox,
+      attemptSandboxRepository: this.attemptSandboxRepository,
+    });
     this.attemptRunner = new SubtaskAttemptRunner({
       db: deps.db,
       sessionId: deps.sessionId,
@@ -376,8 +395,11 @@ export class MetaclawSession {
         attemptReceiptRepo: this.attemptReceiptRepo,
         resourceLeaseService,
         dispatchItemRepo,
+        taskRuntimeService: this.taskRuntimeService,
       }),
-      publicationRepo: new WorkspacePublicationRepo(deps.db),
+      publicationRepo,
+      generationReplanRepo,
+      cancellationCoordinator,
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
@@ -430,6 +452,9 @@ export class MetaclawSession {
         resolveRequestText: eventId => {
           const event = this.kernelWorkflowRepo.findEvent(eventId);
           return event?.type === 'plan_proposed' ? event.requestText : '';
+        },
+        cancelTask: async (taskId, reason) => {
+          await this.kernelExecutionRuntime.cancelTask(taskId, reason);
         },
       },
     });
@@ -973,7 +998,7 @@ export class MetaclawSession {
       schemaVersion: 4,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
-      runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
+      runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
       executorCatalog,
       executorStatuses: this.kernelExecutorStatusRepo.list(),
       v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
@@ -1061,7 +1086,7 @@ export class MetaclawSession {
     this.triggerWorkspaceRetentionSweep();
     const runningTask = tasks.find(task => task.status === 'running') ?? null;
     const schedulerState: RuntimeState = {
-      runningTaskId: runningTask?.id ?? null,
+      runningTaskId: runningTask?.id ?? this.kernelExecutionRuntime.getSingleActiveTaskId(),
       runningExecutorName: null,
       readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
       blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
@@ -1323,6 +1348,7 @@ export class MetaclawSession {
       orchestration: this.deps.orchestration,
       executor: this.deps.executor,
       activeExecutions: this.executionRuntime,
+      taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
@@ -1454,7 +1480,12 @@ export class MetaclawSession {
       for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
         if (sandboxLossAttemptIds.has(record.attemptId)) continue;
         sandboxLossAttemptIds.add(record.attemptId);
-        new KernelDispatchItemRepo(this.deps.db).markUncertain(
+        const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
+        const dispatchItem = dispatchItems.find(record.attemptId);
+        if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
+          continue;
+        }
+        dispatchItems.markUncertain(
           record.attemptId,
           `sandbox ${record.containerId} was reconciled during startup`,
           now,
@@ -1475,6 +1506,7 @@ export class MetaclawSession {
           checkpointId: checkpointIds.get(record.attemptId) ?? null,
         });
       }
+      await this.kernelExecutionRuntime.recoverCancellations();
     } catch {
       // Docker can be unavailable while planning/query/direct-reply paths remain usable.
     }

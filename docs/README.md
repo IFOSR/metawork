@@ -34,10 +34,14 @@ Key recent ADRs:
 
 The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md).
 
-## Active Roadmap
+## Completed Roadmap
 
-- [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): staged convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, and safe asynchronous scheduling.
-Phase 6 (safe asynchronous scheduling over the enforced partition model) is the active roadmap stage. Phase 5's [resource partition, sandbox and elevation implementation plan](archive/plans/2026-07-22-phase-5-resource-partition-sandbox-elevation-detailed-implementation-plan.md) is complete and archived.
+- [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
+- [Phase 6 final reliability closure](plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
+
+## Future Roadmap
+
+- [Multi-top-level-Task scheduling](plans/future-multi-task-scheduling-roadmap.md): deferred independent work for admission, priority, fairness and starvation protection. It is not an unfinished Phase 6 stage; ADR-0011 remains active.
 
 ## Historical Plans
 

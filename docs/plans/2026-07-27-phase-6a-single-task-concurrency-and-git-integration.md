@@ -13,7 +13,7 @@
 
 本阶段保留 ADR-0011 的单活顶层 Task 约束，在一个 Task generation 内交付最终并发底座。Work Graph 只表达依赖；Kernel 依据纯事实授权确定性的 dispatch batch；Runtime 并行启动 attempt、管理资源和 Git 副作用，并在成果发布成功后才完成 Subtask。
 
-Phase 6 下只增加多 Task 候选、公平性、饥饿保护和顶层 admission hard cut，不重写本阶段的 frontier、batch、attempt supervisor 或 publication seam。
+后续可靠性收口继续复用本阶段的 frontier、batch、attempt supervisor 和 publication seam。ADR-0026 已将 Phase 6 最终范围固定为单顶层 Task 内的可靠异步并发；曾计划作为“Phase 6 下”的多 Task 候选、公平性和 admission hard cut 已移入未来独立路线图，ADR-0011 保持有效。
 
 本阶段不实现数据库语义合并、活跃数据库/WAL/journal/log/cache 管理和 Git LFS。现有 Phase 5 checkpoint/CAS 继续保存 Git 无法覆盖的恢复材料，但不扩展为第二套版本合并系统。
 
@@ -103,7 +103,7 @@ v3 Kernel applied ledger 继续作为审计。升级不运行双契约；遗留 
 4. 统一 Git workspace，改为 dependency ancestry merge，交付 publication gate 和 `awaiting_integration`。
 5. 交付文本/二进制策略、三次 repair、conflict replan 和 crash recovery。
 6. 删除单节点 dispatch、Runtime 局部策略状态、Adapter 单 active container、新任务 directory fallback、dependency cherry-pick 和 Task 单 running-executor 投影。
-7. 更新 CONTEXT、技术总览和路线图，声明 Phase 6 上完成、Phase 6 下待规划。
+7. 更新 CONTEXT、技术总览和路线图；当时记录 Phase 6 上完成，最终范围随后由 ADR-0026 和 Phase 6 可靠性收口计划修订。
 
 ## 验收
 

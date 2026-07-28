@@ -1,18 +1,18 @@
 # 待解决 Issues(临时移交)
 
 > 来源:`main` 合并后的全面 code review + Docker 测试(2026-06-30)。
-> 本文件为临时清单,供后续 agent 接手。已处理项不在此列(门禁 i18n 已修复,门禁单任务策略已在 ADR-0011 / CONTEXT.md 记录为刻意决策)。
+> 本文件为临时清单,供后续 agent 接手。已处理项不在此列(门禁 i18n 已修复,单顶层 Task 策略已在 ADR-0011 / ADR-0026 / CONTEXT.md 记录为刻意决策)。
 
-## P1 — 5 个多任务验收用例已 `it.skip`,待多任务恢复时取消 skip
+## Future — 4 个旧多任务验收用例保留为 `it.skip`
 
-`TaskAdmissionGate`(刻意加入,见 [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md))关闭了"第二个顶层任务"的排队/抢占/自动恢复。以下沿用旧多任务行为的验收用例已**保留但 `it.skip`**(每处带中文注释),避免阻塞当前推送:
+当前单 Task admission 由 `ControlKernel` 按 [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md) 授权；旧 `TaskAdmissionGate` 已删除。[ADR-0026](docs/adr/0026-phase-6-single-task-reliability-closure.md) 明确多顶层 Task 不属于 Phase 6。以下依赖旧排队/抢占/自动恢复语义的用例保留为 `it.skip`，只在 [未来多 Task 路线图](docs/plans/future-multi-task-scheduling-roadmap.md) 被重新激活时重写：
 
 - `tests/tui/auto-resume-preempted.test.ts` — "resumes the preempted parked task before a later normal queued task"
 - `tests/tui/guidance-blocks.test.ts` — "shows a completion guidance block that points to the next queued task"
 - `tests/tui/guidance-panel.test.ts` — "updates the guidance panel after task completion points to the next queued task"
 - `tests/tui/memory-resume-acceptance.test.ts` — "keeps task-local memory ahead of global memory when a parked task resumes after preemption"
 
-**处理方向**:当多任务调度重新启用时(放松门禁,放行调度器内部的恢复/抢占路径),搜索 `it.skip(` + "ADR-0011" 注释,逐个取消 skip 并按新语义修正。
+**处理方向**：未来若实现多 Task，不能原样恢复旧强抢占/自动恢复预期；应按新的协作式调度 ADR 重写，再移除对应 skip。该项不是 07-16 路线图或 Phase 6 的未完成验收。
 
 复现:
 ```bash

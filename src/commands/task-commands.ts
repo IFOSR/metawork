@@ -32,11 +32,11 @@ function parseClearScope(value: string | undefined): TaskClearScope | null {
   return null;
 }
 
-export function cancelTasksByScope(
+export async function cancelTasksByScope(
   context: CommandContext,
   scope: TaskClearScope,
   reason = `用户清空${CLEAR_SCOPE_LABELS[scope]}`,
-): { cancelled: Task[]; runningCancelled: boolean } {
+): Promise<{ cancelled: Task[]; runningCancelled: boolean }> {
   const repo = context.taskEngine['taskRepo'];
   const statuses = CLEAR_SCOPE_STATUSES[scope];
   const candidates = repo.findAll()
@@ -44,12 +44,7 @@ export function cancelTasksByScope(
   const runningCancelled = candidates.some(task => task.status === 'running');
 
   for (const task of candidates) {
-    context.taskEngine.cancel(task.id, reason);
-  }
-
-  for (const task of candidates.filter(candidate => candidate.status === 'running')) {
-    if (context.activeExecutions) context.activeExecutions.abortTask(task.id);
-    else context.executor.abort();
+    await context.taskControl.cancelTask(task.id, reason);
   }
 
   return { cancelled: candidates, runningCancelled };
@@ -186,7 +181,7 @@ export const tasksCommand: CommandHandler = {
         return { type: 'text', content: '用法: /task clear [all|parked|blocked]' };
       }
 
-      const result = cancelTasksByScope(context, scope);
+      const result = await cancelTasksByScope(context, scope);
       return {
         type: 'text',
         content: formatTaskClearResult(scope, result.cancelled, result.runningCancelled),
@@ -404,14 +399,46 @@ export const taskCommand: CommandHandler = {
         }
 
         case 'cancel':
-          context.taskEngine.cancel(taskId);
-          if (wasRunning) context.activeExecutions?.abortTask(taskId);
-          return { type: 'text', content: `任务 #${taskId} 已取消` };
+          {
+            const receipt = await context.taskControl.cancelTask(taskId);
+            return {
+              type: 'text',
+              content: `任务 #${taskId} 已取消：影响 ${receipt.affectedSubtaskIds.length} 个 Subtask，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
+            };
+          }
 
         case 'done':
-          context.taskEngine.transition(taskId, 'done');
-          if (wasRunning) context.activeExecutions?.abortTask(taskId);
-          return { type: 'text', content: `任务 #${taskId} 已完成` };
+          return {
+            type: 'text',
+            content: `任务 #${taskId} 不能手工绕过完成门；完整结果会在运行残留清零后自动完成，部分结果请使用 /task ${taskId} accept-partial`,
+          };
+
+        case 'subtask':
+          if (args[2] !== 'cancel' || args.length < 4) {
+            return {
+              type: 'text',
+              content: `用法: /task ${taskId} subtask cancel <subtaskId...>`,
+            };
+          }
+          {
+            const receipt = await context.taskControl.cancelSubtasks(
+              taskId,
+              args.slice(3),
+            );
+            return {
+              type: 'text',
+              content: `任务 #${taskId} 已提交原子 Subtask 取消：影响 ${receipt.affectedSubtaskIds.length} 个节点，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
+            };
+          }
+
+        case 'accept-partial':
+          {
+            const receipt = await context.taskControl.acceptPartialResult(taskId);
+            return {
+              type: 'text',
+              content: `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
+            };
+          }
 
         default:
           return { type: 'text', content: `未知操作: ${action}` };

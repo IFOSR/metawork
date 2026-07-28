@@ -102,6 +102,22 @@ export class WorkUnitClaimService {
     return lost;
   }
 
+  releaseOrphanedAttempt(input: {
+    workUnitId: string;
+    taskId: string;
+    subtaskId: string;
+    attemptId: string;
+  }): void {
+    this.release(input.workUnitId, input.taskId, input.subtaskId, input.attemptId);
+  }
+
+  hasClaimedByTask(taskId: string): boolean {
+    return this.workUnitRepo.findAll().some(workUnit =>
+      workUnit.claimedTaskId === taskId
+      && ['claimed', 'running', 'waiting'].includes(workUnit.state)
+    );
+  }
+
   reconcileOrphanedClaims(): WorkUnit[] {
     const orphaned = this.workUnitRepo.findAll().filter(workUnit =>
       ['claimed', 'running', 'waiting'].includes(workUnit.state)

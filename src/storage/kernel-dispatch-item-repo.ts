@@ -26,6 +26,9 @@ export interface KernelDispatchItemRecord {
   sandboxContainerId: string | null;
   launchStartedAt: string | null;
   terminalAt: string | null;
+  cancellationDecisionId: string | null;
+  cancelRequestedAt: string | null;
+  cancelledAt: string | null;
   errorSummary: string | null;
   createdAt: string;
   updatedAt: string;
@@ -49,6 +52,9 @@ interface DispatchItemRow {
   sandbox_container_id: string | null;
   launch_started_at: string | null;
   terminal_at: string | null;
+  cancellation_decision_id: string | null;
+  cancel_requested_at: string | null;
+  cancelled_at: string | null;
   error_summary: string | null;
   created_at: string;
   updated_at: string;
@@ -137,6 +143,22 @@ export class KernelDispatchItemRepo {
 
   claimPending(attemptId: string, now: string): KernelDispatchItemRecord | null {
     const claim = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (!current) return null;
+      const fence = this.db.prepare(`
+        SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+        FROM tasks
+        INNER JOIN subtasks ON subtasks.id = ?
+        WHERE tasks.id = ?
+      `).get(current.subtaskId, current.taskId) as {
+        task_status: string;
+        subtask_status: string;
+      } | undefined;
+      if (
+        !fence
+        || fence.task_status === 'cancelled'
+        || fence.subtask_status === 'cancelled'
+      ) return null;
       const changed = this.db.prepare(`
         UPDATE kernel_dispatch_items
         SET status = 'launching', launch_started_at = ?, updated_at = ?
@@ -147,12 +169,12 @@ export class KernelDispatchItemRepo {
     return claim();
   }
 
-  markRunning(attemptId: string, workUnitId: string | null, now: string): void {
-    this.db.prepare(`
+  markRunning(attemptId: string, workUnitId: string | null, now: string): boolean {
+    return this.db.prepare(`
       UPDATE kernel_dispatch_items
       SET status = 'running', work_unit_id = COALESCE(?, work_unit_id), updated_at = ?
       WHERE attempt_id = ? AND status = 'launching'
-    `).run(workUnitId, now, attemptId);
+    `).run(workUnitId, now, attemptId).changes === 1;
   }
 
   markSandbox(attemptId: string, containerId: string, now: string): void {
@@ -164,11 +186,19 @@ export class KernelDispatchItemRepo {
   }
 
   markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
-    this.db.prepare(`
-      UPDATE kernel_dispatch_items
-      SET status = 'terminal', terminal_at = ?, error_summary = ?, updated_at = ?
-      WHERE attempt_id = ? AND status IN ('launching', 'running')
-    `).run(now, errorSummary, now, attemptId);
+    const finish = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (current?.status === 'cancelling') {
+        this.markCancelled(attemptId, now, errorSummary);
+        return;
+      }
+      this.db.prepare(`
+        UPDATE kernel_dispatch_items
+        SET status = 'terminal', terminal_at = ?, error_summary = ?, updated_at = ?
+        WHERE attempt_id = ? AND status IN ('launching', 'running')
+      `).run(now, errorSummary, now, attemptId);
+    });
+    finish();
   }
 
   markUncertain(attemptId: string, errorSummary: string, now: string): void {
@@ -179,12 +209,95 @@ export class KernelDispatchItemRepo {
     `).run(errorSummary, now, attemptId);
   }
 
-  cancelTask(taskId: string, now: string): number {
-    return this.db.prepare(`
+  requestCancellation(input: {
+    taskId: string;
+    generationId?: string | null;
+    subtaskIds?: readonly string[] | null;
+    decisionId: string;
+    now: string;
+  }): KernelDispatchItemRecord[] {
+    const request = this.db.transaction(() => {
+      const filters = ['task_id = ?'];
+      const parameters: unknown[] = [input.taskId];
+      if (input.generationId) {
+        filters.push('generation_id = ?');
+        parameters.push(input.generationId);
+      }
+      if (input.subtaskIds) {
+        if (input.subtaskIds.length === 0) return [];
+        filters.push(`subtask_id IN (${input.subtaskIds.map(() => '?').join(', ')})`);
+        parameters.push(...input.subtaskIds);
+      }
+      const where = filters.join(' AND ');
+      this.db.prepare(`
+        UPDATE kernel_dispatch_items
+        SET status = 'cancelled',
+            terminal_at = ?,
+            cancellation_decision_id = ?,
+            cancel_requested_at = ?,
+            cancelled_at = ?,
+            updated_at = ?
+        WHERE ${where} AND status = 'pending_launch'
+      `).run(
+        input.now,
+        input.decisionId,
+        input.now,
+        input.now,
+        input.now,
+        ...parameters,
+      );
+      this.db.prepare(`
+        UPDATE kernel_dispatch_items
+        SET status = 'cancelling',
+            cancellation_decision_id = ?,
+            cancel_requested_at = COALESCE(cancel_requested_at, ?),
+            updated_at = ?
+        WHERE ${where} AND status IN ('launching', 'running', 'uncertain')
+      `).run(input.decisionId, input.now, input.now, ...parameters);
+      return (this.db.prepare(`
+        SELECT * FROM kernel_dispatch_items
+        WHERE ${where}
+          AND cancellation_decision_id = ?
+          AND status IN ('cancelling', 'cancelled')
+        ORDER BY batch_order, attempt_id
+      `).all(...parameters, input.decisionId) as DispatchItemRow[]).map(rowToDispatchItem);
+    });
+    return request();
+  }
+
+  listCancelling(taskId?: string): KernelDispatchItemRecord[] {
+    const filter = taskId ? ' AND task_id = ?' : '';
+    return (this.db.prepare(`
+      SELECT * FROM kernel_dispatch_items
+      WHERE status = 'cancelling'${filter}
+      ORDER BY batch_order, created_at, attempt_id
+    `).all(...(taskId ? [taskId] : [])) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  markCancelled(attemptId: string, now: string, errorSummary: string | null = null): void {
+    this.db.prepare(`
       UPDATE kernel_dispatch_items
-      SET status = 'cancelled', terminal_at = ?, updated_at = ?
-      WHERE task_id = ? AND status IN ('pending_launch', 'launching', 'running')
-    `).run(now, now, taskId).changes;
+      SET status = 'cancelled',
+          terminal_at = COALESCE(terminal_at, ?),
+          cancelled_at = COALESCE(cancelled_at, ?),
+          error_summary = COALESCE(?, error_summary),
+          updated_at = ?
+      WHERE attempt_id = ? AND status = 'cancelling'
+    `).run(now, now, errorSummary, now, attemptId);
+  }
+
+  cancelTask(taskId: string, now: string, decisionId = `legacy_cancel_${taskId}`): number {
+    return this.requestCancellation({ taskId, decisionId, now }).length;
+  }
+
+  hasBlockingResidue(taskId: string, generationId?: string): boolean {
+    const generationFilter = generationId ? ' AND generation_id = ?' : '';
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM kernel_dispatch_items
+      WHERE task_id = ?${generationFilter}
+        AND status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+      LIMIT 1
+    `).get(taskId, ...(generationId ? [generationId] : [])));
   }
 
   reconcileLaunching(): number {
@@ -215,6 +328,9 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     sandboxContainerId: row.sandbox_container_id,
     launchStartedAt: row.launch_started_at,
     terminalAt: row.terminal_at,
+    cancellationDecisionId: row.cancellation_decision_id,
+    cancelRequestedAt: row.cancel_requested_at,
+    cancelledAt: row.cancelled_at,
     errorSummary: row.error_summary,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

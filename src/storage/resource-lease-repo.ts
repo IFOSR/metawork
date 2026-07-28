@@ -25,6 +25,8 @@ interface ResourceLeaseRow {
   heartbeat_at: string;
   expires_at: string;
   released_at: string | null;
+  revocation_requested_at: string | null;
+  revocation_reason: string | null;
   created_at: string;
 }
 
@@ -58,6 +60,8 @@ function leaseFromRow(row: ResourceLeaseRow): ResourceLeaseRecord {
     heartbeatAt: row.heartbeat_at,
     expiresAt: row.expires_at,
     releasedAt: row.released_at,
+    revocationRequestedAt: row.revocation_requested_at,
+    revocationReason: row.revocation_reason,
     createdAt: row.created_at,
   };
 }
@@ -128,6 +132,8 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
           heartbeat_at: input.now,
           expires_at: input.expiresAt,
           released_at: null,
+          revocation_requested_at: null,
+          revocation_reason: null,
           created_at: input.now,
         };
         insert.run(
@@ -152,6 +158,7 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
       UPDATE resource_leases
       SET heartbeat_at = ?, expires_at = ?
       WHERE attempt_id = ? AND lease_token = ? AND released_at IS NULL AND expires_at > ?
+        AND revocation_requested_at IS NULL
     `).run(now, expiresAt, attemptId, leaseToken, now).changes;
   }
 
@@ -173,6 +180,66 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     return (this.db.prepare(`
       SELECT * FROM resource_waits WHERE attempt_id = ? ORDER BY requested_at, id
     `).all(attemptId) as ResourceWaitRow[]).map(waitFromRow);
+  }
+
+  requestRevocation(
+    taskId: string,
+    generationId: string | null,
+    subtaskIds: readonly string[] | null,
+    reason: string,
+    now: string,
+  ): number {
+    const filters = ['task_id = ?', 'released_at IS NULL'];
+    const parameters: unknown[] = [taskId];
+    if (generationId) {
+      filters.push('generation_id = ?');
+      parameters.push(generationId);
+    }
+    if (subtaskIds) {
+      if (subtaskIds.length === 0) return 0;
+      filters.push(`subtask_id IN (${subtaskIds.map(() => '?').join(', ')})`);
+      parameters.push(...subtaskIds);
+    }
+    return this.db.prepare(`
+      UPDATE resource_leases
+      SET revocation_requested_at = COALESCE(revocation_requested_at, ?),
+          revocation_reason = COALESCE(revocation_reason, ?)
+      WHERE ${filters.join(' AND ')}
+    `).run(now, reason, ...parameters).changes;
+  }
+
+  cancelWaits(
+    taskId: string,
+    generationId: string | null,
+    subtaskIds: readonly string[] | null,
+    now: string,
+  ): number {
+    const filters = ['task_id = ?', "status = 'waiting'"];
+    const parameters: unknown[] = [taskId];
+    if (generationId) {
+      filters.push('generation_id = ?');
+      parameters.push(generationId);
+    }
+    if (subtaskIds) {
+      if (subtaskIds.length === 0) return 0;
+      filters.push(`subtask_id IN (${subtaskIds.map(() => '?').join(', ')})`);
+      parameters.push(...subtaskIds);
+    }
+    return this.db.prepare(`
+      UPDATE resource_waits
+      SET status = 'cancelled', resolved_at = ?
+      WHERE ${filters.join(' AND ')}
+    `).run(now, ...parameters).changes;
+  }
+
+  releaseRevokedAttempt(attemptId: string, now: string): number {
+    return this.db.prepare(`
+      UPDATE resource_leases
+      SET released_at = ?
+      WHERE attempt_id = ?
+        AND released_at IS NULL
+        AND revocation_requested_at IS NOT NULL
+    `).run(now, attemptId).changes;
   }
 
   private upsertWait(

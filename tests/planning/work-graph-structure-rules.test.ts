@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveCancellationClosure,
   deriveRunnableFrontier,
   validateWorkGraph,
   type WorkGraphRuntimeFact,
@@ -169,6 +170,28 @@ describe('Work Graph v5 runnable frontier', () => {
     ];
 
     expect(deriveRunnableFrontier({ subtasks }, facts)).toEqual([]);
+  });
+});
+
+describe('Work Graph cancellation closure', () => {
+  it('cancels an atomic target batch and every transitive downstream node in stable reverse topology order', () => {
+    const subtasks = [
+      subtask('root'),
+      subtask('left', [edge('root')]),
+      subtask('right', [edge('root')]),
+      subtask('left-leaf', [edge('left')]),
+      subtask('join', [edge('left-leaf'), edge('right')]),
+      subtask('independent'),
+    ];
+
+    expect(deriveCancellationClosure(
+      { subtasks },
+      subtasks.map(item => ({ subtaskId: item.id, status: 'ready' })),
+      ['left', 'right'],
+    )).toEqual({
+      ok: true,
+      subtaskIds: ['join', 'left-leaf', 'left', 'right'],
+    });
   });
 });
 

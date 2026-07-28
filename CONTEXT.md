@@ -4,7 +4,7 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 ## Current Implementation Notes
 
-Phase 6A completed the single-Task concurrency and Git-publication baseline. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` still serializes authorization and application, while up to four child attempts may run asynchronously inside the one active top-level Task. Every attempt runs in a fresh Docker sandbox; its Task-generation/Subtask Git worktree persists across retry, fallback, takeover and merge repair. The isolated Codex `PlanningAgent` owns natural-language semantics, `ControlKernel` owns scheduling and recovery policy, and Execution owns WorkUnit claims, leases, containers and Git side effects. Phase 6B may widen the scheduling candidate set to multiple Tasks without replacing these seams.
+Phase 6 is complete at the single-Task boundary. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while up to four child attempts may run asynchronously inside the one admitted top-level Task. Every attempt runs in a fresh Docker sandbox; its Task-generation/Subtask Git worktree persists across retry, fallback, takeover and merge repair. The isolated Codex `PlanningAgent` owns natural-language semantics, `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, containers and Git side effects. ADR-0011 remains an intentional product boundary; multi-top-level-Task scheduling belongs to a future independent roadmap.
 
 `src/planning/` owns the PlanningAgent interface (`CodexPlanningAgent`), dedicated Codex runner, Planner MCP, minimal planning context, strict v6 structured output, and catalog-aware validation. v6 adds only exact pending-request `authorization_resolution`; Work Graph remains v5 and Planner does not enumerate resource claims. `src/work-graph/` owns the shared v5 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Planner timeout, MCP failure, or invalid output after one repair fails closed to clarification; there is no earlier-schema production parser, legacy intent route, semantic default, or keyword fallback.
 
@@ -12,7 +12,7 @@ Phase 6A completed the single-Task concurrency and Git-publication baseline. The
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
 
-Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. Phase 5's v25 persistence adds resource leases/waits, workspace/checkpoint/CAS metadata, permission requests/grants/user authorizations, attempt sandboxes and AgentClass image/profile bindings. Phase 6A's v26 adds durable `kernel_dispatch_items`, candidate `workspace_publications` and immutable `workspace_merge_attempts`; it fails closed legacy nonterminal Kernel v3 applications rather than running two contracts. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery must reconcile applications, child items, sandbox records and publication state before accepting input.
+Migration v23 renamed `planning_decisions` to immutable `planning_decisions_legacy_audit` and introduced the unified `kernel_decisions` ledger with a unique event ID. Phase 4's v24 persistence separates durable events, Decision applications, external effects, attempt continuation metadata and work-graph revisions from that immutable authorization ledger. Phase 5's v25 persistence adds resource leases/waits, workspace/checkpoint/CAS metadata, permission requests/grants/user authorizations, attempt sandboxes and AgentClass image/profile bindings. Phase 6A's v26 adds durable `kernel_dispatch_items`, candidate `workspace_publications` and immutable `workspace_merge_attempts`; it fails closed legacy nonterminal Kernel v3 applications rather than running two contracts. Phase 6 closure migration v27 adds durable `cancelling/cancelled` dispatch and publication facts, lease revocation requests, generation-scoped replan requests and `full | partial_accepted` revision completion. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, sandbox records, leases and publication state before accepting input.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
@@ -23,7 +23,7 @@ When touching dispatch, update focused behavior tests around `ControlKernel`, `D
 ## Routing Language
 
 **Task**:
-A durable top-level unit of user work. ADR-0011 still admits at most one active top-level Task, while Phase 6A allows independent Subtasks inside it to execute concurrently.
+A durable top-level unit of user work. ADR-0011 admits at most one active top-level Task; Phase 6 allows independent Subtasks inside it to execute concurrently and keeps the Task's single-active slot occupied while cancellation cleanup still owns containers or leases.
 _Avoid_: request, prompt, executor run, browser tab
 
 **Subtask**:
@@ -59,7 +59,7 @@ A strict v6 proposal from the PlanningAgent describing intent, target, task cont
 _Avoid_: runtime command, task event, execution policy
 
 **ControlKernel**:
-The pure deterministic v4 decision module for Planning, frontier batch dispatch, capacity, execution outcome, publication conflict, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
+The pure deterministic v4 decision module for Planning, frontier batch dispatch, capacity, execution outcome, Task/Subtask cancellation, partial-result acceptance, generation replan, publication conflict, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
 _Avoid_: planning agent, runtime applier, executor router
 
 **KernelDecision**:
@@ -101,6 +101,14 @@ _Avoid_: conversation transcript, cross-task search, dependency output channel
 **Attempt Receipt**:
 The immutable terminal audit for one Task/Subtask/attempt/WorkUnit/AgentClass invocation, including attempt kind, provenance, raw response and parsing/verification facts. A successful receipt proves candidate production, not publication or Subtask completion.
 _Avoid_: retry state machine, user-visible result, mutable handoff
+
+**Cancellation Fence**:
+The durable Kernel-authorized transaction that makes a Task or an atomic downstream Subtask closure non-runnable before Runtime starts physical cleanup. Active dispatch/publication rows remain `cancelling` and continue to occupy capacity until the sandbox is exited or missing and WorkUnit/resource leases are released. Outcomes arriving after the fence are stale `no_op` facts.
+_Avoid_: best-effort process abort, status-only update, rollback of published facts
+
+**Generation Replan Request**:
+The one durable ordinary automatic-replan request for a Task generation/revision. Multiple exhausted Subtasks coalesce into it; independent work drains first, Planner runs only at quiescence, and an exact token prevents a cancelled or stale Planner result from superseding the graph.
+_Avoid_: conflict-chain replan, per-attempt hidden retry, parallel Planner calls
 
 **Work Unit Event**:
 A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.

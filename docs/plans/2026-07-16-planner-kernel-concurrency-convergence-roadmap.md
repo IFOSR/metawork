@@ -3,14 +3,14 @@
 ## 计划状态
 
 - **计划日期**：2026-07-16
-- **当前状态**：实施中；Phase 1～5 与 Phase 6 上已完成
-- **当前激活阶段**：Phase 6 下详细规划——多 Task 候选、公平性、跨 Task 取消/恢复与 ADR-0011 hard cut
-- **最近交付阶段**：Phase 6 上 [详细实施计划](2026-07-27-phase-6a-single-task-concurrency-and-git-integration.md)；单 Task frontier/batch、异步 attempt、Git publication 与真实 provider smoke 已交付
+- **当前状态**：已完成；Phase 1～6 全部退出条件均已满足
+- **当前激活阶段**：无
+- **最近交付阶段**：Phase 6 [最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)；单 Task DAG 并发、持久取消、generation replan、Git publication 和严格完成门已交付
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
-- **实施方式**：一次只展开一个阶段的实施计划；当前阶段完成并归档后再激活下一阶段
-- **完成日期**：未完成
-- **实现提交**：未产生
+- **实施方式**：各阶段已按单一 schema、单一 Kernel 路径完成 hard cut
+- **完成日期**：2026-07-28
+- **实现提交**：见 Phase 6 最终可靠性收口计划的完成记录
 
 ## 一、路线图目标
 
@@ -175,9 +175,9 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 
 完成记录（2026-07-22）：ADR-0024、Resource Model、AgentClass immutable image/profile、SQLite v25、PlanningAgentPlan v6、Kernel v3、持久 workspace/checkpoint/CAS、受管 Git workspace、resource lease/wait、每 attempt 短命 Docker sandbox、attempt-scoped model gateway、结构化 capability elevation、精确用户授权和 sandbox recovery 已交付。Planner 不承担资源 claim；Runtime 构造默认资源事实，Executor 只对越界操作请求能力，Kernel 唯一决定 grant/deny/escalate。宿主 Executor fallback、bypass-sandbox、旧 workspace/worktree lease 入口和既有违规 seam 已删除；生产仍保持一个 active Task 和一个 active Subtask attempt。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（195 个文件、780 个测试通过；5 个文件、16 个测试跳过）、真实 Docker sandbox 集成测试和 `npm run smoke:anyfusion` 均通过。实现提交为 `aae3d64`；Phase 5 计划已归档，Phase 6 激活。
 
-### Phase 6：异步并发调度
+### Phase 6：单 Task 异步并发与可靠性收口
 
-目标：在已验证的 DAG、Kernel 和 partition 模型上启用安全并发，并分成两个可独立审查的 hard cut。
+目标：在已验证的 DAG、Kernel 和 partition 模型上，为一个已接纳的顶层 Task 启用安全并发，并关闭取消、故障恢复和完成门。ADR-0026 将本阶段最终边界固定为单顶层 Task；多 Task admission、优先级、公平性和饥饿保护不属于本路线图。
 
 #### Phase 6 上：单 Task 并发与 Git publication
 
@@ -192,18 +192,22 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - 文本允许三方合并，二进制路径独占且不自动合并；冲突返回原 AgentClass 最多 repair 三次，再独立 conflict replan 一次，仍失败则 park。
 - 覆盖 batch、sandbox、candidate、publication、conflict 和 repair crash window。
 
-完成记录（2026-07-27）：ADR-0025、纯 `deriveRunnableFrontier`、Kernel v4、SQLite v26、durable dispatch supervisor、attempt-reentrant Adapter、内部 Git generation/worktree、完整 dependency ancestry、`awaiting_integration` publication gate、文本/二进制策略和 bounded conflict repair 已交付。真实 Session 回归验证两个同 AgentClass sibling attempt 重叠运行，并在故意反转完成顺序后仍按首次授权顺序发布；显式 Docker 集成验证两个隔离容器真实重叠；generation Git 初始化和每个 Subtask resource grant 已收敛为并发安全。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（199 个文件、806 个测试通过；5 个文件、17 个测试按环境门控跳过）与 Docker 内真实 Codex Planner→Kernel→Runtime→Executor artifact smoke 均通过。Phase 6 上正式完成，ADR-0011 继续有效，Phase 6 下将复用本阶段调度与 publication 路径完成多 Task hard cut。
+完成记录（2026-07-27）：ADR-0025、纯 `deriveRunnableFrontier`、Kernel v4、SQLite v26、durable dispatch supervisor、attempt-reentrant Adapter、内部 Git generation/worktree、完整 dependency ancestry、`awaiting_integration` publication gate、文本/二进制策略和 bounded conflict repair 已交付。真实 Session 回归验证两个同 AgentClass sibling attempt 重叠运行，并在故意反转完成顺序后仍按首次授权顺序发布；显式 Docker 集成验证两个隔离容器真实重叠；generation Git 初始化和每个 Subtask resource grant 已收敛为并发安全。`npm run lint`、`npm run build`、canonical Codex/Pi image build、Docker/Linux 全量回归（199 个文件、806 个测试通过；5 个文件、17 个测试按环境门控跳过）与 Docker 内真实 Codex Planner→Kernel→Runtime→Executor artifact smoke 均通过。
 
-#### Phase 6 下：多 Task 候选与公平性
+#### Phase 6 最终可靠性收口
 
-待规划范围：
+执行方向：
 
-- 将 v4 scheduling snapshot 从单一 active Task 扩展为多个 Task candidate。
-- 在协作式、非强制抢占模型下增加优先级、公平性、饥饿保护、跨 Task 等待和 parked recovery。
-- 保持 Phase 6 上的 frontier、dispatch item、attempt supervisor、resource lease 和 publication 路径不变。
-- 完成多 Task admission hard cut 后归档 ADR-0011。
+- Kernel v4 统一授权整 Task 取消、原子 Subtask 下游闭包取消和显式部分结果接受。
+- SQLite v27 为 dispatch/publication 增加 `cancelling/cancelled`，为 resource lease 增加 revocation request，并保存 generation replan request 与 revision completion kind。
+- 取消栅栏先提交，Runtime cancellation supervisor 再精确中止 attempt、确认 sandbox 退出并释放 WorkUnit、lease 和 capacity；启动时幂等续做。
+- publication 最终事务重查取消栅栏；取消后已经生成的 integration commit 只保留审计，不发布 result、handoff 或 workspace completion。
+- 多个耗尽恢复预算的 Subtask 合并为同一 generation ordinary replan；旧图静止后 Planner 只调用一次，取消或失效的 quiescence token 拒绝晚到 plan。
+- `complete_task` 在 dispatch、publication、sandbox、WorkUnit、lease、receipt、replan 和 Kernel application 残留全部清零前不得将 Task 置为 `done`。
 
-Phase 6 总退出条件：Phase 6 上的单 Task 并发/集成已满足；剩余条件仅为 Phase 6 下的多 Task 候选、公平性、跨 Task 取消/恢复和 ADR-0011 归档。届时本路线图总体完成。
+完成记录（2026-07-28）：ADR-0026、纯 `deriveCancellationClosure`、SQLite v27、durable cancellation coordinator、显式 Subtask cancellation/partial acceptance、publication cancellation fence、generation replan coalescing/token CAS 和严格完成门已交付。Phase 6 的最终能力定义为“单顶层 Task 内按 DAG 并发执行、隔离 attempt、Git 成果集成、可恢复的异步执行”。ADR-0011 保持有效，不归档。完整验证与提交记录见 [Phase 6 最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)。
+
+Phase 6 总退出条件已满足。未来若需要多顶层 Task，必须从 [多顶层 Task 调度未来路线图](future-multi-task-scheduling-roadmap.md) 单独启动，不重新解释本路线图的完成状态。
 
 ## 六、无临时兼容层策略
 
@@ -236,11 +240,12 @@ Phase 6 总退出条件：Phase 6 上的单 Task 并发/集成已满足；剩余
 | 崩溃恢复与残留清理 | Phase 5、Phase 6 |
 | Worktree/临时目录隔离 | Phase 5 |
 | 并行结果合并 | Phase 6 |
-| 跨 Task 调度、公平性和取消传播 | Phase 6 |
+| 单 Task 内并发取消传播 | Phase 6 |
+| 跨 Task 调度、公平性和取消传播 | [未来独立路线图](future-multi-task-scheduling-roadmap.md) |
 | Planner / Kernel / Scheduler / Runtime 授权职责 | Phase 3、Phase 5 |
 | ADR、数据迁移与容器级竞争测试 | Phase 5、Phase 6 退出条件 |
 
-因此该技术债不再作为独立 active debt 维护，归档后由本路线图的 Phase 5～6 追踪关闭。
+因此单 Task partition 与并发可靠性债务已由本路线图 Phase 5～6 关闭；跨 Task 策略不再计入本路线图完成条件。
 
 ## 八之二、Kernel 决策权技术债覆盖确认
 
@@ -257,7 +262,7 @@ Phase 6 总退出条件：Phase 6 上的单 Task 并发/集成已满足；剩余
 | 应急细分（写库、容量、heartbeat_lost 等） | Phase 4、Phase 5 | 已关闭（结构化 failure + 资源/沙箱事件） |
 | 目录与命名收敛 | Phase 3、Phase 5 | 已关闭（`ControlKernel`；admission gate / decision applier 已删除） |
 
-该技术债于 2026-07-27 复核后归档，退出条件 1～5 全部满足；剩余的并发调度不属于该债范围，仍由 Phase 6 追踪。
+该技术债于 2026-07-27 复核后归档，退出条件 1～5 全部满足；Phase 6 已在单 Task 边界完成并发可靠性收口。
 
 ## 九、总体完成条件
 
@@ -270,3 +275,5 @@ Phase 6 总退出条件：Phase 6 上的单 Task 并发/集成已满足；剩余
 5. Runtime 可安全并发执行无依赖、无 partition 冲突的 Subtask。
 6. 不存在新旧 Plan schema、路由字段或 Kernel 策略的并行兼容路径。
 7. 所有阶段均完成文档回填、迁移验证、聚焦测试和完整 Docker 测试。
+
+完成判定（2026-07-28）：以上七项均已满足。多顶层 Task 并发从未作为这些产品级完成条件的隐含前提；ADR-0026 已把它明确移至未来独立路线图。

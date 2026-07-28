@@ -256,6 +256,33 @@ function taskNodes(): CommandNode[] {
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], 'cancel'),
     operation('complete', '完成任务', ['running'], 'done'),
     action({
+      name: 'subtask-cancel',
+      summary: '原子取消 Subtask 及其传递下游',
+      effect: '提交 Kernel durable event；独立 sibling 继续运行。',
+      usage: '/task <taskId> subtask cancel <subtaskId...>',
+      arguments: [
+        taskReference('所属任务', ['running', 'blocked']),
+        variadic('subtaskIds', '要取消的 Subtask ID'),
+      ],
+      run: (args, context) => invokeLegacy(taskCommand, [
+        stringArg(args, 'taskId'),
+        'subtask',
+        'cancel',
+        ...stringListArg(args, 'subtaskIds'),
+      ], context),
+    }),
+    action({
+      name: 'accept-partial',
+      summary: '显式接受部分取消后的剩余成果',
+      effect: '仅在所有节点 done/cancelled 且运行残留清零时完成 Task。',
+      usage: '/task <taskId> accept-partial',
+      arguments: [taskReference('要接受部分结果的任务', ['blocked'])],
+      run: (args, context) => invokeLegacy(taskCommand, [
+        stringArg(args, 'taskId'),
+        'accept-partial',
+      ], context),
+    }),
+    action({
       name: 'recovery', summary: '查看任务恢复项', effect: '只读查看 uncertain/failed application 和外部副作用。',
       usage: '/task recovery <taskId>', arguments: [taskReference('要查看恢复项的任务')],
       run: async args => ({

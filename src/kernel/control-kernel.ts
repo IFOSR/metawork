@@ -1,7 +1,10 @@
 import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import { validateWorkGraph as validateWorkGraphStructure } from '../work-graph/index.js';
+import {
+  deriveCancellationClosure,
+  validateWorkGraph as validateWorkGraphStructure,
+} from '../work-graph/index.js';
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
@@ -20,7 +23,14 @@ export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_integration' |
 export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
 export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
 export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
-export type KernelDispatchItemStatus = 'pending_launch' | 'launching' | 'running' | 'terminal' | 'cancelled' | 'uncertain';
+export type KernelDispatchItemStatus =
+  | 'pending_launch'
+  | 'launching'
+  | 'running'
+  | 'cancelling'
+  | 'terminal'
+  | 'cancelled'
+  | 'uncertain';
 export type KernelAttemptPayload =
   | {
       protocol: 'completion-correction-v2';
@@ -149,6 +159,24 @@ export type KernelEvent =
       repairAttemptsUsed: number;
       conflictReplansUsed: number;
       conflictingPaths: string[];
+    })
+  | (KernelEventEnvelope & {
+      type: 'task_cancel_requested';
+      reason: string;
+    })
+  | (KernelEventEnvelope & {
+      type: 'subtasks_cancel_requested';
+      targetSubtaskIds: string[];
+      reason: string;
+    })
+  | (KernelEventEnvelope & {
+      type: 'partial_result_acceptance_requested';
+    })
+  | (KernelEventEnvelope & {
+      type: 'generation_quiescence_observed';
+      requestId: string;
+      generationId: string;
+      sourceRevision: number;
     });
 
 export interface KernelTaskFact {
@@ -172,6 +200,10 @@ export interface KernelAttemptFact {
   terminalKind: 'completed' | 'failed';
   failure: KernelFailure | null;
   completedAt: string;
+}
+
+export interface KernelCancellationSubtaskFact extends KernelSubtaskFact {
+  dependencySubtaskIds: string[];
 }
 
 export interface KernelDispatchItemFact {
@@ -216,6 +248,22 @@ export type KernelSnapshot =
       recoverySafety: KernelRecoverySafety;
       automaticRecoveryAllowed: boolean;
       resourceGrantsBySubtask: Record<string, ResourceClaim[]>;
+      completionBlockedReasons: string[];
+      generationReplanRequest: {
+        id: string;
+        status: 'pending_quiescence' | 'planning' | 'submitted';
+      } | null;
+      generationQuiescent: boolean;
+    }
+  | {
+      schemaVersion: 4;
+      type: 'task_control';
+      task: KernelTaskFact | null;
+      generationId: string | null;
+      graphRevision: number | null;
+      subtasks: KernelCancellationSubtaskFact[];
+      completionBlockedReasons: string[];
+      partialCancellation: boolean;
     }
   | {
       schemaVersion: 4;
@@ -316,6 +364,34 @@ export type KernelDecisionAction =
     }
   | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
   | {
+      type: 'queue_generation_replan';
+      taskId: string;
+      generationId: string;
+      sourceRevision: number;
+      requestId: string;
+    }
+  | {
+      type: 'cancel_task';
+      taskId: string;
+      generationId: string | null;
+    }
+  | {
+      type: 'cancel_subtasks';
+      taskId: string;
+      generationId: string;
+      graphRevision: number;
+      subtaskIds: string[];
+      expectedStatuses: Array<{ subtaskId: string; status: KernelSubtaskStatus }>;
+    }
+  | {
+      type: 'accept_partial_result';
+      taskId: string;
+      generationId: string;
+      graphRevision: number;
+      completedSubtaskIds: string[];
+      cancelledSubtaskIds: string[];
+    }
+  | {
       type: 'request_merge_replan';
       taskId: string;
       subtaskId: string;
@@ -399,6 +475,18 @@ export class ControlKernel {
         return this.decideSandboxRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'sandbox_recovery' }>);
       case 'merge_conflict_observed':
         return this.decideMergeConflict(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
+      case 'task_cancel_requested':
+      case 'subtasks_cancel_requested':
+      case 'partial_result_acceptance_requested':
+        return this.decideTaskControl(
+          event,
+          snapshot as Extract<KernelSnapshot, { type: 'task_control' }>,
+        );
+      case 'generation_quiescence_observed':
+        return this.decideGenerationQuiescence(
+          event,
+          snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>,
+        );
     }
   }
 
@@ -510,8 +598,20 @@ export class ControlKernel {
     }
     const subtasks = selectDispatchableSubtasks(snapshot);
     if (subtasks.length === 0) {
+      if (snapshot.generationReplanRequest?.status === 'pending_quiescence') {
+        return snapshot.generationQuiescent
+          ? decision(event, {
+              type: 'request_replan',
+              taskId: event.taskId,
+              generationId: snapshot.generationId,
+              sourceRevision: snapshot.graphRevision,
+            }, 'generation is quiescent; the coalesced automatic replan may start')
+          : decision(event, { type: 'no_op' }, 'generation replan is waiting for quiescence');
+      }
       if (snapshot.subtasks.length > 0 && snapshot.subtasks.every(item => item.status === 'done')) {
-        return decision(event, { type: 'complete_task', taskId: event.taskId }, 'all Subtasks completed');
+        return snapshot.completionBlockedReasons.length === 0
+          ? decision(event, { type: 'complete_task', taskId: event.taskId }, 'all Subtasks completed and runtime residue is clear')
+          : decision(event, { type: 'no_op' }, `Task completion is waiting for: ${snapshot.completionBlockedReasons.join(', ')}`);
       }
       if (snapshot.dispatchItems.some(item => isPendingOrActiveDispatch(item.status))
         || snapshot.subtasks.some(item => item.status === 'running' || item.status === 'awaiting_integration')) {
@@ -581,8 +681,8 @@ export class ControlKernel {
     if (failure.code === 'startup_orphaned_work') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
     }
-    if (failure.kind === 'cancelled' && snapshot.task?.status === 'cancelled') {
-      return decision(event, { type: 'no_op' }, 'cancelled Task requires no recovery');
+    if (snapshot.task?.status === 'cancelled' || subtask.status === 'cancelled') {
+      return decision(event, { type: 'no_op' }, 'cancellation fence makes the late attempt outcome stale');
     }
     if (!snapshot.automaticRecoveryAllowed || snapshot.recoverySafety === 'external_non_idempotent') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'automatic recovery cannot prove external effect safety');
@@ -634,12 +734,126 @@ export class ControlKernel {
     }
     return snapshot.automaticReplansUsed < 1
       ? decision(event, {
-          type: 'request_replan',
+          type: 'queue_generation_replan',
           taskId: event.taskId!,
           generationId: snapshot.generationId,
           sourceRevision: snapshot.graphRevision,
-        }, 'authorized candidates exhausted; one automatic replan is allowed')
+          requestId: generationReplanRequestId(
+            event.taskId!,
+            snapshot.generationId,
+            snapshot.graphRevision,
+          ),
+        }, 'authorized candidates exhausted; one coalesced automatic replan is allowed')
       : decision(event, { type: 'park_for_replan', taskId: event.taskId! }, 'automatic replan budget exhausted');
+  }
+
+  private decideTaskControl(
+    event: Extract<KernelEvent, {
+      type: 'task_cancel_requested' | 'subtasks_cancel_requested' | 'partial_result_acceptance_requested';
+    }>,
+    snapshot: Extract<KernelSnapshot, { type: 'task_control' }>,
+  ): KernelDecision {
+    if (!event.taskId || !snapshot.task || snapshot.task.id !== event.taskId) {
+      return decision(event, { type: 'reject_request' }, 'Task control target is missing or stale');
+    }
+    if (event.type === 'task_cancel_requested') {
+      if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)) {
+        return decision(event, { type: 'reject_request' }, `Task is already ${snapshot.task.status}`);
+      }
+      return decision(event, {
+        type: 'cancel_task',
+        taskId: event.taskId,
+        generationId: snapshot.generationId,
+      }, 'durable Task cancellation fence authorized');
+    }
+    if (!snapshot.generationId || snapshot.graphRevision === null) {
+      return decision(event, { type: 'reject_request' }, 'active Work Graph generation is missing');
+    }
+    if (event.type === 'subtasks_cancel_requested') {
+      const closure = deriveCancellationClosure(
+        {
+          subtasks: snapshot.subtasks.map(subtask => ({
+            id: subtask.id,
+            dependencies: subtask.dependencySubtaskIds.map(fromSubtaskId => ({
+              fromSubtaskId,
+            })),
+          })),
+        },
+        snapshot.subtasks.map(subtask => ({
+          subtaskId: subtask.id,
+          status: subtask.status,
+        })),
+        event.targetSubtaskIds,
+      );
+      if (!closure.ok) {
+        return decision(
+          event,
+          { type: 'reject_request' },
+          `Subtask cancellation rejected (${closure.reason}): ${closure.subtaskIds.join(', ')}`,
+        );
+      }
+      const selected = new Set(closure.subtaskIds);
+      return decision(event, {
+        type: 'cancel_subtasks',
+        taskId: event.taskId,
+        generationId: snapshot.generationId,
+        graphRevision: snapshot.graphRevision,
+        subtaskIds: closure.subtaskIds,
+        expectedStatuses: snapshot.subtasks
+          .filter(subtask => selected.has(subtask.id))
+          .map(subtask => ({ subtaskId: subtask.id, status: subtask.status }))
+          .sort((left, right) => left.subtaskId.localeCompare(right.subtaskId)),
+      }, 'atomic downstream Subtask cancellation closure authorized');
+    }
+    const completedSubtaskIds = snapshot.subtasks
+      .filter(subtask => subtask.status === 'done')
+      .map(subtask => subtask.id)
+      .sort();
+    const cancelledSubtaskIds = snapshot.subtasks
+      .filter(subtask => subtask.status === 'cancelled')
+      .map(subtask => subtask.id)
+      .sort();
+    if (
+      snapshot.task.status !== 'blocked'
+      || !snapshot.partialCancellation
+      || completedSubtaskIds.length === 0
+      || snapshot.subtasks.some(subtask => !['done', 'cancelled'].includes(subtask.status))
+      || snapshot.completionBlockedReasons.length > 0
+    ) {
+      return decision(event, { type: 'reject_request' }, 'partial result is not ready for explicit acceptance');
+    }
+    return decision(event, {
+      type: 'accept_partial_result',
+      taskId: event.taskId,
+      generationId: snapshot.generationId,
+      graphRevision: snapshot.graphRevision,
+      completedSubtaskIds,
+      cancelledSubtaskIds,
+    }, 'explicit partial result acceptance authorized');
+  }
+
+  private decideGenerationQuiescence(
+    event: Extract<KernelEvent, { type: 'generation_quiescence_observed' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  ): KernelDecision {
+    const request = snapshot.generationReplanRequest;
+    if (
+      !event.taskId
+      || !request
+      || request.id !== event.requestId
+      || request.status !== 'pending_quiescence'
+      || event.generationId !== snapshot.generationId
+      || event.sourceRevision !== snapshot.graphRevision
+      || !snapshot.generationQuiescent
+    ) {
+      return decision(event, { type: 'no_op' }, 'generation quiescence observation is stale or incomplete');
+    }
+    return decision(event, {
+      type: 'request_replan',
+      taskId: event.taskId,
+      generationId: event.generationId,
+      sourceRevision: event.sourceRevision,
+    }, 'generation quiescence token accepted');
   }
 
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
@@ -897,6 +1111,11 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
   if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
   if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';
   if (event.type === 'sandbox_lost') return snapshot.type === 'sandbox_recovery';
+  if (
+    event.type === 'task_cancel_requested'
+    || event.type === 'subtasks_cancel_requested'
+    || event.type === 'partial_result_acceptance_requested'
+  ) return snapshot.type === 'task_control';
   return snapshot.type === 'dispatch';
 }
 
@@ -1001,7 +1220,10 @@ function singleDispatchBatch(
 }
 
 function isPendingOrActiveDispatch(status: KernelDispatchItemStatus): boolean {
-  return status === 'pending_launch' || status === 'launching' || status === 'running';
+  return status === 'pending_launch'
+    || status === 'launching'
+    || status === 'running'
+    || status === 'cancelling';
 }
 
 function deterministicAttemptId(eventId: string, subtaskId: string, agentClassName: string, kind: string): string {
@@ -1010,6 +1232,16 @@ function deterministicAttemptId(eventId: string, subtaskId: string, agentClassNa
 
 function deterministicTaskId(eventId: string): string {
   return `task_${eventId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function generationReplanRequestId(
+  taskId: string,
+  generationId: string,
+  sourceRevision: number,
+): string {
+  return `generation_replan_${[taskId, generationId, String(sourceRevision)]
+    .map(value => value.replace(/[^a-zA-Z0-9_-]/g, '_'))
+    .join('_')}`;
 }
 
 function addMilliseconds(value: string, milliseconds: number): string {

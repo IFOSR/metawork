@@ -29,6 +29,7 @@ export interface SessionKernelRuntimeDeps {
     getCurrentTaskId(): string | null;
     setFocusContext(focus: FocusContext | null): void;
     resolveRequestText(eventId: string): string;
+    cancelTask(taskId: string, reason: string): Promise<void>;
   };
 }
 
@@ -90,7 +91,11 @@ export class SessionKernelRuntime {
       case 'dispatch_batch':
       case 'complete_task':
       case 'request_replan':
+      case 'queue_generation_replan':
       case 'request_merge_replan':
+      case 'cancel_task':
+      case 'cancel_subtasks':
+      case 'accept_partial_result':
       case 'resolve_recovery':
       case 'grant_capability':
       case 'deny_capability':
@@ -122,8 +127,18 @@ export class SessionKernelRuntime {
     }
     if (taskCommand.control === 'clear_tasks') {
       const scope = normalizeClearScope(taskCommand.scope);
-      const result = this.deps.taskRuntimeService.clearTasks(scope);
-      for (const task of result.cancelled.filter(item => item.status === 'running')) this.deps.activeExecutions.abortTask(task.id);
+      const statuses = scope === 'all'
+        ? ['created', 'ready', 'running', 'parked', 'blocked']
+        : [scope];
+      const candidates = this.deps.taskRuntimeService.listTasks()
+        .filter(task => statuses.includes(task.status));
+      for (const task of candidates) {
+        await this.deps.callbacks.cancelTask(
+          task.id,
+          `Planner-authorized clear_tasks (${scope})`,
+        );
+      }
+      const result = { cancelled: candidates, runningCancelled: candidates.some(task => task.status === 'running') };
       if (result.cancelled.some(task => task.id === this.deps.callbacks.getCurrentTaskId())) {
         this.deps.callbacks.setCurrentTaskId(null);
         this.deps.callbacks.setFocusContext(null);

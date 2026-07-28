@@ -143,6 +143,91 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('authorizes one atomic downstream cancellation closure and rejects a closure containing done work', () => {
+    const controlSnapshot: Extract<KernelSnapshot, { type: 'task_control' }> = {
+      schemaVersion: 4,
+      type: 'task_control',
+      task: { id: 'task_1', status: 'running' },
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      subtasks: [
+        cancellationSubtask('root', 'done'),
+        cancellationSubtask('left', 'running', ['root']),
+        cancellationSubtask('right', 'ready', ['root']),
+        cancellationSubtask('join', 'awaiting_decision', ['left', 'right']),
+      ],
+      completionBlockedReasons: [],
+      partialCancellation: false,
+    };
+    const cancelEvent: KernelEvent = {
+      ...runtimeEvent({
+        type: 'subtasks_cancel_requested',
+        targetSubtaskIds: ['left'],
+        reason: 'user command',
+      }),
+      subtaskId: undefined,
+    };
+
+    expect(new ControlKernel().decide(cancelEvent, controlSnapshot).action).toEqual({
+      type: 'cancel_subtasks',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      subtaskIds: ['join', 'left'],
+      expectedStatuses: [
+        { subtaskId: 'join', status: 'awaiting_decision' },
+        { subtaskId: 'left', status: 'running' },
+      ],
+    });
+
+    const rejected = new ControlKernel().decide({
+      ...cancelEvent,
+      id: 'event_cancel_done',
+      targetSubtaskIds: ['root'],
+    }, controlSnapshot);
+    expect(rejected.action).toEqual({ type: 'reject_request' });
+    expect(rejected.reason).toContain('already_done');
+  });
+
+  it('treats every outcome after a Task or Subtask cancellation fence as a no-op', () => {
+    const failed = executionFailure('attempt_cancelled', 'codex-cli', 'primary', 'network');
+    const cancelledTask = dispatchSnapshot();
+    cancelledTask.task = { id: 'task_1', status: 'cancelled' };
+    expect(new ControlKernel().decide(failed, cancelledTask).action).toEqual({ type: 'no_op' });
+
+    const cancelledSubtask = dispatchSnapshot();
+    cancelledSubtask.subtasks[0]!.status = 'cancelled';
+    cancelledSubtask.frontier = [];
+    expect(new ControlKernel().decide(failed, cancelledSubtask).action).toEqual({ type: 'no_op' });
+  });
+
+  it('accepts partial results only after cancellation has quiesced with at least one completed node', () => {
+    const partialSnapshot: Extract<KernelSnapshot, { type: 'task_control' }> = {
+      schemaVersion: 4,
+      type: 'task_control',
+      task: { id: 'task_1', status: 'blocked' },
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      subtasks: [
+        cancellationSubtask('published', 'done'),
+        cancellationSubtask('cancelled', 'cancelled'),
+      ],
+      completionBlockedReasons: [],
+      partialCancellation: true,
+    };
+    const partialEvent = runtimeEvent({
+      type: 'partial_result_acceptance_requested',
+    });
+    expect(new ControlKernel().decide(partialEvent, partialSnapshot).action).toEqual({
+      type: 'accept_partial_result',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      completedSubtaskIds: ['published'],
+      cancelledSubtaskIds: ['cancelled'],
+    });
+  });
+
   it('tries remaining AgentClasses in order, then waits for capacity', () => {
     const kernel = new ControlKernel();
     const failed = runtimeEvent({
@@ -264,7 +349,11 @@ describe('ControlKernel', () => {
     const exhausted = dispatchSnapshot([], 'awaiting_decision');
     exhausted.attempts = [attemptFact(fallbackFailure), attemptFact(taskFailure)];
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({
-      type: 'request_replan', taskId: 'task_1', generationId: 'generation_task_1_1', sourceRevision: 1,
+      type: 'queue_generation_replan',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      sourceRevision: 1,
+      requestId: 'generation_replan_task_1_generation_task_1_1_1',
     });
     exhausted.automaticReplansUsed = 1;
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
@@ -482,6 +571,23 @@ function dispatchSnapshot(
     recoverySafety: 'workspace_reconcilable',
     automaticRecoveryAllowed: true,
     resourceGrantsBySubtask: { subtask_1: [] },
+    completionBlockedReasons: [],
+    generationReplanRequest: null,
+    generationQuiescent: true,
+  };
+}
+
+function cancellationSubtask(
+  id: string,
+  status: Extract<KernelSnapshot, { type: 'task_control' }>['subtasks'][number]['status'],
+  dependencySubtaskIds: string[] = [],
+): Extract<KernelSnapshot, { type: 'task_control' }>['subtasks'][number] {
+  return {
+    id,
+    taskId: 'task_1',
+    status,
+    preferredAgentClassList: ['codex-cli'],
+    dependencySubtaskIds,
   };
 }
 

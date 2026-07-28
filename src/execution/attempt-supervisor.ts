@@ -99,7 +99,9 @@ export class AttemptSupervisor {
     item: KernelDispatchItemRecord,
     context: AttemptSupervisorContext,
   ): Promise<void> {
-    this.repository.markRunning(item.attemptId, null, new Date().toISOString());
+    if (!this.repository.markRunning(item.attemptId, null, new Date().toISOString())) {
+      return;
+    }
     try {
       const event = await context.run(item);
       this.repository.markTerminal(item.attemptId, null, new Date().toISOString());

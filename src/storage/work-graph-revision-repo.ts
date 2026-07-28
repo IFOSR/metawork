@@ -11,6 +11,7 @@ export interface WorkGraphRevisionRecord {
   proposalSource: 'initial' | 'replan' | 'conflict_replan';
   automaticReplan: boolean;
   status: WorkGraphRevisionStatus;
+  completionKind: 'full' | 'partial_accepted' | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -24,6 +25,7 @@ interface RevisionRow {
   proposal_source: 'initial' | 'replan' | 'conflict_replan';
   automatic_replan: number;
   status: WorkGraphRevisionStatus;
+  completion_kind: 'full' | 'partial_accepted' | null;
   created_at: string;
   updated_at: string;
 }
@@ -49,7 +51,7 @@ export class WorkGraphRevisionRepo {
     return row ? rowToRecord(row) : null;
   }
 
-  activate(input: Omit<WorkGraphRevisionRecord, 'status'>): WorkGraphRevisionRecord {
+  activate(input: Omit<WorkGraphRevisionRecord, 'status' | 'completionKind'>): WorkGraphRevisionRecord {
     this.db.prepare(`
       UPDATE work_graph_revisions SET status = 'superseded', updated_at = ?
       WHERE task_id = ? AND status = 'active' AND revision <> ?
@@ -74,11 +76,17 @@ export class WorkGraphRevisionRepo {
     return this.find(input.taskId, input.revision)!;
   }
 
-  complete(taskId: string, revision: number, now: string): void {
+  complete(
+    taskId: string,
+    revision: number,
+    now: string,
+    completionKind: 'full' | 'partial_accepted' = 'full',
+  ): void {
     this.db.prepare(`
-      UPDATE work_graph_revisions SET status = 'completed', updated_at = ?
+      UPDATE work_graph_revisions
+      SET status = 'completed', completion_kind = ?, updated_at = ?
       WHERE task_id = ? AND revision = ? AND status = 'active'
-    `).run(now, taskId, revision);
+    `).run(completionKind, now, taskId, revision);
   }
 
   countAutomaticReplans(taskId: string, generationId: string): number {
@@ -100,6 +108,7 @@ function rowToRecord(row: RevisionRow): WorkGraphRevisionRecord {
     proposalSource: row.proposal_source,
     automaticReplan: row.automatic_replan === 1,
     status: row.status,
+    completionKind: row.completion_kind,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

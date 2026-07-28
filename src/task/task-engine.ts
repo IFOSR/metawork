@@ -12,7 +12,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   ready: ['running', 'parked', 'cancelled'],
   running: ['parked', 'blocked', 'done'],
   parked: ['ready', 'cancelled'],
-  blocked: ['ready', 'parked'],
+  blocked: ['ready', 'parked', 'done'],
   done: ['archived'],
   archived: [],
   cancelled: [],

@@ -2,7 +2,7 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> Phase 6 上架构更新（2026-07-27）：`KernelWorkflow` 继续串行完成 event、Kernel v4 Decision 和 application，但 `dispatch_batch` 会持久化多个 child item，由 attempt supervisor 在单一活跃顶层 Task 内并行启动最多四个隔离 attempt。SQLite v26 增加 dispatch item、候选 publication 和不可变 merge audit；所有新文件任务统一使用内部 Git，只有 publication 成功后才原子发布 Subtask 完成事实。Phase 6 下仅补多 Task 候选、公平性和 admission hard cut。
+> Phase 6 最终架构（2026-07-28）：`KernelWorkflow` 继续串行完成 event、Kernel v4 Decision 和 application，但 `dispatch_batch` 会持久化多个 child item，由 attempt supervisor 在单一活跃顶层 Task 内并行启动最多四个隔离 attempt。SQLite v26 增加 dispatch item、候选 publication 和不可变 merge audit；v27 增加持久取消收束、lease revocation、generation replan 和显式部分完成。所有新文件任务统一使用内部 Git，只有 publication 成功后才原子发布 Subtask 完成事实。ADR-0011 保持有效；多顶层 Task 调度移入未来独立路线图。
 
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
@@ -118,7 +118,7 @@ flowchart LR
 
 这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0011 仍保持一个已接纳的顶层任务，但该 Task 内互不依赖的 Subtasks 已可并行。
 
-当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成或取消。Phase 6 下将增加多 Task candidate、公平性、饥饿保护和 admission hard cut，不重写 Phase 6 上的 frontier、batch、supervisor 或 publication seam。
+当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成，或取消后的容器与 lease 清理完毕。多 Task candidate、优先级、公平性和饥饿保护不属于已完成的 Phase 6，统一移入未来独立路线图。
 
 ### 飞书和进度展示路径
 
@@ -404,7 +404,7 @@ Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_ex
 
 - `execute(input)`：用结构化上下文执行任务。
 - `isAvailable()`：检测 Executor 是否可运行。
-- `abort()`：取消正在执行的任务。
+- `abort(attemptId?)`：精确中止一个 attempt；整 Task 取消由 Runtime control port 枚举其全部 active attempts。
 - `installSkill(pkg)`、`updateSkill(pkg)`、`disableSkill(target)`、`deprecateSkill(target)`：支持 Executor 自己的 Skill 生命周期管理。
 
 常用管理命令：
@@ -759,7 +759,8 @@ AnyFusion 会：
 /task unblock <id>
 /task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
-/task complete <id>
+/task <taskId> subtask cancel <subtaskId...>
+/task <taskId> accept-partial
 /task index rebuild
 /task index search <query>
 
@@ -804,6 +805,8 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命容器一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
 
+整 Task 取消和显式 Subtask 取消也必须进入 durable Kernel seam。取消栅栏先提交，`cancelling` dispatch/publication 在精确 sandbox 退出或确认缺失、WorkUnit 与 lease 释放前继续占用容量；晚到 outcome 只记为 `no_op`。Subtask 取消按下游闭包原子执行，不影响独立 sibling；剩余工作收束后 Task 进入 `blocked`，用户只能取消整个 Task，或通过 `/task <taskId> accept-partial` 显式接受已发布部分。
+
 ## PlanningAgent、ControlKernel 和 Work Unit
 
 自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出严格 v6 `PlanningAgentPlan`。Work Graph 仍为 v5；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
@@ -811,7 +814,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`ControlKernel` v4 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
+`ControlKernel` v4 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
 
 `DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
@@ -821,7 +824,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox，v26 增加 dispatch item、workspace publication 和不可变 merge attempt。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。SQLite v22 保存只读 v3 audit，v24 增加 graph revision 与 durable workflow，v25 增加 resource/workspace/permission/sandbox，v26 增加 dispatch item、workspace publication 和不可变 merge attempt，v27 增加 cancellation cleanup、lease revocation、generation replan request 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

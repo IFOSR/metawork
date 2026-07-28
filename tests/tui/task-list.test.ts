@@ -64,6 +64,22 @@ describe('tasksCommand', () => {
       memoryEngine,
       orchestration,
       executor,
+      taskControl: {
+        cancelTask: async taskId => {
+          taskEngine.cancel(taskId, 'test cancellation');
+          return {
+            taskId,
+            affectedSubtaskCount: 0,
+            cleanupAttemptCount: 0,
+          };
+        },
+        cancelSubtasks: async () => ({
+          taskId: '',
+          affectedSubtaskCount: 0,
+          cleanupAttemptCount: 0,
+        }),
+        acceptPartialResult: async taskId => ({ taskId }),
+      },
       currentTaskId: null,
       db,
       config: createConfig(),

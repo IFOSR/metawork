@@ -35,7 +35,12 @@ import { buildDefaultResourceClaims } from '../resource/index.js';
 import { deriveRunnableFrontier } from '../work-graph/index.js';
 import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { AttemptSupervisor, type AttemptSupervisorContext } from './attempt-supervisor.js';
+import type {
+  CancellationReceipt,
+  TaskCancellationCoordinator,
+} from './task-cancellation-coordinator.js';
 import type {
   WorkspacePublicationWorker,
   WorkspacePublicationOutcome,
@@ -95,6 +100,8 @@ export interface KernelExecutionRuntimeDeps {
   maxConcurrentAttempts: number;
   publicationWorker: WorkspacePublicationWorker;
   publicationRepo: WorkspacePublicationRepo;
+  generationReplanRepo: GenerationReplanRequestRepo;
+  cancellationCoordinator: TaskCancellationCoordinator;
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
   persistenceService: SessionPersistenceService;
@@ -136,6 +143,188 @@ export class KernelExecutionRuntime {
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
     );
+  }
+
+  async cancelTask(taskId: string, reason = 'explicit Task cancellation command'): Promise<CancellationReceipt> {
+    return this.submitTaskControlEvent({
+      schemaVersion: 4,
+      type: 'task_cancel_requested',
+      id: `task_cancel_${generateInteractionId()}`,
+      correlationId: taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId,
+      reason,
+    });
+  }
+
+  async cancelSubtasks(
+    taskId: string,
+    targetSubtaskIds: string[],
+    reason = 'explicit Subtask cancellation command',
+  ): Promise<CancellationReceipt> {
+    return this.submitTaskControlEvent({
+      schemaVersion: 4,
+      type: 'subtasks_cancel_requested',
+      id: `subtasks_cancel_${generateInteractionId()}`,
+      correlationId: taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId,
+      targetSubtaskIds,
+      reason,
+    });
+  }
+
+  async acceptPartialResult(taskId: string): Promise<CancellationReceipt> {
+    return this.submitTaskControlEvent({
+      schemaVersion: 4,
+      type: 'partial_result_acceptance_requested',
+      id: `partial_accept_${generateInteractionId()}`,
+      correlationId: taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId,
+    });
+  }
+
+  async recoverCancellations(taskId?: string): Promise<void> {
+    await this.deps.cancellationCoordinator.recover(taskId);
+  }
+
+  getSingleActiveTaskId(): string | null {
+    return this.deps.taskRuntimeService.getCurrentRunningTask()?.id
+      ?? this.deps.cancellationCoordinator.findCleanupTaskId();
+  }
+
+  private async submitTaskControlEvent(
+    event: Extract<KernelEvent, {
+      type: 'task_cancel_requested' | 'subtasks_cancel_requested'
+        | 'partial_result_acceptance_requested';
+    }>,
+  ): Promise<CancellationReceipt> {
+    let receipt: CancellationReceipt | null = null;
+    let controlError: string | null = null;
+    const workflow = new DurableKernelWorkflow({
+      kernel: this.deps.controlKernel,
+      buildSnapshot: () => this.deps.cancellationCoordinator.buildSnapshot(event.taskId!),
+      store: this.deps.kernelWorkflowStore,
+      clock: { now: () => new Date().toISOString() },
+      runtime: {
+        apply: async decision => {
+          if (decision.action.type === 'cancel_task' || decision.action.type === 'cancel_subtasks') {
+            receipt = this.deps.cancellationCoordinator.apply(
+              decision as Parameters<TaskCancellationCoordinator['apply']>[0],
+            );
+            void this.drainCancellation(event.taskId!);
+            return null;
+          }
+          if (decision.action.type === 'accept_partial_result') {
+            const action = decision.action;
+            const revision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+            const blocked = this.deps.cancellationCoordinator.completionBlockedReasons(
+              action.taskId,
+              action.generationId,
+              decision.id,
+            );
+            if (
+              !revision
+              || revision.generationId !== action.generationId
+              || revision.revision !== action.graphRevision
+              || blocked.length > 0
+            ) {
+              controlError = `partial acceptance changed before application${blocked.length > 0
+                ? `: ${blocked.join(', ')}`
+                : ''}`;
+              return null;
+            }
+            const allSubtasks = this.deps.subtaskRepo.listActiveByTask(action.taskId);
+            const done = allSubtasks.filter(subtask =>
+              action.completedSubtaskIds.includes(subtask.id) && subtask.status === 'done'
+            );
+            const cancelled = allSubtasks.filter(subtask =>
+              action.cancelledSubtaskIds.includes(subtask.id) && subtask.status === 'cancelled'
+            );
+            if (
+              done.length !== action.completedSubtaskIds.length
+              || cancelled.length !== action.cancelledSubtaskIds.length
+            ) {
+              controlError = 'partial acceptance Subtask facts changed before application';
+              return null;
+            }
+            this.deps.workGraphRevisionRepo.complete(
+              action.taskId,
+              action.graphRevision,
+              new Date().toISOString(),
+              'partial_accepted',
+            );
+            const task = this.deps.taskRuntimeService.findTask(action.taskId)!;
+            await this.completeTask({
+              taskId: action.taskId,
+              decisionId: decision.id,
+              executionId: `partial_${decision.id}`,
+              request: {
+                userPrompt: task.goal,
+                contextTaskId: task.id,
+                executionMode: 'follow-up',
+                origin: 'user',
+                schedulingReason: 'explicit partial result acceptance',
+              },
+              subtasks: done,
+              cancelledSubtasks: cancelled,
+              completionKind: 'partial_accepted',
+              finishExecution: async lines => {
+                this.deps.callbacks.appendOutput(...lines);
+                this.deps.callbacks.refreshRuntimeState();
+              },
+            });
+            receipt = {
+              taskId: action.taskId,
+              affectedSubtaskIds: action.cancelledSubtaskIds,
+              cleanupAttemptIds: [],
+            };
+            return null;
+          }
+          if (decision.action.type === 'reject_request' || decision.action.type === 'block_work') {
+            controlError = decision.reason;
+            return null;
+          }
+          if (decision.action.type === 'no_op') return null;
+          throw new Error(`Task control Runtime cannot apply ${decision.action.type}`);
+        },
+      },
+      acceptedEventTypes: [
+        'task_cancel_requested',
+        'subtasks_cancel_requested',
+        'partial_result_acceptance_requested',
+      ],
+      acceptedActions: [
+        'cancel_task',
+        'cancel_subtasks',
+        'accept_partial_result',
+        'reject_request',
+        'block_work',
+        'no_op',
+      ],
+      taskId: event.taskId!,
+    });
+    await workflow.submit(event);
+    if (controlError) throw new Error(controlError);
+    if (!receipt) throw new Error('Task control decision produced no receipt');
+    return receipt;
+  }
+
+  private async drainCancellation(taskId: string): Promise<void> {
+    try {
+      await this.attemptSupervisor.drain(taskId);
+      await this.deps.cancellationCoordinator.recover(taskId);
+      this.deps.callbacks.refreshRuntimeState();
+    } catch {
+      // The durable cancelling rows retain capacity and startup recovery retries cleanup.
+    }
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
@@ -208,7 +397,7 @@ export class KernelExecutionRuntime {
         firstDispatchOrder: firstDispatchOrder.get(subtask.id) ?? null,
         hasPendingOrActiveAttempt: dispatchItems.some(item =>
           item.subtaskId === subtask.id
-          && ['pending_launch', 'launching', 'running'].includes(item.status)
+          && ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)
         ),
       })),
     ).filter(subtaskId => {
@@ -226,7 +415,8 @@ export class KernelExecutionRuntime {
       schemaVersion: 4,
       type: 'dispatch',
       task: task ? { id: task.id, status: task.status } : null,
-      runningTaskId: this.deps.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
+      runningTaskId: this.deps.taskRuntimeService.getCurrentRunningTask()?.id
+        ?? this.deps.cancellationCoordinator.findCleanupTaskId(),
       graphState,
       subtasks: subtasks.map(subtask => ({
         id: subtask.id,
@@ -245,7 +435,7 @@ export class KernelExecutionRuntime {
       availableSlots: Math.max(
         0,
         this.deps.maxConcurrentAttempts - dispatchItems.filter(item =>
-          ['pending_launch', 'launching', 'running'].includes(item.status)
+          ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)
         ).length,
       ),
       resourceConflictSubtaskIds: [],
@@ -271,6 +461,41 @@ export class KernelExecutionRuntime {
           subtask.id,
         ),
       ])),
+      completionBlockedReasons: this.deps.cancellationCoordinator
+        .completionBlockedReasons(
+          taskId,
+          activeRevision?.generationId ?? null,
+        ),
+      generationReplanRequest: activeRevision
+        ? (() => {
+            const request = this.deps.generationReplanRepo.findActive(
+              taskId,
+              activeRevision.generationId,
+            );
+            return request ? {
+              id: request.id,
+              status: request.status as 'pending_quiescence' | 'planning' | 'submitted',
+            } : null;
+          })()
+        : null,
+      generationQuiescent: frontier.length === 0
+        && !dispatchItems.some(item =>
+          ['pending_launch', 'launching', 'running', 'cancelling', 'uncertain']
+            .includes(item.status)
+        )
+        && !this.deps.publicationRepo.hasBlockingResidue(
+          taskId,
+          activeRevision?.generationId,
+        )
+        && !this.deps.cancellationCoordinator.completionBlockedReasons(
+          taskId,
+          activeRevision?.generationId ?? null,
+        ).some(reason => [
+          'sandbox',
+          'work_unit',
+          'resource_lease',
+          'attempt_receipt',
+        ].includes(reason)),
     };
   }
 
@@ -411,6 +636,21 @@ export class KernelExecutionRuntime {
         return null;
       }
       const activeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+      const completionBlockedReasons = this.deps.cancellationCoordinator
+        .completionBlockedReasons(
+          action.taskId,
+          activeRevision?.generationId ?? null,
+          decision.id,
+        );
+      if (completionBlockedReasons.length > 0) {
+        await this.blockTask(
+          action.taskId,
+          `Task completion blocked by runtime residue: ${completionBlockedReasons.join(', ')}`,
+          input.finishExecution,
+          'manual',
+        );
+        return null;
+      }
       const subtasks = this.deps.subtaskRepo.listByTask(action.taskId).filter(subtask =>
         subtask.status === 'done'
         && (!activeRevision || subtask.generationId === activeRevision.generationId)
@@ -422,12 +662,58 @@ export class KernelExecutionRuntime {
       });
       return null;
     }
+    if (action.type === 'queue_generation_replan') {
+      this.deps.generationReplanRepo.enqueue({
+        id: action.requestId,
+        taskId: action.taskId,
+        generationId: action.generationId,
+        sourceRevision: action.sourceRevision,
+        triggerDecisionId: decision.id,
+        now: new Date().toISOString(),
+      });
+      return this.eventFromDecision(decision, {
+        type: 'dispatch_requested',
+        taskId: action.taskId,
+        reason: 'generation replan queued; continue independent work until quiescence',
+      });
+    }
     if (action.type === 'request_replan') {
-      return this.deps.callbacks.requestReplan(
-        decision as KernelDecision & {
-          action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-        },
+      const request = this.deps.generationReplanRepo.findByGeneration(
+        action.taskId,
+        action.generationId,
+        action.sourceRevision,
       );
+      if (!request) throw new Error('generation replan request is missing');
+      const token = `quiescence_${decision.id}`;
+      if (!this.deps.generationReplanRepo.markPlanning(
+        request.id,
+        token,
+        new Date().toISOString(),
+      )) {
+        return null;
+      }
+      try {
+        const event = await this.deps.callbacks.requestReplan(
+          decision as KernelDecision & {
+            action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+          },
+        );
+        if (!this.deps.generationReplanRepo.markSubmitted(
+          request.id,
+          token,
+          new Date().toISOString(),
+        )) {
+          return null;
+        }
+        return event;
+      } catch (error) {
+        this.deps.generationReplanRepo.fail(
+          request.id,
+          error instanceof Error ? error.message : String(error),
+          new Date().toISOString(),
+        );
+        throw error;
+      }
     }
     if (action.type === 'request_merge_replan') {
       const now = new Date().toISOString();
@@ -456,6 +742,14 @@ export class KernelExecutionRuntime {
         },
       });
       if (result.outcome === 'not_executable') throw new Error(`authorized replan could not apply: ${result.reason}`);
+      if (action.proposalSource === 'replan') {
+        const request = this.deps.generationReplanRepo.findByGeneration(
+          action.taskId,
+          action.generationId,
+          action.graphRevision - 1,
+        );
+        if (request) this.deps.generationReplanRepo.resolve(request.id, new Date().toISOString());
+      }
       return this.eventFromDecision(decision, {
         type: 'dispatch_requested',
         taskId: action.taskId,
@@ -769,10 +1063,12 @@ export class KernelExecutionRuntime {
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
         'handoff_contract_failed', 'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
+        'generation_quiescence_observed',
       ],
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'no_op',
         'wait_for_partition', 'recover_workspace_attempt',
@@ -789,6 +1085,8 @@ export class KernelExecutionRuntime {
       executionId,
       workflow,
     });
+    await this.deps.cancellationCoordinator.recover(taskId);
+    this.deps.cancellationCoordinator.settlePartialCancellation(taskId);
   }
 
   private async drainPublications(input: {
@@ -811,6 +1109,7 @@ export class KernelExecutionRuntime {
           await this.attemptSupervisor.drain(input.taskId);
           break;
         }
+        if (outcome.type === 'cancelled') continue;
         integrated = true;
         this.projectIntegratedPublication(outcome);
       }
@@ -860,7 +1159,13 @@ export class KernelExecutionRuntime {
       if (!workUnit.claimedTaskId || !workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
       const task = this.deps.taskRuntimeService.findTask(workUnit.claimedTaskId);
       const subtask = this.deps.subtaskRepo.findById(workUnit.claimedSubtaskId);
-      if (!task || !subtask || subtask.status === 'done') continue;
+      if (
+        !task
+        || task.status === 'cancelled'
+        || !subtask
+        || subtask.status === 'done'
+        || subtask.status === 'cancelled'
+      ) continue;
       this.deps.attemptRunner.landHeartbeatLost({
         attemptId: workUnit.claimedAttemptId,
         executionId: `heartbeat_${workUnit.claimedAttemptId}`,
@@ -1007,10 +1312,12 @@ export class KernelExecutionRuntime {
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
         'handoff_contract_failed', 'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
+        'generation_quiescence_observed',
       ],
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'no_op',
         'wait_for_partition', 'recover_workspace_attempt',
@@ -1024,6 +1331,8 @@ export class KernelExecutionRuntime {
       executionId,
       workflow,
     });
+    await this.deps.cancellationCoordinator.recover(task.id);
+    this.deps.cancellationCoordinator.settlePartialCancellation(task.id);
     return applied;
   }
 
@@ -1061,6 +1370,8 @@ export class KernelExecutionRuntime {
     executionId: string;
     request: QueuedExecutionRequest;
     subtasks: Subtask[];
+    cancelledSubtasks?: Subtask[];
+    completionKind?: 'full' | 'partial_accepted';
     finishExecution(lines: string[]): Promise<void>;
   }): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(input.taskId)!;
@@ -1071,9 +1382,16 @@ export class KernelExecutionRuntime {
       return `- ${subtask.title}: ${firstLine.slice(0, 240)}`;
     }).join('\n');
     const displaySummary = input.subtasks.map(subtask => `- ${subtask.title}: completed`).join('\n');
+    const cancelledSubtasks = input.cancelledSubtasks ?? [];
+    const completionKind = input.completionKind ?? 'full';
     const aggregateParts = (summary: string) => [
-      `Task #${input.taskId} completed ${input.subtasks.length} Subtask(s).`,
+      completionKind === 'partial_accepted'
+        ? `Task #${input.taskId} completed with an explicitly accepted partial result.`
+        : `Task #${input.taskId} completed ${input.subtasks.length} Subtask(s).`,
       summary,
+      cancelledSubtasks.length > 0
+        ? `Cancelled Subtasks:\n${cancelledSubtasks.map(subtask => `- ${subtask.id}: ${subtask.title}`).join('\n')}`
+        : '',
       warnings.length > 0 ? `Warnings:\n${warnings.map(warning => `- ${warning}`).join('\n')}` : '',
       artifacts.length > 0 ? `Artifacts:\n${artifacts.map(path => `- ${path}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n');
@@ -1096,6 +1414,8 @@ export class KernelExecutionRuntime {
       executionMode: input.request.executionMode,
       origin: input.request.origin ?? 'user',
       recoveryTrigger: input.request.recoveryTrigger,
+      completionKind,
+      cancelledSubtaskIds: cancelledSubtasks.map(subtask => subtask.id),
     };
     this.deps.effectOutboxRepo.transaction(() => {
       this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
@@ -1106,7 +1426,9 @@ export class KernelExecutionRuntime {
         systemOutput: cleanAggregate,
         executorUsed: input.subtasks.length === 1 ? input.subtasks[0]!.preferredAgentClassList[0] ?? 'executor' : 'work-graph',
       });
-      if (this.deps.taskRuntimeService.findTask(input.taskId)?.status === 'running') {
+      if (['running', 'blocked'].includes(
+        this.deps.taskRuntimeService.findTask(input.taskId)?.status ?? '',
+      )) {
         this.deps.taskRuntimeService.transitionTask(input.taskId, 'done');
       }
       const now = new Date().toISOString();

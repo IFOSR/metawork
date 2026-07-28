@@ -10,7 +10,7 @@ It is built for teams who need agents to do more than answer the current turn. A
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
-- Enforces one active top-level task through a durable serial `KernelWorkflow`, while Phase 6A authorizes deterministic batches and supervises up to four isolated child attempts concurrently.
+- Enforces one active top-level task through a durable serial `KernelWorkflow`, while Phase 6 authorizes deterministic batches and supervises up to four isolated child attempts concurrently.
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
 - Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
@@ -109,7 +109,7 @@ flowchart LR
 
 This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and Git publication matter. ADR-0011 still keeps one admitted top-level task, but independent Subtasks inside that Task now run concurrently.
 
-ADR-0011 deliberately allows only one active top-level Task. Direct replies, clarifications and non-executing domain commands remain available. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no TaskAdmissionGate shortcut. Phase 6B will add multi-Task candidates, fairness, starvation protection and the admission hard cut without replacing Phase 6A's frontier, batch, supervisor or publication paths.
+ADR-0011 deliberately allows only one active top-level Task. Direct replies, clarifications and non-executing domain commands remain available. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no `TaskAdmissionGate` shortcut. Multi-Task candidates, priority, fairness and starvation protection are not part of Phase 6 and are tracked by a future independent roadmap.
 
 ### Feishu And Progress Path
 
@@ -397,7 +397,7 @@ Optional advanced adapter interfaces:
 
 - `execute(input)`: run a task with structured context.
 - `isAvailable()`: check whether the executor can run.
-- `abort()`: cancel a running task.
+- `abort(attemptId?)`: abort one exact attempt; Task cancellation enumerates every active attempt through the Runtime control port.
 - `installSkill(pkg)`, `updateSkill(pkg)`, `disableSkill(target)`, `deprecateSkill(target)`: support executor-specific Skill lifecycle management.
 
 Executor management commands:
@@ -726,7 +726,8 @@ Useful commands:
 /task unblock <id>
 /task unblock <id> /tmp/evidence-v4.pdf
 /task cancel <id>
-/task complete <id>
+/task <taskId> subtask cancel <subtaskId...>
+/task <taskId> accept-partial
 /task index rebuild
 /task index search <query>
 
@@ -765,9 +766,11 @@ Implicit recall excludes the current task, so a task does not accidentally recal
 
 ## Single-Task Concurrent Kernel Control Model
 
-AnyFusion currently admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v4 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are deferred to Phase 6B. Direct replies, clarifications, status/query commands and explicit non-executing pause/block/cancel commands remain available.
+AnyFusion admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v4 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are outside the completed Phase 6 scope. Direct replies, clarifications, status/query commands and explicit task-control commands remain available.
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. `KernelWorkflow` remains serial, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
+
+Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact sandbox is exited or missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task <taskId> accept-partial`.
 
 ## Planning Agent, Control Kernel, And Work Units
 
@@ -776,7 +779,7 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v4 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
+`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v4 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
 
 `DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. `planning_decisions_legacy_audit` is read-only history; Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
 
@@ -786,7 +789,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; v23 adds the unified decision ledger; v24 adds durable inbox/application/outbox and graph revisions; v25 adds resource, workspace, permission and sandbox records; v26 adds dispatch items, candidate publications and immutable merge attempts. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. Migration v22 preserves Phase 1 rows in read-only `subtasks_v3_audit`; v23 adds the unified decision ledger; v24 adds durable inbox/application/outbox and graph revisions; v25 adds resource, workspace, permission and sandbox records; v26 adds dispatch items, candidate publications and immutable merge attempts; v27 adds cancellation cleanup, lease revocation, coalesced generation replan and explicit partial completion facts. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
