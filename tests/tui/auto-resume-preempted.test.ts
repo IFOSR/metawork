@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -121,17 +120,6 @@ describe('App auto-resume after preemption', () => {
         }
       }),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确工作任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -143,7 +131,6 @@ describe('App auto-resume after preemption', () => {
         config: createConfig(),
         sessionId: 'sess_auto_resume',
         contextRecaller,
-        llmBridge,
         availableExecutorCommands: new Set(['codex']),
       })
     );

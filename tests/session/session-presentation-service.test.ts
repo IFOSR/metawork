@@ -110,22 +110,7 @@ describe('SessionPresentationService', () => {
     expect(proposalLines.join('\n')).toContain('置信度：0.91');
   });
 
-  it('formats recall and last-task automatic decision blocks', () => {
-    const recallLines = presenter.formatRecallReviewBlock({
-      taskId: 'task_1',
-      taskTitle: '调研任务',
-      selectionItems: [{
-        kind: 'preference',
-        candidate: {
-          scope: 'global',
-          summary: '默认先给结论',
-          reason: '长期偏好',
-        },
-      }],
-    });
-    expect(recallLines.join('\n')).toContain('记忆召回自动处理');
-    expect(recallLines.join('\n')).toContain('[global] 默认先给结论');
-
+  it('formats last-task automatic decision blocks', () => {
     const lastTaskLines = presenter.formatLastTaskAutoDecisionBlock({
       completedTask: task({ id: 'done_1', title: '已完成任务', status: 'done' }),
       unfinishedTask: task({ id: 'parked_1', title: '最近未完成任务', status: 'parked' }),

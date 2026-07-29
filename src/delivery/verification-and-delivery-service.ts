@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync } from 'fs';
 import type { ResolvedPreference, Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import {
@@ -174,13 +173,7 @@ export class VerificationAndDeliveryService {
   }
 
   prepare(input: DeliveryPreparationInput): DeliveryPreparationResult {
-    const artifactPaths = this.ensureFeishuDocumentArtifact(
-      input.output,
-      this.collectArtifactPaths(input.output, input.workspaceContext?.targetPaths ?? []),
-      input.workspaceContext,
-      input.preferences,
-      input.userPrompt,
-    );
+    const artifactPaths = this.collectArtifactPaths(input.output, input.workspaceContext?.targetPaths ?? []);
     const verification = this.verifySync({
       output: input.output,
       evidenceText: input.evidenceText,
@@ -211,13 +204,7 @@ export class VerificationAndDeliveryService {
   }
 
   async prepareAsync(input: DeliveryPreparationInput): Promise<DeliveryPreparationResult> {
-    const collectedArtifactPaths = this.ensureFeishuDocumentArtifact(
-      input.output,
-      this.collectArtifactPaths(input.output, input.workspaceContext?.targetPaths ?? []),
-      input.workspaceContext,
-      input.preferences,
-      input.userPrompt,
-    );
+    const collectedArtifactPaths = this.collectArtifactPaths(input.output, input.workspaceContext?.targetPaths ?? []);
     const verification = await this.verify({
       output: input.output,
       evidenceText: input.evidenceText,
@@ -352,34 +339,6 @@ export class VerificationAndDeliveryService {
       .filter(path => existsSync(path));
 
     return Array.from(new Set(normalized));
-  }
-
-  private ensureFeishuDocumentArtifact(
-    output: string,
-    artifactPaths: string[],
-    workspaceContext: WorkspaceContext | undefined,
-    preferences: ResolvedPreference[],
-    userPrompt: string,
-  ): string[] {
-    if (!workspaceContext?.allowFilesystem || artifactPaths.some(path => /\.(md|markdown)$/i.test(path))) {
-      return artifactPaths;
-    }
-
-    const needsFeishuDocumentDelivery = [userPrompt, ...preferences.map(preference => preference.content)]
-      .some(text => /(飞书云文档|飞书文档|云文档|在线预览)/u.test(text));
-    if (!needsFeishuDocumentDelivery || !output.trim() || isUndeliverableExecutorOutput(output)) {
-      return artifactPaths;
-    }
-
-    const targetDirectory = workspaceContext.targetPaths[0];
-    if (!targetDirectory) {
-      return artifactPaths;
-    }
-
-    mkdirSync(targetDirectory, { recursive: true });
-    const artifactPath = resolve(targetDirectory, 'feishu-document.md');
-    writeFileSync(artifactPath, output.trimEnd() + '\n', 'utf-8');
-    return Array.from(new Set([...artifactPaths, artifactPath]));
   }
 
   private buildTaskResultSummary(

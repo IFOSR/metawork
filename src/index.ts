@@ -5,19 +5,12 @@ import { createDatabase } from './storage/database.js';
 import { TaskRepo } from './storage/task-repo.js';
 import { PreferenceRepo } from './storage/preference-repo.js';
 import { ObservationRepo } from './storage/observation-repo.js';
-import { TaskMemoryCardRepo } from './storage/task-memory-card-repo.js';
 import { TaskSearchIndexRepo } from './storage/task-search-index-repo.js';
-import { TaskRelationRepo } from './storage/task-relation-repo.js';
-import { TaskMemoryEmbeddingRepo } from './storage/task-memory-embedding-repo.js';
-import { RecallFeedbackRepo } from './storage/recall-feedback-repo.js';
-import { HybridMemoryRecaller } from './memory/hybrid-memory-recaller.js';
-import { HybridTaskRetriever } from './task/hybrid-task-retriever.js';
 import { TaskEngine } from './task/task-engine.js';
 import { MemoryEngine } from './memory/memory-engine.js';
 import { OrchestrationEngine } from './guidance/orchestration.js';
 import { createDefaultExecutor } from './execution/execution-runtime.js';
 import { ContextRecaller } from './memory/context-recaller.js';
-import { LlmBridge } from './core/llm-bridge.js';
 import { loadConfig, migrateLegacyFeishuConfigFileToGateway } from './utils/config.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
@@ -111,31 +104,10 @@ async function main() {
   const taskRepo = new TaskRepo(db, taskSearchIndexRepo);
   const prefRepo = new PreferenceRepo(db);
   const obsRepo = new ObservationRepo(db);
-  const taskRelationRepo = new TaskRelationRepo(db);
-  const taskMemoryEmbeddingRepo = new TaskMemoryEmbeddingRepo(db);
-  const recallFeedbackRepo = new RecallFeedbackRepo(db);
 
-  const taskMemoryCardRepo = new TaskMemoryCardRepo(db, taskSearchIndexRepo);
-
-  // 5. 初始化执行器语义桥接
-  const llmBridge = new LlmBridge(config.executor.command);
-
-  // 6. 初始化引擎
+  // 5. 初始化引擎
   const taskEngine = new TaskEngine(taskRepo, snapshotDir);
-  const hybridTaskRetriever = new HybridTaskRetriever({
-    taskRepo,
-    taskSearchIndexRepo,
-    taskRelationRepo,
-    taskMemoryEmbeddingRepo,
-    recallFeedbackRepo,
-  });
-  const hybridMemoryRecaller = new HybridMemoryRecaller({
-    taskRepo,
-    taskMemoryEmbeddingRepo,
-    recallFeedbackRepo,
-    hybridTaskRetriever,
-  });
-  const memoryEngine = new MemoryEngine(prefRepo, obsRepo, undefined, hybridMemoryRecaller, taskMemoryCardRepo, llmBridge);
+  const memoryEngine = new MemoryEngine(prefRepo, obsRepo);
   const orchestration = new OrchestrationEngine(taskEngine);
 
   // 7. 初始化执行器
@@ -154,7 +126,7 @@ async function main() {
 
   // 9. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;
-  const contextRecaller = new ContextRecaller(db, llmBridge);
+  const contextRecaller = new ContextRecaller(db);
   const notifier = createNotificationService(config);
 
   if (cliArgs.scriptPath) {
@@ -168,7 +140,6 @@ async function main() {
       config,
       sessionId,
       contextRecaller,
-      llmBridge,
       notifier,
     });
     if (result.output.length > 0) {
@@ -185,7 +156,6 @@ async function main() {
     db,
     config,
     contextRecaller,
-    llmBridge,
     notifier,
     workspaceRoot: process.cwd(),
   });
@@ -204,7 +174,6 @@ async function main() {
       config,
       sessionId,
       contextRecaller,
-      llmBridge,
       notifier,
     });
     gatewaySession.initialize({ showDashboard: false });
@@ -245,7 +214,7 @@ async function main() {
   }
 
   // 9. 启动 TUI
-  renderApp({ taskEngine, memoryEngine, orchestration, executor, defaultExecutorFactory, db, config, sessionId, contextRecaller, llmBridge, notifier });
+  renderApp({ taskEngine, memoryEngine, orchestration, executor, defaultExecutorFactory, db, config, sessionId, contextRecaller, notifier });
 }
 
 main().catch((error) => {

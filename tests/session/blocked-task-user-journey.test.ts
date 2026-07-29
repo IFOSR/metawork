@@ -8,10 +8,9 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
+import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 
@@ -75,10 +74,6 @@ describe('blocked task user journey', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '默认优先级' }),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -88,7 +83,6 @@ describe('blocked task user journey', () => {
       config: createConfig(),
       sessionId: 'sess_blocked_user_journey',
       contextRecaller,
-      llmBridge,
       notifier,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(

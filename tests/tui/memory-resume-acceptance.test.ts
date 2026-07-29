@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -124,18 +123,6 @@ describe('Round 1 memory resume acceptance', () => {
         }
       }),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: 'round 1 resume acceptance',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: 'new task',
-      }),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -147,7 +134,6 @@ describe('Round 1 memory resume acceptance', () => {
         config: createConfig(),
         sessionId: 'sess_memory_resume_acceptance',
         contextRecaller,
-        llmBridge,
       }),
     );
 

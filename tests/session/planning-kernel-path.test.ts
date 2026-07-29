@@ -13,7 +13,6 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
 import { completionResponse } from '../support/completion-response.js';
 import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
@@ -90,11 +89,6 @@ function createSession(
     isAvailable: vi.fn().mockResolvedValue(true),
     abort: vi.fn(),
   };
-  const llmBridge = {
-    resolveRoute: vi.fn(),
-    resolveIntent: vi.fn(),
-    rankInteractions: vi.fn().mockResolvedValue([]),
-  } as unknown as LlmBridge;
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
@@ -104,7 +98,6 @@ function createSession(
     config: createConfig(),
     sessionId,
     contextRecaller: new ContextRecaller(db),
-    llmBridge,
     planningAgent: {
       plan: typeof planningPlan === 'function'
         ? vi.fn().mockImplementation(planningPlan)

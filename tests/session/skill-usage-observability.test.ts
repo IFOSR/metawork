@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -98,10 +97,6 @@ describe('Session skill usage observability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -111,7 +106,6 @@ describe('Session skill usage observability', () => {
       config: createConfig(),
       sessionId: 'sess_skill_usage',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '用 TDD 实现一个小功能' }),
       ),

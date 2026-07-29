@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 
@@ -101,10 +100,6 @@ describe('App resume-running task noop', () => {
       abort: vi.fn(),
     };
 
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     // Turn 1 creates the durable task; turn 2 references the now-running task and
     // asks to continue it. The running task id is only known after turn 1, so the
     // resume plan resolves it lazily from the repo at plan() time.
@@ -134,7 +129,6 @@ describe('App resume-running task noop', () => {
         config: createConfig(),
         sessionId: 'sess_resume_running_noop',
         contextRecaller,
-        llmBridge,
         availableExecutorCommands: new Set(['codex']),
         planningAgent,
       }),

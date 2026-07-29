@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
@@ -79,12 +78,6 @@ describe('session startup running-task reconciliation', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const dockerAvailable = vi.spyOn(
       DockerCliAttemptSandboxAdapter.prototype,
       'listManaged',
@@ -98,7 +91,6 @@ describe('session startup running-task reconciliation', () => {
       config: createConfig(),
       sessionId: 'sess_startup_reconcile',
       contextRecaller,
-      llmBridge,
       executorFactory: () => executor,
     });
 
@@ -165,11 +157,6 @@ describe('session startup running-task reconciliation', () => {
       config: createConfig(),
       sessionId: 'sess_recovery_blocked',
       contextRecaller: new ContextRecaller(db),
-      llmBridge: {
-        resolveRoute: vi.fn(),
-        resolveIntent: vi.fn(),
-        rankInteractions: vi.fn(),
-      } as unknown as LlmBridge,
       executorFactory: () => executor,
     });
 
@@ -293,11 +280,6 @@ describe('session startup running-task reconciliation', () => {
       config: createConfig(),
       sessionId: 'sess_terminal_seal_blocked',
       contextRecaller: new ContextRecaller(db),
-      llmBridge: {
-        resolveRoute: vi.fn(),
-        resolveIntent: vi.fn(),
-        rankInteractions: vi.fn(),
-      } as unknown as LlmBridge,
       executorFactory: () => executor,
     });
 

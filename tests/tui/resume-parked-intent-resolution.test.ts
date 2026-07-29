@@ -11,7 +11,6 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
-import { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { taskControlPlan } from '../support/planning-agent-plans.js';
@@ -96,15 +95,7 @@ describe('App parked task intent resolution', () => {
     });
     taskEngine.transition(finishedTask.id, 'done');
 
-    const llmBridge = new LlmBridge('codex');
     let parkedTaskId = '';
-    const querySpy = vi.spyOn(llmBridge, 'query')
-      .mockImplementation(async (prompt: string) => {
-        if (prompt.includes('判断用户输入是否是在要求恢复')) {
-          return `{"action":"resume","taskId":"${parkedTaskId}","confidence":0.94,"reason":"用户明确要求继续之前挂起的任务"}`;
-        }
-        return '{"priority":"normal","reason":"测试默认优先级"}';
-      });
 
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
@@ -128,7 +119,6 @@ describe('App parked task intent resolution', () => {
         config: createConfig(),
         sessionId: 'sess_resume_parked_intent',
         contextRecaller,
-        llmBridge,
         availableExecutorCommands: new Set(['codex']),
         planningAgent: {
           plan: vi.fn().mockImplementation(async () => taskControlPlan({
@@ -167,7 +157,6 @@ describe('App parked task intent resolution', () => {
     await flushUpdates();
     await waitForExecutorCall(executor.execute as ReturnType<typeof vi.fn>);
 
-    expect(querySpy).not.toHaveBeenCalled();
     expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls.some(call =>
       call[0].context.taskBackground.id === parkedTask.id
     )).toBe(true);

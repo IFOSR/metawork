@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan, clarificationPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -92,9 +91,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -106,7 +102,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_input_history',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: 'history navigation test' }),
           directReplyPlan({ reason: 'history navigation test' }),
@@ -169,9 +164,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -183,7 +175,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_multiline_editor',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'multiline editor test' })),
       })
     );
@@ -240,9 +231,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -254,7 +242,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_normal_backspace',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'backspace test' })),
       })
     );
@@ -294,9 +281,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -308,7 +292,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_raw_lf_submit',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'raw LF submit test' })),
       })
     );
@@ -348,9 +331,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -362,7 +342,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_command_suggestions',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'command suggestion test' })),
       })
     );
@@ -401,9 +380,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const app = render(
       React.createElement(App, {
         taskEngine,
@@ -414,7 +390,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_command_group_suggestions',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'nested command suggestion test' })),
       })
     );
@@ -473,9 +448,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -487,7 +459,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_test',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }),
           workGraphPlan({ goal: '排队任务', matchedBoundary: ['repo_execution'] }),
@@ -553,9 +524,6 @@ describe('App input availability', () => {
     const pendingPlan = new Promise<ReturnType<typeof workGraphPlan>>(resolve => {
       resolvePlan = resolve;
     });
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const planningAgent = { plan: vi.fn().mockReturnValue(pendingPlan) };
 
     const app = render(
@@ -568,7 +536,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_processing_status',
         contextRecaller,
-        llmBridge,
         planningAgent,
       })
     );
@@ -629,9 +596,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -643,7 +607,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_test',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           workGraphPlan({ goal: '普通任务', matchedBoundary: ['repo_execution'] }),
           workGraphPlan({ goal: '紧急优先处理这个任务', matchedBoundary: ['repo_execution'] }),
@@ -700,11 +663,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-    // Second turn: the planner cannot confidently decide and stays conservative
-    // (clarification) instead of queueing keyword-fallback work.
     const planningAgent = {
       plan: vi.fn()
         .mockResolvedValueOnce(workGraphPlan({ goal: '主线任务', matchedBoundary: ['repo_execution'] }))
@@ -721,7 +679,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_llm_stalled_while_running',
         contextRecaller,
-        llmBridge,
         planningAgent,
       })
     );
@@ -778,9 +735,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -792,7 +746,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_routed_executor_status',
         contextRecaller,
-        llmBridge,
         executorFactory: (name: string) => name === 'pi-agent' ? piExecutor : null,
         availableExecutorCommands: new Set(['codex', 'pi']),
         planningAgent: stubPlanningAgent(
@@ -848,9 +801,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -862,7 +812,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_enter_completes',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'enter completion test' })),
       })
     );
@@ -897,9 +846,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const app = render(
       React.createElement(App, {
         taskEngine,
@@ -910,7 +856,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_middle_cursor_submit',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'unused' })),
       })
     );
@@ -954,9 +899,6 @@ describe('App input availability', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -968,7 +910,6 @@ describe('App input availability', () => {
         config: createConfig(),
         sessionId: 'sess_tab_completes',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: 'tab completion test' })),
       })
     );

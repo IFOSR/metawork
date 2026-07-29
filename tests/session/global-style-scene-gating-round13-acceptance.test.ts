@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
@@ -39,21 +38,6 @@ function createConfig(): Config {
       dashboard_on_start: true,
     },
   };
-}
-
-function createDurableRouteBridge(): LlmBridge {
-  return {
-    resolveRoute: vi.fn().mockResolvedValue({
-      route: 'durable_task',
-      reason: '明确任务',
-    }),
-    resolveIntent: vi.fn().mockResolvedValue({
-      type: 'new',
-      taskId: null,
-      reason: '新任务',
-    }),
-    rankInteractions: vi.fn().mockResolvedValue([]),
-  } as unknown as LlmBridge;
 }
 
 describe('global style scene gating', () => {
@@ -92,7 +76,6 @@ describe('global style scene gating', () => {
       config: createConfig(),
       sessionId: 'sess_round13_global_style_scene',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '直接把刚才我们讨论的内容整理成ppt' }),
       ),
@@ -107,7 +90,7 @@ describe('global style scene gating', () => {
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('auto-applies applicable formal tone without recall confirmation', async () => {
+  it('不再按场景关键词自动采用全局风格偏好（语义归 Planner）', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -147,7 +130,6 @@ describe('global style scene gating', () => {
       config: createConfig(),
       sessionId: 'sess_round13_formal_research_style_gate',
       contextRecaller,
-      llmBridge: createDurableRouteBridge(),
       executorFactory: () => executor,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '帮我写一份正式的行业调研报告' }),
@@ -159,8 +141,8 @@ describe('global style scene gating', () => {
 
     const output = session.getSnapshot().output.join('\n');
     expect(output).not.toContain('记忆召回确认');
-    expect(output).toContain('已自动采用记忆');
-    expect(output).toContain('使用正式严谨的表达');
+    expect(output).not.toContain('已自动采用记忆');
+    expect(output).not.toContain('使用正式严谨的表达');
     expect(output).not.toContain('用活泼欢快的语气');
     expect(executor.execute).toHaveBeenCalledTimes(1);
   });

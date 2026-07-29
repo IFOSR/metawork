@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
@@ -74,12 +73,6 @@ describe('Round 8 inline web links acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '明确工作任务' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -89,7 +82,6 @@ describe('Round 8 inline web links acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_round8_inline_links',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(plan),
     });
 

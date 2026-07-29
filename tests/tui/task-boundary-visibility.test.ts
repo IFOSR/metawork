@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -95,9 +94,6 @@ describe('App task-boundary visibility', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -109,7 +105,6 @@ describe('App task-boundary visibility', () => {
         config: createConfig(),
         sessionId: 'sess_task_boundary_visibility_followup',
         contextRecaller,
-        llmBridge,
         executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
@@ -197,9 +192,6 @@ describe('App task-boundary visibility', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -211,7 +203,6 @@ describe('App task-boundary visibility', () => {
         config: createConfig(),
         sessionId: 'sess_task_boundary_visibility_conversation',
         contextRecaller,
-        llmBridge,
         executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),

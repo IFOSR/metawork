@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import {
   stubPlanningAgent,
@@ -62,10 +61,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -75,7 +70,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_direct_reply_runtime_state',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(directReplyPlan({
         reason: '普通问答',
         response: { directReply: '最终回答' },
@@ -144,10 +138,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -157,7 +147,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_round3_boundary',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         directReplyPlan({ reason: '普通讨论' }),
         workGraphPlan({
@@ -231,10 +220,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -244,7 +229,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_clear_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'blocked' }),
       ),
@@ -295,10 +279,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -308,7 +288,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_query_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -356,10 +335,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -369,7 +344,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_query_no_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -404,10 +378,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -417,7 +387,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_query_running_task',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -457,10 +426,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -470,7 +435,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_query_completion_no_running',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -513,10 +477,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -526,7 +486,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_semantic_scheduler_state',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -561,11 +520,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '普通检查' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -575,7 +529,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_deliverable_check_executor',
       contextRecaller,
-      llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '检查这个任务生成的 Markdown 文档内容是否完整' }),
@@ -612,11 +565,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '普通生成' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -626,7 +574,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_generation_executor',
       contextRecaller,
-      llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '继续把这个任务的预览版生成出来' }),
@@ -662,10 +609,6 @@ describe('Round 3 task boundary acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -675,7 +618,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_clear_all_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'all' }),
       ),
@@ -734,10 +676,6 @@ describe('Round 3 task boundary acceptance', () => {
       abort: vi.fn(),
     };
     let parkedTaskId = '';
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -747,7 +685,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_resume_parked_without_new_task',
       contextRecaller,
-      llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: {
         plan: vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: parkedTaskId })),
@@ -798,10 +735,6 @@ describe('Round 3 task boundary acceptance', () => {
       abort: vi.fn(),
     };
     let blockedTaskId = '';
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -811,7 +744,6 @@ describe('Round 3 task boundary acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_resume_blocked_without_new_task',
       contextRecaller,
-      llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: {
         plan: vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),

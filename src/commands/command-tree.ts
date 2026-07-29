@@ -2,7 +2,6 @@ import type { TaskStatus } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { LearningCandidateRepo } from '../storage/learning-candidate-repo.js';
 import { ObservationRepo } from '../storage/observation-repo.js';
-import { RecallReviewPolicyRepo } from '../storage/recall-review-policy-repo.js';
 import type { CommandHandler, CommandResult as LegacyCommandResult } from './router.js';
 import {
   CommandCatalog,
@@ -395,7 +394,6 @@ function executorNodes(): CommandNode[] {
 function memoryNodes(): CommandNode[] {
   const memoryValues = (context: CommandContext) => context.memoryEngine.list().map(item => ({ id: item.id, label: `#${item.id}`, description: item.content }));
   const observationValues = (context: CommandContext) => new ObservationRepo(context.db).findAll().map(item => ({ id: item.id, label: `#${item.id}`, description: item.pattern }));
-  const policyValues = (context: CommandContext) => new RecallReviewPolicyRepo(context.db).findAll().map(item => ({ id: item.id, label: `#${item.id}`, description: item.policyType }));
   const memoryRef = () => dynamicReference('memoryId', '记忆', memoryValues);
   const observationRef = () => dynamicReference('observationId', '观察候选', observationValues);
   const scopeOption = option('--scope', '记忆作用域', enumArg('scope', '作用域', ['global', 'project', 'contact', 'task-local']));
@@ -425,12 +423,6 @@ function memoryNodes(): CommandNode[] {
         usage: `/memory vault ${name} [--dir <path>]`, options: [option('--dir', 'Vault 目录', text('dir', '目录路径'))],
         run: (a, c) => invokeLegacy(memoryCommand, ['vault', name, ...optionTokens(a, ['dir'])], c),
       })),
-    },
-    {
-      kind: 'group', name: 'review-policy', summary: '回忆审查策略', children: [
-        action({ name: 'list', summary: '列出审查策略', effect: '读取全部回忆审查策略。', usage: '/memory review-policy list', run: (_, c) => invokeLegacy(memoryCommand, ['review-policy'], c) }),
-        action({ name: 'revoke', summary: '撤销审查策略', effect: '删除指定回忆审查策略。', usage: '/memory review-policy revoke <policyId>', arguments: [dynamicReference('policyId', '审查策略', policyValues)], run: (a, c) => invokeLegacy(memoryCommand, ['review-policy', 'revoke', stringArg(a, 'policyId')], c) }),
-      ],
     },
   ];
 }

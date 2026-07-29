@@ -11,7 +11,6 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
@@ -37,7 +36,6 @@ function createSession(input: {
   memoryEngine: MemoryEngine;
   executor: ExecutorAdapter;
   sessionId: string;
-  llmBridge?: Partial<LlmBridge>;
   planningAgent?: PlanningAgent;
   executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
@@ -51,12 +49,6 @@ function createSession(input: {
     config: createConfig(),
     sessionId: input.sessionId,
     contextRecaller: new ContextRecaller(input.db),
-    llmBridge: {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'durable task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-      ...input.llmBridge,
-    } as unknown as LlmBridge,
     planningAgent: input.planningAgent,
     executorFactory: input.executorFactory,
     availableExecutorCommands: input.availableExecutorCommands,
@@ -221,11 +213,6 @@ describe('planner-first executor command acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_fixed_executor',
       contextRecaller: new ContextRecaller(db),
-      llmBridge: {
-        resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: 'research automation task' }),
-        resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: 'new task' }),
-        rankInteractions: vi.fn().mockResolvedValue([]),
-      } as unknown as LlmBridge,
       executorFactory: name => name === 'pi-agent' ? piExecutor : null,
       availableExecutorCommands: new Set(['codex', 'pi']),
       planningAgent: stubPlanningAgent(

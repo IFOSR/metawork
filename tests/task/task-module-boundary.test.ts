@@ -8,9 +8,6 @@ const taskDomainFiles = [
   'task-engine',
   'task-runtime-service',
   'task-execution-planner',
-  'task-relevance-ranker',
-  'task-embedding-service',
-  'hybrid-task-retriever',
 ];
 
 describe('task module architecture boundaries', () => {

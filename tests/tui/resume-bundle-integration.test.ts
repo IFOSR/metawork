@@ -15,7 +15,6 @@ import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { completionResponse } from '../support/completion-response.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -114,13 +113,6 @@ describe('App persisted v4 resume integration', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'reference',
-        taskId: parkedTask.id,
-        reason: '继续刚才的任务',
-      }),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -132,7 +124,6 @@ describe('App persisted v4 resume integration', () => {
         config: createConfig(),
         sessionId: 'sess_resume',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
         ),

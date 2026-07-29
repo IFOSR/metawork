@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
@@ -98,9 +97,6 @@ describe('App network recovery natural-language control', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -112,7 +108,6 @@ describe('App network recovery natural-language control', () => {
         config: createConfig(),
         sessionId: 'sess_network_nl_recovery',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'recover_blocked', taskId: blockedTask.id, scope: null }),
         ),

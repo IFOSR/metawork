@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
 const inputCapture = vi.hoisted(() => ({
@@ -97,9 +96,6 @@ describe('App permission failure blocking', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -111,7 +107,6 @@ describe('App permission failure blocking', () => {
         config: createConfig(),
         sessionId: 'sess_permission_block',
         contextRecaller,
-        llmBridge,
         availableExecutorCommands: new Set(['codex']),
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '继续调研 agent memory' })),
       }),

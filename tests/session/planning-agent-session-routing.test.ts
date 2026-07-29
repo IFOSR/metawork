@@ -11,7 +11,6 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import { completionResponse } from '../support/completion-response.js';
 
@@ -84,7 +83,7 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
 }
 
 describe('MetaclawSession planning-agent routing', () => {
-  it('routes natural language through the injected PlanningAgent without touching legacy llmBridge intent methods', async () => {
+  it('routes natural language through the injected PlanningAgent without touching legacy intent methods', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-route');
@@ -102,12 +101,6 @@ describe('MetaclawSession planning-agent routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      resolveTaskStateOwnership: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan()),
     };
@@ -121,7 +114,6 @@ describe('MetaclawSession planning-agent routing', () => {
       config: createConfig(),
       sessionId: 'sess_planning_agent_route',
       contextRecaller,
-      llmBridge,
       planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });
@@ -130,9 +122,6 @@ describe('MetaclawSession planning-agent routing', () => {
     await session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
     expect(planningAgent.plan).toHaveBeenCalledTimes(1);
-    expect(llmBridge.resolveRoute).not.toHaveBeenCalled();
-    expect(llmBridge.resolveIntent).not.toHaveBeenCalled();
-    expect(llmBridge.resolveTaskStateOwnership).not.toHaveBeenCalled();
     expect(executor.execute).toHaveBeenCalledTimes(1);
     expect(session.getSnapshot().output.join('\n')).toContain('completed 1 Subtask(s)');
   });
@@ -150,11 +139,6 @@ describe('MetaclawSession planning-agent routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         action: 'clarification',
@@ -184,7 +168,6 @@ describe('MetaclawSession planning-agent routing', () => {
       config: createConfig(),
       sessionId: 'sess_planning_agent_clarify',
       contextRecaller,
-      llmBridge,
       planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });
@@ -217,12 +200,6 @@ describe('MetaclawSession planning-agent routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      resolveTaskStateOwnership: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         reason: '修改仓库代码',
@@ -248,7 +225,6 @@ describe('MetaclawSession planning-agent routing', () => {
       config: createConfig(),
       sessionId: 'sess_planning_agent_verifier',
       contextRecaller,
-      llmBridge,
       planningAgent,
       availableExecutorCommands: new Set(['codex']),
     });

@@ -53,7 +53,6 @@ describe('Kernel capacity control loop', () => {
       config,
       sessionId: 'session_capacity',
       contextRecaller: new ContextRecaller(db),
-      llmBridge: { rankInteractions: vi.fn().mockResolvedValue([]) } as never,
       planningAgent: stubPlanningAgent(plan),
       availableExecutorCommands: new Set(['codex']),
     });

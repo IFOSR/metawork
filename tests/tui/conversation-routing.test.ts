@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
 
@@ -94,9 +93,6 @@ describe('App conversation routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -108,7 +104,6 @@ describe('App conversation routing', () => {
         config: createConfig(),
         sessionId: 'sess_conversation_routing',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通问候' })),
       }),
     );
@@ -162,9 +157,6 @@ describe('App conversation routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -176,7 +168,6 @@ describe('App conversation routing', () => {
         config: createConfig(),
         sessionId: 'sess_visible_user_turn_break',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通对话' })),
       }),
     );
@@ -241,9 +232,6 @@ describe('App conversation routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -255,7 +243,6 @@ describe('App conversation routing', () => {
         config: createConfig(),
         sessionId: 'sess_conversation_focus',
         contextRecaller,
-        llmBridge,
         executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
@@ -296,9 +283,6 @@ describe('App conversation routing', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -310,7 +294,6 @@ describe('App conversation routing', () => {
         config: createConfig(),
         sessionId: 'sess_conversation_followup_task',
         contextRecaller,
-        llmBridge,
         executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),

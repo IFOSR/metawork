@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { taskCommand } from '../../src/commands/task-commands.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -63,10 +62,6 @@ describe('Round 4 task view acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -76,7 +71,6 @@ describe('Round 4 task view acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_round4_task_view',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
       ),

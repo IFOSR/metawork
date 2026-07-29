@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -104,9 +103,6 @@ describe('App task view recovery hints', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -118,7 +114,6 @@ describe('App task view recovery hints', () => {
         config: createConfig(),
         sessionId: 'sess_task_view_recovery_hints',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -160,9 +155,6 @@ describe('App task view recovery hints', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -174,7 +166,6 @@ describe('App task view recovery hints', () => {
         config: createConfig(),
         sessionId: 'sess_task_view_link_materials',
         contextRecaller,
-        llmBridge,
       }),
     );
 

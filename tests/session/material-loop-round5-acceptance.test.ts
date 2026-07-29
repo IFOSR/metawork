@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 
@@ -61,10 +60,6 @@ describe('Round 5 material loop acceptance', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
@@ -79,7 +74,6 @@ describe('Round 5 material loop acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_round5_materials',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
       ),

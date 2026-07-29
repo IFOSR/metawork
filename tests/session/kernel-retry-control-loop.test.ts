@@ -67,7 +67,6 @@ describe('Kernel durable retry control loop', () => {
       config,
       sessionId: 'session_retry',
       contextRecaller: new ContextRecaller(db),
-      llmBridge: { rankInteractions: vi.fn().mockResolvedValue([]) } as never,
       planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'continue after a transient network failure' })),
       availableExecutorCommands: new Set(['codex']),
     });

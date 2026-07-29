@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
 
@@ -96,9 +95,6 @@ describe('App execution progress', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -110,7 +106,6 @@ describe('App execution progress', () => {
         config: createConfig(),
         sessionId: 'sess_execution_progress',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '整理 Phoenix 项目周报' })),
       }),
     );
@@ -174,9 +169,6 @@ describe('App execution progress', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -188,7 +180,6 @@ describe('App execution progress', () => {
         config: createConfig(),
         sessionId: 'sess_execution_waiting_hint',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '整理 Phoenix 项目周报' })),
       }),
     );

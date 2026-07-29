@@ -12,7 +12,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
@@ -101,14 +100,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '脚本输入',
-      }),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
@@ -122,7 +113,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted',
       contextRecaller,
-      llmBridge,
     });
 
     expect(executor.execute).not.toHaveBeenCalled();
@@ -150,10 +140,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
@@ -167,7 +153,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_detail',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
       ),
@@ -206,10 +191,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '直接把邮件发给客户',
@@ -222,7 +203,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_risky_gate',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({
           goal: '直接把邮件发给客户',
@@ -262,10 +242,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     await runScriptedSession({
       inputs: [
         '写一段测试内容，保存成 markdown 文件',
@@ -278,7 +254,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_artifact',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '写一段测试内容，保存成 markdown 文件' }),
       ),
@@ -319,10 +294,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '生成一个报名落地页 html 文件',
@@ -335,7 +306,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_html_artifact',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '生成一个报名落地页 html 文件' }),
       ),
@@ -367,10 +337,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '请产出飞书云文档和在线预览',
@@ -383,7 +349,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_fallback',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请产出飞书云文档和在线预览' }),
       ),
@@ -426,10 +391,6 @@ describe('scripted session', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
-
     const result = await runScriptedSession({
       inputs: [
         '请调研 pi Agent，产出飞书云文档和在线预览',
@@ -442,7 +403,6 @@ describe('scripted session', () => {
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_undeliverable',
       contextRecaller,
-      llmBridge,
       availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览' }),

@@ -3,7 +3,6 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import type { SessionPersistenceService } from '../session/session-persistence-service.js';
-import type { MemoryCaptureService } from '../memory/memory-capture-service.js';
 import type { GuidanceProposal, Subtask, Suggestion } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -70,7 +69,6 @@ function defaultResourceGrant(taskId: string, generationId: string, subtaskId: s
 export interface KernelExecutionRuntimeInput {
   taskId: string;
   request: QueuedExecutionRequest;
-  approvedRecallSelection: unknown;
   recoveryOnly?: boolean;
 }
 
@@ -105,7 +103,6 @@ export interface KernelExecutionRuntimeDeps {
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
   persistenceService: SessionPersistenceService;
-  memoryCaptureService: MemoryCaptureService;
   kernelExecutorStatusProjector: KernelExecutorStatusProjector;
   presentation: SessionPresentationService;
   callbacks: {
@@ -361,7 +358,6 @@ export class KernelExecutionRuntime {
         origin: 'system',
         schedulingReason: reason,
       },
-      approvedRecallSelection: null,
       recoveryOnly: true,
     });
     return this.deps.taskRuntimeService.findTask(taskId)?.updatedAt !== before;
@@ -1426,11 +1422,6 @@ export class KernelExecutionRuntime {
     ].filter(Boolean).join('\n\n');
     const cleanAggregate = aggregateParts(persistedSummary);
     const displayAggregate = aggregateParts(displaySummary);
-    const memoryAggregate = [
-      cleanAggregate,
-      'Subtask clean results:',
-      ...input.subtasks.map(subtask => `## ${subtask.id}\n${subtask.result}`),
-    ].join('\n\n');
 
     const effectId = `effect_${input.decisionId}_task_completion`;
     const effectPayload = {
@@ -1478,11 +1469,7 @@ export class KernelExecutionRuntime {
         availableAt: now,
       });
     });
-    const completionLines = this.deps.memoryCaptureService.captureCompletionPatterns({
-      userPrompt: input.request.userPrompt,
-      output: memoryAggregate,
-      taskId: input.taskId,
-    }).lines;
+    const completionLines: string[] = [];
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: input.taskId });
     this.deps.callbacks.persistSessionState({ lastFocusedTaskId: input.taskId, lastCompletedTaskId: input.taskId });
     completionLines.push(displayAggregate);

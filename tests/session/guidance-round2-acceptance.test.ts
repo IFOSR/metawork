@@ -10,7 +10,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
@@ -64,12 +63,6 @@ function createSession(config: Config, notifier?: NotificationService) {
     isAvailable: vi.fn().mockResolvedValue(true),
     abort: vi.fn(),
   };
-  const llmBridge = {
-    resolveRoute: vi.fn(),
-    resolveIntent: vi.fn(),
-    rankInteractions: vi.fn(),
-  } as unknown as LlmBridge;
-
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
@@ -79,7 +72,6 @@ function createSession(config: Config, notifier?: NotificationService) {
     config,
     sessionId: 'sess_guidance_round2',
     contextRecaller,
-    llmBridge,
     notifier,
   });
 

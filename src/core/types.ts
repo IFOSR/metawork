@@ -340,10 +340,6 @@ export interface MemoryContext {
   resolvedPreferences: ResolvedPreference[];
 }
 
-export interface TaskMemoryContext {
-  taskCandidates: TaskMemoryCandidate[];
-}
-
 export interface HistoryContext {
   currentConversationTurns?: Array<{
     taskId: string;
@@ -413,7 +409,6 @@ export interface ExecutionContextBundleV2 {
   taskBrief: TaskBrief;
   resumeContext?: ResumeContext;
   memoryContext: MemoryContext;
-  taskMemoryContext: TaskMemoryContext;
   historyContext: HistoryContext;
   materialContext: MaterialContext;
   workspaceContext?: WorkspaceContext;
@@ -461,116 +456,6 @@ export interface GuidanceProposal {
   proposalPayload: Record<string, unknown>;
   expiresAt: string | null;
   createdAt: string;
-}
-
-// ─── V2 记忆召回 ───
-export const RecallCandidateSource = {
-  RULE: 'rule',
-  SEMANTIC: 'semantic',
-  CONTINUITY: 'continuity',
-} as const;
-
-export type RecallCandidateSource = (typeof RecallCandidateSource)[keyof typeof RecallCandidateSource];
-
-export const TaskMemoryKind = {
-  TASK_SUMMARY: 'task_summary',
-  SNAPSHOT_SUMMARY: 'snapshot_summary',
-  MATERIAL_SUMMARY: 'material_summary',
-  ARTIFACT_SUMMARY: 'artifact_summary',
-} as const;
-
-export type TaskMemoryKind = (typeof TaskMemoryKind)[keyof typeof TaskMemoryKind];
-
-export interface TaskMemoryCandidate {
-  id: string;
-  taskId: string;
-  sourceTaskId: string;
-  memoryKind: TaskMemoryKind;
-  title: string;
-  summary: string;
-  reason: string;
-  source: RecallCandidateSource;
-  score: number;
-  artifactPaths: string[];
-}
-
-export interface PreferenceMemoryCandidate {
-  id: string;
-  preferenceId: string;
-  scope: PreferenceScope;
-  subject: string | null;
-  summary: string;
-  reason: string;
-  source: RecallCandidateSource;
-  score: number;
-  applicabilityAction?: MemoryApplicabilityAction;
-  applicabilityScore?: number;
-  applicabilityReason?: string;
-  judgeSource?: MemoryApplicabilityJudgeSource;
-}
-
-export const MemoryApplicabilityAction = {
-  AUTO_APPLY: 'auto_apply',
-  ASK_REVIEW: 'ask_review',
-  SUPPRESS: 'suppress',
-} as const;
-
-export type MemoryApplicabilityAction =
-  (typeof MemoryApplicabilityAction)[keyof typeof MemoryApplicabilityAction];
-
-export const MemoryApplicabilityJudgeSource = {
-  LLM: 'llm',
-  RULE: 'rule',
-  POLICY: 'policy',
-  FALLBACK: 'fallback',
-} as const;
-
-export type MemoryApplicabilityJudgeSource =
-  (typeof MemoryApplicabilityJudgeSource)[keyof typeof MemoryApplicabilityJudgeSource];
-
-export const RecallReviewOption = {
-  ACCEPT_ALL: 'accept_all',
-  REJECT_ALL: 'reject_all',
-  EDIT: 'edit',
-  SELECT_PARTIAL: 'select_partial',
-  AUTO_APPLY_FUTURE: 'auto_apply_future',
-} as const;
-
-export type RecallReviewOption = (typeof RecallReviewOption)[keyof typeof RecallReviewOption];
-
-export interface RecallReviewCard {
-  taskMemorySummary: Array<{
-    label: string;
-    summary: string;
-    reason: string;
-  }>;
-  preferenceMemorySummary: Array<{
-    scope: PreferenceScope;
-    summary: string;
-    reason: string;
-  }>;
-  options: RecallReviewOption[];
-}
-
-export const RecallReviewPolicyType = {
-  TASK_MEMORY: 'task_memory',
-  PROJECT_PREFERENCE: 'project_preference',
-  CONTACT_PREFERENCE: 'contact_preference',
-  PROPOSAL_TYPE: 'proposal_type',
-} as const;
-
-export type RecallReviewPolicyType =
-  (typeof RecallReviewPolicyType)[keyof typeof RecallReviewPolicyType];
-
-export interface RecallReviewPolicy {
-  id: string;
-  policyType: RecallReviewPolicyType;
-  scope: string | null;
-  subject: string | null;
-  proposalType: GuidanceActionType | null;
-  autoApply: boolean;
-  createdAt: string;
-  updatedAt: string;
 }
 
 // ─── 配置 ───

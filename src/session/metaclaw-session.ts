@@ -3,7 +3,6 @@ import type Database from 'better-sqlite3';
 import { resolve } from 'node:path';
 import type {
   Config,
-  GuidanceActionType,
   GuidanceProposal,
   RuntimeState,
   Task,
@@ -15,12 +14,8 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import { NoopNotificationService, type NotificationService } from '../notifications/types.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
-import type { LlmBridge } from '../core/llm-bridge.js';
-import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
-import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
 import { SessionPersistenceService } from './session-persistence-service.js';
-import { MemoryCaptureService } from '../memory/memory-capture-service.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import { CommandReadServices } from '../commands/command-read-services.js';
 import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
@@ -91,7 +86,6 @@ export interface MetaclawSessionDeps {
   config: Config;
   sessionId: string;
   contextRecaller: ContextRecaller;
-  llmBridge: LlmBridge;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
   defaultExecutorFactory?: () => ExecutorAdapter;
@@ -194,8 +188,6 @@ export class MetaclawSession {
   private readonly commandReadServices: CommandReadServices;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
-  private readonly memoryCaptureService: MemoryCaptureService;
-  private readonly recallReviewApplicationService: RecallReviewApplicationService;
   private readonly presentation: SessionPresentationService;
   private readonly agentClassService: AgentClassService;
   private readonly executorAdminService: ExecutorAdminService;
@@ -287,23 +279,6 @@ export class MetaclawSession {
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
-      resumeContextBuilder: new ResumeContextBuilder(
-        deps.taskEngine,
-        deps.memoryEngine,
-        deps.contextRecaller,
-      ),
-    });
-    this.memoryCaptureService = new MemoryCaptureService({
-      db: deps.db,
-      memoryEngine: deps.memoryEngine,
-      notifier: this.notifier,
-      deliveryService: this.verificationAndDeliveryService,
-    });
-    this.recallReviewApplicationService = createDefaultRecallReviewApplicationService({
-      db: deps.db,
-      memoryContextService: this.memoryContextService,
-      memoryCaptureService: this.memoryCaptureService,
-      formatters: this.presentation,
     });
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
@@ -403,7 +378,6 @@ export class MetaclawSession {
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
-      memoryCaptureService: this.memoryCaptureService,
       kernelExecutorStatusProjector: new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo),
       presentation: this.presentation,
       callbacks: {
@@ -425,7 +399,6 @@ export class MetaclawSession {
     });
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
       taskRuntimeService: this.taskRuntimeService,
-      recallReviewApplicationService: this.recallReviewApplicationService,
       kernelExecutionRuntime: this.kernelExecutionRuntime,
       presentation: this.presentation,
       callbacks: {
@@ -1060,9 +1033,8 @@ export class MetaclawSession {
   private async prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-    proposalType: GuidanceActionType | null = null,
   ): Promise<void> {
-    return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request, proposalType);
+    return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request);
   }
 
   private appendOutput(...lines: string[]): void {

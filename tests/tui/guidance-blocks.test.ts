@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -125,11 +124,6 @@ describe('App guidance blocks', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -141,7 +135,6 @@ describe('App guidance blocks', () => {
         config: createConfig(),
         sessionId: 'sess_guidance_startup',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -176,11 +169,6 @@ describe('App guidance blocks', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '测试 durable task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -192,7 +180,6 @@ describe('App guidance blocks', () => {
         config: createConfig(),
         sessionId: 'sess_guidance_completion',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -243,11 +230,6 @@ describe('App guidance blocks', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -259,7 +241,6 @@ describe('App guidance blocks', () => {
         config: createConfig(),
         sessionId: 'sess_guidance_unblock',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -313,11 +294,6 @@ describe('App guidance blocks', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -329,7 +305,6 @@ describe('App guidance blocks', () => {
         config: createConfig(),
         sessionId: 'sess_guidance_resume_parked',
         contextRecaller,
-        llmBridge,
       }),
     );
 

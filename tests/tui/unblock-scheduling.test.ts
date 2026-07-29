@@ -13,7 +13,6 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { completionResponse } from '../support/completion-response.js';
 
@@ -112,9 +111,6 @@ describe('App unblock scheduling', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -126,7 +122,6 @@ describe('App unblock scheduling', () => {
         config: createConfig(),
         sessionId: 'sess_unblock',
         contextRecaller,
-        llmBridge,
       })
     );
 
@@ -180,9 +175,6 @@ describe('App unblock scheduling', () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       abort: vi.fn(),
     };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
 
     const app = render(
       React.createElement(App, {
@@ -194,7 +186,6 @@ describe('App unblock scheduling', () => {
         config: createConfig(),
         sessionId: 'sess_unblock_resources',
         contextRecaller,
-        llmBridge,
       })
     );
 

@@ -256,8 +256,6 @@ describe('CommandCatalog', () => {
 /memory relations
 /memory vault export
 /memory vault status
-/memory review-policy list
-/memory review-policy revoke
 /profile user
 /profile project
 /profile executor
@@ -284,7 +282,6 @@ describe('CommandCatalog', () => {
     expect(actions).toContain('/task index search');
     expect(actions).toContain('/executor register <executorName>');
     expect(actions).toContain('/executor register wizard');
-    expect(actions).toContain('/memory review-policy revoke');
     expect(actions).toContain('/learning patch promote');
     expect(actions).toContain('/profile user');
     expect(actions).toContain('/config');
