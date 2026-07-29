@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { learningCommand } from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
@@ -17,7 +16,7 @@ function createTestDb() {
 describe('learningCommand review UX', () => {
   it('lists pending learning candidates and supports approve/reject review actions', async () => {
     const db = createTestDb();
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const repo = new LearningCandidateRepo(db);
 
     repo.insert({

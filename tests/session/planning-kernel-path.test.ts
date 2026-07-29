@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
@@ -80,7 +79,7 @@ function createSession(
   runMigrations(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
-  const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+  const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
   const executor: ExecutorAdapter = executorOverride ?? {
     name: 'codex-cli',
     execute: vi.fn().mockImplementation(async input => ({

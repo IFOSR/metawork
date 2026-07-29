@@ -40,7 +40,7 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
 | **Isolated execution** | Every attempt runs in a disposable non-root Docker sandbox with read-only inputs and a persistent private workspace; runtime elevation is explicit, bounded, and Kernel-authorized. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
-| **Operational memory and delivery** | Confirmed preferences, task history, semantic retrieval, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
+| **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
 ## Built for complex enterprise workflows
 

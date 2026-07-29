@@ -242,18 +242,7 @@ describe('CommandCatalog', () => {
 /memory add
 /memory edit
 /memory delete
-/memory candidates
-/memory confirm
-/memory reject
 /memory stats
-/memory recent
-/memory auto-captured
-/memory timeline
-/memory applied
-/memory undo
-/memory explain
-/memory evidence
-/memory relations
 /memory vault export
 /memory vault status
 /profile user

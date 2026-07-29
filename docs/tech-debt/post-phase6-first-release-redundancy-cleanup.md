@@ -24,7 +24,22 @@
 - 删除偏好场景与交付意图词表：`MemoryEngine.recall`/`recallForReview` 及其 `isGlobalPreferenceSceneCompatible`、`classifyPersonalityTonePreference`、`detectRequestedPersonalityTones`、`isPersonalityToneSceneCompatible`、`isStructuredWorkScene`、`inferType` 的自然语言猜测；`ResumeContextBuilder` 整体删除；`VerificationAndDeliveryService.ensureFeishuDocumentArtifact` 的飞书文档交付关键词删除。
 - 删除 `src/core/types.ts` 中 11 个已无消费者的 V2 记忆召回类型与 `ExecutionContextBundleV2.taskMemoryContext`，以及 `SessionPresentationService.formatRecallReviewBlock`。
 - 删除 6 张已无消费者的 SQLite 表及其 8 个索引：`task_relations`、`task_memory_embeddings`、`preference_embeddings`、`memory_recall_events`、`recall_review_policies`、`recall_feedback`。
-- 删除 16 个只保活上述实现的测试文件，并把原先断言旧语义的用例改写为反向覆盖（断言代码侧不再猜测语义）。
+- 删除只保活上述实现的测试文件，并把原先断言旧语义的用例改写为反向覆盖（断言代码侧不再猜测语义）。
+
+后续审查收尾：
+
+- 删除没有生产调用者、仅由测试保活的 `TaskMemoryCardRepo.searchRelevant` 自然语言评分、通用词表和 resume/reference 推断。
+- 删除失去生产写入入口的 observation 候选链、`/memory candidates|confirm|reject`、候选通知与 delivery 接口，以及 `observations` 表。
+- 删除失去生产写入入口的 memory audit 链、`/memory recent|auto-captured|applied|undo|explain|evidence|timeline|relations`，以及 `memory_audit_events` 表；Vault 继续导出显式确认偏好。
+- 删除只服务于旧召回的 `ConversationTurn` source、ContextRecaller helper、presentation block 和 reflection source 残留。
+- 同步 `AGENTS.md`、README 和中英文技术总览，使现行文档只描述 Planner MCP 确定性搜索、显式偏好和结构化 Executor evidence。
+
+后续收尾验证：
+
+- `npm run lint` 通过。
+- `npm run build` 通过。
+- Docker 全量测试通过：185 files / 726 tests passed，4 files / 15 tests skipped，0 failed。
+- Docker 真实 smoke 通过：Codex Planner → Kernel → Codex attempt → Git publication，产出并验证 `smoke-result.md`。
 
 验证：
 

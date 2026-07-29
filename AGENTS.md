@@ -6,13 +6,13 @@ MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, w
 
 Key areas are organized by responsibility:
 
-- `src/core/` is intentionally narrow and contains shared primitives, the generic memory/ranking LLM bridge, and the shared `KernelFailure` fact.
+- `src/core/` is intentionally narrow and contains shared primitives plus the shared `KernelFailure` fact.
 - `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), the dedicated Codex planner runner, the read-only Planner MCP server, minimal planning context construction, plan types/vocabulary, and plan validation. Planning only proposes.
 - `src/kernel/` owns the pure `ControlKernel`, which exposes a single `decide(event, snapshot)` seam. It is the sole authority for plan admission, dispatch, capacity, execution failure recovery, retry/fallback/replan, derived AgentClass availability, permission grant/deny/escalation, partition waiting, and sandbox recovery. It reads no clock, repository, adapter, or raw log, and performs no side effects.
 - `src/work-graph/` owns the shared work graph types and pure structural validation consumed by Planning, Kernel, and Execution.
 - `src/session/` is Application Shell: it coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/ControlKernel wiring, and persistence. It triggers the kernel workflow and projects output; it never interprets outcomes strategically.
-- `src/task/` owns task state, runtime, ranking, and semantic retrieval.
-- `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
+- `src/task/` owns task state and runtime. Deterministic task search is exposed to the Planner through its read-only MCP.
+- `src/memory/` owns explicit confirmed preferences, deterministic recent conversation context, and vault export.
 - `src/execution/` owns side effects only: the durable kernel execution runtime, work graph materialization/recovery, work-unit claiming, subtask attempt running, per-attempt sandboxes, workspaces, aggregation, and progress.
 - `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages. Adapters normalize raw errors into structured `KernelFailure` facts; they do not decide recovery.
 - `src/resource/` owns resource partition identity, claims, permission rules, and capability-request evaluation.

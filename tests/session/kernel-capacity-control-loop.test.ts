@@ -4,7 +4,6 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
@@ -45,7 +44,7 @@ describe('Kernel capacity control loop', () => {
     };
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
       executor,
       executorFactory: () => executor,

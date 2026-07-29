@@ -1,4 +1,4 @@
-import type { GuidanceActionType, Task } from '../core/types.js';
+import type { Task } from '../core/types.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
@@ -22,7 +22,6 @@ export class SessionTaskExecutionApplicationService {
   async prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-    _proposalType: GuidanceActionType | null = null,
   ): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) {

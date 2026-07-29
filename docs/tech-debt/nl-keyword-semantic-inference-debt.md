@@ -1,10 +1,10 @@
 # 自然语言关键字语义推断残留
 
-> 状态：已盘点，待逐项评估与收紧  
+> 状态：已关闭（历史盘点；P0 清理已完成）  
 > 创建日期：2026-07-15  
 > 关联计划：`docs/archive/plans/2026-07-13-planner-semantic-tightening-and-dedicated-mcp-zh.md`  
 > 关联 ADR：ADR-0015（Planner-Owned Semantics And Tool-Mediated Context）  
-> 用途：记录 2026-07-13 Planner 语义收紧后，代码中仍依赖关键字/正则做自然语言语义推断的残留点。本文只登记债务，不在此直接改实现。  
+> 用途：保留 2026-07-13 Planner 语义收紧后的历史盘点。实现结果记录在 `post-phase6-first-release-redundancy-cleanup.md`；本文中的源码位置不再代表现行实现。  
 > 边界：slash 命令、显式 ID、路径、URL、附件等确定性解析不视为债务。
 
 ## 总体判断

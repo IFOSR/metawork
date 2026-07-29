@@ -303,7 +303,6 @@ describe('VerificationAndDeliveryService', () => {
 
   it('delivers resume-blocked task completion through notification service only when needed', async () => {
     const notifier = {
-      notifyMemoryCandidate: vi.fn(),
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
     const service = new VerificationAndDeliveryService();
@@ -331,26 +330,6 @@ describe('VerificationAndDeliveryService', () => {
       origin: 'user',
     })).toBeNull();
     expect(notifier.notifyTaskCompleted).toHaveBeenCalledTimes(1);
-  });
-
-  it('delivers memory candidate notifications without blocking callers', () => {
-    const notifier = {
-      notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
-      notifyTaskCompleted: vi.fn(),
-    };
-    const service = new VerificationAndDeliveryService();
-
-    service.deliverMemoryCandidate(notifier, {
-      observationId: 'obs_1',
-      pattern: '长期偏好',
-      source: 'high-confidence',
-    });
-
-    expect(notifier.notifyMemoryCandidate).toHaveBeenCalledWith({
-      observationId: 'obs_1',
-      pattern: '长期偏好',
-      source: 'high-confidence',
-    });
   });
 
   it('formats blocked recovery completion output in the delivery boundary', () => {

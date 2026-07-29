@@ -1,4 +1,4 @@
-// Formats session-facing status, guidance, recall review, queue, and recovery
+// Formats session-facing status, guidance, queue, and recovery
 // messages so orchestration code can work with domain facts instead of strings.
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
@@ -142,62 +142,6 @@ export class SessionPresentationService {
       ...proposal.reasons.map((reason, index) => `${index === 0 ? '│ 理由：' : '│       '}${reason}`),
       `│ 置信度：${proposal.confidence.toFixed(2)}`,
       '│ 策略：无需用户确认；高置信提案自动执行，低置信提案自动跳过',
-      '└──────────────────────────────────────────────────┘',
-    ];
-  }
-
-  formatAutoAppliedMemoryBlock(input: {
-    taskId: string;
-    taskTitle: string;
-    preferenceCandidates: Array<{
-      preferenceId: string;
-      summary: string;
-      score: number;
-      reason: string;
-      applicabilityScore?: number;
-      applicabilityReason?: string;
-    }>;
-    taskCandidates: Array<{
-      id: string;
-      title: string;
-      score: number;
-      reason: string;
-    }>;
-  }): string[] {
-    const lines = [
-      '',
-      '┌─ 已自动采用记忆 ─────────────────────────────────┐',
-      `│ 当前任务：#${input.taskId} ${input.taskTitle}`,
-    ];
-
-    for (const candidate of input.preferenceCandidates) {
-      const score = candidate.applicabilityScore ?? Math.min(1, candidate.score / 100);
-      const reason = candidate.applicabilityReason ?? candidate.reason;
-      lines.push(`│ - ${candidate.preferenceId}: ${candidate.summary} score=${score.toFixed(2)}`);
-      lines.push(`│   reason=${reason}`);
-    }
-
-    for (const candidate of input.taskCandidates) {
-      lines.push(`│ - ${candidate.id}: ${candidate.title} score=${candidate.score}`);
-      lines.push(`│   reason=${candidate.reason}`);
-    }
-
-    lines.push('└──────────────────────────────────────────────────┘');
-    return lines;
-  }
-
-  formatSuppressedRecallBlock(input: {
-    taskId: string;
-    taskTitle: string;
-    preferenceCount: number;
-    taskMemoryCount: number;
-  }): string[] {
-    return [
-      '',
-      '┌─ 已跳过不确定记忆 ───────────────────────────────┐',
-      `│ 当前任务：#${input.taskId} ${input.taskTitle}`,
-      '│ 策略：无需用户确认；无法确定适用的召回默认不注入执行上下文',
-      `│ 跳过：${input.preferenceCount} 条偏好，${input.taskMemoryCount} 条任务记忆`,
       '└──────────────────────────────────────────────────┘',
     ];
   }

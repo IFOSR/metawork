@@ -4,7 +4,6 @@ import type { ConversationTurn } from './conversation-turn.js';
 const TASK_HISTORY_LIMIT = 10;
 const SESSION_HISTORY_LIMIT = 5;
 const OUTPUT_TRUNCATE_LENGTH = 150;
-const FULL_OUTPUT_DEFAULT_LIMIT = 12_000;
 
 interface RecallInput {
   taskId: string;
@@ -30,21 +29,6 @@ function toTurn(row: InteractionRow, source: ConversationTurn['source']): Conver
     taskId: row.task_id,
     userInput: row.user_input,
     systemOutput: truncateOutput(row.system_output),
-    createdAt: row.created_at,
-    source,
-  };
-}
-
-function truncateFullOutput(output: string, maxLength: number): string {
-  if (output.length <= maxLength) return output;
-  return `${output.slice(0, maxLength)}...`;
-}
-
-function toFullTurn(row: InteractionRow, source: ConversationTurn['source'], maxOutputLength: number): ConversationTurn {
-  return {
-    taskId: row.task_id,
-    userInput: row.user_input,
-    systemOutput: truncateFullOutput(row.system_output, maxOutputLength),
     createdAt: row.created_at,
     source,
   };
@@ -93,39 +77,6 @@ export class ContextRecaller {
    */
   async recallAsync(input: RecallInput): Promise<ConversationTurn[]> {
     return this.recall(input);
-  }
-
-  recallForTaskIds(taskIds: string[], limitPerTask = 3): ConversationTurn[] {
-    const uniqueTaskIds = Array.from(new Set(taskIds.filter(Boolean)));
-    if (uniqueTaskIds.length === 0) {
-      return [];
-    }
-
-    const turns: ConversationTurn[] = [];
-    for (const taskId of uniqueTaskIds) {
-      const rows = this.db.prepare(
-        'SELECT id, task_id, user_input, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT ?'
-      ).all(taskId, limitPerTask) as InteractionRow[];
-      turns.push(...rows.map(row => toTurn(row, 'task')));
-    }
-
-    return turns.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-  }
-
-  recallRecentSessionFull(
-    sessionId: string,
-    excludeTaskId: string,
-    options: { limit?: number; maxOutputLength?: number } = {},
-  ): ConversationTurn[] {
-    const limit = options.limit ?? 3;
-    const maxOutputLength = options.maxOutputLength ?? FULL_OUTPUT_DEFAULT_LIMIT;
-    const rows = this.db.prepare(
-      'SELECT id, task_id, user_input, system_output, created_at FROM interactions WHERE session_id = ? AND (task_id IS NULL OR task_id != ?) ORDER BY created_at DESC LIMIT ?'
-    ).all(sessionId, excludeTaskId, limit) as InteractionRow[];
-
-    return rows
-      .map(row => toFullTurn(row, 'session', maxOutputLength))
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   private recallForTask(taskId: string): InteractionRow[] {

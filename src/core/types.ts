@@ -236,17 +236,6 @@ export interface Preference {
   updatedAt: string;
 }
 
-// ─── 观察记录 ───
-export interface Observation {
-  id: string;
-  pattern: string;
-  occurrenceCount: number;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  sourceTasks: string[];
-  promotedToPreferenceId: string | null;
-}
-
 // ─── 主动建议 ───
 export interface Suggestion {
   taskId: string;

@@ -55,12 +55,6 @@ export interface TaskCompletionDeliveryInput {
   recoveryTrigger?: TaskRecoveryTrigger;
 }
 
-export interface MemoryCandidateDeliveryInput {
-  observationId: string;
-  pattern: string;
-  source: 'high-confidence' | 'repeated-pattern';
-}
-
 export class HeuristicVerifier implements Verifier {
   verify(input: VerificationInput): VerificationResult {
     if (!isUndeliverableExecutorOutput(input.output)) {
@@ -282,15 +276,6 @@ export class VerificationAndDeliveryService {
     } catch (error) {
       return `⚠️ 任务完成通知失败: ${(error as Error).message}`;
     }
-  }
-
-  deliverMemoryCandidate(
-    notifier: NotificationService,
-    input: MemoryCandidateDeliveryInput,
-  ): void {
-    void notifier.notifyMemoryCandidate(input).catch(() => {
-      // Notification failures must not block memory capture or task execution.
-    });
   }
 
   appendBlockedRecoveryCompletionBlock(

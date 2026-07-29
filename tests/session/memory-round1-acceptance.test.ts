@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -11,7 +10,6 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { completionResponse } from '../support/completion-response.js';
 
@@ -43,12 +41,11 @@ function createConfig(): Config {
 }
 
 describe('Round 1 memory acceptance', () => {
-  it('不再从自然语言重复模式生成观察候选，显式 /memory confirm 仍可确认', async () => {
+  it('不再从自然语言重复模式写入长期偏好，显式 /memory add 仍可写入', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const observationRepo = new ObservationRepo(db);
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), observationRepo);
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -86,8 +83,6 @@ describe('Round 1 memory acceptance', () => {
     await session.submit('再给张总写一封邮件，内容是同步项目风险，用正式语气', { awaitAsyncWork: true });
     await session.submit('继续给张总准备一封邮件，内容是安排下周会议，用正式语气', { awaitAsyncWork: true });
 
-    // 自动模式抽取已随影子栈删除：三次相似请求不再沉淀观察候选。
-    expect(memoryEngine.getCandidates()).toHaveLength(0);
     expect(session.getSnapshot().output.join('\n')).not.toContain('检测到重复模式');
 
     const manual = memoryEngine.addManual({
@@ -113,7 +108,7 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -201,7 +196,7 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -243,7 +238,6 @@ describe('Round 1 memory acceptance', () => {
     expect(output).not.toContain('[n] 忽略');
     expect(output).not.toContain('[e <新内容>] 编辑后确认');
     expect(output).not.toContain('已保留为候选，不等待确认');
-    expect(memoryEngine.getCandidates()).toHaveLength(0);
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
     expect(output).not.toContain('已确认偏好');
   });
@@ -252,7 +246,7 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -300,13 +294,9 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const notifier: NotificationService = {
-      notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
-    };
-
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: vi.fn().mockImplementation(async input => { const result = {
@@ -328,25 +318,21 @@ describe('Round 1 memory acceptance', () => {
       config: createConfig(),
       sessionId: 'sess_memory_high_confidence_user_statement',
       contextRecaller,
-      notifier,
       planningAgent: stubPlanningAgent(),
     });
 
     session.initialize();
     await session.submit('以后凡是长篇调研、人物研究、竞品分析，默认输出 Markdown 文件，并在聊天中只给摘要和文件路径', { awaitAsyncWork: true });
 
-    const candidates = memoryEngine.getCandidates();
-    expect(candidates).toHaveLength(0);
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
     expect(session.getSnapshot().output.join('\n')).not.toContain('已自动记录偏好');
-    expect(notifier.notifyMemoryCandidate).not.toHaveBeenCalled();
   });
 
   it('不再从 Executor 输出里抽取长期偏好候选', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -384,8 +370,6 @@ describe('Round 1 memory acceptance', () => {
     session.initialize();
     await session.submit('刚才基于上下文你能提炼出什么工作记忆？', { awaitAsyncWork: true });
 
-    const candidates = memoryEngine.getCandidates();
-    expect(candidates).toHaveLength(0);
     expect(session.getSnapshot().output.join('\n')).not.toContain('检测到可能的长期偏好');
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
   });
@@ -394,7 +378,7 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -427,8 +411,6 @@ describe('Round 1 memory acceptance', () => {
 
     const confirmed = memoryEngine.list({ status: 'confirmed' });
     expect(confirmed).toHaveLength(0);
-    expect(memoryEngine.getCandidates()).toHaveLength(0);
-
     const output = session.getSnapshot().output.join('\n');
     expect(output).not.toContain('已自动记录偏好');
     expect(output).not.toContain('要把它记为长期偏好吗');
@@ -441,7 +423,7 @@ describe('Round 1 memory acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -473,8 +455,6 @@ describe('Round 1 memory acceptance', () => {
     await session.submit('以后凡是报告都要自动发给客户');
 
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
-    expect(memoryEngine.getCandidates()).toHaveLength(0);
-
     const output = session.getSnapshot().output.join('\n');
     expect(output).not.toContain('高风险偏好不会静默写入');
   });

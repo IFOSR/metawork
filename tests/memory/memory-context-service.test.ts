@@ -5,7 +5,6 @@ import { resolve } from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MemoryContextService } from '../../src/memory/memory-context-service.js';
@@ -23,7 +22,7 @@ describe('MemoryContextService', () => {
 
   beforeEach(() => {
     db = createTestDb();
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const contextRecaller = new ContextRecaller(db);
     service = new MemoryContextService({
       memoryEngine,

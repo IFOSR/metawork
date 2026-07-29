@@ -15,11 +15,11 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - timer 仅重查由 decision ledger 标记的容量阻塞；普通执行失败不自动恢复。
 - Kernel v4 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
 - 当前强制单一活跃顶层任务，避免 ControlKernel 与 work-unit dispatch 加固期间出现多任务并存的歧义。
-- 通过本地 SQLite FTS 索引检索历史任务，并结合混合召回恢复相关上下文。
+- 通过本地 SQLite FTS 索引向 PlanningAgent 提供显式的历史任务检索。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
 - 已实现并测试 Agentic Loop 核心层：聚合执行器结果、检查证据、发现不满足验收的部分并反馈重试。
-- 只自动注入明确适用的记忆和偏好；不确定召回默认跳过，飞书和无人值守执行器不会等待确认。
+- 向 PlanningAgent 提供有界的已确认全局偏好和近期会话历史；Runtime 不执行隐式语义召回。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
@@ -73,7 +73,7 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-Codex `PlanningAgent` 使用专用 runner，而不复用 executor 的 `LlmBridge` 参数。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
+Codex `PlanningAgent` 使用专用 runner，而不复用 Executor adapter。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
 
 ### 普通问答路径
 
@@ -143,7 +143,7 @@ conversation / task 的边界很重要：
 
 当前 direct reply 路径是显式的：AnyFusion 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
 
-[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：任务检索索引、混合任务召回、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总验收和 Agentic Loop 核心层都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
+[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
 重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
 
@@ -776,7 +776,7 @@ AnyFusion 会：
 
 主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
-## 任务检索和混合召回
+## 任务检索
 
 AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id，也可以通过关键词、上下文和关系找回相关任务。
 
@@ -787,17 +787,7 @@ AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可
 /task index search 合同 风险 矩阵
 ```
 
-HybridTaskRetriever 会综合多种信号：
-
-- 当前请求里显式提到的 task id。
-- 当前 session 的焦点任务。
-- 任务检索索引的全文命中。
-- 任务关系。
-- 最近活跃任务。
-- 反馈和历史执行痕迹。
-- 候选集上的语义 rerank。
-
-隐式召回会排除当前任务，避免任务第一次执行时把自己召回成历史记忆。不确定记忆不会被盲目注入；飞书和无人值守 executor 流程不会因为等待记忆确认而卡住。
+该索引是确定性读模型，不是语义路由器。PlanningAgent 决定历史任务是否相关，调用 `search_tasks` 搜索，再通过 `get_task_context` 读取选中的记录。Runtime 不根据用户措辞推断任务连续性、相关历史、时间线意图或恢复/参考模式。
 
 ## 单 Task 并发调度模型
 
@@ -830,24 +820,23 @@ AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求�
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
-## 记忆和召回审查
+## 显式记忆
 
-AnyFusion 把确认过的偏好、观察、任务记忆卡片、召回事件和学习候选保存在 SQLite 中。
+AnyFusion 把显式确认的偏好、任务记忆卡片和学习候选保存在 SQLite 中。
 
-记忆不会被盲目注入。明确适用的记忆会自动应用并留下审计记录；不确定记忆默认跳过，而不是要求用户现场确认。这样飞书和无人值守 executor 流程可以持续推进。
+自然语言请求不会通过代码侧启发式创建、提升或应用记忆。用户只通过显式 `/memory` 命令管理偏好。PlanningAgent 会收到有界的全局已确认偏好，并可在 Subtask `contextRef` 中精确引用某条确认偏好。
 
 命令：
 
 ```bash
 /memory
-/memory candidates
-/memory confirm obs_123 --scope contact --subject Alex
 /memory add Alex prefers formal updates with legal copied
 /memory search formal
 /memory edit <pref_id> --scope project Use tables for outputs
 /memory delete <pref_id>
 /memory stats
-/memory review-policy
+/memory vault export
+/memory vault status
 ```
 
 ## 学习循环
@@ -921,13 +910,13 @@ src/
 ├── intent/         # 内联资源归一化和非路由意图/材料辅助函数
 ├── kernel/         # 纯 ControlKernel，负责 PlanningAgentPlan 与 Runtime event 授权
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
-├── memory/         # 记忆捕获、召回、召回审查、偏好、上下文 bundle 和 vault 导出
+├── memory/         # 显式偏好、确定性会话上下文和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
 ├── planning/       # PlanningAgent 接口（CodexPlanningAgent）、context builder、plan schema/词汇、校验
 ├── resource/       # Partition identity、冲突、permission profile 与 bounded grant 纯规则
 ├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影
 ├── storage/        # SQLite migrations 和 repositories
-├── task/           # 任务状态机、runtime、调度、恢复规划、排序、语义/embedding 检索
+├── task/           # 任务状态机和 runtime
 ├── tui/            # Ink 终端 UI
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```

@@ -1,7 +1,6 @@
 import type { TaskStatus } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { LearningCandidateRepo } from '../storage/learning-candidate-repo.js';
-import { ObservationRepo } from '../storage/observation-repo.js';
 import type { CommandHandler, CommandResult as LegacyCommandResult } from './router.js';
 import {
   CommandCatalog,
@@ -393,30 +392,18 @@ function executorNodes(): CommandNode[] {
 
 function memoryNodes(): CommandNode[] {
   const memoryValues = (context: CommandContext) => context.memoryEngine.list().map(item => ({ id: item.id, label: `#${item.id}`, description: item.content }));
-  const observationValues = (context: CommandContext) => new ObservationRepo(context.db).findAll().map(item => ({ id: item.id, label: `#${item.id}`, description: item.pattern }));
   const memoryRef = () => dynamicReference('memoryId', '记忆', memoryValues);
-  const observationRef = () => dynamicReference('observationId', '观察候选', observationValues);
   const scopeOption = option('--scope', '记忆作用域', enumArg('scope', '作用域', ['global', 'project', 'contact', 'task-local']));
   const typeOption = option('--type', '记忆类型', text('type', '记忆类型'));
   const subjectOption = option('--subject', '记忆主题', text('subject', '主题'));
   const editOptions = [scopeOption, typeOption, subjectOption];
-  const simple = (name: string, summary: string) => action({
-    name, summary, effect: summary, usage: `/memory ${name}`,
-    run: (_, context) => invokeLegacy(memoryCommand, [name], context),
-  });
-
   return [
     action({ name: 'list', summary: '列出已确认记忆', effect: '读取并展示已确认偏好。', usage: '/memory list', run: (_, c) => invokeLegacy(memoryCommand, [], c) }),
     action({ name: 'search', summary: '搜索记忆', effect: '按关键词搜索偏好记忆。', usage: '/memory search <query...>', arguments: [rest('query', '搜索内容')], run: (a, c) => invokeLegacy(memoryCommand, ['search', stringArg(a, 'query')], c) }),
     action({ name: 'add', summary: '添加记忆', effect: '新增手工确认的偏好记忆。', usage: '/memory add [options] <content...>', arguments: [rest('content', '记忆内容')], options: editOptions, run: (a, c) => invokeLegacy(memoryCommand, ['add', ...optionTokens(a, ['scope', 'type', 'subject']), stringArg(a, 'content')], c) }),
     action({ name: 'edit', summary: '编辑记忆', effect: '修改记忆的内容或元数据。', usage: '/memory edit <memoryId> [options] [content...]', arguments: [memoryRef(), rest('content', '新内容', true)], options: editOptions, run: (a, c) => invokeLegacy(memoryCommand, ['edit', stringArg(a, 'memoryId'), ...optionTokens(a, ['scope', 'type', 'subject']), stringArg(a, 'content')].filter(Boolean), c) }),
     action({ name: 'delete', summary: '删除记忆', effect: '删除指定记忆。', usage: '/memory delete <memoryId>', arguments: [memoryRef()], run: (a, c) => invokeLegacy(memoryCommand, ['delete', stringArg(a, 'memoryId')], c) }),
-    simple('candidates', '列出记忆候选'),
-    action({ name: 'confirm', summary: '确认记忆候选', effect: '将观察候选确认为长期记忆。', usage: '/memory confirm <observationId> [options]', arguments: [observationRef()], options: [scopeOption, subjectOption], run: (a, c) => invokeLegacy(memoryCommand, ['confirm', stringArg(a, 'observationId'), ...optionTokens(a, ['scope', 'subject'])], c) }),
-    action({ name: 'reject', summary: '拒绝记忆候选', effect: '拒绝指定观察候选。', usage: '/memory reject <observationId>', arguments: [observationRef()], run: (a, c) => invokeLegacy(memoryCommand, ['reject', stringArg(a, 'observationId')], c) }),
-    ...['stats', 'recent', 'auto-captured', 'timeline'].map(name => simple(name, ({ stats: '查看记忆统计', recent: '查看最近记忆事件', 'auto-captured': '查看自动捕获记忆', timeline: '查看记忆时间线' } as Record<string, string>)[name]!)),
-    action({ name: 'applied', summary: '查看已应用记忆', effect: '查看全局或指定任务使用过的记忆。', usage: '/memory applied [<taskId>]', arguments: [{ ...taskReference('要过滤的任务'), optional: true }], run: (a, c) => invokeLegacy(memoryCommand, ['applied', optionalStringArg(a, 'taskId') ?? ''].filter(Boolean), c) }),
-    ...['undo', 'explain', 'evidence', 'relations'].map(name => action({ name, summary: `${name} 记忆`, effect: `对指定记忆执行 ${name}。`, usage: `/memory ${name} <memoryId>`, arguments: [memoryRef()], run: (a, c) => invokeLegacy(memoryCommand, [name, stringArg(a, 'memoryId')], c) })),
+    action({ name: 'stats', summary: '查看记忆统计', effect: '统计已确认的偏好记忆。', usage: '/memory stats', run: (_, c) => invokeLegacy(memoryCommand, ['stats'], c) }),
     {
       kind: 'group', name: 'vault', summary: '记忆 Vault', children: ['export', 'status'].map(name => action({
         name, summary: `${name === 'export' ? '导出' : '查看'} Vault`, effect: `${name === 'export' ? '导出' : '统计'}记忆 Vault 文件。`,

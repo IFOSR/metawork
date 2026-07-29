@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -49,7 +48,7 @@ function createSession(config: Config, notifier?: NotificationService) {
   const db = createTestDb();
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-  const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+  const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
   const orchestration = new OrchestrationEngine(taskEngine);
   const contextRecaller = new ContextRecaller(db);
   const executor: ExecutorAdapter = {
@@ -165,7 +164,6 @@ describe('Round 2 guidance acceptance', () => {
 
   it.skip('notifies when a system-resumed blocked task completes in the background', async () => {
     const notifier: NotificationService = {
-      notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
     const { session, taskEngine, taskRepo, db } = createSession(createConfig({

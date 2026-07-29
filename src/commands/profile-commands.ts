@@ -1,4 +1,3 @@
-import { MemoryAuditEventRepo } from '../storage/memory-audit-event-repo.js';
 import type { CommandHandler } from './router.js';
 
 export const profileCommand: CommandHandler = {
@@ -10,13 +9,11 @@ export const profileCommand: CommandHandler = {
     const preferences = context.memoryEngine.list({ status: 'confirmed' });
 
     if (action === 'user') {
-      const events = new MemoryAuditEventRepo(context.db).findRecent(1000);
       return {
         type: 'text',
         content: [
           '用户工作画像',
           `长期记忆 ${preferences.length}`,
-          `自动化事件 ${events.length}`,
           ...preferences.slice(0, 10).map(preference => `  - [${preference.scope}] ${preference.content}`),
         ].join('\n'),
       };

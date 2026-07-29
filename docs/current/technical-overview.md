@@ -12,11 +12,11 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Restores interrupted work with resume context instead of restarting from scratch.
 - Enforces one active top-level task through a durable serial `KernelWorkflow`, while Phase 6 authorizes deterministic batches and supervises up to four isolated child attempts concurrently.
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
-- Searches historical tasks with a local SQLite FTS index and hybrid retrieval.
+- Exposes historical tasks through a local SQLite FTS index that the PlanningAgent queries explicitly.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
 - Validates every Subtask through Completion Protocol v2, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
-- Recalls only clearly applicable preferences and task memory; uncertain recall is skipped by default so Feishu and unattended executors never wait for confirmation.
+- Supplies bounded confirmed global preferences and recent conversation history to the PlanningAgent; Runtime does not perform implicit semantic recall.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
@@ -64,7 +64,7 @@ flowchart LR
 
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
-The Codex `PlanningAgent` uses a dedicated runner rather than executor-oriented `LlmBridge` parameters. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
 ### Direct Reply Path
 
@@ -134,7 +134,7 @@ The conversation/task boundary matters:
 
 The current direct-reply path is explicit: AnyFusion assembles bounded long-term memory and recent conversation history before planning, the PlanningAgent produces `response.directReply`, and runtime delivers that answer without claiming an executor work unit. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
 
-The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: task search indexing, hybrid task retrieval, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, verification, and the Agentic Loop core are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
+The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
 Important runtime boundary: the Agentic Loop is implemented as a core architecture layer and tested directly. The current interactive/script session path uses the session runtime unless a feature path explicitly calls the strategy/orchestration loop.
 
@@ -743,7 +743,7 @@ Useful commands:
 
 The main TUI obtains completion state from the same `CommandCatalog` used by `/help`, validation, and execution. `Up`/`Down` selects a candidate, `Tab` completes only the token at the cursor, and `Enter` submits only a complete valid command. Directory nodes, missing arguments, and invalid dynamic references remain in the editor. Flat legacy entrypoints and aliases are not registered.
 
-## Task Search And Hybrid Retrieval
+## Task Search
 
 AnyFusion keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
 
@@ -754,17 +754,7 @@ Commands:
 /task index search contract risk matrix
 ```
 
-The hybrid retriever combines several signals:
-
-- Explicit task references from the current request.
-- Focused task context from the current session.
-- Full-text matches from the task search index.
-- Related tasks through task relations.
-- Recent task activity.
-- Feedback and prior execution traces.
-- Semantic reranking across the candidate set.
-
-Implicit recall excludes the current task, so a task does not accidentally recall itself during first execution. Uncertain memory is not injected blindly; unattended Gateway and Feishu flows keep moving instead of blocking on confirmation prompts.
+The index is a deterministic read model, not a semantic router. The PlanningAgent decides when historical work is relevant, calls `search_tasks`, and reads selected records with `get_task_context`. Runtime code does not infer task continuity, related history, timeline intent, or resume/reference mode from user wording.
 
 ## Single-Task Concurrent Kernel Control Model
 
@@ -838,24 +828,23 @@ Skill tradeoffs:
 
 AnyFusion uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
 
-## Memory And Recall Review
+## Explicit Memory
 
-AnyFusion stores confirmed preferences, observations, task memory cards, recall events, and learning candidates in SQLite.
+AnyFusion stores explicitly confirmed preferences, task memory cards, and learning candidates in SQLite.
 
-Memory is never injected blindly. Clearly applicable memories are applied automatically with an audit trail; uncertain memories are skipped by default instead of asking for confirmation. Feishu and unattended executor flows therefore keep moving without interactive prompts.
+Natural-language requests never create, promote, or apply memory through a code-side heuristic. Users manage preferences through explicit `/memory` commands. Bounded confirmed global preferences are provided to the PlanningAgent, which may reference an exact confirmed preference in a Subtask `contextRef`.
 
 Commands:
 
 ```bash
 /memory
-/memory candidates
-/memory confirm obs_123 --scope contact --subject Alex
 /memory add Alex prefers formal updates with legal copied
 /memory search formal
 /memory edit <pref_id> --scope project Use tables for outputs
 /memory delete <pref_id>
 /memory stats
-/memory review-policy
+/memory vault export
+/memory vault status
 ```
 
 ## Learning Loop
@@ -929,12 +918,12 @@ src/
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
 ├── kernel/         # Pure ControlKernel contracts/decisions and synchronous control-loop seam
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
-├── memory/         # Memory capture, recall, recall review, preferences, context bundles, vault export
+├── memory/         # Explicit preferences, deterministic conversation context, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
 ├── planning/       # PlanningAgent interface (CodexPlanningAgent), context builder, plan schema/vocabulary, validation
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories
-├── task/           # Task domain state machine/runtime, ranking, semantic/embedding retrieval
+├── task/           # Task domain state machine and runtime
 ├── tui/            # Ink terminal UI
 └── utils/          # Config, paths, logger, IDs
 ```

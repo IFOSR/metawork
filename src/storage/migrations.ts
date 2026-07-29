@@ -44,16 +44,6 @@ CREATE TABLE preference_usage (
           FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
 
-CREATE TABLE observations (
-          id TEXT PRIMARY KEY,
-          pattern TEXT NOT NULL,
-          occurrence_count INTEGER DEFAULT 1,
-          first_seen_at TEXT NOT NULL,
-          last_seen_at TEXT NOT NULL,
-          source_tasks TEXT DEFAULT '[]',
-          promoted_to_preference_id TEXT
-        );
-
 CREATE TABLE interactions (
           id TEXT PRIMARY KEY,
           task_id TEXT,
@@ -169,18 +159,6 @@ CREATE TABLE skill_effect_summaries (
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(executor_name, skill_name, skill_version_key)
-      );
-
-CREATE TABLE memory_audit_events (
-        id TEXT PRIMARY KEY,
-        task_id TEXT,
-        memory_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        score REAL,
-        reason TEXT NOT NULL DEFAULT '',
-        judge_source TEXT NOT NULL DEFAULT 'rule',
-        evidence_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL
       );
 
 CREATE TABLE executor_route_events (
@@ -767,8 +745,6 @@ CREATE INDEX idx_preferences_scope ON preferences(scope);
 
 CREATE INDEX idx_preferences_status ON preferences(status);
 
-CREATE INDEX idx_observations_pattern ON observations(pattern);
-
 CREATE INDEX idx_interactions_session ON interactions(session_id, created_at);
 
 CREATE INDEX idx_interactions_task ON interactions(task_id, created_at);
@@ -813,15 +789,6 @@ CREATE INDEX idx_skill_effect_summaries_skill
 
 CREATE INDEX idx_skill_effect_summaries_executor
         ON skill_effect_summaries(executor_name, used_count, updated_at);
-
-CREATE INDEX idx_memory_audit_events_memory
-        ON memory_audit_events(memory_id, created_at);
-
-CREATE INDEX idx_memory_audit_events_task
-        ON memory_audit_events(task_id, created_at);
-
-CREATE INDEX idx_memory_audit_events_action
-        ON memory_audit_events(action, created_at);
 
 CREATE INDEX idx_executor_route_events_executor
         ON executor_route_events(selected_executor, created_at);

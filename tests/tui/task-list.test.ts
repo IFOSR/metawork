@@ -8,7 +8,6 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { tasksCommand } from '../../src/commands/task-commands.js';
 import type { CommandContext } from '../../src/commands/router.js';
 import type { Config } from '../../src/core/types.js';
@@ -51,7 +50,7 @@ describe('tasksCommand', () => {
     taskRepo = new TaskRepo(db);
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const executor: ExecutorAdapter = {
       name: 'codex-cli',
       execute: async () => ({ success: true, output: '', exitCode: 0, durationMs: 0 }),

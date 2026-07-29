@@ -5,7 +5,6 @@ import { CommandReadServices } from '../../src/commands/command-read-services.js
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -35,7 +34,7 @@ function createHarness() {
   const context = {
     db,
     taskEngine,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
     executor,
     activeExecutions: { abortTask: vi.fn() },

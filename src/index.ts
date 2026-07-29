@@ -4,7 +4,6 @@ import { mkdirSync, existsSync } from 'fs';
 import { createDatabase } from './storage/database.js';
 import { TaskRepo } from './storage/task-repo.js';
 import { PreferenceRepo } from './storage/preference-repo.js';
-import { ObservationRepo } from './storage/observation-repo.js';
 import { TaskSearchIndexRepo } from './storage/task-search-index-repo.js';
 import { TaskEngine } from './task/task-engine.js';
 import { MemoryEngine } from './memory/memory-engine.js';
@@ -103,11 +102,10 @@ async function main() {
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
   const taskRepo = new TaskRepo(db, taskSearchIndexRepo);
   const prefRepo = new PreferenceRepo(db);
-  const obsRepo = new ObservationRepo(db);
 
   // 5. 初始化引擎
   const taskEngine = new TaskEngine(taskRepo, snapshotDir);
-  const memoryEngine = new MemoryEngine(prefRepo, obsRepo);
+  const memoryEngine = new MemoryEngine(prefRepo);
   const orchestration = new OrchestrationEngine(taskEngine);
 
   // 7. 初始化执行器

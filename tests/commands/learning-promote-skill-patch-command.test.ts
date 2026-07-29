@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { learningCommand } from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
@@ -38,7 +37,7 @@ function insertPatchCandidate(repo: LearningCandidateRepo, overrides: Partial<Pa
 function commandContext(db: Database.Database, executor: Partial<ExecutorAdapter>) {
   return {
     db,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     executor: {
       name: 'mock-executor',
       execute: vi.fn(),

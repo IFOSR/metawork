@@ -66,14 +66,6 @@ export class MemoryContextService {
     };
   }
 
-  recallConversationContext(input: { sessionId: string; userInput: string; taskId?: string }): Promise<ConversationTurn[]> {
-    return this.deps.contextRecaller.recallAsync({
-      taskId: input.taskId ?? '',
-      sessionId: input.sessionId,
-      userInput: input.userInput,
-    });
-  }
-
   normalizeInlineResources(input: string, resources: string[], stripResource: (text: string) => string): InlineResourceNormalizationResult {
     return {
       normalizedGoal: stripResource(input) || input,
