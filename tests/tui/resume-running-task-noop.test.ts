@@ -10,10 +10,10 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
-import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import type { Config } from '../../src/core/types.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -71,8 +71,8 @@ async function waitForCondition(condition: () => boolean, timeoutMs = 2_000): Pr
 }
 
 function createDeferredResult() {
-  let resolve!: (value: ExecutorResult) => void;
-  const promise = new Promise<ExecutorResult>(res => {
+  let resolve!: (value: number) => void;
+  const promise = new Promise<number>(res => {
     resolve = res;
   });
   return { promise, resolve };
@@ -92,12 +92,7 @@ describe('App resume-running task noop', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const runningDeferred = createDeferredResult();
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementationOnce(() => runningDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ wait: runningDeferred.promise }));
 
     // Turn 1 creates the durable task; turn 2 references the now-running task and
     // asks to continue it. The running task id is only known after turn 1, so the
@@ -123,12 +118,11 @@ describe('App resume-running task noop', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_resume_running_noop',
         contextRecaller,
-        availableExecutorCommands: new Set(['codex']),
         planningAgent,
       }),
     );
@@ -146,21 +140,16 @@ describe('App resume-running task noop', () => {
     const createdTask = taskRepo.findByStatus('running')[0];
     expect(createdTask).toBeTruthy();
     const taskId = createdTask!.id;
-    await waitForCondition(() => executor.execute.mock.calls.length === 1);
+    await waitForCondition(() => attemptSandbox.create.mock.calls.length === 1);
 
     await typeAndSubmit('把之前挂起的任务继续完成');
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('ready')).toHaveLength(0);
     expect(taskRepo.findAll()).toHaveLength(1);
     expect(app.lastFrame()).toContain(`任务 #${taskId} 已在执行中，无需再次排队`);
 
-    runningDeferred.resolve({
-      success: true,
-      output: 'memory research done',
-      exitCode: 0,
-      durationMs: 500,
-    });
+    runningDeferred.resolve(0);
     await flushUpdates();
 
     app.unmount();

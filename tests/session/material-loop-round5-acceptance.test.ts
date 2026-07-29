@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -8,9 +8,9 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -48,17 +48,9 @@ describe('Round 5 material loop acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: 'Phoenix 周报结论：主线推进稳定，风险集中在联调和测试数据。',
-        exitCode: 0,
-        durationMs: 180,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'Phoenix 周报结论：主线推进稳定，风险集中在联调和测试数据。',
+    }));
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
@@ -68,7 +60,7 @@ describe('Round 5 material loop acceptance', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_round5_materials',

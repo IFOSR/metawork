@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
@@ -9,40 +9,22 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import { completionResponse } from '../support/completion-response.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 describe('Kernel durable retry control loop', () => {
-  it('drains a persisted retry wake into one native continuation and completion', async () => {
+  it('drains a persisted retry wake into one sandbox recovery-packet attempt and completion', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-retry');
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      supportsContinuation: true,
-      execute: vi.fn()
-        .mockImplementationOnce(async input => {
-          input.recovery?.onContinuationToken?.('codex-thread-1');
-          return {
-            success: false,
-            output: '',
-            error: 'network unavailable',
-            failure: { kind: 'network', scope: 'agent_class', code: 'network_failure', summary: 'network unavailable' },
-            exitCode: 1,
-            durationMs: 1,
-          };
-        })
-        .mockImplementationOnce(async input => ({
-          success: true,
-          output: completionResponse(input, 'continued successfully', []),
-          exitCode: 0,
-          durationMs: 1,
-        })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+      ? {
+          body: 'network unavailable',
+          exitCode: 1,
+          rawOutput: 'network is unreachable',
+        }
+      : { body: 'continued successfully' });
     const config: Config = {
       version: 1,
       executor: { command: 'codex', timeout: 60_000 },
@@ -60,14 +42,12 @@ describe('Kernel durable retry control loop', () => {
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      executorFactory: () => executor,
+      attemptSandbox,
       db,
       config,
       sessionId: 'session_retry',
       contextRecaller: new ContextRecaller(db),
       planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'continue after a transient network failure' })),
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false, showDashboard: false });
 
@@ -87,11 +67,11 @@ describe('Kernel durable retry control loop', () => {
 
     expect(handled).toBe(true);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
-    expect(executor.execute).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(executor.execute).mock.calls[1]?.[0].recovery).toMatchObject({
-      mode: 'native_session',
-      continuationToken: 'codex-thread-1',
-    });
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(2);
+    const retryPrompt = attemptSandbox.create.mock.calls[1]![0].args.at(-1);
+    expect(retryPrompt).toContain('Recovery mode: recovery_packet');
+    expect(retryPrompt).toContain('Recovery packet:');
+    expect(retryPrompt).toContain('执行器网络连接失败，请检查网络或代理配置');
     expect(db.prepare(`
       SELECT attempt_kind, source_attempt_id FROM executor_attempt_receipts
       WHERE task_id = ? ORDER BY completed_at, attempt_id

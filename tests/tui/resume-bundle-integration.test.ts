@@ -11,10 +11,9 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -101,24 +100,14 @@ describe('App persisted v4 resume integration', () => {
     });
     taskRepo.update(parkedTask.id, { lastInterruptionReason: '被任务 #task_high 抢占' });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '恢复完成',
-        exitCode: 0,
-        durationMs: 800,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '恢复完成' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_resume',
@@ -138,11 +127,12 @@ describe('App persisted v4 resume integration', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === parkedTask.id);
-      expect(executionCall?.[0].context.taskBackground.goal).toBe('完成分析摘要');
-      expect(JSON.stringify(executionCall?.[0].context)).not.toContain('报告 A 已完成');
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === parkedTask.id);
+      const prompt = executionCall?.[0].args.at(-1);
+      expect(prompt).toContain('Background goal: 完成分析摘要');
+      expect(prompt).not.toContain('报告 A 已完成');
     });
 
     app.unmount();

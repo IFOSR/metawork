@@ -11,9 +11,8 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -73,24 +72,16 @@ describe('App task result aggregation', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。'),
-        exitCode: 0,
-        durationMs: 500,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_task_result_aggregation',

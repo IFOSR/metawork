@@ -9,6 +9,7 @@ import { buildExecutorContextPrompt } from './prompt-builder.js';
 import type { AttemptSandboxRepositoryPort } from '../execution/repositories.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { AttemptModelGatewayServer } from '../execution/attempt-model-gateway.js';
+import { normalizeExecutorFailure } from './error-utils.js';
 
 const EXECUTOR_PROVIDER_ENV_KEYS = [
   'OPENAI_API_KEY',
@@ -171,7 +172,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       modelGateway = null;
       return exitCode === 0 && output
         ? { success: true, output, exitCode, durationMs: Date.now() - startedAt }
-        : failed(logs.trim() || `sandbox exited with code ${exitCode}`, 'sandbox_execution_failed', startedAt, exitCode);
+        : failedExecution(logs.trim() || `sandbox exited with code ${exitCode}`, startedAt, exitCode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       let cleanupError: string | null = null;
@@ -279,6 +280,18 @@ function failed(message: string, code: string, startedAt: number, exitCode = 1):
     output: '',
     error: message,
     failure: { kind: 'configuration', scope: 'agent_class', code, summary: message },
+    exitCode,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+function failedExecution(message: string, startedAt: number, exitCode: number): ExecutorResult {
+  const failure = normalizeExecutorFailure(message);
+  return {
+    success: false,
+    output: '',
+    error: failure.summary,
+    failure,
     exitCode,
     durationMs: Date.now() - startedAt,
   };

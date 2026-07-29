@@ -254,8 +254,12 @@ describe('ExecutionRuntime', () => {
     });
 
     expect(result.executorName).toBe('pi-agent');
-    expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('OPENAI_BASE_URL') });
-    expect(sandbox.create).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'success', error: null });
+    expect(sandbox.create).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt_runtime',
+      imageRef: 'metaclaw/test:latest',
+      resolvedImageId: 'sha256:test',
+    }));
   });
 
   it('fails closed when the sandbox adapter reports a failure', async () => {
@@ -296,13 +300,13 @@ describe('ExecutionRuntime', () => {
       onProgress: vi.fn(),
     });
 
-    // Both runs fail closed (no provider env) but still register/clear active tokens.
+    // Each run resolves its own adapter, then registers and clears its own abort token.
     const [first, second] = await Promise.all([
       runtime.run(input('exec_first', 'task_first')),
       runtime.run(input('exec_second', 'task_second')),
     ]);
-    expect(first.status).toBe('failed');
-    expect(second.status).toBe('failed');
+    expect(first.status).toBe('success');
+    expect(second.status).toBe('success');
     // Tokens were cleared after completion, so nothing remains to abort.
     expect(runtime.abortTask('task_first')).toBe(0);
     expect(runtime.abortTask('task_second')).toBe(0);

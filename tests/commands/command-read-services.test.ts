@@ -18,16 +18,10 @@ function createHarness() {
   runMigrations(db);
   new AgentClassService({ db }).seedDefaults();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
-  const executor = {
-    name: 'codex-cli',
-    execute: vi.fn(),
-    isAvailable: vi.fn(),
-    abort: vi.fn(),
-  };
   const runtimeInspector = {
     inspectExecutorRegistration: vi.fn(() => ({
       configured: true,
-      bindingSource: 'default' as const,
+      bindingSource: 'sandbox' as const,
       adapterName: 'codex-cli',
     })),
   };
@@ -36,7 +30,6 @@ function createHarness() {
     taskEngine,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
-    executor,
     activeExecutions: { abortTask: vi.fn() },
     readServices: new CommandReadServices(db, runtimeInspector),
     currentTaskId: null,
@@ -47,7 +40,7 @@ function createHarness() {
       ui: { language: 'zh-CN', dashboard_on_start: false },
     },
   } as any;
-  return { db, taskEngine, executor, runtimeInspector, context };
+  return { db, taskEngine, runtimeInspector, context };
 }
 
 describe('command fact queries', () => {
@@ -98,7 +91,7 @@ describe('command fact queries', () => {
   });
 
   it('shows static AgentClass facts and only active WorkUnits without probing the executor', async () => {
-    const { db, context, executor, runtimeInspector } = createHarness();
+    const { db, context, runtimeInspector } = createHarness();
     const workUnits = new WorkUnitRepo(db);
     const now = '2026-07-14T10:00:00.000Z';
     workUnits.upsert({
@@ -116,13 +109,10 @@ describe('command fact queries', () => {
 
     expect(result.content).toContain('Executor AgentClass：codex-cli');
     expect(result.content).toContain('配置状态: 已配置');
-    expect(result.content).toContain('runtime binding: default');
+    expect(result.content).toContain('runtime binding: sandbox');
     expect(result.content).toContain('wu-running');
     expect(result.content).not.toContain('wu-idle');
     expect(runtimeInspector.inspectExecutorRegistration).toHaveBeenCalledWith('codex-cli');
-    expect(executor.execute).not.toHaveBeenCalled();
-    expect(executor.isAvailable).not.toHaveBeenCalled();
-    expect(executor.abort).not.toHaveBeenCalled();
   });
 
   it('groups persisted planner, kernel, WorkUnit, and executor facts by task', async () => {

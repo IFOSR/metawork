@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -9,10 +9,9 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -33,24 +32,20 @@ function createSession(input: {
   db: Database.Database;
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
-  executor: ExecutorAdapter;
+  attemptSandbox: FakeAttemptSandbox;
   sessionId: string;
   planningAgent?: PlanningAgent;
-  executorFactory?: (name: string) => ExecutorAdapter | null;
-  availableExecutorCommands?: Set<string>;
 }) {
   return new MetaclawSession({
     taskEngine: input.taskEngine,
     memoryEngine: input.memoryEngine,
     orchestration: new OrchestrationEngine(input.taskEngine),
-    executor: input.executor,
+    attemptSandbox: input.attemptSandbox,
     db: input.db,
     config: createConfig(),
     sessionId: input.sessionId,
     contextRecaller: new ContextRecaller(input.db),
     planningAgent: input.planningAgent,
-    executorFactory: input.executorFactory,
-    availableExecutorCommands: input.availableExecutorCommands,
   });
 }
 
@@ -60,13 +55,8 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-wizard');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_agent_class_register_wizard' });
+    const attemptSandbox = new FakeAttemptSandbox();
+    const session = createSession({ db, taskEngine, memoryEngine, attemptSandbox, sessionId: 'sess_agent_class_register_wizard' });
 
     session.initialize();
     await session.submit('/executor register wizard');
@@ -117,13 +107,8 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-oneline');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const session = createSession({ db, taskEngine, memoryEngine, executor, sessionId: 'sess_agent_class_register_oneline' });
+    const attemptSandbox = new FakeAttemptSandbox();
+    const session = createSession({ db, taskEngine, memoryEngine, attemptSandbox, sessionId: 'sess_agent_class_register_oneline' });
 
     session.initialize();
     await session.submit(`/executor register research-bot --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} --permission-profile restricted-custom --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation`);
@@ -142,22 +127,12 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-planner-exec');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'code task done'),
-        exitCode: 0,
-        durationMs: 50,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'code task done' }));
     const session = createSession({
       db,
       taskEngine,
       memoryEngine,
-      executor,
+      attemptSandbox,
       sessionId: 'sess_planner_exec',
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
@@ -178,7 +153,7 @@ describe('planner-first executor command acceptance', () => {
 
     const workUnitEvents = db.prepare('SELECT event_type FROM work_unit_events ORDER BY created_at ASC').all() as Array<{ event_type: string }>;
     expect(workUnitEvents.map(row => row.event_type)).toEqual(expect.arrayContaining(['claimed', 'running', 'released']));
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
   });
 
   it('provisions the planner-selected executor class on demand without choosing peers', async () => {
@@ -186,34 +161,16 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-fixed-executor');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const defaultExecutor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'default executor completed research'),
-        exitCode: 0,
-        durationMs: 50,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const piExecutor: ExecutorAdapter = {
-      name: 'pi-agent',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'default executor completed research' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration: new OrchestrationEngine(taskEngine),
-      executor: defaultExecutor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_fixed_executor',
       contextRecaller: new ContextRecaller(db),
-      executorFactory: name => name === 'pi-agent' ? piExecutor : null,
-      availableExecutorCommands: new Set(['codex', 'pi']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli' }),
       ),
@@ -222,8 +179,8 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit('请调研这个方案并进行自动化分析，输出报告', { awaitAsyncWork: true });
 
-    expect(defaultExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(piExecutor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('codex');
     expect(db.prepare(`
       SELECT agent_class_name, state FROM work_units
       WHERE agent_class_kind = 'executor'
@@ -239,29 +196,16 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-actual-executor-output');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const codexExecutor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({ success: true, output: 'fallback completed', exitCode: 0, durationMs: 50 }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const unavailablePi: ExecutorAdapter = {
-      name: 'pi-agent',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(false),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'fallback completed' }));
     const planned = workGraphPlan({ goal: '执行带受控路由的任务' });
 
     const session = createSession({
       db,
       taskEngine,
       memoryEngine,
-      executor: codexExecutor,
+      attemptSandbox,
       sessionId: 'sess_actual_executor_output',
       planningAgent: stubPlanningAgent(planned),
-      executorFactory: name => name === 'pi-agent' ? unavailablePi : null,
-      availableExecutorCommands: new Set(['codex', 'pi']),
     });
     session.initialize();
     await session.submit('执行带候选回退的任务', { awaitAsyncWork: true });
@@ -269,8 +213,8 @@ describe('planner-first executor command acceptance', () => {
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
     expect(output).not.toContain('【Executor: pi-agent｜派发准备】');
-    expect(codexExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(unavailablePi.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0]![0].command).toBe('codex');
   });
 
   it('blocks failed executor subtasks for planner recovery instead of platform fallback', async () => {
@@ -278,23 +222,15 @@ describe('planner-first executor command acceptance', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-no-platform-fallback');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: false,
-        output: '',
-        error: 'executor idle timeout',
-        exitCode: 1,
-        durationMs: 900_000,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'executor returned an unclassified failure',
+      exitCode: 1,
+    }));
     const session = createSession({
       db,
       taskEngine,
       memoryEngine,
-      executor,
+      attemptSandbox,
       sessionId: 'sess_no_platform_fallback',
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请实现一个 TypeScript 单元测试并修复代码', capabilityClass: 'code_edit' }),
@@ -306,7 +242,7 @@ describe('planner-first executor command acceptance', () => {
 
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('Execution blocked: unknown requires explicit recovery');
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });

@@ -11,9 +11,8 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -99,24 +98,14 @@ describe('App unblock scheduling', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复处理',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_unblock',
@@ -134,10 +123,10 @@ describe('App unblock scheduling', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === blockedTask.id);
-      expect(executionCall?.[0].context.currentSubtask.id).toContain(blockedTask.id);
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === blockedTask.id);
+      expect(executionCall?.[0].subtaskId).toContain(blockedTask.id);
     });
 
     app.unmount();
@@ -163,24 +152,14 @@ describe('App unblock scheduling', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复处理',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_unblock_resources',
@@ -197,18 +176,18 @@ describe('App unblock scheduling', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    let executionContext: Parameters<ExecutorAdapter['execute']>[0]['context'] | null = null;
+    let executionPrompt: string | null = null;
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === blockedTask.id);
-      expect(executionCall?.[0].context).toBeTruthy();
-      executionContext = executionCall![0].context;
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === blockedTask.id);
+      expect(executionCall?.[0].args.at(-1)).toBeTruthy();
+      executionPrompt = executionCall![0].args.at(-1)!;
     });
-    if (!executionContext) {
-      throw new Error('expected a task execution call with a SubtaskExecutionContext');
+    if (!executionPrompt) {
+      throw new Error('expected a task execution call with a rendered SubtaskExecutionContext');
     }
-    expect(JSON.stringify(executionContext.selectedEvidence)).not.toContain('/tmp/evidence-v3.pdf');
+    expect(executionPrompt).not.toContain('/tmp/evidence-v3.pdf');
     expect(taskEngine['taskRepo'].findById(blockedTask.id)?.resources).toContain('/tmp/evidence-v3.pdf');
 
     app.unmount();

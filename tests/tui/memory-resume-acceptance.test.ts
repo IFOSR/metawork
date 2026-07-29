@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -101,34 +101,31 @@ describe('Round 1 memory resume acceptance', () => {
     const resumedDeferred = createDeferredResult();
 
     let firstExecuteResolved = false;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockImplementationOnce(() => firstDeferred.promise)
-        .mockImplementationOnce(() => urgentDeferred.promise)
-        .mockImplementationOnce(() => resumedDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn().mockImplementation(() => {
-        if (!firstExecuteResolved) {
-          firstExecuteResolved = true;
-          firstDeferred.resolve({
-            success: false,
-            output: '',
-            error: 'execution interrupted',
-            exitCode: 1,
-            durationMs: 100,
-            interrupted: true,
-          });
-        }
-      }),
-    };
+    const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred];
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['首次执行', '会议纪要已总结', '季度复盘已恢复完成'][attemptIndex],
+      wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
+    }));
+    attemptSandbox.stop.mockImplementation(async () => {
+      if (!firstExecuteResolved) {
+        firstExecuteResolved = true;
+        firstDeferred.resolve({
+          success: false,
+          output: '',
+          error: 'execution interrupted',
+          exitCode: 1,
+          durationMs: 100,
+          interrupted: true,
+        });
+      }
+    });
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_memory_resume_acceptance',
@@ -172,16 +169,14 @@ describe('Round 1 memory resume acceptance', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalledTimes(3);
+      expect(attemptSandbox.create).toHaveBeenCalledTimes(3);
     });
 
-    const resumedInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0];
-    const resolvedPreferences = resumedInput.executionContextBundle.memoryContext.resolvedPreferences;
-
-    expect(resumedInput.executionContextBundle.mode).toBe('resume-parked');
-    expect(resolvedPreferences).toHaveLength(1);
-    expect(resolvedPreferences[0].scope).toBe('task-local');
-    expect(resolvedPreferences[0].reason).toBe('命中当前任务局部偏好');
+    const resumedInput = attemptSandbox.create.mock.calls[2][0];
+    const resumedPrompt = resumedInput.args.join(' ');
+    expect(resumedInput.taskId).toBe(primaryTask.id);
+    expect(resumedPrompt).toContain('当前任务固定使用表格结构并保留风险栏目');
+    expect(resumedPrompt).not.toContain('输出尽量短，不强制表格');
 
     resumedDeferred.resolve({
       success: true,

@@ -72,7 +72,7 @@ describe('Round 4 task view acceptance', () => {
     const completedTask = taskRepo.findByStatus('done')[0];
     expect(completedTask).toBeDefined();
 
-    const detail = await createDefaultCommandCatalog().execute(`/task ${completedTask.id}`, {
+    const detail = await createDefaultCommandCatalog().execute(`/task show ${completedTask.id}`, {
       taskEngine,
       memoryEngine,
       orchestration,

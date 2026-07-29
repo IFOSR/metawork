@@ -5,10 +5,6 @@ import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { getBuiltinExecutorAgentClasses } from './builtin-executor-catalog.js';
 
-export interface AgentClassSeedInput {
-  availableCommands?: Set<string>;
-}
-
 function plannerClass(): AgentClass {
   return {
     name: 'planner',

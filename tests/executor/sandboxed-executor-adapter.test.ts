@@ -52,6 +52,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     const envFile = join(directory, 'executor-pi.env');
     writeFileSync(envFile, 'OPENAI_API_KEY=unpaired-provider-secret\n');
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
+    vi.stubEnv('OPENAI_BASE_URL', '');
     const { sandbox, create } = sandboxPort();
     const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
 

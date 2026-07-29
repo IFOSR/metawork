@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
@@ -10,10 +10,9 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -88,17 +87,7 @@ describe('scripted session', () => {
       '2026-04-20T10:00:00.000Z',
     );
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复处理',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
     const result = await runScriptedSession({
       inputs: [
         `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
@@ -107,14 +96,14 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted',
       contextRecaller,
     });
 
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已提交恢复请求，并附带资源 /tmp/evidence-v3.pdf`);
     expect(result.output.join('\n')).toContain('work graph is missing; replanning is required');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('parked');
@@ -128,17 +117,9 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
-        exitCode: 0,
-        durationMs: 200,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
+    }));
     const result = await runScriptedSession({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
@@ -147,7 +128,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_detail',
@@ -179,17 +160,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已发送给客户',
-        exitCode: 0,
-        durationMs: 200,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已发送给客户' }));
     const result = await runScriptedSession({
       inputs: [
         '直接把邮件发给客户',
@@ -197,7 +168,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_risky_gate',
@@ -212,7 +183,7 @@ describe('scripted session', () => {
       ),
     });
 
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain('该操作存在较高风险，请明确确认是否继续执行。');
     expect(result.output.join('\n')).not.toContain('risk confirmation required');
   });
@@ -224,23 +195,16 @@ describe('scripted session', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async (input) => {
-        const artifactDir = input.context.workspaceContext.targetPaths[0];
+    const attemptSandbox = new FakeAttemptSandbox(input => {
+        const artifactDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
         const artifactPath = resolve(artifactDir!, 'artifact-note.md');
         mkdirSync(artifactDir!, { recursive: true });
         writeFileSync(artifactPath, '# Artifact\nsaved by test\n', 'utf-8');
         return {
-          success: true,
-          output: completionResponse(input, `已保存结果到 ${artifactPath}`, [artifactPath]),
-          exitCode: 0,
-          durationMs: 200,
+          body: `已保存结果到 ${artifactPath}`,
+          artifacts: [artifactPath],
         };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+      });
     await runScriptedSession({
       inputs: [
         '写一段测试内容，保存成 markdown 文件',
@@ -248,7 +212,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_artifact',
@@ -272,27 +236,16 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async (input) => {
-        const targetDir = input.context.workspaceContext.targetPaths[0];
+    const attemptSandbox = new FakeAttemptSandbox(input => {
+        const targetDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
         const artifactPath = resolve(targetDir!, 'landing-page.html');
         mkdirSync(targetDir!, { recursive: true });
         writeFileSync(artifactPath, '<!DOCTYPE html><html><body><h1>报名页</h1></body></html>', 'utf-8');
         return {
-          success: true,
-          output: completionResponse(
-            input,
-            `已生成 HTML 文件：${artifactPath}\n<!DOCTYPE html><html><body><h1>报名页</h1></body></html>`,
-            [artifactPath],
-          ),
-          exitCode: 0,
-          durationMs: 200,
+          body: `已生成 HTML 文件：${artifactPath}\n<!DOCTYPE html><html><body><h1>报名页</h1></body></html>`,
+          artifacts: [artifactPath],
         };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+      });
     const result = await runScriptedSession({
       inputs: [
         '生成一个报名落地页 html 文件',
@@ -300,7 +253,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_html_artifact',
@@ -325,17 +278,9 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
-        exitCode: 0,
-        durationMs: 200,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
+    }));
     const result = await runScriptedSession({
       inputs: [
         '请产出飞书云文档和在线预览',
@@ -343,7 +288,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_fallback',
@@ -367,11 +312,8 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async () => ({
-        success: true,
-        output: [
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      rawOutput: [
           '⏱ Timeout — denying command',
           '',
           '磊哥，我已开始调研并确认“pi Agent”大概率指的是 earendil-works/pi。',
@@ -384,12 +326,7 @@ describe('scripted session', () => {
           '',
           '需要你允许后，我再继续完成完整调研报告并写入目标目录。',
         ].join('\n'),
-        exitCode: 0,
-        durationMs: 200,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    }));
     const result = await runScriptedSession({
       inputs: [
         '请调研 pi Agent，产出飞书云文档和在线预览',
@@ -397,12 +334,11 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_undeliverable',
       contextRecaller,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览' }),
       ),

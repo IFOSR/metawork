@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -7,9 +7,9 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -44,17 +44,12 @@ describe('Learning candidate session review UX', () => {
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-os-tests');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_learning_review',
@@ -85,6 +80,6 @@ describe('Learning candidate session review UX', () => {
     expect(snapshot).toContain('复用飞书回复截断调试流程');
     expect(snapshot).toContain('已批准学习候选 #lc_session_1');
     expect(repo.findById('lc_session_1')?.status).toBe('approved');
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 });

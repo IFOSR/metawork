@@ -140,15 +140,14 @@ Important runtime boundary: the Agentic Loop is implemented as a core architectu
 
 ## Current Executors
 
-AnyFusion supports these executor adapters:
+AnyFusion ships two canonical sandboxed Executor AgentClasses:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
 | Codex CLI | `codex` | Repository edits, tests, deterministic implementation, code review with patches | Install and authenticate the OpenAI Codex CLI |
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows | Install `@earendil-works/pi-coding-agent` and authenticate Pi |
-| Hermes Agent | `hermes` | Research tasks, multi-tool orchestration, memory/gateway/assistant workflows | Install and authenticate Hermes |
 
-The default runtime command is `codex`, represented by the static `codex-cli` AgentClass. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims an existing healthy idle instance or creates a `starting` instance and probes adapter availability; failed probes fall through the plan's ordered AgentClass candidates, and exhaustion blocks the task. Pi is the canonical current-web-research class. A configured non-canonical default that has not been registered is materialized as an unclassified AgentClass with no routing capabilities; an existing non-canonical class is preserved.
+`codex-cli` and `pi-agent` are immutable canonical AgentClasses with verified image and permission-profile bindings. No executor WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass only through `SandboxedExecutorAdapter`; there is no host-process fallback or configured default executor.
 
 ## Prerequisites
 
@@ -173,8 +172,7 @@ sudo apt-get install -y build-essential python3 make g++
 
 Executor prerequisites:
 
-- Install and log in to OpenAI Codex CLI if you want the default `codex-cli` executor.
-- Install and log in to Pi Agent or Hermes Agent if you want research-style work routed away from the default executor when those profiles are available.
+- Build or pull the canonical Codex and Pi executor images used by the configured AgentClasses.
 
 Feishu prerequisites, only if you use Feishu Gateway integration:
 
@@ -421,16 +419,7 @@ which codex
 codex --help
 ```
 
-Use Codex as the default executor:
-
-```yaml
-executor:
-  command: codex
-  timeout: 300
-  max_duration: 3600
-```
-
-`timeout` is a continuous no-output watchdog, not a fixed wall-clock runtime limit. AnyFusion resets it whenever the executor writes stdout or stderr, so a live executor can keep running as long as it continues to show activity. `max_duration` is kept for backward-compatible configuration files and is not used to kill active executor processes.
+Codex attempts run inside the canonical `metaclaw-executor-codex:phase5` image through `SandboxedExecutorAdapter`.
 
 ### Pi Agent
 
@@ -448,41 +437,7 @@ AnyFusion calls it as:
 pi -p "<prompt>"
 ```
 
-Pi research workflows often run longer than CLI coding tasks. AnyFusion automatically gives `pi-agent` at least `timeout: 900` seconds of continuous no-output idle time, even if the global executor config is shorter. Active Pi processes are not stopped by a hard total-duration limit.
-
-Use Pi as the default executor if desired:
-
-```yaml
-executor:
-  command: pi
-```
-
-### Hermes Agent
-
-Install and authenticate Hermes, then verify:
-
-```bash
-which hermes
-hermes --help
-```
-
-AnyFusion calls it as:
-
-```bash
-hermes --oneshot "<prompt>" --yolo --accept-hooks
-```
-
-`--oneshot` runs Hermes in script/headless mode, `--yolo` bypasses dangerous-command approval prompts, and `--accept-hooks` auto-accepts unseen hooks. Current research dispatch does not race Pi Agent and Hermes Agent. The planner ranks available executor agent classes for each subtask, then the platform claims an idle work unit from that candidate set. If no idle or available work unit can claim the subtask, the task is blocked for recovery; automatic platform fallback is intentionally deferred to planner replanning.
-
-### Retired Legacy Adapters
-
-The `deepseek-tui`, `claude-code`, and `openclaw` adapters are retained for compatibility and explicit local configuration, but they are not seeded into the default executor registry unless explicitly configured as the default executor.
-
-```bash
-executor:
-  command: hermes        # legacy/manual
-  # command: deepseek-tui # legacy/manual
-```
+Pi attempts run inside the canonical `metaclaw-executor-pi:phase5` image through the same sandbox seam.
 
 ## Run
 
@@ -663,7 +618,7 @@ Access control is handled by the Gateway:
 - Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `anyfusion gateway pairing`.
 - Group chats default to `group_policy: open` with `require_mention: true`.
 - `/sethome` sent in a Feishu chat records that chat as `gateway.platforms.feishu.home_channel`.
-- Legacy `integrations.feishu` settings are still read as a compatibility source, but new deployments should use `gateway.platforms.feishu`.
+- Feishu configuration is read only from `gateway.platforms.feishu`.
 
 Useful Feishu Gateway commands:
 
@@ -795,7 +750,7 @@ Executors and Skills are different layers of the ecosystem.
 
 An Executor is who does the work. A Skill is the method, knowledge, or operating guide the worker uses while doing it.
 
-Executors are agent runtimes such as Codex CLI, Pi Agent, Hermes Agent, DeepSeek TUI, or a domain-specific local agent. An executor determines the model, toolchain, permissions, runtime environment, context window, file access, non-interactive command, cost profile, and reliability boundary.
+Executors are sandboxed AgentClass runtimes such as the canonical Codex CLI and Pi Agent images. An executor determines the model, toolchain, permissions, runtime environment, context window, file access, non-interactive command, cost profile, and reliability boundary.
 
 Skills are lighter capability packages. They describe how to perform a specific class of work: how to analyze futures contracts, how to review code, how to run a research workflow, or what output format to use. A Skill can improve an executor's behavior, but it does not automatically change the executor's runtime, permissions, tools, or installation state.
 
@@ -928,7 +883,7 @@ src/
 └── utils/          # Config, paths, logger, IDs
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow: it keeps shared primitives and the generic memory/ranking `llm-bridge`; the obsolete `CapabilityClass` vocabulary has been removed in favor of controlled Routing Capability IDs. Keyword RuleHints, task-routing intent guesses, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow and keeps shared primitives plus the shared `KernelFailure` fact. Keyword RuleHints, task-routing intent guesses, the generic memory/ranking LLM bridge, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
 
 ## License
 

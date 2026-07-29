@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -8,11 +8,9 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
-import { DockerCliAttemptSandboxAdapter } from '../../src/execution/docker-cli-attempt-sandbox-adapter.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
@@ -66,43 +64,27 @@ describe('session startup running-task reconciliation', () => {
       summary: '已完成一半',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '自动恢复成功',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const dockerAvailable = vi.spyOn(
-      DockerCliAttemptSandboxAdapter.prototype,
-      'listManaged',
-    ).mockRejectedValue(new Error('Docker must not be consulted without attempt ownership'));
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '自动恢复成功' }));
+    attemptSandbox.listManaged.mockRejectedValue(
+      new Error('sandbox must not be consulted without attempt ownership'),
+    );
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_startup_reconcile',
       contextRecaller,
-      executorFactory: () => executor,
     });
 
-    try {
-      session.initialize();
-      await session.waitForAsyncWork();
-    } finally {
-      dockerAvailable.mockRestore();
-    }
+    session.initialize();
+    await session.waitForAsyncWork();
     const snapshot = session.getSnapshot();
 
-    expect(dockerAvailable).not.toHaveBeenCalled();
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.listManaged).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
     expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
@@ -137,36 +119,23 @@ describe('session startup running-task reconciliation', () => {
       createdAt: '2026-07-28T00:00:00.000Z',
       updatedAt: '2026-07-28T00:00:00.000Z',
     });
-    const dockerFailure = vi.spyOn(
-      DockerCliAttemptSandboxAdapter.prototype,
-      'listManaged',
-    ).mockRejectedValue(new Error('Docker daemon unavailable'));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox();
+    attemptSandbox.listManaged.mockRejectedValue(new Error('Docker daemon unavailable'));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_recovery_blocked',
       contextRecaller: new ContextRecaller(db),
-      executorFactory: () => executor,
     });
 
-    try {
-      session.initialize();
-      await session.waitForAsyncWork();
-    } finally {
-      dockerFailure.mockRestore();
-    }
+    session.initialize();
+    await session.waitForAsyncWork();
 
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(workUnits.findById('executor-recovery-blocked')).toMatchObject({
       state: 'running',
       claimedTaskId: runningTask.id,
@@ -260,34 +229,20 @@ describe('session startup running-task reconciliation', () => {
         SELECT RAISE(ABORT, 'injected terminal seal failure');
       END
     `);
-    const dockerAvailable = vi.spyOn(
-      DockerCliAttemptSandboxAdapter.prototype,
-      'listManaged',
-    ).mockResolvedValue([]);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_terminal_seal_blocked',
       contextRecaller: new ContextRecaller(db),
-      executorFactory: () => executor,
     });
 
-    try {
-      session.initialize();
-      await expect(session.waitForAsyncWork()).resolves.toBeUndefined();
-    } finally {
-      dockerAvailable.mockRestore();
-    }
+    session.initialize();
+    await expect(session.waitForAsyncWork()).resolves.toBeUndefined();
 
     expect(workUnits.findById(workUnitId)).toMatchObject({
       state: 'running',

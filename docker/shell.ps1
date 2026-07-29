@@ -58,7 +58,10 @@ $plannerEnvContainerPath = '/run/metaclaw/env/planner-codex.env'
 $codexExecutorEnvContainerPath = '/run/metaclaw/env/executor-codex.env'
 $piExecutorEnvContainerPath = '/run/metaclaw/env/executor-pi.env'
 $workspaceVolume = 'metaclaw-shell-workspace'
-$dataVolume = 'metaclaw-shell-data'
+# Pre-release schemas are intentionally not migrated. Scope the persistent data
+# volume to the current schema so -Rebuild starts clean after a schema break
+# while preserving the previous volume for manual recovery.
+$dataVolume = 'metaclaw-shell-data-v27'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the

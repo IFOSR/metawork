@@ -8,11 +8,10 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -51,22 +50,12 @@ function createSession(config: Config, notifier?: NotificationService) {
   const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
   const orchestration = new OrchestrationEngine(taskEngine);
   const contextRecaller = new ContextRecaller(db);
-  const executor: ExecutorAdapter = {
-    name: 'codex-cli',
-    execute: vi.fn().mockImplementation(async input => { const result = {
-      success: true,
-      output: 'ok',
-      exitCode: 0,
-      durationMs: 50,
-    }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-    isAvailable: vi.fn().mockResolvedValue(true),
-    abort: vi.fn(),
-  };
+  const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'ok' }));
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
     orchestration,
-    executor,
+    attemptSandbox,
     db,
     config,
     sessionId: 'sess_guidance_round2',
@@ -74,7 +63,7 @@ function createSession(config: Config, notifier?: NotificationService) {
     notifier,
   });
 
-  return { session, taskEngine, taskRepo, executor, db };
+  return { session, taskEngine, taskRepo, attemptSandbox, db };
 }
 
 describe('Round 2 guidance acceptance', () => {
@@ -133,7 +122,7 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it.skip('periodically unblocks and resumes a recoverable executor-failure task', async () => {
-    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, attemptSandbox, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
@@ -154,10 +143,10 @@ describe('Round 2 guidance acceptance', () => {
     await session.waitForAsyncWork();
 
     expect(handled).toBe(true);
-    expect(executor.isAvailable).toHaveBeenCalled();
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.context.taskBackground.id).toBe(task.id);
+    expect(attemptSandbox.resolveImage).toHaveBeenCalled();
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    const executionInput = attemptSandbox.create.mock.calls[0]![0];
+    expect(executionInput.taskId).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('定时检查');
   });
@@ -202,7 +191,7 @@ describe('Round 2 guidance acceptance', () => {
   });
 
   it('does not periodically resume blocked tasks that still need user materials', async () => {
-    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, attemptSandbox, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
@@ -222,12 +211,12 @@ describe('Round 2 guidance acceptance', () => {
     await session.waitForAsyncWork();
 
     expect(handled).toBe(false);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(taskRepo.findById(task.id)?.status).toBe('blocked');
   });
 
   it('does not periodically resume blocked tasks when recheck is disabled', async () => {
-    const { session, taskEngine, taskRepo, executor } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, attemptSandbox } = createSession(createConfig({
       blocked_recheck_enabled: false,
     }));
 
@@ -245,12 +234,12 @@ describe('Round 2 guidance acceptance', () => {
     const handled = await session.maybeReconcileBlockedTasksOnTimer(1_000);
 
     expect(handled).toBe(false);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(taskRepo.findById(task.id)?.status).toBe('blocked');
   });
 
   it.skip('task pool watchdog resumes executable parked tasks', async () => {
-    const { session, taskEngine, taskRepo, executor, db } = createSession(createConfig({
+    const { session, taskEngine, taskRepo, attemptSandbox, db } = createSession(createConfig({
       blocked_recheck_enabled: true,
       blocked_recheck_interval: 5,
     }));
@@ -271,15 +260,15 @@ describe('Round 2 guidance acceptance', () => {
     await session.waitForAsyncWork();
 
     expect(handled).toBe(true);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.context.taskBackground.id).toBe(task.id);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    const executionInput = attemptSandbox.create.mock.calls[0]![0];
+    expect(executionInput.taskId).toBe(task.id);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
     expect(session.getSnapshot().output.join('\n')).toContain('任务池看护：发现可执行任务');
   });
 
   it('task pool watchdog reminds users why blocked and parked tasks cannot run yet', async () => {
-    const { session, taskEngine, executor } = createSession(createConfig({
+    const { session, taskEngine, attemptSandbox } = createSession(createConfig({
       reminder_enabled: true,
       reminder_throttle: 60,
       blocked_recheck_enabled: true,
@@ -317,7 +306,7 @@ describe('Round 2 guidance acceptance', () => {
 
     const output = session.getSnapshot().output.join('\n');
     expect(handled).toBe(true);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(output).toContain('任务池看护提醒');
     expect(output).toContain(`#${blockedTask.id} 等待合同材料`);
     expect(output).toContain('等待用户补充合同 PDF');

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -8,11 +8,10 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -36,7 +35,7 @@ function createConfig(): Config {
 }
 
 describe('Session skill usage observability', () => {
-  it('records executor SkillUsageEvents without exposing them in user-visible output', async () => {
+  it('does not misclassify sandbox lifecycle output as SkillUsageEvents or expose it to users', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -44,63 +43,12 @@ describe('Session skill usage observability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async (input) => {
-        input.onProgress?.({
-          kind: 'skill',
-          text: '开始按 TDD 执行',
-          skillEvent: {
-            eventType: 'skill_started',
-            skillName: 'test-driven-development',
-            skillVersion: '1.1.0',
-            message: '开始按 TDD 执行',
-            payload: { phase: 'RED' },
-          },
-        });
-        input.onProgress?.({
-          kind: 'skill',
-          text: 'RED 测试已创建',
-          skillEvent: {
-            eventType: 'skill_progress',
-            skillName: 'test-driven-development',
-            skillVersion: '1.1.0',
-            message: 'RED 测试已创建',
-            payload: { phase: 'RED' },
-          },
-        });
-        input.onProgress?.({
-          kind: 'skill',
-          text: 'RED 测试已创建',
-          skillEvent: {
-            eventType: 'skill_progress',
-            skillName: 'test-driven-development',
-            skillVersion: '1.1.0',
-            message: 'RED 测试已创建',
-            payload: { phase: 'RED' },
-          },
-        });
-        input.onProgress?.({
-          kind: 'skill',
-          text: 'TDD 流程完成',
-          skillEvent: {
-            eventType: 'skill_completed',
-            skillName: 'test-driven-development',
-            skillVersion: '1.1.0',
-            message: 'TDD 流程完成',
-            payload: { tests: 'passed' },
-          },
-        });
-        return { success: true, output: completionResponse(input, '完成'), exitCode: 0, durationMs: 100 };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '完成' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_skill_usage',
@@ -113,9 +61,8 @@ describe('Session skill usage observability', () => {
     await session.submit('用 TDD 实现一个小功能', { awaitAsyncWork: true });
 
     const events = new SkillUsageEventRepo(db).listByTask(taskRepo.findByStatus('done')[0].id);
-    expect(events.map(event => event.eventType)).toEqual(['skill_started', 'skill_progress', 'skill_progress', 'skill_completed']);
-    expect(events[0].executionId).toMatch(/^exec_/);
-    expect(events[0].executorName).toBe('codex-cli');
+    expect(events).toEqual([]);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
 
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('【Executor: codex-cli｜最终结果｜#');

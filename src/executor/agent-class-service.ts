@@ -8,7 +8,6 @@ import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
 
 export interface AgentClassServiceDeps {
   db: Database.Database;
-  availableCommands?: Set<string>;
 }
 
 /** Owns the static AgentClass catalog; executor WorkUnits are provisioned by Runtime. */

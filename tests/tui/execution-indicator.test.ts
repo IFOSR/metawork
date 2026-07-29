@@ -11,10 +11,8 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { ExecutorInput } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -93,23 +91,17 @@ describe('App execution indicator', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
-    let executionInput: ExecutorInput | undefined;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation((input) => {
-        executionInput = input;
-        return deferred.promise;
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '执行完成',
+      wait: deferred.promise.then(result => result.exitCode),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_test',
@@ -133,14 +125,14 @@ describe('App execution indicator', () => {
 
     expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
 
-    for (let attempt = 0; attempt < 100 && !executionInput; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    expect(executionInput).toBeDefined();
+    expect(attemptSandbox.create).toHaveBeenCalled();
 
     deferred.resolve({
       success: true,
-      output: completionResponse(executionInput!, '执行完成'),
+      output: '执行完成',
       exitCode: 0,
       durationMs: 1200,
     });
@@ -183,19 +175,14 @@ describe('App execution indicator', () => {
       },
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_parked_summary',
@@ -221,19 +208,17 @@ describe('App execution indicator', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockReturnValue(deferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '执行完成',
+      wait: deferred.promise.then(result => result.exitCode),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_last_event',

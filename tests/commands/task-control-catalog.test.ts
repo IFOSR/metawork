@@ -29,7 +29,6 @@ function createHarness() {
     taskEngine,
     activeExecutions: { abortTask },
     taskControl: { cancelTask, cancelSubtasks, acceptPartialResult },
-    executor: { name: 'codex-cli' },
   } as any;
   return {
     db, taskRepo, taskEngine, abortTask, cancelTask, cancelSubtasks,

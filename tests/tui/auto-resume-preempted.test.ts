@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -97,40 +97,36 @@ describe('App auto-resume after preemption', () => {
     const laterNormalDeferred = createDeferredResult();
 
     let firstExecuteResolved = false;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockImplementationOnce(() => firstDeferred.promise)
-        .mockImplementationOnce(() => urgentDeferred.promise)
-        .mockImplementationOnce(() => resumedDeferred.promise)
-        .mockImplementationOnce(() => laterNormalDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn().mockImplementation(() => {
-        if (!firstExecuteResolved) {
-          firstExecuteResolved = true;
-          firstDeferred.resolve({
-            success: false,
-            output: '',
-            error: 'execution interrupted',
-            exitCode: 1,
-            durationMs: 200,
-            interrupted: true,
-          });
-        }
-      }),
-    };
+    const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred, laterNormalDeferred];
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['first done', 'urgent done', 'resumed done', 'later done'][attemptIndex],
+      wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
+    }));
+    attemptSandbox.stop.mockImplementation(async containerId => {
+      if (!firstExecuteResolved) {
+        firstExecuteResolved = true;
+        firstDeferred.resolve({
+          success: false,
+          output: '',
+          error: 'execution interrupted',
+          exitCode: 1,
+          durationMs: 200,
+          interrupted: true,
+        });
+      }
+      return undefined;
+    });
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_auto_resume',
         contextRecaller,
-        availableExecutorCommands: new Set(['codex']),
       })
     );
 
@@ -159,10 +155,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 400,
     });
-    await waitForExecutorCallCount(executor.execute as ReturnType<typeof vi.fn>, 3);
+    await waitForExecutorCallCount(attemptSandbox.create, 3);
 
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0].task.title).toContain('主线研究任务');
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0].executionContextBundle.mode).toBe('resume-parked');
+    expect(taskRepo.findById(attemptSandbox.create.mock.calls[2][0].taskId)?.title).toContain('主线研究任务');
     expect(taskEngine['taskRepo'].findByStatus('running')[0]?.title).toContain('主线研究任务');
 
     resumedDeferred.resolve({
@@ -171,9 +166,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 500,
     });
-    await waitForExecutorCallCount(executor.execute as ReturnType<typeof vi.fn>, 4);
+    await waitForExecutorCallCount(attemptSandbox.create, 4);
 
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[3][0].task.title).toContain('普通排队任务');
+    expect(taskRepo.findById(attemptSandbox.create.mock.calls[3][0].taskId)?.title).toContain('普通排队任务');
 
     laterNormalDeferred.resolve({
       success: true,

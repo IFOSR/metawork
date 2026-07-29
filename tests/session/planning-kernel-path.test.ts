@@ -11,13 +11,19 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
-import { completionResponse } from '../support/completion-response.js';
 import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
+import type {
+  FakeAttemptSandboxResponder,
+  FakeAttemptSandboxResponse,
+} from '../support/fake-attempt-sandbox.js';
+import {
+  completionResponseFromSandboxInput,
+  FakeAttemptSandbox,
+} from '../support/fake-attempt-sandbox.js';
 
 function createConfig(): Config {
   return {
@@ -72,7 +78,9 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
 function createSession(
   sessionId: string,
   planningPlan: PlanningAgentPlan | ((context: PlanningContext) => PlanningAgentPlan | Promise<PlanningAgentPlan>),
-  executorOverride?: ExecutorAdapter,
+  responder?: (
+    ...args: [...Parameters<FakeAttemptSandboxResponder>, Database.Database]
+  ) => FakeAttemptSandboxResponse | Promise<FakeAttemptSandboxResponse>,
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -80,19 +88,14 @@ function createSession(
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
   const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-  const executor: ExecutorAdapter = executorOverride ?? {
-    name: 'codex-cli',
-    execute: vi.fn().mockImplementation(async input => ({
-      success: true, output: completionResponse(input, 'done'), exitCode: 0, durationMs: 10,
-    })),
-    isAvailable: vi.fn().mockResolvedValue(true),
-    abort: vi.fn(),
-  };
+  const attemptSandbox = new FakeAttemptSandbox(
+    (input, attemptIndex) => responder?.(input, attemptIndex, db) ?? { body: 'done' },
+  );
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
     orchestration: new OrchestrationEngine(taskEngine),
-    executor,
+    attemptSandbox,
     db,
     config: createConfig(),
     sessionId,
@@ -102,10 +105,17 @@ function createSession(
         ? vi.fn().mockImplementation(planningPlan)
         : vi.fn().mockResolvedValue(planningPlan),
     },
-    availableExecutorCommands: new Set(['codex']),
   });
   session.initialize({ resumeStartupTasks: false });
-  return { db, session, taskRepo, memoryEngine, executor, kernelDecisionRepo: new KernelDecisionRepo(db), sessionId };
+  return {
+    db,
+    session,
+    taskRepo,
+    memoryEngine,
+    attemptSandbox,
+    kernelDecisionRepo: new KernelDecisionRepo(db),
+    sessionId,
+  };
 }
 
 function seedPriorGenerationEvidence(db: Database.Database, taskId: string): void {
@@ -251,7 +261,7 @@ describe('natural-language planning/kernel path', () => {
 
     const [createdTask] = harness.taskRepo.findAll();
     expect(createdTask).toBeDefined();
-    expect(harness.executor.execute).toHaveBeenCalledTimes(1);
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(1);
 
     const audits = harness.kernelDecisionRepo.listBySession('sess_durable');
     expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
@@ -271,28 +281,6 @@ describe('natural-language planning/kernel path', () => {
     const oneFinished = new Promise<void>(resolve => {
       notifyOneFinished = resolve;
     });
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => {
-        running += 1;
-        maximumRunning = Math.max(maximumRunning, running);
-        if (release.size === 1) notifyBothStarted();
-        await new Promise<void>(resolve => {
-          release.set(input.context.currentSubtask.id, resolve);
-          if (release.size === 2) notifyBothStarted();
-        });
-        running -= 1;
-        if (running === 1) notifyOneFinished();
-        return {
-          success: true,
-          output: completionResponse(input, `${input.context.currentSubtask.id} done`),
-          exitCode: 0,
-          durationMs: 10,
-        };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
     const harness = createSession('sess_concurrent_frontier', plan({
       workGraph: {
         reason: 'two independent implementation units',
@@ -331,7 +319,19 @@ describe('natural-language planning/kernel path', () => {
           },
         ],
       },
-    }), executor);
+    }), input => {
+      running += 1;
+      maximumRunning = Math.max(maximumRunning, running);
+      const wait = new Promise<number>(resolve => {
+        release.set(input.subtaskId, () => {
+          running -= 1;
+          if (running === 1) notifyOneFinished();
+          resolve(0);
+        });
+        if (release.size === 2) notifyBothStarted();
+      });
+      return { body: `${input.subtaskId} done`, wait };
+    });
 
     const submission = harness.session.submit('Implement A and B', { awaitAsyncWork: true });
     await Promise.race([
@@ -428,25 +428,20 @@ describe('natural-language planning/kernel path', () => {
           priority: { level: 'normal', reason: 'automatic replan' },
         },
       });
-    });
-    vi.mocked(harness.executor.execute)
-      .mockImplementationOnce(async input => {
-        seedPriorGenerationEvidence(harness.db, input.context.identity.taskId);
+    }, (input, attemptIndex, db) => {
+      if (attemptIndex === 0) {
+        seedPriorGenerationEvidence(db, input.taskId);
         return {
-          success: true,
-          output: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+          rawOutput: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
             schemaVersion: 2,
             status: 'failed',
-            subtaskId: input.context.currentSubtask.id,
+            subtaskId: input.subtaskId,
             failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
           })}`,
-          exitCode: 0,
-          durationMs: 10,
         };
-      })
-      .mockImplementationOnce(async input => ({
-        success: true, output: completionResponse(input, 'replanned work done'), exitCode: 0, durationMs: 10,
-      }));
+      }
+      return { rawOutput: completionResponseFromSandboxInput(input, 'replanned work done') };
+    });
 
     await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
 
@@ -456,7 +451,7 @@ describe('natural-language planning/kernel path', () => {
     expect(replanRequest).not.toContain('evidence_prior_generation');
     expect(replanRequest).not.toContain('must not leak into the current generation');
     expect(contextBuildCalls).toBe(2);
-    expect(harness.executor.execute).toHaveBeenCalledTimes(2);
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
     expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
     expect(harness.db.prepare(`
       SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
@@ -490,7 +485,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('你好呀', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你好，我是 MetaClaw。');
     const audits = harness.kernelDecisionRepo.listBySession('sess_direct');
     expect(audits).toHaveLength(1);
@@ -520,7 +515,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('今天星期几', { awaitAsyncWork: true });
 
     expect(decideSpy).toHaveBeenCalledTimes(1);
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('今天是星期四。');
     const audits = harness.kernelDecisionRepo.listBySession('sess_shortcircuit');
     expect(audits).toHaveLength(1);
@@ -539,7 +534,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('这个可能要处理一下', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('请明确是聊天还是创建任务。');
     expect(output).not.toContain('统一意图裁决置信度不足');

@@ -25,6 +25,11 @@ export interface FakeAttemptSandboxResponse {
   exitCode?: number;
   rawOutput?: string;
   wait?: Promise<number>;
+  failure?: {
+    kind: 'capability_mismatch' | 'task_failed' | 'quality_failed';
+    code: string;
+    summary: string;
+  };
 }
 
 export type FakeAttemptSandboxResponder = (
@@ -76,6 +81,14 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     const response = this.requireResponse(containerId);
     if (response.rawOutput !== undefined) return response.rawOutput;
     if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
+    if (response.failure) {
+      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+        schemaVersion: 2,
+        status: 'failed',
+        subtaskId: input.subtaskId,
+        failure: response.failure,
+      })}`;
+    }
     return completionResponseFromSandboxInput(input, response.body, response.artifacts);
   });
 

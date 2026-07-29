@@ -87,7 +87,6 @@ export interface MetaclawSessionDeps {
   contextRecaller: ContextRecaller;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
-  availableExecutorCommands?: Set<string>;
   sourceRoot?: string;
   attemptSandbox?: AttemptSandboxPort;
 }
@@ -223,10 +222,7 @@ export class MetaclawSession {
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
     });
-    this.agentClassService = new AgentClassService({
-      db: deps.db,
-      availableCommands: deps.availableExecutorCommands,
-    });
+    this.agentClassService = new AgentClassService({ db: deps.db });
     this.attemptSandbox = deps.attemptSandbox ?? new DockerCliAttemptSandboxAdapter();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);

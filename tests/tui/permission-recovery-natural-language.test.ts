@@ -11,10 +11,9 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -85,24 +84,14 @@ describe('App permission recovery natural-language control', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '授权后已恢复执行',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '授权后已恢复执行' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_permission_nl_recovery',
@@ -121,8 +110,8 @@ describe('App permission recovery natural-language control', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.id).toBe(blockedTask.id);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0][0].taskId).toBe(blockedTask.id);
     expect(app.lastFrame()).toContain('阻塞已解除，任务重新具备执行条件');
 
     app.unmount();

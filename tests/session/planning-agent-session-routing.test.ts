@@ -9,9 +9,11 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
-import { completionResponse } from '../support/completion-response.js';
+import {
+  completionResponseFromSandboxInput,
+  FakeAttemptSandbox,
+} from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -89,17 +91,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'done'),
-        exitCode: 0,
-        durationMs: 100,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan()),
     };
@@ -108,20 +100,19 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_route',
       contextRecaller,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
     await session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
     expect(planningAgent.plan).toHaveBeenCalledTimes(1);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(session.getSnapshot().output.join('\n')).toContain('completed 1 Subtask(s)');
   });
 
@@ -132,12 +123,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox();
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         action: 'clarification',
@@ -162,13 +148,12 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_clarify',
       contextRecaller,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
@@ -176,7 +161,7 @@ describe('MetaclawSession planning-agent routing', () => {
 
     expect(planningAgent.plan).toHaveBeenCalledTimes(1);
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(session.getSnapshot().output.join('\n')).toContain('请明确是聊天还是创建任务。');
   });
 
@@ -187,18 +172,10 @@ describe('MetaclawSession planning-agent routing', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, '已修改代码并完成实现。')
-          .replace('tests were not run: deterministic test fixture', 'implementation completed'),
-        exitCode: 0,
-        durationMs: 100,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(input => ({
+      rawOutput: completionResponseFromSandboxInput(input, '已修改代码并完成实现。')
+        .replace('tests were not run: deterministic fake sandbox', 'implementation completed'),
+    }));
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         reason: '修改仓库代码',
@@ -219,13 +196,12 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_verifier',
       contextRecaller,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 

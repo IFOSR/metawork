@@ -54,7 +54,7 @@ flowchart LR
   Frontier --> Batch[dispatch_batch<br/>持久 child items]
   Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
-  Context --> Executors[ExecutionRuntime<br/>Codex、Pi、Hermes、自定义 CLI]
+  Context --> Executors[ExecutionRuntime<br/>canonical Codex / Pi sandbox]
   Executors --> Verify[Completion Protocol v2<br/>receipt 与 candidate commit]
   Verify --> Publish[Git publication gate<br/>稳定顺序集成]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
@@ -153,7 +153,6 @@ conversation / task 的边界很重要：
 | --- | --- | --- | --- |
 | Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 安装并登录 OpenAI Codex CLI |
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 安装 `@earendil-works/pi-coding-agent` 并完成登录 |
-| Hermes Agent | `hermes` | 调研、多工具编排、记忆/网关/助手工作流 | 安装并登录 Hermes |
 
 默认运行时命令是 `codex`，静态目录中表示为 `codex-cli` AgentClass，但不预置虚假的空闲 executor WorkUnit。获批后，Runtime 优先 claim 健康 idle 实例；没有容量时创建 `starting` 实例并探测，失败则按 Plan 候选顺序回退，全部失败时阻塞任务。Pi 是 canonical 的当前网页研究类；配置为默认值但尚未注册的其他 Executor 会以不含路由能力的未分类 AgentClass 启动，已有的非 canonical 类则保持不变。
 
@@ -181,7 +180,7 @@ sudo apt-get install -y build-essential python3 make g++
 执行器前提：
 
 - 使用默认 `codex-cli`：安装并登录 OpenAI Codex CLI。
-- 如果希望调研类工作可分配到默认执行器之外：安装并登录 Pi Agent 或 Hermes Agent。
+- 构建或拉取 canonical Codex/Pi AgentClass 所绑定的执行镜像。
 
 飞书集成前提：
 
@@ -455,41 +454,7 @@ AnyFusion 调用方式：
 pi -p "<prompt>"
 ```
 
-Pi 调研类工作流通常比 CLI 编码任务执行更久。即使全局执行器配置更短，AnyFusion 也会自动给 `pi-agent` 至少 `timeout: 900` 秒的连续无输出等待时间。活跃的 Pi 进程不会再因为硬总时长上限被终止。
-
-如需将 Pi 设为默认执行器：
-
-```yaml
-executor:
-  command: pi
-```
-
-### Hermes Agent
-
-安装并登录 Hermes，然后验证：
-
-```bash
-which hermes
-hermes --help
-```
-
-AnyFusion 调用方式：
-
-```bash
-hermes --oneshot "<prompt>" --yolo --accept-hooks
-```
-
-`--oneshot` 让 Hermes 以脚本/headless 模式运行，`--yolo` 跳过危险命令确认，`--accept-hooks` 自动接受未见过的 hooks。当前调研 dispatch 不会默认让 Pi Agent 和 Hermes Agent 竞速。Planner 会为每个 subtask 排序可用 executor agent classes，平台层再从候选集合里 claim 一个空闲 work unit。如果没有空闲或可用的 work unit 能 claim 该 subtask，任务会 blocked 等待恢复；自动平台 fallback 目前刻意留给后续 planner replanning。
-
-### 已退役的兼容 Adapter
-
-`deepseek-tui`、`claude-code` 和 `openclaw` adapter 仍保留在代码里，用于兼容和显式本地配置；但除非把它们显式配置为默认 executor，否则不会进入默认注册表。
-
-```bash
-executor:
-  command: hermes        # 旧版/手动
-  # command: deepseek-tui # 旧版/手动
-```
+Pi attempt 通过 canonical `metaclaw-executor-pi:phase5` 镜像和统一的 `SandboxedExecutorAdapter` seam 运行。
 
 ## Executor 与 Skill 的差异
 
@@ -497,7 +462,7 @@ Executor 和 Skill 是生态里的不同层。
 
 Executor 是“谁来干活”。Skill 是“干活时带什么方法、知识和工具规范”。
 
-Executor 更像一个可派发的 Agent runtime：Codex CLI、Pi Agent、Hermes Agent、DeepSeek TUI，或者某个垂直领域本地 Agent。它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
+Executor 是 sandboxed AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent 镜像。它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
 
 Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么做期货分析、怎么做代码审查、怎么跑调研流程、怎么输出报告格式。Skill 可以改善某个 Executor 的表现，但不会自动改变这个 Executor 的 runtime、权限、工具或安装状态。
 
@@ -696,7 +661,7 @@ AnyFusion 将“文档生成”和“飞书交付”分开处理：
 - 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `anyfusion gateway pairing` 审批或撤销。
 - 群聊默认使用 `group_policy: open` 和 `require_mention: true`。
 - 在飞书聊天里发送 `/sethome` 会把该聊天记录为 `gateway.platforms.feishu.home_channel`。
-- 旧版 `integrations.feishu` 配置仍会作为兼容来源读取，但新部署应使用 `gateway.platforms.feishu`。
+- Feishu 配置只从 `gateway.platforms.feishu` 读取。
 
 常用飞书 Gateway 命令：
 
@@ -921,7 +886,7 @@ src/
 └── utils/          # 配置、路径、日志、ID 等通用工具
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄：保留共享基础类型、通用记忆/排序 `llm-bridge` 和 `CapabilityClass`。关键词 RuleHints、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、`src/session/kernel-decision-applier.ts`、`src/execution/work-graph-runtime-service.ts`、`src/execution/work-unit-claim-service.ts` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄，只保留共享基础类型和共享 `KernelFailure` 事实。关键词 RuleHints、通用记忆/排序 LLM bridge、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、Session Kernel runtime、`src/execution/` 和 storage repositories。
 
 ## License
 

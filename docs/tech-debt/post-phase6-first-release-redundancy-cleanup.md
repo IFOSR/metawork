@@ -1,6 +1,6 @@
 # Phase 6 后首次发布冗余与兼容层清理
 
-> 状态：进行中（第 1 批已完成 / 第 2 批进行中 / 共 5 批）  
+> 状态：进行中（第 2 批已完成 / 共 5 批）
 > 创建日期：2026-07-28  
 > 代码基线：`474f6d4`（`feat: close single-task phase 6 reliability`）  
 > 关联 ADR：ADR-0011、ADR-0015、ADR-0018、ADR-0020  
@@ -50,33 +50,32 @@
 
 实施提交：见本节标题对应的 `refactor: remove natural-language semantic shadow stack` 提交。
 
-### 第 2 批：第 4 节 P1 生产路径兼容架构（进行中）
+### 第 2 批：第 4 节 P1 生产路径兼容架构（已完成）
 
-- 开始日期：2026-07-29
+- 完成日期：2026-07-29
 - 覆盖范围：本文档第 4 节全部子项（4.1 命令双契约、4.2 Host Executor 测试旁路、4.3 Feishu 旧配置迁移、4.4 Feishu 旧文本输出协议）
-- 当前状态：生产代码四项全部改完；测试侧 4.1 已完成，4.2 剩余 29 个 session/TUI 测试待迁移，尚未提交。
 
-已完成的生产侧行为变化：
+实际交付的行为变化：
 
 - 4.1：删除 `src/commands/router.ts` 与旧 `CommandHandler`/`CommandContext`，`command-tree.ts` 不再把结构化参数回拼成 `string[]`，`legacyContext`/`convertLegacyResult`/`invokeLegacy`/`legacyAction` 全部删除；`/task`、`/executor`、`/memory`、`/learning`、`/profile` 直接绑定 `CommandAction.execute`。命令集合与外部行为不变。
 - 4.2：`ExecutorRegistry` 只解析 AgentClass → `SandboxedExecutorAdapter`，删除 `allowHostTestAdapters`、`defaultExecutor`/`defaultExecutorFactory`、`executorFactory`、`ExecutorAdapterRegistry` 与 `createDefaultExecutorAdapterRegistry`；删除 `custom-cli.ts`、`claude-code.ts`、`codex-cli.ts`、`hermes-agent.ts`、`deepseek-tui.ts`、`openclaw.ts`、`command-line-adapter.ts`、`response-only-cli.ts`；`ExecutorAdapter` 接口收紧为 `name`/`supportsContinuation?`/`execute`/`executeResponseOnly?`/`isAvailable`/`abort`。`MetaclawSessionDeps.executor` 与 `CommandContext.executor` 一并删除。
 - 4.3：删除 `Config.integrations.feishu` 类型、`resolveFeishuGatewayConfig` 的 legacy fallback、`migrateLegacyFeishuConfigFileToGateway` 及 `src/index.ts` 中两次迁移调用；保留 `integrations.markdown_preview`。
 - 4.4：`parseFeishuTaskOutputLine` 删除旧 `+ #task...` 分支，只接受当前带 Executor identity 的格式。
+- Session 现在消费已有的 `MetaclawSessionDeps.attemptSandbox` seam；41 个 session/TUI 测试迁移到共享 fake `AttemptSandboxPort`，不再注入 host `ExecutorAdapter`。
+- 删除失效的 `availableExecutorCommands`/`availableCommands` command-probe seam，以及 command context 中残留的 `executor` 和 `bindingSource: default` 测试 fixture。
+- `SandboxedExecutorAdapter` 对非零 sandbox 退出日志调用统一的 adapter-boundary failure normalizer，使 network、timeout、permission 和 unknown failure 继续进入对应的 Kernel retry/recovery 策略。
 
 行为影响（供后续批次注意）：因 4.2 删除了 Executor 侧 skill 安装/更新/停用/废弃能力，`/learning promote` 对 `skill`、`skill_patch`、`skill_disable`、`skill_deprecation` 候选现在一律写入 `unsupported` 审计（`executorName: 'sandboxed'`）并返回“当前 executor 不支持 …”，不再存在成功安装路径。`task_memory_card` 候选的沉淀行为不变。
 
-剩余工作：
+验证：
 
-- 29 个 `tests/session/**`、`tests/tui/**` 测试仍通过注入假 `ExecutorAdapter`（`execute: vi.fn()`）驱动整条 Session → Kernel → Execution 链。4.2 删除该注入点后，这些测试需按 4.2 第 2 条改为通过窄 fake `AttemptSandboxPort` 注入结果。
-- 该迁移的前置条件：`MetaclawSessionDeps.attemptSandbox` 目前已声明但未被构造函数消费（`metaclaw-session.ts` 仍硬编码 `new DockerCliAttemptSandboxAdapter()`），需先接通该注入点。
-- fake sandbox 需让 `logs()` 返回带 completion marker 的输出，且 marker 内 `subtaskId` 需从 `create()` 入参反推（运行时生成，测试无法预先写死）。
-- `tests/session/task-view-round4-acceptance.test.ts` 是最后一个仍引用已删除 `taskCommand` 的文件，需改用 `showTask`。
+- `npm run lint`（`tsc --noEmit`）通过。
+- `npm run build` 通过。
+- Docker 全量测试：`docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test` → 179 files / 687 tests passed，4 files / 15 tests skipped，0 failed。
+- Docker shell 启动验证：SSH/TUI 持久数据卷按当前 pre-release schema 隔离为 `metaclaw-shell-data-v27`；旧数据卷保留。CLI 实际启动通过，新数据库确认 `schema_version = 27`。
+- Docker smoke：`npm run smoke:metaclaw` → `MetaClaw real task smoke passed.`（executor codex，scenario artifact），产出并验证 `smoke-result.md`。
 
-阶段性验证（2026-07-29，重建镜像后）：
-
-- `npm run lint`（`tsc --noEmit`）通过。注意 `tsconfig.json` 的 `exclude` 含 `tests`，宿主机 lint 不覆盖测试类型错误。
-- Docker 全量测试：183 files → 150 passed / 29 failed / 4 skipped；702 tests → 637 passed / 50 failed / 15 skipped。29 个失败文件全部为上述待迁移的 session/TUI 测试。
-- 尚未运行 smoke（等测试全绿后再跑）。
+实施提交：本次提交（`refactor: remove production compatibility architecture`）。
 
 ## 1. 目标与边界
 

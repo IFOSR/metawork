@@ -9,9 +9,9 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -53,36 +53,19 @@ describe('blocked task user journey', () => {
     const notifier: NotificationService = {
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockResolvedValueOnce({
-          success: false,
-          output: '',
-          error: '执行器网络连接失败，请检查网络或代理配置',
-          exitCode: 1,
-          durationMs: 100,
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          output: '阻塞解除后已完成用户旅程验收报告',
-          exitCode: 0,
-          durationMs: 120,
-        }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+      ? { body: '沙箱未产出任何可交付结果', exitCode: 1 }
+      : { body: '阻塞解除后已完成用户旅程验收报告' });
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_blocked_user_journey',
       contextRecaller,
       notifier,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 blocked 任务用户旅程验收报告', executor: 'codex-cli', matchedBoundary: ['general'] }),
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
@@ -107,7 +90,7 @@ describe('blocked task user journey', () => {
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);

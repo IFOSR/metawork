@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -9,9 +9,8 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import { completionResponse } from '../support/completion-response.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 
@@ -22,15 +21,11 @@ describe('Kernel capacity control loop', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
     const available = { value: false };
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      isAvailable: vi.fn(async () => available.value),
-      execute: vi.fn(async input => {
-        const body = 'capacity recovered';
-        return { success: true, output: completionResponse(input, body, []), exitCode: 0, durationMs: 1 };
-      }),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'capacity recovered' }));
+    attemptSandbox.resolveImage.mockImplementation(async () => {
+      if (!available.value) throw new Error('image unavailable');
+      return `sha256:${'a'.repeat(64)}`;
+    });
     const plan = workGraphPlan({ goal: 'run after capacity recovers', expectedOutput: 'summary' });
     const config: Config = {
       version: 1,
@@ -46,14 +41,12 @@ describe('Kernel capacity control loop', () => {
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      executor,
-      executorFactory: () => executor,
+      attemptSandbox,
       db,
       config,
       sessionId: 'session_capacity',
       contextRecaller: new ContextRecaller(db),
       planningAgent: stubPlanningAgent(plan),
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false, showDashboard: false });
     db.prepare('DELETE FROM work_units').run();
@@ -62,7 +55,7 @@ describe('Kernel capacity control loop', () => {
 
     const [task] = taskRepo.findAll();
     expect(task.status).toBe('blocked');
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
     expect(new KernelExecutorStatusProjector(new KernelExecutorStatusRepo(db)).list()
@@ -73,7 +66,7 @@ describe('Kernel capacity control loop', () => {
 
     expect(handled).toBe(true);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_batch' }, { action: 'complete_task' }]));
   });
