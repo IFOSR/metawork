@@ -3,7 +3,6 @@ import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
-import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { CommandReadServices } from './command-read-services.js';
 import type { TaskControlPort } from './task-control-port.js';
@@ -12,7 +11,6 @@ export interface CommandContext {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
-  executor: ExecutorAdapter;
   activeExecutions: ActiveExecutionControl;
   taskControl: TaskControlPort;
   readServices: CommandReadServices;

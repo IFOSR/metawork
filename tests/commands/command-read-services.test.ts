@@ -16,7 +16,7 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
   const executor = {
     name: 'codex-cli',

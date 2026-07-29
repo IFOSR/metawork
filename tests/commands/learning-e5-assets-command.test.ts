@@ -1,13 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { learningCommand } from '../../src/commands/learning-commands.js';
+import {
+  listSkillEffects,
+  listTaskMemoryCards,
+  promoteLearningCandidate,
+  showLearningSummary,
+} from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
 import { TaskMemoryCardRepo } from '../../src/storage/task-memory-card-repo.js';
 import { SkillEffectSummaryRepo } from '../../src/storage/skill-effect-summary-repo.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
+import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -16,20 +22,15 @@ function createTestDb() {
   return db;
 }
 
-function commandContext(db: Database.Database, executor: Partial<ExecutorAdapter> = {}) {
+function commandContext(db: Database.Database): CommandContext {
   return {
     db,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-    executor: {
-      name: 'mock-executor',
-      execute: vi.fn(),
-      isAvailable: vi.fn(),
-      abort: vi.fn(),
-      installSkill: vi.fn(),
-      updateSkill: vi.fn(),
-      ...executor,
-    },
-  } as any;
+  } as never as CommandContext;
+}
+
+function args(positionals: ResolvedCommandArgs['positionals'] = {}): ResolvedCommandArgs {
+  return { positionals, options: {} };
 }
 
 function insertTaskMemoryCardCandidate(repo: LearningCandidateRepo) {
@@ -60,19 +61,16 @@ function insertTaskMemoryCardCandidate(repo: LearningCandidateRepo) {
   });
 }
 
-describe('learningCommand E5 learning asset commands', () => {
-  it('promotes an approved task_memory_card candidate into task_memory_cards without calling executor skill APIs', async () => {
+describe('learning E5 learning asset commands', () => {
+  it('promotes an approved task_memory_card candidate into task_memory_cards without writing skill install audits', async () => {
     const db = createTestDb();
     const candidateRepo = new LearningCandidateRepo(db);
     insertTaskMemoryCardCandidate(candidateRepo);
-    const installSkill = vi.fn();
-    const updateSkill = vi.fn();
 
-    const result = await learningCommand.execute(['promote', 'lc_card_1'], commandContext(db, { installSkill, updateSkill }));
+    const result = await promoteLearningCandidate(args({ candidateId: 'lc_card_1' }), commandContext(db));
 
     expect(result.content).toContain('已沉淀任务记忆卡');
-    expect(installSkill).not.toHaveBeenCalled();
-    expect(updateSkill).not.toHaveBeenCalled();
+    expect(new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_card_1')).toHaveLength(0);
     expect(candidateRepo.findById('lc_card_1')?.status).toBe('promoted');
     const card = new TaskMemoryCardRepo(db).findByTaskId('task_e5_1');
     expect(card).toMatchObject({
@@ -113,9 +111,9 @@ describe('learningCommand E5 learning asset commands', () => {
       usedAt: '2026-04-27T03:11:00Z',
     });
 
-    const cards = await learningCommand.execute(['cards'], commandContext(db));
-    const skills = await learningCommand.execute(['skills'], commandContext(db));
-    const summary = await learningCommand.execute(['summary'], commandContext(db));
+    const cards = await listTaskMemoryCards(args(), commandContext(db));
+    const skills = await listSkillEffects(args(), commandContext(db));
+    const summary = await showLearningSummary(args(), commandContext(db));
 
     expect(cards.content).toContain('已有任务记忆卡');
     expect(skills.content).toContain('test-driven-development@1.1.0');

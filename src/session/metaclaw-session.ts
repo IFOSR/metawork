@@ -11,7 +11,6 @@ import type {
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
-import type { ExecutorAdapter } from '../executor/adapter.js';
 import { NoopNotificationService, type NotificationService } from '../notifications/types.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
@@ -30,6 +29,7 @@ import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
+import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
@@ -81,17 +81,15 @@ export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
-  executor: ExecutorAdapter;
   db: Database.Database;
   config: Config;
   sessionId: string;
   contextRecaller: ContextRecaller;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
-  defaultExecutorFactory?: () => ExecutorAdapter;
-  executorFactory?: (name: string) => ExecutorAdapter | null;
   availableExecutorCommands?: Set<string>;
   sourceRoot?: string;
+  attemptSandbox?: AttemptSandboxPort;
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -209,7 +207,7 @@ export class MetaclawSession {
   private readonly workspaceStore: WorkspaceStore;
   private readonly workspaceRetentionService: WorkspaceRetentionService;
   private workspaceRetentionSweep: Promise<void> | null = null;
-  private readonly attemptSandbox: DockerCliAttemptSandboxAdapter;
+  private readonly attemptSandbox: AttemptSandboxPort;
   private readonly permissionRepository: SqlitePermissionRepository;
   private readonly attemptSandboxRepository: SqliteAttemptSandboxRepository;
   private readonly workspaceRepository: SqliteWorkspaceRepository;
@@ -227,10 +225,9 @@ export class MetaclawSession {
     });
     this.agentClassService = new AgentClassService({
       db: deps.db,
-      defaultExecutorName: deps.executor.name,
       availableCommands: deps.availableExecutorCommands,
     });
-    this.attemptSandbox = new DockerCliAttemptSandboxAdapter();
+    this.attemptSandbox = deps.attemptSandbox ?? new DockerCliAttemptSandboxAdapter();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
     this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
@@ -240,15 +237,11 @@ export class MetaclawSession {
       this.workspaceStore,
     );
     const executorRegistry = new ExecutorRegistry({
-      config: deps.config,
-      defaultExecutor: deps.executor,
-      defaultExecutorFactory: deps.defaultExecutorFactory,
-      executorFactory: deps.executorFactory,
       agentClassLookup: this.agentClassService,
       attemptSandbox: this.attemptSandbox,
       attemptSandboxRepository: this.attemptSandboxRepository,
     });
-    this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);
+    this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
@@ -1318,7 +1311,6 @@ export class MetaclawSession {
       taskEngine: this.deps.taskEngine,
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
-      executor: this.deps.executor,
       activeExecutions: this.executionRuntime,
       taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,

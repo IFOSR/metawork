@@ -10,7 +10,7 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);

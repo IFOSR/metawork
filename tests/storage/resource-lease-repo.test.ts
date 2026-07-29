@@ -20,7 +20,7 @@ function seedForeignKeys(db: Database.Database): void {
   ) VALUES (?, 'task', 1, 'gen', ?, ?, 'ready', '[]', '[]', '[]', '[]', 'summary', '[]', 'low', '', '[]', '{}', NULL, ?, ?)`);
   insertSubtask.run('subtask-a', 'a', 'a', now, now);
   insertSubtask.run('subtask-b', 'b', 'b', now, now);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   for (const id of ['worker-a', 'worker-b']) {
     db.prepare(`INSERT INTO work_units (
       id, agent_class_name, agent_class_kind, state, claimed_task_id, claimed_subtask_id,

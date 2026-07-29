@@ -6,7 +6,6 @@ import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { getBuiltinExecutorAgentClasses } from './builtin-executor-catalog.js';
 
 export interface AgentClassSeedInput {
-  defaultExecutorName: string;
   availableCommands?: Set<string>;
 }
 
@@ -39,35 +38,6 @@ function plannerClass(): AgentClass {
   };
 }
 
-function unclassifiedExecutorClass(name: string): AgentClass {
-  return {
-    name,
-    kind: 'executor',
-    domains: [],
-    capabilities: [],
-    inputTypes: ['text'],
-    outputTypes: ['markdown'],
-    strengths: [],
-    weaknesses: [],
-    primaryUseCases: [],
-    avoidUseCases: [],
-    intentAffinity: {},
-    riskLevel: 'medium',
-    harness: 'cli',
-    model: null,
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-    runtimeCommand: null,
-    runtimeArgs: [],
-    runtimeCheckCommand: null,
-    executionImageRef: null,
-    resolvedImageId: null,
-    permissionProfileId: null,
-    projectUrl: null,
-  };
-}
-
 function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
   const {
     createdAt: _existingCreatedAt,
@@ -86,7 +56,6 @@ function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): 
 
 export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
-  input: AgentClassSeedInput,
 ): void {
   const canonicalAgentClasses = getBuiltinExecutorAgentClasses();
 
@@ -103,14 +72,10 @@ export function seedDefaultAgentClasses(
       });
     }
   }
-  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
-    agentClassRepo.upsert(unclassifiedExecutorClass(input.defaultExecutorName));
-  }
 }
 
 export function seedDefaultWorkUnits(
   workUnitRepo: Pick<WorkUnitRepo, 'upsert' | 'findById'>,
-  input: { executorAgentClassName: string },
 ): void {
   const now = new Date().toISOString();
   if (!workUnitRepo.findById('planner-1')) {

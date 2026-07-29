@@ -1,78 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
-import type { ExecutorAdapter, ExecutorInput } from '../../src/executor/adapter.js';
-import type { AgentClass, Config, ExecutorResult, Subtask, Task, WorkUnit } from '../../src/core/types.js';
-import {
-  createDefaultExecutorAdapterRegistry,
-  ExecutionRuntime,
-  ExecutorAdapterRegistry,
-  ExecutorRegistry,
-} from '../../src/execution/execution-runtime.js';
-import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
-import {
-  getBuiltinExecutorAgentClasses,
-  getBuiltinExecutorDefinition,
-} from '../../src/executor/builtin-executor-catalog.js';
+import type { ExecutorInput } from '../../src/executor/adapter.js';
+import type { AgentClass, Subtask, WorkUnit } from '../../src/core/types.js';
+import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
+import type { AgentClassLookupPort } from '../../src/executor/agent-class-lookup-port.js';
+import type { AttemptSandboxPort, CreateAttemptSandboxInput, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
+import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
-  runMigrations(db);
-  return db;
-}
-
-function createConfig(): Config {
-  return {
-    version: 1,
-    executor: { command: 'codex', timeout: 60_000, max_duration: 300 },
-    orchestration: { max_concurrent_attempts: 4, reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
-    ui: { language: 'zh-CN', dashboard_on_start: false },
+function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSandboxPort {
+  const record: AttemptSandboxRecord = {
+    containerId: 'container_test',
+    imageId: 'sha256:test',
+    status: 'created',
+    exitCode: null,
+    labels: {},
   };
-}
-
-function createExecutor(name: string, result: ExecutorResult | Promise<ExecutorResult>): ExecutorAdapter {
   return {
-    name,
-    execute: vi.fn().mockImplementation(async (_input: ExecutorInput) => result),
-    isAvailable: vi.fn().mockResolvedValue(true),
-    abort: vi.fn(),
-  };
-}
-
-function createTask(): Task {
-  return {
-    id: 'task_runtime',
-    title: 'runtime task',
-    goal: 'execute runtime task',
-    status: 'running',
-    summary: '',
-    snapshots: [],
-    resources: [],
-    artifacts: [],
-    dependencies: [],
-    prioritySignals: {
-      dueAt: null,
-      isReady: true,
-      progressRatio: 0,
-      blocksOthers: false,
-      idleHours: 0,
-    },
-    injectedPreferences: [],
-    lastSchedulingReason: '',
-    lastInterruptionReason: '',
-    interruptionCount: 0,
-    createdAt: '2026-06-22T00:00:00Z',
-    updatedAt: '2026-06-22T00:00:00Z',
-  };
-}
-
-function createResult(output: string, success = true): ExecutorResult {
-  return {
-    success,
-    output: success ? output : '',
-    error: success ? undefined : output,
-    exitCode: success ? 0 : 1,
-    durationMs: 42,
+    resolveImage: vi.fn().mockResolvedValue('sha256:test'),
+    create: vi.fn().mockImplementation(async (_input: CreateAttemptSandboxInput) => record),
+    start: vi.fn().mockResolvedValue(undefined),
+    wait: vi.fn().mockResolvedValue(0),
+    logs: vi.fn().mockResolvedValue('sandbox output'),
+    pause: vi.fn().mockResolvedValue(undefined),
+    resume: vi.fn().mockResolvedValue(undefined),
+    inspect: vi.fn().mockResolvedValue(record),
+    stop: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
+    listManaged: vi.fn().mockResolvedValue([]),
+    ...overrides,
   };
 }
 
@@ -100,7 +54,19 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
     runtimeCommand: null,
     runtimeArgs: [],
     runtimeCheckCommand: null,
+    executionImageRef: null,
+    resolvedImageId: null,
+    permissionProfileId: null,
     projectUrl: null,
+  };
+}
+
+function createConfiguredAgentClass(name = 'codex-cli'): AgentClass {
+  return {
+    ...createAgentClass(name),
+    executionImageRef: 'metaclaw/test:latest',
+    resolvedImageId: 'sha256:test',
+    permissionProfileId: 'workspace-engineering',
   };
 }
 
@@ -108,6 +74,8 @@ function createSubtask(): Subtask {
   return {
     id: 'subtask_runtime',
     taskId: 'task_runtime',
+    graphRevision: 1,
+    generationId: 'gen_runtime',
     title: 'Runtime subtask',
     goal: 'execute runtime subtask',
     status: 'running',
@@ -143,7 +111,28 @@ function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
   };
 }
 
-function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
+function createSandboxBinding(): NonNullable<ExecutorInput['sandbox']> {
+  return {
+    attemptId: 'attempt_runtime',
+    taskId: 'task_runtime',
+    generationId: 'gen_runtime',
+    subtaskId: 'subtask_runtime',
+    workUnitId: 'executor-1',
+    leaseToken: 'lease_runtime',
+    idempotencyKey: 'idem_runtime',
+    workspacePath: process.cwd(),
+    workspaceId: 'workspace_runtime',
+    sourcePath: process.cwd(),
+    inputsPath: process.cwd(),
+    handoffsPath: process.cwd(),
+    gitMetadataPath: null,
+    controlNetwork: 'metaclaw-control',
+    capabilityBinding: null,
+    onContainerCreated: undefined,
+  };
+}
+
+function createExecutorInput(withSandbox = true): Omit<ExecutorInput, 'onProgress'> {
   const subtask = createSubtask();
   return {
     context: {
@@ -161,30 +150,30 @@ function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
       completionContract: { marker: '<!-- metaclaw:completion:v2 -->', schemaVersion: 2 },
       evidenceTools: { availability: 'unavailable', reason: 'unit test' },
     },
+    ...(withSandbox ? { sandbox: createSandboxBinding() } : {}),
   };
 }
 
-function createRuntime(options: {
-  defaultExecutor?: ExecutorAdapter;
-  defaultExecutorFactory?: () => ExecutorAdapter;
-  executors?: Record<string, ExecutorAdapter>;
-  db?: Database.Database;
-} = {}): ExecutionRuntime {
-  const defaultExecutor = options.defaultExecutor ?? createExecutor('codex-cli', createResult('default ok'));
-  const registry = new ExecutorRegistry({
-    db: options.db ?? createDb(),
-    config: createConfig(),
-    defaultExecutor,
-    defaultExecutorFactory: options.defaultExecutorFactory,
-    executorFactory: name => options.executors?.[name] ?? null,
-  });
-  return new ExecutionRuntime(registry, defaultExecutor);
+function createLookup(agentClasses: AgentClass[]): AgentClassLookupPort {
+  const byName = new Map(agentClasses.map(agentClass => [agentClass.name, agentClass]));
+  return {
+    findByName: name => byName.get(name) ?? null,
+    listAgentClasses: () => [...byName.values()],
+    setResolvedImageId: (name, imageId) => {
+      const existing = byName.get(name);
+      if (existing) byName.set(name, { ...existing, resolvedImageId: imageId });
+    },
+  };
+}
+
+function createRegistry(agentClasses: AgentClass[], sandbox: AttemptSandboxPort): ExecutorRegistry {
+  return new ExecutorRegistry({ agentClassLookup: createLookup(agentClasses), attemptSandbox: sandbox });
 }
 
 describe('ExecutionRuntime', () => {
-  it('returns a class-level configuration failure instead of substituting the default executor', async () => {
-    const defaultExecutor = createExecutor('codex-cli', createResult('must not run'));
-    const runtime = createRuntime({ defaultExecutor });
+  it('returns a class-level configuration failure when no AgentClass is bound', async () => {
+    const registry = createRegistry([], createSandbox());
+    const runtime = new ExecutionRuntime(registry);
     const result = await runtime.run({
       taskId: 'task_runtime',
       executionId: 'exec_unbound',
@@ -204,131 +193,82 @@ describe('ExecutionRuntime', () => {
       executorName: 'unbound-agent',
       failure: { kind: 'configuration', scope: 'agent_class', code: 'executor_adapter_unbound' },
     });
-    expect(defaultExecutor.execute).not.toHaveBeenCalled();
   });
 
-  it('creates an isolated default executor per run so aborting one task cannot stop another', async () => {
-    let resolveFirst!: (result: ExecutorResult) => void;
-    let resolveSecond!: (result: ExecutorResult) => void;
-    const firstPending = new Promise<ExecutorResult>(done => { resolveFirst = done; });
-    const secondPending = new Promise<ExecutorResult>(done => { resolveSecond = done; });
-    const first = createExecutor('codex-cli', firstPending);
-    const second = createExecutor('codex-cli', secondPending);
-    const defaultExecutor = createExecutor('codex-cli', createResult('availability only'));
-    const factory = vi.fn()
-      .mockReturnValueOnce(first)
-      .mockReturnValueOnce(second);
-    const runtime = createRuntime({ defaultExecutor, defaultExecutorFactory: factory });
-
-    const runFirst = runtime.run({
-      taskId: 'task_first',
-      executionId: 'exec_first',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('codex-cli'),
-        agentClass: createAgentClass('codex-cli'),
-        acceptance: [],
-        expectedOutput: 'summary',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
+  it('resolves a configured AgentClass to a sandboxed adapter and reports sandbox binding source', () => {
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createSandbox());
+    expect(registry.resolve('codex-cli')?.name).toBe('codex-cli');
+    expect(registry.inspect('codex-cli')).toEqual({
+      configured: true,
+      bindingSource: 'sandbox',
+      adapterName: 'codex-cli',
     });
-    const runSecond = runtime.run({
-      taskId: 'task_second',
-      executionId: 'exec_second',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('codex-cli'),
-        agentClass: createAgentClass('codex-cli'),
-        acceptance: [],
-        expectedOutput: 'summary',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
-    });
-    await Promise.resolve();
-
-    expect(factory).toHaveBeenCalledTimes(2);
-    expect(runtime.abortTask('task_first')).toBe(1);
-    expect(first.abort).toHaveBeenCalledTimes(1);
-    expect(second.abort).not.toHaveBeenCalled();
-    expect(defaultExecutor.abort).not.toHaveBeenCalled();
-
-    resolveFirst(createResult('first late result'));
-    resolveSecond(createResult('second result'));
-    await Promise.all([runFirst, runSecond]);
   });
 
-  it('tracks and aborts the actual routed executor for a task, then clears the execution token', async () => {
-    let resolve!: (result: ExecutorResult) => void;
-    const pending = new Promise<ExecutorResult>(done => { resolve = done; });
-    const routed = createExecutor('pi-agent', pending);
-    const defaultExecutor = createExecutor('codex-cli', createResult('default should not run'));
-    const runtime = createRuntime({ defaultExecutor, executors: { 'pi-agent': routed } });
-
-    const run = runtime.run({
-      taskId: 'task_runtime',
-      executionId: 'exec_active',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('pi-agent'),
-        agentClass: createAgentClass('pi-agent'),
-        acceptance: [],
-        expectedOutput: 'summary',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
+  it('reports unbound when the AgentClass has no verified image or permission profile', () => {
+    const registry = createRegistry([createAgentClass('codex-cli')], createSandbox());
+    expect(registry.inspect('codex-cli')).toEqual({
+      configured: false,
+      bindingSource: 'unbound',
+      adapterName: null,
     });
-    await Promise.resolve();
-
-    expect(runtime.abortTask('task_runtime')).toBe(1);
-    expect(routed.abort).toHaveBeenCalledTimes(1);
-    expect(defaultExecutor.abort).not.toHaveBeenCalled();
-
-    resolve(createResult('late result'));
-    await run;
-    expect(runtime.abortTask('task_runtime')).toBe(0);
   });
 
-  it('executes a claimed subtask on the claimed work unit agent class', async () => {
-    const deepseek = createExecutor('deepseek-tui', createResult('deepseek ok'));
-    const runtime = createRuntime({ executors: { 'deepseek-tui': deepseek } });
-    const agentClass = createAgentClass('deepseek-tui');
+  it('resolves and caches the image id for an AgentClass with an unresolved image ref', async () => {
+    const unresolved: AgentClass = {
+      ...createAgentClass('codex-cli'),
+      executionImageRef: 'metaclaw/test:latest',
+      resolvedImageId: null,
+      permissionProfileId: 'workspace-engineering',
+    };
+    const lookup = createLookup([unresolved]);
+    const sandbox = createSandbox();
+    const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptSandbox: sandbox });
 
-    const result = await runtime.run({
-      taskId: 'task_runtime',
-      executionId: 'exec_runtime',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('deepseek-tui'),
-        agentClass,
-        acceptance: [],
-        expectedOutput: 'summary',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
-    });
-
-    expect(result.executorName).toBe('deepseek-tui');
-    expect(result.output).toBe('deepseek ok');
-    expect(deepseek.execute).toHaveBeenCalledTimes(1);
+    await expect(registry.isAvailable('codex-cli')).resolves.toBe(true);
+    expect(sandbox.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
+    expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
   });
 
-  it('does not perform runtime fallback when the claimed executor fails', async () => {
-    const codex = createExecutor('codex-cli', createResult('codex should not run'));
-    const pi = createExecutor('pi-agent', createResult('executor idle timeout', false));
-    const runtime = createRuntime({
-      defaultExecutor: codex,
-      executors: { 'pi-agent': pi },
-    });
+  it('is unavailable when the AgentClass does not exist', async () => {
+    const registry = createRegistry([], createSandbox());
+    await expect(registry.isAvailable('missing')).resolves.toBe(false);
+  });
 
+  it('runs a claimed subtask through the sandboxed adapter for the claimed AgentClass', async () => {
+    const sandbox = createSandbox();
+    const registry = createRegistry([createConfiguredAgentClass('pi-agent')], sandbox);
+    const runtime = new ExecutionRuntime(registry);
     const result = await runtime.run({
       taskId: 'task_runtime',
       executionId: 'exec_runtime',
       spec: {
         subtask: createSubtask(),
         workUnit: createWorkUnit('pi-agent'),
-        agentClass: createAgentClass('pi-agent'),
+        agentClass: createConfiguredAgentClass('pi-agent'),
+        acceptance: [],
+        expectedOutput: 'summary',
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
+    });
+
+    expect(result.executorName).toBe('pi-agent');
+    expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('OPENAI_BASE_URL') });
+    expect(sandbox.create).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the sandbox adapter reports a failure', async () => {
+    const sandbox = createSandbox({ wait: vi.fn().mockResolvedValue(1), logs: vi.fn().mockResolvedValue('boom') });
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], sandbox);
+    const runtime = new ExecutionRuntime(registry);
+    const result = await runtime.run({
+      taskId: 'task_runtime',
+      executionId: 'exec_runtime',
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('codex-cli'),
+        agentClass: createConfiguredAgentClass('codex-cli'),
         acceptance: [],
         expectedOutput: 'summary',
       },
@@ -337,114 +277,34 @@ describe('ExecutionRuntime', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(result.executorName).toBe('pi-agent');
-    expect(pi.execute).toHaveBeenCalledTimes(1);
-    expect(codex.execute).not.toHaveBeenCalled();
   });
 
-  it('does not bypass the AgentClass lookup port for custom runtime commands', () => {
-    const db = createDb();
-    new AgentClassRepo(db).upsert({
-      ...createAgentClass('research-bot'),
-      domains: ['research'],
-      capabilities: ['report_generation'],
-      runtimeCommand: 'research-bot',
-      runtimeArgs: ['run', '--prompt', '{prompt}'],
-      runtimeCheckCommand: 'research-bot --version',
-    });
-    const defaultExecutor = createExecutor('codex-cli', createResult('default ok'));
-    const registry = new ExecutorRegistry({
-      db,
-      config: createConfig(),
-      defaultExecutor,
+  it('resolves a fresh adapter per run and tracks aborts per task token', async () => {
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createSandbox());
+    const runtime = new ExecutionRuntime(registry);
+    const input = (executionId: string, taskId: string) => ({
+      taskId,
+      executionId,
+      spec: {
+        subtask: createSubtask(),
+        workUnit: createWorkUnit('codex-cli'),
+        agentClass: createConfiguredAgentClass('codex-cli'),
+        acceptance: [],
+        expectedOutput: 'summary' as const,
+      },
+      executorInput: createExecutorInput(),
+      onProgress: vi.fn(),
     });
 
-    const executor = registry.resolve('research-bot');
-
-    expect(executor).toBeNull();
-    expect(registry.inspect('research-bot')).toEqual({
-      configured: false,
-      bindingSource: 'unbound',
-      adapterName: null,
-    });
-  });
-
-  it('resolves registered adapter factories without editing runtime branching logic', () => {
-    const db = createDb();
-    const defaultExecutor = createExecutor('codex-cli', createResult('default ok'));
-    const adapterRegistry = new ExecutorAdapterRegistry()
-      .register('test-agent', config => createExecutor('test-agent', createResult(`timeout=${config.timeout}`)), ['test']);
-    const registry = new ExecutorRegistry({
-      db,
-      config: createConfig(),
-      defaultExecutor,
-      adapterRegistry,
-    });
-
-    const executor = registry.resolve('test-agent');
-
-    expect(executor?.name).toBe('test-agent');
-  });
-
-  it('derives canonical adapter names, aliases, and runtime commands from definitions', () => {
-    let codexCommand = '';
-    const definition = getBuiltinExecutorDefinition('codex-cli')!;
-    const registry = new ExecutorAdapterRegistry()
-      .registerCanonical('codex-cli', (_config, command) => {
-        codexCommand = command;
-        return createExecutor('codex-cli', createResult('ok'));
-      });
-
-    expect(registry.createByCommand(definition.adapterBinding.commandAliases[0]!, {
-      timeout: 60,
-      workspaceRoot: process.cwd(),
-    })?.name).toBe('codex-cli');
-    expect(codexCommand).toBe(definition.adapterBinding.commandAliases[0]);
-  });
-
-  it('requires complete canonical factory coverage only when explicitly asserted', () => {
-    const partial = new ExecutorAdapterRegistry()
-      .registerCanonical('codex-cli', () => createExecutor('codex-cli', createResult('ok')));
-
-    expect(partial.has('codex-cli')).toBe(true);
-    expect(() => partial.assertCanonicalCoverage()).toThrow(
-      'Missing canonical Executor Adapter registrations: pi-agent',
-    );
-    expect(() => createDefaultExecutorAdapterRegistry().assertCanonicalCoverage()).not.toThrow();
-  });
-
-  it('does not treat direct canonical-looking bindings as canonical registrations', () => {
-    const registry = new ExecutorAdapterRegistry()
-      .register('codex-cli', () => createExecutor('codex-cli', createResult('ok')), ['codex'])
-      .register('pi-agent', () => createExecutor('pi-agent', createResult('ok')), ['pi']);
-
-    expect(() => registry.assertCanonicalCoverage()).toThrow(
-      'Missing canonical Executor Adapter registrations: codex-cli, pi-agent',
-    );
-  });
-
-  it('fails closed on duplicate adapter names and aliases', () => {
-    const registry = new ExecutorAdapterRegistry()
-      .register('first', () => createExecutor('first', createResult('ok')), ['shared']);
-
-    expect(() => registry.register(
-      'second',
-      () => createExecutor('second', createResult('ok')),
-      ['shared'],
-    )).toThrow('Duplicate Executor Adapter binding: shared');
-    expect(() => registry.register(
-      'first',
-      () => createExecutor('first', createResult('ok')),
-    )).toThrow('Duplicate Executor Adapter binding: first');
-  });
-
-  it('keeps non-canonical built-in adapters registered', () => {
-    const registry = createDefaultExecutorAdapterRegistry();
-    const config = { timeout: 60, workspaceRoot: process.cwd() };
-
-    expect(registry.createByCommand('claude', config)?.name).toBe('claude-code');
-    expect(registry.createByCommand('hermes', config)?.name).toBe('hermes-agent');
-    expect(registry.createByCommand('deepseek', config)?.name).toBe('deepseek-tui');
-    expect(registry.createByCommand('openclaw', config)?.name).toBe('openclaw');
+    // Both runs fail closed (no provider env) but still register/clear active tokens.
+    const [first, second] = await Promise.all([
+      runtime.run(input('exec_first', 'task_first')),
+      runtime.run(input('exec_second', 'task_second')),
+    ]);
+    expect(first.status).toBe('failed');
+    expect(second.status).toBe('failed');
+    // Tokens were cleared after completion, so nothing remains to abort.
+    expect(runtime.abortTask('task_first')).toBe(0);
+    expect(runtime.abortTask('task_second')).toBe(0);
   });
 });

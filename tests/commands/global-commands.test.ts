@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
-import { exitCommand, attachCommand } from '../../src/commands/global-commands.js';
+import { exitSession, attachTaskResources } from '../../src/commands/global-commands.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
+import type { ResolvedCommandArgs } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
 
 function createTestDb() {
@@ -36,34 +37,32 @@ function createConfig(): Config {
   };
 }
 
-describe('exitCommand', () => {
-  it('应返回 exit 类型', async () => {
-    const result = await exitCommand.execute([], {} as any);
+function attachArgs(taskId: string, resources: string[]): ResolvedCommandArgs {
+  return { positionals: { taskId, resources }, options: {} };
+}
+
+describe('global commands', () => {
+  it('exitSession 应返回 exit 类型', async () => {
+    const result = await exitSession();
     expect(result.type).toBe('exit');
   });
 
-  it('名称为 exit，别名包含 quit 和 q', () => {
-    expect(exitCommand.name).toBe('exit');
-    expect(exitCommand.aliases).toEqual([]);
-  });
-
-  it('supports attaching multiple files to the current task', async () => {
+  it('supports attaching multiple files to the given task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
     const task = taskEngine.create({ title: 'Phoenix 周报', goal: '整理 Phoenix 周报' });
 
-    const result = await attachCommand.execute(
-      ['file-a.md', 'file-b.md'],
+    const result = await attachTaskResources(
+      attachArgs(task.id, ['file-a.md', 'file-b.md']),
       {
         taskEngine,
         memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
         orchestration: new OrchestrationEngine(taskEngine),
-        executor: {} as any,
         currentTaskId: task.id,
         db,
         config: createConfig(),
-      },
+      } as never,
     );
 
     const updatedTask = taskRepo.findById(task.id)!;
@@ -86,17 +85,16 @@ describe('exitCommand', () => {
       status: 'waiting',
     });
 
-    const result = await attachCommand.execute(
-      [task.id, 'evidence-a.pdf', 'evidence-b.pdf'],
+    const result = await attachTaskResources(
+      attachArgs(task.id, ['evidence-a.pdf', 'evidence-b.pdf']),
       {
         taskEngine,
         memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
         orchestration: new OrchestrationEngine(taskEngine),
-        executor: {} as any,
         currentTaskId: null,
         db,
         config: createConfig(),
-      },
+      } as never,
     );
 
     const updatedTask = taskRepo.findById(task.id)!;

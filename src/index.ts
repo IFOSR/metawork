@@ -8,9 +8,8 @@ import { TaskSearchIndexRepo } from './storage/task-search-index-repo.js';
 import { TaskEngine } from './task/task-engine.js';
 import { MemoryEngine } from './memory/memory-engine.js';
 import { OrchestrationEngine } from './guidance/orchestration.js';
-import { createDefaultExecutor } from './execution/execution-runtime.js';
 import { ContextRecaller } from './memory/context-recaller.js';
-import { loadConfig, migrateLegacyFeishuConfigFileToGateway } from './utils/config.js';
+import { loadConfig } from './utils/config.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
 import { parseCliArgs } from './cli/args.js';
@@ -57,7 +56,6 @@ async function main() {
 
   if (cliArgs.gatewayCommand === 'doctor') {
     const configPath = resolve(metaclawDir, 'config.yaml');
-    migrateLegacyFeishuConfigFileToGateway(configPath);
     const config = loadConfig(configPath);
     console.log(formatGatewayDoctorChecks(runGatewayDoctor({ config, metaclawDir })));
     return;
@@ -76,7 +74,6 @@ async function main() {
 
   // 2. 加载配置
   const configPath = resolve(metaclawDir, 'config.yaml');
-  migrateLegacyFeishuConfigFileToGateway(configPath);
   const config = loadConfig(configPath);
   const markdownPreviewConfig = config.integrations?.markdown_preview;
   const markdownPreviewServer = markdownPreviewConfig?.enabled
@@ -108,21 +105,12 @@ async function main() {
   const memoryEngine = new MemoryEngine(prefRepo);
   const orchestration = new OrchestrationEngine(taskEngine);
 
-  // 7. 初始化执行器
-  const defaultExecutorFactory = () => createDefaultExecutor({
-    command: config.executor.command,
-    timeout: config.executor.timeout,
-    maxDuration: config.executor.max_duration,
-    workspaceRoot: process.cwd(),
-  });
-  const executor = defaultExecutorFactory();
-
-  // 8. Executor availability is resolved from the verified attempt image at
+  // 7. Executor availability is resolved from the verified attempt image at
   // dispatch time. Startup must keep direct reply/query/planning available
   // when Docker is unavailable and let Kernel surface a configuration block
   // only for work that actually requires execution.
 
-  // 9. 初始化上下文召回器
+  // 8. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;
   const contextRecaller = new ContextRecaller(db);
   const notifier = createNotificationService(config);
@@ -132,8 +120,6 @@ async function main() {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
-      defaultExecutorFactory,
       db,
       config,
       sessionId,
@@ -166,8 +152,6 @@ async function main() {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
-      defaultExecutorFactory,
       db,
       config,
       sessionId,
@@ -212,7 +196,7 @@ async function main() {
   }
 
   // 9. 启动 TUI
-  renderApp({ taskEngine, memoryEngine, orchestration, executor, defaultExecutorFactory, db, config, sessionId, contextRecaller, notifier });
+  renderApp({ taskEngine, memoryEngine, orchestration, db, config, sessionId, contextRecaller, notifier });
 }
 
 main().catch((error) => {

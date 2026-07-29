@@ -8,10 +8,9 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { taskCommand } from '../../src/commands/task-commands.js';
-import type { CommandContext } from '../../src/commands/router.js';
+import { showTask } from '../../src/commands/task-commands.js';
+import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -40,7 +39,7 @@ function createConfig(): Config {
   };
 }
 
-describe('taskCommand detail view', () => {
+describe('showTask detail view', () => {
   let db: Database.Database;
   let taskEngine: TaskEngine;
   let memoryEngine: MemoryEngine;
@@ -52,22 +51,15 @@ describe('taskCommand detail view', () => {
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: async () => ({ success: true, output: '', exitCode: 0, durationMs: 0 }),
-      isAvailable: async () => true,
-      abort: () => {},
-    };
 
     context = {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
       currentTaskId: null,
       db,
       config: createConfig(),
-    };
+    } as never;
   });
 
   it('shows latest executor and injected memory details in task detail output', async () => {
@@ -98,7 +90,7 @@ describe('taskCommand detail view', () => {
       '2026-04-18T10:00:00.000Z',
     );
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('最近执行器: codex-cli');
     expect(result.content).toContain('最近调度原因: 用户提交');
@@ -147,7 +139,7 @@ describe('taskCommand detail view', () => {
       '2026-04-18T11:05:00.000Z',
     );
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('任务视图');
     expect(result.content).toContain('当前状态');
@@ -179,7 +171,7 @@ describe('taskCommand detail view', () => {
       lastInterruptionReason: '用户手动暂停',
     });
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('当前状态: parked');
     expect(result.content).toContain('上次做到');
@@ -203,7 +195,7 @@ describe('taskCommand detail view', () => {
       status: 'waiting',
     });
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('本地文件材料');
     expect(result.content).toContain('/tmp/phoenix-weekly.md');
@@ -225,7 +217,7 @@ describe('taskCommand detail view', () => {
       ],
     });
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('材料概览: 1 个本地文件，1 个网页链接，已提取 1 份可读摘录');
     expect(result.content).toContain('材料状态: 现有材料已包含可读内容，可先继续推进任务；若结果仍不够具体，再补充更多材料');
@@ -242,7 +234,7 @@ describe('taskCommand detail view', () => {
       artifacts: ['/tmp/metaclaw-artifacts/harness-analysis.md'],
     } as any);
 
-    const result = await taskCommand.execute([task.id], context);
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
     expect(result.content).toContain('任务产物');
     expect(result.content).toContain('/tmp/metaclaw-artifacts/harness-analysis.md');

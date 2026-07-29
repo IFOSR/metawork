@@ -58,8 +58,6 @@ describe('gateway setup', () => {
         },
         home_channel: 'oc_home',
       });
-      const rawConfig = load(readFileSync(resolve(metaclawDir, 'config.yaml'), 'utf-8')) as any;
-      expect(rawConfig.integrations?.feishu).toBeUndefined();
       expect(createFeishuBridge(config, {} as never)).not.toBeNull();
       expect(readFileSync(resolve(metaclawDir, '.env'), 'utf-8')).toContain('FEISHU_BOT_OPEN_ID=ou_bot');
       expect(outputLines.join('\n')).toContain('metaclaw gateway run');
@@ -105,21 +103,23 @@ describe('gateway setup', () => {
     }
   });
 
-  it('migrates legacy Feishu setup values while writing only canonical Gateway config', async () => {
-    const metaclawDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-gateway-legacy-setup-'));
+  it('preserves existing canonical Gateway endpoint values while rewriting credentials', async () => {
+    const metaclawDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-gateway-existing-setup-'));
     writeFileSync(resolve(metaclawDir, 'config.yaml'), [
       'integrations:',
-      '  feishu:',
-      '    enabled: true',
-      '    mode: webhook',
-      '    app_id: cli_old',
-      '    event_port: 9898',
-      '    event_path: /old/events',
-      '    verification_token: old-token',
       '  markdown_preview:',
       '    enabled: true',
       '    host: 127.0.0.1',
       '    port: 8790',
+      'gateway:',
+      '  enabled: true',
+      '  platforms:',
+      '    feishu:',
+      '      enabled: true',
+      '      app_id: cli_old',
+      '      event_port: 9898',
+      '      event_path: /old/events',
+      '      verification_token: old-token',
       '',
     ].join('\n'));
     const previousSecret = process.env.FEISHU_APP_SECRET;
@@ -141,7 +141,6 @@ describe('gateway setup', () => {
       });
 
       const rawConfig = load(readFileSync(resolve(metaclawDir, 'config.yaml'), 'utf-8')) as any;
-      expect(rawConfig.integrations.feishu).toBeUndefined();
       expect(rawConfig.integrations.markdown_preview).toEqual({
         enabled: true,
         host: '127.0.0.1',

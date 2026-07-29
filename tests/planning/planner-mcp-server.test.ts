@@ -124,7 +124,7 @@ describe('PlannerDataReader', () => {
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
       ) VALUES ('global', ?, NULL, 'sess_current', ?)
     `).run(task.id, '2026-07-10T00:00:00.000Z');
-    const agentClassService = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    const agentClassService = new AgentClassService({ db });
     agentClassService.seedDefaults();
     agentClassService.upsert({
       ...agentClassService.findByName('codex-cli')!,

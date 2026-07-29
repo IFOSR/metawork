@@ -26,16 +26,6 @@ describe('Feishu Gateway config resolution', () => {
   it('uses Gateway Feishu config as the canonical runtime source', () => {
     const config: Config = {
       ...baseConfig(),
-      integrations: {
-        feishu: {
-          enabled: true,
-          mode: 'webhook',
-          app_id: 'cli_legacy',
-          app_secret_env: 'OLD_SECRET',
-          event_port: 9999,
-          event_path: '/old',
-        },
-      },
       gateway: {
         enabled: true,
         platforms: {
@@ -66,32 +56,18 @@ describe('Feishu Gateway config resolution', () => {
     });
   });
 
-  it('uses legacy integration only as migration fallback', () => {
-    const config: Config = {
-      ...baseConfig(),
-      integrations: {
-        feishu: {
-          enabled: true,
-          mode: 'webhook',
-          app_id: 'cli_legacy',
-          app_secret_env: 'OLD_SECRET',
-          event_port: 9999,
-          event_path: '/old',
-          verification_token: 'old-token',
-        },
-      },
-    };
-
-    expect(resolveFeishuGatewayConfig(config)).toEqual({
-      enabled: true,
+  it('falls back to disabled defaults when Gateway Feishu config is absent', () => {
+    expect(resolveFeishuGatewayConfig(baseConfig())).toEqual({
+      enabled: false,
       domain: 'feishu',
-      connectionMode: 'webhook',
-      appId: 'cli_legacy',
-      appSecretEnv: 'OLD_SECRET',
-      eventPort: 9999,
-      eventPath: '/old',
-      verificationToken: 'old-token',
-      source: 'legacy-integration',
+      connectionMode: 'websocket',
+      appId: undefined,
+      appSecretEnv: 'FEISHU_APP_SECRET',
+      eventPort: 8787,
+      eventPath: '/feishu/events',
+      verificationToken: undefined,
+      encryptKeyEnv: undefined,
+      source: 'default',
     });
   });
 
@@ -109,7 +85,6 @@ describe('Feishu Gateway config resolution', () => {
       enabled: true,
       mode: 'websocket',
       app_id: 'cli_gateway',
-      app_secret: undefined,
       app_secret_env: 'FEISHU_APP_SECRET',
       event_port: 8787,
       event_path: '/feishu/events',

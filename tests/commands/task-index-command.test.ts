@@ -8,11 +8,10 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { taskCommand } from '../../src/commands/task-commands.js';
+import { rebuildTaskIndex, searchTaskIndex } from '../../src/commands/task-commands.js';
 import { TaskSearchIndexRepo } from '../../src/storage/task-search-index-repo.js';
-import type { CommandContext } from '../../src/commands/router.js';
+import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 
 function createConfig(): Config {
   return {
@@ -47,22 +46,15 @@ describe('task index command', () => {
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     const orchestration = new OrchestrationEngine(taskEngine);
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: async () => ({ success: true, output: '', exitCode: 0, durationMs: 0 }),
-      isAvailable: async () => true,
-      abort: () => {},
-    };
 
     context = {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
       currentTaskId: null,
       db,
       config: createConfig(),
-    };
+    } as never;
   });
 
   it('rebuilds the task search index from existing task data', async () => {
@@ -76,7 +68,7 @@ describe('task index command', () => {
 
     expect(new TaskSearchIndexRepo(db).count()).toBe(0);
 
-    const result = await taskCommand.execute(['index', 'rebuild'], context);
+    const result = await rebuildTaskIndex({ positionals: {}, options: {} }, context);
 
     expect(result.content).toContain('任务检索索引已重建');
     expect(result.content).toContain('条索引记录');
@@ -91,7 +83,7 @@ describe('task index command', () => {
     });
     taskSearchIndexRepo.rebuild();
 
-    const result = await taskCommand.execute(['index', 'search', 'Orion 冒烟测试'], context);
+    const result = await searchTaskIndex({ positionals: { query: 'Orion 冒烟测试' }, options: {} }, context);
 
     expect(result.content).toContain('任务检索索引命中');
     expect(result.content).toContain(`#${task.id}`);

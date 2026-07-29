@@ -1,10 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { learningCommand } from '../../src/commands/learning-commands.js';
+import {
+  approvePatchCandidate,
+  generateSkillFeedback,
+  listPatchCandidates,
+  promoteLearningCandidate,
+} from '../../src/commands/learning-commands.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
 import { ReflectionEventRepo } from '../../src/storage/reflection-event-repo.js';
+import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
+import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -12,21 +19,16 @@ function createDb(): Database.Database {
   return db;
 }
 
-function context(db: Database.Database, updateSkill = vi.fn()) {
-  return {
-    db,
-    executor: {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn(),
-      abort: vi.fn(),
-      updateSkill,
-    },
-  } as any;
+function context(db: Database.Database): CommandContext {
+  return { db } as never as CommandContext;
+}
+
+function args(positionals: ResolvedCommandArgs['positionals'] = {}): ResolvedCommandArgs {
+  return { positionals, options: {} };
 }
 
 describe('learning skill feedback loop', () => {
-  it('turns runtime skill feedback into patch candidates and supports approve/promote aliases', async () => {
+  it('turns runtime skill feedback into patch candidates and supports approve/promote review', async () => {
     const db = createDb();
     new SkillUsageEventRepo(db).insert({
       id: 'sue_feedback_1',
@@ -44,7 +46,7 @@ describe('learning skill feedback loop', () => {
       createdAt: '2026-05-21T01:00:00.000Z',
     });
 
-    const feedback = await learningCommand.execute(['skill-feedback'], context(db));
+    const feedback = await generateSkillFeedback(args(), context(db));
     expect(feedback.content).toContain('已生成 Skill Runtime Feedback');
 
     const candidateRepo = new LearningCandidateRepo(db);
@@ -60,23 +62,18 @@ describe('learning skill feedback loop', () => {
       sourceId: 'sue_feedback_1',
     });
 
-    const list = await learningCommand.execute(['patch', 'candidates'], context(db));
+    const list = await listPatchCandidates(args(), context(db));
     expect(list.content).toContain('Skill Patch Candidates');
     expect(list.content).toContain(candidate.id);
 
-    const approve = await learningCommand.execute(['patch', 'approve', candidate.id], context(db));
+    const approve = await approvePatchCandidate(args({ candidateId: candidate.id }), context(db));
     expect(approve.content).toContain('已批准 Skill Patch Candidate');
 
-    const updateSkill = vi.fn().mockResolvedValue({
-      ok: true,
-      executorName: 'codex-cli',
-      installedSkillName: 'tdd-implementation',
-      installedVersion: '1.0.1',
-      message: 'updated',
+    const promote = await promoteLearningCandidate(args({ candidateId: candidate.id }), context(db));
+    expect(promote.content).toContain('不支持 Skill 更新');
+    expect(new ExecutorSkillInstallEventRepo(db).listByCandidate(candidate.id)[0]).toMatchObject({
+      action: 'update',
+      status: 'unsupported',
     });
-    const promote = await learningCommand.execute(['patch', 'promote', candidate.id], context(db, updateSkill));
-    expect(promote.content).toContain('已下发并更新 Skill');
-    expect(updateSkill).toHaveBeenCalledTimes(1);
-    expect(candidateRepo.findById(candidate.id)?.status).toBe('promoted');
   });
 });

@@ -6,8 +6,9 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { memoryCommand } from '../../src/commands/memory-commands.js';
-import { profileCommand } from '../../src/commands/profile-commands.js';
+import { exportMemoryVault, showMemoryVaultStatus } from '../../src/commands/memory-commands.js';
+import { showProjectProfile, showUserProfile } from '../../src/commands/profile-commands.js';
+import type { CommandContext } from '../../src/commands/catalog.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -19,11 +20,13 @@ function createTestDb() {
 describe('memory graph and vault commands', () => {
   let db: Database.Database;
   let memoryEngine: MemoryEngine;
+  let context: CommandContext;
   let prefId: string;
 
   beforeEach(() => {
     db = createTestDb();
     memoryEngine = new MemoryEngine(new PreferenceRepo(db));
+    context = { memoryEngine, db } as never as CommandContext;
     const pref = memoryEngine.addManual({
       content: 'MetaClaw 文档默认使用中文，并保留执行证据',
       scope: 'project',
@@ -31,15 +34,14 @@ describe('memory graph and vault commands', () => {
       subject: 'MetaClaw',
     });
     prefId = pref.id;
-
   });
 
   it('shows user and project profiles from local memory graph assets', async () => {
-    const userProfile = await profileCommand.execute(['user'], { memoryEngine, db, executor: { name: 'codex-cli' } } as any);
+    const userProfile = await showUserProfile({ positionals: {}, options: {} }, context);
     expect(userProfile.content).toContain('用户工作画像');
     expect(userProfile.content).toContain('长期记忆 1');
 
-    const projectProfile = await profileCommand.execute(['project', 'MetaClaw'], { memoryEngine, db } as any);
+    const projectProfile = await showProjectProfile({ positionals: { name: 'MetaClaw' }, options: {} }, context);
     expect(projectProfile.content).toContain('项目画像：MetaClaw');
     expect(projectProfile.content).toContain('MetaClaw 文档默认使用中文');
   });
@@ -47,10 +49,7 @@ describe('memory graph and vault commands', () => {
   it('exports a readable one-way Markdown vault', async () => {
     const vaultDir = mkdtempSync(join(tmpdir(), 'metaclaw-vault-'));
 
-    const exportResult = await memoryCommand.execute(['vault', 'export', '--dir', vaultDir], {
-      memoryEngine,
-      db,
-    } as any);
+    const exportResult = await exportMemoryVault({ positionals: {}, options: { dir: vaultDir } }, context);
     expect(exportResult.content).toContain('Vault 导出完成');
 
     expect(existsSync(join(vaultDir, 'README.md'))).toBe(true);
@@ -61,10 +60,7 @@ describe('memory graph and vault commands', () => {
     expect(prefMarkdown).toContain('scope: project');
     expect(prefMarkdown).toContain('MetaClaw 文档默认使用中文');
 
-    const statusResult = await memoryCommand.execute(['vault', 'status', '--dir', vaultDir], {
-      memoryEngine,
-      db,
-    } as any);
+    const statusResult = await showMemoryVaultStatus({ positionals: {}, options: { dir: vaultDir } }, context);
     expect(statusResult.content).toContain('preferences=1');
   });
 });

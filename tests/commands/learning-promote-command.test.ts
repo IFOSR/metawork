@@ -1,12 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { learningCommand } from '../../src/commands/learning-commands.js';
+import { promoteLearningCandidate } from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
 import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -34,69 +34,46 @@ function insertCandidate(repo: LearningCandidateRepo, overrides: Partial<Paramet
   });
 }
 
-function commandContext(db: Database.Database, executor: Partial<ExecutorAdapter>) {
+function commandContext(db: Database.Database): CommandContext {
   return {
     db,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-    executor: {
-      name: 'mock-executor',
-      execute: vi.fn(),
-      isAvailable: vi.fn(),
-      abort: vi.fn(),
-      ...executor,
-    },
-  } as any;
+  } as never as CommandContext;
 }
 
-describe('learningCommand promote UX', () => {
-  it('promotes an approved safe skill candidate through executor.installSkill and writes audit', async () => {
+function args(candidateId: string): ResolvedCommandArgs {
+  return { positionals: { candidateId }, options: {} };
+}
+
+describe('learning promote UX', () => {
+  it('records an unsupported install audit for approved safe skill candidates', async () => {
     const db = createTestDb();
     const repo = new LearningCandidateRepo(db);
     insertCandidate(repo);
-    const installSkill = vi.fn().mockResolvedValue({
-      ok: true,
-      executorName: 'mock-executor',
-      installedSkillName: 'reusable-metaclaw-verification-workflow',
-      installedVersion: '1.0.0',
-      message: 'installed',
-    });
 
-    const result = await learningCommand.execute(['promote', 'lc_promote_1'], commandContext(db, { installSkill }));
+    const result = await promoteLearningCandidate(args('lc_promote_1'), commandContext(db));
 
-    expect(result.content).toContain('已下发并安装');
-    expect(installSkill).toHaveBeenCalledTimes(1);
-    expect(installSkill.mock.calls[0][0]).toMatchObject({
-      candidateId: 'lc_promote_1',
-      name: 'reusable-metaclaw-verification-workflow',
-    });
-    expect(repo.findById('lc_promote_1')?.status).toBe('promoted');
+    expect(result.content).toContain('不支持 Skill 安装');
+    expect(repo.findById('lc_promote_1')?.status).toBe('approved');
     const audits = new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_promote_1');
     expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ status: 'success', action: 'install', executorName: 'mock-executor' });
+    expect(audits[0]).toMatchObject({
+      status: 'unsupported',
+      action: 'install',
+      executorName: 'sandboxed',
+      packageId: 'pkg_lc_promote_1',
+    });
   });
 
-  it('records unsupported when executor does not implement installSkill without crashing', async () => {
-    const db = createTestDb();
-    const repo = new LearningCandidateRepo(db);
-    insertCandidate(repo);
-
-    const result = await learningCommand.execute(['promote', 'lc_promote_1'], commandContext(db, {}));
-
-    expect(result.content).toContain('不支持');
-    expect(repo.findById('lc_promote_1')?.status).toBe('approved');
-    expect(new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_promote_1')[0].status).toBe('unsupported');
-  });
-
-  it('blocks rejected, pending, or unsafe candidates before executor install', async () => {
+  it('blocks rejected, pending, or unsafe candidates before building a skill package', async () => {
     const db = createTestDb();
     const repo = new LearningCandidateRepo(db);
     insertCandidate(repo, { status: 'pending' });
-    const installSkill = vi.fn();
 
-    const result = await learningCommand.execute(['promote', 'lc_promote_1'], commandContext(db, { installSkill }));
+    const result = await promoteLearningCandidate(args('lc_promote_1'), commandContext(db));
 
     expect(result.content).toContain('不能 promotion');
-    expect(installSkill).not.toHaveBeenCalled();
-    expect(new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_promote_1')[0].status).toBe('blocked');
+    const audits = new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_promote_1');
+    expect(audits[0]).toMatchObject({ status: 'blocked', packageId: null });
   });
 });

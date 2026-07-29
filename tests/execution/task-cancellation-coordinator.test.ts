@@ -26,7 +26,7 @@ describe('TaskCancellationCoordinator', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+    new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-task-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
@@ -242,7 +242,7 @@ describe('TaskCancellationCoordinator', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+    new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-subtask-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });

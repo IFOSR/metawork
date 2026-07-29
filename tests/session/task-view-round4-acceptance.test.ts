@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -8,11 +8,10 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import { taskCommand } from '../../src/commands/task-commands.js';
+import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -50,22 +49,14 @@ describe('Round 4 task view acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。'),
-        exitCode: 0,
-        durationMs: 120,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'Phoenix 周报结论：本周主线推进稳定，当前风险集中在跨团队依赖与下周交付节点。',
+    }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_round4_task_view',
@@ -81,11 +72,13 @@ describe('Round 4 task view acceptance', () => {
     const completedTask = taskRepo.findByStatus('done')[0];
     expect(completedTask).toBeDefined();
 
-    const detail = await taskCommand.execute([completedTask.id], {
+    const detail = await createDefaultCommandCatalog().execute(`/task ${completedTask.id}`, {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      activeExecutions: null,
+      taskControl: null,
+      readServices: null,
       currentTaskId: null,
       db,
       config: createConfig(),

@@ -3,10 +3,11 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { learningCommand } from '../../src/commands/learning-commands.js';
+import { buildLearningWeeklyReview } from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
 import { TaskMemoryCardRepo } from '../../src/storage/task-memory-card-repo.js';
 import { SkillEffectSummaryRepo } from '../../src/storage/skill-effect-summary-repo.js';
+import type { CommandContext } from '../../src/commands/catalog.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -15,17 +16,11 @@ function createTestDb() {
   return db;
 }
 
-function commandContext(db: Database.Database) {
+function commandContext(db: Database.Database): CommandContext {
   return {
     db,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-    executor: {
-      name: 'mock-executor',
-      execute: vi.fn(),
-      isAvailable: vi.fn(),
-      abort: vi.fn(),
-    },
-  } as any;
+  } as never as CommandContext;
 }
 
 function seedWeeklyReviewData(db: Database.Database): void {
@@ -77,7 +72,7 @@ function seedWeeklyReviewData(db: Database.Database): void {
   }
 }
 
-describe('learningCommand E7 weekly self-review', () => {
+describe('learning E7 weekly self-review', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -89,7 +84,7 @@ describe('learningCommand E7 weekly self-review', () => {
     const db = createTestDb();
     seedWeeklyReviewData(db);
 
-    const result = await learningCommand.execute(['weekly'], commandContext(db));
+    const result = await buildLearningWeeklyReview({ positionals: {}, options: {} }, commandContext(db));
 
     expect(result.content).toContain('MetaClaw 学习周报');
     expect(result.content).toContain('## 待审核学习候选');
@@ -98,6 +93,8 @@ describe('learningCommand E7 weekly self-review', () => {
     expect(result.content).toContain('完成 E6 Skill 治理闭环');
     expect(result.content).toContain('## Skill 治理建议');
     expect(result.content).toContain('fragile-skill');
-    expect(result.data).toMatchObject({ weeklyReview: { pendingCandidateCount: 1, taskMemoryCardCount: 1, governanceRecommendationCount: 1 } });
+    expect(result.type === 'text' ? result.payload : undefined).toMatchObject({
+      weeklyReview: { pendingCandidateCount: 1, taskMemoryCardCount: 1, governanceRecommendationCount: 1 },
+    });
   });
 });

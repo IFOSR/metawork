@@ -189,7 +189,6 @@ function writeFeishuGatewayConfig(input: {
   const configPath = resolve(input.metaclawDir, 'config.yaml');
   const envPath = resolve(input.metaclawDir, '.env');
   const config = readConfigObject(configPath);
-  const legacyFeishu = objectValue(objectValue(config.integrations).feishu);
   const existingGatewayFeishu = objectValue(objectValue(objectValue(config.gateway).platforms).feishu);
   const feishuConfig = {
     enabled: true,
@@ -197,9 +196,9 @@ function writeFeishuGatewayConfig(input: {
     connection_mode: input.connectionMode,
     app_id: input.credentials.appId,
     app_secret_env: 'FEISHU_APP_SECRET',
-    event_port: numberValue(existingGatewayFeishu.event_port, numberValue(legacyFeishu.event_port, 8787)),
-    event_path: stringValue(existingGatewayFeishu.event_path, stringValue(legacyFeishu.event_path, '/feishu/events')),
-    verification_token: stringValue(existingGatewayFeishu.verification_token, stringValue(legacyFeishu.verification_token, '')),
+    event_port: numberValue(existingGatewayFeishu.event_port, 8787),
+    event_path: stringValue(existingGatewayFeishu.event_path, '/feishu/events'),
+    verification_token: stringValue(existingGatewayFeishu.verification_token, ''),
     access: {
       dm_policy: input.dmPolicy,
       allowed_users: input.allowedUsers,
@@ -223,14 +222,6 @@ function writeFeishuGatewayConfig(input: {
       feishu: feishuConfig,
     },
   };
-  const integrations = objectValue(config.integrations);
-  delete integrations.feishu;
-  if (Object.keys(integrations).length > 0) {
-    config.integrations = integrations;
-  } else {
-    delete config.integrations;
-  }
-
   writeFileSync(configPath, dump(config, { lineWidth: 120 }), 'utf-8');
   writeEnvValues(envPath, {
     FEISHU_APP_SECRET: input.credentials.appSecret,

@@ -7,7 +7,7 @@ import { AgentClassService } from '../../src/executor/agent-class-service.js';
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   return db;
 }
 

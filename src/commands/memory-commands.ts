@@ -1,53 +1,18 @@
 import { MemoryVaultExporter } from '../memory/memory-vault-exporter.js';
 import type { PreferenceScope } from '../core/types.js';
-import type { CommandHandler, CommandContext, CommandResult } from './router.js';
+import {
+  optionArg,
+  stringArg,
+  type CommandContext,
+  type CommandResult,
+  type ResolvedCommandArgs,
+} from './catalog.js';
 
-const VALID_SCOPES = new Set<PreferenceScope>(['global', 'project', 'contact', 'task-local']);
+const VALID_SCOPES = new Set<string>(['global', 'project', 'contact', 'task-local']);
 
-interface ParsedMemoryArgs {
-  scope?: PreferenceScope;
-  type?: string;
-  subject?: string;
-  rest: string[];
-}
-
-function parseMemoryArgs(args: string[]): ParsedMemoryArgs {
-  const parsed: ParsedMemoryArgs = { rest: [] };
-
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index];
-
-    if (token === '--scope') {
-      const scope = args[index + 1] as PreferenceScope | undefined;
-      if (scope && VALID_SCOPES.has(scope)) {
-        parsed.scope = scope;
-        index += 1;
-        continue;
-      }
-    }
-
-    if (token === '--type') {
-      const type = args[index + 1];
-      if (type) {
-        parsed.type = type;
-        index += 1;
-        continue;
-      }
-    }
-
-    if (token === '--subject') {
-      const subject = args[index + 1];
-      if (subject) {
-        parsed.subject = subject;
-        index += 1;
-        continue;
-      }
-    }
-
-    parsed.rest.push(token);
-  }
-
-  return parsed;
+function scopeOption(args: ResolvedCommandArgs): PreferenceScope | undefined {
+  const value = optionArg(args, '--scope');
+  return value && VALID_SCOPES.has(value) ? value as PreferenceScope : undefined;
 }
 
 function formatPreferenceLine(preference: {
@@ -60,116 +25,120 @@ function formatPreferenceLine(preference: {
   return `  #${preference.id} [${preference.scope}]${subjectText} ${preference.content}`;
 }
 
-function parseDirArg(args: string[]): string | undefined {
-  const index = args.indexOf('--dir');
-  return index >= 0 ? args[index + 1] : undefined;
+export async function listMemories(
+  _args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const prefs = context.memoryEngine.list({ status: 'confirmed' });
+  if (prefs.length === 0) {
+    return { type: 'text', content: '暂无已确认偏好' };
+  }
+  return { type: 'text', content: `已确认偏好：\n${prefs.map(formatPreferenceLine).join('\n')}` };
 }
 
-export const memoryCommand: CommandHandler = {
-  name: 'memory',
-  aliases: [],
-  description: '偏好管理：/memory [search|add|edit|delete|stats|vault]',
-  async execute(args, context) {
-    const action = args[0];
+export async function searchMemories(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const keyword = stringArg(args, 'query').trim();
+  if (!keyword) {
+    return { type: 'text', content: '用法: /memory search <关键词>' };
+  }
+  const results = context.memoryEngine.searchByKeyword(keyword);
+  if (results.length === 0) {
+    return { type: 'text', content: `未找到包含 "${keyword}" 的偏好` };
+  }
+  return { type: 'text', content: `搜索结果：\n${results.map(formatPreferenceLine).join('\n')}` };
+}
 
-    if (!action) {
-      // 显示所有活跃偏好
-      const prefs = context.memoryEngine.list({ status: 'confirmed' });
-      if (prefs.length === 0) {
-        return { type: 'text', content: '暂无已确认偏好' };
-      }
+export async function addMemory(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const content = stringArg(args, 'content').trim();
+  if (!content) {
+    return {
+      type: 'text',
+      content: '用法: /memory add [--scope <global|project|contact|task-local>] [--type <type>] [--subject <subject>] <内容>',
+    };
+  }
+  const pref = context.memoryEngine.addManual({
+    content,
+    scope: scopeOption(args) ?? 'global',
+    type: optionArg(args, '--type') ?? 'domain',
+    subject: optionArg(args, '--subject'),
+  });
+  return { type: 'text', content: `已添加偏好 #${pref.id}` };
+}
 
-      const lines = prefs.map(formatPreferenceLine);
-      return { type: 'text', content: `已确认偏好：\n${lines.join('\n')}` };
-    }
+export async function editMemory(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const prefId = stringArg(args, 'memoryId');
+  const content = stringArg(args, 'content').trim();
+  const scope = scopeOption(args);
+  const type = optionArg(args, '--type');
+  const subject = optionArg(args, '--subject');
 
-    switch (action) {
-      case 'search': {
-        const keyword = args[1];
-        if (!keyword) {
-          return { type: 'text', content: '用法: /memory search <关键词>' };
-        }
-        const results = context.memoryEngine['prefRepo'].searchByKeyword(keyword);
-        if (results.length === 0) {
-          return { type: 'text', content: `未找到包含 "${keyword}" 的偏好` };
-        }
-        const lines = results.map(formatPreferenceLine);
-        return { type: 'text', content: `搜索结果：\n${lines.join('\n')}` };
-      }
+  if (!prefId || (!content && scope === undefined && type === undefined && subject === undefined)) {
+    return {
+      type: 'text',
+      content: '用法: /memory edit <id> [--scope <global|project|contact|task-local>] [--type <type>] [--subject <subject>] <新内容>',
+    };
+  }
 
-      case 'add': {
-        const parsed = parseMemoryArgs(args.slice(1));
-        const content = parsed.rest.join(' ');
-        if (!content) {
-          return { type: 'text', content: '用法: /memory add [--scope <global|project|contact|task-local>] [--type <type>] [--subject <subject>] <内容>' };
-        }
-        const pref = context.memoryEngine.addManual({
-          content,
-          scope: parsed.scope ?? 'global',
-          type: parsed.type ?? 'domain',
-          subject: parsed.subject,
-        });
-        return { type: 'text', content: `已添加偏好 #${pref.id}` };
-      }
+  const updated = context.memoryEngine.update(prefId, {
+    ...(content ? { content } : {}),
+    ...(scope ? { scope } : {}),
+    ...(type ? { type } : {}),
+    ...(subject ? { subject } : {}),
+  });
+  return { type: 'text', content: `已更新偏好 #${updated.id}: ${updated.content}` };
+}
 
-      case 'edit': {
-        const prefId = args[1];
-        const parsed = parseMemoryArgs(args.slice(2));
-        const content = parsed.rest.join(' ');
-        if (!prefId || (!content && parsed.scope === undefined && parsed.type === undefined && parsed.subject === undefined)) {
-          return { type: 'text', content: '用法: /memory edit <id> [--scope <global|project|contact|task-local>] [--type <type>] [--subject <subject>] <新内容>' };
-        }
+export async function deleteMemory(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const prefId = stringArg(args, 'memoryId');
+  if (!prefId) {
+    return { type: 'text', content: '用法: /memory delete <id>' };
+  }
+  context.memoryEngine.delete(prefId);
+  return { type: 'text', content: `已删除偏好 #${prefId}` };
+}
 
-        const updated = context.memoryEngine.update(prefId, {
-          ...(content ? { content } : {}),
-          ...(parsed.scope ? { scope: parsed.scope } : {}),
-          ...(parsed.type ? { type: parsed.type } : {}),
-          ...(parsed.subject ? { subject: parsed.subject } : {}),
-        });
-        return { type: 'text', content: `已更新偏好 #${updated.id}: ${updated.content}` };
-      }
+export async function showMemoryStats(
+  _args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const all = context.memoryEngine.list();
+  const confirmed = all.filter(preference => preference.status === 'confirmed').length;
+  return {
+    type: 'text',
+    content: `偏好统计：\n  已确认: ${confirmed}\n  总计: ${all.length}`,
+  };
+}
 
-      case 'delete': {
-        const prefId = args[1];
-        if (!prefId) {
-          return { type: 'text', content: '用法: /memory delete <id>' };
-        }
-        context.memoryEngine.delete(prefId);
-        return { type: 'text', content: `已删除偏好 #${prefId}` };
-      }
+export async function exportMemoryVault(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const result = new MemoryVaultExporter(context.memoryEngine).export({ vaultDir: optionArg(args, '--dir') });
+  return {
+    type: 'text',
+    content: `Vault 导出完成：${result.vaultDir}\npreferences=${result.preferenceCount}`,
+  };
+}
 
-      case 'stats': {
-        const all = context.memoryEngine.list();
-        const confirmed = all.filter(p => p.status === 'confirmed').length;
-        return {
-          type: 'text',
-          content: `偏好统计：\n  已确认: ${confirmed}\n  总计: ${all.length}`,
-        };
-      }
-
-      case 'vault': {
-        const subAction = args[1];
-        const vaultDir = parseDirArg(args.slice(2));
-        const exporter = new MemoryVaultExporter(context.memoryEngine);
-        if (subAction === 'export') {
-          const result = exporter.export({ vaultDir });
-          return {
-            type: 'text',
-            content: `Vault 导出完成：${result.vaultDir}\npreferences=${result.preferenceCount}`,
-          };
-        }
-        if (subAction === 'status') {
-          const result = exporter.status({ vaultDir });
-          return {
-            type: 'text',
-            content: `Vault 状态：${result.vaultDir}\npreferences=${result.preferenceCount}`,
-          };
-        }
-        return { type: 'text', content: '用法: /memory vault [export|status] [--dir <path>]' };
-      }
-
-      default:
-        return { type: 'text', content: `未知操作: ${action}` };
-    }
-  },
-};
+export async function showMemoryVaultStatus(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const result = new MemoryVaultExporter(context.memoryEngine).status({ vaultDir: optionArg(args, '--dir') });
+  return {
+    type: 'text',
+    content: `Vault 状态：${result.vaultDir}\npreferences=${result.preferenceCount}`,
+  };
+}

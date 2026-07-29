@@ -62,4 +62,8 @@ export class MemoryEngine {
     return this.prefRepo.findAll();
   }
 
+  searchByKeyword(keyword: string): Preference[] {
+    return this.prefRepo.searchByKeyword(keyword);
+  }
+
 }

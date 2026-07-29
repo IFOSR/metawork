@@ -771,7 +771,7 @@ export function App(props: AppProps) {
   });
 
   const renderLines = buildRenderLines(committedOutput);
-  const composerStatus = getComposerStatus(snapshot, committedOutput, props.executor.name, isSubmitting);
+  const composerStatus = getComposerStatus(snapshot, committedOutput, props.config.executor.command, isSubmitting);
   const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId || snapshot.runtimeState.runningExecutorName ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
   const latestEvent = `最近事件 ${snapshot.runtimeState.lastEvent ?? '0'}`;
   const waitingHintVisible = shouldShowWaitingHint(snapshot, committedOutput, showWaitingIndicator);
@@ -791,7 +791,7 @@ export function App(props: AppProps) {
         {waitingHintVisible && (
           <Text color={META_TEXT_COLOR}>
             {'  · Executor: '}
-            {snapshot.runtimeState.runningExecutorName ?? props.executor.name}
+            {snapshot.runtimeState.runningExecutorName ?? props.config.executor.command}
             {' 执行中'}{'.'.repeat(executionAnimationFrame + 1)}
           </Text>
         )}

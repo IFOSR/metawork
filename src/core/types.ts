@@ -475,20 +475,6 @@ export interface Config {
     };
   };
   integrations?: {
-    /**
-     * @deprecated Migration-only. Feishu runtime config now lives under
-     * `gateway.platforms.feishu`; keep this type only to read old config files.
-     */
-    feishu?: {
-      enabled: boolean;
-      mode?: 'websocket' | 'webhook';
-      app_id?: string;
-      app_secret?: string;
-      app_secret_env?: string;
-      event_port: number;
-      event_path: string;
-      verification_token?: string;
-    };
     markdown_preview?: {
       enabled: boolean;
       host: string;

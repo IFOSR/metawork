@@ -1,4 +1,11 @@
-import type { CommandHandler, CommandContext, CommandResult } from './router.js';
+import {
+  optionalStringArg,
+  stringArg,
+  stringListArg,
+  type CommandContext,
+  type CommandResult,
+  type ResolvedCommandArgs,
+} from './catalog.js';
 import { MANAGEABLE_TASK_STATUSES, type TaskClearScope } from '../task/task-control-types.js';
 import { buildMaterialSummary, extractMaterialTextSnippets, isWebLink, splitTaskResources } from '../intent/material-utils.js';
 import type { Task, TaskStatus } from '../core/types.js';
@@ -37,7 +44,7 @@ export async function cancelTasksByScope(
   scope: TaskClearScope,
   reason = `用户清空${CLEAR_SCOPE_LABELS[scope]}`,
 ): Promise<{ cancelled: Task[]; runningCancelled: boolean }> {
-  const repo = context.taskEngine['taskRepo'];
+  const repo = context.taskEngine.getTaskRepo();
   const statuses = CLEAR_SCOPE_STATUSES[scope];
   const candidates = repo.findAll()
     .filter(task => statuses.includes(task.status));
@@ -166,285 +173,311 @@ function buildRecoveryAction(task: {
   return '无';
 }
 
-export const tasksCommand: CommandHandler = {
-  name: 'tasks',
-  aliases: [],
-  description: '命令目录内部的任务列表与批量清理实现。',
-  async execute(args, context) {
-    const filter = args[0];
-    const repo = context.taskEngine['taskRepo'];
-    let tasks;
+export async function listTasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const scope = optionalStringArg(args, 'scope');
+  const filter = scope && scope !== 'all' ? scope : undefined;
+  const repo = context.taskEngine.getTaskRepo();
+  let tasks;
 
-    if (filter === 'clear') {
-      const scope = parseClearScope(args[1]);
-      if (!scope) {
-        return { type: 'text', content: '用法: /task clear [all|parked|blocked]' };
-      }
+  if (filter === 'active') {
+    tasks = repo.findActive();
+  } else if (filter === 'ready' || filter === 'parked' || filter === 'blocked' || filter === 'done') {
+    tasks = repo.findByStatus(filter);
+  } else {
+    tasks = repo.findAll();
+  }
 
-      const result = await cancelTasksByScope(context, scope);
-      return {
-        type: 'text',
-        content: formatTaskClearResult(scope, result.cancelled, result.runningCancelled),
-      };
-    }
+  if (tasks.length === 0) {
+    return { type: 'text', content: '暂无任务' };
+  }
 
-    if (filter === 'active') {
-      tasks = repo.findActive();
-    } else if (filter === 'ready') {
-      tasks = repo.findByStatus('ready');
-    } else if (filter === 'parked') {
-      tasks = repo.findByStatus('parked');
-    } else if (filter === 'blocked') {
-      tasks = repo.findByStatus('blocked');
-    } else if (filter === 'done') {
-      tasks = repo.findByStatus('done');
-    } else {
-      tasks = repo.findAll();
-    }
+  if (filter) {
+    const lines = tasks.map(formatTaskLine);
+    return { type: 'text', content: `任务列表：\n${lines.join('\n')}` };
+  }
 
-    if (tasks.length === 0) {
-      return { type: 'text', content: '暂无任务' };
-    }
+  const groups = [
+    { title: '当前执行', tasks: repo.findByStatus('running') },
+    { title: '待执行', tasks: repo.findByStatus('ready') },
+    { title: '已挂起', tasks: repo.findByStatus('parked') },
+    { title: '已阻塞', tasks: repo.findByStatus('blocked') },
+    { title: '已完成', tasks: repo.findByStatus('done') },
+  ].filter(group => group.tasks.length > 0);
 
-    if (filter) {
-      const lines = tasks.map(formatTaskLine);
-      return { type: 'text', content: `任务列表：\n${lines.join('\n')}` };
-    }
+  const lines = ['任务清单：', ''];
+  for (const group of groups) {
+    lines.push(group.title);
+    group.tasks.forEach(task => lines.push(formatTaskLine(task)));
+    lines.push('');
+  }
 
-    const groups = [
-      { title: '当前执行', tasks: repo.findByStatus('running') },
-      { title: '待执行', tasks: repo.findByStatus('ready') },
-      { title: '已挂起', tasks: repo.findByStatus('parked') },
-      { title: '已阻塞', tasks: repo.findByStatus('blocked') },
-      { title: '已完成', tasks: repo.findByStatus('done') },
-    ].filter(group => group.tasks.length > 0);
+  return { type: 'text', content: lines.join('\n').trimEnd() };
+}
 
-    const lines = ['任务清单：', ''];
-    for (const group of groups) {
-      lines.push(group.title);
-      group.tasks.forEach(task => lines.push(formatTaskLine(task)));
-      lines.push('');
-    }
+export async function clearTasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const scope = parseClearScope(optionalStringArg(args, 'scope'));
+  if (!scope) {
+    return { type: 'text', content: '用法: /task clear [all|parked|blocked]' };
+  }
 
-    return { type: 'text', content: lines.join('\n').trimEnd() };
-  },
-};
+  const result = await cancelTasksByScope(context, scope);
+  return {
+    type: 'text',
+    content: formatTaskClearResult(scope, result.cancelled, result.runningCancelled),
+  };
+}
 
-export const taskCommand: CommandHandler = {
-  name: 'task',
-  aliases: [],
-  description: '任务操作：/task <id> [pause|resume|block|unblock|cancel|done]；/task index rebuild|search <query>',
-  async execute(args, context) {
-    if (args.length === 0) {
-      return { type: 'text', content: '用法: /task <id> [action]；/task index rebuild|search <query>' };
-    }
+export async function showTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-    if (args[0] === 'index') {
-      const action = args[1];
-      const indexRepo = new TaskSearchIndexRepo(context.db);
+  const latestInteraction = context.db.prepare(
+    'SELECT executor_used, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
+  ).get(taskId) as { executor_used: string | null; system_output: string | null; created_at: string } | undefined;
+  const injectedPreferences = context.memoryEngine
+    .list()
+    .filter(preference => task.injectedPreferences.includes(preference.id));
+  const latestSnapshot = task.snapshots[task.snapshots.length - 1] ?? null;
+  const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
+  const latestResult = task.summary || latestInteraction?.system_output || '无';
+  const latestNextStep = buildLatestNextStep(task);
+  const statusExplanation = buildStatusExplanation(task);
+  const lastProgress = latestSnapshot?.done.join('；') || task.summary || '无';
+  const materialGroups = splitTaskResources(task.resources);
+  const materialSnippets = await extractMaterialTextSnippets(task.resources);
+  const materialSummary = buildMaterialSummary(task.resources, materialSnippets);
+  const recoveryAction = buildRecoveryAction({
+    ...task,
+    materialSummary,
+  });
 
-      if (action === 'rebuild') {
-        const count = indexRepo.rebuild();
-        return { type: 'text', content: `任务检索索引已重建：${count} 条索引记录` };
-      }
+  const lines = [
+    `任务视图 #${task.id}`,
+    `标题: ${task.title}`,
+    `目标: ${task.goal}`,
+    '',
+    `当前状态: ${task.status}`,
+    `状态说明: ${statusExplanation}`,
+    `上次做到: ${lastProgress}`,
+    `最新结果摘要: ${latestResult}`,
+    `最新下一步: ${latestNextStep}`,
+    `当前阻塞: ${blocker}`,
+    `材料概览: ${materialSummary.overview}`,
+    `材料状态: ${materialSummary.sufficiency}`,
+    `关联材料: ${task.resources.join(', ') || '无'}`,
+    `本地文件材料: ${materialGroups.files.join(', ') || '无'}`,
+    `网页链接材料: ${materialGroups.links.join(', ') || '无'}`,
+    `任务产物: ${task.artifacts.join(', ') || '无'}`,
+    `恢复操作: ${recoveryAction}`,
+    '',
+    `最近执行器: ${latestInteraction?.executor_used || '无'}`,
+    `最近调度原因: ${task.lastSchedulingReason || '无'}`,
+    `最近中断原因: ${task.lastInterruptionReason || '无'}`,
+    `最新快照时间: ${latestSnapshot ? latestSnapshot.createdAt : '无'}`,
+    `创建时间: ${task.createdAt}`,
+    `更新时间: ${task.updatedAt}`,
+  ];
+  if (injectedPreferences.length > 0) {
+    lines.push('', '注入偏好:');
+    injectedPreferences.forEach(preference => {
+      const subjectText = preference.subject ? ` (${preference.subject})` : '';
+      lines.push(`  - [${preference.scope}]${subjectText} ${preference.content}`);
+    });
+  }
+  return { type: 'text', content: lines.join('\n') };
+}
 
-      if (action === 'search') {
-        const query = args.slice(2).join(' ').trim();
-        if (!query) {
-          return { type: 'text', content: '用法: /task index search <query>' };
-        }
+export async function pauseTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-        const results = indexRepo.search(query, 10);
-        if (results.length === 0) {
-          return { type: 'text', content: '任务检索索引没有命中结果' };
-        }
+  try {
+    const wasRunning = task.status === 'running';
+    context.taskEngine.park(taskId, '用户手动暂停', {
+      done: [task.summary || '进行中'],
+      pending: ['待继续'],
+      nextStep: '恢复后继续',
+      pauseReason: '用户手动暂停',
+    });
+    if (wasRunning) context.activeExecutions?.abortTask(taskId);
+    return { type: 'text', content: `任务 #${taskId} 已暂停` };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
 
-        return {
-          type: 'text',
-          content: [
-            `任务检索索引命中 ${results.length} 条：`,
-            ...results.map(result => {
-              const snippet = result.snippet.replace(/\s+/g, ' ').trim();
-              return `  - #${result.taskId} [${result.sourceKind}] ${result.title || result.sourceId}: ${snippet}`;
-            }),
-          ].join('\n'),
-        };
-      }
+export async function resumeTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-      return { type: 'text', content: '用法: /task index rebuild|search <query>' };
-    }
+  return {
+    type: 'directive',
+    content: `任务 #${taskId} 已提交恢复请求`,
+    directive: { kind: 'resume-task', taskId, mode: 'resume-parked' },
+  };
+}
 
-    const taskId = args[0];
-    const action = args[1];
+export async function blockTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-    const task = context.taskEngine['taskRepo'].findById(taskId);
-    if (!task) {
-      return { type: 'text', content: `任务不存在: ${taskId}` };
-    }
+  try {
+    const wasRunning = task.status === 'running';
+    const reason = stringArg(args, 'reason') || '未指定原因';
+    context.taskEngine.block(taskId, {
+      taskId,
+      type: 'manual',
+      description: reason,
+      status: 'waiting',
+    });
+    if (wasRunning) context.activeExecutions?.abortTask(taskId);
+    return { type: 'text', content: `任务 #${taskId} 已标记为阻塞: ${reason}` };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
 
-    if (!action) {
-      const latestInteraction = context.db.prepare(
-        'SELECT executor_used, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
-      ).get(taskId) as { executor_used: string | null; system_output: string | null; created_at: string } | undefined;
-      const injectedPreferences = context.memoryEngine
-        .list()
-        .filter(preference => task.injectedPreferences.includes(preference.id));
-      const latestSnapshot = task.snapshots[task.snapshots.length - 1] ?? null;
-      const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
-      const latestResult = task.summary || latestInteraction?.system_output || '无';
-      const latestNextStep = buildLatestNextStep(task);
-      const statusExplanation = buildStatusExplanation(task);
-      const lastProgress = latestSnapshot?.done.join('；') || task.summary || '无';
-      const materialGroups = splitTaskResources(task.resources);
-      const materialSnippets = await extractMaterialTextSnippets(task.resources);
-      const materialSummary = buildMaterialSummary(task.resources, materialSnippets);
-      const recoveryAction = buildRecoveryAction({
-        ...task,
-        materialSummary,
-      });
+export async function unblockTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-      const lines = [
-        `任务视图 #${task.id}`,
-        `标题: ${task.title}`,
-        `目标: ${task.goal}`,
-        '',
-        `当前状态: ${task.status}`,
-        `状态说明: ${statusExplanation}`,
-        `上次做到: ${lastProgress}`,
-        `最新结果摘要: ${latestResult}`,
-        `最新下一步: ${latestNextStep}`,
-        `当前阻塞: ${blocker}`,
-        `材料概览: ${materialSummary.overview}`,
-        `材料状态: ${materialSummary.sufficiency}`,
-        `关联材料: ${task.resources.join(', ') || '无'}`,
-        `本地文件材料: ${materialGroups.files.join(', ') || '无'}`,
-        `网页链接材料: ${materialGroups.links.join(', ') || '无'}`,
-        `任务产物: ${task.artifacts.join(', ') || '无'}`,
-        `恢复操作: ${recoveryAction}`,
-        '',
-        `最近执行器: ${latestInteraction?.executor_used || '无'}`,
-        `最近调度原因: ${task.lastSchedulingReason || '无'}`,
-        `最近中断原因: ${task.lastInterruptionReason || '无'}`,
-        `最新快照时间: ${latestSnapshot ? latestSnapshot.createdAt : '无'}`,
-        `创建时间: ${task.createdAt}`,
-        `更新时间: ${task.updatedAt}`,
-      ];
-      if (injectedPreferences.length > 0) {
-        lines.push('', '注入偏好:');
-        injectedPreferences.forEach(preference => {
-          const subjectText = preference.subject ? ` (${preference.subject})` : '';
-          lines.push(`  - [${preference.scope}]${subjectText} ${preference.content}`);
-        });
-      }
-      return { type: 'text', content: lines.join('\n') };
-    }
+  const newlyProvidedResources = Array.from(new Set(stringListArg(args, 'resources').filter(Boolean)));
+  const blockedReason = task.dependencies
+    .filter(dependency => dependency.status === 'waiting')
+    .map(dependency => dependency.description)
+    .filter(Boolean)
+    .join('；');
 
-    try {
-      const wasRunning = task.status === 'running';
-      switch (action) {
-        case 'pause':
-          context.taskEngine.park(taskId, '用户手动暂停', {
-            done: [task.summary || '进行中'],
-            pending: ['待继续'],
-            nextStep: '恢复后继续',
-            pauseReason: '用户手动暂停',
-          });
-          if (wasRunning) context.activeExecutions?.abortTask(taskId);
-          return { type: 'text', content: `任务 #${taskId} 已暂停` };
+  return {
+    type: 'directive',
+    content: newlyProvidedResources.length > 0
+      ? `任务 #${taskId} 已提交恢复请求，并附带资源 ${newlyProvidedResources.join(', ')}`
+      : `任务 #${taskId} 已提交恢复请求`,
+    directive: {
+      kind: 'resume-task',
+      taskId,
+      mode: 'resume-blocked',
+      newlyProvidedResources,
+      blockedReason,
+    },
+  };
+}
 
-        case 'resume': {
-          return {
-            type: 'text',
-            content: `任务 #${taskId} 已提交恢复请求`,
-            data: {
-              schedulerAction: 'resume',
-              taskId,
-              mode: 'resume-parked',
-            },
-          };
-        }
+export async function cancelTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-        case 'block': {
-          const reason = args.slice(2).join(' ') || '未指定原因';
-          context.taskEngine.block(taskId, {
-            taskId,
-            type: 'manual',
-            description: reason,
-            status: 'waiting',
-          });
-          if (wasRunning) context.activeExecutions?.abortTask(taskId);
-          return { type: 'text', content: `任务 #${taskId} 已标记为阻塞: ${reason}` };
-        }
+  try {
+    const receipt = await context.taskControl.cancelTask(taskId);
+    return {
+      type: 'text',
+      content: `任务 #${taskId} 已取消：影响 ${receipt.affectedSubtaskIds.length} 个 Subtask，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
+    };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
 
-        case 'unblock': {
-          const newlyProvidedResources = Array.from(new Set(args.slice(2).filter(Boolean)));
-          const blockedReason = task.dependencies
-            .filter(dependency => dependency.status === 'waiting')
-            .map(dependency => dependency.description)
-            .filter(Boolean)
-            .join('；');
-          return {
-            type: 'text',
-            content: newlyProvidedResources.length > 0
-              ? `任务 #${taskId} 已提交恢复请求，并附带资源 ${newlyProvidedResources.join(', ')}`
-              : `任务 #${taskId} 已提交恢复请求`,
-            data: {
-              schedulerAction: 'resume',
-              taskId,
-              mode: 'resume-blocked',
-              newlyProvidedResources,
-              blockedReason,
-            },
-          };
-        }
+export async function completeTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-        case 'cancel':
-          {
-            const receipt = await context.taskControl.cancelTask(taskId);
-            return {
-              type: 'text',
-              content: `任务 #${taskId} 已取消：影响 ${receipt.affectedSubtaskIds.length} 个 Subtask，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
-            };
-          }
+  return {
+    type: 'text',
+    content: `任务 #${taskId} 不能手工绕过完成门；完整结果会在运行残留清零后自动完成，部分结果请使用 /task ${taskId} accept-partial`,
+  };
+}
 
-        case 'done':
-          return {
-            type: 'text',
-            content: `任务 #${taskId} 不能手工绕过完成门；完整结果会在运行残留清零后自动完成，部分结果请使用 /task ${taskId} accept-partial`,
-          };
+export async function cancelSubtasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
 
-        case 'subtask':
-          if (args[2] !== 'cancel' || args.length < 4) {
-            return {
-              type: 'text',
-              content: `用法: /task ${taskId} subtask cancel <subtaskId...>`,
-            };
-          }
-          {
-            const receipt = await context.taskControl.cancelSubtasks(
-              taskId,
-              args.slice(3),
-            );
-            return {
-              type: 'text',
-              content: `任务 #${taskId} 已提交原子 Subtask 取消：影响 ${receipt.affectedSubtaskIds.length} 个节点，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
-            };
-          }
+  const subtaskIds = stringListArg(args, 'subtaskIds');
+  if (subtaskIds.length === 0) {
+    return { type: 'text', content: `用法: /task ${taskId} subtask cancel <subtaskId...>` };
+  }
 
-        case 'accept-partial':
-          {
-            const receipt = await context.taskControl.acceptPartialResult(taskId);
-            return {
-              type: 'text',
-              content: `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
-            };
-          }
+  try {
+    const receipt = await context.taskControl.cancelSubtasks(taskId, subtaskIds);
+    return {
+      type: 'text',
+      content: `任务 #${taskId} 已提交原子 Subtask 取消：影响 ${receipt.affectedSubtaskIds.length} 个节点，${receipt.cleanupAttemptIds.length} 个 attempt 正在清理`,
+    };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
 
-        default:
-          return { type: 'text', content: `未知操作: ${action}` };
-      }
-    } catch (error) {
-      return { type: 'text', content: `操作失败: ${(error as Error).message}` };
-    }
-  },
-};
+export async function acceptPartialResult(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
+
+  try {
+    const receipt = await context.taskControl.acceptPartialResult(taskId);
+    return {
+      type: 'text',
+      content: `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
+    };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
+
+export async function rebuildTaskIndex(
+  _args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const count = new TaskSearchIndexRepo(context.db).rebuild();
+  return { type: 'text', content: `任务检索索引已重建：${count} 条索引记录` };
+}
+
+export async function searchTaskIndex(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const query = stringArg(args, 'query').trim();
+  if (!query) {
+    return { type: 'text', content: '用法: /task index search <query>' };
+  }
+
+  const results = new TaskSearchIndexRepo(context.db).search(query, 10);
+  if (results.length === 0) {
+    return { type: 'text', content: '任务检索索引没有命中结果' };
+  }
+
+  return {
+    type: 'text',
+    content: [
+      `任务检索索引命中 ${results.length} 条：`,
+      ...results.map(result => {
+        const snippet = result.snippet.replace(/\s+/g, ' ').trim();
+        return `  - #${result.taskId} [${result.sourceKind}] ${result.title || result.sourceId}: ${snippet}`;
+      }),
+    ].join('\n'),
+  };
+}
