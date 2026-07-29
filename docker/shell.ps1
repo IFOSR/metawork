@@ -84,6 +84,15 @@ function Test-ContainerExists {
     return ($code -eq 0)
 }
 
+# Mounts are fixed when a container is created. Detect shells created before the
+# Runtime gained Docker Engine access so the default workflow does not silently
+# restart a container that can never provision executor sandboxes.
+function Test-ContainerHasDockerSocket {
+    if (-not (Test-ContainerExists)) { return $false }
+    $destinations = docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' $container 2>$null
+    return (@($destinations) -contains '/var/run/docker.sock')
+}
+
 function Test-ImageExists {
     param([string]$Tag)
     $code = Invoke-DockerQuiet image inspect $Tag
@@ -228,6 +237,7 @@ function Start-ShellContainer {
       --security-opt seccomp=unconfined `
       -p "${sshPort}:22" `
       --entrypoint /bin/bash `
+      --mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock' `
       -v "${workspaceVolume}:/workspace" `
       -v "${dataVolume}:/data" `
       -v "${plannerEnvFile}:${plannerEnvContainerPath}:ro" `
@@ -258,6 +268,11 @@ function Start-ShellContainer {
 
 function Ensure-ContainerRunning {
     if (Test-ContainerExists) {
+        if (-not (Test-ContainerHasDockerSocket)) {
+            Write-Host "Container predates the Docker socket mount; recreating it..." -ForegroundColor Yellow
+            Start-ShellContainer
+            return
+        }
         $running = docker inspect -f '{{.State.Running}}' $container 2>$null
         if ($running -ne 'true') {
             Write-Host "Container exists but is stopped, starting it..." -ForegroundColor Yellow

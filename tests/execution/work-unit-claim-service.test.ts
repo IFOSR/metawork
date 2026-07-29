@@ -251,4 +251,33 @@ describe('WorkUnitClaimService', () => {
     expect(repo.findAll().filter(unit => unit.agentClassKind === 'executor').map(unit => unit.state))
       .toEqual(['failed', 'failed']);
   });
+
+  it('persists the concrete executor probe error for later diagnostics', async () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+
+    const claim = await new WorkUnitClaimService(repo, 60_000, async () => {
+      throw new Error(
+        'Cannot connect to the Docker daemon at unix:///var/run/docker.sock; '
+        + 'OPENAI_API_KEY=sk-not-for-planner',
+      );
+    }).claim({
+      taskId: 'task_1',
+      attemptId: 'attempt_1',
+      subtask: {
+        id: 'subtask_1',
+        preferredAgentClassList: ['codex-cli'],
+      },
+    });
+
+    expect(claim).toBeNull();
+    const failed = repo.findAll().find(unit => unit.state === 'failed');
+    expect(failed).toBeDefined();
+    expect(repo.listEvents(failed!.id).at(-1)).toMatchObject({
+      eventType: 'probe_failed',
+      message: expect.stringContaining('Cannot connect to the Docker daemon'),
+    });
+    expect(repo.listEvents(failed!.id).at(-1)?.message).not.toContain('sk-not-for-planner');
+  });
 });

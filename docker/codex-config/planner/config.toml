@@ -36,5 +36,5 @@ startup_timeout_sec = 10
 tool_timeout_sec = 15
 enabled = true
 required = true
-enabled_tools = ["search_tasks", "get_task_context", "get_current_session_context", "get_runtime_state", "list_executor_classes"]
+enabled_tools = ["search_tasks", "get_task_context", "get_current_session_context", "get_runtime_state", "list_executor_status", "get_executor_diagnostics"]
 default_tools_approval_mode = "approve"

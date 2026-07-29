@@ -1,6 +1,8 @@
 import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { truncateText } from '../utils/truncate-text.js';
 
 export interface WorkUnitClaim {
   workUnit: WorkUnit;
@@ -177,14 +179,20 @@ export class WorkUnitClaimService {
     });
     this.recordEvent(id, null, null, null, 'probe_started', 'starting');
     let available = false;
+    let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
       available = await this.probeExecutor(agentClassName);
-    } catch {
+    } catch (error) {
       available = false;
+      const detail = error instanceof Error ? error.message : String(error);
+      failureReason = truncateText(
+        redactSensitiveText(`executor probe failed: ${agentClassName}: ${detail}`),
+        800,
+      );
     }
     if (!available) {
       this.workUnitRepo.updateState(id, 'failed', { heartbeatAt: new Date().toISOString() });
-      this.recordEvent(id, null, null, null, 'probe_failed', 'failed', `executor probe failed: ${agentClassName}`);
+      this.recordEvent(id, null, null, null, 'probe_failed', 'failed', failureReason);
       return null;
     }
     this.workUnitRepo.updateState(id, 'idle', { heartbeatAt: new Date().toISOString() });

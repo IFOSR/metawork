@@ -383,7 +383,7 @@ Executor 扩展契约：
 - `intentAffinity`：按 route intent 记录的 affinity，例如 `repo_execution`、`research_workflow`、`memory_agent_ops` 和 `general`。
 - `projectUrl`：项目仓库或文档地址。
 
-Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_executor_status` 读取，不再将其保存为 AgentClass 的静态路由元数据。
+Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_executor_status` 读取，不再将其保存为 AgentClass 的静态路由元数据。Runtime 在故障发生点持久化有界、脱敏的诊断事实，但不把它们被动注入每轮 Planner 上下文；用户追问执行为何失败或阻塞时，Planner 才通过显式只读诊断工具查询并用自然语言解释。
 
 必需的运行绑定：
 
@@ -563,7 +563,7 @@ anyfusion --connect
 
 在 Windows 上，`docker exec -it` 无法为 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流将容器作为 SSH 服务运行，从而为 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。默认 Planner 和执行器为 Codex，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
 
-完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。Executor attempt 由可信 Runtime 经 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。当前 Windows 调试链路把 Docker Desktop Unix socket 挂载给可信 shell Runtime，并自动重建缺少该挂载的旧 shell 容器。Executor attempt 由该可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 

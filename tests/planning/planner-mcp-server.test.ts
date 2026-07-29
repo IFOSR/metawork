@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
@@ -156,6 +157,43 @@ describe('PlannerDataReader', () => {
     expect(JSON.stringify(status)).not.toContain('historicalSuccess');
   });
 
+  it('returns bounded executor probe failures only when explicitly queried', () => {
+    const { db, reader } = createHarness();
+    const now = '2026-07-29T00:00:00.000Z';
+    new AgentClassService({ db }).seedDefaults();
+    db.prepare(`
+      INSERT INTO work_units (
+        id, agent_class_name, agent_class_kind, state, heartbeat_at,
+        lease_expires_at, created_at, updated_at, claimed_attempt_id
+      ) VALUES (?, ?, 'executor', 'failed', ?, NULL, ?, ?, NULL)
+    `).run('executor-diagnostic', 'codex-cli', now, now, now);
+    db.prepare(`
+      INSERT INTO work_unit_events (
+        id, work_unit_id, task_id, subtask_id, attempt_id,
+        event_type, state, message, payload_json, created_at
+      ) VALUES (?, ?, NULL, NULL, NULL, 'probe_failed', 'failed', ?, '{}', ?)
+    `).run(
+      'event-diagnostic',
+      'executor-diagnostic',
+      'executor probe failed: codex-cli: Cannot connect to the Docker daemon',
+      now,
+    );
+
+    expect(reader.getExecutorDiagnostics({ agentClassName: 'codex-cli' })).toEqual({
+      count: 1,
+      failures: [{
+        workUnitId: 'executor-diagnostic',
+        agentClassName: 'codex-cli',
+        taskId: null,
+        subtaskId: null,
+        eventType: 'probe_failed',
+        state: 'failed',
+        reason: 'executor probe failed: codex-cli: Cannot connect to the Docker daemon',
+        createdAt: now,
+      }],
+    });
+  });
+
   it('performs all planner reads with SQLite query-only mode enabled', () => {
     const { db, reader } = createHarness();
     db.pragma('query_only = ON');
@@ -164,8 +202,23 @@ describe('PlannerDataReader', () => {
     reader.searchTasks({});
     reader.getRuntimeState();
     reader.listExecutorStatus();
+    reader.getExecutorDiagnostics({});
 
     const after = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);
     expect(after).toBe(before);
+  });
+
+  it('enables the diagnostic query and tells Planner to use it only on demand', () => {
+    const config = readFileSync('docker/codex-config/planner/config.toml', 'utf-8');
+    const skill = readFileSync(
+      'docker/codex-config/planner/skills/metaclaw-planner/SKILL.md',
+      'utf-8',
+    );
+
+    expect(config).toContain('"get_executor_diagnostics"');
+    expect(config).toContain('"list_executor_status"');
+    expect(config).not.toContain('"list_executor_classes"');
+    expect(skill).toContain('user asks why execution is blocked');
+    expect(skill).toContain('get_executor_diagnostics');
   });
 });

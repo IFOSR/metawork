@@ -230,6 +230,25 @@ describe('ExecutionRuntime', () => {
     expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
   });
 
+  it('preserves image resolution failures for the WorkUnit probe audit', async () => {
+    const unresolved: AgentClass = {
+      ...createAgentClass('codex-cli'),
+      executionImageRef: 'metaclaw/test:latest',
+      resolvedImageId: null,
+      permissionProfileId: 'workspace-engineering',
+    };
+    const sandbox = createSandbox({
+      resolveImage: vi.fn().mockRejectedValue(
+        new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock'),
+      ),
+    });
+    const registry = createRegistry([unresolved], sandbox);
+
+    await expect(registry.isAvailable('codex-cli')).rejects.toThrow(
+      'Cannot connect to the Docker daemon',
+    );
+  });
+
   it('is unavailable when the AgentClass does not exist', async () => {
     const registry = createRegistry([], createSandbox());
     await expect(registry.isAvailable('missing')).resolves.toBe(false);

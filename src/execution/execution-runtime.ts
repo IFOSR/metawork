@@ -68,13 +68,9 @@ export class ExecutorRegistry {
     const agentClass = this.deps.agentClassLookup.findByName(name);
     if (!agentClass) return false;
     if (agentClass.executionImageRef && !agentClass.resolvedImageId) {
-      try {
-        const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
-        if (!imageId.startsWith('sha256:')) return false;
-        this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
-      } catch {
-        return false;
-      }
+      const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
+      if (!imageId.startsWith('sha256:')) return false;
+      this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
     }
     const adapter = this.resolve(name);
     if (!adapter) return false;

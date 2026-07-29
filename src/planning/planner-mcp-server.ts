@@ -193,6 +193,39 @@ export class PlannerDataReader {
       })),
     };
   }
+
+  getExecutorDiagnostics(input: { agentClassName?: string; limit?: number }) {
+    const limit = boundedLimit(input.limit);
+    const params: unknown[] = [];
+    const classFilter = input.agentClassName?.trim()
+      ? 'AND w.agent_class_name = ?'
+      : '';
+    if (classFilter) params.push(input.agentClassName!.trim());
+    params.push(limit);
+    const rows = this.db.prepare(`
+      SELECT e.work_unit_id, w.agent_class_name, e.task_id, e.subtask_id,
+             e.event_type, e.state, e.message, e.created_at
+      FROM work_unit_events e
+      JOIN work_units w ON w.id = e.work_unit_id
+      WHERE e.event_type = 'probe_failed'
+      ${classFilter}
+      ORDER BY e.created_at DESC
+      LIMIT ?
+    `).all(...params) as Array<Record<string, unknown>>;
+    return {
+      count: rows.length,
+      failures: rows.map(row => ({
+        workUnitId: row.work_unit_id,
+        agentClassName: row.agent_class_name,
+        taskId: row.task_id,
+        subtaskId: row.subtask_id,
+        eventType: row.event_type,
+        state: row.state,
+        reason: truncateText(String(row.message ?? ''), 800),
+        createdAt: row.created_at,
+      })),
+    };
+  }
 }
 
 export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
@@ -228,6 +261,13 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     description: 'List bounded Kernel executor class health and three recent safe execution outcomes. Static routing capabilities are already in Planner startup context.',
     inputSchema: {},
   }, async () => toolResult(reader.listExecutorStatus()));
+  server.registerTool('get_executor_diagnostics', {
+    description: 'Read recent bounded executor probe failures and their persisted safe reasons when the user asks why execution is blocked or an executor is unavailable.',
+    inputSchema: {
+      agentClassName: z.string().min(1).max(160).optional(),
+      limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
+    },
+  }, async input => toolResult(reader.getExecutorDiagnostics(input)));
   return server;
 }
 

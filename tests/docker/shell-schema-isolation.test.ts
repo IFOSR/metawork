@@ -16,4 +16,15 @@ describe('Docker shell SQLite schema isolation', () => {
       `$dataVolume = 'metaclaw-shell-data-v${version}'`,
     );
   });
+
+  it('mounts the Docker socket and recreates stale containers without that mount', () => {
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+
+    expect(shell).toContain(
+      "--mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock'",
+    );
+    expect(shell).toContain('function Test-ContainerHasDockerSocket');
+    expect(shell).toContain('if (-not (Test-ContainerHasDockerSocket))');
+    expect(shell).toContain('Start-ShellContainer');
+  });
 });
