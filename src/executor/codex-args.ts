@@ -10,8 +10,10 @@ export function buildCodexNonInteractiveArgs(
 ): string[] {
   return [
     'exec',
-    '--dangerously-bypass-approvals-and-sandbox',
-    '--dangerously-bypass-hook-trust',
+    '--sandbox',
+    'workspace-write',
+    '-c',
+    'approval_policy="never"',
     '--skip-git-repo-check',
     ...((options.ephemeral ?? true) ? ['--ephemeral'] : []),
     ...(options.outputLastMessagePath
@@ -19,6 +21,28 @@ export function buildCodexNonInteractiveArgs(
       : []),
     '--color',
     'never',
+    prompt,
+  ];
+}
+
+export function buildCodexResumeArgs(
+  sessionId: string,
+  prompt: string,
+  options: CodexNonInteractiveArgsOptions = {},
+): string[] {
+  return [
+    'exec',
+    'resume',
+    '--sandbox',
+    'workspace-write',
+    '-c',
+    'approval_policy="never"',
+    '--skip-git-repo-check',
+    '--json',
+    ...(options.outputLastMessagePath ? ['--output-last-message', options.outputLastMessagePath] : []),
+    '--color',
+    'never',
+    sessionId,
     prompt,
   ];
 }

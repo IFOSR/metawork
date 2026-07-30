@@ -6,15 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -45,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -78,38 +77,25 @@ describe('App task-boundary visibility', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
-        exitCode: 0,
-        durationMs: 90,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_task_boundary_visibility_followup',
         contextRecaller,
-        llmBridge,
-        executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
           workGraphPlan({
@@ -160,7 +146,7 @@ describe('App task-boundary visibility', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -185,33 +171,18 @@ describe('App task-boundary visibility', () => {
       },
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: true,
-        output: '最容易被替代的是通用 prompt 编排，最难被替代的是调度、状态与恢复。',
-        exitCode: 0,
-        durationMs: 90,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_task_boundary_visibility_conversation',
         contextRecaller,
-        llmBridge,
-        executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
           directReplyPlan({ reason: '延续当前对话，不恢复旧任务' }),

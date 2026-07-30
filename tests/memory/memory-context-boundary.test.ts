@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('Phase 2 Executor context boundary', () => {
   it('removes Task-level memory/history construction from Session execution', () => {
-    const source = readFileSync('src/session/session-execution-coordinator.ts', 'utf8');
+    const source = readFileSync('src/execution/kernel-execution-runtime.ts', 'utf8');
     expect(source).not.toContain('prepareExecutionContext');
     expect(source).not.toContain('memoryContextService');
     expect(source).not.toContain('conversationHistory');

@@ -3,17 +3,23 @@ import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
-import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { CommandReadServices } from './command-read-services.js';
+import type { TaskControlPort } from './task-control-port.js';
 
 export interface CommandContext {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
-  executor: ExecutorAdapter;
   activeExecutions: ActiveExecutionControl;
+  taskControl: TaskControlPort;
   readServices: CommandReadServices;
+  refreshExecutors?(agentClassNames?: string[]): Promise<{
+    checked: string[];
+    recovered: string[];
+    stillError: string[];
+    skipped: string[];
+  }>;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;
@@ -29,6 +35,21 @@ export type CommandDirective =
       mode: 'resume-parked' | 'resume-blocked';
       newlyProvidedResources?: string[];
       blockedReason?: string;
+    }
+  | {
+      kind: 'show-task-recovery';
+      taskId: string;
+    }
+  | {
+      kind: 'resolve-task-recovery';
+      taskId: string;
+      recoveryItemId: string;
+      resolution: 'assume_applied' | 'retry';
+    }
+  | {
+      kind: 'resolve-permission';
+      requestId: string;
+      resolution: 'approve' | 'deny';
     };
 
 export type CommandResult =
@@ -457,7 +478,7 @@ export class CommandCatalog {
   }
 
   async execute(input: string, context: CommandContext): Promise<CommandResult> {
-    const trimmed = input.trim();
+    const trimmed = normalizeTargetFirstTaskControl(input.trim());
     if (!trimmed.startsWith('/')) return { type: 'text', content: '无效命令' };
     const tokens = lexCommand(trimmed);
     if (tokens.some(token => !token.closed)) {
@@ -904,4 +925,18 @@ export class CommandCatalog {
   private invalid(error: string): ParseActionResult {
     return { state: 'invalid', args: { positionals: {}, options: {} }, hint: null, error };
   }
+}
+
+function normalizeTargetFirstTaskControl(input: string): string {
+  const subtaskCancellation = input.match(
+    /^\/task\s+(\S+)\s+subtask\s+cancel\s+(.+)$/,
+  );
+  if (subtaskCancellation) {
+    return `/task subtask-cancel ${subtaskCancellation[1]} ${subtaskCancellation[2]}`;
+  }
+  const partialAcceptance = input.match(/^\/task\s+(\S+)\s+accept-partial$/);
+  if (partialAcceptance) {
+    return `/task accept-partial ${partialAcceptance[1]}`;
+  }
+  return input;
 }

@@ -13,7 +13,7 @@ import {
   TaskExecutionEvidenceRepo,
 } from './execution-evidence-port.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { COMPLETION_MARKER_V1 } from './completion-protocol.js';
+import { COMPLETION_MARKER_V2 } from './completion-protocol.js';
 import type { ExecutionEvidenceToolBinding } from './execution-evidence-tool-server.js';
 
 export interface SelectedExecutionEvidence {
@@ -33,7 +33,18 @@ export interface SubtaskExecutionContext {
   outOfScopeSiblings: Array<{ id: string; title: string }>;
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
-  completionContract: { marker: typeof COMPLETION_MARKER_V1; schemaVersion: 1 };
+  completionContract:
+    | { marker: typeof COMPLETION_MARKER_V2; schemaVersion: 2 }
+    | {
+        marker: '---METACLAW-MERGE-REPAIR---';
+        protocol: 'metaclaw:merge-repair:v1';
+        allowedPaths: string[];
+      };
+  recovery?: {
+    mode: 'native_session' | 'recovery_packet' | 'fresh';
+    sourceAttemptId: string | null;
+    packet: Record<string, unknown> | null;
+  };
   evidenceTools: {
     availability: 'available' | 'unavailable';
     reason: string;
@@ -63,6 +74,9 @@ export class SubtaskExecutionContextBuilder {
     sessionId: string;
     workspaceContext: WorkspaceContext;
     evidenceToolsAvailable: boolean;
+    currentSubtaskOverride?: Partial<SubtaskExecutionContext['currentSubtask']>;
+    completionContractOverride?: SubtaskExecutionContext['completionContract'];
+    recovery?: SubtaskExecutionContext['recovery'];
     evidenceToolBinding?: ExecutionEvidenceToolBinding;
   }): { context: SubtaskExecutionContext; evidenceCapability: ScopedExecutionEvidencePort } {
     this.syncTaskEvidenceCatalog(input.task);
@@ -101,6 +115,7 @@ export class SubtaskExecutionContextBuilder {
           goal: input.subtask.goal,
           expectedOutput: input.subtask.expectedOutput,
           acceptance: input.subtask.acceptance,
+          ...input.currentSubtaskOverride,
         },
         incomingHandoffs,
         outgoingHandoffRequirements,
@@ -116,7 +131,9 @@ export class SubtaskExecutionContextBuilder {
           attemptId: input.attemptId,
           workUnitId: input.workUnitId,
         },
-        completionContract: { marker: COMPLETION_MARKER_V1, schemaVersion: 1 },
+        completionContract: input.completionContractOverride
+          ?? { marker: COMPLETION_MARKER_V2, schemaVersion: 2 },
+        recovery: input.recovery,
         evidenceTools: input.evidenceToolsAvailable
           ? {
               availability: 'available',
@@ -211,6 +228,12 @@ export class SubtaskExecutionContextBuilder {
       title = `Confirmed preference ${preference.id}`;
       content = preference.content;
       this.evidenceRepo.upsert({ id: evidenceId, taskId: task.id, kind: 'preference', sourceId: preference.id, title, content });
+    } else if (ref.kind === 'task_evidence') {
+      const row = this.evidenceRepo.findForTask(task.id, ref.evidenceId);
+      if (!row || row.kind !== 'task_evidence') throw new Error(`task_evidence_not_authorized: ${ref.evidenceId}`);
+      evidenceId = row.id;
+      title = row.title;
+      content = row.content;
     } else {
       evidenceId = createEvidenceId(`${ref.side}_interaction`, ref.interactionId);
       const materialized = this.evidenceRepo.findForTask(task.id, evidenceId);

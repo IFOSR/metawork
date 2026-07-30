@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
@@ -115,6 +116,32 @@ describe('PlannerDataReader', () => {
     expect(JSON.stringify(result)).not.toContain('secret other session');
   });
 
+  it('exposes bounded Planner-owned facts through MCP instead of prompt injection', () => {
+    const { db, reader } = createHarness();
+    db.prepare(`
+      INSERT INTO preferences (
+        id, type, scope, subject, content, status, confidence,
+        occurrence_count, source_tasks, created_at, updated_at, confirmed_at
+      ) VALUES (?, 'instruction', 'global', NULL, ?, 'confirmed', 1, 1, '[]', ?, ?, ?)
+    `).run(
+      'pref_planner',
+      'Prefer concise answers.',
+      '2026-07-30T00:00:00.000Z',
+      '2026-07-30T00:00:00.000Z',
+      '2026-07-30T00:00:00.000Z',
+    );
+
+    const result = reader.getPlanningContext();
+
+    expect(result.confirmedPreferences).toEqual([
+      expect.objectContaining({ id: 'pref_planner', content: 'Prefer concise answers.' }),
+    ]);
+    expect(result.routingCatalog.executors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
+    ]));
+    expect(result.pendingAuthorizationRequest).toBeNull();
+  });
+
   it('returns dynamic executor status without static catalog or runtime configuration', () => {
     const { db, taskEngine, reader } = createHarness();
     const task = taskEngine.create({ title: 'active task', goal: 'work' });
@@ -124,7 +151,7 @@ describe('PlannerDataReader', () => {
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
       ) VALUES ('global', ?, NULL, 'sess_current', ?)
     `).run(task.id, '2026-07-10T00:00:00.000Z');
-    const agentClassService = new AgentClassService({ db, defaultExecutorName: 'codex-cli' });
+    const agentClassService = new AgentClassService({ db });
     agentClassService.seedDefaults();
     agentClassService.upsert({
       ...agentClassService.findByName('codex-cli')!,
@@ -134,9 +161,15 @@ describe('PlannerDataReader', () => {
     });
     const now = '2026-07-10T00:00:00.000Z';
     db.prepare(`
-      INSERT INTO kernel_executor_status (agent_class_name, class_health, recent_attempts_json, updated_at)
-      VALUES ('codex-cli', 'healthy', ?, ?)
-    `).run(JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]), now);
+      INSERT INTO kernel_executor_status (
+        agent_class_name, class_health, recent_attempts_json, recent_recovery_checks_json, updated_at
+      )
+      VALUES ('codex-cli', 'healthy', ?, ?, ?)
+    `).run(
+      JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]),
+      JSON.stringify([{ checkId: 'check_1', trigger: 'planning_cycle', outcome: 'recovered', failure: null }]),
+      now,
+    );
 
     expect(reader.getRuntimeState()).toMatchObject({
       focus: { taskId: task.id },
@@ -149,11 +182,53 @@ describe('PlannerDataReader', () => {
         agentClassName: 'codex-cli',
         classHealth: 'healthy',
         recentAttempts: [expect.objectContaining({ failureKind: 'network' })],
+        recentRecoveryChecks: [expect.objectContaining({
+          checkId: 'check_1',
+          trigger: 'planning_cycle',
+          outcome: 'recovered',
+        })],
       }),
     ]));
     expect(JSON.stringify(status)).not.toContain('sensitive-runtime-token');
     expect(JSON.stringify(status)).not.toContain('runtimeCommand');
     expect(JSON.stringify(status)).not.toContain('historicalSuccess');
+  });
+
+  it('returns bounded executor probe failures only when explicitly queried', () => {
+    const { db, reader } = createHarness();
+    const now = '2026-07-29T00:00:00.000Z';
+    new AgentClassService({ db }).seedDefaults();
+    db.prepare(`
+      INSERT INTO work_units (
+        id, agent_class_name, agent_class_kind, state, heartbeat_at,
+        lease_expires_at, created_at, updated_at, claimed_attempt_id
+      ) VALUES (?, ?, 'executor', 'failed', ?, NULL, ?, ?, NULL)
+    `).run('executor-diagnostic', 'codex-cli', now, now, now);
+    db.prepare(`
+      INSERT INTO work_unit_events (
+        id, work_unit_id, task_id, subtask_id, attempt_id,
+        event_type, state, message, payload_json, created_at
+      ) VALUES (?, ?, NULL, NULL, NULL, 'probe_failed', 'failed', ?, '{}', ?)
+    `).run(
+      'event-diagnostic',
+      'executor-diagnostic',
+      'executor probe failed: codex-cli: Cannot connect to the Docker daemon',
+      now,
+    );
+
+    expect(reader.getExecutorDiagnostics({ agentClassName: 'codex-cli' })).toEqual({
+      count: 1,
+      failures: [{
+        workUnitId: 'executor-diagnostic',
+        agentClassName: 'codex-cli',
+        taskId: null,
+        subtaskId: null,
+        eventType: 'probe_failed',
+        state: 'failed',
+        reason: 'executor probe failed: codex-cli: Cannot connect to the Docker daemon',
+        createdAt: now,
+      }],
+    });
   });
 
   it('performs all planner reads with SQLite query-only mode enabled', () => {
@@ -162,10 +237,26 @@ describe('PlannerDataReader', () => {
     const before = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);
 
     reader.searchTasks({});
+    reader.getPlanningContext();
     reader.getRuntimeState();
     reader.listExecutorStatus();
+    reader.getExecutorDiagnostics({});
 
     const after = Number((db.prepare('SELECT total_changes() AS count').get() as { count: number }).count);
     expect(after).toBe(before);
+  });
+
+  it('enables the diagnostic query and tells Planner to use it only on demand', () => {
+    const config = readFileSync('docker/codex-config/planner/config.toml', 'utf-8');
+    const skill = readFileSync(
+      'docker/codex-config/planner/skills/metaclaw-planner/SKILL.md',
+      'utf-8',
+    );
+
+    expect(config).toContain('"get_executor_diagnostics"');
+    expect(config).toContain('"list_executor_status"');
+    expect(config).not.toContain('"list_executor_classes"');
+    expect(skill).toContain('user asks why execution is blocked');
+    expect(skill).toContain('get_executor_diagnostics');
   });
 });

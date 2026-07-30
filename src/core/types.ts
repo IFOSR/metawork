@@ -18,6 +18,18 @@ export const TaskStatus = {
 
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
+export const SubtaskStatus = {
+  READY: 'ready',
+  RUNNING: 'running',
+  AWAITING_INTEGRATION: 'awaiting_integration',
+  AWAITING_DECISION: 'awaiting_decision',
+  BLOCKED: 'blocked',
+  DONE: 'done',
+  CANCELLED: 'cancelled',
+} as const;
+
+export type SubtaskStatus = (typeof SubtaskStatus)[keyof typeof SubtaskStatus];
+
 // ─── 任务快照 ───
 export interface TaskSnapshot {
   done: string[];           // 已完成内容
@@ -82,6 +94,9 @@ export interface AgentClass {
   runtimeCommand: string | null;
   runtimeArgs: string[];
   runtimeCheckCommand: string | null;
+  executionImageRef: string | null;
+  resolvedImageId: string | null;
+  permissionProfileId: 'workspace-engineering' | 'public-web-research' | 'restricted-custom' | null;
   projectUrl: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -90,9 +105,11 @@ export interface AgentClass {
 export interface Subtask {
   id: string;
   taskId: string;
+  graphRevision: number;
+  generationId: string;
   title: string;
   goal: string;
-  status: TaskStatus;
+  status: SubtaskStatus;
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
@@ -174,7 +191,7 @@ export interface WorktreeLease {
 // ─── 阻塞依赖 ───
 export interface Dependency {
   taskId: string;
-  type: 'manual';           // V1 仅支持手动解除
+  type: 'manual' | 'kernel_capacity' | 'kernel_retry' | 'kernel_availability';
   description: string;
   status: 'waiting' | 'resolved';
   createdAt: string;
@@ -219,17 +236,6 @@ export interface Preference {
   updatedAt: string;
 }
 
-// ─── 观察记录 ───
-export interface Observation {
-  id: string;
-  pattern: string;
-  occurrenceCount: number;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  sourceTasks: string[];
-  promotedToPreferenceId: string | null;
-}
-
 // ─── 主动建议 ───
 export interface Suggestion {
   taskId: string;
@@ -247,6 +253,7 @@ export interface ExecutorResult {
   exitCode: number;
   durationMs: number;
   interrupted?: boolean;
+  failure?: import('./kernel-failure.js').KernelFailure;
 }
 
 // ─── 恢复摘要 ───
@@ -322,10 +329,6 @@ export interface MemoryContext {
   resolvedPreferences: ResolvedPreference[];
 }
 
-export interface TaskMemoryContext {
-  taskCandidates: TaskMemoryCandidate[];
-}
-
 export interface HistoryContext {
   currentConversationTurns?: Array<{
     taskId: string;
@@ -395,7 +398,6 @@ export interface ExecutionContextBundleV2 {
   taskBrief: TaskBrief;
   resumeContext?: ResumeContext;
   memoryContext: MemoryContext;
-  taskMemoryContext: TaskMemoryContext;
   historyContext: HistoryContext;
   materialContext: MaterialContext;
   workspaceContext?: WorkspaceContext;
@@ -445,116 +447,6 @@ export interface GuidanceProposal {
   createdAt: string;
 }
 
-// ─── V2 记忆召回 ───
-export const RecallCandidateSource = {
-  RULE: 'rule',
-  SEMANTIC: 'semantic',
-  CONTINUITY: 'continuity',
-} as const;
-
-export type RecallCandidateSource = (typeof RecallCandidateSource)[keyof typeof RecallCandidateSource];
-
-export const TaskMemoryKind = {
-  TASK_SUMMARY: 'task_summary',
-  SNAPSHOT_SUMMARY: 'snapshot_summary',
-  MATERIAL_SUMMARY: 'material_summary',
-  ARTIFACT_SUMMARY: 'artifact_summary',
-} as const;
-
-export type TaskMemoryKind = (typeof TaskMemoryKind)[keyof typeof TaskMemoryKind];
-
-export interface TaskMemoryCandidate {
-  id: string;
-  taskId: string;
-  sourceTaskId: string;
-  memoryKind: TaskMemoryKind;
-  title: string;
-  summary: string;
-  reason: string;
-  source: RecallCandidateSource;
-  score: number;
-  artifactPaths: string[];
-}
-
-export interface PreferenceMemoryCandidate {
-  id: string;
-  preferenceId: string;
-  scope: PreferenceScope;
-  subject: string | null;
-  summary: string;
-  reason: string;
-  source: RecallCandidateSource;
-  score: number;
-  applicabilityAction?: MemoryApplicabilityAction;
-  applicabilityScore?: number;
-  applicabilityReason?: string;
-  judgeSource?: MemoryApplicabilityJudgeSource;
-}
-
-export const MemoryApplicabilityAction = {
-  AUTO_APPLY: 'auto_apply',
-  ASK_REVIEW: 'ask_review',
-  SUPPRESS: 'suppress',
-} as const;
-
-export type MemoryApplicabilityAction =
-  (typeof MemoryApplicabilityAction)[keyof typeof MemoryApplicabilityAction];
-
-export const MemoryApplicabilityJudgeSource = {
-  LLM: 'llm',
-  RULE: 'rule',
-  POLICY: 'policy',
-  FALLBACK: 'fallback',
-} as const;
-
-export type MemoryApplicabilityJudgeSource =
-  (typeof MemoryApplicabilityJudgeSource)[keyof typeof MemoryApplicabilityJudgeSource];
-
-export const RecallReviewOption = {
-  ACCEPT_ALL: 'accept_all',
-  REJECT_ALL: 'reject_all',
-  EDIT: 'edit',
-  SELECT_PARTIAL: 'select_partial',
-  AUTO_APPLY_FUTURE: 'auto_apply_future',
-} as const;
-
-export type RecallReviewOption = (typeof RecallReviewOption)[keyof typeof RecallReviewOption];
-
-export interface RecallReviewCard {
-  taskMemorySummary: Array<{
-    label: string;
-    summary: string;
-    reason: string;
-  }>;
-  preferenceMemorySummary: Array<{
-    scope: PreferenceScope;
-    summary: string;
-    reason: string;
-  }>;
-  options: RecallReviewOption[];
-}
-
-export const RecallReviewPolicyType = {
-  TASK_MEMORY: 'task_memory',
-  PROJECT_PREFERENCE: 'project_preference',
-  CONTACT_PREFERENCE: 'contact_preference',
-  PROPOSAL_TYPE: 'proposal_type',
-} as const;
-
-export type RecallReviewPolicyType =
-  (typeof RecallReviewPolicyType)[keyof typeof RecallReviewPolicyType];
-
-export interface RecallReviewPolicy {
-  id: string;
-  policyType: RecallReviewPolicyType;
-  scope: string | null;
-  subject: string | null;
-  proposalType: GuidanceActionType | null;
-  autoApply: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
 // ─── 配置 ───
 export interface Config {
   version: number;
@@ -569,6 +461,7 @@ export interface Config {
     top_k_preferences: number;
     blocked_recheck_enabled?: boolean;
     blocked_recheck_interval?: number;
+    max_concurrent_attempts: number;
   };
   ui: {
     language: string;
@@ -582,20 +475,6 @@ export interface Config {
     };
   };
   integrations?: {
-    /**
-     * @deprecated Migration-only. Feishu runtime config now lives under
-     * `gateway.platforms.feishu`; keep this type only to read old config files.
-     */
-    feishu?: {
-      enabled: boolean;
-      mode?: 'websocket' | 'webhook';
-      app_id?: string;
-      app_secret?: string;
-      app_secret_env?: string;
-      event_port: number;
-      event_path: string;
-      verification_token?: string;
-    };
     markdown_preview?: {
       enabled: boolean;
       host: string;

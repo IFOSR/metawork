@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -23,8 +22,7 @@ describe('MemoryEngine V1 lifecycle', () => {
   beforeEach(() => {
     const db = createTestDb();
     const prefRepo = new PreferenceRepo(db);
-    const obsRepo = new ObservationRepo(db);
-    engine = new MemoryEngine(prefRepo, obsRepo);
+    engine = new MemoryEngine(prefRepo);
     taskEngine = new TaskEngine(new TaskRepo(db), resolve(tmpdir(), 'metaclaw-test-snapshots'));
   });
 

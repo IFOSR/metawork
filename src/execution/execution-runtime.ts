@@ -1,27 +1,25 @@
 // Resolves executor adapters and runs claimed subtask specs through the execution result normalization path.
-import type Database from 'better-sqlite3';
-import type { ExecutorAdapter, ExecutorInput, ExecutorProgressEvent } from '../executor/adapter.js';
-import { ClaudeCodeAdapter } from '../executor/claude-code.js';
-import { CodexCliAdapter } from '../executor/codex-cli.js';
-import { CustomCliExecutorAdapter } from '../executor/custom-cli.js';
-import { DeepSeekTuiAdapter } from '../executor/deepseek-tui.js';
-import { HermesAgentAdapter } from '../executor/hermes-agent.js';
-import { OpenClawAdapter } from '../executor/openclaw.js';
-import { PiAgentAdapter } from '../executor/pi-agent.js';
-import {
-  getBuiltinExecutorDefinition,
-  getBuiltinExecutorDefinitions,
-  type BuiltinExecutorName,
-} from '../executor/builtin-executor-catalog.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import type { AgentClass, Config, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
+import type {
+  ExecutorAdapter,
+  ExecutorInput,
+  ExecutorProbeResult,
+  ExecutorProgressEvent,
+} from '../executor/adapter.js';
+import type { AgentClass, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
+import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
+import type { AgentClassLookupPort } from '../executor/agent-class-lookup-port.js';
+import type { AttemptSandboxPort } from './attempt-sandbox.js';
+import { SandboxedExecutorAdapter } from '../executor/sandboxed-executor-adapter.js';
+import type { AttemptSandboxRepositoryPort } from './repositories.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
+// Recovery strategy is not represented here: the Adapter emits a structured
+// KernelFailure and ControlKernel alone decides retry, fallback, replan or block.
 export interface ExecutionResult {
   taskId: string;
   executionId: string;
@@ -29,238 +27,118 @@ export interface ExecutionResult {
   executorName: string;
   output: string;
   error: string | null;
+  failure: KernelFailure | null;
   artifacts: string[];
   subtaskResults: SubtaskResult[];
   durationMs: number;
   userPrompt: string;
   preferences: ResolvedPreference[];
   context: SubtaskExecutionContext;
-  recovery: {
-    recoverable: boolean;
-    blockReason: string | null;
-  };
-  runtime: {
-    attemptedExecutors: string[];
-    fallbackExecutors: string[];
-    fallbackReason: string | null;
-    fallbackLines: string[];
-  };
 }
 
 export interface ExecutorRegistryDeps {
-  db: Database.Database;
-  config: Config;
-  defaultExecutor: ExecutorAdapter;
-  defaultExecutorFactory?: () => ExecutorAdapter;
-  executorFactory?: (name: string) => ExecutorAdapter | null;
-  adapterRegistry?: ExecutorAdapterRegistry;
+  agentClassLookup: AgentClassLookupPort;
+  attemptSandbox: AttemptSandboxPort;
+  attemptSandboxRepository?: AttemptSandboxRepositoryPort;
+  controlNetwork?: string;
 }
-
-interface AdapterFactoryConfig {
-  timeout: number;
-  maxDuration?: number;
-  workspaceRoot: string;
-}
-
-export type AdapterFactory = (config: AdapterFactoryConfig) => ExecutorAdapter;
-export type CanonicalAdapterFactory = (
-  config: AdapterFactoryConfig,
-  command: string,
-) => ExecutorAdapter;
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'default' | 'injected' | 'built-in' | 'custom-cli' | 'unbound';
+  bindingSource: 'sandbox' | 'unbound';
   adapterName: string | null;
 }
 
-function withLongResearchTimeoutDefaults<T extends AdapterFactoryConfig>(config: T): T {
-  return {
-    ...config,
-    timeout: Math.max(config.timeout, 900),
-    maxDuration: Math.max(config.maxDuration ?? 0, 7200),
-  };
-}
-
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-/** Registers built-in executor adapter factories and maps runtime command aliases to adapter names. */
-export class ExecutorAdapterRegistry {
-  private readonly factories = new Map<string, AdapterFactory>();
-  private readonly commandAliases = new Map<string, string>();
-  private readonly canonicalRegistrations = new Set<BuiltinExecutorName>();
-
-  register(name: string, factory: AdapterFactory, commandAliases: string[] = []): this {
-    const bindingKeys = [name, ...commandAliases];
-    const seen = new Set<string>();
-    for (const bindingKey of bindingKeys) {
-      if (seen.has(bindingKey) || this.commandAliases.has(bindingKey)) {
-        throw new Error(`Duplicate Executor Adapter binding: ${bindingKey}`);
-      }
-      seen.add(bindingKey);
-    }
-    if (this.factories.has(name)) {
-      throw new Error(`Duplicate Executor Adapter name: ${name}`);
-    }
-    this.factories.set(name, factory);
-    this.commandAliases.set(name, name);
-    for (const alias of commandAliases) {
-      this.commandAliases.set(alias, name);
-    }
-    return this;
-  }
-
-  registerCanonical(name: BuiltinExecutorName, factory: CanonicalAdapterFactory): this {
-    const definition = getBuiltinExecutorDefinition(name);
-    if (!definition) {
-      throw new Error(`Missing canonical Executor definition: ${name}`);
-    }
-    const command = definition.adapterBinding.commandAliases[0];
-    if (!command) {
-      throw new Error(`Canonical Executor ${name} has no runtime command alias`);
-    }
-    this.register(
-      definition.adapterBinding.adapterName,
-      config => factory(config, command),
-      [...definition.adapterBinding.commandAliases],
-    );
-    this.canonicalRegistrations.add(name);
-    return this;
-  }
-
-  assertCanonicalCoverage(): this {
-    const missing = getBuiltinExecutorDefinitions()
-      .map(definition => definition.name)
-      .filter(name => !this.canonicalRegistrations.has(name))
-      .sort((left, right) => left.localeCompare(right));
-    if (missing.length > 0) {
-      throw new Error(`Missing canonical Executor Adapter registrations: ${missing.join(', ')}`);
-    }
-    return this;
-  }
-
-  create(name: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
-    const factory = this.factories.get(name);
-    return factory ? factory(config) : null;
-  }
-
-  has(name: string): boolean {
-    return this.factories.has(name);
-  }
-
-  createByCommand(command: string, config: AdapterFactoryConfig): ExecutorAdapter | null {
-    const name = this.commandAliases.get(command);
-    return name ? this.create(name, config) : null;
-  }
-}
-
-export function createDefaultExecutorAdapterRegistry(): ExecutorAdapterRegistry {
-  return new ExecutorAdapterRegistry()
-    .registerCanonical('codex-cli', (config, command) => new CodexCliAdapter({ ...config, command }))
-    .register('claude-code', config => new ClaudeCodeAdapter({ ...config, command: 'claude' }), ['claude'])
-    .register('hermes-agent', config => new HermesAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command: 'hermes' })), ['hermes'])
-    .registerCanonical('pi-agent', (config, command) => new PiAgentAdapter(withLongResearchTimeoutDefaults({ ...config, command })))
-    .register('deepseek-tui', config => new DeepSeekTuiAdapter({ ...config, command: 'deepseek-tui' }), ['deepseek'])
-    .register('openclaw', config => new OpenClawAdapter({ ...config, command: 'openclaw' }))
-    .assertCanonicalCoverage();
-}
-
-/** Resolves executor names from injected defaults, registered adapters, or custom AgentClass runtime commands. */
+/** Resolves AgentClasses to the canonical sandboxed executor adapter. */
 export class ExecutorRegistry {
-  private readonly adapterRegistry: ExecutorAdapterRegistry;
-
-  constructor(private readonly deps: ExecutorRegistryDeps) {
-    this.adapterRegistry = deps.adapterRegistry ?? createDefaultExecutorAdapterRegistry();
-  }
+  constructor(private readonly deps: ExecutorRegistryDeps) {}
 
   resolve(name: string): ExecutorAdapter | null {
-    if (name === this.deps.defaultExecutor.name) {
-      return this.deps.defaultExecutorFactory?.() ?? this.deps.defaultExecutor;
-    }
-
-    const injected = this.deps.executorFactory?.(name);
-    if (injected) {
-      return injected;
-    }
-
-    const registered = this.adapterRegistry.create(name, {
-      timeout: this.deps.config.executor.timeout,
-      maxDuration: this.deps.config.executor.max_duration,
-      workspaceRoot: process.cwd(),
-    });
-    if (registered) {
-      return registered;
-    }
-
-    const customAgentClass = new AgentClassRepo(this.deps.db).findByName(name);
-    if (!customAgentClass?.runtimeCommand) {
-      return null;
-    }
-
-    return new CustomCliExecutorAdapter({
-      name,
-      command: customAgentClass.runtimeCommand,
-      args: customAgentClass.runtimeArgs ?? [],
-      checkCommand: customAgentClass.runtimeCheckCommand,
-      timeout: this.deps.config.executor.timeout,
-      maxDuration: this.deps.config.executor.max_duration,
-      workspaceRoot: process.cwd(),
-    });
-  }
-
-  resolveRequired(name: string): ExecutorAdapter {
-    return this.resolve(name) ?? this.deps.defaultExecutor;
+    const agentClass = this.deps.agentClassLookup.findByName(name);
+    return agentClass
+      ? new SandboxedExecutorAdapter(agentClass, this.deps.attemptSandbox, this.deps.attemptSandboxRepository)
+      : null;
   }
 
   inspect(name: string): ExecutorRegistrationInspection {
-    if (name === this.deps.defaultExecutor.name) {
-      return { configured: true, bindingSource: 'default', adapterName: name };
-    }
-
-    const injected = this.deps.executorFactory?.(name);
-    if (injected) {
-      return { configured: true, bindingSource: 'injected', adapterName: injected.name };
-    }
-
-    if (this.adapterRegistry.has(name)) {
-      return { configured: true, bindingSource: 'built-in', adapterName: name };
-    }
-
-    const customAgentClass = new AgentClassRepo(this.deps.db).findByName(name);
-    if (customAgentClass?.runtimeCommand) {
-      return { configured: true, bindingSource: 'custom-cli', adapterName: name };
-    }
-
-    return { configured: false, bindingSource: 'unbound', adapterName: null };
+    const agentClass = this.deps.agentClassLookup.findByName(name);
+    const configured = Boolean(
+      agentClass?.executionImageRef
+      && agentClass.resolvedImageId
+      && agentClass.permissionProfileId,
+    );
+    return { configured, bindingSource: configured ? 'sandbox' : 'unbound', adapterName: configured ? name : null };
   }
 
-  async isAvailable(name: string): Promise<boolean> {
+  async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
+    const agentClass = this.deps.agentClassLookup.findByName(name);
+    if (!agentClass) {
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'agent_class_not_found',
+          summary: `AgentClass ${name} is not registered`,
+        },
+      };
+    }
+    if (agentClass.executionImageRef && !agentClass.resolvedImageId) {
+      try {
+        const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
+        if (!imageId.startsWith('sha256:')) {
+          return {
+            available: false,
+            failure: {
+              kind: 'configuration',
+              scope: 'agent_class',
+              code: 'executor_image_not_immutable',
+              summary: `Executor image for ${name} did not resolve to an immutable image ID`,
+            },
+          };
+        }
+        this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
+      } catch (error) {
+        return {
+          available: false,
+          failure: {
+            kind: 'adapter',
+            scope: 'agent_class',
+            code: 'executor_image_probe_failed',
+            summary: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+    }
     const adapter = this.resolve(name);
     if (!adapter) {
-      return false;
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'executor_adapter_unbound',
+          summary: `No Executor Adapter is configured for AgentClass ${name}`,
+        },
+      };
     }
-    const available = await adapter.isAvailable();
-    return available !== false;
+    try {
+      await this.deps.attemptSandbox.probeControlNetwork?.(
+        this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+      );
+    } catch (error) {
+      return {
+        available: false,
+        failure: {
+          kind: 'adapter',
+          scope: 'agent_class',
+          code: 'executor_control_network_unavailable',
+          summary: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+    return adapter.probe(previousFailure);
   }
-}
-
-export function createDefaultExecutor(config: {
-  command: string;
-  timeout: number;
-  maxDuration?: number;
-  workspaceRoot?: string;
-}): ExecutorAdapter {
-  const workspaceRoot = config.workspaceRoot ?? process.cwd();
-  const adapterConfig = {
-    timeout: config.timeout,
-    maxDuration: config.maxDuration,
-    workspaceRoot,
-  };
-  const registry = createDefaultExecutorAdapterRegistry();
-  return registry.createByCommand(config.command, adapterConfig)
-    ?? registry.create('claude-code', adapterConfig)!;
 }
 
 export interface ExecutionRuntimeRunInput {
@@ -281,16 +159,35 @@ export interface SubtaskExecutionSpec {
 
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
 export class ExecutionRuntime implements ActiveExecutionControl {
-  private readonly activeByTask = new Map<string, Map<string, { workUnitId: string; executor: ExecutorAdapter }>>();
+  private readonly activeByTask = new Map<string, Map<string, {
+    attemptId: string;
+    workUnitId: string;
+    executor: ExecutorAdapter;
+  }>>();
   private executionTokenSequence = 0;
 
-  constructor(
-    private readonly registry: ExecutorRegistry,
-    _defaultExecutor: ExecutorAdapter,
-  ) {}
+  constructor(private readonly registry: ExecutorRegistry) {}
 
-  isExecutorAvailable(name: string): Promise<boolean> {
-    return this.registry.isAvailable(name);
+  async isExecutorAvailable(name: string): Promise<boolean> {
+    return (await this.registry.probe(name)).available;
+  }
+
+  probeExecutor(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
+    return this.registry.probe(name, previousFailure);
+  }
+
+  supportsResponseOnly(name: string): boolean {
+    return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
+  }
+
+  supportsContinuation(name: string): boolean {
+    return this.registry.resolve(name)?.supportsContinuation === true;
+  }
+
+  async runResponseOnly(agentClassName: string, prompt: string, maxBytes: number) {
+    const executor = this.registry.resolve(agentClassName);
+    if (!executor?.executeResponseOnly) return null;
+    return executor.executeResponseOnly({ prompt, maxBytes });
   }
 
   inspectExecutorRegistration(name: string): ExecutorRegistrationInspection {
@@ -298,9 +195,38 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
-    const executor = this.registry.resolveRequired(input.spec.agentClass.name);
+    const executor = this.registry.resolve(input.spec.agentClass.name);
+    if (!executor) {
+      const summary = `No Executor Adapter is configured for AgentClass ${input.spec.agentClass.name}`;
+      return {
+        taskId: input.taskId,
+        executionId: input.executionId,
+        status: 'failed',
+        executorName: input.spec.agentClass.name,
+        output: '',
+        error: summary,
+        failure: kernelFailure({
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'executor_adapter_unbound',
+          summary,
+        }),
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 0,
+        userPrompt: input.executorInput.context.currentSubtask.goal,
+        preferences: [],
+        context: input.executorInput.context,
+      };
+    }
     const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
-    this.registerActive(input.taskId, executionToken, input.spec.workUnit.id, executor);
+    this.registerActive(
+      input.taskId,
+      executionToken,
+      input.executorInput.context.identity.attemptId,
+      input.spec.workUnit.id,
+      executor,
+    );
     try {
       const result = await this.executeOnce(
         executor,
@@ -312,16 +238,20 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         executor,
         result,
         subtaskResults: [],
-        runtime: {
-          attemptedExecutors: [executor.name],
-          fallbackExecutors: [],
-          fallbackReason: null,
-          fallbackLines: [],
-        },
       });
     } finally {
       this.clearActive(input.taskId, executionToken);
     }
+  }
+
+  abortAttempt(taskId: string, attemptId: string): boolean {
+    const active = this.activeByTask.get(taskId);
+    const entry = active
+      ? [...active.values()].find(candidate => candidate.attemptId === attemptId)
+      : null;
+    if (!entry) return false;
+    entry.executor.abort(attemptId);
+    return true;
   }
 
   abortTask(taskId: string): number {
@@ -330,9 +260,8 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       return 0;
     }
 
-    const executors = Array.from(new Set(Array.from(active.values()).map(entry => entry.executor)));
-    for (const executor of executors) {
-      executor.abort();
+    for (const entry of active.values()) {
+      entry.executor.abort(entry.attemptId);
     }
     return active.size;
   }
@@ -340,11 +269,12 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   private registerActive(
     taskId: string,
     executionToken: string,
+    attemptId: string,
     workUnitId: string,
     executor: ExecutorAdapter,
   ): void {
     const active = this.activeByTask.get(taskId) ?? new Map();
-    active.set(executionToken, { workUnitId, executor });
+    active.set(executionToken, { attemptId, workUnitId, executor });
     this.activeByTask.set(taskId, active);
   }
 
@@ -362,7 +292,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     executor: ExecutorAdapter;
     result: ExecutorResult;
     subtaskResults: SubtaskResult[];
-    runtime: ExecutionResult['runtime'];
   }): ExecutionResult {
     return {
       taskId: input.input.taskId,
@@ -373,17 +302,13 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       executorName: input.executor.name,
       output: input.result.output,
       error: input.result.error ?? null,
+      failure: input.result.failure ?? null,
       artifacts: input.subtaskResults.flatMap(result => result.artifacts),
       subtaskResults: input.subtaskResults,
       durationMs: input.result.durationMs,
       userPrompt: input.input.executorInput.context.currentSubtask.goal,
       preferences: [],
       context: input.input.executorInput.context,
-      recovery: {
-        recoverable: Boolean(input.result.error),
-        blockReason: input.result.error ?? null,
-      },
-      runtime: input.runtime,
     };
   }
 

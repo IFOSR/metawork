@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { validateCompletionProtocol, COMPLETION_MARKER_V1 } from '../../src/execution/completion-protocol.js';
+import { validateCompletionProtocol, COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 import type { Subtask } from '../../src/core/types.js';
 
 const roots: string[] = [];
@@ -22,12 +22,13 @@ function subtask(overrides: Partial<Subtask> = {}): Subtask {
 }
 
 function response(envelope: Record<string, unknown>, body = 'Completed cleanly.'): string {
-  return `${body}\n\n${COMPLETION_MARKER_V1}\n${JSON.stringify(envelope)}`;
+  return `${body}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify(envelope)}`;
 }
 
 function envelope(overrides: Record<string, unknown> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    status: 'completed',
     subtaskId: 'task_a',
     acceptanceEvidence: [{ key: 'done', evidence: ['verified result'] }],
     artifacts: [],
@@ -40,7 +41,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('Completion Protocol v1', () => {
+describe('Completion Protocol v2', () => {
   it('strips a strict terminal envelope', () => {
     const result = validateCompletionProtocol({ rawResponse: response(envelope()), subtask: subtask(), outgoingHandoffs: [], targetPaths: [] });
     expect(result).toMatchObject({ ok: true, body: 'Completed cleanly.', warnings: [] });
@@ -48,7 +49,7 @@ describe('Completion Protocol v1', () => {
 
   it('rejects duplicate markers, trailing text, and mismatched acceptance', () => {
     expect(validateCompletionProtocol({
-      rawResponse: `${response(envelope())}\n${COMPLETION_MARKER_V1}`,
+      rawResponse: `${response(envelope())}\n${COMPLETION_MARKER_V2}`,
       subtask: subtask(), outgoingHandoffs: [], targetPaths: [],
     }).ok).toBe(false);
     expect(validateCompletionProtocol({
@@ -60,6 +61,31 @@ describe('Completion Protocol v1', () => {
       subtask: subtask(), outgoingHandoffs: [], targetPaths: [],
     });
     expect(mismatch.ok ? [] : mismatch.violations.map(item => item.code)).toContain('completion_acceptance_mismatch');
+  });
+
+  it('accepts only the controlled Executor failure taxonomy', () => {
+    const failed = validateCompletionProtocol({
+      rawResponse: response({
+        schemaVersion: 2,
+        status: 'failed',
+        subtaskId: 'task_a',
+        failure: { kind: 'capability_mismatch', code: 'missing_browser', summary: 'This class cannot browse.' },
+      }, 'Unable to complete this Subtask.'),
+      subtask: subtask(), outgoingHandoffs: [], targetPaths: [],
+    });
+    expect(failed).toMatchObject({
+      ok: true,
+      envelope: { status: 'failed', failure: { kind: 'capability_mismatch' } },
+    });
+    expect(validateCompletionProtocol({
+      rawResponse: response({
+        schemaVersion: 2,
+        status: 'failed',
+        subtaskId: 'task_a',
+        failure: { kind: 'network', code: 'network', summary: 'network down' },
+      }),
+      subtask: subtask(), outgoingHandoffs: [], targetPaths: [],
+    }).ok).toBe(false);
   });
 
   it('requires exact outgoing handoff items and types', () => {

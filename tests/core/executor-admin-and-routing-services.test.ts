@@ -16,11 +16,7 @@ function createDb() {
 describe('agent class admin and planner dispatch services', () => {
   it('owns executor AgentClass register wizard state and persists classes without session logic', async () => {
     const db = createDb();
-    const agentClassService = new AgentClassService({
-      db,
-      defaultExecutorName: 'codex-cli',
-      availableCommands: new Set(['codex']),
-    });
+    const agentClassService = new AgentClassService({ db });
     const service = new ExecutorAdminService({
       agentClassService,
       presentation: new SessionPresentationService(),
@@ -29,6 +25,9 @@ describe('agent class admin and planner dispatch services', () => {
 
     expect(service.startWizard().join('\n')).toContain('Executor AgentClass name');
     await service.handlePendingWizardInput('research-bot');
+    await service.handlePendingWizardInput('registry.example/research-bot:1.0.0');
+    await service.handlePendingWizardInput(`sha256:${'a'.repeat(64)}`);
+    await service.handlePendingWizardInput('restricted-custom');
     await service.handlePendingWizardInput('manual');
     await service.handlePendingWizardInput('research-bot');
     await service.handlePendingWizardInput('run --prompt {prompt}');
@@ -55,11 +54,7 @@ describe('agent class admin and planner dispatch services', () => {
   it('infers package runtime from project URL inside the admin service', async () => {
     const db = createDb();
     const service = new ExecutorAdminService({
-      agentClassService: new AgentClassService({
-        db,
-        defaultExecutorName: 'codex-cli',
-        availableCommands: new Set(['codex']),
-      }),
+      agentClassService: new AgentClassService({ db }),
       presentation: new SessionPresentationService(),
       fetchText: vi.fn(async url => url.endsWith('/package.json')
         ? JSON.stringify({ name: '@acme/research-bot', bin: { 'research-bot': './bin.js' } })
@@ -68,6 +63,9 @@ describe('agent class admin and planner dispatch services', () => {
 
     service.startWizard();
     await service.handlePendingWizardInput('research-bot');
+    await service.handlePendingWizardInput('registry.example/research-bot:1.0.0');
+    await service.handlePendingWizardInput(`sha256:${'b'.repeat(64)}`);
+    await service.handlePendingWizardInput('restricted-custom');
     await service.handlePendingWizardInput('url');
     const result = await service.handlePendingWizardInput('https://github.com/acme/research-bot');
 
@@ -78,7 +76,7 @@ describe('agent class admin and planner dispatch services', () => {
   it('rejects canonical names at the first wizard step', async () => {
     const db = createDb();
     const service = new ExecutorAdminService({
-      agentClassService: new AgentClassService({ db, defaultExecutorName: 'codex-cli' }),
+      agentClassService: new AgentClassService({ db }),
       presentation: new SessionPresentationService(),
       fetchText: vi.fn(),
     });

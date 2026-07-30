@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { describe, expect, it, vi } from 'vitest';
@@ -236,7 +236,7 @@ describe('VerificationAndDeliveryService', () => {
     expect(result).toEqual({ status: 'pass', reason: null });
   });
 
-  it('collects artifacts, writes Feishu fallback markdown, and builds completion lines', () => {
+  it('collects artifacts and builds completion lines', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'metaclaw-delivery-'));
     const artifactPath = resolve(dir, 'result.html');
     writeFileSync(artifactPath, '<html>done</html>', 'utf-8');
@@ -254,13 +254,12 @@ describe('VerificationAndDeliveryService', () => {
       nextStep: '无后续建议',
     });
 
-    const feishuFallbackPath = resolve(dir, 'feishu-document.md');
     expect(result.verification.status).toBe('pass');
-    expect(result.artifactPaths).toEqual(expect.arrayContaining([artifactPath, feishuFallbackPath]));
-    expect(existsSync(feishuFallbackPath)).toBe(true);
-    expect(readFileSync(feishuFallbackPath, 'utf-8')).toContain('已生成在线预览');
+    expect(result.artifactPaths).toEqual([artifactPath]);
+    // 交付意图不再由代码侧关键词推断，不应凭空生成飞书文档产物（ADR-0015）。
+    expect(existsSync(resolve(dir, 'feishu-document.md'))).toBe(false);
     expect(result.completionLines.join('\n')).toContain('✓ 任务完成 (1.2s)');
-    expect(result.completionLines.join('\n')).toContain('→ 已记录 2 个任务产物');
+    expect(result.completionLines.join('\n')).toContain('→ 已记录 1 个任务产物');
   });
 
   it.each([
@@ -304,7 +303,6 @@ describe('VerificationAndDeliveryService', () => {
 
   it('delivers resume-blocked task completion through notification service only when needed', async () => {
     const notifier = {
-      notifyMemoryCandidate: vi.fn(),
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
     const service = new VerificationAndDeliveryService();
@@ -332,26 +330,6 @@ describe('VerificationAndDeliveryService', () => {
       origin: 'user',
     })).toBeNull();
     expect(notifier.notifyTaskCompleted).toHaveBeenCalledTimes(1);
-  });
-
-  it('delivers memory candidate notifications without blocking callers', () => {
-    const notifier = {
-      notifyMemoryCandidate: vi.fn().mockResolvedValue(undefined),
-      notifyTaskCompleted: vi.fn(),
-    };
-    const service = new VerificationAndDeliveryService();
-
-    service.deliverMemoryCandidate(notifier, {
-      observationId: 'obs_1',
-      pattern: '长期偏好',
-      source: 'high-confidence',
-    });
-
-    expect(notifier.notifyMemoryCandidate).toHaveBeenCalledWith({
-      observationId: 'obs_1',
-      pattern: '长期偏好',
-      source: 'high-confidence',
-    });
   });
 
   it('formats blocked recovery completion output in the delivery boundary', () => {

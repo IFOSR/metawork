@@ -24,7 +24,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
 function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
   return {
     id: 'plan_1',
-    schemaVersion: 4,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -41,6 +41,7 @@ function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
       priority: { level: 'normal', reason: 'normal scheduling' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: { reason: 'capability-minimal work graph', subtasks },
     source: 'codex-planner',
   };
@@ -133,6 +134,23 @@ describe('validatePlanningAgentPlan', () => {
 
     expect(validatePlanningAgentPlan(candidate, catalog).errors).toContain(
       'unknown_dependency: subtasks.1.dependencies.0.fromSubtaskId: subtask b depends on unknown subtask missing',
+    );
+  });
+
+  it('rejects a mergeable same-AgentClass chain through shared Work Graph validation', () => {
+    const candidate = plan([
+      subtask({ id: 'implement' }),
+      subtask({
+        id: 'verify',
+        dependencies: [{
+          fromSubtaskId: 'implement',
+          requiredItems: [{ key: 'result', type: 'text', description: 'implementation result' }],
+        }],
+      }),
+    ]);
+
+    expect(validatePlanningAgentPlan(candidate, catalog).errors).toContain(
+      'mergeable_same_agent_chain: subtasks.1.dependencies.0: subtasks implement -> verify form a mergeable codex-cli single chain',
     );
   });
 });

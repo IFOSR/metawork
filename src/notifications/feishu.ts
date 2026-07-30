@@ -2,7 +2,7 @@ import { createHmac } from 'crypto';
 import type { Config } from '../core/types.js';
 import { createFeishuWebhookMarkdownCard, FeishuAppClient, resolveAppSecret, type FeishuAppConfig } from '../integrations/feishu-app.js';
 import { resolveFeishuGatewayConfig, toFeishuAppConfig } from '../gateway/feishu-config.js';
-import { NoopNotificationService, type MemoryCandidateNotification, type NotificationService, type TaskCompletedNotification } from './types.js';
+import { NoopNotificationService, type NotificationService, type TaskCompletedNotification } from './types.js';
 
 export interface FeishuNotificationConfig {
   enabled: boolean;
@@ -40,29 +40,6 @@ export class FeishuNotifier implements NotificationService {
     this.nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   }
 
-  async notifyMemoryCandidate(input: MemoryCandidateNotification): Promise<void> {
-    if (!this.config.enabled || !this.config.webhook_url) {
-      return;
-    }
-
-    const body: Record<string, unknown> = {
-      msg_type: 'interactive',
-      ...createFeishuWebhookMarkdownCard(formatMemoryCandidateText(input)),
-    };
-
-    if (this.config.secret) {
-      const timestamp = String(this.nowSeconds());
-      body.timestamp = timestamp;
-      body.sign = createFeishuSign(timestamp, this.config.secret);
-    }
-
-    const response = await this.postJson(this.config.webhook_url, body);
-    if (!response.ok) {
-      const responseText = await response.text();
-      throw new Error(`飞书通知发送失败: HTTP ${response.status} ${responseText}`);
-    }
-  }
-
   async notifyTaskCompleted(input: TaskCompletedNotification): Promise<void> {
     if (!this.config.enabled || !this.config.webhook_url) {
       return;
@@ -96,11 +73,6 @@ export class FeishuGatewayHomeNotifier implements NotificationService {
     },
   ) {}
 
-  async notifyMemoryCandidate(input: MemoryCandidateNotification): Promise<void> {
-    const client = this.input.client ?? this.createClient();
-    await client.sendMarkdownCardToChat(this.input.homeChannel, formatMemoryCandidateText(input));
-  }
-
   async notifyTaskCompleted(input: TaskCompletedNotification): Promise<void> {
     const client = this.input.client ?? this.createClient();
     await client.sendMarkdownCardToChat(this.input.homeChannel, formatTaskCompletedText(input));
@@ -116,23 +88,6 @@ export class FeishuGatewayHomeNotifier implements NotificationService {
       app_secret: appSecret,
     });
   }
-}
-
-function formatMemoryCandidateText(input: MemoryCandidateNotification): string {
-  const sourceText = input.source === 'high-confidence'
-    ? '高置信偏好识别'
-    : '重复模式识别';
-
-  return [
-    'Metaclaw 检测到候选偏好',
-    '',
-    `来源：${sourceText}`,
-    `候选：${input.pattern}`,
-    `ID：${input.observationId}`,
-    '',
-    '当前任务不会等待用户确认。系统只会自动写入低风险、高置信偏好；其余候选仅保留备查。',
-    `如需长期保存，可稍后在 Metaclaw 输入 /memory confirm ${input.observationId}；不需要则输入 /memory reject ${input.observationId}。`,
-  ].join('\n');
 }
 
 function formatTaskCompletedText(input: TaskCompletedNotification): string {

@@ -3,7 +3,7 @@ import { PlanningContextBuilder } from '../../src/planning/planning-context-buil
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 
 describe('PlanningContextBuilder', () => {
-  it('builds bounded startup context without unrelated runtime facts', () => {
+  it('builds host metadata without model dialogue or injected domain facts', () => {
     const context = new PlanningContextBuilder({
       sessionId: 'sess_minimal',
       requestSource: 'interactive',
@@ -12,16 +12,8 @@ describe('PlanningContextBuilder', () => {
 
     expect(context).toEqual({
       userInput: 'continue',
-      initialContext: {
-        longTermMemories: [],
-        conversationHistory: [],
-      },
       request: { sessionId: 'sess_minimal', source: 'interactive' },
-      permissions: {
-        allowDurableTask: true,
-        allowFileModification: true,
-        allowExternalGateway: true,
-      },
+      pendingAuthorizationRequest: null,
       executorCatalog: getPlannerExecutorCatalog(),
       timeoutMs: 5_000,
     });
@@ -29,6 +21,8 @@ describe('PlanningContextBuilder', () => {
     expect(context).not.toHaveProperty('agentClasses');
     expect(context).not.toHaveProperty('ruleHints');
     expect(context).not.toHaveProperty('currentFocus');
+    expect(context).not.toHaveProperty('initialContext');
+    expect(context).not.toHaveProperty('permissions');
     expect(JSON.stringify(context.executorCatalog)).not.toMatch(
       /nativeAffordances|requiredAffordances|agentClassDefaults|adapterBinding|runtimeCommand|historicalSuccess/,
     );

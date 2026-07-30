@@ -3,25 +3,33 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
-import { PlanningDecisionRepo } from '../../src/storage/planning-decision-repo.js';
+import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
-import { PolicyKernel } from '../../src/kernel/policy-kernel.js';
+import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan, PlanningContext } from '../../src/planning/planning-types.js';
-import { completionResponse } from '../support/completion-response.js';
+import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
+import { PlanningContextBuilder } from '../../src/planning/planning-context-builder.js';
+import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
+import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
+import type {
+  FakeAttemptSandboxResponder,
+  FakeAttemptSandboxResponse,
+} from '../support/fake-attempt-sandbox.js';
+import {
+  completionResponseFromSandboxInput,
+  FakeAttemptSandbox,
+} from '../support/fake-attempt-sandbox.js';
 
 function createConfig(): Config {
   return {
     version: 1,
     executor: { command: 'codex', timeout: 60_000 },
-    orchestration: { reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
+    orchestration: { max_concurrent_attempts: 4, reminder_enabled: false, reminder_throttle: 3600, top_k_preferences: 5 },
     ui: { language: 'zh-CN', dashboard_on_start: false },
   };
 }
@@ -29,7 +37,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 4,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -46,6 +54,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
       priority: { level: 'normal', reason: 'test priority' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: {
       reason: 'single executor work graph',
       subtasks: [{
@@ -69,60 +78,94 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
 function createSession(
   sessionId: string,
   planningPlan: PlanningAgentPlan | ((context: PlanningContext) => PlanningAgentPlan | Promise<PlanningAgentPlan>),
+  responder?: (
+    ...args: [...Parameters<FakeAttemptSandboxResponder>, Database.Database]
+  ) => FakeAttemptSandboxResponse | Promise<FakeAttemptSandboxResponse>,
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
-  const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
-  const executor: ExecutorAdapter = {
-    name: 'codex-cli',
-    execute: vi.fn().mockImplementation(async input => ({
-      success: true, output: completionResponse(input, 'done'), exitCode: 0, durationMs: 10,
-    })),
-    isAvailable: vi.fn().mockResolvedValue(true),
-    abort: vi.fn(),
-  };
-  const llmBridge = {
-    resolveRoute: vi.fn(),
-    resolveIntent: vi.fn(),
-    rankInteractions: vi.fn().mockResolvedValue([]),
-  } as unknown as LlmBridge;
+  const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
+  const attemptSandbox = new FakeAttemptSandbox(
+    (input, attemptIndex) => responder?.(input, attemptIndex, db) ?? { body: 'done' },
+  );
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
     orchestration: new OrchestrationEngine(taskEngine),
-    executor,
+    attemptSandbox,
     db,
     config: createConfig(),
     sessionId,
     contextRecaller: new ContextRecaller(db),
-    llmBridge,
     planningAgent: {
       plan: typeof planningPlan === 'function'
         ? vi.fn().mockImplementation(planningPlan)
         : vi.fn().mockResolvedValue(planningPlan),
     },
-    availableExecutorCommands: new Set(['codex']),
   });
   session.initialize({ resumeStartupTasks: false });
-  return { db, session, taskRepo, memoryEngine, executor, planningDecisionRepo: new PlanningDecisionRepo(db), sessionId };
+  return {
+    db,
+    session,
+    taskRepo,
+    memoryEngine,
+    attemptSandbox,
+    kernelDecisionRepo: new KernelDecisionRepo(db),
+    sessionId,
+  };
 }
 
-// Behavior-first coverage of the PlanningAgent -> PolicyKernel -> Runtime seam.
+function seedPriorGenerationEvidence(db: Database.Database, taskId: string): void {
+  const now = '2026-07-20T00:00:00.000Z';
+  new SubtaskRepo(db).upsert({
+    id: 'subtask_prior_generation',
+    taskId,
+    graphRevision: 99,
+    generationId: 'generation_prior',
+    title: 'Prior generation work',
+    goal: 'Prior generation work',
+    status: 'done',
+    dependencies: [],
+    contextRefs: [],
+    requiredCapabilities: ['workspace-engineering'],
+    preferredAgentClassList: ['codex-cli'],
+    expectedOutput: 'historical result',
+    acceptance: [],
+    riskLevel: 'low',
+    result: 'must not leak into the current generation',
+    artifacts: [],
+    verification: { warnings: [], completionSchemaVersion: 2 },
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  new TaskExecutionEvidenceRepo(db).upsert({
+    id: 'evidence_prior_generation',
+    taskId,
+    kind: 'task_evidence',
+    sourceId: 'subtask_prior_generation',
+    title: 'Prior generation evidence',
+    content: 'must not leak into the current generation',
+    createdAt: now,
+  });
+}
+
+// Behavior-first coverage of the PlanningAgent -> ControlKernel -> Runtime seam.
 // Rather than grepping the session source for symbol names, these assert the
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
-  it('uses confirmed global memory in a direct reply', async () => {
+  it('does not inject confirmed global memory into the Planner model input', async () => {
     const harness = createSession('sess_direct_memory', context => plan({
       action: 'direct_reply',
-      reason: '回答用户的名字',
+      reason: '确认宿主不注入偏好',
       response: {
         directReply: JSON.stringify(context).includes('我的名字是咸蛋超人')
-          ? '你的名字是咸蛋超人。'
-          : '我不知道你的名字。',
+          ? '宿主注入了偏好。'
+          : '偏好需要通过 Planner MCP 查询。',
       },
       task: {
         binding: 'none',
@@ -144,7 +187,9 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('我的名字是什么？', { awaitAsyncWork: true });
 
-    expect(harness.session.getSnapshot().output.join('\n')).toContain('你的名字是咸蛋超人。');
+    const output = harness.session.getSnapshot().output.join('\n');
+    expect(output).toContain('偏好需要通过 Planner MCP 查询。');
+    expect(output).not.toContain('宿主注入了偏好。');
   });
 
   it('does not expose an unconfirmed global memory to a direct reply', async () => {
@@ -176,19 +221,22 @@ describe('natural-language planning/kernel path', () => {
     expect(output).not.toContain('泄露了未确认记忆。');
   });
 
-  it('recalls persisted conversation history in the next direct reply', async () => {
+  it('lets the PlanningAgent own dialogue memory without replaying persisted history', async () => {
     let turn = 0;
+    let nativeThreadMarker: string | null = null;
+    const receivedInputs: string[] = [];
     const harness = createSession('sess_direct_history', context => {
       turn += 1;
-      const recalledFirstReply = JSON.stringify(context).includes('暗号是青鸟');
+      receivedInputs.push(context.userInput);
+      if (turn === 1 && context.userInput.includes('青鸟')) nativeThreadMarker = '青鸟';
       return plan({
         action: 'direct_reply',
         reason: '延续当前对话',
         response: {
           directReply: turn === 1
             ? '好的，暗号是青鸟。'
-            : recalledFirstReply
-              ? '你刚才的暗号是青鸟。'
+            : nativeThreadMarker
+              ? `你刚才的暗号是${nativeThreadMarker}。`
               : '我没有找到刚才的暗号。',
         },
         task: {
@@ -209,6 +257,10 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('我刚才说的暗号是什么？', { awaitAsyncWork: true });
 
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你刚才的暗号是青鸟。');
+    expect(receivedInputs).toEqual([
+      '请记住，暗号是青鸟。',
+      '我刚才说的暗号是什么？',
+    ]);
   });
 
   it('authorizes a durable task, dispatches the executor, and audits the decision', async () => {
@@ -218,13 +270,207 @@ describe('natural-language planning/kernel path', () => {
 
     const [createdTask] = harness.taskRepo.findAll();
     expect(createdTask).toBeDefined();
-    expect(harness.executor.execute).toHaveBeenCalledTimes(1);
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(1);
 
-    const audits = harness.planningDecisionRepo.listBySession('sess_durable');
-    expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('plan_work_graph');
-    expect(['accept', 'rewrite']).toContain(audits[0]!.outcome);
-    expect(audits[0]!.taskId).toBe(createdTask!.id);
+    const audits = harness.kernelDecisionRepo.listBySession('sess_durable');
+    expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
+    expect(audits.some(audit => audit.action === 'dispatch_batch')).toBe(true);
+    expect(audits.some(audit => audit.action === 'complete_task')).toBe(true);
+  });
+
+  it('runs independent frontier items concurrently and publishes them in stable dispatch order', async () => {
+    let running = 0;
+    let maximumRunning = 0;
+    const release = new Map<string, () => void>();
+    let notifyBothStarted!: () => void;
+    const bothStarted = new Promise<void>(resolve => {
+      notifyBothStarted = resolve;
+    });
+    let notifyOneFinished!: () => void;
+    const oneFinished = new Promise<void>(resolve => {
+      notifyOneFinished = resolve;
+    });
+    const harness = createSession('sess_concurrent_frontier', plan({
+      workGraph: {
+        reason: 'two independent implementation units',
+        subtasks: [
+          {
+            id: 'subtask_a',
+            title: 'Implement A',
+            goal: 'Implement A',
+            dependencies: [],
+            contextRefs: [{ kind: 'current_user_input' }],
+            requiredCapabilities: ['workspace-engineering'],
+            preferredAgentClassList: ['codex-cli'],
+            expectedOutput: 'summary',
+            acceptance: [{
+              key: 'a_done',
+              description: 'A is complete.',
+              requiredEvidence: ['completion result'],
+            }],
+            riskLevel: 'low',
+          },
+          {
+            id: 'subtask_b',
+            title: 'Implement B',
+            goal: 'Implement B',
+            dependencies: [],
+            contextRefs: [{ kind: 'current_user_input' }],
+            requiredCapabilities: ['workspace-engineering'],
+            preferredAgentClassList: ['codex-cli'],
+            expectedOutput: 'summary',
+            acceptance: [{
+              key: 'b_done',
+              description: 'B is complete.',
+              requiredEvidence: ['completion result'],
+            }],
+            riskLevel: 'low',
+          },
+        ],
+      },
+    }), input => {
+      running += 1;
+      maximumRunning = Math.max(maximumRunning, running);
+      const wait = new Promise<number>(resolve => {
+        release.set(input.subtaskId, () => {
+          running -= 1;
+          if (running === 1) notifyOneFinished();
+          resolve(0);
+        });
+        if (release.size === 2) notifyBothStarted();
+      });
+      return { body: `${input.subtaskId} done`, wait };
+    });
+
+    const submission = harness.session.submit('Implement A and B', { awaitAsyncWork: true });
+    await Promise.race([
+      bothStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(JSON.stringify({
+        dispatchItems: harness.db.prepare(`
+          SELECT subtask_id, status, batch_order, error_summary
+          FROM kernel_dispatch_items ORDER BY batch_order
+        `).all(),
+        subtasks: harness.db.prepare(`
+          SELECT id, status, error FROM subtasks ORDER BY id
+        `).all(),
+        workUnits: harness.db.prepare(`
+          SELECT id, agent_class_name, state, claimed_subtask_id
+          FROM work_units ORDER BY id
+        `).all(),
+        receipts: harness.db.prepare(`
+          SELECT subtask_id, terminal_state, error_code, error_detail, failure_json
+          FROM executor_attempt_receipts ORDER BY completed_at
+        `).all(),
+        workUnitEvents: harness.db.prepare(`
+          SELECT work_unit_id, subtask_id, event_type, state, message
+          FROM work_unit_events ORDER BY created_at
+        `).all(),
+        resourceWaits: harness.db.prepare(`
+          SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
+        `).all(),
+        output: harness.session.getSnapshot().output,
+      }))), 2_000)),
+    ]);
+    expect(maximumRunning).toBe(2);
+
+    const releaseSubtask = (authoredId: string) => {
+      const item = [...release.entries()].find(([runtimeId]) => runtimeId.endsWith(`_${authoredId}`));
+      expect(item).toBeDefined();
+      item?.[1]();
+    };
+    releaseSubtask('subtask_b');
+    await oneFinished;
+    expect(running).toBe(1);
+    releaseSubtask('subtask_a');
+    await submission;
+
+    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect((harness.db.prepare(`
+      SELECT subtask_id, status, batch_order
+      FROM kernel_dispatch_items
+      ORDER BY batch_order ASC
+    `).all() as Array<{ subtask_id: string; status: string; batch_order: number }>).map(item => ({
+      ...item,
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a', status: 'terminal', batch_order: 0 },
+      { subtask_id: 'subtask_b', status: 'terminal', batch_order: 1 },
+    ]);
+    expect((harness.db.prepare(`
+      SELECT subtask_id, status, first_dispatch_order
+      FROM workspace_publications
+      ORDER BY first_dispatch_order ASC
+    `).all() as Array<{ subtask_id: string; status: string; first_dispatch_order: number }>).map(item => ({
+      ...item,
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a', status: 'integrated', first_dispatch_order: 0 },
+      { subtask_id: 'subtask_b', status: 'integrated', first_dispatch_order: 1 },
+    ]);
+    expect((harness.db.prepare(`
+      SELECT publication.subtask_id
+      FROM workspace_merge_attempts AS merge_attempt
+      JOIN workspace_publications AS publication ON publication.id = merge_attempt.publication_id
+      ORDER BY merge_attempt.rowid ASC
+    `).all() as Array<{ subtask_id: string }>).map(item => ({
+      subtask_id: item.subtask_id.endsWith('_subtask_a') ? 'subtask_a' : 'subtask_b',
+    }))).toEqual([
+      { subtask_id: 'subtask_a' },
+      { subtask_id: 'subtask_b' },
+    ]);
+  });
+
+  it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {
+    let plannerCalls = 0;
+    let replanRequest = '';
+    const contextBuild = vi.spyOn(PlanningContextBuilder.prototype, 'build');
+    const harness = createSession('sess_replan', context => {
+      plannerCalls += 1;
+      if (plannerCalls === 1) return plan();
+      replanRequest = context.userInput;
+      const taskId = context.userInput.match(/Task id: (\S+)/)?.[1] ?? null;
+      return plan({
+        id: 'plan_replan',
+        task: {
+          binding: 'reference', taskId, control: 'none', scope: null, title: 'Implement remaining work',
+          goal: 'Implement the remaining work after failure', includeRecentConversationContext: false,
+          priority: { level: 'normal', reason: 'automatic replan' },
+        },
+      });
+    }, (input, attemptIndex, db) => {
+      if (attemptIndex === 0) {
+        seedPriorGenerationEvidence(db, input.taskId);
+        return {
+          rawOutput: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+            schemaVersion: 2,
+            status: 'failed',
+            subtaskId: input.subtaskId,
+            failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
+          })}`,
+        };
+      }
+      return { rawOutput: completionResponseFromSandboxInput(input, 'replanned work done') };
+    });
+
+    await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
+
+    const contextBuildCalls = contextBuild.mock.calls.length;
+    contextBuild.mockRestore();
+    expect(plannerCalls).toBe(2);
+    expect(replanRequest).not.toContain('evidence_prior_generation');
+    expect(replanRequest).not.toContain('must not leak into the current generation');
+    expect(contextBuildCalls).toBe(2);
+    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
+    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect(harness.db.prepare(`
+      SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
+    `).all()).toEqual([
+      { revision: 1, status: 'superseded', automatic_replan: 0 },
+      { revision: 2, status: 'completed', automatic_replan: 1 },
+    ]);
+    expect(harness.kernelDecisionRepo.listBySession('sess_replan').map(item => item.action)).toEqual(
+      expect.arrayContaining(['request_replan', 'authorize_task_plan', 'complete_task']),
+    );
   });
 
   it('handles a direct reply without creating a task and audits it', async () => {
@@ -248,20 +494,16 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('你好呀', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你好，我是 MetaClaw。');
-    const audits = harness.planningDecisionRepo.listBySession('sess_direct');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_direct');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
-    expect(audits[0]!.outcome).toBe('accept');
+    expect(audits[0]!.action).toBe('deliver_direct_reply');
     expect(audits[0]!.taskId).toBeNull();
   });
 
-  it('short-circuits the kernel decide() round-trip for a direct reply while still auditing', async () => {
-    // A direct_reply is a read-only answer the planner already produced and
-    // validated; the session authorizes it directly instead of running the full
-    // authorization round-trip. Behavior (audit + delivery) must be unchanged.
-    const decideSpy = vi.spyOn(PolicyKernel.prototype, 'decide');
+  it('routes direct replies through the same persisted decide() seam', async () => {
+    const decideSpy = vi.spyOn(ControlKernel.prototype, 'decide');
     const harness = createSession('sess_shortcircuit', plan({
       action: 'direct_reply',
       reason: '普通对话',
@@ -281,13 +523,12 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('今天星期几', { awaitAsyncWork: true });
 
-    expect(decideSpy).not.toHaveBeenCalled();
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(decideSpy).toHaveBeenCalledTimes(1);
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('今天是星期四。');
-    const audits = harness.planningDecisionRepo.listBySession('sess_shortcircuit');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_shortcircuit');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.decision.runtimeAction).toBe('direct_reply');
-    expect(audits[0]!.outcome).toBe('accept');
+    expect(audits[0]!.action).toBe('deliver_direct_reply');
 
     decideSpy.mockRestore();
   });
@@ -302,17 +543,16 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('这个可能要处理一下', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.executor.execute).not.toHaveBeenCalled();
+    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('请明确是聊天还是创建任务。');
     expect(output).not.toContain('统一意图裁决置信度不足');
     expect(output).not.toContain('→ 输入：');
     expect(output).not.toContain('→ 判断：');
     expect(output).not.toContain('confidence=');
-    const audits = harness.planningDecisionRepo.listBySession('sess_clarify');
+    const audits = harness.kernelDecisionRepo.listBySession('sess_clarify');
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.outcome).toBe('clarify');
-    expect(audits[0]!.decision.runtimeAction).toBe('clarification');
+    expect(audits[0]!.action).toBe('request_clarification');
   });
 
   it('maps executor rejection to a user-safe action while preserving the audit reason', async () => {
@@ -324,9 +564,9 @@ describe('natural-language planning/kernel path', () => {
 
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('当前请求未通过执行校验，请调整请求后重试。');
-    expect(output).not.toContain('PolicyKernel rejected request');
+    expect(output).not.toContain('ControlKernel rejected request');
     expect(output).not.toContain('no available executor agent class');
-    const [audit] = harness.planningDecisionRepo.listBySession('sess_reject_executor');
+    const [audit] = harness.kernelDecisionRepo.listBySession('sess_reject_executor');
     expect(audit?.reason).toContain('preferredAgentClassList');
   });
 });

@@ -6,16 +6,9 @@ const projectRoot = resolve(__dirname, '../..');
 
 const MEMORY_FILES = [
   'memory-engine',
-  'memory-capture-service',
   'memory-context-service',
   'memory-vault-exporter',
-  'hybrid-memory-recaller',
   'context-recaller',
-  'resume-context-builder',
-  'recall-policy-service',
-  'recall-review-application-service',
-  'recall-review-builder',
-  'preference-embedding-service',
 ];
 
 describe('memory module architecture boundaries', () => {

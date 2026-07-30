@@ -110,22 +110,7 @@ describe('SessionPresentationService', () => {
     expect(proposalLines.join('\n')).toContain('置信度：0.91');
   });
 
-  it('formats recall and last-task automatic decision blocks', () => {
-    const recallLines = presenter.formatRecallReviewBlock({
-      taskId: 'task_1',
-      taskTitle: '调研任务',
-      selectionItems: [{
-        kind: 'preference',
-        candidate: {
-          scope: 'global',
-          summary: '默认先给结论',
-          reason: '长期偏好',
-        },
-      }],
-    });
-    expect(recallLines.join('\n')).toContain('记忆召回自动处理');
-    expect(recallLines.join('\n')).toContain('[global] 默认先给结论');
-
+  it('formats last-task automatic decision blocks', () => {
     const lastTaskLines = presenter.formatLastTaskAutoDecisionBlock({
       completedTask: task({ id: 'done_1', title: '已完成任务', status: 'done' }),
       unfinishedTask: task({ id: 'parked_1', title: '最近未完成任务', status: 'parked' }),
@@ -178,35 +163,7 @@ describe('SessionPresentationService', () => {
     expect(lines.join('\n')).toContain('进度 50%');
   });
 
-  it('formats memory recall blocks, executor wizard summary, and failure hints', () => {
-    const memoryLines = presenter.formatAutoAppliedMemoryBlock({
-      taskId: 'task_1',
-      taskTitle: '调研任务',
-      preferenceCandidates: [{
-        preferenceId: 'pref_1',
-        summary: '默认先给结论',
-        score: 90,
-        reason: '命中偏好',
-      }],
-      taskCandidates: [{
-        id: 'mem_task_1',
-        title: '旧任务',
-        score: 82,
-        reason: '相似上下文',
-      }],
-    });
-    expect(memoryLines.join('\n')).toContain('已自动采用记忆');
-    expect(memoryLines.join('\n')).toContain('pref_1: 默认先给结论 score=0.90');
-
-    const suppressedLines = presenter.formatSuppressedRecallBlock({
-      taskId: 'task_1',
-      taskTitle: '调研任务',
-      preferenceCount: 2,
-      taskMemoryCount: 1,
-    });
-    expect(suppressedLines.join('\n')).toContain('已跳过不确定记忆');
-    expect(suppressedLines.join('\n')).toContain('跳过：2 条偏好，1 条任务记忆');
-
+  it('formats executor wizard summary and failure hints', () => {
     const wizardSummary = presenter.formatExecutorRegisterWizardSummary({
       name: 'claude',
       projectUrl: 'https://example.test',

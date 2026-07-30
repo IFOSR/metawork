@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 const schemaPath = process.env.METACLAW_PLANNER_SCHEMA_PATH
-  ?? '/opt/metaclaw/schema/planning-agent-plan-v4.schema.json';
+  ?? '/opt/metaclaw/schema/planning-agent-plan-v6.schema.json';
 const codexHome = process.env.METACLAW_PLANNER_CODEX_HOME
   ?? '/var/lib/metaclaw/codex/planner';
 const prompt = [

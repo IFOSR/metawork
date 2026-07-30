@@ -1,9 +1,8 @@
-import { readFileSync, existsSync, writeFileSync } from 'fs';
-import { dump, load } from 'js-yaml';
+import { readFileSync, existsSync } from 'fs';
+import { load } from 'js-yaml';
 import { dirname, extname, join } from 'path';
 import type { Config } from '../core/types.js';
 import { loadEnvFileIfExists } from './env-file.js';
-import { createGatewayFeishuConfigFromLegacy, migrateLegacyFeishuToGatewayConfig } from '../gateway/feishu-config.js';
 
 /**
  * 默认配置
@@ -21,6 +20,7 @@ const DEFAULT_CONFIG: Config = {
     top_k_preferences: 5,
     blocked_recheck_enabled: true,
     blocked_recheck_interval: 60,
+    max_concurrent_attempts: 4,
   },
   ui: {
     language: 'zh-CN',
@@ -91,17 +91,7 @@ export function loadConfig(configPath: string): Config {
       event_port: 8787,
       event_path: '/feishu/events',
     };
-    const legacyFeishuConfig = userConfig.integrations?.feishu
-      ? Object.assign(
-          {
-            mode: 'websocket' as const,
-            app_secret_env: 'FEISHU_APP_SECRET',
-            event_port: 8787,
-            event_path: '/feishu/events',
-          },
-          userConfig.integrations.feishu,
-        )
-      : undefined;
+
 
     // 深度合并配置
     const mergedConfig: Config = {
@@ -121,7 +111,6 @@ export function loadConfig(configPath: string): Config {
       integrations: {
         ...DEFAULT_CONFIG.integrations,
         ...userConfig.integrations,
-        ...(legacyFeishuConfig ? { feishu: legacyFeishuConfig } : {}),
         markdown_preview: {
           ...defaultMarkdownPreviewConfig,
           ...userConfig.integrations?.markdown_preview,
@@ -149,71 +138,22 @@ export function loadConfig(configPath: string): Config {
         },
       },
     };
-    return migrateLegacyFeishuToGatewayConfig(mergedConfig);
+    return validateConfig(mergedConfig);
   } catch (error) {
+    if (error instanceof InvalidConfigError) throw error;
     console.error(`配置文件加载失败: ${resolvedConfigPath}`, error);
     return DEFAULT_CONFIG;
   }
 }
 
-/**
- * Migration-only bridge for users who have not started a Gateway build yet.
- * New setup/runtime paths must not write integrations.feishu.
- */
-export function migrateLegacyFeishuConfigFileToGateway(configPath: string): boolean {
-  const resolvedConfigPath = resolveExistingConfigPath(configPath);
-  if (!resolvedConfigPath) {
-    return false;
+class InvalidConfigError extends Error {}
+
+function validateConfig(config: Config): Config {
+  if (!Number.isInteger(config.orchestration.max_concurrent_attempts)
+    || config.orchestration.max_concurrent_attempts <= 0) {
+    throw new InvalidConfigError('max_concurrent_attempts must be a positive integer');
   }
-
-  const rawConfig = objectValue(load(readFileSync(resolvedConfigPath, 'utf-8')));
-  const integrations = objectValue(rawConfig.integrations);
-  const legacyFeishu = objectValue(integrations.feishu);
-  if (legacyFeishu.enabled !== true) {
-    return false;
-  }
-
-  const gateway = objectValue(rawConfig.gateway);
-  const platforms = objectValue(gateway.platforms);
-  const existingGatewayFeishu = objectValue(platforms.feishu);
-  if (existingGatewayFeishu.enabled === true) {
-    return false;
-  }
-
-  const appSecretEnv = stringValue(legacyFeishu.app_secret_env, 'FEISHU_APP_SECRET');
-  rawConfig.gateway = {
-    ...gateway,
-    enabled: true,
-    platforms: {
-      ...platforms,
-      feishu: createGatewayFeishuConfigFromLegacy({
-        enabled: true,
-        mode: legacyFeishu.mode === 'webhook' ? 'webhook' : 'websocket',
-        app_id: stringValueOrUndefined(legacyFeishu.app_id),
-        app_secret_env: appSecretEnv,
-        event_port: numberValue(legacyFeishu.event_port, 8787),
-        event_path: stringValue(legacyFeishu.event_path, '/feishu/events'),
-        verification_token: stringValueOrUndefined(legacyFeishu.verification_token),
-      }),
-    },
-  };
-
-  if (typeof legacyFeishu.app_secret === 'string' && legacyFeishu.app_secret.length > 0) {
-    writeEnvValues(join(dirname(resolvedConfigPath), '.env'), {
-      [appSecretEnv]: legacyFeishu.app_secret,
-    });
-    process.env[appSecretEnv] = legacyFeishu.app_secret;
-  }
-
-  delete integrations.feishu;
-  if (Object.keys(integrations).length > 0) {
-    rawConfig.integrations = integrations;
-  } else {
-    delete rawConfig.integrations;
-  }
-
-  writeFileSync(resolvedConfigPath, dump(rawConfig, { lineWidth: 120 }), 'utf-8');
-  return true;
+  return config;
 }
 
 function resolveExistingConfigPath(configPath: string): string | null {
@@ -235,52 +175,4 @@ function resolveExistingConfigPath(configPath: string): string | null {
   }
 
   return null;
-}
-
-function objectValue(value: unknown): Record<string, any> {
-  return value && typeof value === 'object' ? value as Record<string, any> : {};
-}
-
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === 'string' ? value : fallback;
-}
-
-function stringValueOrUndefined(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
-}
-
-function numberValue(value: unknown, fallback: number): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function writeEnvValues(envPath: string, values: Record<string, string>): void {
-  const existingLines = existsSync(envPath)
-    ? readFileSync(envPath, 'utf-8').split(/\r?\n/)
-    : [];
-  const valueMap = new Map(Object.entries(values));
-  const written = new Set<string>();
-  const lines = existingLines
-    .filter((line, index) => index < existingLines.length - 1 || line.trim().length > 0)
-    .map(line => {
-      const key = line.includes('=') ? line.slice(0, line.indexOf('=')).trim() : '';
-      if (!valueMap.has(key)) {
-        return line;
-      }
-      written.add(key);
-      return `${key}=${quoteEnvValue(valueMap.get(key) ?? '')}`;
-    });
-  for (const [key, value] of valueMap) {
-    if (!written.has(key)) {
-      lines.push(`${key}=${quoteEnvValue(value)}`);
-    }
-  }
-  writeFileSync(envPath, `${lines.join('\n')}\n`, { encoding: 'utf-8', mode: 0o600 });
-}
-
-function quoteEnvValue(value: string): string {
-  if (/^[A-Za-z0-9_./:-]*$/.test(value)) {
-    return value;
-  }
-  return JSON.stringify(value);
 }

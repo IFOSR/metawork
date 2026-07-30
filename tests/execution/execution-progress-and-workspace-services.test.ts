@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { ExecutionProgressService } from '../../src/execution/execution-progress-service.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
-import { WorkspaceTargetService } from '../../src/execution/workspace-target-service.js';
+import { WorkspaceStore } from '../../src/execution/workspace-store.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 
 function createDb() {
@@ -56,12 +56,15 @@ describe('execution progress and workspace services', () => {
     expect(tracker.evidenceText[0]).toContain('skill_event=skill_progress');
   });
 
-  it('creates workspace targets outside MetaclawSession', () => {
+  it('creates persistent workspace targets outside MetaclawSession', async () => {
     const root = mkdtempSync(join(tmpdir(), 'metaclaw-workspace-targets-'));
-    const target = join(root, 'a/b/c');
     try {
-      new WorkspaceTargetService().ensureTargets([target]);
-      expect(() => new WorkspaceTargetService().ensureTargets([target])).not.toThrow();
+      const store = new WorkspaceStore(root);
+      const identity = { taskId: 'task', generationId: 'generation', subtaskId: 'subtask' };
+      const first = await store.ensureWorkspace(identity, 'directory');
+      const second = await store.ensureWorkspace(identity, 'directory');
+      expect(second.rootPath).toBe(first.rootPath);
+      expect(existsSync(first.filesPath)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

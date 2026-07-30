@@ -6,14 +6,12 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -44,6 +42,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -101,7 +100,7 @@ describe('App guidance panel', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -118,29 +117,21 @@ describe('App guidance panel', () => {
     taskEngine.transition(startupTask.id, 'ready');
 
     const deferred = createDeferredResult();
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementationOnce(() => deferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: 'startup done',
+      wait: deferred.promise.then(result => result.exitCode),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_panel',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -161,37 +152,28 @@ describe('App guidance panel', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
     const firstDeferred = createDeferredResult();
     const secondDeferred = createDeferredResult();
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockImplementationOnce(() => firstDeferred.promise)
-        .mockImplementationOnce(() => secondDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({ route: 'durable_task', reason: '测试 durable task' }),
-      resolveIntent: vi.fn().mockResolvedValue({ type: 'new', taskId: null, reason: '新任务' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
+    const deferredResults = [firstDeferred, secondDeferred];
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['第一项任务完成', '第二项任务完成'][attemptIndex],
+      wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_panel_completion',
         contextRecaller,
-        llmBridge,
       }),
     );
 

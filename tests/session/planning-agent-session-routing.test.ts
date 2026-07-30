@@ -3,17 +3,17 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
-import { completionResponse } from '../support/completion-response.js';
+import {
+  completionResponseFromSandboxInput,
+  FakeAttemptSandbox,
+} from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -27,6 +27,7 @@ function createConfig(): Config {
     version: 1,
     executor: { command: 'codex', timeout: 60_000 },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -44,7 +45,7 @@ function createConfig(): Config {
 function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 4,
+    schemaVersion: 6,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -61,6 +62,7 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
       priority: { level: 'normal', reason: 'test work graph priority' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
     workGraph: {
       reason: 'single executor work graph',
       subtasks: [{
@@ -82,30 +84,14 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
 }
 
 describe('MetaclawSession planning-agent routing', () => {
-  it('routes natural language through the injected PlanningAgent without touching legacy llmBridge intent methods', async () => {
+  it('routes natural language through the injected PlanningAgent without touching legacy intent methods', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-route');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, 'done'),
-        exitCode: 0,
-        durationMs: 100,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      resolveTaskStateOwnership: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan()),
     };
@@ -114,24 +100,19 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_route',
       contextRecaller,
-      llmBridge,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
     await session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
     expect(planningAgent.plan).toHaveBeenCalledTimes(1);
-    expect(llmBridge.resolveRoute).not.toHaveBeenCalled();
-    expect(llmBridge.resolveIntent).not.toHaveBeenCalled();
-    expect(llmBridge.resolveTaskStateOwnership).not.toHaveBeenCalled();
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
     expect(session.getSnapshot().output.join('\n')).toContain('completed 1 Subtask(s)');
   });
 
@@ -139,20 +120,10 @@ describe('MetaclawSession planning-agent routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-clarify');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox();
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         action: 'clarification',
@@ -177,14 +148,12 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_clarify',
       contextRecaller,
-      llmBridge,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
@@ -192,7 +161,7 @@ describe('MetaclawSession planning-agent routing', () => {
 
     expect(planningAgent.plan).toHaveBeenCalledTimes(1);
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(session.getSnapshot().output.join('\n')).toContain('请明确是聊天还是创建任务。');
   });
 
@@ -200,27 +169,13 @@ describe('MetaclawSession planning-agent routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-verifier');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => ({
-        success: true,
-        output: completionResponse(input, '已修改代码并完成实现。')
-          .replace('tests were not run: deterministic test fixture', 'implementation completed'),
-        exitCode: 0,
-        durationMs: 100,
-      })),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn(),
-      resolveIntent: vi.fn(),
-      resolveTaskStateOwnership: vi.fn(),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(input => ({
+      rawOutput: completionResponseFromSandboxInput(input, '已修改代码并完成实现。')
+        .replace('tests were not run: deterministic fake sandbox', 'implementation completed'),
+    }));
     const planningAgent = {
       plan: vi.fn().mockResolvedValue(workGraphPlan({
         reason: '修改仓库代码',
@@ -241,14 +196,12 @@ describe('MetaclawSession planning-agent routing', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_verifier',
       contextRecaller,
-      llmBridge,
       planningAgent,
-      availableExecutorCommands: new Set(['codex']),
     });
     session.initialize({ resumeStartupTasks: false });
 
@@ -257,12 +210,35 @@ describe('MetaclawSession planning-agent routing', () => {
     const [task] = taskRepo.findAll();
     expect(task.status).toBe('blocked');
     expect(task.summary).toBe('');
+    expect(task.dependencies).toEqual([expect.objectContaining({
+      taskId: task.id,
+      type: 'manual',
+      status: 'waiting',
+      description: 'response-only correction is unavailable or already exhausted',
+    })]);
+    expect(db.prepare('SELECT status, result FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({
+      status: 'blocked',
+      result: '',
+    });
     expect(db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get()).toEqual({
       terminal_state: 'contract_blocked',
       error_code: 'completion_patch_evidence_missing',
     });
+    expect(db.prepare(`
+      SELECT state, claimed_task_id, claimed_subtask_id, claimed_attempt_id
+      FROM work_units WHERE agent_class_kind = 'executor'
+    `).get()).toEqual({
+      state: 'failed',
+      claimed_task_id: null,
+      claimed_subtask_id: null,
+      claimed_attempt_id: null,
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM task_events
+      WHERE task_id = ? AND event_type = 'phase2_execution_blocked'
+    `).get(task.id)).toEqual({ count: 1 });
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('completion_patch_evidence_missing');
+    expect(output).toContain('response-only correction is unavailable or already exhausted');
     expect(output).not.toContain('completed 1 Subtask(s)');
   });
 });

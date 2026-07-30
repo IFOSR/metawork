@@ -6,16 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -46,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -70,7 +68,7 @@ describe('App execution progress', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     memoryEngine.addManual({
       content: 'Phoenix 项目材料统一使用 Phoenix 术语体系',
       scope: 'project',
@@ -80,36 +78,18 @@ describe('App execution progress', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async (input) => {
-        input.onProgress?.({ kind: 'status', text: '已启动 codex-cli 执行器' });
-        input.onProgress?.({ kind: 'log', text: '正在检索市场份额数据' });
-        return {
-          success: true,
-          output: completionResponse(input, '调研完成'),
-          exitCode: 0,
-          durationMs: 500,
-        };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '调研完成' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_execution_progress',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '整理 Phoenix 项目周报' })),
       }),
     );
@@ -137,7 +117,7 @@ describe('App execution progress', () => {
     expect(app.lastFrame()).not.toContain('已创建：');
     expect(app.lastFrame()).not.toContain('执行准备：');
     expect(app.lastFrame()).not.toContain('PlanningAgent:');
-    expect(app.lastFrame()).not.toContain('PolicyKernel:');
+    expect(app.lastFrame()).not.toContain('ControlKernel:');
     expect(app.lastFrame()).not.toContain('Runtime:');
     expect(app.lastFrame()).not.toContain('[Planner: dispatch]');
     expect(app.lastFrame()).not.toContain('Work Unit ');
@@ -155,39 +135,25 @@ describe('App execution progress', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => {
-        await new Promise(resolve => setTimeout(resolve, 900));
-        return {
-          success: true,
-          output: completionResponse(input, '调研完成'),
-          exitCode: 0,
-          durationMs: 280,
-        };
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '调研完成',
+      wait: new Promise<number>(resolve => setTimeout(() => resolve(0), 900)),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_execution_waiting_hint',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '整理 Phoenix 项目周报' })),
       }),
     );

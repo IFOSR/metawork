@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
 import {
   buildPlannerCodexArgs,
+  buildPlannerCodexResumeArgs,
   CodexPlannerRunner,
   parseCodexJsonl,
 } from '../../src/planning/planner-codex-runner.js';
@@ -14,16 +15,8 @@ import type { PlanningContext } from '../../src/planning/planning-types.js';
 function context(): PlanningContext {
   return {
     userInput: 'continue',
-    initialContext: {
-      longTermMemories: [],
-      conversationHistory: [],
-    },
     request: { sessionId: 'sess_runner', source: 'interactive' },
-    permissions: {
-      allowDurableTask: true,
-      allowFileModification: true,
-      allowExternalGateway: false,
-    },
+    pendingAuthorizationRequest: null,
     executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 1_234,
   };
@@ -37,16 +30,61 @@ function fakeProcess() {
 }
 
 describe('CodexPlannerRunner', () => {
-  it('uses an ephemeral read-only Codex invocation with the generated schema', () => {
+  it('uses a persistent read-only Codex invocation with the generated schema', () => {
     expect(buildPlannerCodexArgs('plan this', '/schema/v2.json')).toEqual(expect.arrayContaining([
       'exec',
       '--sandbox', 'read-only',
-      '--ephemeral',
       '--json',
       '--output-schema', '/schema/v2.json',
       '--disable', 'apps',
       'plan this',
     ]));
+    expect(buildPlannerCodexArgs('plan this', '/schema/v2.json')).not.toContain('--ephemeral');
+  });
+
+  it('resumes the native Codex thread for the next turn in the same MetaClaw session', async () => {
+    const first = fakeProcess();
+    const second = fakeProcess();
+    const spawn = vi.fn()
+      .mockReturnValueOnce(first as never)
+      .mockReturnValueOnce(second as never);
+    const runner = new CodexPlannerRunner({ spawn: spawn as never });
+
+    const firstTurn = runner.run('first prompt', context());
+    first.stdout.emit('data', Buffer.from([
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-native-1' }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"ok":true}' },
+      }),
+    ].join('\n')));
+    first.emit('close', 0);
+    await firstTurn;
+
+    const secondTurn = runner.run('second prompt', context());
+    second.stdout.emit('data', Buffer.from([
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-native-1' }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"ok":true}' },
+      }),
+    ].join('\n')));
+    second.emit('close', 0);
+    await secondTurn;
+
+    expect(spawn).toHaveBeenNthCalledWith(
+      2,
+      'codex',
+      buildPlannerCodexResumeArgs(
+        'thread-native-1',
+        'second prompt',
+        '/opt/metaclaw/schema/planning-agent-plan-v6.schema.json',
+      ),
+      expect.any(Object),
+    );
+    const resumeArgs = buildPlannerCodexResumeArgs('thread-native-1', 'second prompt', '/schema.json');
+    expect(resumeArgs).not.toContain('--sandbox');
+    expect(resumeArgs).not.toContain('--color');
   });
 
   it('parses final output and sanitized MCP tool events from Codex JSONL', () => {
@@ -139,10 +177,13 @@ describe('CodexPlannerRunner', () => {
     });
 
     const promise = runner.run('prompt', context());
-    proc.stdout.emit('data', Buffer.from(JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: '{"ok":true}' },
-    })));
+    proc.stdout.emit('data', Buffer.from([
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-isolated' }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '{"ok":true}' },
+      }),
+    ].join('\n')));
     proc.emit('close', 0);
 
     await expect(promise).resolves.toMatchObject({ output: '{"ok":true}', toolCalls: [] });
@@ -170,10 +211,13 @@ describe('CodexPlannerRunner', () => {
     try {
       const runner = new CodexPlannerRunner({ spawn: spawn as never, envFile });
       const promise = runner.run('prompt', context());
-      proc.stdout.emit('data', Buffer.from(JSON.stringify({
-        type: 'item.completed',
-        item: { type: 'agent_message', text: '{"ok":true}' },
-      })));
+      proc.stdout.emit('data', Buffer.from([
+        JSON.stringify({ type: 'thread.started', thread_id: 'thread-env' }),
+        JSON.stringify({
+          type: 'item.completed',
+          item: { type: 'agent_message', text: '{"ok":true}' },
+        }),
+      ].join('\n')));
       proc.emit('close', 0);
 
       await promise;

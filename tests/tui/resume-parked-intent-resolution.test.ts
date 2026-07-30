@@ -6,17 +6,14 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
-import { LlmBridge } from '../../src/core/llm-bridge.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { taskControlPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -47,6 +44,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -62,9 +60,9 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function waitForExecutorCall(execute: ReturnType<typeof vi.fn>) {
+async function waitForExecutorCall(create: ReturnType<typeof vi.fn>) {
   for (let index = 0; index < 20; index += 1) {
-    if (execute.mock.calls.length > 0) {
+    if (create.mock.calls.length > 0) {
       return;
     }
     await flushUpdates();
@@ -80,7 +78,7 @@ describe('App parked task intent resolution', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -95,40 +93,20 @@ describe('App parked task intent resolution', () => {
     });
     taskEngine.transition(finishedTask.id, 'done');
 
-    const llmBridge = new LlmBridge('codex');
     let parkedTaskId = '';
-    const querySpy = vi.spyOn(llmBridge, 'query')
-      .mockImplementation(async (prompt: string) => {
-        if (prompt.includes('判断用户输入是否是在要求恢复')) {
-          return `{"action":"resume","taskId":"${parkedTaskId}","confidence":0.94,"reason":"用户明确要求继续之前挂起的任务"}`;
-        }
-        return '{"priority":"normal","reason":"测试默认优先级"}';
-      });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '继续输出 memory 调研内容',
-        exitCode: 0,
-        durationMs: 700,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '继续输出 memory 调研内容' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_resume_parked_intent',
         contextRecaller,
-        llmBridge,
-        availableExecutorCommands: new Set(['codex']),
         planningAgent: {
           plan: vi.fn().mockImplementation(async () => taskControlPlan({
             control: 'resume_task',
@@ -142,7 +120,7 @@ describe('App parked task intent resolution', () => {
       title: '给 agent 增加 memory 的开源调研',
       goal: '充分调研 agent memory 的设计与开源方案',
     });
-    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
+    seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
     parkedTaskId = parkedTask.id;
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
@@ -164,11 +142,10 @@ describe('App parked task intent resolution', () => {
 
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
-    await waitForExecutorCall(executor.execute as ReturnType<typeof vi.fn>);
+    await waitForExecutorCall(attemptSandbox.create);
 
-    expect(querySpy).not.toHaveBeenCalled();
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls.some(call =>
-      call[0].context.taskBackground.id === parkedTask.id
+    expect(attemptSandbox.create.mock.calls.some(call =>
+      call[0].taskId === parkedTask.id
     )).toBe(true);
 
     app.unmount();

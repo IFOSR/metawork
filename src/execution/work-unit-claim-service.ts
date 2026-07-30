@@ -1,6 +1,8 @@
 import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { truncateText } from '../utils/truncate-text.js';
 
 export interface WorkUnitClaim {
   workUnit: WorkUnit;
@@ -17,7 +19,10 @@ export class WorkUnitClaimService {
   constructor(
     private readonly workUnitRepo: WorkUnitRepo,
     private readonly leaseMs = 60_000,
-    private readonly probeExecutor: (agentClassName: string) => Promise<boolean> = async () => false,
+    private readonly probeExecutor: (
+      agentClassName: string,
+      mode: 'claim' | 'capacity',
+    ) => Promise<boolean> = async () => false,
   ) {}
 
   async claim(input: {
@@ -31,7 +36,7 @@ export class WorkUnitClaimService {
     );
     if (!workUnit) {
       for (const agentClassName of input.subtask.preferredAgentClassList) {
-        workUnit = await this.provisionExecutor(agentClassName);
+        workUnit = await this.provisionExecutor(agentClassName, 'claim');
         if (workUnit) break;
       }
     }
@@ -60,7 +65,12 @@ export class WorkUnitClaimService {
         'attempt_started',
         'claimed',
       ),
-      release: () => this.release(workUnit!.id),
+      release: () => this.release(
+        workUnit!.id,
+        input.taskId,
+        input.subtask.id,
+        input.attemptId,
+      ),
       markRunning: () => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'running'),
       heartbeat: () => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'running'),
       markWaiting: (message = 'work unit waiting') => this.mark(workUnit!.id, input.taskId, input.subtask.id, input.attemptId, 'waiting', message),
@@ -68,15 +78,96 @@ export class WorkUnitClaimService {
     };
   }
 
+  async probe(agentClassName: string): Promise<boolean> {
+    if (this.workUnitRepo.findIdleByKind('executor', [agentClassName])) return true;
+    return Boolean(await this.provisionExecutor(agentClassName, 'capacity'));
+  }
+
+  isClaimCurrent(workUnitId: string, attemptId: string, requiredState?: WorkUnit['state']): boolean {
+    const workUnit = this.workUnitRepo.findById(workUnitId);
+    return Boolean(
+      workUnit
+      && workUnit.claimedAttemptId === attemptId
+      && (!requiredState || workUnit.state === requiredState),
+    );
+  }
+
   sweepExpired(now = new Date()): WorkUnit[] {
     const lost = this.workUnitRepo.markHeartbeatLost(now.toISOString());
     for (const workUnit of lost) {
       this.recordEvent(workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId, workUnit.claimedAttemptId, 'heartbeat_lost', 'heartbeat_lost');
+      this.workUnitRepo.updateState(workUnit.id, 'heartbeat_lost', {
+        claimedTaskId: null,
+        claimedSubtaskId: null,
+        claimedAttemptId: null,
+        leaseExpiresAt: null,
+      });
+      this.recordEvent(workUnit.id, workUnit.claimedTaskId, workUnit.claimedSubtaskId, workUnit.claimedAttemptId, 'released', 'heartbeat_lost');
     }
     return lost;
   }
 
-  private async provisionExecutor(agentClassName: string): Promise<WorkUnit | null> {
+  releaseOrphanedAttempt(input: {
+    workUnitId: string;
+    taskId: string;
+    subtaskId: string;
+    attemptId: string;
+  }): void {
+    this.release(input.workUnitId, input.taskId, input.subtaskId, input.attemptId);
+  }
+
+  hasClaimedByTask(taskId: string): boolean {
+    return this.workUnitRepo.findAll().some(workUnit =>
+      workUnit.claimedTaskId === taskId
+      && ['claimed', 'running', 'waiting'].includes(workUnit.state)
+    );
+  }
+
+  listOrphanedClaims(): WorkUnit[] {
+    return this.workUnitRepo.findAll().filter(workUnit =>
+      ['claimed', 'running', 'waiting'].includes(workUnit.state)
+      && workUnit.claimedAttemptId !== null
+    );
+  }
+
+  releaseReconciledClaim(input: {
+    workUnitId: string;
+    taskId: string;
+    subtaskId: string;
+    attemptId: string;
+  }): void {
+    const existing = this.workUnitRepo.findById(input.workUnitId);
+    if (
+      !existing
+      || existing.claimedTaskId !== input.taskId
+      || existing.claimedSubtaskId !== input.subtaskId
+      || existing.claimedAttemptId !== input.attemptId
+    ) {
+      this.releaseOrphanedAttempt(input);
+      return;
+    }
+    this.workUnitRepo.updateState(existing.id, 'heartbeat_lost', {
+      claimedTaskId: input.taskId,
+      claimedSubtaskId: input.subtaskId,
+      claimedAttemptId: input.attemptId,
+      leaseExpiresAt: null,
+    });
+    this.recordEvent(
+      existing.id,
+      input.taskId,
+      input.subtaskId,
+      input.attemptId,
+      'heartbeat_lost',
+      'heartbeat_lost',
+      'startup reconciled orphaned WorkUnit claim after terminal facts were sealed',
+    );
+    this.releaseOrphanedAttempt(input);
+  }
+
+  private async provisionExecutor(
+    agentClassName: string,
+    mode: 'claim' | 'capacity',
+  ): Promise<WorkUnit | null> {
     const now = new Date().toISOString();
     const id = `executor-${sanitizeId(agentClassName)}-${generateInteractionId()}`;
     this.workUnitRepo.upsert({
@@ -94,14 +185,20 @@ export class WorkUnitClaimService {
     });
     this.recordEvent(id, null, null, null, 'probe_started', 'starting');
     let available = false;
+    let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
-      available = await this.probeExecutor(agentClassName);
-    } catch {
+      available = await this.probeExecutor(agentClassName, mode);
+    } catch (error) {
       available = false;
+      const detail = error instanceof Error ? error.message : String(error);
+      failureReason = truncateText(
+        redactSensitiveText(`executor probe failed: ${agentClassName}: ${detail}`),
+        800,
+      );
     }
     if (!available) {
       this.workUnitRepo.updateState(id, 'failed', { heartbeatAt: new Date().toISOString() });
-      this.recordEvent(id, null, null, null, 'probe_failed', 'failed', `executor probe failed: ${agentClassName}`);
+      this.recordEvent(id, null, null, null, 'probe_failed', 'failed', failureReason);
       return null;
     }
     this.workUnitRepo.updateState(id, 'idle', { heartbeatAt: new Date().toISOString() });
@@ -128,9 +225,21 @@ export class WorkUnitClaimService {
     this.recordEvent(workUnitId, taskId, subtaskId, attemptId, state, state, message);
   }
 
-  private release(workUnitId: string): void {
+  private release(workUnitId: string, taskId: string, subtaskId: string, attemptId: string): void {
     const existing = this.workUnitRepo.findById(workUnitId);
     if (!existing) return;
+    if (existing.claimedAttemptId !== attemptId) {
+      this.recordEvent(
+        workUnitId,
+        taskId,
+        subtaskId,
+        attemptId,
+        'release_skipped_stale',
+        existing.state,
+        `release skipped because WorkUnit is no longer claimed by attempt ${attemptId}`,
+      );
+      return;
+    }
     const claimedTaskId = existing.claimedTaskId;
     const claimedSubtaskId = existing.claimedSubtaskId;
     const claimedAttemptId = existing.claimedAttemptId;

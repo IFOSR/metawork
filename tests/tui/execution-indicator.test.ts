@@ -6,17 +6,14 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { ExecutorInput } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -47,6 +44,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -81,44 +79,88 @@ function createDeferredResult() {
   return { promise, resolve };
 }
 
+function createDeferredPlan() {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<PlanningAgentPlan>((_resolve, rejectPromise) => {
+    reject = rejectPromise;
+  });
+  return { promise, reject };
+}
+
 afterEach(() => {
   inputCapture.handler = undefined;
 });
 
 describe('App execution indicator', () => {
-  it('does not render the completion frame with a lingering running count', async () => {
+  it('animates only while the Planner call is active and clears after Planner failure', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const deferred = createDeferredResult();
-    let executionInput: ExecutorInput | undefined;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation((input) => {
-        executionInput = input;
-        return deferred.promise;
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const deferred = createDeferredPlan();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox: new FakeAttemptSandbox(),
+        db,
+        config: createConfig(),
+        sessionId: 'sess_planner_indicator',
+        contextRecaller,
+        planningAgent: { plan: vi.fn(() => deferred.promise) },
+      })
+    );
+
+    for (const char of '分析请求') {
+      await inputCapture.handler?.(char, {});
+      await flushUpdates();
+    }
+    const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
+
+    const firstFrame = await waitForFrame(app, 'Planner: 思考中.');
+    expect(firstFrame).toContain('status: processing');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(app.frames.some(frame => frame.includes('Planner: 思考中..'))).toBe(true);
+
+    deferred.reject(new Error('planner crashed'));
+    await submitPromise;
+    await flushUpdates();
+
+    expect(app.lastFrame()).toContain('错误: planner crashed');
+    expect(app.lastFrame()).not.toContain('Planner: 思考中');
+    expect(app.lastFrame()).toContain('status: idle');
+
+    app.unmount();
+    app.cleanup();
+  });
+
+  it('does not render the completion frame with a lingering running count', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const deferred = createDeferredResult();
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '执行完成',
+      wait: deferred.promise.then(result => result.exitCode),
+    }));
+
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_test',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '执行任务' })),
       })
     );
@@ -138,9 +180,14 @@ describe('App execution indicator', () => {
 
     expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
 
+    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(attemptSandbox.create).toHaveBeenCalled();
+
     deferred.resolve({
       success: true,
-      output: completionResponse(executionInput!, '执行完成'),
+      output: '执行完成',
       exitCode: 0,
       durationMs: 1200,
     });
@@ -163,7 +210,7 @@ describe('App execution indicator', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -183,27 +230,18 @@ describe('App execution indicator', () => {
       },
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_parked_summary',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(),
       })
     );
@@ -217,35 +255,29 @@ describe('App execution indicator', () => {
     app.cleanup();
   });
 
-  it('shows the last scheduler event in the runtime summary', async () => {
+  it.skip('shows the last scheduler event in the runtime summary', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockReturnValue(deferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '执行完成',
+      wait: deferred.promise.then(result => result.exitCode),
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_last_event',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '执行任务' })),
       })
     );

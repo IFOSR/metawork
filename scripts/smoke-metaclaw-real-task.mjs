@@ -15,7 +15,8 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const artifactExpectedLine = 'MetaClaw real task smoke passed.';
-const scenarioNames = new Set(['artifact', 'python-hello']);
+export const plannerMemoryMarker = 'native-thread-memory-7f3c9a';
+const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello']);
 
 export function readOption(args, name) {
   const inline = args.find(arg => arg.startsWith(`${name}=`));
@@ -94,16 +95,25 @@ export function bootstrapExecutor(input) {
 }
 
 export function buildScenarioScript(scenario) {
+  if (scenario === 'planner-session') {
+    return [
+      `请记住本次会话测试口令是 ${plannerMemoryMarker}。只回复“已记住”，不要创建任务。`,
+      '刚才的测试口令是什么？只回复口令，不要查询任务或创建任务。',
+      '/exit',
+      '',
+    ].join('\n');
+  }
+
   if (scenario === 'artifact') {
     return [
-      `Create a file named smoke-result.md inside the authorized Task target directory provided in the execution context. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
+      `Create a file named smoke-result.md inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
       '/exit',
       '',
     ].join('\n');
   }
 
   return [
-    'Create a Python file named hello_world.py inside the authorized Task target directory provided in the execution context.',
+    "Create a Python file named hello_world.py inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path.",
     'The Python file content must include exactly this line: print("hello world")',
     'Run the file with python3 and report the stdout.',
     '/exit',
@@ -196,6 +206,19 @@ export function verifyPythonHelloScenario(input) {
   return { artifactPath: pythonFile, pythonCommand };
 }
 
+export function verifyPlannerSessionScenario(input) {
+  if (input.sessionFiles.length !== 1) {
+    throw new Error(
+      `Smoke failed: expected exactly one native Codex session file for two turns, found ${input.sessionFiles.length}`,
+    );
+  }
+  const recall = input.interactions.find(row => String(row.userInput ?? '').includes('刚才的测试口令是什么'));
+  if (!recall || !String(recall.systemOutput ?? '').includes(plannerMemoryMarker)) {
+    throw new Error('Smoke failed: the second Planner reply did not recall the marker from its native Codex session');
+  }
+  return { nativeSessionPath: input.sessionFiles[0] };
+}
+
 export function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? process.cwd(),
@@ -224,7 +247,10 @@ function readPlannerDiagnostics(repoRoot, metaclawHome) {
     "import Database from 'better-sqlite3';",
     "const db = new Database(process.argv[1], { readonly: true });",
     "const rows = db.prepare('SELECT status, attempt_count, error_summary FROM planner_runs ORDER BY created_at DESC LIMIT 3').all();",
-    'process.stdout.write(JSON.stringify(rows));',
+    "const decisions = db.prepare('SELECT event_type, action, reason FROM kernel_decisions ORDER BY created_at DESC LIMIT 5').all();",
+    "const attempts = db.prepare('SELECT terminal_state, error_code, error_detail, failure_json, substr(raw_response, 1, 1000) AS response FROM executor_attempt_receipts ORDER BY completed_at DESC LIMIT 3').all();",
+    "const sandboxes = db.prepare('SELECT status, exit_code, cleanup_status, cleanup_error FROM attempt_sandboxes ORDER BY created_at DESC LIMIT 3').all();",
+    'process.stdout.write(JSON.stringify({ plannerRuns: rows, decisions, attempts, sandboxes }));',
   ].join(' ');
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source, dbPath], {
     cwd: repoRoot,
@@ -234,7 +260,30 @@ function readPlannerDiagnostics(repoRoot, metaclawHome) {
   return result.status === 0 ? String(result.stdout ?? '').trim() : '';
 }
 
+function readPlannerInteractions(repoRoot, metaclawHome) {
+  const dbPath = join(metaclawHome, 'metaclaw.db');
+  const source = [
+    "import Database from 'better-sqlite3';",
+    "const db = new Database(process.argv[1], { readonly: true });",
+    "const rows = db.prepare('SELECT user_input AS userInput, system_output AS systemOutput FROM interactions ORDER BY created_at ASC').all();",
+    'process.stdout.write(JSON.stringify(rows));',
+  ].join(' ');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', source, dbPath], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`Smoke failed: could not read Planner interaction evidence: ${result.stderr ?? ''}`);
+  }
+  return JSON.parse(String(result.stdout ?? '[]'));
+}
+
 export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
+  if (env.METACLAW_SMOKE_IN_DOCKER !== 'true') {
+    runDockerSmoke(rawArgs, env);
+    return;
+  }
   const repoRoot = resolve(process.cwd());
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     process.stdout.write(buildHelp());
@@ -245,7 +294,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     readOption(rawArgs, '--executor') ?? env.METACLAW_SMOKE_EXECUTOR ?? 'codex',
   );
   const scenario = parseScenario(
-    readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'artifact',
+    readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
   );
   const executorTimeout = parsePositiveInteger(
     readOption(rawArgs, '--timeout') ?? env.METACLAW_SMOKE_TIMEOUT,
@@ -256,10 +305,12 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     executorCommand === 'pi' ? 3600 : 300,
   );
 
-  const metaclawHome = mkdtempSync(join(tmpdir(), 'metaclaw-smoke-home-'));
-  const executorHome = mkdtempSync(join(tmpdir(), 'metaclaw-smoke-executor-home-'));
-  const workdir = mkdtempSync(join(tmpdir(), 'metaclaw-smoke-work-'));
-  const scriptDir = mkdtempSync(join(tmpdir(), 'metaclaw-smoke-script-'));
+  const smokeRoot = env.METACLAW_SMOKE_ROOT ? resolve(env.METACLAW_SMOKE_ROOT) : tmpdir();
+  mkdirSync(smokeRoot, { recursive: true });
+  const metaclawHome = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-home-'));
+  const executorHome = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-executor-home-'));
+  const workdir = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-work-'));
+  const scriptDir = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-script-'));
   const scriptPath = join(scriptDir, 'script.txt');
 
   try {
@@ -289,13 +340,15 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     bootstrapExecutor({ executorCommand, executorHome, repoRoot });
     writeFileSync(scriptPath, buildScenarioScript(scenario));
 
-    run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
-      cwd: repoRoot,
-      shell: process.platform === 'win32',
-    });
+    if (env.METACLAW_SMOKE_SKIP_BUILD !== 'true') {
+      run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+        cwd: repoRoot,
+        shell: process.platform === 'win32',
+      });
+    }
     const childEnv = {
       METACLAW_HOME: metaclawHome,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v4.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v6.schema.json'),
     };
     if (executorCommand === 'pi') {
       childEnv.HOME = executorHome;
@@ -313,15 +366,27 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       throw new Error('Smoke failed: expected route/execution output to mention pi-agent');
     }
 
-    const verification = scenario === 'artifact'
-      ? verifyArtifactScenario({ output, workdir })
-      : verifyPythonHelloScenario({ output, workdir });
+    const verification = scenario === 'planner-session'
+      ? verifyPlannerSessionScenario({
+        interactions: readPlannerInteractions(repoRoot, metaclawHome),
+        sessionFiles: findFiles(
+          join(env.METACLAW_PLANNER_CODEX_HOME, 'sessions'),
+          filePath => filePath.endsWith('.jsonl'),
+        ),
+      })
+      : scenario === 'artifact'
+        ? verifyArtifactScenario({ output, workdir })
+        : verifyPythonHelloScenario({ output, workdir });
 
     process.stdout.write([
-      'MetaClaw real task smoke passed.',
+      scenario === 'planner-session'
+        ? 'MetaClaw native Planner session smoke passed.'
+        : 'MetaClaw real task smoke passed.',
       `Executor: ${executorCommand}`,
       `Scenario: ${scenario}`,
-      `Artifact: ${verification.artifactPath}`,
+      scenario === 'planner-session'
+        ? `Native session: ${verification.nativeSessionPath}`
+        : `Artifact: ${verification.artifactPath}`,
       `Workdir: ${workdir}`,
       '',
     ].join('\n'));
@@ -336,15 +401,87 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
   }
 }
 
+function runDockerSmoke(rawArgs, env) {
+  if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
+    process.stdout.write(buildHelp());
+    return;
+  }
+  const repoRoot = resolve(process.cwd());
+  const scenario = parseScenario(
+    readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
+  );
+  const plannerOnly = scenario === 'planner-session';
+  const smokeRoot = mkdtempSync(join(tmpdir(), 'metaclaw-docker-smoke-'));
+  const suffix = `${process.pid}-${Date.now()}`;
+  const network = `metaclaw-smoke-${suffix}`;
+  const control = `metaclaw-smoke-control-${suffix}`;
+  const runtimeImage = 'metaclaw-runtime:phase5';
+  const mounts = [
+    ['docker/planner-codex.env', '/run/metaclaw/env/planner-codex.env'],
+    ['docker/executor-codex.env', '/run/metaclaw/env/executor-codex.env'],
+    ['docker/executor-pi.env', '/run/metaclaw/env/executor-pi.env'],
+  ];
+  for (const [hostPath] of mounts) {
+    if (!existsSync(join(repoRoot, hostPath))) {
+      throw new Error(`Smoke requires ${hostPath}; copy the corresponding .env.example and configure the provider.`);
+    }
+  }
+
+  try {
+    run('docker', ['build', '-f', 'docker/Dockerfile.runtime', '-t', runtimeImage, '.'], { cwd: repoRoot });
+    if (!plannerOnly) {
+      run('docker', ['build', '-f', 'docker/Dockerfile.attempt-codex', '-t', 'metaclaw-executor-codex:phase5', '.'], { cwd: repoRoot });
+      run('docker', ['build', '-f', 'docker/Dockerfile.attempt-pi', '-t', 'metaclaw-executor-pi:phase5', '.'], { cwd: repoRoot });
+      run('docker', ['network', 'create', '--internal', network], { cwd: repoRoot });
+    }
+    const createArgs = [
+      'create', '--name', control, '--network', 'bridge',
+      '--workdir', '/app',
+      '--mount', `type=bind,src=${smokeRoot},dst=/smoke`,
+      ...(!plannerOnly ? [
+        '--mount', 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock',
+      ] : []),
+      ...mounts.flatMap(([hostPath, containerPath]) => [
+        '--mount', `type=bind,src=${join(repoRoot, hostPath)},dst=${containerPath},readonly`,
+      ]),
+      '-e', 'METACLAW_SMOKE_IN_DOCKER=true',
+      '-e', 'METACLAW_SMOKE_SKIP_BUILD=true',
+      '-e', 'METACLAW_SMOKE_ROOT=/smoke',
+      ...(!plannerOnly ? [
+        '-e', `METACLAW_CONTROL_NETWORK=${network}`,
+        '-e', `METACLAW_DOCKER_HOST_PATH_MAP=${JSON.stringify({ '/smoke': smokeRoot })}`,
+        '-e', 'METACLAW_CONTROL_HOST=metaclaw-control',
+      ] : []),
+      runtimeImage,
+      'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
+      ...rawArgs,
+    ];
+    run('docker', createArgs, { cwd: repoRoot });
+    if (!plannerOnly) {
+      run('docker', ['network', 'connect', '--alias', 'metaclaw-control', network, control], { cwd: repoRoot });
+    }
+    const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
+    process.stdout.write(result.stdout ?? '');
+    process.stderr.write(result.stderr ?? '');
+  } finally {
+    spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
+    if (!plannerOnly) {
+      spawnSync('docker', ['network', 'rm', network], { cwd: repoRoot, encoding: 'utf8' });
+    }
+    rmSync(smokeRoot, { recursive: true, force: true });
+  }
+}
+
 function buildHelp() {
   return [
-    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
+    'Usage: npm run smoke:metaclaw -- [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
     '',
     'Environment variables:',
     '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
-    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to artifact.',
+    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn native Codex memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
+    '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; ordinary smoke runs create the control container automatically.',
     '',
     'Examples:',
     '  npm run smoke:metaclaw',

@@ -4,9 +4,13 @@ import type { AgentClass } from '../core/types.js';
 import type { AgentClassService } from './agent-class-service.js';
 import type { SessionPresentationService } from '../session/session-presentation-service.js';
 import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
+import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
 
 type ExecutorRegisterWizardStep =
   | 'name'
+  | 'image'
+  | 'imageId'
+  | 'permissionProfile'
   | 'mode'
   | 'projectUrl'
   | 'command'
@@ -20,6 +24,9 @@ export interface PendingExecutorRegisterWizard {
   step: ExecutorRegisterWizardStep;
   profile: {
     name?: string;
+    executionImageRef?: string;
+    resolvedImageId?: string;
+    permissionProfileId?: PermissionProfileId;
     projectUrl?: string | null;
     runtimeCommand?: string;
     runtimeArgs?: string[];
@@ -71,7 +78,7 @@ export class ExecutorAdminService {
   startWizard(): string[] {
     this.wizard = { step: 'name', profile: {} };
     return [
-      '1/8 Executor AgentClass name?',
+      '1/11 Executor AgentClass name?',
       'Examples: research-bot, finance-research-agent',
     ];
   }
@@ -93,8 +100,28 @@ export class ExecutorAdminService {
           return { handled: true, lines: [`Cannot register canonical Executor AgentClass: ${value}`] };
         }
         wizard.profile.name = value;
+        wizard.step = 'image';
+        return { handled: true, lines: ['2/11 Docker image reference? Example: registry.example/agent:1.2.3'] };
+
+      case 'image':
+        if (!value) return { handled: true, lines: ['Image reference cannot be empty.'] };
+        wizard.profile.executionImageRef = value;
+        wizard.step = 'imageId';
+        return { handled: true, lines: ['3/11 Immutable resolved image ID? Use sha256:<64 hex>.'] };
+
+      case 'imageId':
+        if (!/^sha256:[a-f0-9]{64}$/u.test(value)) return { handled: true, lines: ['Image ID must be sha256:<64 hex>.'] };
+        wizard.profile.resolvedImageId = value;
+        wizard.step = 'permissionProfile';
+        return { handled: true, lines: ['4/11 Permission profile? workspace-engineering, public-web-research, or restricted-custom.'] };
+
+      case 'permissionProfile':
+        if (!PERMISSION_PROFILE_IDS.includes(value as PermissionProfileId)) {
+          return { handled: true, lines: ['Unknown permission profile.'] };
+        }
+        wizard.profile.permissionProfileId = value as PermissionProfileId;
         wizard.step = 'mode';
-        return { handled: true, lines: ['2/8 Type url or manual.'] };
+        return { handled: true, lines: ['5/11 Type url or manual.'] };
 
       case 'mode':
         if (/^url$/iu.test(value)) {
@@ -184,8 +211,11 @@ export class ExecutorAdminService {
   }
 
   private completeWizard(wizard: PendingExecutorRegisterWizard): string[] {
-    if (!wizard.profile.name || !wizard.profile.runtimeCommand) {
-      return ['Registration failed: missing name or command.'];
+    if (
+      !wizard.profile.name || !wizard.profile.runtimeCommand || !wizard.profile.executionImageRef
+      || !wizard.profile.resolvedImageId || !wizard.profile.permissionProfileId
+    ) {
+      return ['Registration failed: missing name, image, permission profile, or command.'];
     }
     if (isBuiltinExecutorName(wizard.profile.name)) {
       return [`Cannot register canonical Executor AgentClass: ${wizard.profile.name}`];
@@ -213,6 +243,9 @@ export class ExecutorAdminService {
       runtimeCommand: wizard.profile.runtimeCommand,
       runtimeArgs: wizard.profile.runtimeArgs ?? [],
       runtimeCheckCommand: wizard.profile.runtimeCheckCommand ?? null,
+      executionImageRef: wizard.profile.executionImageRef,
+      resolvedImageId: wizard.profile.resolvedImageId,
+      permissionProfileId: wizard.profile.permissionProfileId,
       projectUrl: wizard.profile.projectUrl ?? existing?.projectUrl ?? null,
     };
     this.deps.agentClassService.upsert(agentClass);

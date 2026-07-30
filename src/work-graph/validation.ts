@@ -16,6 +16,7 @@ export type WorkGraphViolationCode =
   | 'empty_work_graph'
   | 'evidence_requirements_count_invalid'
   | 'invalid_key'
+  | 'mergeable_same_agent_chain'
   | 'missing_entry_node'
   | 'self_dependency'
   | 'too_many_context_refs'
@@ -28,7 +29,7 @@ export interface WorkGraphViolation {
   message: string;
 }
 
-/** Pure v4 structural and contract validation shared by Planner, Kernel and Runtime. */
+/** Pure v5 structural and contract validation shared by Planner, Kernel and Runtime. */
 export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): WorkGraphViolation[] {
   const violations: WorkGraphViolation[] = [];
   if (graph.subtasks.length === 0) {
@@ -77,6 +78,29 @@ export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): W
   if (containsCycle(dependencyGraph)) {
     violations.push(violation('dependency_cycle', [], 'subtasks', 'work graph contains a dependency cycle'));
   }
+
+  const children = new Map<string, string[]>();
+  for (const subtask of graph.subtasks) children.set(subtask.id, []);
+  for (const subtask of graph.subtasks) {
+    for (const dependency of subtask.dependencies) {
+      children.get(dependency.fromSubtaskId)?.push(subtask.id);
+    }
+  }
+  for (const [index, downstream] of graph.subtasks.entries()) {
+    if (downstream.dependencies.length !== 1) continue;
+    const upstreamId = downstream.dependencies[0]!.fromSubtaskId;
+    if (children.get(upstreamId)?.length !== 1) continue;
+    const upstream = subtasksById.get(upstreamId);
+    const preferred = upstream?.preferredAgentClassList[0];
+    if (!preferred || downstream.preferredAgentClassList[0] !== preferred) continue;
+    violations.push(violation(
+      'mergeable_same_agent_chain',
+      [upstreamId, downstream.id],
+      `subtasks.${index}.dependencies.0`,
+      `subtasks ${upstreamId} -> ${downstream.id} form a mergeable ${preferred} single chain`,
+    ));
+  }
+
   return violations.sort(compareViolations);
 }
 
@@ -145,6 +169,7 @@ export function contextRefKey(ref: ContextRef): string {
     case 'current_user_input': return ref.kind;
     case 'interaction': return `${ref.kind}:${ref.interactionId}:${ref.side}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
+    case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
     case 'preference': return `${ref.kind}:${ref.preferenceId}`;
   }
 }

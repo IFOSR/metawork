@@ -1,22 +1,5 @@
-// Adapts the Pi coding agent with a generated web-search extension for source-backed research tasks.
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
-import { buildEnvFromFile } from '../utils/env-file.js';
-import { CommandLineExecutorAdapter } from './command-line-adapter.js';
-import type { ExecutorInput } from './adapter.js';
-
-const PI_WEB_EXTENSION_PATH = join(homedir(), '.metaclaw', 'pi-extensions', 'metaclaw-web-tools.ts');
-
-const PI_RESEARCH_SYSTEM_PROMPT = [
-  'Metaclaw routes research and source-backed tasks to you with web tools enabled.',
-  'Use web_search automatically whenever the task needs current information, source attribution, online verification, market/company/product research, or time-sensitive facts.',
-  'Use web_fetch to inspect important URLs from search results before making source-backed claims.',
-  'If a web tool fails, retry with a narrower query or another result before falling back to prior knowledge.',
-  'When online verification is required but all web access fails, explicitly state the network limitation and do not present stale knowledge as verified fact.',
-].join('\n');
-
-const PI_WEB_EXTENSION_SOURCE = String.raw`
+// Holds the generated Pi web-tools extension source used by the sandboxed Pi attempt image.
+export const PI_WEB_EXTENSION_SOURCE = String.raw`
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
@@ -265,42 +248,3 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(evidenceGetTool);
 }
 `;
-
-function ensurePiWebExtension(): string {
-  const dir = join(homedir(), '.metaclaw', 'pi-extensions');
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(PI_WEB_EXTENSION_PATH, PI_WEB_EXTENSION_SOURCE);
-  return PI_WEB_EXTENSION_PATH;
-}
-
-/** Runs Pi with MetaClaw's generated web tools extension and research-oriented system prompt. */
-export class PiAgentAdapter extends CommandLineExecutorAdapter {
-  readonly name = 'pi-agent';
-
-  protected buildSpawnArgs(prompt: string): string[] {
-    return [
-      '--no-extensions',
-      '--extension',
-      ensurePiWebExtension(),
-      '--tools',
-      'web_search,web_fetch,evidence_list,evidence_search,evidence_get,bash,read,write,edit,grep,find,ls',
-      '--append-system-prompt',
-      PI_RESEARCH_SYSTEM_PROMPT,
-      '-p',
-      prompt,
-    ];
-  }
-
-  protected buildSpawnEnv(input?: ExecutorInput): NodeJS.ProcessEnv {
-    const binding = input?.context.evidenceTools.binding;
-    return {
-      ...buildEnvFromFile(process.env.METACLAW_PI_EXECUTOR_ENV_FILE),
-      ...(binding ? {
-        METACLAW_EVIDENCE_JSON_URL: binding.jsonUrl,
-        METACLAW_EVIDENCE_TOKEN: binding.bearerToken,
-      } : {}),
-    };
-  }
-}

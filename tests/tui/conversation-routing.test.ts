@@ -6,16 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
-import { completionResponse } from '../support/completion-response.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -46,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -78,36 +76,22 @@ describe('App conversation routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '你好，我在。',
-        exitCode: 0,
-        durationMs: 50,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '你好，我在。' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_routing',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通问候' })),
       }),
     );
@@ -121,7 +105,7 @@ describe('App conversation routing', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
     expect(app.lastFrame()).toContain('这是一条测试直接回答');
@@ -129,7 +113,7 @@ describe('App conversation routing', () => {
     expect(app.lastFrame()).not.toContain('已识别普通对话');
     expect(app.lastFrame()).not.toContain('执行策略：直接回答，不创建任务');
     expect(app.lastFrame()).not.toContain('PlanningAgent:');
-    expect(app.lastFrame()).not.toContain('PolicyKernel:');
+    expect(app.lastFrame()).not.toContain('ControlKernel:');
 
     app.unmount();
     app.cleanup();
@@ -139,43 +123,24 @@ describe('App conversation routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockResolvedValueOnce({
-          success: true,
-          output: '第一轮回复',
-          exitCode: 0,
-          durationMs: 50,
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          output: '第二轮回复',
-          exitCode: 0,
-          durationMs: 50,
-        }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['第一轮回复', '第二轮回复'][attemptIndex],
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_visible_user_turn_break',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(directReplyPlan({ reason: '普通对话' })),
       }),
     );
@@ -204,7 +169,7 @@ describe('App conversation routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -229,33 +194,20 @@ describe('App conversation routing', () => {
       },
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '最容易被替代的是通用 prompt 编排，最难被替代的是调度、状态与恢复。',
-        exitCode: 0,
-        durationMs: 90,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '最容易被替代的是通用 prompt 编排，最难被替代的是调度、状态与恢复。',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_focus',
         contextRecaller,
-        llmBridge,
-        executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
           workGraphPlan({ goal: '可以，继续', includeRecentConversationContext: true, overrides: { reason: '按当前对话创建跟进任务' } }),
@@ -266,7 +218,7 @@ describe('App conversation routing', () => {
     await typeAndSubmit('未来最容易被基座模型替代的模块是什么');
     await typeAndSubmit('可以，继续');
 
-    expect(executor.execute).toHaveBeenCalled();
+    expect(attemptSandbox.create).toHaveBeenCalled();
     expect(app.lastFrame()).toContain('最容易被替代的是通用 prompt 编排');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTask.id}`);
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('parked');
@@ -279,38 +231,25 @@ describe('App conversation routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
-        exitCode: 0,
-        durationMs: 90,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_followup_task',
         contextRecaller,
-        llmBridge,
-        executorFactory: () => executor,
         planningAgent: stubPlanningAgent(
           directReplyPlan({ reason: '普通讨论' }),
           workGraphPlan({
@@ -348,13 +287,13 @@ describe('App conversation routing', () => {
     await typeAndSubmit('未来随着基座模型的能力越来越强，是否还需要 harness');
     await typeAndSubmit('把刚才那段回答整理成三点结论');
 
-    expect(executor.execute).toHaveBeenCalled();
-    const followUpCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
+    expect(attemptSandbox.create).toHaveBeenCalled();
+    const followUpCall = attemptSandbox.create.mock.calls
       .map(call => call[0])
-      .find(input => input.context.taskBackground.title.includes('把刚才那段回答整理成三点结论'));
+      .find(input => input.taskId !== parkedTaskId);
     expect(followUpCall).toBeDefined();
-    expect(followUpCall!.context.taskBackground.id).not.toBe(parkedTaskId);
-    expect(JSON.stringify(followUpCall!.context)).not.toContain('未来随着基座模型');
+    expect(followUpCall!.taskId).not.toBe(parkedTaskId);
+    expect(followUpCall!.args.join(' ')).not.toContain('未来随着基座模型');
     expect(taskRepo.findById(parkedTaskId)?.status).toBe('parked');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTaskId}`);
 

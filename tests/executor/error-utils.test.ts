@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { formatExecutorError, formatExecutorProgress, isRecoverableExecutorFailure } from '../../src/executor/error-utils.js';
+import {
+  formatExecutorError,
+  formatExecutorProgress,
+  isRecoverableExecutorFailure,
+  normalizeExecutorFailure,
+} from '../../src/executor/error-utils.js';
 
 describe('formatExecutorError', () => {
   it('collapses codex network logs into a concise user-facing message', () => {
@@ -55,6 +60,20 @@ describe('formatExecutorError', () => {
   it('maps legacy executor max duration timeout to a compatibility message', () => {
     expect(formatExecutorError('executor max duration exceeded')).toBe('执行器历史总时长超限，请升级执行器配置并重试');
     expect(isRecoverableExecutorFailure('executor max duration exceeded')).toBe(true);
+  });
+});
+
+describe('normalizeExecutorFailure', () => {
+  it('normalizes infrastructure text once at the Adapter boundary', () => {
+    expect(normalizeExecutorFailure('temporary failure in name resolution')).toMatchObject({
+      kind: 'network', scope: 'agent_class', code: 'network_failure',
+    });
+    expect(normalizeExecutorFailure('executor idle timeout')).toMatchObject({
+      kind: 'timeout', scope: 'agent_class', code: 'executor_timeout',
+    });
+    expect(normalizeExecutorFailure('permission denied: /workspace')).toMatchObject({
+      kind: 'permission', scope: 'task', code: 'permission_denied',
+    });
   });
 });
 

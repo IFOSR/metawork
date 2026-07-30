@@ -1,12 +1,12 @@
 import type Database from 'better-sqlite3';
-import type { CompletionHandoffV1 } from '../execution/completion-protocol.js';
+import type { CompletionHandoffV2 } from '../execution/completion-protocol.js';
 
 export interface PersistedSubtaskHandoff {
   taskId: string;
   fromSubtaskId: string;
   toSubtaskId: string;
   attemptId: string;
-  items: CompletionHandoffV1['items'];
+  items: CompletionHandoffV2['items'];
   completionSchemaVersion: number;
   createdAt: string;
 }
@@ -65,7 +65,7 @@ function rowToHandoff(row: HandoffRow): PersistedSubtaskHandoff {
     fromSubtaskId: row.from_subtask_id,
     toSubtaskId: row.to_subtask_id,
     attemptId: row.attempt_id,
-    items: JSON.parse(row.items_json) as CompletionHandoffV1['items'],
+    items: JSON.parse(row.items_json) as CompletionHandoffV2['items'],
     completionSchemaVersion: row.completion_schema_version,
     createdAt: row.created_at,
   };

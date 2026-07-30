@@ -1,13 +1,15 @@
 import type Database from 'better-sqlite3';
-import type { AgentClassRiskLevel, Subtask, TaskStatus } from '../core/types.js';
+import type { AgentClassRiskLevel, Subtask, SubtaskStatus } from '../core/types.js';
 import type { ContextRef, WorkGraphAcceptanceCriterion, WorkGraphDependency } from '../work-graph/index.js';
 
 interface SubtaskRow {
   id: string;
   task_id: string;
+  graph_revision: number;
+  generation_id: string;
   title: string;
   goal: string;
-  status: TaskStatus;
+  status: SubtaskStatus;
   dependencies_json: string;
   context_refs_json: string;
   required_capabilities_json: string;
@@ -35,6 +37,8 @@ function rowToSubtask(row: SubtaskRow): Subtask {
   return {
     id: row.id,
     taskId: row.task_id,
+    graphRevision: row.graph_revision,
+    generationId: row.generation_id,
     title: row.title,
     goal: row.goal,
     status: row.status,
@@ -61,10 +65,10 @@ export class SubtaskRepo {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO subtasks (
-        id, task_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
+        id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
         preferred_agent_class_list_json, expected_output, acceptance_json,
         risk_level, result, artifacts_json, verification_json, error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
@@ -84,6 +88,8 @@ export class SubtaskRepo {
     `).run(
       subtask.id,
       subtask.taskId,
+      subtask.graphRevision,
+      subtask.generationId,
       subtask.title,
       subtask.goal,
       subtask.status,
@@ -108,6 +114,19 @@ export class SubtaskRepo {
     return rows.map(rowToSubtask);
   }
 
+  listActiveByTask(taskId: string): Subtask[] {
+    const rows = this.db.prepare(`
+      SELECT subtask.*
+      FROM subtasks subtask
+      JOIN work_graph_revisions revision
+        ON revision.task_id = subtask.task_id
+       AND revision.revision = subtask.graph_revision
+      WHERE subtask.task_id = ? AND revision.status = 'active'
+      ORDER BY subtask.created_at ASC
+    `).all(taskId) as SubtaskRow[];
+    return rows.map(rowToSubtask);
+  }
+
   listTaskIds(): string[] {
     const rows = this.db.prepare('SELECT DISTINCT task_id FROM subtasks ORDER BY task_id ASC').all() as Array<{ task_id: string }>;
     return rows.map(row => row.task_id);
@@ -118,7 +137,7 @@ export class SubtaskRepo {
     return row ? rowToSubtask(row) : null;
   }
 
-  updateStatus(id: string, status: TaskStatus, changes: {
+  updateStatus(id: string, status: SubtaskStatus, changes: {
     result?: string;
     artifacts?: string[];
     verification?: Subtask['verification'];

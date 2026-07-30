@@ -2568,14 +2568,6 @@ function parseFeishuTaskOutputLine(line: string): FeishuTaskOutputLine | null {
     };
   }
 
-  const legacyTaskLine = normalized.match(/^[+·•]\s+#?(task_[^\s]+)\s*(.*)$/);
-  if (legacyTaskLine) {
-    return {
-      taskId: legacyTaskLine[1],
-      text: legacyTaskLine[2] ?? '',
-    };
-  }
-
   return null;
 }
 

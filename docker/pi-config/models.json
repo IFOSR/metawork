@@ -5,7 +5,7 @@
       "api": "openai-completions",
       "apiKey": "$OPENAI_API_KEY",
       "models": [
-        { "id": "gpt-5.4" },
+        { "id": "gpt-5.6-luna" },
         { "id": "gpt-5.4-mini" },
         { "id": "deepseek-v4-flash" },
         { "id": "deepseek-v4-pro" },

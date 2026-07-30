@@ -10,17 +10,30 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);
+  const cancelTask = vi.fn(async (taskId: string, reason?: string) => {
+    taskEngine.cancel(taskId, reason);
+    return { taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+  });
+  const cancelSubtasks = vi.fn(async (taskId: string, subtaskIds: string[]) => ({
+    taskId, affectedSubtaskIds: subtaskIds, cleanupAttemptIds: [],
+  }));
+  const acceptPartialResult = vi.fn(async (taskId: string) => ({
+    taskId, affectedSubtaskIds: ['cancelled'], cleanupAttemptIds: [],
+  }));
   const context = {
     db,
     taskEngine,
     activeExecutions: { abortTask },
-    executor: { name: 'codex-cli' },
+    taskControl: { cancelTask, cancelSubtasks, acceptPartialResult },
   } as any;
-  return { db, taskRepo, taskEngine, abortTask, context, catalog: createDefaultCommandCatalog() };
+  return {
+    db, taskRepo, taskEngine, abortTask, cancelTask, cancelSubtasks,
+    acceptPartialResult, context, catalog: createDefaultCommandCatalog(),
+  };
 }
 
 function createRunningTask(taskEngine: TaskEngine, suffix: string) {
@@ -34,8 +47,6 @@ describe('canonical task control commands', () => {
   it.each([
     ['pause', 'parked', ''],
     ['block', 'blocked', ' 等待材料'],
-    ['cancel', 'cancelled', ''],
-    ['complete', 'done', ''],
   ] as const)('persists %s before aborting the active task', async (command, expectedStatus, tail) => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, command);
@@ -45,6 +56,27 @@ describe('canonical task control commands', () => {
     expect(result.type).toBe('text');
     expect(harness.taskRepo.findById(task.id)?.status).toBe(expectedStatus);
     expect(harness.abortTask).toHaveBeenCalledWith(task.id);
+  });
+
+  it('routes Task cancellation through the durable Task control port', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'cancel');
+
+    await harness.catalog.execute(`/task cancel ${task.id}`, harness.context);
+
+    expect(harness.taskRepo.findById(task.id)?.status).toBe('cancelled');
+    expect(harness.cancelTask).toHaveBeenCalledWith(task.id);
+    expect(harness.abortTask).not.toHaveBeenCalled();
+  });
+
+  it('does not let the manual complete command bypass the completion gate', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'complete');
+
+    const result = await harness.catalog.execute(`/task complete ${task.id}`, harness.context);
+
+    expect(harness.taskRepo.findById(task.id)?.status).toBe('running');
+    expect(result.content).toContain('完成门');
   });
 
   it('clears matching tasks and aborts only tasks that were running', async () => {
@@ -57,8 +89,33 @@ describe('canonical task control commands', () => {
 
     expect(harness.taskRepo.findById(running.id)?.status).toBe('cancelled');
     expect(harness.taskRepo.findById(parked.id)?.status).toBe('cancelled');
-    expect(harness.abortTask).toHaveBeenCalledTimes(1);
-    expect(harness.abortTask).toHaveBeenCalledWith(running.id);
+    expect(harness.cancelTask).toHaveBeenCalledTimes(2);
+    expect(harness.cancelTask).toHaveBeenCalledWith(running.id, expect.any(String));
+    expect(harness.cancelTask).toHaveBeenCalledWith(parked.id, expect.any(String));
+    expect(harness.abortTask).not.toHaveBeenCalled();
+  });
+
+  it('accepts the target-first Subtask cancellation and partial acceptance commands', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'subtask-control');
+
+    await harness.catalog.execute(
+      `/task ${task.id} subtask cancel subtask-a subtask-b`,
+      harness.context,
+    );
+    expect(harness.cancelSubtasks).toHaveBeenCalledWith(
+      task.id,
+      ['subtask-a', 'subtask-b'],
+    );
+
+    harness.taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: 'partial cancellation',
+      status: 'waiting',
+    });
+    await harness.catalog.execute(`/task ${task.id} accept-partial`, harness.context);
+    expect(harness.acceptPartialResult).toHaveBeenCalledWith(task.id);
   });
 
 });

@@ -6,17 +6,14 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -47,6 +44,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -71,12 +69,12 @@ describe('App network recovery natural-language control', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '调研 memory', goal: '继续整理 memory 框架' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -86,32 +84,18 @@ describe('App network recovery natural-language control', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复执行',
-        exitCode: 0,
-        durationMs: 400,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复执行' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_network_nl_recovery',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'recover_blocked', taskId: blockedTask.id, scope: null }),
         ),
@@ -126,9 +110,9 @@ describe('App network recovery natural-language control', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0].context.taskBackground.id).toBe(blockedTask.id);
-    expect(app.lastFrame()).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0][0].taskId).toBe(blockedTask.id);
+    expect(app.lastFrame()).toContain('阻塞已解除，任务重新具备执行条件');
 
     app.unmount();
     app.cleanup();

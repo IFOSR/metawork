@@ -1,14 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { learningCommand } from '../../src/commands/learning-commands.js';
+import {
+  listSkillEffects,
+  promoteLearningCandidate,
+  showLearningSummary,
+} from '../../src/commands/learning-commands.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
 import { ExecutorSkillInstallEventRepo } from '../../src/storage/executor-skill-install-event-repo.js';
 import { SkillEffectSummaryRepo } from '../../src/storage/skill-effect-summary-repo.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -17,18 +20,15 @@ function createTestDb() {
   return db;
 }
 
-function commandContext(db: Database.Database, executor: Partial<ExecutorAdapter> = {}) {
+function commandContext(db: Database.Database): CommandContext {
   return {
     db,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
-    executor: {
-      name: 'mock-executor',
-      execute: vi.fn(),
-      isAvailable: vi.fn(),
-      abort: vi.fn(),
-      ...executor,
-    },
-  } as any;
+    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+  } as never as CommandContext;
+}
+
+function args(positionals: ResolvedCommandArgs['positionals'] = {}): ResolvedCommandArgs {
+  return { positionals, options: {} };
 }
 
 function insertGovernanceCandidate(repo: LearningCandidateRepo, kind: 'skill_disable' | 'skill_deprecation') {
@@ -57,37 +57,29 @@ function insertGovernanceCandidate(repo: LearningCandidateRepo, kind: 'skill_dis
   });
 }
 
-describe('learningCommand E6 skill governance promotion and review UX', () => {
-  it('promotes approved skill_disable candidates through executor.disableSkill and writes governance audit', async () => {
+describe('learning E6 skill governance promotion and review UX', () => {
+  it('records unsupported audit for approved skill_disable candidates because sandboxed executors have no disable API', async () => {
     const db = createTestDb();
     const candidateRepo = new LearningCandidateRepo(db);
     insertGovernanceCandidate(candidateRepo, 'skill_disable');
-    const disableSkill = vi.fn().mockResolvedValue({
-      ok: true,
-      executorName: 'mock-executor',
-      installedSkillName: 'fragile-skill',
-      installedVersion: '1.0.0',
-      message: 'disabled fragile-skill',
-    });
 
-    const result = await learningCommand.execute(['promote', 'lc_skill_disable'], commandContext(db, { disableSkill } as any));
+    const result = await promoteLearningCandidate(args({ candidateId: 'lc_skill_disable' }), commandContext(db));
 
-    expect(disableSkill).toHaveBeenCalledWith({ skillName: 'fragile-skill', skillVersion: '1.0.0' });
-    expect(result.content).toContain('已下发并停用 Skill');
-    expect(candidateRepo.findById('lc_skill_disable')?.status).toBe('promoted');
+    expect(result.content).toContain('不支持 Skill 停用');
+    expect(candidateRepo.findById('lc_skill_disable')?.status).toBe('approved');
     expect(new ExecutorSkillInstallEventRepo(db).listByCandidate('lc_skill_disable')[0]).toMatchObject({
       action: 'disable',
-      status: 'success',
-      message: 'disabled fragile-skill',
+      status: 'unsupported',
+      executorName: 'sandboxed',
     });
   });
 
-  it('records unsupported audit for approved skill_deprecation candidates when executor has no deprecateSkill API', async () => {
+  it('records unsupported audit for approved skill_deprecation candidates', async () => {
     const db = createTestDb();
     const candidateRepo = new LearningCandidateRepo(db);
     insertGovernanceCandidate(candidateRepo, 'skill_deprecation');
 
-    const result = await learningCommand.execute(['promote', 'lc_skill_deprecation'], commandContext(db));
+    const result = await promoteLearningCandidate(args({ candidateId: 'lc_skill_deprecation' }), commandContext(db));
 
     expect(result.content).toContain('不支持 Skill 废弃');
     expect(candidateRepo.findById('lc_skill_deprecation')?.status).toBe('approved');
@@ -113,8 +105,8 @@ describe('learningCommand E6 skill governance promotion and review UX', () => {
       });
     }
 
-    const skills = await learningCommand.execute(['skills'], commandContext(db));
-    const summary = await learningCommand.execute(['summary'], commandContext(db));
+    const skills = await listSkillEffects(args(), commandContext(db));
+    const summary = await showLearningSummary(args(), commandContext(db));
 
     expect(skills.content).toContain('高风险');
     expect(skills.content).toContain('建议停用');

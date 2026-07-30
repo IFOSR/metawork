@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export type ReflectionEventSourceType = 'task_completion' | 'user_feedback' | 'executor_skill_usage' | 'recall_feedback';
+export type ReflectionEventSourceType = 'task_completion' | 'user_feedback' | 'executor_skill_usage';
 
 interface ReflectionEventRow {
   id: string;

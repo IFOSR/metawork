@@ -6,14 +6,12 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -44,6 +42,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -88,7 +87,7 @@ describe('App auto-resume after preemption', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -98,52 +97,36 @@ describe('App auto-resume after preemption', () => {
     const laterNormalDeferred = createDeferredResult();
 
     let firstExecuteResolved = false;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockImplementationOnce(() => firstDeferred.promise)
-        .mockImplementationOnce(() => urgentDeferred.promise)
-        .mockImplementationOnce(() => resumedDeferred.promise)
-        .mockImplementationOnce(() => laterNormalDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn().mockImplementation(() => {
-        if (!firstExecuteResolved) {
-          firstExecuteResolved = true;
-          firstDeferred.resolve({
-            success: false,
-            output: '',
-            error: 'execution interrupted',
-            exitCode: 1,
-            durationMs: 200,
-            interrupted: true,
-          });
-        }
-      }),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: '明确工作任务',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: '新任务',
-      }),
-    } as unknown as LlmBridge;
+    const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred, laterNormalDeferred];
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['first done', 'urgent done', 'resumed done', 'later done'][attemptIndex],
+      wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
+    }));
+    attemptSandbox.stop.mockImplementation(async containerId => {
+      if (!firstExecuteResolved) {
+        firstExecuteResolved = true;
+        firstDeferred.resolve({
+          success: false,
+          output: '',
+          error: 'execution interrupted',
+          exitCode: 1,
+          durationMs: 200,
+          interrupted: true,
+        });
+      }
+      return undefined;
+    });
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_auto_resume',
         contextRecaller,
-        llmBridge,
-        availableExecutorCommands: new Set(['codex']),
       })
     );
 
@@ -172,10 +155,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 400,
     });
-    await waitForExecutorCallCount(executor.execute as ReturnType<typeof vi.fn>, 3);
+    await waitForExecutorCallCount(attemptSandbox.create, 3);
 
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0].task.title).toContain('主线研究任务');
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0].executionContextBundle.mode).toBe('resume-parked');
+    expect(taskRepo.findById(attemptSandbox.create.mock.calls[2][0].taskId)?.title).toContain('主线研究任务');
     expect(taskEngine['taskRepo'].findByStatus('running')[0]?.title).toContain('主线研究任务');
 
     resumedDeferred.resolve({
@@ -184,9 +166,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 500,
     });
-    await waitForExecutorCallCount(executor.execute as ReturnType<typeof vi.fn>, 4);
+    await waitForExecutorCallCount(attemptSandbox.create, 4);
 
-    expect((executor.execute as ReturnType<typeof vi.fn>).mock.calls[3][0].task.title).toContain('普通排队任务');
+    expect(taskRepo.findById(attemptSandbox.create.mock.calls[3][0].taskId)?.title).toContain('普通排队任务');
 
     laterNormalDeferred.resolve({
       success: true,

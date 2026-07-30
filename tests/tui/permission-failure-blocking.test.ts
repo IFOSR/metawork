@@ -6,15 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -45,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -79,38 +78,25 @@ describe('App permission failure blocking', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: false,
-        output: '',
-        error: '执行器权限受限，请确认已授予所需目录访问权限后重试',
-        exitCode: 1,
-        durationMs: 900,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      exitCode: 1,
+      rawOutput: 'permission denied while accessing the requested workspace',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_permission_block',
         contextRecaller,
-        llmBridge,
-        availableExecutorCommands: new Set(['codex']),
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '继续调研 agent memory' })),
       }),
     );
@@ -121,12 +107,12 @@ describe('App permission failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器权限受限，请确认已授予所需目录访问权限后重试') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: permission requires explicit recovery') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('执行器权限受限，请确认已授予所需目录访问权限后重试');
-    expect(app.lastFrame()).toContain('Execution blocked: 执行器权限受限，请确认已授予所需目录访问权限后重试');
+    expect(blockedTask.dependencies[0]?.description).toBe('permission requires explicit recovery');
+    expect(app.lastFrame()).toContain('Execution blocked: permission requires explicit recovery');
 
     app.unmount();
     app.cleanup();

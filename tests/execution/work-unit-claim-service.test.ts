@@ -118,13 +118,49 @@ describe('WorkUnitClaimService', () => {
     expect(lost).toHaveLength(1);
     expect(repo.findById('executor-1')).toMatchObject({
       state: 'heartbeat_lost',
-      claimedTaskId: 'task_1',
-      claimedSubtaskId: 'subtask_1',
+      claimedTaskId: null,
+      claimedSubtaskId: null,
     });
     expect(lost[0]).toMatchObject({
       state: 'heartbeat_lost',
       claimedTaskId: 'task_1',
       claimedSubtaskId: 'subtask_1',
+    });
+  });
+
+  it('does not let a stale attempt release a WorkUnit that has been claimed by another attempt', async () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+    repo.upsert(workUnit());
+    const claim = await new WorkUnitClaimService(repo).claim({
+      taskId: 'task_1',
+      attemptId: 'attempt_1',
+      subtask: {
+        id: 'subtask_1',
+        preferredAgentClassList: ['codex-cli'],
+      },
+    });
+    repo.updateState('executor-1', 'running', {
+      claimedTaskId: 'task_2',
+      claimedSubtaskId: 'subtask_2',
+      claimedAttemptId: 'attempt_2',
+    });
+
+    claim?.release();
+
+    expect(repo.findById('executor-1')).toMatchObject({
+      state: 'running',
+      claimedTaskId: 'task_2',
+      claimedSubtaskId: 'subtask_2',
+      claimedAttemptId: 'attempt_2',
+    });
+    expect(repo.listEvents('executor-1').at(-1)).toMatchObject({
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      attemptId: 'attempt_1',
+      eventType: 'release_skipped_stale',
+      state: 'running',
     });
   });
 
@@ -161,7 +197,7 @@ describe('WorkUnitClaimService', () => {
       },
     });
 
-    expect(probe).toHaveBeenCalledWith('codex-cli');
+    expect(probe).toHaveBeenCalledWith('codex-cli', 'claim');
     expect(claim?.workUnit).toMatchObject({ agentClassName: 'codex-cli', state: 'claimed' });
     expect(repo.listEvents(claim!.workUnit.id).map(event => event.eventType)).toEqual([
       'probe_started',
@@ -214,5 +250,34 @@ describe('WorkUnitClaimService', () => {
     expect(claim).toBeNull();
     expect(repo.findAll().filter(unit => unit.agentClassKind === 'executor').map(unit => unit.state))
       .toEqual(['failed', 'failed']);
+  });
+
+  it('persists the concrete executor probe error for later diagnostics', async () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+
+    const claim = await new WorkUnitClaimService(repo, 60_000, async () => {
+      throw new Error(
+        'Cannot connect to the Docker daemon at unix:///var/run/docker.sock; '
+        + 'OPENAI_API_KEY=sk-not-for-planner',
+      );
+    }).claim({
+      taskId: 'task_1',
+      attemptId: 'attempt_1',
+      subtask: {
+        id: 'subtask_1',
+        preferredAgentClassList: ['codex-cli'],
+      },
+    });
+
+    expect(claim).toBeNull();
+    const failed = repo.findAll().find(unit => unit.state === 'failed');
+    expect(failed).toBeDefined();
+    expect(repo.listEvents(failed!.id).at(-1)).toMatchObject({
+      eventType: 'probe_failed',
+      message: expect.stringContaining('Cannot connect to the Docker daemon'),
+    });
+    expect(repo.listEvents(failed!.id).at(-1)?.message).not.toContain('sk-not-for-planner');
   });
 });

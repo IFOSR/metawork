@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join } from 'path';
+import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
@@ -61,33 +62,8 @@ export class PlannerDataReader {
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
     const latest = snapshots.at(-1) ?? null;
-    const v4SubtaskCount = Number((this.db.prepare(
-      'SELECT COUNT(*) AS count FROM subtasks WHERE task_id = ?',
-    ).get(taskId) as { count: number }).count);
-    const auditTable = v4SubtaskCount === 0
-      ? (tableExists(this.db, 'subtasks_v3_audit')
-          ? 'subtasks_v3_audit'
-          : tableExists(this.db, 'subtasks_v2_audit') ? 'subtasks_v2_audit' : null)
-      : null;
-    const legacySubtasks = auditTable
-      ? (this.db.prepare(`
-          SELECT id, title, goal, status, result, error
-          FROM ${auditTable} WHERE task_id = ?
-          ORDER BY created_at ASC LIMIT ?
-        `).all(taskId, 8) as Array<Record<string, unknown>>).map(legacy => ({
-          id: legacy.id,
-          title: truncateText(String(legacy.title ?? ''), 160),
-          goal: truncateText(String(legacy.goal ?? ''), 320),
-          status: legacy.status,
-          result: truncateText(String(legacy.result ?? ''), 500),
-          error: legacy.error === null ? null : truncateText(String(legacy.error ?? ''), 320),
-        }))
-      : [];
     return {
       found: true,
-      requiresWorkGraphReplan: v4SubtaskCount === 0 && legacySubtasks.length > 0,
-      auditSchemaVersion: auditTable === 'subtasks_v3_audit' ? 3 : auditTable === 'subtasks_v2_audit' ? 2 : null,
-      auditSubtasks: legacySubtasks,
       task: {
         id: row.id,
         title: truncateText(String(row.title ?? ''), 200),
@@ -119,10 +95,13 @@ export class PlannerDataReader {
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, bounded) as Array<Record<string, unknown>>;
     const decisions = this.db.prepare(`
-      SELECT id, task_id, plan_json, outcome, reason, created_at
-      FROM planning_decisions WHERE session_id = ?
+      SELECT id, task_id, event_json, decision_json, action, reason, created_at
+      FROM kernel_decisions WHERE session_id = ? AND event_type = 'plan_proposed'
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
+    const recentPlanningDecisions = decisions
+      .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
+      .slice(-Math.min(5, bounded));
     return {
       sessionId: this.sessionId,
       interactions: interactions.reverse().map(row => ({
@@ -133,17 +112,21 @@ export class PlannerDataReader {
         executorUsed: row.executor_used,
         createdAt: row.created_at,
       })),
-      recentPlanningDecisions: decisions.reverse().map((row) => {
-        const plan = safeJson<Record<string, unknown>>(row.plan_json, {});
+      recentPlanningDecisions: recentPlanningDecisions.map(row => {
+        const event = safeJson<Record<string, unknown>>(row.event_json, {});
+        const plan = isRecord(event.proposal) ? event.proposal : {};
         const task = isRecord(plan.task) ? plan.task : {};
         const risk = isRecord(plan.risk) ? plan.risk : {};
         return {
           id: row.id,
           taskId: row.task_id,
+          requestText: truncateText(String(event.requestText ?? ''), 500),
           action: plan.action,
           control: task.control,
           targetTaskId: task.taskId,
-          outcome: row.outcome,
+          clarificationQuestion: truncateText(String(plan.clarificationQuestion ?? ''), 500) || null,
+          outcome: 'issued',
+          kernelAction: row.action,
           riskRequiresConfirmation: risk.requiresConfirmation === true,
           reason: truncateText(String(row.reason ?? ''), 320),
           createdAt: row.created_at,
@@ -197,7 +180,8 @@ export class PlannerDataReader {
 
   listExecutorStatus() {
     const rows = this.db.prepare(`
-      SELECT a.name, s.class_health, s.recent_attempts_json, s.updated_at
+      SELECT a.name, s.class_health, s.recent_attempts_json,
+             s.recent_recovery_checks_json, s.updated_at
       FROM agent_classes a
       LEFT JOIN kernel_executor_status s ON s.agent_class_name = a.name
       WHERE a.kind = 'executor'
@@ -209,7 +193,79 @@ export class PlannerDataReader {
         agentClassName: String(row.name),
         classHealth: typeof row.class_health === 'string' ? row.class_health : 'unverified',
         recentAttempts: safeJson(row.recent_attempts_json, []).slice(0, 3),
+        recentRecoveryChecks: safeJson(row.recent_recovery_checks_json, []).slice(0, 3),
         updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      })),
+    };
+  }
+
+  getPlanningContext() {
+    const preferences = this.db.prepare(`
+      SELECT id, type, scope, subject, content, confirmed_at
+      FROM preferences
+      WHERE status = 'confirmed' AND scope = 'global'
+      ORDER BY COALESCE(confirmed_at, updated_at) DESC
+      LIMIT ?
+    `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
+    const pending = this.db.prepare(`
+      SELECT id, task_id, capability, resource_text, operation, reason, created_at
+      FROM permission_requests
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get() as Record<string, unknown> | undefined;
+    return {
+      sessionId: this.sessionId,
+      confirmedPreferences: preferences.map(row => ({
+        id: row.id,
+        type: row.type,
+        scope: row.scope,
+        subject: row.subject,
+        content: truncateText(String(row.content ?? ''), 1_000),
+        confirmedAt: row.confirmed_at,
+      })),
+      pendingAuthorizationRequest: pending ? {
+        requestId: pending.id,
+        taskId: pending.task_id,
+        capability: pending.capability,
+        resource: pending.resource_text,
+        operation: pending.operation,
+        reason: truncateText(String(pending.reason ?? ''), 1_000),
+        createdAt: pending.created_at,
+      } : null,
+      routingCatalog: getPlannerExecutorCatalog(),
+    };
+  }
+
+  getExecutorDiagnostics(input: { agentClassName?: string; limit?: number }) {
+    const limit = boundedLimit(input.limit);
+    const params: unknown[] = [];
+    const classFilter = input.agentClassName?.trim()
+      ? 'AND w.agent_class_name = ?'
+      : '';
+    if (classFilter) params.push(input.agentClassName!.trim());
+    params.push(limit);
+    const rows = this.db.prepare(`
+      SELECT e.work_unit_id, w.agent_class_name, e.task_id, e.subtask_id,
+             e.event_type, e.state, e.message, e.created_at
+      FROM work_unit_events e
+      JOIN work_units w ON w.id = e.work_unit_id
+      WHERE e.event_type = 'probe_failed'
+      ${classFilter}
+      ORDER BY e.created_at DESC
+      LIMIT ?
+    `).all(...params) as Array<Record<string, unknown>>;
+    return {
+      count: rows.length,
+      failures: rows.map(row => ({
+        workUnitId: row.work_unit_id,
+        agentClassName: row.agent_class_name,
+        taskId: row.task_id,
+        subtaskId: row.subtask_id,
+        eventType: row.event_type,
+        state: row.state,
+        reason: truncateText(String(row.message ?? ''), 800),
+        createdAt: row.created_at,
       })),
     };
   }
@@ -230,9 +286,13 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     inputSchema: { taskId: z.string().min(1).max(160) },
   }, async input => toolResult(reader.getTaskContext(input.taskId)));
   server.registerTool('get_current_session_context', {
-    description: 'Read bounded recent interactions and planning decisions for the current trusted session only.',
+    description: 'Read bounded durable MetaClaw interaction and planning-decision audit facts for the current trusted session. Native Codex thread history is the authority for dialogue continuity.',
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
+  server.registerTool('get_planning_context', {
+    description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, and canonical routing capabilities and AgentClasses. Call before executable planning, preference-dependent replies, or authorization resolution.',
+    inputSchema: {},
+  }, async () => toolResult(reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
     description: 'Read one bounded interaction side by stable ID only when the current user explicitly referenced it.',
     inputSchema: {
@@ -248,6 +308,13 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     description: 'List bounded Kernel executor class health and three recent safe execution outcomes. Static routing capabilities are already in Planner startup context.',
     inputSchema: {},
   }, async () => toolResult(reader.listExecutorStatus()));
+  server.registerTool('get_executor_diagnostics', {
+    description: 'Read recent bounded executor probe failures and their persisted safe reasons when the user asks why execution is blocked or an executor is unavailable.',
+    inputSchema: {
+      agentClassName: z.string().min(1).max(160).optional(),
+      limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
+    },
+  }, async input => toolResult(reader.getExecutorDiagnostics(input)));
   return server;
 }
 
@@ -273,12 +340,6 @@ function boundedLimit(limit?: number): number {
 function safeJson<T>(value: unknown, fallback: T): T {
   if (typeof value !== 'string' || !value) return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
-}
-
-function tableExists(db: Database.Database, table: string): boolean {
-  return Boolean(db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(table));
 }
 
 function sanitizeSnapshot(snapshot: Record<string, unknown>) {

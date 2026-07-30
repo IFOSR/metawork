@@ -6,15 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -45,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -74,43 +73,30 @@ afterEach(() => {
   inputCapture.handler = undefined;
 });
 
-describe('App network failure blocking', () => {
-  it('moves a task into blocked with an explicit unblock hint after network failure', async () => {
+describe('App recoverable infrastructure failure waiting', () => {
+  it('moves a task into a Kernel-authorized retry wait after network failure', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: false,
-        output: '',
-        error: '执行器网络连接失败，请检查网络或代理配置',
-        exitCode: 1,
-        durationMs: 800,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      exitCode: 1,
+      rawOutput: '执行器网络连接失败，请检查网络或代理配置',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_network_block',
         contextRecaller,
-        llmBridge,
-        availableExecutorCommands: new Set(['codex']),
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '调研 agent memory 框架' })),
       }),
     );
@@ -121,53 +107,41 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器网络连接失败，请检查网络或代理配置') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('执行器网络连接失败，请检查网络或代理配置');
-    expect(app.lastFrame()).toContain('Execution blocked: 执行器网络连接失败，请检查网络或代理配置');
+    expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
+    expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
 
     app.unmount();
     app.cleanup();
   });
 
-  it('moves a task into blocked with an idle-timeout-specific hint after executor inactivity', async () => {
+  it('moves a task into a Kernel-authorized retry wait after executor inactivity', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockResolvedValue({
-        success: false,
-        output: '',
-        error: '执行器空闲超时，长时间无输出或状态变化，请检查执行器是否卡住',
-        exitCode: 1,
-        durationMs: 1800,
-      }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      exitCode: 1,
+      rawOutput: 'executor idle timeout',
+    }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_idle_timeout_block',
         contextRecaller,
-        llmBridge,
-        availableExecutorCommands: new Set(['codex']),
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '生成 HTML 幻灯片' })),
       }),
     );
@@ -178,12 +152,13 @@ describe('App network failure blocking', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: 执行器空闲超时') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('执行器空闲超时，长时间无输出或状态变化，请检查执行器是否卡住');
-    expect(app.lastFrame()).toContain('Execution blocked: 执行器空闲超时');
+    expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
+    expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
 
     app.unmount();
     app.cleanup();

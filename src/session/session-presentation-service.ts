@@ -1,4 +1,4 @@
-// Formats session-facing status, guidance, recall review, queue, and recovery
+// Formats session-facing status, guidance, queue, and recovery
 // messages so orchestration code can work with domain facts instead of strings.
 import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
@@ -17,24 +17,6 @@ export interface GuidanceSuggestion {
   recommendedAction: string;
   reasons: string[];
 }
-
-export type RecallReviewSelectionItem =
-  | {
-      kind: 'preference';
-      candidate: {
-        scope: string;
-        summary: string;
-        reason: string;
-      };
-    }
-  | {
-      kind: 'task';
-      candidate: {
-        title: string;
-        summary: string;
-        reason: string;
-      };
-    };
 
 export interface TaskQueueSnapshotEntry {
   task: Task;
@@ -160,94 +142,6 @@ export class SessionPresentationService {
       ...proposal.reasons.map((reason, index) => `${index === 0 ? '│ 理由：' : '│       '}${reason}`),
       `│ 置信度：${proposal.confidence.toFixed(2)}`,
       '│ 策略：无需用户确认；高置信提案自动执行，低置信提案自动跳过',
-      '└──────────────────────────────────────────────────┘',
-    ];
-  }
-
-  formatRecallReviewBlock(review: {
-    taskId: string;
-    taskTitle: string;
-    selectionItems: RecallReviewSelectionItem[];
-  }): string[] {
-    const lines = [
-      '',
-      '┌─ 记忆召回自动处理 ───────────────────────────────┐',
-      `│ 当前任务：#${review.taskId} ${review.taskTitle}`,
-      '│ 策略：无需用户确认；明确适用的记忆自动采用，不确定的记忆默认跳过',
-    ];
-
-    if (review.selectionItems.length === 0) {
-      lines.push('│ 没有待处理的召回项，将直接继续执行');
-    } else {
-      review.selectionItems.forEach((item, index) => {
-        const label = item.kind === 'preference'
-          ? `[${item.candidate.scope}] ${item.candidate.summary}`
-          : `${item.candidate.title}: ${item.candidate.summary}`;
-        lines.push(`│ ${index + 1}. ${label}`);
-        lines.push(`│    判断依据：${item.candidate.reason}`);
-      });
-    }
-
-    lines.push(
-      '│ 当前通道不等待人工选择；如果需要调整长期偏好，可稍后使用 /memory 管理',
-      '└──────────────────────────────────────────────────┘',
-    );
-
-    return lines;
-  }
-
-  formatAutoAppliedMemoryBlock(input: {
-    taskId: string;
-    taskTitle: string;
-    preferenceCandidates: Array<{
-      preferenceId: string;
-      summary: string;
-      score: number;
-      reason: string;
-      applicabilityScore?: number;
-      applicabilityReason?: string;
-    }>;
-    taskCandidates: Array<{
-      id: string;
-      title: string;
-      score: number;
-      reason: string;
-    }>;
-  }): string[] {
-    const lines = [
-      '',
-      '┌─ 已自动采用记忆 ─────────────────────────────────┐',
-      `│ 当前任务：#${input.taskId} ${input.taskTitle}`,
-    ];
-
-    for (const candidate of input.preferenceCandidates) {
-      const score = candidate.applicabilityScore ?? Math.min(1, candidate.score / 100);
-      const reason = candidate.applicabilityReason ?? candidate.reason;
-      lines.push(`│ - ${candidate.preferenceId}: ${candidate.summary} score=${score.toFixed(2)}`);
-      lines.push(`│   reason=${reason}`);
-    }
-
-    for (const candidate of input.taskCandidates) {
-      lines.push(`│ - ${candidate.id}: ${candidate.title} score=${candidate.score}`);
-      lines.push(`│   reason=${candidate.reason}`);
-    }
-
-    lines.push('└──────────────────────────────────────────────────┘');
-    return lines;
-  }
-
-  formatSuppressedRecallBlock(input: {
-    taskId: string;
-    taskTitle: string;
-    preferenceCount: number;
-    taskMemoryCount: number;
-  }): string[] {
-    return [
-      '',
-      '┌─ 已跳过不确定记忆 ───────────────────────────────┐',
-      `│ 当前任务：#${input.taskId} ${input.taskTitle}`,
-      '│ 策略：无需用户确认；无法确定适用的召回默认不注入执行上下文',
-      `│ 跳过：${input.preferenceCount} 条偏好，${input.taskMemoryCount} 条任务记忆`,
       '└──────────────────────────────────────────────────┘',
     ];
   }

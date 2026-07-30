@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Subtask } from '../core/types.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
 
-export const COMPLETION_MARKER_V1 = '<!-- metaclaw:completion:v1 -->';
+export const COMPLETION_MARKER_V2 = '<!-- metaclaw:completion:v2 -->';
 const MAX_ENVELOPE_BYTES = 128 * 1024;
 
 const TextItemSchema = z.object({
@@ -17,8 +17,9 @@ const ArtifactItemSchema = z.object({
   type: z.literal('artifact'),
   paths: z.array(z.string()),
 }).strict();
-const CompletionEnvelopeSchema = z.object({
-  schemaVersion: z.literal(1),
+const CompletedEnvelopeSchema = z.object({
+  schemaVersion: z.literal(2),
+  status: z.literal('completed'),
   subtaskId: z.string(),
   acceptanceEvidence: z.array(z.object({
     key: z.string(),
@@ -30,9 +31,21 @@ const CompletionEnvelopeSchema = z.object({
     items: z.array(z.discriminatedUnion('type', [TextItemSchema, ArtifactItemSchema])),
   }).strict()),
 }).strict();
+const FailedEnvelopeSchema = z.object({
+  schemaVersion: z.literal(2),
+  status: z.literal('failed'),
+  subtaskId: z.string(),
+  failure: z.object({
+    kind: z.enum(['capability_mismatch', 'task_failed', 'quality_failed']),
+    code: z.string().trim().min(1).max(96),
+    summary: z.string().trim().min(1).max(320),
+  }).strict(),
+}).strict();
+const CompletionEnvelopeSchema = z.discriminatedUnion('status', [CompletedEnvelopeSchema, FailedEnvelopeSchema]);
 
-export type CompletionEnvelopeV1 = z.infer<typeof CompletionEnvelopeSchema>;
-export type CompletionHandoffV1 = CompletionEnvelopeV1['handoffs'][number];
+export type CompletionEnvelopeV2 = z.infer<typeof CompletionEnvelopeSchema>;
+export type CompletedEnvelopeV2 = z.infer<typeof CompletedEnvelopeSchema>;
+export type CompletionHandoffV2 = CompletedEnvelopeV2['handoffs'][number];
 
 export type CompletionContractErrorCode =
   | 'completion_acceptance_mismatch'
@@ -54,14 +67,14 @@ export type CompletionProtocolResult =
   | {
     ok: true;
     body: string;
-    envelope: CompletionEnvelopeV1;
+    envelope: CompletionEnvelopeV2;
     normalizedArtifacts: string[];
     warnings: string[];
   }
   | {
     ok: false;
     body: string | null;
-    envelope: CompletionEnvelopeV1 | null;
+    envelope: CompletionEnvelopeV2 | null;
     violations: CompletionContractViolation[];
   };
 
@@ -75,7 +88,7 @@ export interface IncomingHandoffUsage {
   artifactPaths: number;
 }
 
-/** Parses, strips and deterministically verifies the exact v1 completion trailer. */
+/** Parses, strips and deterministically verifies the exact v2 completion trailer. */
 export function validateCompletionProtocol(input: {
   rawResponse: string;
   subtask: Subtask;
@@ -91,6 +104,9 @@ export function validateCompletionProtocol(input: {
   const { body, envelope } = parsed;
   if (envelope.subtaskId !== input.subtask.id) {
     violations.push(contractViolation('completion_subtask_mismatch', 'subtaskId', `expected ${input.subtask.id}, received ${envelope.subtaskId}`));
+  }
+  if (envelope.status === 'failed') {
+    return { ok: true, body, envelope, normalizedArtifacts: [], warnings: [] };
   }
   validateAcceptance(input.subtask, envelope, violations);
   validateHandoffs(input.outgoingHandoffs, envelope, violations);
@@ -111,13 +127,13 @@ export function validateCompletionProtocol(input: {
 }
 
 function parseCompletion(rawResponse: string): CompletionProtocolResult {
-  const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
+  const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V2.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
   if (markerMatches.length !== 1) {
     return failure('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`);
   }
   const markerIndex = markerMatches[0]!.index!;
   const body = rawResponse.slice(0, markerIndex).trim();
-  const rawEnvelope = rawResponse.slice(markerIndex + COMPLETION_MARKER_V1.length).trimStart();
+  const rawEnvelope = rawResponse.slice(markerIndex + COMPLETION_MARKER_V2.length).trimStart();
   if (!body) return failure('completion_malformed', 'body', 'completion body must be non-empty');
   if (!rawEnvelope || Buffer.byteLength(rawEnvelope, 'utf8') > MAX_ENVELOPE_BYTES) {
     return failure('completion_budget_exceeded', 'envelope', 'completion envelope is empty or exceeds 128 KiB');
@@ -146,7 +162,7 @@ function parseCompletion(rawResponse: string): CompletionProtocolResult {
 
 function validateAcceptance(
   subtask: Subtask,
-  envelope: CompletionEnvelopeV1,
+  envelope: CompletedEnvelopeV2,
   violations: CompletionContractViolation[],
 ): void {
   const expected = new Set(subtask.acceptance.map(item => item.key));
@@ -173,7 +189,7 @@ function validateAcceptance(
 
 function validateHandoffs(
   contracts: OutgoingHandoffContract[],
-  envelope: CompletionEnvelopeV1,
+  envelope: CompletedEnvelopeV2,
   violations: CompletionContractViolation[],
 ): void {
   const expectedByTarget = new Map(contracts.map(contract => [contract.toSubtaskId, contract.requiredItems]));
@@ -204,7 +220,7 @@ function validateHandoffs(
 }
 
 function validateBudgets(
-  envelope: CompletionEnvelopeV1,
+  envelope: CompletedEnvelopeV2,
   violations: CompletionContractViolation[],
   incomingUsageByTarget: ReadonlyMap<string, IncomingHandoffUsage> | undefined,
 ): void {
@@ -244,7 +260,7 @@ function validateBudgets(
 }
 
 function validateArtifacts(
-  envelope: CompletionEnvelopeV1,
+  envelope: CompletedEnvelopeV2,
   targetPaths: string[],
   cwd: string,
   violations: CompletionContractViolation[],
@@ -287,7 +303,7 @@ function validateArtifacts(
   return normalized;
 }
 
-function validateExpectedOutput(subtask: Subtask, envelope: CompletionEnvelopeV1, violations: CompletionContractViolation[]): void {
+function validateExpectedOutput(subtask: Subtask, envelope: CompletedEnvelopeV2, violations: CompletionContractViolation[]): void {
   if (subtask.expectedOutput === 'artifact' && envelope.artifacts.length === 0) {
     violations.push(contractViolation('completion_artifact_required', 'artifacts', 'artifact output requires at least one valid artifact'));
   }

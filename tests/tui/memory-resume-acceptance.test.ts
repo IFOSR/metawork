@@ -6,14 +6,12 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -44,6 +42,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -93,7 +92,7 @@ describe('Round 1 memory resume acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
@@ -102,51 +101,35 @@ describe('Round 1 memory resume acceptance', () => {
     const resumedDeferred = createDeferredResult();
 
     let firstExecuteResolved = false;
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockImplementationOnce(() => firstDeferred.promise)
-        .mockImplementationOnce(() => urgentDeferred.promise)
-        .mockImplementationOnce(() => resumedDeferred.promise),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn().mockImplementation(() => {
-        if (!firstExecuteResolved) {
-          firstExecuteResolved = true;
-          firstDeferred.resolve({
-            success: false,
-            output: '',
-            error: 'execution interrupted',
-            exitCode: 1,
-            durationMs: 100,
-            interrupted: true,
-          });
-        }
-      }),
-    };
-    const llmBridge = {
-      resolveRoute: vi.fn().mockResolvedValue({
-        route: 'durable_task',
-        reason: 'round 1 resume acceptance',
-      }),
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'new',
-        taskId: null,
-        reason: 'new task',
-      }),
-      rankInteractions: vi.fn().mockResolvedValue([]),
-    } as unknown as LlmBridge;
+    const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred];
+    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+      body: ['首次执行', '会议纪要已总结', '季度复盘已恢复完成'][attemptIndex],
+      wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
+    }));
+    attemptSandbox.stop.mockImplementation(async () => {
+      if (!firstExecuteResolved) {
+        firstExecuteResolved = true;
+        firstDeferred.resolve({
+          success: false,
+          output: '',
+          error: 'execution interrupted',
+          exitCode: 1,
+          durationMs: 100,
+          interrupted: true,
+        });
+      }
+    });
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_memory_resume_acceptance',
         contextRecaller,
-        llmBridge,
       }),
     );
 
@@ -186,16 +169,14 @@ describe('Round 1 memory resume acceptance', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalledTimes(3);
+      expect(attemptSandbox.create).toHaveBeenCalledTimes(3);
     });
 
-    const resumedInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[2][0];
-    const resolvedPreferences = resumedInput.executionContextBundle.memoryContext.resolvedPreferences;
-
-    expect(resumedInput.executionContextBundle.mode).toBe('resume-parked');
-    expect(resolvedPreferences).toHaveLength(1);
-    expect(resolvedPreferences[0].scope).toBe('task-local');
-    expect(resolvedPreferences[0].reason).toBe('命中当前任务局部偏好');
+    const resumedInput = attemptSandbox.create.mock.calls[2][0];
+    const resumedPrompt = resumedInput.args.join(' ');
+    expect(resumedInput.taskId).toBe(primaryTask.id);
+    expect(resumedPrompt).toContain('当前任务固定使用表格结构并保留风险栏目');
+    expect(resumedPrompt).not.toContain('输出尽量短，不强制表格');
 
     resumedDeferred.resolve({
       success: true,

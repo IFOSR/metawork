@@ -1,51 +1,57 @@
 // Session facade that wires MetaClaw's task OS modules and exposes the user-facing session snapshot.
 import type Database from 'better-sqlite3';
+import { resolve } from 'node:path';
 import type {
   Config,
-  GuidanceActionType,
   GuidanceProposal,
   RuntimeState,
-  AgentClass,
   Task,
   TaskRecoveryTrigger,
 } from '../core/types.js';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
-import type { ExecutorAdapter } from '../executor/adapter.js';
 import { NoopNotificationService, type NotificationService } from '../notifications/types.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
-import type { LlmBridge } from '../core/llm-bridge.js';
-import { SchedulerEngine } from '../task/scheduler.js';
-import type { DispatchContext } from '../task/scheduler.js';
-import { ResumeContextBuilder } from '../memory/resume-context-builder.js';
 import { MemoryContextService } from '../memory/memory-context-service.js';
-import { RecallReviewApplicationService, createDefaultRecallReviewApplicationService } from '../memory/recall-review-application-service.js';
 import { SessionPersistenceService } from './session-persistence-service.js';
-import { MemoryCaptureService } from '../memory/memory-capture-service.js';
-import { TaskResumePlanner } from '../task/task-resume-planner.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import { CommandReadServices } from '../commands/command-read-services.js';
 import type { CommandCatalog, CommandCompletion, CommandContext } from '../commands/catalog.js';
-import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
+import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
 import { ExecutorAdminService } from '../executor/executor-admin-service.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
-import { WorkspaceTargetService } from '../execution/workspace-target-service.js';
+import { WorkspaceStore } from '../execution/workspace-store.js';
+import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
+import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
+import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
+import { ResourceLeaseService } from '../execution/resource-lease-service.js';
+import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
+import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
+import { SqlitePermissionRepository } from '../storage/permission-repo.js';
+import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
+import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
+import { resolveMetaclawDir } from '../utils/paths.js';
+import { PermissionWorkflowService } from '../execution/permission-workflow-service.js';
+import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
+import { buildPermissionRules } from '../resource/index.js';
+import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
-import { SessionExecutionCoordinator } from './session-execution-coordinator.js';
+import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
 import { type QueuedExecutionRequest } from './session-helpers.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
 import { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.js';
 import { contextRefKey } from '../work-graph/index.js';
@@ -54,29 +60,72 @@ import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
-import type { PlanningAgentPlan } from '../planning/planning-types.js';
-import { PolicyKernel, type KernelDecision } from '../kernel/policy-kernel.js';
-import { KernelDecisionApplier } from './kernel-decision-applier.js';
-import { PlanningDecisionRepo } from '../storage/planning-decision-repo.js';
+import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
+import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
+import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
+import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
+import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
+import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
+import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
-import { KernelExecutorStatusProjector } from '../kernel/kernel-executor-status-projector.js';
+import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
+import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
-  executor: ExecutorAdapter;
   db: Database.Database;
   config: Config;
   sessionId: string;
   contextRecaller: ContextRecaller;
-  llmBridge: LlmBridge;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
-  defaultExecutorFactory?: () => ExecutorAdapter;
-  executorFactory?: (name: string) => ExecutorAdapter | null;
-  availableExecutorCommands?: Set<string>;
+  sourceRoot?: string;
+  attemptSandbox?: AttemptSandboxPort;
+}
+
+function boundedKernelRequestText(value: string): string {
+  return redactSensitiveText(value).slice(0, 24_000);
+}
+
+function startupOrphanEvent(input: {
+  sessionId: string;
+  task: Task;
+  subtaskId: string;
+  attemptId: string;
+  agentClassName: string;
+  occurredAt: string;
+}): Extract<KernelEvent, { type: 'execution_outcome' }> {
+  return {
+    schemaVersion: 5,
+    type: 'execution_outcome',
+    id: `startup_orphan_${input.attemptId}`,
+    correlationId: input.task.id,
+    causationId: input.attemptId,
+    occurredAt: input.occurredAt,
+    sessionId: input.sessionId,
+    taskId: input.task.id,
+    subtaskId: input.subtaskId,
+    attemptId: input.attemptId,
+    terminalKind: 'failed',
+    agentClassName: input.agentClassName,
+    attemptKind: 'primary',
+    sourceAttemptId: null,
+    failure: {
+      kind: 'heartbeat_lost',
+      scope: 'agent_class',
+      code: 'startup_orphaned_work',
+      summary: 'Metaclaw restarted with orphaned active work; explicit recovery is required',
+    },
+  };
 }
 
 export interface SessionSnapshot {
@@ -88,6 +137,9 @@ export interface SessionSnapshot {
     status: Task['status'];
   } | null;
   runtimeState: RuntimeState;
+  plannerState: {
+    status: 'idle' | 'running';
+  };
   latestGuidance: GuidanceState | null;
 }
 
@@ -110,9 +162,15 @@ export class MetaclawSession {
     lastEvent: null,
   };
   private latestGuidance: GuidanceState | null = null;
+  private activePlannerRuns = 0;
   private initialized = false;
+  private initialization: Promise<void> | null = null;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
-  private runningExecutorNameByTask = new Map<string, string>();
+  private runningExecutorsByAttempt = new Map<string, {
+    taskId: string;
+    subtaskId: string;
+    name: string;
+  }>();
   private lastReminderAt: number | null = null;
   private lastReminderFingerprint: string | null = null;
   private lastTaskPoolWatchdogReminderAt: number | null = null;
@@ -120,9 +178,10 @@ export class MetaclawSession {
   private lastBlockedRecheckAt: number | null = null;
   private blockedRecheckInFlight = false;
   private backgroundWork = new Set<Promise<void>>();
+  private currentTaskId: string | null = null;
+  private focusContext: FocusContext | null = null;
   private readonly memoryContextService: MemoryContextService;
   private readonly commandCatalog: CommandCatalog;
-  private readonly scheduler: SchedulerEngine<QueuedExecutionRequest>;
   private readonly sessionStateRepo: SessionStateRepo;
   private readonly notifier: NotificationService;
   private readonly inputController: InputController;
@@ -131,26 +190,36 @@ export class MetaclawSession {
   private readonly commandReadServices: CommandReadServices;
   private readonly verificationAndDeliveryService: VerificationAndDeliveryService;
   private readonly persistenceService: SessionPersistenceService;
-  private readonly memoryCaptureService: MemoryCaptureService;
-  private readonly recallReviewApplicationService: RecallReviewApplicationService;
-  private readonly taskResumePlanner: TaskResumePlanner;
   private readonly presentation: SessionPresentationService;
   private readonly agentClassService: AgentClassService;
   private readonly executorAdminService: ExecutorAdminService;
   private readonly executionProgressService: ExecutionProgressService;
   private readonly planningContextBuilder: PlanningContextBuilder;
   private readonly planningAgent: PlanningAgent;
-  private readonly policyKernel: PolicyKernel;
-  private readonly planningDecisionRepo: PlanningDecisionRepo;
+  private readonly controlKernel: ControlKernel;
+  private readonly kernelDecisionRepo: KernelDecisionRepo;
+  private readonly kernelWorkflowRepo: KernelWorkflowRepo;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
+  private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
+  private readonly effectOutboxRepo: KernelEffectOutboxRepo;
+  private readonly taskExecutionEvidenceRepo: TaskExecutionEvidenceRepo;
+  private readonly attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   private readonly subtaskRepo: SubtaskRepo;
   private readonly taskEventRepo: TaskEventRepo;
   private readonly workUnitClaimService: WorkUnitClaimService;
-  private readonly workspaceTargetService: WorkspaceTargetService;
-  private readonly sessionExecutionCoordinator: SessionExecutionCoordinator;
+  private readonly attemptRunner: SubtaskAttemptRunner;
+  private readonly workspaceStore: WorkspaceStore;
+  private readonly workspaceRetentionService: WorkspaceRetentionService;
+  private workspaceRetentionSweep: Promise<void> | null = null;
+  private readonly attemptSandbox: AttemptSandboxPort;
+  private readonly permissionRepository: SqlitePermissionRepository;
+  private readonly attemptSandboxRepository: SqliteAttemptSandboxRepository;
+  private readonly workspaceRepository: SqliteWorkspaceRepository;
+  private readonly kernelExecutionRuntime: KernelExecutionRuntime;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
-  private readonly kernelDecisionApplier: KernelDecisionApplier;
+  private readonly sessionKernelRuntime: SessionKernelRuntime;
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
@@ -158,21 +227,24 @@ export class MetaclawSession {
     this.taskRuntimeService = new TaskRuntimeService({
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
-      orchestration: deps.orchestration,
     });
-    this.agentClassService = new AgentClassService({
-      db: deps.db,
-      defaultExecutorName: deps.executor.name,
-      availableCommands: deps.availableExecutorCommands,
-    });
+    this.agentClassService = new AgentClassService({ db: deps.db });
+    this.attemptSandbox = deps.attemptSandbox ?? new DockerCliAttemptSandboxAdapter();
+    this.permissionRepository = new SqlitePermissionRepository(deps.db);
+    this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
+    this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
+    this.workspaceStore = new WorkspaceStore(resolve(resolveMetaclawDir(), 'workspace-store'));
+    this.workspaceRetentionService = new WorkspaceRetentionService(
+      this.workspaceRepository,
+      this.workspaceStore,
+    );
     const executorRegistry = new ExecutorRegistry({
-      db: deps.db,
-      config: deps.config,
-      defaultExecutor: deps.executor,
-      defaultExecutorFactory: deps.defaultExecutorFactory,
-      executorFactory: deps.executorFactory,
+      agentClassLookup: this.agentClassService,
+      attemptSandbox: this.attemptSandbox,
+      attemptSandboxRepository: this.attemptSandboxRepository,
+      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
-    this.executionRuntime = new ExecutionRuntime(executorRegistry, deps.executor);
+    this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
@@ -184,41 +256,43 @@ export class MetaclawSession {
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
+    this.workGraphRevisionRepo = new WorkGraphRevisionRepo(deps.db);
+    this.effectOutboxRepo = new KernelEffectOutboxRepo(deps.db);
+    this.taskExecutionEvidenceRepo = new TaskExecutionEvidenceRepo(deps.db);
+    this.attemptReceiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.workGraphRuntimeService = new WorkGraphRuntimeService(
       this.subtaskRepo,
       this.taskEventRepo,
-      new TaskExecutionEvidenceRepo(deps.db),
+      this.workGraphRevisionRepo,
+      this.taskExecutionEvidenceRepo,
     );
+    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
+    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
       60_000,
-      name => this.executionRuntime.isExecutorAvailable(name),
+      async (name, mode) => {
+        const result = await this.executionRuntime.probeExecutor(name);
+        if (mode === 'claim' && !result.available && result.failure) {
+          kernelExecutorStatusProjector.recordExecutionOutcome({
+            agentClassName: name,
+            attemptId: `claim_probe_${generateInteractionId()}`,
+            outcome: 'failed',
+            failure: result.failure,
+          });
+        }
+        return result.available;
+      },
     );
-    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
-    this.workspaceTargetService = new WorkspaceTargetService();
+    this.executorRecoveryRefreshService = new ExecutorRecoveryRefreshService({
+      statusRepo: this.kernelExecutorStatusRepo,
+      statusProjector: kernelExecutorStatusProjector,
+      probe: (name, previousFailure) => this.executionRuntime.probeExecutor(name, previousFailure),
+      onRecovered: (name, checkId) => this.kernelExecutionRuntime.executorRecovered(name, checkId),
+    });
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
-      resumeContextBuilder: new ResumeContextBuilder(
-        deps.taskEngine,
-        deps.memoryEngine,
-        deps.contextRecaller,
-      ),
-    });
-    this.memoryCaptureService = new MemoryCaptureService({
-      db: deps.db,
-      memoryEngine: deps.memoryEngine,
-      notifier: this.notifier,
-      deliveryService: this.verificationAndDeliveryService,
-    });
-    this.recallReviewApplicationService = createDefaultRecallReviewApplicationService({
-      db: deps.db,
-      memoryContextService: this.memoryContextService,
-      memoryCaptureService: this.memoryCaptureService,
-      formatters: this.presentation,
-    });
-    this.taskResumePlanner = new TaskResumePlanner({
-      taskRuntimeService: this.taskRuntimeService,
     });
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
@@ -228,18 +302,10 @@ export class MetaclawSession {
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
       audit: new PlannerRunRepo(deps.db),
     });
-    this.policyKernel = new PolicyKernel();
-    this.planningDecisionRepo = new PlanningDecisionRepo(deps.db);
+    this.controlKernel = new ControlKernel();
+    this.kernelDecisionRepo = new KernelDecisionRepo(deps.db);
+    this.kernelWorkflowRepo = new KernelWorkflowRepo(deps.db);
     this.commandCatalog = createDefaultCommandCatalog();
-    this.scheduler = new SchedulerEngine<QueuedExecutionRequest>(
-      deps.taskEngine,
-      deps.orchestration,
-      deps.executor,
-      async (taskId: string, context?: DispatchContext<QueuedExecutionRequest>) => this.dispatchTask(taskId, context),
-      undefined,
-      this.taskRuntimeService,
-      this.executionRuntime,
-    );
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
       hasPendingExecutorRegisterWizard: () => this.executorAdminService.hasPendingWizard(),
@@ -249,7 +315,30 @@ export class MetaclawSession {
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
-    const attemptRunner = new SubtaskAttemptRunner({
+    const sourceRoot = deps.sourceRoot
+      ?? (process.env.NODE_ENV === 'test'
+        ? resolve(process.cwd(), 'tests', 'fixtures', 'workspace-source')
+        : process.cwd());
+    const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
+    const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
+    const publicationRepo = new WorkspacePublicationRepo(deps.db);
+    const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
+    const cancellationCoordinator = new TaskCancellationCoordinator({
+      db: deps.db,
+      taskRuntimeService: this.taskRuntimeService,
+      subtaskRepo: this.subtaskRepo,
+      taskEventRepo: this.taskEventRepo,
+      workGraphRevisionRepo: this.workGraphRevisionRepo,
+      dispatchItemRepo,
+      publicationRepo,
+      generationReplanRepo,
+      resourceLeaseService,
+      workUnitClaimService: this.workUnitClaimService,
+      activeExecutions: this.executionRuntime,
+      attemptSandbox: this.attemptSandbox,
+      attemptSandboxRepository: this.attemptSandboxRepository,
+    });
+    this.attemptRunner = new SubtaskAttemptRunner({
       db: deps.db,
       sessionId: deps.sessionId,
       taskRuntimeService: this.taskRuntimeService,
@@ -257,8 +346,16 @@ export class MetaclawSession {
       workUnitClaimService: this.workUnitClaimService,
       executionRuntime: this.executionRuntime,
       agentClassService: this.agentClassService,
+      workspaceStore: this.workspaceStore,
+      attemptSandbox: this.attemptSandbox,
+      resourceLeaseService,
+      permissionRepository: this.permissionRepository,
+      kernelWorkflowStore: this.kernelWorkflowRepo,
+      workspaceRepository: this.workspaceRepository,
+      sourceRoot,
+      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
-    this.sessionExecutionCoordinator = new SessionExecutionCoordinator({
+    this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
       orchestration: deps.orchestration,
       notifier: this.notifier,
@@ -266,64 +363,86 @@ export class MetaclawSession {
       agentClassService: this.agentClassService,
       workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
+      workGraphRevisionRepo: this.workGraphRevisionRepo,
+      effectOutboxRepo: this.effectOutboxRepo,
+      attemptReceiptRepo: this.attemptReceiptRepo,
       subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
-      attemptRunner,
-      scheduler: this.scheduler,
+      attemptRunner: this.attemptRunner,
+      controlKernel: this.controlKernel,
+      kernelWorkflowStore: this.kernelWorkflowRepo,
+      dispatchItemRepo,
+      maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
+      publicationWorker: new WorkspacePublicationWorker({
+        db: deps.db,
+        sessionId: deps.sessionId,
+        sourceRoot,
+        workspaceStore: this.workspaceStore,
+        workspaceRepository: this.workspaceRepository,
+        subtaskRepo: this.subtaskRepo,
+        attemptReceiptRepo: this.attemptReceiptRepo,
+        resourceLeaseService,
+        dispatchItemRepo,
+        taskRuntimeService: this.taskRuntimeService,
+      }),
+      publicationRepo,
+      generationReplanRepo,
+      cancellationCoordinator,
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
-      memoryCaptureService: this.memoryCaptureService,
-      kernelExecutorStatusProjector: new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo),
+      kernelExecutorStatusProjector,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
         setFocusContext: focus => this.setFocusContext(focus),
-        setRunningExecutorName: (taskId, name) => this.runningExecutorNameByTask.set(taskId, name),
-        clearRunningExecutorName: taskId => this.runningExecutorNameByTask.delete(taskId),
+        setRunningExecutorName: (taskId, subtaskId, attemptId, name) => (
+          this.setRunningExecutorName(taskId, subtaskId, attemptId, name)
+        ),
+        clearRunningExecutorName: (taskId, attemptId) => this.clearRunningExecutorName(taskId, attemptId),
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion),
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
+        requestReplan: decision => this.requestKernelReplan(decision),
+        requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
+        buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
     });
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
-      defaultExecutorName: deps.executor.name,
       taskRuntimeService: this.taskRuntimeService,
-      scheduler: this.scheduler,
-      recallReviewApplicationService: this.recallReviewApplicationService,
-      sessionExecutionCoordinator: this.sessionExecutionCoordinator,
+      kernelExecutionRuntime: this.kernelExecutionRuntime,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
-        appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
         refreshRuntimeState: () => this.refreshRuntimeState(),
-        notify: () => this.notify(),
       },
     });
-    this.kernelDecisionApplier = new KernelDecisionApplier({
+    this.sessionKernelRuntime = new SessionKernelRuntime({
       sessionId: deps.sessionId,
-      planningDecisionRepo: this.planningDecisionRepo,
       taskRuntimeService: this.taskRuntimeService,
-      taskResumePlanner: this.taskResumePlanner,
       memoryContextService: this.memoryContextService,
       orchestration: deps.orchestration,
-      executor: deps.executor,
       activeExecutions: this.executionRuntime,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        appendPlanningClarification: plan => this.appendPlanningClarification(plan),
         deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
-        buildRecoveryTrigger: (task, input) => this.buildRecoveryTrigger(task, input),
+        resolveRequestText: eventId => {
+          const event = this.kernelWorkflowRepo.findEvent(eventId);
+          return event?.type === 'plan_proposed' ? event.requestText : '';
+        },
+        cancelTask: async (taskId, reason) => {
+          await this.kernelExecutionRuntime.cancelTask(taskId, reason);
+        },
       },
     });
 
@@ -356,6 +475,9 @@ export class MetaclawSession {
           }
         : null,
       runtimeState: this.runtimeState,
+      plannerState: {
+        status: this.activePlannerRuns > 0 ? 'running' : 'idle',
+      },
       latestGuidance: this.latestGuidance
         ? {
             ...this.latestGuidance,
@@ -395,7 +517,7 @@ export class MetaclawSession {
 
     const resumeStartupTasks = options.resumeStartupTasks ?? true;
     const showDashboard = options.showDashboard ?? true;
-    const recoveredRunningTasks = resumeStartupTasks ? this.recoverOrphanedRunningTasks() : [];
+    const recoveredRunningTasks: Task[] = [];
 
     if (showDashboard && this.deps.config.ui.dashboard_on_start) {
       const dashboard = this.deps.orchestration.getDashboard();
@@ -423,8 +545,8 @@ export class MetaclawSession {
     if (recoveredRunningTasks.length > 0) {
       for (const task of recoveredRunningTasks) {
         this.output.push(
-          `→ 检测到上次异常退出，任务 #${task.id} 已转为挂起`,
-          `→ 可执行 /task resume ${task.id} 继续，或直接说“继续刚才那个任务”`,
+          `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞`,
+          `→ 可执行 /task resume ${task.id} 提交显式恢复请求`,
         );
       }
     }
@@ -435,25 +557,34 @@ export class MetaclawSession {
     }
 
     this.initialized = true;
+    this.initialization = resumeStartupTasks
+      ? this.recoverDurableStartup().then(async recovered => {
+          for (const task of recovered) {
+            this.appendOutput(
+              `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞（由 Kernel 持久恢复收敛）`,
+              `→ 可执行 /task recovery ${task.id} 查看不确定项`,
+            );
+          }
+          await this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' });
+        })
+      : this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' }).then(() => undefined);
     this.refreshRuntimeState();
     this.notify();
-    if (resumeStartupTasks) {
-      this.resumeUnfinishedTasksOnStartup(recoveredRunningTasks);
-    }
   }
 
   async submit(
     rawInput: string,
     options: { awaitAsyncWork?: boolean } = {},
   ): Promise<{ exitRequested: boolean }> {
+    await this.initialization;
     return this.inputController.submit(rawInput, options);
   }
 
   async waitForAsyncWork(): Promise<void> {
+    await this.initialization;
     while (this.backgroundWork.size > 0) {
       await Promise.allSettled(Array.from(this.backgroundWork));
     }
-    await this.scheduler.waitForIdle();
   }
 
   appendSystemMessage(...lines: string[]): void {
@@ -516,7 +647,7 @@ export class MetaclawSession {
       return false;
     }
 
-    const candidates = this.findTimerRecheckableBlockedTasks();
+    const candidates = this.kernelDecisionRepo.listCurrentByAction('wait_for_capacity');
     if (candidates.length === 0) {
       this.lastBlockedRecheckAt = nowMs;
       return false;
@@ -525,34 +656,16 @@ export class MetaclawSession {
     this.lastBlockedRecheckAt = nowMs;
     this.blockedRecheckInFlight = true;
     try {
-      const executorAvailable = await this.deps.executor.isAvailable();
-      if (!executorAvailable) {
-        return false;
-      }
-
       const target = candidates[0];
-      const blockedReason = this.getWaitingBlockReason(target) || '未知原因';
-      this.taskRuntimeService.unblockTask(target.id);
-      this.setCurrentTaskId(target.id);
-      this.setFocusContext({ kind: 'task', taskId: target.id });
-      this.appendOutput(
-        `→ 定时检查：任务 #${target.id} 的阻塞条件可能已恢复`,
-        `→ 原阻塞原因：${blockedReason}`,
-        '→ 已解除阻塞并重新进入调度',
-      );
-      await this.prepareTaskExecution(target.id, {
-        userPrompt: target.goal,
-        contextTaskId: target.id,
-        executionMode: 'resume-blocked',
-        origin: 'system',
-        schedulingReason: '定时检查确认执行器可用，恢复阻塞任务',
-        recoveryTrigger: this.buildRecoveryTrigger(target, {
-          kind: 'timer-recheck',
-          blockedReason,
-          triggerReason: '定时检查确认执行器可用',
-        }),
+      if (!target?.taskId || !target.subtaskId) return false;
+      return this.kernelExecutionRuntime.recheckCapacity({
+        taskId: target.taskId,
+        subtaskId: target.subtaskId,
+        blockedDecisionId: target.id,
+        blockedAt: target.createdAt,
+        recheckAfterMs: intervalMs,
+        occurredAt: new Date(nowMs).toISOString(),
       });
-      return true;
     } finally {
       this.blockedRecheckInFlight = false;
       this.refreshRuntimeState();
@@ -565,50 +678,15 @@ export class MetaclawSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+      if (await this.kernelExecutionRuntime.recoverDue(task.id, 'timer durable recovery drain')) return true;
+    }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
       return true;
     }
 
-    const beforeState = this.scheduler.getRuntimeState();
-    const scheduledTaskId = await this.scheduler.scheduleNext();
     this.refreshRuntimeState();
-
-    if (!beforeState.runningTaskId && scheduledTaskId) {
-      const task = this.taskRuntimeService.findTask(scheduledTaskId);
-      if (task) {
-        this.appendOutput(
-          `→ 任务池看护：发现可执行任务 #${task.id} ${task.title}`,
-          '→ 已自动进入调度执行',
-        );
-      }
-      return true;
-    }
-
     return this.maybeEmitTaskPoolWatchdogReminder(nowMs);
-  }
-
-  private findTimerRecheckableBlockedTasks(): Task[] {
-    return this.taskRuntimeService.listTasks()
-      .filter(task => task.status === 'blocked')
-      .filter(task => this.isTimerRecheckableBlockedTask(task))
-      .sort((left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime());
-  }
-
-  private isTimerRecheckableBlockedTask(task: Task): boolean {
-    const reason = this.getWaitingBlockReason(task);
-    if (!reason) {
-      return false;
-    }
-
-    if (isPermissionFailure(reason)) {
-      return false;
-    }
-
-    if (/材料|文件|链接|文档|资料|补充|缺少|等待|授权|权限|permission|authorized|access/i.test(reason)) {
-      return false;
-    }
-
-    return isRecoverableExecutorFailure(reason);
   }
 
   private getWaitingBlockReason(task: Task): string {
@@ -732,42 +810,261 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
-  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
-    this.appendOutput('【MetaClaw｜理解用户请求】');
-    const initialContext = await this.memoryContextService.preparePlanningInitialContext({
-      sessionId: this.deps.sessionId,
-      userInput,
-      topK: this.deps.config.orchestration.top_k_preferences,
-    });
-    const context = this.planningContextBuilder.build({ userInput, initialContext });
-    const plan = await this.planningAgent.plan(context);
-    // A direct_reply is a read-only answer the planner already produced and
-    // validated. The kernel applies no authorization to it (it would only
-    // re-validate and rubber-stamp accept), so we short-circuit the full
-    // decide() round-trip and build the accept decision directly. The applier
-    // still records the planning decision, so the audit trail is unchanged.
-    const decision = plan.action === 'direct_reply'
-      ? this.policyKernel.authorizeDirectReply(plan)
-      : this.policyKernel.decide(plan, {
-        tasks: this.taskRuntimeService.listTasks(),
-        runningTask: this.taskRuntimeService.getCurrentRunningTask(),
-        agentClasses: this.listRuntimeVisibleAgentClasses(),
-        executorCatalog: context.executorCatalog,
-        executorStatuses: this.kernelExecutorStatusRepo.list(),
-        v4WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
-        eligibleContextRefKeys: this.buildEligibleContextRefKeys(plan, userInput),
-        currentFocus: this.getFocusContext(),
-      });
+  private async planWithExecutorRecovery(context: PlanningContext): Promise<PlanningAgentPlan> {
+    const planning = this.runPlanningAgent(context);
+    const refresh = this.executorRecoveryRefreshService.refresh({ trigger: 'planning_cycle' });
+    let plan = await planning;
+    const report = await refresh;
+    if (report.recovered.length === 0 || !plan.workGraph) return plan;
+    const relevantRecovered = report.recovered.filter(name =>
+      plan.workGraph?.subtasks.some(subtask =>
+        subtask.preferredAgentClassList.some(candidate => candidate === name)
+      )
+    );
+    if (relevantRecovered.length === 0) return plan;
 
-    return this.kernelDecisionApplier.apply({
-      userInput,
-      plan,
-      decision,
+    const repairContext = this.planningContextBuilder.build({
+      userInput: [
+        'Executor availability changed while the preceding proposal was being prepared.',
+        `Recovered AgentClasses: ${relevantRecovered.join(', ')}`,
+        'Revise the immediately preceding proposal once in this same Planner thread.',
+        'Return a complete replacement plan, preserving the user intent and full static eligible canonical sets.',
+        `Previous proposal: ${JSON.stringify(plan)}`,
+        `Current Executor status: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
+      ].join('\n\n').slice(0, 24_000),
     });
+    plan = await this.runPlanningAgent(repairContext);
+    return plan;
   }
 
-  private listRuntimeVisibleAgentClasses(): AgentClass[] {
-    return this.agentClassService.listAgentClasses();
+  private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
+    this.activePlannerRuns += 1;
+    this.notify();
+    try {
+      return await this.planningAgent.plan(context);
+    } finally {
+      this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.notify();
+    }
+  }
+
+  private planHasAvailabilityExhaustion(plan: PlanningAgentPlan): boolean {
+    if (!plan.workGraph) return false;
+    const unavailable = new Set(
+      this.kernelExecutorStatusRepo.list()
+        .filter(status => status.classHealth === 'error' || status.classHealth === 'disabled')
+        .map(status => status.agentClassName),
+    );
+    return plan.workGraph.subtasks.some(subtask =>
+      subtask.preferredAgentClassList.length === 0
+      || subtask.preferredAgentClassList.every(name => unavailable.has(name))
+    );
+  }
+
+  private async requestAvailabilityExplanation(plan: PlanningAgentPlan): Promise<PlanningAgentPlan> {
+    return this.runPlanningAgent(this.planningContextBuilder.build({
+      userInput: [
+        'The immediately preceding proposal cannot be admitted because at least one Subtask has no currently available eligible Executor.',
+        'Explain the current recovery-check failures to the user in natural language.',
+        'Return a direct_reply plan only. Do not create or revise a Task.',
+        `Deferred proposal: ${JSON.stringify(plan)}`,
+        `Executor status and recent recovery checks: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
+      ].join('\n\n').slice(0, 24_000),
+    }));
+  }
+
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    this.appendOutput('【MetaClaw｜理解用户请求】');
+    const pendingPermission = this.permissionRepository.findOldestPending();
+    const context = this.planningContextBuilder.build({
+      userInput,
+      pendingAuthorizationRequest: pendingPermission ? {
+        requestId: pendingPermission.request.id,
+        taskId: pendingPermission.request.taskId,
+        capability: pendingPermission.request.capability,
+        resource: pendingPermission.request.resource,
+        operation: pendingPermission.request.operation,
+        reason: pendingPermission.request.reason,
+      } : null,
+    });
+    let plan = await this.planWithExecutorRecovery(context);
+    if (this.planHasAvailabilityExhaustion(plan)) {
+      plan = await this.requestAvailabilityExplanation(plan);
+    }
+    const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
+    const event: KernelEvent = {
+      schemaVersion: 5,
+      type: 'plan_proposed',
+      id: eventId,
+      correlationId: plan.id,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: plan.task.taskId ?? undefined,
+      proposal: plan,
+      requestText: boundedKernelRequestText(userInput),
+      generationId: `generation_${eventId}`,
+      proposalSource: 'initial',
+      targetGraphRevision: 1,
+    };
+    const snapshot = this.buildPlanAdmissionSnapshot(event, context.executorCatalog, userInput);
+    const workflow = new DurableKernelWorkflow({
+      kernel: this.controlKernel,
+      buildSnapshot: () => snapshot,
+      store: this.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      runtime: this.sessionKernelRuntime.forInput(userInput),
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+        'record_permission_resolution',
+      ],
+    });
+    await workflow.submit(event);
+    if (plan.action === 'authorization_resolution' && plan.authorizationResolution) {
+      await this.resolvePermission({
+        requestId: plan.authorizationResolution.requestId,
+        resolution: plan.authorizationResolution.resolution,
+        source: 'planner',
+        plannerPlanId: plan.id,
+      });
+    }
+    return true;
+  }
+
+  private async requestKernelReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
+    const task = this.taskRuntimeService.findTask(decision.action.taskId);
+    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
+    this.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
+    const evidence = this.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(
+      task.id,
+      decision.action.generationId,
+    );
+    const failures = this.attemptReceiptRepo.listByTask(task.id)
+      .filter(item =>
+        item.generationId === decision.action.generationId
+        && item.graphRevision === decision.action.sourceRevision
+        && item.terminalState !== 'completed'
+      )
+      .sort((left, right) =>
+        left.completedAt.localeCompare(right.completedAt)
+        || left.attemptId.localeCompare(right.attemptId)
+      );
+    const request = [
+      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Generation: ${decision.action.generationId}`,
+      `Superseded revision: ${decision.action.sourceRevision}`,
+      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
+        evidenceId: item.id,
+        title: item.title,
+        summary: item.content.slice(0, 2_000),
+      })))}`,
+      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
+        attemptId: item.attemptId,
+        agentClassName: item.agentClassName,
+        terminalState: item.terminalState,
+        failure: item.failure,
+        code: item.errorCode,
+        summary: String(item.errorDetail ?? '').slice(0, 1_000),
+      })))}`,
+      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.planningContextBuilder.build({
+      userInput: request,
+    });
+    const plan = await this.planWithExecutorRecovery(context);
+    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
+      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
+      : null;
+    return {
+      schemaVersion: 5,
+      type: 'plan_proposed',
+      id: `replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: task.id,
+      proposal: plan,
+      requestText: boundedKernelRequestText(request),
+      generationId: decision.action.generationId,
+      proposalSource: 'replan',
+      targetGraphRevision: decision.action.sourceRevision + 1,
+      availabilityExplanation,
+    };
+  }
+
+  private async requestKernelMergeReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+    const task = this.taskRuntimeService.findTask(decision.action.taskId);
+    const revision = this.workGraphRevisionRepo.findActive(decision.action.taskId);
+    if (!task || !revision) return null;
+    const request = [
+      'Replan only the remaining semantic work after a Git publication conflict.',
+      'Do not create a dedicated conflict-resolution Subtask.',
+      'Return plan_work_graph bound to the exact existing Task and preserve completed facts.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Conflicted Subtask id: ${decision.action.subtaskId}`,
+      `Publication id: ${decision.action.publicationId}`,
+      `Conflict chain id: ${decision.action.conflictChainId}`,
+      'The revised remaining work must let the original delivery intent publish without choosing or silently overwriting a conflicting version.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.planningContextBuilder.build({
+      userInput: request,
+    });
+    const plan = await this.planWithExecutorRecovery(context);
+    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
+      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
+      : null;
+    return {
+      schemaVersion: 5,
+      type: 'plan_proposed',
+      id: `merge_replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: task.id,
+      proposal: plan,
+      requestText: boundedKernelRequestText(request),
+      generationId: revision.generationId,
+      proposalSource: 'conflict_replan',
+      targetGraphRevision: revision.revision + 1,
+      availabilityExplanation,
+    };
+  }
+
+  private buildPlanAdmissionSnapshot(
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    executorCatalog = this.planningContextBuilder.getExecutorCatalog(),
+    userInput = event.proposal.task.goal ?? '',
+  ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
+    return {
+      schemaVersion: 5,
+      type: 'plan_admission',
+      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
+      runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
+      executorCatalog,
+      executorStatuses: this.kernelExecutorStatusRepo.list(),
+      v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
+      eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
+      pendingAuthorizationRequest: (() => {
+        const pending = this.permissionRepository.findOldestPending();
+        return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
+      })(),
+    };
   }
 
   private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
@@ -788,6 +1085,13 @@ export class MetaclawSession {
       if (ref.kind === 'preference') {
         const row = this.deps.db.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
         if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (ref.kind === 'task_evidence') {
+        const row = this.deps.db.prepare(`
+          SELECT id FROM task_execution_evidence WHERE id = ? AND task_id = ? AND kind = 'task_evidence'
+        `).get(ref.evidenceId, targetTask?.id ?? '') as { id: string } | undefined;
+        if (row) eligible.add(contextRefKey(ref));
         continue;
       }
       if (isEligibleInteractionRef({
@@ -813,9 +1117,8 @@ export class MetaclawSession {
   private async prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-    proposalType: GuidanceActionType | null = null,
   ): Promise<void> {
-    return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request, proposalType);
+    return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request);
   }
 
   private appendOutput(...lines: string[]): void {
@@ -825,20 +1128,31 @@ export class MetaclawSession {
   }
 
   private setCurrentTaskId(taskId: string | null): void {
-    this.taskRuntimeService.setCurrentTaskId(taskId);
+    this.currentTaskId = taskId;
     this.notify();
   }
 
   private getCurrentTaskId(): string | null {
-    return this.taskRuntimeService.getCurrentTaskId();
+    return this.currentTaskId;
   }
 
   private refreshRuntimeState(): void {
-    const schedulerState = this.scheduler.getRuntimeState();
+    const tasks = this.taskRuntimeService.listTasks();
+    this.workspaceRetentionService.reconcileTaskStatuses(tasks);
+    this.triggerWorkspaceRetentionSweep();
+    const runningTask = tasks.find(task => task.status === 'running') ?? null;
+    const schedulerState: RuntimeState = {
+      runningTaskId: runningTask?.id ?? this.kernelExecutionRuntime.getSingleActiveTaskId(),
+      runningExecutorName: null,
+      readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
+      blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
+      parkedTaskIds: tasks.filter(task => task.status === 'parked').map(task => task.id),
+      lastEvent: this.runtimeState.lastEvent,
+    };
     this.runtimeState = {
       ...schedulerState,
       runningExecutorName: schedulerState.runningTaskId
-        ? this.runningExecutorNameByTask.get(schedulerState.runningTaskId) ?? null
+        ? this.formatRunningExecutors(schedulerState.runningTaskId)
         : null,
     };
     this.notify();
@@ -874,8 +1188,14 @@ export class MetaclawSession {
   }
 
   private async handleCommand(userInput: string): Promise<boolean> {
+    if (/^\/task\s+(resume|recover|recovery)\b/iu.test(userInput)) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
+    }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
     this.appendOutput(result.content);
+    if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
+    }
 
     if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
       this.appendOutput(...this.executorAdminService.startWizard());
@@ -912,7 +1232,175 @@ export class MetaclawSession {
       }
     }
 
+    if (result.type === 'directive' && result.directive.kind === 'show-task-recovery') {
+      this.appendOutput(this.formatTaskRecovery(result.directive.taskId));
+    }
+
+    if (result.type === 'directive' && result.directive.kind === 'resolve-task-recovery') {
+      await this.resolveTaskRecovery(result.directive);
+    }
+
+    if (result.type === 'directive' && result.directive.kind === 'resolve-permission') {
+      await this.resolvePermission(result.directive);
+    }
+
     return false;
+  }
+
+  private triggerWorkspaceRetentionSweep(): void {
+    if (this.workspaceRetentionSweep) return;
+    const sweep = this.workspaceRetentionService.sweepDue()
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        this.workspaceRetentionSweep = null;
+      });
+    this.workspaceRetentionSweep = sweep;
+    this.trackBackgroundWork(sweep);
+  }
+
+  private async resolvePermission(input: {
+    requestId: string;
+    resolution: 'approve' | 'deny';
+    source?: 'command' | 'button' | 'planner';
+    plannerPlanId?: string | null;
+  }): Promise<void> {
+    const record = this.permissionRepository.findRequest(input.requestId);
+    if (!record) throw new Error(`permission request not found: ${input.requestId}`);
+    const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
+    const workspaceId = sandbox?.workspaceId
+      ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
+    const task = this.taskRuntimeService.findTask(record.request.taskId);
+    const resourceRegistrations = new Map((task?.resources ?? []).map((resource, index) => [
+      resource,
+      { kind: 'path' as const, mountId: `inputs-${record.request.taskId}`, normalizedRelativePath: `resource-${index}` },
+    ]));
+    const workflow = new PermissionWorkflowService({
+      context: {
+        sessionId: this.deps.sessionId,
+        taskId: record.request.taskId,
+        generationId: record.request.generationId,
+        subtaskId: record.request.subtaskId,
+        attemptId: record.request.attemptId,
+        agentClassName: record.request.agentClassName,
+        permissionProfileId: record.request.permissionProfileId,
+        containerId: sandbox?.containerId ?? '',
+        workspaceId,
+        checkpointId: null,
+      },
+      repository: this.permissionRepository,
+      resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
+      sandbox: this.attemptSandbox,
+      workflowStore: this.kernelWorkflowRepo,
+      kernel: this.controlKernel,
+      rules: buildPermissionRules({
+        permissionProfileId: record.request.permissionProfileId,
+        additionalReadPartitions: resourceRegistrations.values(),
+      }),
+      hooks: {
+        checkpoint: async () => null,
+        onEscalation: async () => undefined,
+        onRecoveryAuthorized: async ({ request }) => {
+          if (!task || !request) return;
+          await this.prepareTaskExecution(task.id, {
+            userPrompt: task.goal,
+            contextTaskId: task.id,
+            executionMode: 'resume-blocked',
+            schedulingReason: `permission ${input.requestId} approved; recover persistent workspace`,
+          });
+        },
+      },
+    });
+    await workflow.resolve({
+      requestId: input.requestId,
+      resolution: input.resolution,
+      source: input.source ?? 'command',
+      plannerPlanId: input.plannerPlanId ?? null,
+    });
+  }
+
+  private formatTaskRecovery(taskId: string): string {
+    const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const effects = this.effectOutboxRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const items = [...applications, ...effects];
+    return items.length > 0
+      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
+      : `Task #${taskId} has no uncertain or failed recovery items.`;
+  }
+
+  private async resolveTaskRecovery(input: {
+    taskId: string;
+    recoveryItemId: string;
+    resolution: 'assume_applied' | 'retry';
+  }): Promise<void> {
+    const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
+      schemaVersion: 5,
+      type: 'recovery_resolution_requested',
+      id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
+      correlationId: input.taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.sessionId,
+      taskId: input.taskId,
+      recoveryItemId: input.recoveryItemId,
+      resolution: input.resolution,
+    };
+    const workflow = new DurableKernelWorkflow({
+      kernel: this.controlKernel,
+      buildSnapshot: () => this.buildRecoverySnapshot(input.taskId, input.recoveryItemId),
+      store: this.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      runtime: {
+        apply: async decision => {
+          if (decision.action.type === 'resolve_recovery') {
+            const now = new Date().toISOString();
+            if (this.kernelWorkflowRepo.findRecoveryItem(decision.action.recoveryItemId)) {
+              this.kernelWorkflowRepo.resolveRecoveryItem(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            } else {
+              this.effectOutboxRepo.resolve(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            }
+            return null;
+          }
+          if (decision.action.type === 'block_work') {
+            this.appendOutput(`Recovery blocked: ${decision.reason}`);
+            return null;
+          }
+          throw new Error(`manual recovery Runtime cannot apply ${decision.action.type}`);
+        },
+      },
+      acceptedEventTypes: ['recovery_resolution_requested'],
+      acceptedActions: ['resolve_recovery', 'block_work'],
+      taskId: input.taskId,
+    });
+    await workflow.submit(event);
+    this.appendOutput(this.formatTaskRecovery(input.taskId));
+  }
+
+  private buildRecoverySnapshot(
+    taskId: string,
+    recoveryItemId: string,
+  ): Extract<KernelSnapshot, { type: 'recovery' }> {
+    const task = this.taskRuntimeService.findTask(taskId);
+    const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
+    const effect = this.effectOutboxRepo.find(recoveryItemId);
+    return {
+      schemaVersion: 5,
+      type: 'recovery',
+      task: task ? { id: task.id, status: task.status } : null,
+      item: application
+        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
+        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+          ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
+          : null,
+    };
   }
 
   private getCommandContext(): CommandContext {
@@ -920,9 +1408,13 @@ export class MetaclawSession {
       taskEngine: this.deps.taskEngine,
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
-      executor: this.deps.executor,
       activeExecutions: this.executionRuntime,
+      taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
+      refreshExecutors: agentClassNames => this.executorRecoveryRefreshService.refresh({
+        trigger: 'manual',
+        agentClassNames,
+      }),
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
       config: this.deps.config,
@@ -932,6 +1424,9 @@ export class MetaclawSession {
   private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
     const result = await this.executorAdminService.handlePendingWizardInput(userInput);
     this.appendOutput(...result.lines);
+    if (result.handled) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
+    }
     return result.handled;
   }
 
@@ -941,7 +1436,7 @@ export class MetaclawSession {
     }
 
     this.appendOutput(
-      '-> PolicyKernel did not produce a runtime action.',
+      '-> ControlKernel did not produce a runtime action.',
       'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
     );
   }
@@ -981,7 +1476,8 @@ export class MetaclawSession {
   // replying executor name and a descriptive lastEvent so the TUI status bar and
   // Feishu can show who is answering. Clearing passes null to restore.
   private setDirectReplyRuntimeState(executorName: string | null): void {
-    const schedulerState = this.scheduler.getRuntimeState();
+    this.refreshRuntimeState();
+    const schedulerState = this.runtimeState;
     if (schedulerState.runningTaskId) {
       this.refreshRuntimeState();
       return;
@@ -997,68 +1493,272 @@ export class MetaclawSession {
     this.notify();
   }
 
-  private dispatchTask(taskId: string, context?: DispatchContext<QueuedExecutionRequest>): Promise<void> {
-    return this.taskExecutionApplicationService.dispatchTask(taskId, context);
-  }
-
   private setFocusContext(focus: FocusContext | null): void {
-    this.taskRuntimeService.setFocusContext(focus);
+    this.focusContext = focus ? { ...focus } : null;
     if (focus?.kind === 'task' && focus.taskId) {
       this.persistSessionState({ lastFocusedTaskId: focus.taskId });
     }
   }
 
   private getFocusContext(): FocusContext | null {
-    return this.taskRuntimeService.getFocusContext();
+    return this.focusContext ? { ...this.focusContext } : null;
   }
 
-  private recoverOrphanedRunningTasks(): Task[] {
-    const runningTasks = this.taskRuntimeService.listTasksByStatus('running');
-    const recovered: Task[] = [];
-
-    for (const task of runningTasks) {
-      const interruptionReason = 'Metaclaw 重启，原执行器会话已断开';
-      this.taskRuntimeService.parkTask(task.id, interruptionReason, {
-        done: task.summary ? [task.summary] : [],
-        pending: [task.goal],
-        nextStep: '确认环境后恢复当前任务',
-        pauseReason: interruptionReason,
-      });
-      this.taskRuntimeService.updateTask(task.id, {
-        lastInterruptionReason: interruptionReason,
-        interruptionCount: task.interruptionCount + 1,
-      });
-      const parkedTask = this.taskRuntimeService.findTask(task.id);
-      if (parkedTask) {
-        recovered.push(parkedTask);
+  private async recoverDurableStartup(): Promise<Task[]> {
+    const now = new Date().toISOString();
+    const sandboxLossAttemptIds = new Set<string>();
+    const claimedOrphans = this.workUnitClaimService.listOrphanedClaims();
+    const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
+    const requiresAttemptReconciliation = claimedOrphans.length > 0
+      || this.attemptSandboxRepository.listActive().length > 0
+      || this.taskRuntimeService.listTasksByStatus('running').some(task =>
+        dispatchItems.listByTask(task.id).some(item =>
+          ['launching', 'running', 'cancelling', 'uncertain'].includes(item.status)
+        )
+      );
+    let recoveryBlockedReason: string | null = null;
+    try {
+      if (requiresAttemptReconciliation) {
+        const checkpointIds = new Map<string, string | null>();
+        const reconciliation = await new AttemptSandboxReconciler(
+          this.attemptSandbox,
+          this.attemptSandboxRepository,
+        ).reconcile({
+          checkpoint: async record => {
+            const persisted = this.workspaceRepository.find(record.workspaceId);
+            if (!persisted) {
+              checkpointIds.set(record.attemptId, null);
+              return;
+            }
+            const workspace = await this.workspaceStore.ensureWorkspace({
+              taskId: persisted.taskId,
+              generationId: persisted.generationId,
+              subtaskId: persisted.subtaskId,
+            }, persisted.kind);
+            const checkpoint = await this.workspaceStore.createCheckpoint(workspace, {
+              reason: 'failure', attemptId: record.attemptId, now,
+            });
+            this.workspaceRepository.recordCheckpoint({
+              id: checkpoint.id,
+              workspaceId: workspace.id,
+              attemptId: record.attemptId,
+              reason: 'failure',
+              manifestUri: checkpoint.manifestUri,
+              manifestHash: checkpoint.manifestHash,
+              manifestSize: checkpoint.manifestSize,
+              createdAt: checkpoint.manifest.createdAt,
+              objects: checkpoint.manifest.entries.flatMap(entry => (
+                entry.type === 'file' && entry.hash && entry.objectUri
+                  ? [{ hash: entry.hash, uri: entry.objectUri, size: entry.size, mediaType: null }]
+                  : []
+              )),
+            });
+            checkpointIds.set(record.attemptId, checkpoint.id);
+          },
+        });
+        for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
+          if (sandboxLossAttemptIds.has(record.attemptId)) continue;
+          sandboxLossAttemptIds.add(record.attemptId);
+          const dispatchItem = dispatchItems.find(record.attemptId);
+          if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
+            continue;
+          }
+          dispatchItems.markUncertain(
+            record.attemptId,
+            `sandbox ${record.containerId} was reconciled during startup`,
+            now,
+          );
+          this.kernelWorkflowRepo.enqueue({
+            schemaVersion: 5,
+            type: 'sandbox_lost',
+            id: `sandbox_lost_${record.attemptId}`,
+            correlationId: record.taskId,
+            causationId: record.attemptId,
+            occurredAt: now,
+            sessionId: this.deps.sessionId,
+            taskId: record.taskId,
+            subtaskId: record.subtaskId,
+            attemptId: record.attemptId,
+            containerId: record.containerId,
+            workspaceId: record.workspaceId,
+            checkpointId: checkpointIds.get(record.attemptId) ?? null,
+          });
+        }
       }
+      await this.kernelExecutionRuntime.recoverCancellations();
+    } catch (error) {
+      recoveryBlockedReason = error instanceof Error ? error.message : String(error);
+    }
+    if (recoveryBlockedReason) {
+      const blocked: Task[] = [];
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+        try {
+          this.taskRuntimeService.blockTask(task.id, {
+            taskId: task.id,
+            type: 'manual',
+            description: `startup recovery blocked: ${recoveryBlockedReason}`,
+            status: 'waiting',
+          });
+        } catch {
+          // Keep the in-memory recovery fence even if persistence is unavailable.
+        }
+        const current = this.taskRuntimeService.findTask(task.id);
+        if (current) blocked.push(current);
+      }
+      this.appendOutput(
+        `恢复阻塞：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
+        '已保留现有 sandbox、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
+      );
+      return blocked;
+    }
+    this.effectOutboxRepo.reconcileSending(now);
+    this.kernelWorkflowRepo.reconcileProcessing();
+    for (const effect of this.effectOutboxRepo.listPending(now)) {
+      if (effect.effectType !== 'task_completion_notification') continue;
+      await this.effectOutboxRepo.deliver(effect.id, async record => {
+        await this.verificationAndDeliveryService.deliverTaskCompletion(
+          this.notifier,
+          record.payload as unknown as Parameters<VerificationAndDeliveryService['deliverTaskCompletion']>[1],
+        );
+        return effect.id;
+      }, () => new Date().toISOString());
     }
 
+    const planningWorkflow = new DurableKernelWorkflow({
+      kernel: this.controlKernel,
+      buildSnapshot: event => this.buildPlanAdmissionSnapshot(
+        event as Extract<KernelEvent, { type: 'plan_proposed' }>,
+      ),
+      store: this.kernelWorkflowRepo,
+      runtime: this.sessionKernelRuntime.forInput(),
+      clock: { now: () => new Date().toISOString() },
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+      ],
+    });
+    await planningWorkflow.recover();
+
+    const reconciledLeases = new ResourceLeaseService(
+      new SqliteResourceLeaseRepository(this.deps.db),
+    );
+    const recovered: Task[] = [];
+    try {
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+      const activeSubtasks = this.subtaskRepo.listActiveByTask(task.id);
+      const subtasks = activeSubtasks.length > 0 ? activeSubtasks : this.subtaskRepo.listByTask(task.id);
+      const taskClaims = claimedOrphans.filter(workUnit => workUnit.claimedTaskId === task.id);
+      for (const workUnit of taskClaims) {
+        if (!workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
+        this.attemptRunner.landHeartbeatLost({
+          attemptId: workUnit.claimedAttemptId,
+          executionId: `startup_${workUnit.claimedAttemptId}`,
+          taskId: task.id,
+          subtaskId: workUnit.claimedSubtaskId,
+          workUnitId: workUnit.id,
+          agentClassName: workUnit.agentClassName,
+        });
+        reconciledLeases.releaseReconciledAttempt(workUnit.claimedAttemptId, now);
+        this.workUnitClaimService.releaseReconciledClaim({
+          workUnitId: workUnit.id,
+          taskId: task.id,
+          subtaskId: workUnit.claimedSubtaskId,
+          attemptId: workUnit.claimedAttemptId,
+        });
+        if (!sandboxLossAttemptIds.has(workUnit.claimedAttemptId)) {
+          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+            sessionId: this.deps.sessionId,
+            task,
+            subtaskId: workUnit.claimedSubtaskId,
+            attemptId: workUnit.claimedAttemptId,
+            agentClassName: workUnit.agentClassName,
+            occurredAt: now,
+          }));
+        }
+      }
+      if (taskClaims.length === 0 && !this.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
+        const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
+        if (orphan) {
+          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+            sessionId: this.deps.sessionId,
+            task,
+            subtaskId: orphan.id,
+            attemptId: `startup_missing_${task.id}_${orphan.id}`,
+            agentClassName: orphan.preferredAgentClassList[0] ?? 'unknown',
+            occurredAt: now,
+          }));
+        }
+      }
+      await this.kernelExecutionRuntime.recoverDue(task.id, 'startup durable recovery');
+      const current = this.taskRuntimeService.findTask(task.id);
+      if (current) recovered.push(current);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const blocked: Task[] = [];
+      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+        try {
+          this.taskRuntimeService.blockTask(task.id, {
+            taskId: task.id,
+            type: 'manual',
+            description: `startup recovery blocked: ${reason}`,
+            status: 'waiting',
+          });
+        } catch {
+          // Preserve durable attempt ownership if even the diagnostic Task update fails.
+        }
+        const current = this.taskRuntimeService.findTask(task.id);
+        if (current) blocked.push(current);
+      }
+      this.appendOutput(
+        `恢复阻塞：无法安全封口 attempt terminal 事实（${reason}）。`,
+        '已保留尚未安全封口的 WorkUnit claim 与 resource lease；修复持久状态后可重试启动恢复。',
+      );
+      return blocked;
+    }
+    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+      if (recovered.some(item => item.id === task.id)) continue;
+      await this.kernelExecutionRuntime.recoverDue(task.id, 'startup due-event drain');
+    }
     return recovered;
   }
 
-  private resumeUnfinishedTasksOnStartup(recoveredRunningTasks: Task[]): void {
-    const candidates = this.buildStartupResumeCandidates(recoveredRunningTasks);
-    if (candidates.length === 0) {
-      return;
-    }
+  private setRunningExecutorName(
+    taskId: string,
+    subtaskId: string,
+    attemptId: string,
+    name: string,
+  ): void {
+    this.runningExecutorsByAttempt.set(attemptId, { taskId, subtaskId, name });
+    this.runtimeState = {
+      ...this.runtimeState,
+      lastEvent: `Kernel dispatched ${name} for ${taskId}/${subtaskId}/${attemptId}`,
+    };
+    this.refreshRuntimeState();
+  }
 
-    this.trackBackgroundWork((async () => {
-      const task = candidates[0];
-      this.appendStartupResumeLine(task.id);
-      if (task.status === 'parked') {
-        this.resumeParkedTaskIfStillParked(task.id);
+  private clearRunningExecutorName(taskId: string, attemptId?: string): void {
+    if (attemptId) {
+      this.runningExecutorsByAttempt.delete(attemptId);
+    } else {
+      for (const [activeAttemptId, active] of this.runningExecutorsByAttempt) {
+        if (active.taskId === taskId) this.runningExecutorsByAttempt.delete(activeAttemptId);
       }
-      await this.prepareTaskExecution(task.id, {
-        userPrompt: task.goal,
-        contextTaskId: task.id,
-        executionMode: task.snapshots.length > 0 || task.lastInterruptionReason ? 'resume-parked' : 'fresh',
-        origin: 'system',
-        schedulingReason: '启动后恢复未完成任务',
-      });
-    })().finally(() => {
-      this.notify();
-    }));
+    }
+    this.runtimeState = { ...this.runtimeState, lastEvent: `Kernel execution settled for ${taskId}` };
+    this.refreshRuntimeState();
+  }
+
+  private formatRunningExecutors(taskId: string): string | null {
+    const names = [...this.runningExecutorsByAttempt.values()]
+      .filter(active => active.taskId === taskId)
+      .map(active => active.name)
+      .sort();
+    if (names.length === 0) return null;
+    const counts = new Map<string, number>();
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+    return [...counts].map(([name, count]) => count === 1 ? name : `${name} ×${count}`).join(', ');
   }
 
   private trackBackgroundWork(work: Promise<void>): void {
@@ -1068,56 +1768,4 @@ export class MetaclawSession {
     });
   }
 
-  private resumeParkedTaskIfStillParked(taskId: string): void {
-    const latestTask = this.taskRuntimeService.findTask(taskId);
-    if (latestTask?.status === 'parked') {
-      this.taskRuntimeService.resumeParkedTask(taskId);
-    }
-  }
-
-  private buildStartupResumeCandidates(recoveredRunningTasks: Task[]): Task[] {
-    const byId = new Map<string, Task>();
-
-    for (const task of recoveredRunningTasks) {
-      byId.set(task.id, task);
-    }
-
-    for (const task of this.taskRuntimeService.listTasks()) {
-      if (['created', 'ready'].includes(task.status) && !byId.has(task.id)) {
-        byId.set(task.id, task);
-      }
-      if (
-        task.status === 'parked'
-        && task.prioritySignals.isReady
-        && task.dependencies.every(dependency => dependency.status === 'resolved')
-        && !byId.has(task.id)
-      ) {
-        byId.set(task.id, task);
-      }
-    }
-
-    const recoveredIds = new Set(recoveredRunningTasks.map(task => task.id));
-    return Array.from(byId.values()).sort((left, right) => {
-      const leftRecovered = recoveredIds.has(left.id);
-      const rightRecovered = recoveredIds.has(right.id);
-      if (leftRecovered !== rightRecovered) {
-        return leftRecovered ? -1 : 1;
-      }
-
-      return right.updatedAt.localeCompare(left.updatedAt);
-    });
-  }
-
-  private appendStartupResumeLine(taskId: string): void {
-    const task = this.taskRuntimeService.findTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    this.appendOutput(
-      task.snapshots.length > 0 || task.lastInterruptionReason
-        ? `→ 启动后继续未完成任务 #${task.id}`
-        : `→ 启动后恢复待执行任务 #${task.id}`,
-    );
-  }
 }

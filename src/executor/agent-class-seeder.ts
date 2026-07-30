@@ -5,11 +5,6 @@ import type { AgentClassRepo } from '../storage/agent-class-repo.js';
 import type { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { getBuiltinExecutorAgentClasses } from './builtin-executor-catalog.js';
 
-export interface AgentClassSeedInput {
-  defaultExecutorName: string;
-  availableCommands?: Set<string>;
-}
-
 function plannerClass(): AgentClass {
   return {
     name: 'planner',
@@ -32,45 +27,31 @@ function plannerClass(): AgentClass {
     runtimeCommand: null,
     runtimeArgs: [],
     runtimeCheckCommand: null,
-    projectUrl: null,
-  };
-}
-
-function unclassifiedExecutorClass(name: string): AgentClass {
-  return {
-    name,
-    kind: 'executor',
-    domains: [],
-    capabilities: [],
-    inputTypes: ['text'],
-    outputTypes: ['markdown'],
-    strengths: [],
-    weaknesses: [],
-    primaryUseCases: [],
-    avoidUseCases: [],
-    intentAffinity: {},
-    riskLevel: 'medium',
-    harness: 'cli',
-    model: null,
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-    runtimeCommand: null,
-    runtimeArgs: [],
-    runtimeCheckCommand: null,
+    executionImageRef: null,
+    resolvedImageId: null,
+    permissionProfileId: null,
     projectUrl: null,
   };
 }
 
 function hasCanonicalStaticFields(existing: AgentClass, canonical: AgentClass): boolean {
-  const { createdAt: _existingCreatedAt, updatedAt: _existingUpdatedAt, ...existingStatic } = existing;
-  const { createdAt: _canonicalCreatedAt, updatedAt: _canonicalUpdatedAt, ...canonicalStatic } = canonical;
+  const {
+    createdAt: _existingCreatedAt,
+    updatedAt: _existingUpdatedAt,
+    resolvedImageId: _existingResolvedImageId,
+    ...existingStatic
+  } = existing;
+  const {
+    createdAt: _canonicalCreatedAt,
+    updatedAt: _canonicalUpdatedAt,
+    resolvedImageId: _canonicalResolvedImageId,
+    ...canonicalStatic
+  } = canonical;
   return isDeepStrictEqual(existingStatic, canonicalStatic);
 }
 
 export function seedDefaultAgentClasses(
   agentClassRepo: Pick<AgentClassRepo, 'upsert' | 'findByName'>,
-  input: AgentClassSeedInput,
 ): void {
   const canonicalAgentClasses = getBuiltinExecutorAgentClasses();
 
@@ -78,17 +59,19 @@ export function seedDefaultAgentClasses(
   for (const canonical of canonicalAgentClasses) {
     const existing = agentClassRepo.findByName(canonical.name);
     if (!existing || !hasCanonicalStaticFields(existing, canonical)) {
-      agentClassRepo.upsert({ ...canonical, createdAt: existing?.createdAt });
+      agentClassRepo.upsert({
+        ...canonical,
+        resolvedImageId: existing?.executionImageRef === canonical.executionImageRef
+          ? existing.resolvedImageId
+          : null,
+        createdAt: existing?.createdAt,
+      });
     }
-  }
-  if (!agentClassRepo.findByName(input.defaultExecutorName)) {
-    agentClassRepo.upsert(unclassifiedExecutorClass(input.defaultExecutorName));
   }
 }
 
 export function seedDefaultWorkUnits(
   workUnitRepo: Pick<WorkUnitRepo, 'upsert' | 'findById'>,
-  input: { executorAgentClassName: string },
 ): void {
   const now = new Date().toISOString();
   if (!workUnitRepo.findById('planner-1')) {

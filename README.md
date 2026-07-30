@@ -38,9 +38,9 @@ It is designed for workflows where continuity, control, and accountability matte
 | **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
 | **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
 | **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
-| **Isolated execution** | Every agent receives one bounded assignment, the required evidence, and direct dependency outputs—not an uncontrolled copy of the entire conversation or sibling work. |
+| **Isolated execution** | Every attempt runs in a disposable non-root Docker sandbox with read-only inputs and a persistent private workspace; runtime elevation is explicit, bounded, and Kernel-authorized. |
 | **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
-| **Operational memory and delivery** | Confirmed preferences, task history, semantic retrieval, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
+| **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
 
 ## Built for complex enterprise workflows
 
@@ -56,17 +56,18 @@ The executor layer is adapter-based, so organizations can register vertical agen
 
 ```mermaid
 flowchart LR
-  Intake[People / CLI / Gateway / Feishu] --> Planning[Planning Agent<br/>Intent and work graph]
-  Planning --> Kernel[Control Kernel<br/>Policy and authorization]
-  Kernel --> Scheduler[Durable Scheduler<br/>State and dependency readiness]
-  Scheduler --> Routing[Capability Routing<br/>Agent class and runtime health]
-  Routing --> Agents[Specialized Agent Work Units<br/>Engineering / Analysis / Custom]
+  Intake[People / TUI / CLI / Gateway / Feishu] --> Session[MetaClaw Session<br/>Application Shell]
+  Session --> Planning[Planning Agent<br/>Native Codex thread]
+  Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
+  Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
+  Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
+  Runtime --> Agents[Sandboxed Agent Work Units<br/>Codex / Pi / Custom]
   Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
 
   State[(Persistent Task State<br/>memory / attempts / audit)]
   Planning <--> State
-  Kernel <--> State
-  Scheduler <--> State
+  Workflow <--> State
+  Runtime <--> State
   Verify --> State
 ```
 
@@ -76,7 +77,7 @@ Three boundaries keep the workflow governable:
 2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
 3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
 
-Work graphs already model independent branches, specialist assignments, and typed dependency delivery. The current preview deliberately serializes ready-subtask execution while resource partitioning, durable leases, conflict detection, and crash-safe concurrent dispatch are completed. This preserves the final concurrency model without claiming unsafe parallelism prematurely.
+Work graphs model independent branches, specialist assignments, and typed dependency delivery. The durable Kernel workflow serializes authorization and application, while up to four independent attempts inside the one active top-level Task may run concurrently. Resource partitioning, durable leases, persistent workspaces, short-lived attempt sandboxes, deterministic Git publication, crash recovery, and event-driven Executor error recovery are active.
 
 ## Quick Start
 
@@ -107,7 +108,7 @@ AnyFusion classifies the request, creates a durable task when required, authoriz
 | Maturity | Developer Preview |
 | Deployment | Limited internal pilot use |
 | Task scope | One active top-level task with dependency-aware subtasks |
-| Dispatch | Serial ready-subtask execution in the current preview; safe asynchronous concurrency is on the published roadmap |
+| Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
 | Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 
 AnyFusion is not presented as Production Ready. The preview is intended to validate the task control plane, work-graph contracts, specialist routing, verification model, and operational workflow before stable compatibility commitments are made.
@@ -117,6 +118,7 @@ AnyFusion is not presented as Production Ready. The preview is intended to valid
 | Resource | Purpose |
 | --- | --- |
 | [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Attempt sandboxes, persistent workspaces, image profiles, Engine topology, and runtime elevation |
 | [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
 | [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |

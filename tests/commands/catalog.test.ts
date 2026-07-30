@@ -108,9 +108,10 @@ describe('CommandCatalog', () => {
       label: '/executor',
       replacement: { start: 0, end: 1, text: '/executor' },
     });
-    expect(root.suggestions.find(item => item.value === 'config')).toMatchObject({
+    const configRoot = catalog.complete({ text: '/con', cursor: 4, context });
+    expect(configRoot.suggestions.find(item => item.value === 'config')).toMatchObject({
       label: '/config',
-      replacement: { start: 0, end: 1, text: '/config' },
+      replacement: { start: 0, end: 4, text: '/config' },
     });
 
     const executor = catalog.complete({ text: '/executor ', cursor: 10, context });
@@ -141,7 +142,7 @@ describe('CommandCatalog', () => {
       replacement: { start: 16, end: 16, text: 'approve' },
     });
 
-    for (const completion of [root, executor, learning, register, patch]) {
+    for (const completion of [root, configRoot, executor, learning, register, patch]) {
       for (const suggestion of completion.suggestions) {
         if (suggestion.value === suggestion.label.replace(/^\//, '')) {
           expect(suggestion.label).toBe(suggestion.replacement.text);
@@ -220,37 +221,31 @@ describe('CommandCatalog', () => {
 /task unblock
 /task cancel
 /task complete
+/task subtask-cancel
+/task accept-partial
 /task attach
 /task history
+/task recovery
+/task recover
 /task index rebuild
 /task index search
 /executor list
+/executor refresh
 /executor show
 /executor register <executorName>
 /executor register wizard
 /executor unregister
 /executor feedback
+/permission approve
+/permission deny
 /memory list
 /memory search
 /memory add
 /memory edit
 /memory delete
-/memory candidates
-/memory confirm
-/memory reject
 /memory stats
-/memory recent
-/memory auto-captured
-/memory timeline
-/memory applied
-/memory undo
-/memory explain
-/memory evidence
-/memory relations
 /memory vault export
 /memory vault status
-/memory review-policy list
-/memory review-policy revoke
 /profile user
 /profile project
 /profile executor
@@ -277,7 +272,6 @@ describe('CommandCatalog', () => {
     expect(actions).toContain('/task index search');
     expect(actions).toContain('/executor register <executorName>');
     expect(actions).toContain('/executor register wizard');
-    expect(actions).toContain('/memory review-policy revoke');
     expect(actions).toContain('/learning patch promote');
     expect(actions).toContain('/profile user');
     expect(actions).toContain('/config');

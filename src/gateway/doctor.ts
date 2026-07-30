@@ -32,7 +32,7 @@ export function runGatewayDoctor(input: {
 
   checks.push({
     name: 'gateway.feishu.app_secret',
-    status: feishu.appSecret || (feishu.appSecretEnv && env[feishu.appSecretEnv]) ? 'ok' : 'fail',
+    status: feishu.appSecretEnv && env[feishu.appSecretEnv] ? 'ok' : 'fail',
     message: feishu.appSecretEnv
       ? `Feishu app secret env ${feishu.appSecretEnv} ${env[feishu.appSecretEnv] ? 'is set' : 'is not set'}`
       : 'Missing Feishu app_secret_env',

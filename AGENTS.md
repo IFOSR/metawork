@@ -1,57 +1,117 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Start Here
 
-MetaClaw is a Node 20 TypeScript CLI/TUI project. Source code lives in `src/`, with the entry point at `src/index.ts`.
+AnyFusion is the public product name. `MetaClaw`, `metaclaw`, and `Metaclaw*`
+remain internal/runtime names and the compatibility CLI alias. Do not rename them
+during unrelated work.
 
-Key areas are organized by responsibility:
+Read only what the task needs, in this order:
 
-- `src/core/` is intentionally narrow and contains shared primitives, the generic memory/ranking LLM bridge, and capability classes.
-- `src/planning/` owns the `PlanningAgent` interface (`CodexPlanningAgent`), the dedicated Codex planner runner, the read-only Planner MCP server, minimal planning context construction, plan types/vocabulary, and plan validation.
-- `src/kernel/` owns pure `PolicyKernel` authorization for `PlanningAgentPlan` decisions. It validates, rewrites, rejects, or clarifies, but does not write storage or call executors.
-- `src/session/` coordinates interactive/script/gateway session intake, explicit memory fast paths, PlanningAgent/PolicyKernel wiring, kernel decision application, task admission for deterministic paths, and persistence.
-- `src/task/` owns task state, runtime, scheduler, resume planning, ranking, and semantic retrieval.
-- `src/memory/` owns memory capture, recall, review, preferences, context bundles, and vault export.
-- `src/execution/` owns execution runtime, work graph application/recovery, work-unit claiming, orchestration, aggregation, progress, workspace, and conversation runtime.
-- `src/executor/` owns executor adapters plus AgentClass admin/seeder services, prompts, and skill packages.
-- `src/guidance/`, `src/learning/`, `src/intent/`, and `src/delivery/` own their named domains.
-- `src/storage/` holds SQLite repositories and migrations for tasks, subtasks, agent classes, work units, planning decisions, planner run/tool-call audits, and events.
-- `src/gateway/`, `src/notifications/`, and `src/integrations/` handle gateway and delivery integrations.
-- `src/commands/`, `src/tui/`, `src/cli/`, and `src/utils/` cover command routing, UI, CLI args, and shared utilities.
+1. [`CONTEXT.md`](CONTEXT.md) — current contracts, domain vocabulary, runtime
+   invariants, and product boundaries.
+2. [`docs/current/technical-overview.md`](docs/current/technical-overview.md) —
+   full runtime, deployment, configuration, and repository overview.
+3. [`docs/adr/README.md`](docs/adr/README.md) — accepted decisions and the
+   authority matrix. Read [ADR-0020](docs/adr/0020-core-module-ownership-and-dependency-direction.md)
+   before architecture or roadmap work.
+4. [`docs/README.md`](docs/README.md) — current docs, plans, operational notes,
+   and archives.
 
-Tests mirror these domains under `tests/`. Design notes and roadmaps are in `docs/`, while runnable/manual scenarios and fixtures are in `examples/`. Current PlanningAgent/PolicyKernel/work-unit vocabulary and migration context live in `CONTEXT.md`.
+Authority order: code and tests, accepted ADRs, [`CONTEXT.md`](CONTEXT.md), current
+technical docs, active plans, then archived material. [`docs/archive/`](docs/archive/) is
+historical unless a current authority explicitly cites it.
 
-For deeper current architecture context, read `docs/current/technical-overview.md`. Use `docs/README.md` as the docs map before opening older dated planning documents. Before architecture or roadmap changes, read `docs/adr/README.md` and ADR-0020; do not treat `docs/archive/adr/` as current implementation authority.
+Architecture shortcuts:
 
-## Build, Test, and Development Commands
+- Planner: [ADR-0015](docs/adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
+- AgentClass definitions/status: [ADR-0018](docs/adr/0018-supported-routing-contracts-and-unified-executor-definitions.md), [ADR-0017](docs/adr/0017-kernel-executor-status-projection.md)
+- Work Graph/publication: [ADR-0021](docs/adr/0021-work-graph-v4-subtask-execution-contract.md), [ADR-0025](docs/adr/0025-single-task-concurrency-and-git-publication.md), [ADR-0026](docs/adr/0026-phase-6-single-task-reliability-closure.md)
+- Kernel/recovery: [ADR-0022](docs/adr/0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](docs/adr/0023-durable-kernel-workflow-recovery-and-availability.md)
+- Sandbox/resources: [ADR-0024](docs/adr/0024-resource-partition-sandbox-and-runtime-elevation.md), [runtime security](docs/current/phase-5-runtime-security.md)
+- Single-Task boundary: [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md), [future roadmap](docs/plans/future-multi-task-scheduling-roadmap.md)
 
-- `npm install`: install dependencies from `package-lock.json`.
-- `npm run dev`: run `tsup --watch` for incremental builds.
-- `npm run build`: bundle `src/index.ts` to `dist/index.js`.
-- `npm run start`: run the built CLI from `dist/`.
-- `npm test`: run the full Vitest suite once.
-- `npm run test:watch`: run Vitest in watch mode.
-- `npm run lint`: type-check with `tsc --noEmit`.
-- `npm run smoke:metaclaw`: execute the real-task smoke script in `scripts/`.
+## Repository Map
 
-## Coding Style & Naming Conventions
+MetaClaw is a Node 20 TypeScript ESM CLI/TUI. `src/index.ts` is the composition
+root. Detailed ownership and dependency rules live in
+[ADR-0020](docs/adr/0020-core-module-ownership-and-dependency-direction.md).
 
-Use strict TypeScript and ESM imports. Follow the existing style: two-space indentation, single quotes, semicolons, and kebab-case filenames such as `task-runtime-service.ts`. Prefer small, domain-named services and repositories over generic utility modules. Keep React/Ink UI code in `.tsx` files and non-UI logic in `.ts` files.
+| Area | Start here |
+| --- | --- |
+| Planning and native Codex thread | [`src/planning/`](src/planning/) |
+| Pure policy and graph rules | [`src/kernel/`](src/kernel/), [`src/work-graph/`](src/work-graph/) |
+| Application Shell | [`src/session/`](src/session/) |
+| Attempts, recovery, sandbox, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
+| Durable facts | [`src/storage/`](src/storage/) |
+| Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
+| CLI, commands, and Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui/`](src/tui/) |
+| Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
+| Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
-## Testing Guidelines
+Main entry points:
 
-Vitest is the test framework, configured for Node with globals enabled. Name tests `*.test.ts` and place them under the matching `tests/<domain>/` folder, for example `tests/core/task-engine.test.ts`. Coverage is configured for `src/core/**` and `src/storage/**`; changes there should include focused regression tests. Run `npm test` and `npm run lint` before submitting.
+- [`src/index.ts`](src/index.ts) — composition and mode selection.
+- [`src/session/metaclaw-session.ts`](src/session/metaclaw-session.ts) — Application Shell.
+- [`src/planning/codex-planning-agent.ts`](src/planning/codex-planning-agent.ts) and
+  [`src/planning/planner-codex-runner.ts`](src/planning/planner-codex-runner.ts) — Planner boundary.
+- [`src/kernel/control-kernel.ts`](src/kernel/control-kernel.ts) and
+  [`src/kernel/kernel-workflow.ts`](src/kernel/kernel-workflow.ts) — policy and
+  durable control seam.
+- [`src/execution/kernel-execution-runtime.ts`](src/execution/kernel-execution-runtime.ts) and
+  [`src/execution/subtask-attempt-runner.ts`](src/execution/subtask-attempt-runner.ts) — execution chain.
+- [`src/tui/app.tsx`](src/tui/app.tsx) — current Ink UI.
+- [`src/gateway/server.ts`](src/gateway/server.ts) and
+  [`src/gateway/feishu-runtime.ts`](src/gateway/feishu-runtime.ts) — remote surfaces.
 
-**`better-sqlite3` is NOT available in the local (Windows) environment, so any test that touches storage/SQLite cannot run locally — all tests MUST be run in Docker.** Do not waste time retrying the suite on the host machine; use `docker build -f Dockerfile.test -t metaclaw-test . && docker run --rm metaclaw-test`. Note also that path-extraction tests (e.g. inline resource matching) assume POSIX paths and only pass under the Linux Docker environment, not on Windows. `npm run lint` (`tsc --noEmit`) is the only check that runs reliably on the host.
+Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are in
+[`examples/`](examples/); Docker and smoke orchestration are in [`docker/`](docker/) and
+[`scripts/`](scripts/).
 
-## Plan Documentation Guidelines
+## Working Rules
 
-Material implementation plans must be written to `docs/plans/`; do not leave the only copy in a chat or handoff. At the beginning of each plan, record its current status and plan date. When the plan is completed, update that same opening section with the completion date, the behaviors or features actually delivered, validation performed, and the implementation or closing commit(s). Do not report a plan as complete until its plan document has been updated.
+- Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
+  belong in `CONTEXT.md`, not this file.
+- The Ink TUI is supported. Do not remove its editor, completion, panels,
+  progress, Guidance, Feishu, or activity-state behavior without an approved
+  replacement plan.
+- Do not add a second semantic router, Runtime-owned recovery policy, Planner
+  storage mutation, or pre-release compatibility path without an ADR.
+- Persistence changes must follow `CONTEXT.md` and update repositories and Docker
+  tests together.
+- Architecture changes must update the applicable ADR, `CONTEXT.md`, current
+  technical overview, and this guide only when onboarding/navigation changes.
 
-## Commit & Pull Request Guidelines
+## Build And Validation
 
-Recent history uses Conventional Commit prefixes, for example `feat: converge metaclaw session architecture` and `docs: clarify install verification flow`. Use concise imperative subjects with prefixes such as `feat:`, `fix:`, `docs:`, `test:`, or `refactor:`. Pull requests should describe the user-visible change, list validation commands run, link related plans/issues, and include screenshots or terminal output when TUI, CLI, or gateway behavior changes.
+- `npm install`, `npm run dev`, `npm run build`, `npm run start`
+- `npm run lint`, `npm test`, `npm run test:watch`
+- `npm run smoke:metaclaw` — native Planner-session smoke.
+- `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
+  gate; see [runtime security](docs/current/phase-5-runtime-security.md).
 
-## Security & Configuration Tips
+`better-sqlite3` is unavailable in the local Windows environment. Run SQLite and
+POSIX-path tests in Docker:
 
-Do not commit local credentials, Feishu app secrets, generated databases, or `dist/` artifacts unless explicitly required. Keep environment-specific setup in ignored local files or documented shell steps, and update `README.md` or `docs/` when configuration expectations change.
+```text
+docker build -f Dockerfile.test -t metaclaw-test .
+docker run --rm metaclaw-test
+```
+
+Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliable
+host check. Core policy, execution, or storage changes require focused tests at
+the owning seam.
+
+## Code, Plans, And Commits
+
+Use strict TypeScript and ESM imports, two-space indentation, single quotes,
+semicolons, and kebab-case filenames. Keep Ink/React in `.tsx` and non-UI logic
+in `.ts`.
+
+Material plans belong in `docs/plans/`; record status and plan date, then add the
+completion date, delivered behavior, validation, and closing commit before
+reporting completion. See [`docs/README.md`](docs/README.md).
+
+Use Conventional Commit subjects (`feat:`, `fix:`, `docs:`, `test:`,
+`refactor:`). Do not commit credentials, Feishu secrets, generated databases,
+local workspace state, or `dist/` unless explicitly required.

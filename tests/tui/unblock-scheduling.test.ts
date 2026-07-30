@@ -6,16 +6,13 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -46,6 +43,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -85,12 +83,12 @@ describe('App unblock scheduling', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -100,32 +98,18 @@ describe('App unblock scheduling', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复处理',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_unblock',
         contextRecaller,
-        llmBridge,
       })
     );
 
@@ -139,10 +123,10 @@ describe('App unblock scheduling', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === blockedTask.id);
-      expect(executionCall?.[0].context.currentSubtask.id).toContain(blockedTask.id);
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === blockedTask.id);
+      expect(executionCall?.[0].subtaskId).toContain(blockedTask.id);
     });
 
     app.unmount();
@@ -153,12 +137,12 @@ describe('App unblock scheduling', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
     taskEngine.block(blockedTask.id, {
@@ -168,32 +152,18 @@ describe('App unblock scheduling', () => {
       status: 'waiting',
     });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已恢复处理',
-        exitCode: 0,
-        durationMs: 500,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveIntent: vi.fn(),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_unblock_resources',
         contextRecaller,
-        llmBridge,
       })
     );
 
@@ -206,18 +176,18 @@ describe('App unblock scheduling', () => {
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
 
-    let executionContext: Parameters<ExecutorAdapter['execute']>[0]['context'] | null = null;
+    let executionPrompt: string | null = null;
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === blockedTask.id);
-      expect(executionCall?.[0].context).toBeTruthy();
-      executionContext = executionCall![0].context;
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === blockedTask.id);
+      expect(executionCall?.[0].args.at(-1)).toBeTruthy();
+      executionPrompt = executionCall![0].args.at(-1)!;
     });
-    if (!executionContext) {
-      throw new Error('expected a task execution call with a SubtaskExecutionContext');
+    if (!executionPrompt) {
+      throw new Error('expected a task execution call with a rendered SubtaskExecutionContext');
     }
-    expect(JSON.stringify(executionContext.selectedEvidence)).not.toContain('/tmp/evidence-v3.pdf');
+    expect(executionPrompt).not.toContain('/tmp/evidence-v3.pdf');
     expect(taskEngine['taskRepo'].findById(blockedTask.id)?.resources).toContain('/tmp/evidence-v3.pdf');
 
     app.unmount();

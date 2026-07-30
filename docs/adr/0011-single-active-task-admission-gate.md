@@ -1,11 +1,11 @@
 ---
 status: accepted
-amended_by: ADR-0020
+amended_by: ADR-0020, ADR-0022
 ---
 
 # Single active task admission gate (deliberate, current scope)
 
-> Architecture alignment (2026-07-17): the single-active-top-level-Task constraint remains accepted. `TaskAdmissionGate` in Session is the current implementation, not the final policy owner; roadmap Phase 3 moves admission authority behind the unified Control Kernel decision seam while Application Shell only applies the decision.
+> Architecture alignment (2026-07-27): the single-active-top-level-Task constraint remains accepted, but the `TaskAdmissionGate` implementation below is historical. Roadmap Phase 3 delivered admission authority behind the unified `ControlKernel.decide(event, snapshot)` seam and deleted `src/session/task-admission-gate.ts`; Application Shell only applies the resulting decision. Read the Decision section below as the origin of the product constraint, not as the current code path.
 
 ## Context
 
@@ -23,6 +23,8 @@ deliberately narrow the runtime to **one active top-level task at a time** for
 now. This is a scope decision, not a discovery of a bug.
 
 ## Decision
+
+> Historical implementation (superseded by ADR-0022). The rule survives; `TaskAdmissionGate` does not.
 
 1. Introduce `TaskAdmissionGate` (`src/session/task-admission-gate.ts`) as the
    single intake boundary. While a top-level task is running it:
@@ -50,13 +52,14 @@ now. This is a scope decision, not a discovery of a bug.
 - **Queueing, preemption, and auto-resume of a *second* task are intentionally
   disabled.** The single active task may still contain multiple subtasks on
   different executors (see CONTEXT.md "Single Active Task") — the restriction is
-  on *top-level* task intake. It does not authorize intra-task parallelism;
-  Runtime remains serial until the convergence roadmap explicitly enables it.
+  on *top-level* task intake. Independent Subtasks inside that Task may run
+  concurrently under ADR-0025; they do not weaken this admission constraint.
 - The following pre-existing acceptance cases encode the *old* multi-task
   behavior (queue / preempt / multi-task resume). They are **kept but
   `it.skip`-ped**, not deleted, because multi-task scheduling is expected to
-  return — at which point the gate is relaxed and these cases are un-skipped and
-  fixed as needed (tracked in `ISSUES.md`):
+  return — at which point the gate is relaxed and these cases are rewritten
+  against the new policy rather than blindly un-skipped (tracked in the
+  [future multi-Task scheduling roadmap](../plans/future-multi-task-scheduling-roadmap.md)):
   - `tests/tui/auto-resume-preempted.test.ts` — "resumes the preempted parked task before a later normal queued task"
   - `tests/tui/guidance-blocks.test.ts` — "shows a completion guidance block that points to the next queued task"
   - `tests/tui/guidance-panel.test.ts` — "updates the guidance panel after task completion points to the next queued task"

@@ -3,14 +3,11 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import {
   stubPlanningAgent,
@@ -18,8 +15,8 @@ import {
   workGraphPlan,
   taskControlPlan,
 } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
-import { completionResponse } from '../support/completion-response.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -36,6 +33,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -52,34 +50,23 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-direct-reply-runtime-state');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn(),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_direct_reply_runtime_state',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(directReplyPlan({
         reason: '普通问答',
         response: { directReply: '最终回答' },
       })),
-      availableExecutorCommands: new Set(['codex']),
     });
 
     session.initialize();
@@ -103,7 +90,7 @@ describe('Round 3 task boundary acceptance', () => {
 
     // No durable task is created, and the writable executor is never invoked.
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
 
     // While the reply was being delivered, the planner was surfaced as active.
     expect(observedDuringReply).toEqual(expect.objectContaining({
@@ -120,43 +107,23 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn()
-        .mockResolvedValueOnce({
-          success: true,
-          output: '强模型减少的是脚手架式 harness，不会消灭操作系统式 harness。',
-          exitCode: 0,
-          durationMs: 80,
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          output: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
-          exitCode: 0,
-          durationMs: 90,
-        }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({
+      body: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
+    }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_round3_boundary',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         directReplyPlan({ reason: '普通讨论' }),
         workGraphPlan({
@@ -198,11 +165,12 @@ describe('Round 3 task boundary acceptance', () => {
     // Turn 1 is a direct_reply (planner answers, no executor). Turn 2 is the
     // executable follow-up, so exactly one executor dispatch happens — for the
     // new follow-up task, not the old parked one.
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const secondCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(secondCall.context.taskBackground.id).not.toBe(parkedTaskId);
-    expect(secondCall.context.taskBackground.title).toContain('把刚才那段分析整理成三点结论');
-    expect(JSON.stringify(secondCall.context)).not.toContain('未来随着基座模型');
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    const secondCall = attemptSandbox.create.mock.calls[0]![0];
+    const secondPrompt = secondCall.args.at(-1) ?? '';
+    expect(secondCall.taskId).not.toBe(parkedTaskId);
+    expect(secondPrompt).toContain('把刚才那段分析整理成三点结论');
+    expect(secondPrompt).not.toContain('未来随着基座模型');
     expect(taskRepo.findById(parkedTaskId)?.status).toBe('parked');
 
     const snapshot = session.getSnapshot().output.join('\n');
@@ -215,35 +183,20 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'blocked' }),
       ),
@@ -272,42 +225,27 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(readyTask.id)?.status).toBe('ready');
     expect(taskRepo.findAll()).toHaveLength(2);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('answers blocked-task status queries from MetaClaw state without calling the executor', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_query_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -333,42 +271,27 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('执行器网络连接失败，请检查网络或代理配置');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('answers no blocked tasks from MetaClaw state without creating a task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_query_no_blocked_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -381,42 +304,27 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('当前没有阻塞任务。');
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('answers current running task queries from MetaClaw state without creating a task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_query_running_task',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -434,42 +342,27 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('当前有 1 个正在执行的任务');
     expect(snapshot).toContain(`#${runningTask.id} [RUNNING] 正在生成报告`);
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('answers completion checks from MetaClaw state when no task is running', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_query_completion_no_running',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -490,42 +383,27 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain(`最近完成：#${doneTask.id} 刚才的任务`);
     expect(snapshot).toContain('摘要：已经完成并生成最终结果');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('routes semantic scheduler-state questions to MetaClaw without requiring keyword coverage', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_semantic_scheduler_state',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -538,44 +416,27 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('当前没有正在执行的任务。');
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('keeps deliverable-content checks on the Executor side even when task words appear', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '检查完成：文档内容完整。',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '普通检查' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '检查完成：文档内容完整。' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_deliverable_check_executor',
       contextRecaller,
-      llmBridge,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '检查这个任务生成的 Markdown 文档内容是否完整' }),
       ),
@@ -589,44 +450,27 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
     expect(snapshot).toContain('检查完成：文档内容完整。');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
   });
 
   it('keeps continuation/generation work on the Executor side instead of treating it as status', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '已继续生成预览版。',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveTaskPriority: vi.fn().mockResolvedValue({ priority: 'normal', reason: '普通生成' }),
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已继续生成预览版。' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_generation_executor',
       contextRecaller,
-      llmBridge,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '继续把这个任务的预览版生成出来' }),
       ),
@@ -639,42 +483,27 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('已继续生成预览版。');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
   });
 
   it('handles natural language clearing of all manageable tasks and aborts running work', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '不应执行',
-        exitCode: 0,
-        durationMs: 1,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_all_tasks',
       contextRecaller,
-      llmBridge,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'all' }),
       ),
@@ -709,45 +538,29 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(runningTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(doneTask.id)?.status).toBe('done');
-    expect(executor.abort).not.toHaveBeenCalled();
-    expect(executor.execute).not.toHaveBeenCalled();
+    expect(attemptSandbox.stop).not.toHaveBeenCalled();
+    expect(attemptSandbox.create).not.toHaveBeenCalled();
   });
 
   it('resumes an explicitly requested parked task instead of creating a new task when intent is misclassified', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '挂起任务已恢复',
-        exitCode: 0,
-        durationMs: 10,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '挂起任务已恢复' }));
     let parkedTaskId = '';
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_parked_without_new_task',
       contextRecaller,
-      llmBridge,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: {
         plan: vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: parkedTaskId })),
       },
@@ -756,7 +569,7 @@ describe('Round 3 task boundary acceptance', () => {
     session.initialize();
 
     const parkedTask = taskEngine.create({ title: 'Pi Agent 调研任务', goal: '继续调研 Pi Agent 能力' });
-    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
+    seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
     parkedTaskId = parkedTask.id;
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
@@ -771,47 +584,30 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit(`重启挂起任务 ${parkedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.context.taskBackground.id).toBe(parkedTask.id);
-    expect(session.getSnapshot().output.join('\n')).toContain(`Resuming parked task #${parkedTask.id}`);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0]![0].taskId).toBe(parkedTask.id);
+    expect(session.getSnapshot().output.join('\n')).toContain('resume parked task');
   });
 
   it('unblocks and resumes an explicitly requested blocked task instead of creating a new task', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '阻塞任务已恢复',
-        exitCode: 0,
-        durationMs: 10,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '阻塞任务已恢复' }));
     let blockedTaskId = '';
-    const llmBridge = {
-      rankInteractions: vi.fn(),
-    } as unknown as LlmBridge;
-
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      executor,
+      attemptSandbox,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_blocked_without_new_task',
       contextRecaller,
-      llmBridge,
-      availableExecutorCommands: new Set(['codex']),
       planningAgent: {
         plan: vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),
       },
@@ -820,7 +616,7 @@ describe('Round 3 task boundary acceptance', () => {
     session.initialize();
 
     const blockedTask = taskEngine.create({ title: '飞书云文档调研', goal: '继续调研飞书云文档能力' });
-    seedPersistedV3WorkGraph(db, blockedTask.id, blockedTask.title);
+    seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
     blockedTaskId = blockedTask.id;
     taskEngine.transition(blockedTask.id, 'ready');
     taskEngine.transition(blockedTask.id, 'running');
@@ -835,9 +631,8 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit(`执行阻塞任务 ${blockedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const executionInput = (executor.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(executionInput.context.taskBackground.id).toBe(blockedTask.id);
-    expect(session.getSnapshot().output.join('\n')).toContain(`任务 #${blockedTask.id} 已解除阻塞`);
+    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptSandbox.create.mock.calls[0]![0].taskId).toBe(blockedTask.id);
+    expect(session.getSnapshot().output.join('\n')).toContain('resume after capacity block');
   });
 });

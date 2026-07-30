@@ -6,17 +6,14 @@ import { App } from '../../src/tui/app.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
-import { seedPersistedV3WorkGraph } from '../support/persisted-work-graph.js';
-import type { LlmBridge } from '../../src/core/llm-bridge.js';
-import { completionResponse } from '../support/completion-response.js';
+import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -47,6 +44,7 @@ function createConfig(): Config {
       timeout: 60_000,
     },
     orchestration: {
+      max_concurrent_attempts: 4,
       reminder_enabled: true,
       reminder_throttle: 3600,
       top_k_preferences: 5,
@@ -86,12 +84,12 @@ describe('App persisted v4 resume integration', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db));
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
     const parkedTask = taskEngine.create({ title: '行业分析', goal: '完成分析摘要' });
-    seedPersistedV3WorkGraph(db, parkedTask.id, parkedTask.title);
+    seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
     taskEngine.transition(parkedTask.id, 'ready');
     taskEngine.transition(parkedTask.id, 'running');
     taskEngine.park(parkedTask.id, '被高优任务抢占', {
@@ -102,36 +100,18 @@ describe('App persisted v4 resume integration', () => {
     });
     taskRepo.update(parkedTask.id, { lastInterruptionReason: '被任务 #task_high 抢占' });
 
-    const executor: ExecutorAdapter = {
-      name: 'codex-cli',
-      execute: vi.fn().mockImplementation(async input => { const result = {
-        success: true,
-        output: '恢复完成',
-        exitCode: 0,
-        durationMs: 800,
-      }; return { ...result, output: completionResponse(input, result.output, result.artifacts ?? []) }; }),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      abort: vi.fn(),
-    };
-    const llmBridge = {
-      resolveIntent: vi.fn().mockResolvedValue({
-        type: 'reference',
-        taskId: parkedTask.id,
-        reason: '继续刚才的任务',
-      }),
-    } as unknown as LlmBridge;
+    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '恢复完成' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        executor,
+        attemptSandbox,
         db,
         config: createConfig(),
         sessionId: 'sess_resume',
         contextRecaller,
-        llmBridge,
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
         ),
@@ -147,11 +127,12 @@ describe('App persisted v4 resume integration', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(executor.execute).toHaveBeenCalled();
-      const executionCall = (executor.execute as ReturnType<typeof vi.fn>).mock.calls
-        .find(call => call[0].context.taskBackground.id === parkedTask.id);
-      expect(executionCall?.[0].context.taskBackground.goal).toBe('完成分析摘要');
-      expect(JSON.stringify(executionCall?.[0].context)).not.toContain('报告 A 已完成');
+      expect(attemptSandbox.create).toHaveBeenCalled();
+      const executionCall = attemptSandbox.create.mock.calls
+        .find(call => call[0].taskId === parkedTask.id);
+      const prompt = executionCall?.[0].args.at(-1);
+      expect(prompt).toContain('Background goal: 完成分析摘要');
+      expect(prompt).not.toContain('报告 A 已完成');
     });
 
     app.unmount();

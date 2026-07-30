@@ -7,7 +7,7 @@
 
 ## 总体判断
 
-应该增加常见任务指令。应该支持“指定执行器”，但要区分“咨询执行器”和“派发任务给执行器”。不建议提供完全绕过 PlanningAgent、PolicyKernel 和任务审计的“裸执行器通道”。
+应该增加常见任务指令。应该支持“指定执行器”，但要区分“咨询执行器”和“派发任务给执行器”。不建议提供完全绕过 PlanningAgent、ControlKernel 和任务审计的“裸执行器通道”。
 
 前端当前最大问题不是配色，而是展示依赖字符串、缺少结构化状态和可执行下一步。
 
@@ -73,7 +73,7 @@
 
 - [ ] 允许用户指定 Executor 执行正式任务。
 - [ ] 指定 Executor 仍然需要创建或继续正式 Task/Execution Attempt。
-- [ ] 派发仍需经过 PlanningAgent、PolicyKernel、任务准入、材料注入和审计。
+- [ ] 派发仍需经过 PlanningAgent、ControlKernel、任务准入、材料注入和审计。
 - [ ] Executor 不存在、不可用或能力不匹配时，展示原因和可选 Executor。
 
 ### 3.2 咨询执行器
@@ -92,7 +92,7 @@
 
 ### 3.4 明确边界
 
-- [ ] 不提供绕过 PlanningAgent、PolicyKernel、Task Persistence 和 Execution Runtime 的裸 Executor 通道。
+- [ ] 不提供绕过 PlanningAgent、ControlKernel、Task Persistence 和 Execution Runtime 的裸 Executor 通道。
 - [ ] 前端明确区分普通对话、Executor 咨询、正式任务派发和任务交接。
 - [ ] 在权限、审计和上下文边界没有设计清楚前，不上线直接 Executor 对话能力。
 

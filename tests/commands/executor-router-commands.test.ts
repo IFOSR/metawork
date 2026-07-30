@@ -7,7 +7,7 @@ import { AgentClassService } from '../../src/executor/agent-class-service.js';
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   return db;
 }
 
@@ -34,7 +34,8 @@ describe('agent class and planner route commands', () => {
       '/executor register research-bot --command research-bot --args "run --prompt {prompt}" '
       + '--check "research-bot --version" --domains research,reporting '
       + '--capabilities research,report_generation --inputs text,files '
-      + '--outputs markdown,report --risk low',
+      + `--outputs markdown,report --risk low --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} `
+      + '--permission-profile restricted-custom',
       context,
     );
     expect(register.content).toBe('Registered Executor AgentClass: research-bot');
@@ -58,7 +59,8 @@ describe('agent class and planner route commands', () => {
 
     await catalog.execute(
       '/executor register legal-contract --domains legal,contract '
-      + '--capabilities contract_review,risk_matrix --risk high',
+      + `--capabilities contract_review,risk_matrix --risk high --image registry.example/legal-contract:1.0.0 --image-id sha256:${'b'.repeat(64)} `
+      + '--permission-profile restricted-custom',
       context,
     );
 

@@ -1,6 +1,6 @@
 # ADR-0017: Kernel Executor Status Projection
 
-- Status: Accepted; amended by ADR-0019 and ADR-0020
+- Status: Accepted; module ownership clarified by ADR-0020 and recovery policy amended by ADR-0023
 - Date: 2026-07-16
 - Scope: static Planner executor catalog and Kernel-owned dynamic executor-status projection
 
@@ -32,6 +32,7 @@ Each row exposes the following Planner-safe data:
 - `agentClassName`;
 - `classHealth`: `unverified`, `healthy`, `error`, or `disabled`;
 - up to the three most recent execution attempts, each with completion time, success/failure outcome, classified failure kind, and safe reason text.
+- a bounded recent recovery-check history with trigger, completion time, result, and redacted structured failure.
 
 No prompt, model output, tool trace, raw process output, credential, or runtime command is exposed through this projection.
 
@@ -45,6 +46,12 @@ No prompt, model output, tool trace, raw process output, credential, or runtime 
 | `disabled` | The class was explicitly disabled by administration or policy, not by a runtime incident. | Must not be selected. |
 
 A busy, running, waiting, or failed WorkUnit is an instance fact and never becomes an AgentClass health state. A single network or timeout failure is recorded in recent attempts but does not make the AgentClass unhealthy. The later Kernel control-plane work owns transition rules for systemic failure, recovery, retry caps, circuits, and re-enable behavior.
+
+### Error recovery amendment (2026-07-30)
+
+`error` is a re-verifiable observation, not an administrative lock. Event-driven recovery refresh checks only enabled AgentClasses currently in `error`; it never health-checks `healthy` or `unverified` classes and never creates a new error. A successful structured probe performs the sole automatic transition `error → healthy`. A failed or timed-out probe keeps the class in `error` and updates only its bounded recovery-check evidence. `disabled` is the only management-locked state and is never automatically recovered.
+
+Recovery checks validate the local deployment chain required to start an attempt, including immutable image resolution, control-network existence/properties, command/configuration, and provider configuration. Authentication or provider-network failures may trigger the adapter's minimal remote validation. Concurrent checks for the same AgentClass share one in-flight operation. There is no periodic poller.
 
 ### Keep control-plane semantics pure and persistence in Runtime adapters
 
@@ -68,7 +75,8 @@ The Planner emits one ordered `preferredAgentClassList` per Subtask containing t
 
 ## Deferred
 
-- Automatic health transitions, recovery, circuit breaking, retry limits, and periodic rechecks;
+- General health discovery for currently healthy/unverified classes and periodic rechecks;
+- circuit breaking and retry-limit changes beyond ADR-0023;
 - execution-failure fallback policy, which roadmap Phase 4 will place behind the unified Kernel seam;
 - capacity limits, shared worker pools, and parallel scheduling;
 - additional Executor classes and custom-Executor certification.

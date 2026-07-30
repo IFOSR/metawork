@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-17
 - Scope: Work Graph contract, Subtask execution context, dependency handoff, completion protocol, execution evidence, and minimal attempt audit
-- Affects: ADR-0019 and ADR-0020
-- Amendment: supersedes ADR-0019's v3 plan/work-graph wire contract; ADR-0019 remains historical authority for the v3 audit migration
+- Affects: ADR-0020
+- Amendment: supersedes ADR-0019's v3 plan/work-graph wire contract; ADR-0019 is archived migration context
 
 ## Context
 
@@ -45,6 +45,10 @@ SQLite schema v22 renames the previous production table to read-only `subtasks_v
 ### Phase boundaries
 
 Phase 2 stays serial. Phase 3 introduces a `handoff_contract_failed` Kernel event carrying attempt, Subtask, WorkUnit, authorized completion contract, and all violations; it may authorize exactly one same-AgentClass correction attempt with precise trailer feedback. A second failure blocks without fallback or backoff. Phase 4 owns general retry/fallback/backoff/circuit-breaker state. Phase 5 introduces partition leases and a versioned `workspace_state` handoff rather than reserving an untyped placeholder now.
+
+### Phase 5 amendment (2026-07-22)
+
+ADR-0024 delivers the deferred workspace contract. Each Task generation + Subtask now owns a persistent workspace whose immutable checkpoint manifest is the versioned `workspace_state`. A downstream Subtask may compose state only from its completed direct dependencies; Runtime must block a conflict and submit a normalized Kernel fact rather than absorb sibling or user-working-tree state implicitly. Git workspace state identifies the MetaClaw-managed commit/branch/diff facts, while non-Git state identifies the workspace URI, checkpoint and content-addressed objects. Large bodies remain outside SQLite.
 
 ## Consequences
 

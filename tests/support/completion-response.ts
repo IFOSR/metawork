@@ -1,13 +1,14 @@
 import type { ExecutorInput } from '../../src/executor/adapter.js';
-import { COMPLETION_MARKER_V1 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 
 export function completionResponse(
   input: ExecutorInput,
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  return `${body}\n\n${COMPLETION_MARKER_V1}\n${JSON.stringify({
-    schemaVersion: 1,
+  return `${body}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+    schemaVersion: 2,
+    status: 'completed',
     subtaskId: input.context.currentSubtask.id,
     acceptanceEvidence: input.context.currentSubtask.acceptance.map(criterion => ({
       key: criterion.key,

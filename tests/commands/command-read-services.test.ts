@@ -5,7 +5,6 @@ import { CommandReadServices } from '../../src/commands/command-read-services.js
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { ObservationRepo } from '../../src/storage/observation-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -17,38 +16,31 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  new AgentClassService({ db, defaultExecutorName: 'codex-cli' }).seedDefaults();
+  new AgentClassService({ db }).seedDefaults();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
-  const executor = {
-    name: 'codex-cli',
-    execute: vi.fn(),
-    isAvailable: vi.fn(),
-    abort: vi.fn(),
-  };
   const runtimeInspector = {
     inspectExecutorRegistration: vi.fn(() => ({
       configured: true,
-      bindingSource: 'default' as const,
+      bindingSource: 'sandbox' as const,
       adapterName: 'codex-cli',
     })),
   };
   const context = {
     db,
     taskEngine,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db), new ObservationRepo(db)),
+    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
-    executor,
     activeExecutions: { abortTask: vi.fn() },
     readServices: new CommandReadServices(db, runtimeInspector),
     currentTaskId: null,
     config: {
       version: 1,
       executor: { command: 'codex', timeout: 60, max_duration: 120 },
-      orchestration: { reminder_enabled: true, reminder_throttle: 60, top_k_preferences: 5 },
+      orchestration: { max_concurrent_attempts: 4, reminder_enabled: true, reminder_throttle: 60, top_k_preferences: 5 },
       ui: { language: 'zh-CN', dashboard_on_start: false },
     },
   } as any;
-  return { db, taskEngine, executor, runtimeInspector, context };
+  return { db, taskEngine, runtimeInspector, context };
 }
 
 describe('command fact queries', () => {
@@ -99,7 +91,7 @@ describe('command fact queries', () => {
   });
 
   it('shows static AgentClass facts and only active WorkUnits without probing the executor', async () => {
-    const { db, context, executor, runtimeInspector } = createHarness();
+    const { db, context, runtimeInspector } = createHarness();
     const workUnits = new WorkUnitRepo(db);
     const now = '2026-07-14T10:00:00.000Z';
     workUnits.upsert({
@@ -117,13 +109,10 @@ describe('command fact queries', () => {
 
     expect(result.content).toContain('Executor AgentClass：codex-cli');
     expect(result.content).toContain('配置状态: 已配置');
-    expect(result.content).toContain('runtime binding: default');
+    expect(result.content).toContain('runtime binding: sandbox');
     expect(result.content).toContain('wu-running');
     expect(result.content).not.toContain('wu-idle');
     expect(runtimeInspector.inspectExecutorRegistration).toHaveBeenCalledWith('codex-cli');
-    expect(executor.execute).not.toHaveBeenCalled();
-    expect(executor.isAvailable).not.toHaveBeenCalled();
-    expect(executor.abort).not.toHaveBeenCalled();
   });
 
   it('groups persisted planner, kernel, WorkUnit, and executor facts by task', async () => {
@@ -145,15 +134,17 @@ describe('command fact queries', () => {
       },
     };
     db.prepare(`
-      INSERT INTO planning_decisions (
-        id, session_id, request_id, task_id, user_input, plan_json,
-        decision_json, outcome, reason, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, created_at
+      ) VALUES (?, 5, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
     `).run(
-      'decision-1', 'session-feedback', 'request-1', task.id, '实现功能',
-      JSON.stringify(proposedPlan),
-      JSON.stringify({ outcome: 'accepted', runtimeAction: 'plan_work_graph', reason: 'approved', plan: approvedPlan }),
-      'accepted', 'approved', '2026-07-14T10:00:00.000Z',
+      'decision-1', 'event-1', 'request-1', 'session-feedback', task.id,
+      JSON.stringify({ schemaVersion: 5, type: 'plan_proposed', id: 'event-1', correlationId: 'request-1', causationId: null, occurredAt: '2026-07-14T10:00:00.000Z', sessionId: 'session-feedback', taskId: task.id, proposal: proposedPlan }),
+      JSON.stringify({ schemaVersion: 5, type: 'plan_admission' }),
+      JSON.stringify({ schemaVersion: 5, id: 'decision-1', eventId: 'event-1', action: { type: 'authorize_task_plan', taskId: task.id, task: {}, workGraph: approvedPlan.workGraph }, reason: 'approved' }),
+      'authorize_task_plan', 'approved', '2026-07-14T10:00:00.000Z',
     );
     const workUnitRepo = new WorkUnitRepo(db);
     workUnitRepo.upsert({
@@ -176,8 +167,8 @@ describe('command fact queries', () => {
 
     expect(result.content).toContain('1. Planner 提议');
     expect(result.content).toContain('claude-code');
-    expect(result.content).toContain('2. PolicyKernel 决策');
-    expect(result.content).toContain('outcome=accepted');
+    expect(result.content).toContain('2. ControlKernel 决策');
+    expect(result.content).toContain('outcome=issued');
     expect(result.content).toContain('3. WorkUnit 过程');
     expect(result.content).toContain('claimed');
     expect(result.content).toContain('4. Executor 结果');

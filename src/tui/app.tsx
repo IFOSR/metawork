@@ -61,6 +61,9 @@ const EMPTY_SNAPSHOT: SessionSnapshot = {
     parkedTaskIds: [],
     lastEvent: null,
   },
+  plannerState: {
+    status: 'idle',
+  },
   latestGuidance: null,
 };
 
@@ -619,7 +622,9 @@ export function App(props: AppProps) {
   }, [snapshot.runtimeState.runningTaskId]);
 
   useEffect(() => {
-    if (!snapshot.runtimeState.runningTaskId) {
+    const activityRunning = Boolean(snapshot.runtimeState.runningTaskId)
+      || snapshot.plannerState.status === 'running';
+    if (!activityRunning) {
       setExecutionAnimationFrame(0);
       return;
     }
@@ -630,7 +635,7 @@ export function App(props: AppProps) {
     timer.unref?.();
 
     return () => clearInterval(timer);
-  }, [snapshot.runtimeState.runningTaskId]);
+  }, [snapshot.runtimeState.runningTaskId, snapshot.plannerState.status]);
 
   useInput(async (char, key) => {
     const editorState = editorRef.current;
@@ -771,7 +776,7 @@ export function App(props: AppProps) {
   });
 
   const renderLines = buildRenderLines(committedOutput);
-  const composerStatus = getComposerStatus(snapshot, committedOutput, props.executor.name, isSubmitting);
+  const composerStatus = getComposerStatus(snapshot, committedOutput, props.config.executor.command, isSubmitting);
   const runtimeSummary = `当前执行 ${snapshot.runtimeState.runningTaskId || snapshot.runtimeState.runningExecutorName ? 1 : 0} | 待执行 ${snapshot.runtimeState.readyTaskIds.length} | 已挂起 ${snapshot.runtimeState.parkedTaskIds.length} | 阻塞 ${snapshot.runtimeState.blockedTaskIds.length}`;
   const latestEvent = `最近事件 ${snapshot.runtimeState.lastEvent ?? '0'}`;
   const waitingHintVisible = shouldShowWaitingHint(snapshot, committedOutput, showWaitingIndicator);
@@ -788,10 +793,15 @@ export function App(props: AppProps) {
             </Text>
           )}
         </Static>
+        {snapshot.plannerState.status === 'running' && (
+          <Text color={META_TEXT_COLOR}>
+            {'  · Planner: 思考中'}{'.'.repeat(executionAnimationFrame + 1)}
+          </Text>
+        )}
         {waitingHintVisible && (
           <Text color={META_TEXT_COLOR}>
             {'  · Executor: '}
-            {snapshot.runtimeState.runningExecutorName ?? props.executor.name}
+            {snapshot.runtimeState.runningExecutorName ?? props.config.executor.command}
             {' 执行中'}{'.'.repeat(executionAnimationFrame + 1)}
           </Text>
         )}
