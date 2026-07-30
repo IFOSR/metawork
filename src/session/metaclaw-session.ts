@@ -137,6 +137,9 @@ export interface SessionSnapshot {
     status: Task['status'];
   } | null;
   runtimeState: RuntimeState;
+  plannerState: {
+    status: 'idle' | 'running';
+  };
   latestGuidance: GuidanceState | null;
 }
 
@@ -159,6 +162,7 @@ export class MetaclawSession {
     lastEvent: null,
   };
   private latestGuidance: GuidanceState | null = null;
+  private activePlannerRuns = 0;
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
@@ -471,6 +475,9 @@ export class MetaclawSession {
           }
         : null,
       runtimeState: this.runtimeState,
+      plannerState: {
+        status: this.activePlannerRuns > 0 ? 'running' : 'idle',
+      },
       latestGuidance: this.latestGuidance
         ? {
             ...this.latestGuidance,
@@ -804,7 +811,7 @@ export class MetaclawSession {
   }
 
   private async planWithExecutorRecovery(context: PlanningContext): Promise<PlanningAgentPlan> {
-    const planning = this.planningAgent.plan(context);
+    const planning = this.runPlanningAgent(context);
     const refresh = this.executorRecoveryRefreshService.refresh({ trigger: 'planning_cycle' });
     let plan = await planning;
     const report = await refresh;
@@ -826,8 +833,19 @@ export class MetaclawSession {
         `Current Executor status: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
       ].join('\n\n').slice(0, 24_000),
     });
-    plan = await this.planningAgent.plan(repairContext);
+    plan = await this.runPlanningAgent(repairContext);
     return plan;
+  }
+
+  private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
+    this.activePlannerRuns += 1;
+    this.notify();
+    try {
+      return await this.planningAgent.plan(context);
+    } finally {
+      this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.notify();
+    }
   }
 
   private planHasAvailabilityExhaustion(plan: PlanningAgentPlan): boolean {
@@ -844,7 +862,7 @@ export class MetaclawSession {
   }
 
   private async requestAvailabilityExplanation(plan: PlanningAgentPlan): Promise<PlanningAgentPlan> {
-    return this.planningAgent.plan(this.planningContextBuilder.build({
+    return this.runPlanningAgent(this.planningContextBuilder.build({
       userInput: [
         'The immediately preceding proposal cannot be admitted because at least one Subtask has no currently available eligible Executor.',
         'Explain the current recovery-check failures to the user in natural language.',

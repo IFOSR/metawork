@@ -61,6 +61,9 @@ const EMPTY_SNAPSHOT: SessionSnapshot = {
     parkedTaskIds: [],
     lastEvent: null,
   },
+  plannerState: {
+    status: 'idle',
+  },
   latestGuidance: null,
 };
 
@@ -619,7 +622,9 @@ export function App(props: AppProps) {
   }, [snapshot.runtimeState.runningTaskId]);
 
   useEffect(() => {
-    if (!snapshot.runtimeState.runningTaskId) {
+    const activityRunning = Boolean(snapshot.runtimeState.runningTaskId)
+      || snapshot.plannerState.status === 'running';
+    if (!activityRunning) {
       setExecutionAnimationFrame(0);
       return;
     }
@@ -630,7 +635,7 @@ export function App(props: AppProps) {
     timer.unref?.();
 
     return () => clearInterval(timer);
-  }, [snapshot.runtimeState.runningTaskId]);
+  }, [snapshot.runtimeState.runningTaskId, snapshot.plannerState.status]);
 
   useInput(async (char, key) => {
     const editorState = editorRef.current;
@@ -788,6 +793,11 @@ export function App(props: AppProps) {
             </Text>
           )}
         </Static>
+        {snapshot.plannerState.status === 'running' && (
+          <Text color={META_TEXT_COLOR}>
+            {'  · Planner: 思考中'}{'.'.repeat(executionAnimationFrame + 1)}
+          </Text>
+        )}
         {waitingHintVisible && (
           <Text color={META_TEXT_COLOR}>
             {'  · Executor: '}

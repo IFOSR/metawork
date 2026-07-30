@@ -11,6 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
+import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
 
@@ -78,11 +79,65 @@ function createDeferredResult() {
   return { promise, resolve };
 }
 
+function createDeferredPlan() {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<PlanningAgentPlan>((_resolve, rejectPromise) => {
+    reject = rejectPromise;
+  });
+  return { promise, reject };
+}
+
 afterEach(() => {
   inputCapture.handler = undefined;
 });
 
 describe('App execution indicator', () => {
+  it('animates only while the Planner call is active and clears after Planner failure', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
+    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
+    const orchestration = new OrchestrationEngine(taskEngine);
+    const contextRecaller = new ContextRecaller(db);
+    const deferred = createDeferredPlan();
+
+    const app = render(
+      React.createElement(App, {
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        attemptSandbox: new FakeAttemptSandbox(),
+        db,
+        config: createConfig(),
+        sessionId: 'sess_planner_indicator',
+        contextRecaller,
+        planningAgent: { plan: vi.fn(() => deferred.promise) },
+      })
+    );
+
+    for (const char of '分析请求') {
+      await inputCapture.handler?.(char, {});
+      await flushUpdates();
+    }
+    const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
+
+    const firstFrame = await waitForFrame(app, 'Planner: 思考中.');
+    expect(firstFrame).toContain('status: processing');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(app.frames.some(frame => frame.includes('Planner: 思考中..'))).toBe(true);
+
+    deferred.reject(new Error('planner crashed'));
+    await submitPromise;
+    await flushUpdates();
+
+    expect(app.lastFrame()).toContain('错误: planner crashed');
+    expect(app.lastFrame()).not.toContain('Planner: 思考中');
+    expect(app.lastFrame()).toContain('status: idle');
+
+    app.unmount();
+    app.cleanup();
+  });
+
   it('does not render the completion frame with a lingering running count', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
