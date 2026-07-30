@@ -5,7 +5,7 @@
 - **计划日期**：2026-07-16
 - **当前状态**：已完成；Phase 1～6 全部退出条件均已满足
 - **当前激活阶段**：无
-- **最近交付阶段**：Phase 6 [最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)；单 Task DAG 并发、持久取消、generation replan、Git publication 和严格完成门已交付
+- **最近交付阶段**：Phase 6 [最终可靠性收口计划](../archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md)；单 Task DAG 并发、持久取消、generation replan、Git publication 和严格完成门已交付
 - **已完成前置**：Codex/Pi canonical capability definitions、Planner-safe catalog、Seeder 与 Adapter binding 已统一
 - **架构指引**：[ADR-0020：核心模块归属与依赖方向](../adr/0020-core-module-ownership-and-dependency-direction.md)；所有后续阶段实施计划和代码改动必须遵守
 - **实施方式**：各阶段已按单一 schema、单一 Kernel 路径完成 hard cut
@@ -205,7 +205,7 @@ Phase 1～2 关闭最初的错误拆分与重复执行问题；Phase 3～4 建�
 - 多个耗尽恢复预算的 Subtask 合并为同一 generation ordinary replan；旧图静止后 Planner 只调用一次，取消或失效的 quiescence token 拒绝晚到 plan。
 - `complete_task` 在 dispatch、publication、sandbox、WorkUnit、lease、receipt、replan 和 Kernel application 残留全部清零前不得将 Task 置为 `done`。
 
-完成记录（2026-07-28）：ADR-0026、纯 `deriveCancellationClosure`、SQLite v27、durable cancellation coordinator、显式 Subtask cancellation/partial acceptance、publication cancellation fence、generation replan coalescing/token CAS 和严格完成门已交付。最终可靠性复核又把 attempt receipt、Subtask 状态、dispatch terminal 与 Kernel outcome/inbox 封入同一 SQLite 事务，外部 cleanup 改为可重放 supervisor；Docker/Git/持久状态无法证明安全时进入 recovery-blocked，并保留 claim/lease。未发布版本同时 hard cut 到新安装 v27 + Kernel v4，删除旧 schema 双读、旧 dispatch API 和纯 compatibility factory/re-export。Phase 6 的最终能力定义为“单顶层 Task 内按 DAG 并发执行、隔离 attempt、Git 成果集成、可恢复的异步执行”。ADR-0011 保持有效，不归档。完整验证与提交记录见 [Phase 6 最终可靠性收口计划](2026-07-28-phase-6-single-task-reliability-closure.md)。
+完成记录（2026-07-28）：ADR-0026、纯 `deriveCancellationClosure`、SQLite v27、durable cancellation coordinator、显式 Subtask cancellation/partial acceptance、publication cancellation fence、generation replan coalescing/token CAS 和严格完成门已交付。最终可靠性复核又把 attempt receipt、Subtask 状态、dispatch terminal 与 Kernel outcome/inbox 封入同一 SQLite 事务，外部 cleanup 改为可重放 supervisor；Docker/Git/持久状态无法证明安全时进入 recovery-blocked，并保留 claim/lease。未发布版本同时 hard cut 到新安装 v27 + Kernel v4，删除旧 schema 双读、旧 dispatch API 和纯 compatibility factory/re-export。Phase 6 的最终能力定义为“单顶层 Task 内按 DAG 并发执行、隔离 attempt、Git 成果集成、可恢复的异步执行”。ADR-0011 保持有效，不归档。完整验证与提交记录见 [Phase 6 最终可靠性收口计划](../archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md)。
 
 Phase 6 总退出条件已满足。未来若需要多顶层 Task，必须从 [多顶层 Task 调度未来路线图](future-multi-task-scheduling-roadmap.md) 单独启动，不重新解释本路线图的完成状态。
 

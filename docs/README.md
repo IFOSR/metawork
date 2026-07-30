@@ -37,7 +37,7 @@ The current Phase 2 contract is [ADR-0021: Work Graph v4 And Subtask Execution C
 ## Completed Roadmap
 
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
-- [Phase 6 final reliability closure](plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
+- [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
 
 ## Future Roadmap
 
@@ -57,10 +57,16 @@ The completed [Phase 3 overall action plan](archive/plans/2026-07-20-phase-3-ker
 
 The completed [Phase 5 implementation plan](archive/plans/2026-07-22-phase-5-resource-partition-sandbox-elevation-detailed-implementation-plan.md) records resource identities, persistent workspaces, leases, Docker attempt sandboxes, runtime elevation, Kernel v3 recovery and validation evidence.
 
+The completed [Phase 6 concurrency and Git integration plan](archive/plans/2026-07-27-phase-6a-single-task-concurrency-and-git-integration.md) and [Phase 6 reliability closure plan](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md) record the single-Task asynchronous frontier, attempt isolation, Git publication, durable cancellation, generation replan and strict completion gate.
+
+The completed [Executor probe diagnostics and Docker shell fix plan](archive/plans/2026-07-29-executor-probe-diagnostics-and-docker-shell-fix.md) records Docker socket access, durable probe diagnostics and Planner-visible troubleshooting evidence.
+
+The completed [Planner native Codex session integration plan](archive/plans/2026-07-29-planner-native-codex-session-integration.md) records session-to-thread binding, native resume, Planner-only prompts and the two-turn memory smoke.
+
 ## Operational Notes
 
 - [Docker + SSH runtime](../README.md#running-interactively-via-docker--ssh): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- [Tech Debt](tech-debt/): the active post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
+- [Tech Debt](tech-debt/): the active post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents
 

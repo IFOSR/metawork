@@ -6,8 +6,8 @@
 - **当前状态**：已完成
 - **完成日期**：2026-07-27
 - **实现提交**：Phase 6 上实现与 closing commit（本计划随提交落库）
-- **上位路线图**：[Planner、Kernel 与并发调度收敛路线图](2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
-- **架构决策**：[ADR-0025](../adr/0025-single-task-concurrency-and-git-publication.md)
+- **上位路线图**：[Planner、Kernel 与并发调度收敛路线图](../../plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md)
+- **架构决策**：[ADR-0025](../../adr/0025-single-task-concurrency-and-git-publication.md)
 
 ## 目标与边界
 

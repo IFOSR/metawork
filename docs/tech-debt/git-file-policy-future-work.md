@@ -2,7 +2,7 @@
 
 - **记录日期**：2026-07-27
 - **状态**：待后续版本处理
-- **当前接管计划**：[Phase 6 上](../plans/2026-07-27-phase-6a-single-task-concurrency-and-git-integration.md)
+- **历史实现计划**：[Phase 6 上](../archive/plans/2026-07-27-phase-6a-single-task-concurrency-and-git-integration.md)
 
 Phase 6 上把所有新文件任务统一到 MetaClaw 托管 Git，并只实现文本三方合并与不可合并二进制独占发布。下列能力有意不在当前版本实现：
 

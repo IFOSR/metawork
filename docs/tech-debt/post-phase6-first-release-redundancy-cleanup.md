@@ -4,7 +4,7 @@
 > 创建日期：2026-07-28  
 > 代码基线：`474f6d4`（`feat: close single-task phase 6 reliability`）  
 > 关联 ADR：ADR-0011、ADR-0015、ADR-0018、ADR-0020  
-> 关联技术债：`docs/tech-debt/nl-keyword-semantic-inference-debt.md`  
+> 关联技术债：`docs/archive/tech-debt/nl-keyword-semantic-inference-debt.md`
 > 用途：移交 Phase 1–6 完成后仍存在的冗余、兼容和旧实现清理，不新增功能或模块。  
 > 产品前提：MetaClaw 尚未发布，不需要兼容历史用户配置、历史数据库或旧输出协议。
 
