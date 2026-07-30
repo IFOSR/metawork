@@ -49,6 +49,7 @@ replacing those semantics.
 ## Future Roadmap
 
 - [Multi-top-level-Task scheduling](plans/future-multi-task-scheduling-roadmap.md): deferred independent work for admission, priority, fairness and starvation protection. It is not an unfinished Phase 6 stage; ADR-0011 remains active.
+- [Codex-native TUI and thread migration](plans/2026-07-30-codex-native-tui-migration.md): proposed replacement of the Ink/session front end with the stock Codex TUI, native Codex threads, Plugin/MCP/Hooks integration, a UI-independent RuntimeSupervisor, and typed Feishu/background event delivery. Implementation requires a new ADR and a successful App Server/Unix-socket capability spike before the current TUI can be removed.
 
 ## Historical Plans
 
