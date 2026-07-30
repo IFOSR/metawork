@@ -28,8 +28,8 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
-- 交互式 TUI 会展示用户提交内容、当前任务、planning/policy 里程碑、执行准备、work-unit dispatch、执行器进度和最终任务结果，让用户能看到核心执行路径，而不是只看到最后答案。
-- TUI 输入框支持常见终端编辑行为：空格、多行输入、左右光标移动、按光标位置 Backspace 删除前一个字符，以及终端发出原始 Delete escape sequence 时的向前删除。
+- 默认本地界面使用下游 AnyFusion-Codex 原生 TUI，保留 Codex 原生 thread、历史、resume/fork/archive、压缩、命令、补全、MCP、approval、interrupt 和工具渲染。
+- 在不转移 Task、Kernel 或 Executor 权限的前提下增加响应式只读 AnyFusion 任务面板；原 Ink UI 完整保留为备用模块。
 - 提供 `npm run smoke:anyfusion` 烟测，默认验证同一原生 Codex Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
@@ -524,15 +524,15 @@ Skill 的限制：
 anyfusion
 ```
 
-交互式 TUI 会在任务执行时保持用户可见性：
+默认命令启动固定版本的 AnyFusion-Codex 原生 TUI：
 
-- 用户提交的输入会回显到 transcript。
-- 输入框状态会显示 `processing`、`running <executor>`、`blocked` 或 `idle`。
-- 状态栏会展示当前任务 ID、任务状态和标题。
-- Planner 和执行过程会展示核心进度，包括理解用户请求、work graph planning、上下文召回、执行上下文构建、work-unit claim、执行器进度、验收和最终结果。
-- AnyFusion 自身的调度/编排里程碑会标为 `【AnyFusion｜...】`；具体执行器的里程碑会标为 `【Executor: <name>｜...】`，执行器进度行也会带上实际 executor 名称，避免把 AnyFusion 的调度动作和真正处理任务的 runtime 混在一起。
-- 输入框支持正常终端编辑：空格、多行输入、左右移动光标、Backspace 删除光标前字符，以及原始 Delete escape sequence 的向前删除。
-- 斜杠命令自动补全：输入 `/` 会弹出按优先级排序的命令建议；`↑`/`↓` 选择，`Tab` 或 `Enter` 把选中命令补全进输入框（不会提交），方便接着输入参数。没有建议列表时，`↑`/`↓` 退回到输入历史回溯。
+- Codex 持有原生 conversation thread、transcript 历史、resume/fork/archive、compaction、斜杠命令、补全、MCP、approval、interrupt 与工具渲染。
+- AnyFusion 品牌仅属于展示层；可执行命令仍为 `codex`，Codex 协议、配置路径与内部技术标识保持兼容。
+- 宽终端右侧显示全局 Task 池和当前 Task/Subtask/Executor/blocking 的只读投影；窄终端隐藏面板并保持原生单栏对话布局。
+- 任务面板不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
+- direct reply 与 clarification 按普通对话展示；proposal 展示人类可读摘要，原始 v6 JSON 只作为 Planner/Stop Hook 内部数据。
+- bridge 断开、数据过期或格式错误只影响面板，不得终止 Codex 对话。
+- 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
 
 或使用项目脚本：
 
@@ -584,9 +584,9 @@ anyfusion --connect
 
 ### 在 Docker 中运行（Windows / 容器化）
 
-在 Windows 上，`docker exec -it` 无法为 Ink TUI 提供真实终端，本地安装路径也假定使用 WSL2。`docker/` 工作流将容器作为 SSH 服务运行，从而为 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。默认 Planner 和执行器为 Codex，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
+在 Windows 上，`docker/` 工作流将容器作为 SSH 服务运行，为原生 TUI 提供真实 PTY，并允许通过 shell 或 VS Code Remote-SSH 浏览 `/workspace`。Planner TUI 与非交互 PlanningAgent 使用服务器预构建并固定版本的 AnyFusion-Codex Linux 产物；Executor attempt 继续使用原版 Codex 镜像，Pi 作为候选执行器保留。Docker 分别只读挂载 `planner-codex.env`、`executor-codex.env` 和 `executor-pi.env`；Planner Codex、Executor Codex 与 Executor Pi 只在启动各自子进程时加载对应文件，entrypoint 也使用各自文件中的 base URL 渲染配置。
 
-完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill 以及相互隔离的 Planner/Executor Codex 配置。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。当前 Windows 调试链路把 Docker Desktop Unix socket 挂载给可信 shell Runtime，并自动重建缺少该挂载的旧 shell 容器。Executor attempt 由该可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整运行镜像内置 CLI、Planner MCP、v6 schema、Planner Skill、Stop Hook、native-TUI bridge，以及相互隔离的 Planner/Executor Codex 配置；它从预构建的 `anyfusion-codex:local` 产物复制 Planner 二进制，本仓库不编译 Rust Fork。宿主不再挂载 `dist`、Codex/PI 配置或 entrypoint；源码变化后使用 `docker/shell.ps1 -Rebuild`，运行时只保留 workspace/data volume。当前 Windows 调试链路把 Docker Desktop Unix socket 挂载给可信 shell Runtime，并自动重建缺少该挂载的旧 shell 容器。Executor attempt 由该可信 Engine endpoint 创建为兄弟容器：source、inputs、handoffs 和 `.git` 只读，私有 `/workspace` 可写，`/tmp` 为 tmpfs；attempt 不获得 Docker socket 或真实 provider credential，而是通过带随机短期 token 的 attempt-scoped model gateway 调用模型。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 
@@ -764,11 +764,10 @@ AnyFusion 会：
 
 主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
-Ink TUI 仍是当前受支持的产品入口。`SessionSnapshot.plannerState` 来自真实
-Planner 调用计数，并在 terminal/finally 路径回到 idle，因此 Planner 动画
-不应由 Task 业务状态推断。Executor 进度、Task 面板、命令补全、Guidance、
-飞书 bridge attachment 和后台 Task-pool 检查也继续属于当前 TUI contract；
-未来可能切换 Codex 原生界面，不代表现在可以删除这套实现。
+AnyFusion-Codex 下游原生 TUI 是默认本地入口。Codex 持有会话交互，MetaClaw 只向
+面板投影只读 Task 状态，并继续独占所有持久化 Task、Kernel 和 Executor 权限。
+原 Ink TUI 完整保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它是
+备用模块而不是第二套持续维护的前端。飞书与 Gateway 是后端交付面，不依赖本地使用哪套 TUI。
 
 ## 任务检索
 
@@ -911,7 +910,8 @@ src/
 ├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影
 ├── storage/        # SQLite migrations 和 repositories
 ├── task/           # 任务状态机和 runtime
-├── tui/            # Ink 终端 UI
+├── tui-bridge/     # 原生 Planner TUI 进程与只读 Unix JSONL bridge
+├── tui/            # 完整保留的备用 Ink 终端 UI
 ├── utils/          # 配置、路径、日志、ID 等通用工具
 └── work-graph/     # 共享 graph 类型、校验、取消闭包和 runnable frontier
 ```

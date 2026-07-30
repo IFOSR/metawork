@@ -158,6 +158,50 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
+  it('submits a native TUI Stop-hook plan through existing Kernel workflow without invoking the runner', async () => {
+    let plannerCalls = 0;
+    const harness = createSession('sess_native_tui_handoff', () => {
+      plannerCalls += 1;
+      return plan();
+    });
+    const nativePlan = plan({
+      id: 'plan_native_tui',
+      action: 'direct_reply',
+      response: { directReply: '已由 native Planner 提交。' },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+      workGraph: null,
+    });
+
+    const result = await harness.session.submitPlannerTuiPlan('请简短回答', nativePlan);
+
+    expect(result).toEqual({ accepted: true, errors: [], planId: 'plan_native_tui' });
+    expect(plannerCalls).toBe(0);
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('已由 native Planner 提交。');
+    expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_handoff')).toEqual([
+      expect.objectContaining({ action: 'deliver_direct_reply', taskId: null }),
+    ]);
+  });
+
+  it('rejects an invalid native TUI proposal before it reaches Kernel workflow', async () => {
+    const harness = createSession('sess_native_tui_invalid', plan());
+    const invalid = { ...plan(), schemaVersion: 5 };
+
+    const result = await harness.session.submitPlannerTuiPlan('创建任务', invalid);
+
+    expect(result.accepted).toBe(false);
+    expect(result.errors.join('\n')).toContain('schemaVersion');
+    expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_invalid')).toHaveLength(0);
+  });
+
   it('does not inject confirmed global memory into the Planner model input', async () => {
     const harness = createSession('sess_direct_memory', context => plan({
       action: 'direct_reply',

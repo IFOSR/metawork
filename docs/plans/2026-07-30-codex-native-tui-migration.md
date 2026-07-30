@@ -1,9 +1,20 @@
 # AnyFusion Codex 原生 TUI 定制迁移计划
 
-> 状态：提议，未实施
+> 状态：实现完成；本机 MetaClaw 验证通过；AnyFusion-Codex Linux 编译与交互验收待服务器完成
 > 计划日期：2026-07-30
 > 目标产品名：AnyFusion；`MetaClaw` / `metaclaw` 继续作为内部运行时名称与兼容 CLI alias
 > 核心边界：本计划只调整本地 TUI 展示与接入，不修改 Kernel、Execution、Executor 的设计逻辑
+
+## 当前交付状态
+
+实现已经落在两个独立仓库：
+
+- `MetaAny/AnyFusion`：默认入口、Application-Shell bridge、Stop Hook、Planner 配置、Docker 装配与回归测试；
+- `MetaAny/anyfusion-codex`：固定 upstream commit 的浅 Fork，仅包含 TUI、只读任务面板、Planner 展示和发布包装。
+
+本机已经完成 AnyFusion 主仓库的 TypeScript lint/build、Docker 全量 Vitest、容器内 build、Stop Hook 与 shell 语法验证。AnyFusion-Codex 的 Rust 编译、原生 TUI 交互和最终 Linux 发布产物刻意留给服务器完成，当前不得将计划标记为最终完成。
+
+实际运行逻辑为：AnyFusion 默认启动修改版 Codex Planner TUI；`PlannerTuiBridge` 通过本地 mode-`0600` Unix JSONL socket 只读投影 Task 状态。Codex Stop Hook 只提交一个 Planner proposal，`MetaclawSession` 随后重新执行 v6 schema 与语义校验，并复用既有 `plan_proposed → DurableKernelWorkflow → ControlKernel` 路径。Planner MCP 仍然只读。Executor attempt 始终使用原版 Codex 镜像。原 `src/tui/` Ink 实现完整保留，可通过 `METACLAW_STANDBY_TUI=1` 作为备用入口启动。
 
 ## 结论
 
@@ -17,7 +28,7 @@ resume、fork、compaction、原生命令、MCP、Skills、Hooks、approval、sa
    Executor、blocked reason 和运行进度面板。
 
 当前 `src/tui/` 下的 Ink TUI **不得删除**。它在新 TUI 成为默认入口后进入“暂时弃用、
-保留可用”的备用模块状态，用于回滚、对照验证和未来重新启用。
+保留源码”的备用模块状态，用于未来重新启用；本计划不为其投入持续构建、兼容或回归维护成本。
 
 ## 本次讨论形成的设计摘要
 
@@ -27,7 +38,7 @@ resume、fork、compaction、原生命令、MCP、Skills、Hooks、approval、sa
   downstream fork。
 - Codex 继续拥有 conversation state；MetaClaw 继续拥有 Task/Kernel/Executor state。
 - 新任务面板只读取现有权威状态，不解释策略、不修改数据库、不直接控制 Executor。
-- 原有 Ink TUI 保留为备用模块，不删除源码、测试、依赖或启动能力。
+- 原有 Ink TUI 保留为备用源码模块，不删除源码、测试和依赖；不承诺本计划后持续提供启动入口或兼容验证。
 
 ## 不可突破的边界
 
@@ -38,7 +49,7 @@ resume、fork、compaction、原生命令、MCP、Skills、Hooks、approval、sa
 - Codex TUI 的品牌、主题、标题、布局和组件；
 - 新增 AnyFusion 任务面板及其 TUI 内部状态；
 - TUI 对现有只读查询接口的调用；
-- TUI launcher、默认入口和备用 TUI 选择；
+- TUI launcher、默认入口和备用 TUI 源码保留声明；
 - 与 TUI 直接相关的构建、打包和 smoke。
 
 本计划不包含新的业务工作流、调度策略、恢复策略或执行策略。
@@ -72,12 +83,12 @@ TUI 不得成为第二个 semantic router 或 policy owner。
 
 - 保留所有源码；
 - 保留 Ink/React 依赖；
-- 保留相关单元测试与 smoke；
-- 保留启动入口，例如未来的 `anyfusion --classic-tui`；
-- 不要求与新 TUI 同时新增功能，但必须保持可构建、可启动、可用于回滚；
+- 保留相关单元测试源码与 fixture，但不要求持续运行；
+- 允许保留现有启动接线，但不新增或维护 `--classic-tui` 等专用入口；
+- 不要求与新 TUI 同时新增功能，也不承诺持续可构建、可启动或可用于即时回滚；
 - 不改名为 archive，不移动到 `docs/archive/`，不把它视为历史废弃代码。
 
-“暂时弃用”仅表示它不再是默认入口，不表示删除或停止维护基本可用性。
+“暂时弃用”表示源码仍在，但当前不承担持续可运行、兼容或回归责任。
 
 ### 5. 保持 Codex 上游能力
 
@@ -103,7 +114,7 @@ anyfusion launcher
   │    ├─ 原生 Codex conversation / commands / history / compaction
   │    └─ AnyFusion read-only Task panel
   │
-  └─ 备用：现有 Ink TUI（--classic-tui）
+  └─ 备用源码：现有 Ink TUI（暂时弃用，不保证入口与持续可运行性）
 
 AnyFusion Codex TUI
   ├─ 连接原生 Codex App Server
@@ -117,6 +128,28 @@ MetaClaw Runtime
 ```
 
 新 TUI 只是 presentation adapter。它不会替代或包装 Kernel，也不会改变执行链。
+
+## Planner 前端提交桥
+
+只读 MCP 只负责提供事实，不能承担用户输入或计划提交。默认 TUI 通过一个位于
+Application Shell 的本地 Unix-socket bridge 完成前端交接：
+
+```text
+AnyFusion Codex TUI（原生 thread/commands/history/compact）
+  ├─ Planner MCP：只读查询事实
+  └─ Stop hook：提交结构化 PlanningAgentPlan
+          ↓
+PlannerTuiBridge（仅做协议校验、会话投影与提交转交）
+          ↓
+现有 plan validation → plan_proposed → DurableKernelWorkflow → ControlKernel
+```
+
+- bridge 不是 MCP，不向 Planner 暴露状态修改工具；
+- bridge 只接受当前 Planner turn 的用户输入与结构化 plan，并调用现有会话/Kernel 提交流程；
+- bridge 自身不得写数据库、调度 Executor 或实现恢复策略；
+- Task panel 通过同一 bridge 订阅只读 Session/Task 投影，不直接读取 SQLite；
+- fork TUI 仅在 Planner 模式下注入 PlanningAgentPlan v6 output schema，并将内部 JSON 渲染为用户可见回复；
+- Executor 继续使用 stock Codex，不加载该 bridge、schema 或 Planner CODEX_HOME。
 
 ## Codex 源码策略
 
@@ -206,7 +239,7 @@ Codex conversation，也不改变任何 Task/Executor 状态。
 
 - Ink TUI 标记为 `standby / backup`；
 - 默认启动命令不再进入 Ink；
-- 显式 `--classic-tui` 可进入 Ink；
+- 不新增 `--classic-tui` 维护承诺；如未来恢复使用，另立计划补齐入口与兼容；
 - 新旧 TUI 不同时运行，不共享前台输入；
 - 备用 TUI 不承担新 TUI 的兼容 shim；
 - 任何未来删除提议必须单独提出、单独批准，不得作为本计划的后续清理自动执行。
@@ -251,10 +284,10 @@ Codex conversation，也不改变任何 Task/Executor 状态。
 
 - `anyfusion` 默认启动 AnyFusion Codex TUI build；
 - `metaclaw` compatibility alias 使用同一默认入口；
-- 增加 `--classic-tui` 进入现有 Ink TUI；
+- 保留现有 Ink TUI 源码、测试源码和依赖，但不新增专用备用入口；
 - launcher 记录所使用的 Codex upstream version；
 - Docker/server shell 对齐新 binary，但不修改业务运行时架构；
-- 保留当前 Ink TUI 的独立 smoke。
+- 不新增或维护当前 Ink TUI 的独立 smoke。
 
 ### Phase 4：默认切换与观察期
 
@@ -277,7 +310,7 @@ Codex conversation，也不改变任何 Task/Executor 状态。
 4. 应用 panel composition patch；
 5. 应用 MetaClaw read-only client patch；
 6. 运行 Codex 原生 TUI/command/MCP/approval smoke；
-7. 运行 AnyFusion branding/panel/classic-TUI smoke；
+7. 运行 AnyFusion branding、panel、原生 Codex commands/history/approval smoke；
 8. 只有全部通过才更新 AnyFusion 默认版本。
 
 升级过程中不得为了减少冲突而把 AnyFusion Task 状态写入 Codex core protocol。若 fork delta
@@ -307,10 +340,9 @@ Codex conversation，也不改变任何 Task/Executor 状态。
 
 ### 备用 Ink TUI
 
-- `--classic-tui` 可启动；
-- editor、completion、panels、Guidance、Feishu 和 activity state 保持现有行为；
-- 相关单元测试继续运行；
-- 不因新 TUI 默认切换而删除依赖或 fixture。
+- `src/tui/`、相关测试源码、fixture 与 Ink/React 依赖不得删除；
+- 本计划不新增功能、不修复兼容、不要求持续构建或 smoke；
+- 未来重新启用时，另立恢复计划并重新确认入口、依赖与回归范围。
 
 ### 核心回归保护
 
@@ -352,6 +384,20 @@ TUI Adapter 和产品展示。
 
 不得借文档同步修改 Kernel/Executor contract。
 
+## 验证记录与服务器交接
+
+本机已通过：
+
+- `npm run lint`；
+- `npm run build`；
+- `docker build -f Dockerfile.test -t metaclaw-test .`；
+- `docker run --rm metaclaw-test`：182 个测试文件通过、707 项测试通过，4 个文件/15 项测试按既有条件跳过；
+- 迁移定向 Docker 测试：4 个测试文件、24 项测试全部通过；
+- 测试镜像内 `npm run build`；
+- Stop Hook 的 Node 语法检查与 Docker shell 脚本语法检查。
+
+当前服务器交接基线已锁定为 `MetaAny/anyfusion-codex@bd607f067f1c4f12ed1c61122ca89f18c23a756c`。服务器仍需确认的行为由 `MetaAny/anyfusion-codex` 根 `AGENTS.md` 定义，包括原生 Codex 会话/历史/命令/压缩回归、AnyFusion 品牌、响应式只读任务面板、bridge 降级、Stop Hook 端到端提交、Planner/Executor 二进制隔离以及可追溯 Linux 发布产物。服务器验收完成后再补写完成日期、两个最终 commit SHA、产物 digest 和交互 smoke 结果。
+
 ## 完成标准
 
 - `anyfusion` 默认打开 AnyFusion 品牌的 Codex TUI downstream build；
@@ -359,7 +405,7 @@ TUI Adapter 和产品展示。
 - AnyFusion Task 面板可读取并展示现有只读状态；
 - 面板故障不会影响 Codex conversation 或 Task 执行；
 - Kernel、Work Graph、Execution、Executor、sandbox 和 publication 没有设计或行为变化；
-- 现有 `src/tui/` Ink TUI 完整保留，并可通过显式备用入口启动；
+- 现有 `src/tui/` Ink TUI 源码完整保留，并显式标记为暂时弃用的备用模块；
 - Ink/React 依赖、测试和 smoke 未删除；
 - Codex fork 修改集中在 TUI、branding、panel adapter 和 packaging；
 - 至少完成一次真实 upstream rebase 验证；

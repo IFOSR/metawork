@@ -43,7 +43,7 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
 
   async run(prompt: string, context: PlanningContext): Promise<PlannerRunResult> {
     const startedAt = Date.now();
-    const command = this.deps.command ?? 'codex';
+    const command = this.deps.command ?? process.env.METACLAW_PLANNER_CODEX_COMMAND ?? 'codex';
     const codexHome = this.deps.codexHome
       ?? process.env.METACLAW_PLANNER_CODEX_HOME
       ?? join(process.env.METACLAW_HOME ?? tmpdir(), 'codex', 'planner');

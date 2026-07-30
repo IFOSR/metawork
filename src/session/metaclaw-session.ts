@@ -60,7 +60,10 @@ import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
+import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
+import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
+import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
@@ -141,6 +144,31 @@ export interface SessionSnapshot {
     status: 'idle' | 'running';
   };
   latestGuidance: GuidanceState | null;
+}
+
+/** A bounded, read-only projection for the native Planner TUI bridge. */
+export interface PlannerTuiSnapshot {
+  schemaVersion: 1;
+  session: {
+    id: string;
+    focusedTask: SessionSnapshot['currentTask'];
+    runtimeState: RuntimeState;
+    plannerState: SessionSnapshot['plannerState'];
+    recentOutput: string[];
+  };
+  taskPool: Array<{
+    id: string;
+    title: string;
+    goal: string;
+    status: Task['status'];
+  }>;
+  executorStatuses: KernelExecutorStatusProjection[];
+}
+
+export interface PlannerTuiPlanSubmissionResult {
+  accepted: boolean;
+  errors: string[];
+  planId: string | null;
 }
 
 interface FocusContext {
@@ -489,6 +517,75 @@ export class MetaclawSession {
 
   completeCommand(text: string, cursor = text.length): CommandCompletion {
     return this.commandCatalog.complete({ text, cursor, context: this.getCommandContext() });
+  }
+
+  /**
+   * Returns presentation-only state for the native Planner TUI. This deliberately
+   * reads through existing Session services; the bridge has no repository, Kernel,
+   * scheduling, or executor write surface.
+   */
+  getPlannerTuiSnapshot(): PlannerTuiSnapshot {
+    const snapshot = this.getSnapshot();
+    return {
+      schemaVersion: 1,
+      session: {
+        id: this.deps.sessionId,
+        focusedTask: snapshot.currentTask ? { ...snapshot.currentTask } : null,
+        runtimeState: {
+          ...snapshot.runtimeState,
+          readyTaskIds: [...snapshot.runtimeState.readyTaskIds],
+          blockedTaskIds: [...snapshot.runtimeState.blockedTaskIds],
+          parkedTaskIds: [...snapshot.runtimeState.parkedTaskIds],
+        },
+        plannerState: { ...snapshot.plannerState },
+        recentOutput: snapshot.output.slice(-100),
+      },
+      taskPool: this.taskRuntimeService.listTasks().map(task => ({
+        id: task.id,
+        title: task.title,
+        goal: task.goal,
+        status: task.status,
+      })),
+      executorStatuses: this.kernelExecutorStatusRepo.list(),
+    };
+  }
+
+  /**
+   * Accepts a Planner proposal emitted by the native Codex Stop hook. The Planner
+   * remains untrusted with respect to state: schema and semantic validation happen
+   * here, then the existing plan_proposed -> DurableKernelWorkflow path remains the
+   * only state-changing route.
+   */
+  async submitPlannerTuiPlan(
+    userInput: string,
+    rawPlan: unknown,
+  ): Promise<PlannerTuiPlanSubmissionResult> {
+    await this.initialization;
+    const normalizedInput = userInput.trim();
+    if (!normalizedInput) {
+      return { accepted: false, errors: ['userInput must not be empty'], planId: null };
+    }
+
+    this.appendUserInput(normalizedInput);
+    const context = this.buildPlanningContext(normalizedInput);
+    const validation = validatePlanningAgentPlan(
+      rawPlan,
+      context.executorCatalog,
+      context.pendingAuthorizationRequest
+        ? {
+            requestId: context.pendingAuthorizationRequest.requestId,
+            taskId: context.pendingAuthorizationRequest.taskId,
+          }
+        : null,
+    );
+    if (!validation.valid) {
+      this.appendOutput(`Planner TUI proposal rejected: ${validation.errors.join('; ')}`);
+      return { accepted: false, errors: validation.errors, planId: null };
+    }
+
+    const plan = PlanningAgentPlanSchema.parse(rawPlan) as PlanningAgentPlan;
+    await this.submitValidatedPlanningAgentPlan(normalizedInput, plan, context);
+    return { accepted: true, errors: [], planId: plan.id };
   }
 
   private reconcileLatestGuidance(): void {
@@ -873,10 +970,9 @@ export class MetaclawSession {
     }));
   }
 
-  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
-    this.appendOutput('【MetaClaw｜理解用户请求】');
+  private buildPlanningContext(userInput: string): PlanningContext {
     const pendingPermission = this.permissionRepository.findOldestPending();
-    const context = this.planningContextBuilder.build({
+    return this.planningContextBuilder.build({
       userInput,
       pendingAuthorizationRequest: pendingPermission ? {
         requestId: pendingPermission.request.id,
@@ -887,10 +983,25 @@ export class MetaclawSession {
         reason: pendingPermission.request.reason,
       } : null,
     });
+  }
+
+  private async acquirePlanningPlan(userInput: string): Promise<{
+    context: PlanningContext;
+    plan: PlanningAgentPlan;
+  }> {
+    const context = this.buildPlanningContext(userInput);
     let plan = await this.planWithExecutorRecovery(context);
     if (this.planHasAvailabilityExhaustion(plan)) {
       plan = await this.requestAvailabilityExplanation(plan);
     }
+    return { context, plan };
+  }
+
+  private async submitValidatedPlanningAgentPlan(
+    userInput: string,
+    plan: PlanningAgentPlan,
+    context: PlanningContext,
+  ): Promise<void> {
     const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
       schemaVersion: 5,
@@ -930,6 +1041,12 @@ export class MetaclawSession {
         plannerPlanId: plan.id,
       });
     }
+  }
+
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    this.appendOutput('【MetaClaw｜理解用户请求】');
+    const { context, plan } = await this.acquirePlanningPlan(userInput);
+    await this.submitValidatedPlanningAgentPlan(userInput, plan, context);
     return true;
   }
 

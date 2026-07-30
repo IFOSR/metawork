@@ -46,10 +46,13 @@ replacing those semantics.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
 - [Executor error recovery refresh](plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
 
+## Active Delivery
+
+- [AnyFusion Codex native TUI migration](plans/2026-07-30-codex-native-tui-migration.md): implementation is complete and local MetaClaw Docker validation has passed; Linux compilation and interactive acceptance of the separate `MetaAny/anyfusion-codex` fork remain a server handoff. The default local surface is the downstream native TUI, while `src/tui/` is retained as the standby Ink module.
+
 ## Future Roadmap
 
 - [Multi-top-level-Task scheduling](plans/future-multi-task-scheduling-roadmap.md): deferred independent work for admission, priority, fairness and starvation protection. It is not an unfinished Phase 6 stage; ADR-0011 remains active.
-- [Codex-native TUI and thread migration](plans/2026-07-30-codex-native-tui-migration.md): proposed replacement of the Ink/session front end with the stock Codex TUI, native Codex threads, Plugin/MCP/Hooks integration, a UI-independent RuntimeSupervisor, and typed Feishu/background event delivery. Implementation requires a new ADR and a successful App Server/Unix-socket capability spike before the current TUI can be removed.
 
 ## Historical Plans
 
@@ -78,10 +81,8 @@ It is historical review context, not an active issue tracker or architecture map
 ## Operational Notes
 
 - [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- The Ink TUI remains a supported implementation. A possible future
-  Codex-native UI direction is exploratory and does not authorize removing the
-  current input, completion, task/guidance, progress, Feishu, or background-pool
-  behavior.
+- The AnyFusion-Codex native TUI is the default local implementation. The original Ink source,
+  tests, and dependencies remain as a standby module and must not be deleted.
 - [Tech Debt](tech-debt/): the active post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents

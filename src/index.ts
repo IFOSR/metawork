@@ -1,4 +1,4 @@
-// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the Ink TUI.
+// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Codex TUI.
 import { resolve } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { createDatabase } from './storage/database.js';
@@ -24,6 +24,9 @@ import { runGatewaySetup } from './gateway/setup.js';
 import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
+import { MetaclawSession } from './session/metaclaw-session.js';
+import { PlannerTuiBridge } from './tui-bridge/planner-tui-bridge.js';
+import { runPlannerTuiProcess } from './tui-bridge/planner-tui-process.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
@@ -128,6 +131,62 @@ async function main() {
     });
     if (result.output.length > 0) {
       process.stdout.write(`${result.output.join('\n')}\n`);
+    }
+    return;
+  }
+
+  const plannerTuiSocketPath = (process.env.METACLAW_PLANNER_TUI_SOCKET
+    ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
+  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-codex';
+  process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
+  if (process.env.METACLAW_STANDBY_TUI !== '1') {
+    const plannerTuiSession = new MetaclawSession({
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      db,
+      config,
+      sessionId,
+      contextRecaller,
+      notifier,
+    });
+    plannerTuiSession.initialize({ showDashboard: false });
+    const plannerTuiBridge = new PlannerTuiBridge({
+      socketPath: plannerTuiSocketPath,
+      session: plannerTuiSession,
+      logger: console,
+    });
+    const nativeGatewayServer = new MetaclawGatewayServer({
+      socketPath: gatewaySocketPath,
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      db,
+      config,
+      contextRecaller,
+      notifier,
+      workspaceRoot: process.cwd(),
+    });
+    await nativeGatewayServer.start();
+    await plannerTuiBridge.start();
+    const blockedRecheckTimer = setInterval(() => {
+      void plannerTuiSession.maybeReviewTaskPoolOnTimer().catch(error => {
+        plannerTuiSession.appendSystemMessage(`错误: ${(error as Error).message}`);
+      });
+    }, plannerTuiSession.getBlockedRecheckIntervalMs());
+    try {
+      await runPlannerTuiProcess({
+        socketPath: plannerTuiSocketPath,
+        sessionId,
+        cwd: process.cwd(),
+      });
+    } finally {
+      clearInterval(blockedRecheckTimer);
+      await Promise.all([
+        plannerTuiBridge.stop(),
+        nativeGatewayServer.stop(),
+        markdownPreviewServer?.stop() ?? Promise.resolve(),
+      ]);
     }
     return;
   }

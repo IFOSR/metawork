@@ -24,8 +24,8 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
-- Shows the interactive TUI input, current task, planning and policy milestones, execution preparation, work-unit dispatch, executor progress, and final task result so users can follow the core execution path instead of seeing only the final answer.
-- Supports terminal-native editing in the TUI composer, including spaces, multiline input, left/right cursor movement, Backspace at the cursor, and forward delete when the terminal emits a raw delete sequence.
+- Uses the downstream AnyFusion-Codex native TUI as the default local conversation surface, retaining Codex-native threads, history, resume/fork/archive, compaction, commands, completion, MCP, approval, interrupt, and tool rendering.
+- Adds a responsive read-only AnyFusion Task panel without moving Task, Kernel, or Executor authority into the TUI; the original Ink UI remains source-preserved as a standby module.
 - Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one native Codex Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
@@ -69,6 +69,8 @@ flowchart LR
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. One live MetaClaw session maps to one native Codex thread: the first turn captures `thread.started.thread_id`, and later turns use `codex exec resume`. Codex owns dialogue history; MetaClaw does not rebuild it from SQLite interactions. The Planner runs with a separate `CODEX_HOME`, native developer instructions, core Planner Skill, generated output schema, read-only sandbox, and dedicated Planner MCP. Confirmed preferences, routing, authorization and runtime facts are read on demand through MCP. Invalid output is repaired once in the same thread; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+
+The local native TUI and the non-interactive PlanningAgent runner use the same modified Planner binary but remain separate processes. `PlannerTuiBridge` is a trusted local Application-Shell adapter over a mode-`0600` Unix JSONL socket. It publishes a bounded Task-pool/focused-Task projection to the TUI and serializes Stop-hook proposal submissions. `MetaclawSession` always reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before reusing the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. The bridge cannot write the database or directly call Kernel, scheduling, Execution, or Executor APIs.
 
 Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
 inspects only enabled AgentClasses whose persisted class health is already
@@ -473,15 +475,15 @@ Start the TUI:
 anyfusion
 ```
 
-The interactive TUI is designed to keep the user oriented while work is running:
+The default command launches the pinned AnyFusion-Codex native TUI:
 
-- Submitted user input is echoed into the transcript.
-- The composer shows `processing`, `running <executor>`, `blocked`, or `idle`.
-- The status panel shows the current task id, status, and title when a task is active.
-- Core progress lines are shown during planning and execution, including request understanding, work graph planning, context recall, context construction, work-unit claim, executor progress, verification, and final result.
-- AnyFusion orchestration milestones are labeled as `【AnyFusion｜...】`; worker milestones are labeled as `【Executor: <name>｜...】` and executor progress lines include the concrete executor name, so users can distinguish scheduler/routing work from the runtime that is actually answering or executing.
-- The input composer supports normal terminal editing: spaces, multiline input with modified Enter/Ctrl+J, left/right cursor movement, Backspace deleting the character before the cursor, and forward delete for raw delete escape sequences.
-- Slash commands autocomplete: typing `/` shows a prioritized suggestion list; `↑`/`↓` selects, `Tab` or `Enter` completes the highlighted command into the composer (without submitting it), so you can keep typing arguments. `↑`/`↓` fall back to input-history recall when no suggestion list is open.
+- Codex owns the native conversation thread, transcript history, resume/fork/archive lifecycle, compaction, slash commands, completion, MCP interaction, approvals, interrupts, and tool rendering.
+- AnyFusion branding is presentation-only; the executable remains `codex` and Codex protocol/configuration identifiers remain compatible.
+- At wide terminal widths, a right-side Task panel shows the global Task pool and focused Task/Subtask/Executor/blocking projection received from the local bridge. At narrow widths the panel disappears and the native conversation layout remains single-column.
+- The panel is read-only. It cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
+- Direct replies and clarifications render as normal conversation content. A proposal renders a human-readable summary while the raw v6 JSON remains an internal Planner/Stop-hook artifact.
+- Bridge failure, stale data, or malformed data degrades the panel only and must not terminate the Codex conversation.
+- Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and receives no migration feature work.
 
 Or use the project helper:
 
@@ -533,20 +535,23 @@ anyfusion --connect
 
 ### Running in Docker (Windows / containerized)
 
-On Windows, `docker exec -it` does not give the Ink TUI a real terminal and the
-local install path assumes WSL2. The `docker/` workflow instead runs the
-container as an SSH server, giving a genuine PTY for the TUI plus a shell for
-browsing `/workspace` output files (and VS Code Remote-SSH access). The default
-planner + executor is Codex with separate Planner/Executor homes; Pi is retained as an executor
-candidate. Docker mounts `planner-codex.env`, `executor-codex.env`, and
+On Windows, the `docker/` workflow runs the container as an SSH server so the native TUI
+receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH.
+The runtime consumes a separately built, pinned AnyFusion-Codex Linux artifact for the Planner TUI
+and non-interactive PlanningAgent. Executor attempts remain on the stock Codex attempt image; Pi
+is retained as an executor candidate. Planner and Executor keep separate homes and provider files. Docker mounts `planner-codex.env`, `executor-codex.env`, and
 `executor-pi.env` read-only. Planner Codex, Executor Codex, and Executor Pi load
 only their assigned provider file, and `docker/entrypoint.sh` renders each config
 template with the base URL from that file.
 
-The hermetic runtime image contains the CLI, Planner MCP, generated v6 schema,
-Planner Skill, and isolated Planner/Executor Codex templates. Host `dist`,
-Codex/PI configs, and entrypoint are not mounted. Source changes require
-`docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. In the maintained Windows debugging workflow, the trusted shell Runtime mounts the Docker Desktop Unix socket and automatically recreates older shell containers that lack this mount. Executor attempts are sibling containers created through that trusted Engine endpoint. They mount source, inputs, handoffs and `.git` read-only, mount only their private `/workspace` read-write, use a tmpfs `/tmp`, and never receive the Docker socket or provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
+The hermetic runtime image contains the CLI, Planner MCP, generated v6 schema, Planner Skill,
+Stop-hook adapter, native-TUI bridge, and isolated Planner/Executor Codex templates.
+`docker/Dockerfile.runtime` copies `/usr/local/bin/codex` from the prebuilt
+`anyfusion-codex:local` artifact into `/opt/anyfusion-codex/bin/codex`; this repository does not
+compile the Rust fork. Host `dist`, Codex/PI configs, and entrypoint are not mounted. Source changes
+require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. In the maintained Windows debugging workflow, the trusted shell Runtime mounts the Docker Desktop Unix socket and automatically recreates older shell containers that lack this mount. Executor attempts are sibling containers created through that trusted Engine endpoint. They mount source, inputs, handoffs and `.git` read-only, mount only their private `/workspace` read-write, use a tmpfs `/tmp`, and never receive the Docker socket or provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
+
+Local validation for this repository covers TypeScript build/lint, the full Docker Vitest suite, Unix-socket bridge behavior, Stop-hook syntax, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux compilation, native Codex TUI interaction, responsive panel behavior, real Stop-hook end-to-end delivery, and the final release artifact are validated in the separate `MetaAny/anyfusion-codex` server handoff.
 
 ## Configuration
 
@@ -724,13 +729,7 @@ Useful commands:
 
 The main TUI obtains completion state from the same `CommandCatalog` used by `/help`, validation, and execution. `Up`/`Down` selects a candidate, `Tab` completes only the token at the cursor, and `Enter` submits only a complete valid command. Directory nodes, missing arguments, and invalid dynamic references remain in the editor. Flat legacy entrypoints and aliases are not registered.
 
-The Ink TUI remains a supported surface. `SessionSnapshot.plannerState` is
-derived from active Planner calls and resets through terminal/finally paths, so
-the Planner animation represents actual Planner activity rather than Task
-business state. Executor progress, task panels, command completion, guidance,
-Feishu bridge attachment, and background Task-pool checks also remain part of
-the current TUI contract; a possible future Codex-native UI migration does not
-make this implementation disposable.
+The AnyFusion-Codex downstream TUI is the default local surface. Native Codex owns conversation interaction; MetaClaw owns the read-only Task projection and all durable Task/Kernel/Executor facts. The old Ink TUI remains intact under `src/tui/` and can be selected with `METACLAW_STANDBY_TUI=1`, but it is explicitly a standby module rather than a second actively maintained frontend. Feishu and Gateway remain backend delivery surfaces and do not depend on which local TUI is active.
 
 ## Task Search
 
@@ -914,7 +913,8 @@ src/
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories
 ├── task/           # Task domain state machine and runtime
-├── tui/            # Ink terminal UI
+├── tui-bridge/     # Native Planner TUI process and read-only Unix JSONL bridge
+├── tui/            # Preserved standby Ink terminal UI
 ├── utils/          # Config, paths, logger, IDs
 └── work-graph/     # Shared graph types, validation, cancellation closure, and runnable frontier
 ```

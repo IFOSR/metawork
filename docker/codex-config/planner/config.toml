@@ -28,6 +28,7 @@ shell_tool = true
 tool_suggest = false
 goals = false
 guardian_approval = false
+hooks = true
 
 [model_providers.anyint]
 name = "AnyInt"
@@ -45,3 +46,11 @@ enabled = true
 required = true
 enabled_tools = ["search_tasks", "get_task_context", "get_current_session_context", "get_planning_context", "get_runtime_state", "list_executor_status", "get_executor_diagnostics"]
 default_tools_approval_mode = "approve"
+
+[hooks]
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "node /app/scripts/anyfusion-planner-stop-hook.mjs"

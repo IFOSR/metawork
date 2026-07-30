@@ -2,7 +2,7 @@
 # then connect over SSH to run the TUI or browse files.
 #
 # Why SSH instead of `docker exec -it`: on Windows, `docker exec -it` gives
-# Ink's input stream a stdin that isn't a real terminal, which crashes the TUI
+# the TUI input stream a stdin that isn't a real terminal, which crashes the TUI
 # with "Raw mode is not supported". SSH provides a genuine PTY, so the Ink TUI
 # works, and you also get a general-purpose shell for inspecting /workspace
 # output files. VS Code Remote-SSH can open the same /workspace as a folder.
@@ -53,6 +53,8 @@ $repoRoot    = Split-Path -Parent $PSScriptRoot
 # The SSH layer sits on the hermetic runtime image. Build-BaseImage compiles the
 # runtime from source; Build-Image only adds the SSH server.
 $baseImage   = 'metaclaw-runtime'
+$anyFusionCodexImage = 'anyfusion-codex:local'
+$anyFusionCodexRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Codex'
 $imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
@@ -271,12 +273,27 @@ function Test-Prereqs {
     }
 }
 
+# Build the pinned downstream Codex TUI fork used only by the Planner surface.
+function Build-AnyFusionCodexImage {
+    param([switch]$Force)
+    if (-not $Force -and (Test-ImageExists $anyFusionCodexImage)) { return }
+    $dockerfile = Join-Path $anyFusionCodexRoot 'Dockerfile.release'
+    if (-not (Test-Path $dockerfile)) {
+        Write-Error "Missing AnyFusion-Codex sibling repository or Dockerfile.release at $anyFusionCodexRoot."
+        exit 1
+    }
+    Write-Host ("Building Planner TUI image " + $anyFusionCodexImage + " ...") -ForegroundColor Yellow
+    docker build -f $dockerfile -t $anyFusionCodexImage $anyFusionCodexRoot
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 # Build the hermetic runtime image when it is missing.
 function Build-BaseImage {
     param([switch]$Force)
     if (-not $Force -and (Test-ImageExists $baseImage)) { return }
+    Build-AnyFusionCodexImage -Force:$Force
     Write-Host ("Base image " + $baseImage + " not found, building hermetic runtime image ...") -ForegroundColor Yellow
-    docker build -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
+    docker build --build-arg ANYFUSION_CODEX_IMAGE=$anyFusionCodexImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -517,7 +534,7 @@ function Clear-StaleHostKey {
 function Enter-Tui {
     Wait-SshReady
     Clear-StaleHostKey
-    Write-Host ("Launching MetaClaw TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
+    Write-Host ("Launching AnyFusion Codex TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
     Write-Host "Tip: /exit to leave the TUI; Ctrl+C to force-quit. Container keeps running." -ForegroundColor DarkGray
     $args = Ssh-CommonArgs
     $args += @('-t', 'cd /workspace && node /app/dist/index.js')

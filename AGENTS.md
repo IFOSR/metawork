@@ -45,7 +45,7 @@ root. Detailed ownership and dependency rules live in
 | Attempts, recovery, sandbox, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
 | Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
-| CLI, commands, and Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui/`](src/tui/) |
+| CLI, commands, native TUI bridge, and standby Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
 | Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
@@ -60,7 +60,9 @@ Main entry points:
   durable control seam.
 - [`src/execution/kernel-execution-runtime.ts`](src/execution/kernel-execution-runtime.ts) and
   [`src/execution/subtask-attempt-runner.ts`](src/execution/subtask-attempt-runner.ts) — execution chain.
-- [`src/tui/app.tsx`](src/tui/app.tsx) — current Ink UI.
+- [`src/tui-bridge/planner-tui-bridge.ts`](src/tui-bridge/planner-tui-bridge.ts) and
+  [`src/tui-bridge/planner-tui-process.ts`](src/tui-bridge/planner-tui-process.ts) — default native Planner TUI adapter.
+- [`src/tui/app.tsx`](src/tui/app.tsx) — preserved standby Ink UI; it is not the default local surface.
 - [`src/gateway/server.ts`](src/gateway/server.ts) and
   [`src/gateway/feishu-runtime.ts`](src/gateway/feishu-runtime.ts) — remote surfaces.
 
@@ -72,9 +74,13 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
   belong in `CONTEXT.md`, not this file.
-- The Ink TUI is supported. Do not remove its editor, completion, panels,
-  progress, Guidance, Feishu, or activity-state behavior without an approved
-  replacement plan.
+- The downstream AnyFusion-Codex native TUI is the default local surface. Its Task panel and
+  bridge are presentation/Application-Shell adapters only: they may project state and hand a
+  Planner proposal to the existing validation path, but may not mutate storage, schedule work,
+  authorize execution, or control an Executor.
+- The Ink TUI under `src/tui/` is a preserved standby module. Do not delete its editor,
+  completion, panels, progress, Guidance, Feishu, activity-state behavior, tests, or Ink/React
+  dependencies. Do not invest migration work in it unless a separate restoration plan is approved.
 - Do not add a second semantic router, Runtime-owned recovery policy, Planner
   storage mutation, or pre-release compatibility path without an ADR.
 - Persistence changes must follow `CONTEXT.md` and update repositories and Docker
@@ -101,6 +107,12 @@ docker run --rm metaclaw-test
 Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliable
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
+
+For the native-TUI migration, local Docker validation covers this TypeScript
+repository, Unix socket bridge, Session-to-Kernel handoff, and unchanged core
+regressions. Building and interactively validating the Rust
+`MetaAny/anyfusion-codex` fork is a Linux-server handoff; do not trigger that
+large compile during routine local MetaClaw validation.
 
 ## Code, Plans, And Commits
 
