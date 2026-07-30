@@ -56,17 +56,18 @@ Executor 层采用 Adapter 机制，企业可以接入自己的垂类 Agent，�
 
 ```mermaid
 flowchart LR
-  Intake[人员 / CLI / Gateway / 飞书] --> Planning[Planning Agent<br/>意图与工作图]
-  Planning --> Kernel[Control Kernel<br/>策略与授权]
-  Kernel --> Scheduler[持久化调度系统<br/>状态与依赖就绪]
-  Scheduler --> Routing[能力路由<br/>AgentClass 与运行健康度]
-  Routing --> Agents[专业 Agent 工作单元<br/>工程 / 分析 / 企业自定义]
+  Intake[人员 / TUI / CLI / Gateway / 飞书] --> Session[MetaClaw Session<br/>Application Shell]
+  Session --> Planning[Planning Agent<br/>原生 Codex thread]
+  Planning --> Workflow[持久化 Kernel Workflow<br/>Inbox / Ledger / Application]
+  Workflow --> Kernel[Control Kernel<br/>策略与授权]
+  Kernel --> Runtime[Execution Runtime<br/>Frontier / Dispatch / Recovery]
+  Runtime --> Agents[Sandbox Agent 工作单元<br/>Codex / Pi / 企业自定义]
   Agents --> Verify[验收与交付<br/>证据 / 产物 / Handoff]
 
   State[(持久任务状态<br/>记忆 / Attempt / 审计)]
   Planning <--> State
-  Kernel <--> State
-  Scheduler <--> State
+  Workflow <--> State
+  Runtime <--> State
   Verify --> State
 ```
 
@@ -76,7 +77,7 @@ flowchart LR
 2. **Control Kernel 基于显式 Runtime 事实作出确定性策略决策。**
 3. **Runtime 执行受限决策，并把规范化结果反馈给下一轮决策。**
 
-当前工作图已经能够表达独立分支、垂类 Agent 分工和类型化依赖交付。资源分区、持久租约、持久 workspace、短命 attempt sandbox 与崩溃恢复已经启用；Preview 版本仍有意串行执行就绪 Subtask，Phase 6 将在这些已强制执行的基础上开启安全异步并行。
+当前工作图能够表达独立分支、垂类 Agent 分工和类型化依赖交付。持久 Kernel workflow 串行完成授权与应用，但单一活跃顶层 Task 内最多四个彼此独立的 attempt 可以并行执行。资源分区、持久租约、持久 workspace、短命 attempt sandbox、确定性 Git publication、崩溃恢复和事件驱动的 Executor `error` 恢复均已启用。
 
 ## 快速开始
 
@@ -107,7 +108,7 @@ AnyFusion 会识别请求、在需要时创建持久任务、授权工作图、�
 | 成熟度 | Developer Preview |
 | 部署状态 | 已部署至内部服务器进行小范围试用 |
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
-| 调度方式 | 当前 Preview 串行执行就绪 Subtask；安全异步并发已列入公开路线图 |
+| 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
 
 AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证任务控制平面、工作图契约、专业 Agent 路由、验收模型与实际运行流程，再逐步形成稳定兼容性承诺。

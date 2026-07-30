@@ -25,10 +25,12 @@
 
 ## 必须复用的既有 seam
 
-未来实现必须复用 Kernel v4 的纯 `decide(event, snapshot)`、durable
+未来实现必须复用当前 Kernel v5 的纯 `decide(event, snapshot)`、durable
 Kernel workflow、dispatch item、attempt supervisor、resource lease、持久
-Subtask worktree、publication gate、取消协调器和严格完成门。不得恢复旧
-Scheduler、TaskAdmissionGate、强制抢占或第二套 Runtime 策略链。
+Subtask worktree、publication gate、取消协调器、deferred availability 和严格
+完成门。不得恢复旧 Scheduler、TaskAdmissionGate、强制抢占或第二套 Runtime
+策略链。启动该路线图时若 Kernel contract 已再次升级，应以当时 accepted ADR
+和 `CONTEXT.md` 为准，而不是固化这里的历史版本号。
 
 ## 非承诺
 

@@ -6,6 +6,10 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
+> Current implementation baseline (2026-07-30): PlanningAgentPlan v6, Work
+> Graph v5, Kernel event/snapshot/decision contract v5, Completion Protocol v2,
+> and fresh-install-only SQLite schema v28.
+
 ## What AnyFusion Does
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
@@ -36,7 +40,7 @@ flowchart LR
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v6<br/>intent, target, risk,<br/>v5 graph or authorization resolution]
   Plan --> Event[KernelEvent<br/>plan_proposed]
-  Event --> Loop[Durable KernelWorkflow<br/>inbox, snapshot, decide, application, apply]
+  Event --> Loop[Durable KernelWorkflow v5<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
   Kernel --> Decision{KernelDecision<br/>one action}
   Decision --> Runtime[Runtime handlers]
@@ -65,6 +69,24 @@ flowchart LR
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. One live MetaClaw session maps to one native Codex thread: the first turn captures `thread.started.thread_id`, and later turns use `codex exec resume`. Codex owns dialogue history; MetaClaw does not rebuild it from SQLite interactions. The Planner runs with a separate `CODEX_HOME`, native developer instructions, core Planner Skill, generated output schema, read-only sandbox, and dedicated Planner MCP. Confirmed preferences, routing, authorization and runtime facts are read on demand through MCP. Invalid output is repaired once in the same thread; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+
+Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
+inspects only enabled AgentClasses whose persisted class health is already
+`error`, coalesces concurrent checks per class, applies a 30-second probe
+timeout, and records bounded redacted recovery evidence separately from attempt
+history. A successful structured probe may perform only `error -> healthy`;
+`disabled` remains an administrative lock, and healthy/unverified classes are
+not polled for new faults. Session startup, planning cycles, Task
+resume/recovery, Executor configuration changes, and
+`/executor refresh [name|all]` are the supported triggers.
+
+Planning and recovery refresh begin concurrently, but Kernel admission waits for
+both. If a preferred/eligible class recovered, the Planner may revise the
+proposal once in the same native Codex thread. If an existing Task still has no
+usable eligible class, Kernel persists the exact proposal as
+`waiting_for_availability` and blocks the Task with a structured availability
+fact. A later `executor_recovered` event re-admits that proposal and moves the
+Task to `ready` without another Planner call or immediate dispatch.
 
 ### Direct Reply Path
 
@@ -136,7 +158,10 @@ The current direct-reply path is explicit: MetaClaw sends the current turn throu
 
 The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
-Important runtime boundary: the Agentic Loop is implemented as a core architecture layer and tested directly. The current interactive/script session path uses the session runtime unless a feature path explicitly calls the strategy/orchestration loop.
+Important runtime boundary: there is no second strategy/orchestration loop
+beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph
+frontier derivation is pure structure; retry, fallback, replan, permission,
+availability, and recovery remain explicit Kernel policy.
 
 ## Current Executors
 
@@ -699,6 +724,14 @@ Useful commands:
 
 The main TUI obtains completion state from the same `CommandCatalog` used by `/help`, validation, and execution. `Up`/`Down` selects a candidate, `Tab` completes only the token at the cursor, and `Enter` submits only a complete valid command. Directory nodes, missing arguments, and invalid dynamic references remain in the editor. Flat legacy entrypoints and aliases are not registered.
 
+The Ink TUI remains a supported surface. `SessionSnapshot.plannerState` is
+derived from active Planner calls and resets through terminal/finally paths, so
+the Planner animation represents actual Planner activity rather than Task
+business state. Executor progress, task panels, command completion, guidance,
+Feishu bridge attachment, and background Task-pool checks also remain part of
+the current TUI contract; a possible future Codex-native UI migration does not
+make this implementation disposable.
+
 ## Task Search
 
 AnyFusion keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
@@ -714,7 +747,7 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 ## Single-Task Concurrent Kernel Control Model
 
-AnyFusion admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v4 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are outside the completed Phase 6 scope. Direct replies, clarifications, status/query commands and explicit task-control commands remain available.
+AnyFusion admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are outside the completed Phase 6 scope. Direct replies, clarifications, status/query commands and explicit task-control commands remain available.
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. `KernelWorkflow` remains serial, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
 
@@ -727,7 +760,7 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, expected output, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v4 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
+`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and sandbox recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
 
 `DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, sandbox records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
 
@@ -737,7 +770,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product creates one current SQLite v27 schema and rejects pre-release databases; it does not create or dual-read legacy Planning, Subtask or worktree audit tables. The schema contains durable inbox/application/outbox and graph revisions, resource/workspace/permission/sandbox records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan and explicit partial completion facts. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product creates one current SQLite v28 schema and rejects pre-release databases; it does not create or dual-read legacy Planning, Subtask or worktree audit tables. The schema contains durable inbox/application/outbox and graph revisions, resource/workspace/permission/sandbox records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. The Task ID/title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only ID/title as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
@@ -848,14 +881,14 @@ npm run smoke:anyfusion
 Targeted tests:
 
 ```bash
-npm test -- tests/session/planner-work-unit-bugfix.test.ts
+npm test -- tests/planning/planner-codex-runner.test.ts
+npm test -- tests/session/planning-agent-session-routing.test.ts
+npm test -- tests/session/planning-kernel-path.test.ts
+npm test -- tests/kernel/control-kernel.test.ts
+npm test -- tests/kernel/kernel-workflow.test.ts
+npm test -- tests/execution/executor-recovery-refresh-service.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
-npm test -- tests/task/scheduler.test.ts
-npm test -- tests/session/task-admission-gate.test.ts
-npm test -- tests/execution/execution-runtime.test.ts
-npm test -- tests/integrations/feishu-app.test.ts
-npm test -- tests/session/scripted-session.test.ts
 ```
 
 ## Repository Layout
@@ -864,27 +897,29 @@ npm test -- tests/session/scripted-session.test.ts
 src/
 ├── cli/            # CLI args: --script, --gateway, --connect
 ├── commands/       # Slash command router and handlers
-├── core/           # Shared primitives, LLM bridge, capability classes, strategy primitives
+├── core/           # Narrow shared primitives and normalized KernelFailure facts
 ├── delivery/       # Verification, artifact extraction, aggregation checks, and final delivery preparation
-├── execution/      # Execution runtime, work-unit claims, orchestration, aggregation, progress, workspace, conversation runtime
+├── execution/      # Authorized side effects: workflow apply, probes, claims, attempts, sandbox, Git publication
 ├── executor/       # Executor adapters plus AgentClass admin/seeder services, prompt builders, skill packages
 ├── gateway/        # Local Gateway server/client and Feishu gateway runtime
 ├── guidance/       # Proactive guidance, task signals, guidance policy, dashboard orchestration
 ├── integrations/   # External integration helpers such as Markdown preview
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
-├── kernel/         # Pure ControlKernel contracts/decisions and synchronous control-loop seam
+├── kernel/         # Pure ControlKernel v5 contracts/decisions and durable workflow seam
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Explicit preferences, deterministic conversation context, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
 ├── planning/       # PlanningAgent interface (CodexPlanningAgent), context builder, plan schema/vocabulary, validation
+├── resource/       # Partition identity, conflicts, permission profiles, grants, and capability-use rules
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories
 ├── task/           # Task domain state machine and runtime
 ├── tui/            # Ink terminal UI
-└── utils/          # Config, paths, logger, IDs
+├── utils/          # Config, paths, logger, IDs
+└── work-graph/     # Shared graph types, validation, cancellation closure, and runnable frontier
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow and keeps shared primitives plus the shared `KernelFailure` fact. Keyword RuleHints, task-routing intent guesses, the generic memory/ranking LLM bridge, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Kernel runtime, `src/execution/`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow and keeps shared primitives plus the shared `KernelFailure` fact. Keyword RuleHints, task-routing intent guesses, the generic memory/ranking LLM bridge, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Application Shell, `src/execution/`, and the storage repositories.
 
 ## License
 

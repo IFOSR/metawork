@@ -56,17 +56,18 @@ The executor layer is adapter-based, so organizations can register vertical agen
 
 ```mermaid
 flowchart LR
-  Intake[People / CLI / Gateway / Feishu] --> Planning[Planning Agent<br/>Intent and work graph]
-  Planning --> Kernel[Control Kernel<br/>Policy and authorization]
-  Kernel --> Scheduler[Durable Scheduler<br/>State and dependency readiness]
-  Scheduler --> Routing[Capability Routing<br/>Agent class and runtime health]
-  Routing --> Agents[Specialized Agent Work Units<br/>Engineering / Analysis / Custom]
+  Intake[People / TUI / CLI / Gateway / Feishu] --> Session[MetaClaw Session<br/>Application Shell]
+  Session --> Planning[Planning Agent<br/>Native Codex thread]
+  Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
+  Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
+  Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
+  Runtime --> Agents[Sandboxed Agent Work Units<br/>Codex / Pi / Custom]
   Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
 
   State[(Persistent Task State<br/>memory / attempts / audit)]
   Planning <--> State
-  Kernel <--> State
-  Scheduler <--> State
+  Workflow <--> State
+  Runtime <--> State
   Verify --> State
 ```
 
@@ -76,7 +77,7 @@ Three boundaries keep the workflow governable:
 2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
 3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
 
-Work graphs already model independent branches, specialist assignments, and typed dependency delivery. Resource partitioning, durable leases, persistent workspaces, short-lived attempt sandboxes and crash recovery are active. The current preview still deliberately serializes ready-subtask execution; Phase 6 will use those enforced foundations for safe asynchronous dispatch.
+Work graphs model independent branches, specialist assignments, and typed dependency delivery. The durable Kernel workflow serializes authorization and application, while up to four independent attempts inside the one active top-level Task may run concurrently. Resource partitioning, durable leases, persistent workspaces, short-lived attempt sandboxes, deterministic Git publication, crash recovery, and event-driven Executor error recovery are active.
 
 ## Quick Start
 
@@ -107,7 +108,7 @@ AnyFusion classifies the request, creates a durable task when required, authoriz
 | Maturity | Developer Preview |
 | Deployment | Limited internal pilot use |
 | Task scope | One active top-level task with dependency-aware subtasks |
-| Dispatch | Serial ready-subtask execution in the current preview; safe asynchronous concurrency is on the published roadmap |
+| Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
 | Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
 
 AnyFusion is not presented as Production Ready. The preview is intended to validate the task control plane, work-graph contracts, specialist routing, verification model, and operational workflow before stable compatibility commitments are made.

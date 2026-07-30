@@ -105,7 +105,7 @@
 | `src/executor/factory.ts` | 已删除 deprecated Executor factory |
 | `src/session/session-execution-coordinator.ts` | 已删除 Session → Execution 兼容转发 barrel |
 | `src/storage/planning-decision-repo.ts` | 已删除旧 Planning Decision repository |
-| SQLite v1–v27 顺序升级链 | 已压平为首次发布基线 schema；不要重新引入版本升级兼容 |
+| SQLite v1–v28 顺序升级链 | 已压平为首次发布基线 schema；不要重新引入版本升级兼容 |
 | Phase 6 attempt terminal/recovery 收束 | 已抽出 `AttemptTerminalService` 并补齐恢复测试，不属于本轮瘦身范围 |
 
 ## 3. P0：自然语言语义影子栈（已完成，2026-07-28）

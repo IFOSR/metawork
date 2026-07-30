@@ -48,6 +48,15 @@ Example:
 
 Historical custom classes without the image/profile triplet remain visible for audit but cannot execute. There is no production host-process fallback.
 
+Executor availability uses a structured `probe()` rather than a boolean command
+check. For a class already in `error`, the recovery probe verifies the local
+Docker Engine, immutable image, `metaclaw-control` network, runtime command, and
+configuration in layers; authentication/provider-network failures may add the
+Adapter's minimal remote validation. A successful recovery check may only move
+that checked class from `error` to `healthy`. Healthy/unverified classes are not
+periodically polled, disabled classes never auto-recover, and a shared
+infrastructure result is not projected onto classes that were not checked.
+
 ## Mount and persistence contract
 
 - `/workspace` is the only bind-mounted writable tree; `/tmp` is a size-limited tmpfs.
@@ -77,8 +86,16 @@ docker build -f Dockerfile.test -t metaclaw-test .
 docker run --rm metaclaw-test
 # Run the Docker integration test from a control container with the Engine
 # socket and an explicit host-path map.
-# Run the real-task smoke from metaclaw-runtime:phase5 with
-# METACLAW_SMOKE_IN_DOCKER=true and the three docker/*.env files mounted read-only.
+# The default live smoke verifies two turns in one native Codex Planner session.
+npm run smoke:metaclaw
+# The explicit artifact gate exercises Planner -> Kernel -> attempt -> publication.
+npm run smoke:metaclaw -- --scenario artifact
 ```
 
-The integration and smoke commands require the canonical attempt images and a trusted local Docker Engine. Both test bodies run inside a trusted control-plane container; the host only performs Docker orchestration. The smoke verifies Planner → Kernel → disposable Executor attempt → scoped model gateway → persistent workspace/artifact → container cleanup. The attempt itself never receives the Engine socket.
+The Docker integration and artifact smoke require the canonical attempt images
+and a trusted local Docker Engine. Their test bodies run inside a trusted
+control-plane container; the host only performs Docker orchestration. The
+artifact smoke verifies Planner → Kernel → disposable Executor attempt → scoped
+model gateway → persistent workspace/artifact → container cleanup. The default
+smoke instead verifies native Planner-thread continuity and does not prove the
+Executor artifact path. The attempt itself never receives the Engine socket.

@@ -3,7 +3,7 @@
 > 状态：已完成
 > 计划日期：2026-07-30
 > 完成日期：2026-07-30
-> 实施提交：本次 closing commit（`fix: recover errored executors through refresh`）
+> 实施提交：`317c406`（`fix: recover errored executors through refresh`）
 
 ## 目标
 

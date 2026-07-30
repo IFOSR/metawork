@@ -2,7 +2,12 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> Phase 6 最终架构（2026-07-28）：`KernelWorkflow` 继续串行完成 event、Kernel v4 Decision 和 application，但 `dispatch_batch` 会持久化多个 child item，由 attempt supervisor 在单一活跃顶层 Task 内并行启动最多四个隔离 attempt。SQLite v26 增加 dispatch item、候选 publication 和不可变 merge audit；v27 增加持久取消收束、lease revocation、generation replan 和显式部分完成。所有新文件任务统一使用内部 Git，只有 publication 成功后才原子发布 Subtask 完成事实。ADR-0011 保持有效；多顶层 Task 调度移入未来独立路线图。
+> 当前实现基线（2026-07-30）：PlanningAgentPlan v6、Work Graph
+> v5、Kernel event/snapshot/decision contract v5、Completion Protocol v2，
+> 以及只支持全新安装的 SQLite schema v28。`KernelWorkflow` 串行完成
+> event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
+> 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
+> 属于未来独立路线图。
 
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
@@ -12,13 +17,13 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 
 - 持久任务状态：created、ready、running、parked、blocked、done、archived、cancelled。
 - 中断后通过 resume context 继续，不从头重做。
-- timer 仅重查由 decision ledger 标记的容量阻塞；普通执行失败不自动恢复。
-- Kernel v4 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
+- timer 仅重查由 decision ledger 标记的容量阻塞；Executor `error` 恢复使用重要节点触发的结构化 probe，不做周期轮询。
+- Kernel v5 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
 - 当前强制单一活跃顶层任务，避免 ControlKernel 与 work-unit dispatch 加固期间出现多任务并存的歧义。
 - 通过本地 SQLite FTS 索引向 PlanningAgent 提供显式的历史任务检索。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
-- 已实现并测试 Agentic Loop 核心层：聚合执行器结果、检查证据、发现不满足验收的部分并反馈重试。
+- Planner → ControlKernel → Runtime 是唯一策略主链；验收、retry、fallback、replan 和 recovery 不再由第二套 Agentic Loop 解释。
 - 每个活动 MetaClaw session 绑定一个原生 Codex Planner thread；已确认偏好和运行时事实通过只读 Planner MCP 按需查询。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
@@ -38,7 +43,9 @@ flowchart LR
   Session --> MemoryFast[显式记忆和偏好快路]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v6<br/>意图、目标、候选、<br/>v5 graph 或授权确认]
-  Plan --> Kernel[ControlKernel v4<br/>frontier、batch、资源、<br/>permission 与恢复]
+  Plan --> Event[KernelEvent<br/>plan_proposed]
+  Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
+  Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
   Kernel --> Decision{KernelDecision}
   Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
@@ -46,7 +53,7 @@ flowchart LR
   Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>创建或绑定任务]
   Decision -->|reject/no_action| Stop[不执行<br/>保留状态]
 
-  Runtime --> TaskOS[Task OS<br/>TaskRuntimeService 和 Scheduler]
+  Runtime --> TaskOS[Task OS<br/>TaskRuntimeService]
   TaskOS --> ExecCoord[KernelExecutionRuntime<br/>构造 scheduling snapshot]
   ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>应用已授权 work graph]
   GraphRuntime --> Graph[Work Graph<br/>持久化 Subtasks]
@@ -65,7 +72,7 @@ flowchart LR
   Delivery --> User
 
   Session <--> Store[(本地 SQLite<br/>任务、subtasks、agent classes、<br/>work units、events、memory)]
-  Kernel -. audit .-> Decisions[(planning_decisions)]
+  Workflow -. audit .-> Decisions[(kernel_decisions)]
   TaskOS <--> Store
   Graph <--> Store
   Attempt <--> Store
@@ -74,6 +81,21 @@ flowchart LR
 所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
 Codex `PlanningAgent` 使用专用 runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个原生 Codex thread：首轮捕获 `thread.started.thread_id`，后续通过 `codex exec resume` 续轮。Codex 自己管理对话历史；MetaClaw 不再从 SQLite interaction 重建提示词。Planner 仍使用独立 `CODEX_HOME`、原生 developer instructions、核心 Skill、output schema、只读 sandbox 和专用 MCP。
+
+Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
+enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
+刷新进行合并，单次 probe 最长 30 秒，并把有界、脱敏的恢复证据和真实
+attempt 历史分开保存。成功 probe 只允许 `error -> healthy`；`disabled`
+是管理锁，healthy/unverified 不会被反向巡检。触发点是 Session 启动、
+planning cycle、Task resume/recovery、Executor 配置变化和
+`/executor refresh [name|all]`。
+
+Planning 与恢复刷新并行开始，但 Kernel 准入前必须等待两者汇合。相关候选
+恢复时，Planner 可在同一个原生 Codex thread 中修订一次提案。已有 Task
+仍无可用 eligible class 时，Kernel 会把精确提案保存为
+`waiting_for_availability` 并结构化阻塞；后续 `executor_recovered` 事实
+可重新准入该提案，将 Task 转为 `ready`，不会再次调用 Planner，也不会立即
+dispatch。
 
 ### 普通问答路径
 
@@ -742,9 +764,15 @@ AnyFusion 会：
 
 主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
+Ink TUI 仍是当前受支持的产品入口。`SessionSnapshot.plannerState` 来自真实
+Planner 调用计数，并在 terminal/finally 路径回到 idle，因此 Planner 动画
+不应由 Task 业务状态推断。Executor 进度、Task 面板、命令补全、Guidance、
+飞书 bridge attachment 和后台 Task-pool 检查也继续属于当前 TUI contract；
+未来可能切换 Codex 原生界面，不代表现在可以删除这套实现。
+
 ## 任务检索
 
-AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id，也可以通过关键词、上下文和关系找回相关任务。
+AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id；Planner 可先用查询文本搜索，再读取明确选中的任务上下文。
 
 命令：
 
@@ -757,7 +785,7 @@ AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可
 
 ## 单 Task 并发调度模型
 
-AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v4 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
+AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v5 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
 
 当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
@@ -772,7 +800,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
 
-`ControlKernel` v4 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
+`ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和 sandbox recovery。
 
 `DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v5 graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
@@ -782,7 +810,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v27 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 一次包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v28 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 一次包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
@@ -850,14 +878,14 @@ anyfusion --script /tmp/anyfusion-flow.txt
 针对性测试：
 
 ```bash
-npm test -- tests/session/planner-work-unit-bugfix.test.ts
+npm test -- tests/planning/planner-codex-runner.test.ts
+npm test -- tests/session/planning-agent-session-routing.test.ts
+npm test -- tests/session/planning-kernel-path.test.ts
+npm test -- tests/kernel/control-kernel.test.ts
+npm test -- tests/kernel/kernel-workflow.test.ts
+npm test -- tests/execution/executor-recovery-refresh-service.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
-npm test -- tests/task/scheduler.test.ts
-npm test -- tests/session/task-admission-gate.test.ts
-npm test -- tests/execution/execution-runtime.test.ts
-npm test -- tests/integrations/feishu-app.test.ts
-npm test -- tests/session/scripted-session.test.ts
 ```
 
 ## 目录结构
@@ -866,15 +894,15 @@ npm test -- tests/session/scripted-session.test.ts
 src/
 ├── cli/            # CLI 参数解析：--script、--gateway、--connect
 ├── commands/       # Slash command 路由和命令处理
-├── core/           # 共享基础类型、LLM bridge、capability classes、策略基础
+├── core/           # 窄共享基础类型和规范化 KernelFailure 事实
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
-├── execution/      # 执行 runtime、work-unit claim、编排、聚合、进度、workspace、对话 runtime
+├── execution/      # 已授权副作用：workflow apply、probe、claim、attempt、sandbox、Git publication
 ├── executor/       # Executor adapter，以及 AgentClass admin/seeder、prompt、skill package
 ├── gateway/        # 本地 Gateway server/client 和飞书 Gateway runtime
 ├── guidance/       # 主动引导、任务信号、引导策略和仪表盘编排
 ├── integrations/   # 外部集成辅助能力，例如 Markdown preview
 ├── intent/         # 内联资源归一化和非路由意图/材料辅助函数
-├── kernel/         # 纯 ControlKernel，负责 PlanningAgentPlan 与 Runtime event 授权
+├── kernel/         # 纯 ControlKernel v5 contract/decision 与 durable workflow seam
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 显式偏好、确定性会话上下文和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
@@ -884,10 +912,11 @@ src/
 ├── storage/        # SQLite migrations 和 repositories
 ├── task/           # 任务状态机和 runtime
 ├── tui/            # Ink 终端 UI
-└── utils/          # 配置、路径、日志、ID 等通用工具
+├── utils/          # 配置、路径、日志、ID 等通用工具
+└── work-graph/     # 共享 graph 类型、校验、取消闭包和 runnable frontier
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄，只保留共享基础类型和共享 `KernelFailure` 事实。关键词 RuleHints、通用记忆/排序 LLM bridge、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、Session Kernel runtime、`src/execution/` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄，只保留共享基础类型和共享 `KernelFailure` 事实。关键词 RuleHints、通用记忆/排序 LLM bridge、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、Session Application Shell、`src/execution/` 和 storage repositories。
 
 ## License
 

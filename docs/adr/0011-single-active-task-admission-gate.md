@@ -57,8 +57,9 @@ now. This is a scope decision, not a discovery of a bug.
 - The following pre-existing acceptance cases encode the *old* multi-task
   behavior (queue / preempt / multi-task resume). They are **kept but
   `it.skip`-ped**, not deleted, because multi-task scheduling is expected to
-  return — at which point the gate is relaxed and these cases are un-skipped and
-  fixed as needed (tracked in `ISSUES.md`):
+  return — at which point the gate is relaxed and these cases are rewritten
+  against the new policy rather than blindly un-skipped (tracked in the
+  [future multi-Task scheduling roadmap](../plans/future-multi-task-scheduling-roadmap.md)):
   - `tests/tui/auto-resume-preempted.test.ts` — "resumes the preempted parked task before a later normal queued task"
   - `tests/tui/guidance-blocks.test.ts` — "shows a completion guidance block that points to the next queued task"
   - `tests/tui/guidance-panel.test.ts` — "updates the guidance panel after task completion points to the next queued task"
