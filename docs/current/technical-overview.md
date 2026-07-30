@@ -16,13 +16,13 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
 - Validates every Subtask through Completion Protocol v2, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
-- Supplies bounded confirmed global preferences and recent conversation history to the PlanningAgent; Runtime does not perform implicit semantic recall.
+- Binds each live MetaClaw session to one native Codex Planner thread; confirmed preferences and runtime facts stay queryable through the read-only Planner MCP.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
 - Shows the interactive TUI input, current task, planning and policy milestones, execution preparation, work-unit dispatch, executor progress, and final task result so users can follow the core execution path instead of seeing only the final answer.
 - Supports terminal-native editing in the TUI composer, including spaces, multiline input, left/right cursor movement, Backspace at the cursor, and forward delete when the terminal emits a raw delete sequence.
-- Ships with `npm run smoke:anyfusion`, a real AnyFusion end-to-end smoke gate that runs the CLI, executor, artifact capture, and regression checks.
+- Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one native Codex Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
 
@@ -64,7 +64,7 @@ flowchart LR
 
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
-The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. It runs with a separate `CODEX_HOME`, core Planner Skill, generated output schema, JSONL event parsing, read-only sandbox, and dedicated Planner MCP. It also has a read-only shell (`grep`/`cat`/`ls`) so it can read repository files and answer code questions directly; the read-only sandbox lets reads through and denies every write (on Linux this needs `--security-opt seccomp=unconfined`, granted once at container creation). Runtime errors are not injected into every planning turn: bounded redacted diagnostic facts are persisted by Runtime and available through explicit read-only Planner MCP queries when the user asks why execution failed or blocked. Invalid output is repaired once; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. One live MetaClaw session maps to one native Codex thread: the first turn captures `thread.started.thread_id`, and later turns use `codex exec resume`. Codex owns dialogue history; MetaClaw does not rebuild it from SQLite interactions. The Planner runs with a separate `CODEX_HOME`, native developer instructions, core Planner Skill, generated output schema, read-only sandbox, and dedicated Planner MCP. Confirmed preferences, routing, authorization and runtime facts are read on demand through MCP. Invalid output is repaired once in the same thread; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
 ### Direct Reply Path
 
@@ -82,7 +82,7 @@ flowchart LR
   Answer --> UI[TUI or Feishu]
 ```
 
-This path is still semantic. The PlanningAgent (read-only sandbox) resolves "continue" or "you stopped halfway" itself — inspecting recent session context and runtime facts through its read-only tools — and writes the final user-visible answer into `response.directReply`. The runtime surfaces that text as-is; it does not run an executor a second time for a reply turn.
+This path is still semantic. The native Codex thread preserves dialogue such as "continue" or "you stopped halfway"; durable MetaClaw facts remain explicit MCP queries. The PlanningAgent writes the final user-visible answer into `response.directReply`, and runtime surfaces it as-is.
 
 ### Durable Task Path
 
@@ -128,11 +128,11 @@ Feishu progress is intentionally split into AnyFusion milestones and concrete ex
 
 The conversation/task boundary matters:
 
-- Conversation: answer now, do not create durable state. Before each PlanningAgent turn, AnyFusion injects bounded confirmed global memory and current-session conversation history. Direct replies are persisted as interactions and automatically appear in the recalled context of later turns.
+- Conversation: answer now, do not create durable state. The native Codex thread owns dialogue continuity. Direct replies are persisted as audit facts, not replayed into later prompts.
 - Task control: inspect or change existing task state. Good for "what is running?", "resume that task", or "clear blocked tasks".
 - Durable task: create or continue work that needs execution, persistence, artifacts, recovery, scheduling, or later retrieval.
 
-The current direct-reply path is explicit: AnyFusion assembles bounded long-term memory and recent conversation history before planning, the PlanningAgent produces `response.directReply`, and runtime delivers that answer without claiming an executor work unit. Feishu final replies wait for direct-reply output to settle before sending the answer, so a progress card does not replace the final result.
+The current direct-reply path is explicit: MetaClaw sends the current turn through the bound native Codex thread, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
 The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
@@ -203,8 +203,9 @@ npm run smoke:anyfusion
 The install is usable when `anyfusion --help` prints the CLI help and `npm run smoke:anyfusion` ends with:
 
 ```text
-AnyFusion real task smoke passed.
-Artifact: /tmp/.../smoke-result.md
+MetaClaw native Planner session smoke passed.
+Scenario: planner-session
+Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
 ```
 
 `setup.sh` installs AnyFusion itself, builds the local CLI, links `anyfusion`, creates `~/.metaclaw/config.yaml`, and detects installed executors on `PATH`.
@@ -228,7 +229,7 @@ Install checklist:
 - `~/.metaclaw/config.yaml` exists.
 - `anyfusion --help` works from a new shell.
 - The default executor command works, for example `codex --help`.
-- `npm run smoke:anyfusion` passes and prints the generated artifact path.
+- `npm run smoke:anyfusion` passes and prints the native Planner session path.
 
 Setup options:
 
@@ -842,7 +843,7 @@ npm run lint
 npm run smoke:anyfusion
 ```
 
-`npm run smoke:anyfusion` is the required real end-to-end smoke gate for feature work. It builds AnyFusion, starts `node dist/index.js --script` with an isolated temporary `METACLAW_HOME` and workspace, submits a real task, lets the configured executor create an artifact, and verifies the artifact path and file content. By default the smoke config uses `codex`; pass another executor/scenario with `npm run smoke:anyfusion -- --executor pi --scenario python-hello` or `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:anyfusion`. New runtime features should pass this smoke path, or the failure/skip reason must be called out explicitly.
+`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one native Codex session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`.
 
 Targeted tests:
 

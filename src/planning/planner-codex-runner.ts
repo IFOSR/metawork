@@ -17,6 +17,7 @@ export interface PlannerToolCallTrace {
 export interface PlannerRunResult {
   output: string;
   toolCalls: PlannerToolCallTrace[];
+  threadId: string | null;
   durationMs: number;
 }
 
@@ -36,6 +37,8 @@ export interface CodexPlannerRunnerDeps {
 }
 
 export class CodexPlannerRunner implements PlannerCodexRunner {
+  private readonly threadIdsBySession = new Map<string, string>();
+
   constructor(private readonly deps: CodexPlannerRunnerDeps = {}) {}
 
   async run(prompt: string, context: PlanningContext): Promise<PlannerRunResult> {
@@ -51,9 +54,14 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
     const plannerEnv = buildEnvFromFile(
       this.deps.envFile ?? process.env.METACLAW_PLANNER_ENV_FILE,
     );
+    const sessionId = context.request.sessionId;
+    const existingThreadId = this.threadIdsBySession.get(sessionId);
+    const args = existingThreadId
+      ? buildPlannerCodexResumeArgs(existingThreadId, prompt, schemaPath)
+      : buildPlannerCodexArgs(`$metaclaw-planner\n\n${prompt}`, schemaPath);
 
     return new Promise((resolve, reject) => {
-      const proc = (this.deps.spawn ?? spawn)(command, buildPlannerCodexArgs(prompt, schemaPath), {
+      const proc = (this.deps.spawn ?? spawn)(command, args, {
         cwd,
         timeout: context.timeoutMs,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -78,6 +86,11 @@ export class CodexPlannerRunner implements PlannerCodexRunner {
         }
         try {
           const parsed = parseCodexJsonl(stdout);
+          if (!existingThreadId && !parsed.threadId) {
+            reject(new Error('Codex planner did not report a native thread id'));
+            return;
+          }
+          if (parsed.threadId) this.threadIdsBySession.set(sessionId, parsed.threadId);
           resolve({ ...parsed, durationMs: Date.now() - startedAt });
         } catch (error) {
           reject(error);
@@ -91,7 +104,6 @@ export function buildPlannerCodexArgs(prompt: string, schemaPath: string): strin
   return [
     'exec',
     '--sandbox', 'read-only',
-    '--ephemeral',
     '--skip-git-repo-check',
     '--json',
     '--output-schema', schemaPath,
@@ -100,6 +112,26 @@ export function buildPlannerCodexArgs(prompt: string, schemaPath: string): strin
     '--disable', 'multi_agent',
     '--disable', 'goals',
     '--disable', 'guardian_approval',
+    prompt,
+  ];
+}
+
+export function buildPlannerCodexResumeArgs(
+  threadId: string,
+  prompt: string,
+  schemaPath: string,
+): string[] {
+  return [
+    'exec',
+    'resume',
+    '--skip-git-repo-check',
+    '--json',
+    '--output-schema', schemaPath,
+    '--disable', 'apps',
+    '--disable', 'multi_agent',
+    '--disable', 'goals',
+    '--disable', 'guardian_approval',
+    threadId,
     prompt,
   ];
 }
@@ -114,11 +146,15 @@ export function parseCodexJsonl(stdout: string): Omit<PlannerRunResult, 'duratio
   }).filter((event): event is Record<string, unknown> => event !== null);
   const toolCalls: PlannerToolCallTrace[] = [];
   let output = '';
+  let threadId: string | null = null;
 
   for (const event of events) {
     const item = isRecord(event.item) ? event.item : event;
     const eventType = String(event.type ?? '');
     const itemType = String(item.type ?? event.type ?? '');
+    if (eventType === 'thread.started' && typeof event.thread_id === 'string') {
+      threadId = event.thread_id;
+    }
     if (itemType === 'agent_message' || itemType === 'message') {
       const text = extractText(item);
       if (text) output = text;
@@ -151,7 +187,7 @@ export function parseCodexJsonl(stdout: string): Omit<PlannerRunResult, 'duratio
       `Codex planner JSONL did not contain a final agent message (events: ${eventTypes || 'none'})`,
     );
   }
-  return { output, toolCalls };
+  return { output, toolCalls, threadId };
 }
 
 function isFailedToolEvent(event: Record<string, unknown>, item: Record<string, unknown>): boolean {

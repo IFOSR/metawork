@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join } from 'path';
+import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
@@ -119,9 +120,11 @@ export class PlannerDataReader {
         return {
           id: row.id,
           taskId: row.task_id,
+          requestText: truncateText(String(event.requestText ?? ''), 500),
           action: plan.action,
           control: task.control,
           targetTaskId: task.taskId,
+          clarificationQuestion: truncateText(String(plan.clarificationQuestion ?? ''), 500) || null,
           outcome: 'issued',
           kernelAction: row.action,
           riskRequiresConfirmation: risk.requiresConfirmation === true,
@@ -194,6 +197,44 @@ export class PlannerDataReader {
     };
   }
 
+  getPlanningContext() {
+    const preferences = this.db.prepare(`
+      SELECT id, type, scope, subject, content, confirmed_at
+      FROM preferences
+      WHERE status = 'confirmed' AND scope = 'global'
+      ORDER BY COALESCE(confirmed_at, updated_at) DESC
+      LIMIT ?
+    `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
+    const pending = this.db.prepare(`
+      SELECT id, task_id, capability, resource_text, operation, reason, created_at
+      FROM permission_requests
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get() as Record<string, unknown> | undefined;
+    return {
+      sessionId: this.sessionId,
+      confirmedPreferences: preferences.map(row => ({
+        id: row.id,
+        type: row.type,
+        scope: row.scope,
+        subject: row.subject,
+        content: truncateText(String(row.content ?? ''), 1_000),
+        confirmedAt: row.confirmed_at,
+      })),
+      pendingAuthorizationRequest: pending ? {
+        requestId: pending.id,
+        taskId: pending.task_id,
+        capability: pending.capability,
+        resource: pending.resource_text,
+        operation: pending.operation,
+        reason: truncateText(String(pending.reason ?? ''), 1_000),
+        createdAt: pending.created_at,
+      } : null,
+      routingCatalog: getPlannerExecutorCatalog(),
+    };
+  }
+
   getExecutorDiagnostics(input: { agentClassName?: string; limit?: number }) {
     const limit = boundedLimit(input.limit);
     const params: unknown[] = [];
@@ -243,9 +284,13 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     inputSchema: { taskId: z.string().min(1).max(160) },
   }, async input => toolResult(reader.getTaskContext(input.taskId)));
   server.registerTool('get_current_session_context', {
-    description: 'Read bounded recent interactions and planning decisions for the current trusted session only.',
+    description: 'Read bounded durable MetaClaw interaction and planning-decision audit facts for the current trusted session. Native Codex thread history is the authority for dialogue continuity.',
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
+  server.registerTool('get_planning_context', {
+    description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, and canonical routing capabilities and AgentClasses. Call before executable planning, preference-dependent replies, or authorization resolution.',
+    inputSchema: {},
+  }, async () => toolResult(reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
     description: 'Read one bounded interaction side by stable ID only when the current user explicitly referenced it.',
     inputSchema: {

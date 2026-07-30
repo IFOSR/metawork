@@ -5,6 +5,7 @@ const expectedTools = [
   'search_tasks',
   'get_task_context',
   'get_current_session_context',
+  'get_planning_context',
   'get_session_interaction',
   'get_runtime_state',
   'get_executor_diagnostics',
@@ -31,6 +32,8 @@ try {
   }
   const state = await client.callTool({ name: 'get_runtime_state', arguments: {} });
   if (state.isError) throw new Error('get_runtime_state returned an MCP error');
+  const planningContext = await client.callTool({ name: 'get_planning_context', arguments: {} });
+  if (planningContext.isError) throw new Error('get_planning_context returned an MCP error');
   const diagnostics = await client.callTool({
     name: 'get_executor_diagnostics',
     arguments: { limit: 1 },

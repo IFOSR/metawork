@@ -783,15 +783,9 @@ export class MetaclawSession {
 
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
     this.appendOutput('【MetaClaw｜理解用户请求】');
-    const initialContext = await this.memoryContextService.preparePlanningInitialContext({
-      sessionId: this.deps.sessionId,
-      userInput,
-      topK: this.deps.config.orchestration.top_k_preferences,
-    });
     const pendingPermission = this.permissionRepository.findOldestPending();
     const context = this.planningContextBuilder.build({
       userInput,
-      initialContext,
       pendingAuthorizationRequest: pendingPermission ? {
         requestId: pendingPermission.request.id,
         taskId: pendingPermission.request.taskId,
@@ -890,7 +884,6 @@ export class MetaclawSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.planningContextBuilder.build({
       userInput: request,
-      initialContext: { longTermMemories: [], conversationHistory: [] },
     });
     const plan = await this.planningAgent.plan(context);
     return {
@@ -931,7 +924,6 @@ export class MetaclawSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.planningContextBuilder.build({
       userInput: request,
-      initialContext: { longTermMemories: [], conversationHistory: [] },
     });
     const plan = await this.planningAgent.plan(context);
     return {

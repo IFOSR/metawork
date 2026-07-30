@@ -31,6 +31,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(smoke.readOption(['--executor', 'pi'], '--executor')).toBe('pi');
     expect(smoke.readOption(['--scenario=python-hello'], '--scenario')).toBe('python-hello');
     expect(smoke.parseExecutorCommand('pi')).toBe('pi');
+    expect(smoke.parseScenario('planner-session')).toBe('planner-session');
     expect(smoke.parseScenario('python-hello')).toBe('python-hello');
     expect(smoke.parsePositiveInteger('42', 10)).toBe(42);
     expect(() => smoke.parseExecutorCommand('pi;rm')).toThrow(/Invalid smoke executor command/);
@@ -77,5 +78,40 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(script).toContain('Runtime will provide the exact authorized target directory');
     expect(script).toContain('do not ask me for a path');
     expect(script).not.toContain('in the current directory');
+  });
+
+  it('uses exactly two dialogue turns for the native Planner session memory smoke', async () => {
+    const smoke = await loadSmokeScript();
+    const script = smoke.buildScenarioScript('planner-session');
+    const turns = script.trim().split('\n');
+
+    expect(turns).toHaveLength(3);
+    expect(turns[0]).toContain(smoke.plannerMemoryMarker);
+    expect(turns[1]).not.toContain(smoke.plannerMemoryMarker);
+    expect(turns[1]).toContain('刚才');
+    expect(turns[2]).toBe('/exit');
+  });
+
+  it('requires the second reply to recall the marker from one native Codex session', async () => {
+    const smoke = await loadSmokeScript();
+
+    expect(smoke.verifyPlannerSessionScenario({
+      interactions: [{
+        userInput: '刚才的测试口令是什么？只回复口令。',
+        systemOutput: smoke.plannerMemoryMarker,
+      }],
+      sessionFiles: ['/planner/sessions/2026/07/30/rollout-one.jsonl'],
+    })).toEqual({
+      nativeSessionPath: '/planner/sessions/2026/07/30/rollout-one.jsonl',
+    });
+
+    expect(() => smoke.verifyPlannerSessionScenario({
+      interactions: [{ userInput: '刚才的测试口令是什么？', systemOutput: '不知道' }],
+      sessionFiles: ['/planner/sessions/one.jsonl'],
+    })).toThrow(/did not recall/);
+    expect(() => smoke.verifyPlannerSessionScenario({
+      interactions: [{ userInput: '刚才的测试口令是什么？', systemOutput: smoke.plannerMemoryMarker }],
+      sessionFiles: ['/planner/sessions/one.jsonl', '/planner/sessions/two.jsonl'],
+    })).toThrow(/exactly one native Codex session/);
   });
 });

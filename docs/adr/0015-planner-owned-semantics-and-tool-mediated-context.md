@@ -54,3 +54,24 @@ Write protection is enforced at the OS layer, not by withholding the shell: the 
 ## Amendment: tool-mediated runtime diagnostics
 
 Runtime failures, interruptions and recovery facts are not passive Planner context. The owning Runtime or adapter persists a bounded, redacted reason at the point where the failure is observed. Planner receives that evidence only through an explicit read-only diagnostic tool when the user asks why execution is blocked or unavailable, and explains the persisted fact in natural language. Raw logs, credentials and write authority remain outside the Planner interface.
+
+## Amendment: native Codex conversation ownership
+
+As of 2026-07-30, this amendment supersedes the earlier ephemeral-runner and
+per-turn startup-context rules. One live MetaClaw session is bound to one native
+Codex thread: the first Planner turn uses `codex exec`, captures
+`thread.started.thread_id`, and later turns use `codex exec resume` with that
+thread. Codex owns dialogue history and compaction. MetaClaw keeps only the
+in-process `sessionId -> threadId` resume handle for this pre-release scope; it
+does not replay a second model conversation.
+
+Stable Planner authority is registered through native Codex mechanisms:
+`developer_instructions`, the `metaclaw-planner` Skill, the structured output
+schema, and the session-scoped read-only MCP. Each turn sends only the current
+user input; one validation repair sends only validation errors in the same
+thread. Confirmed preferences, canonical routing facts, exact pending
+authorization, task/runtime state and diagnostics are queried through MCP when
+needed rather than serialized into every prompt.
+
+SQLite interactions and Kernel decisions remain durable product audit/query
+facts. They are not reconstructed into Codex dialogue history.

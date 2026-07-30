@@ -158,14 +158,14 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
-  it('uses confirmed global memory in a direct reply', async () => {
+  it('does not inject confirmed global memory into the Planner model input', async () => {
     const harness = createSession('sess_direct_memory', context => plan({
       action: 'direct_reply',
-      reason: '回答用户的名字',
+      reason: '确认宿主不注入偏好',
       response: {
         directReply: JSON.stringify(context).includes('我的名字是咸蛋超人')
-          ? '你的名字是咸蛋超人。'
-          : '我不知道你的名字。',
+          ? '宿主注入了偏好。'
+          : '偏好需要通过 Planner MCP 查询。',
       },
       task: {
         binding: 'none',
@@ -187,7 +187,9 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('我的名字是什么？', { awaitAsyncWork: true });
 
-    expect(harness.session.getSnapshot().output.join('\n')).toContain('你的名字是咸蛋超人。');
+    const output = harness.session.getSnapshot().output.join('\n');
+    expect(output).toContain('偏好需要通过 Planner MCP 查询。');
+    expect(output).not.toContain('宿主注入了偏好。');
   });
 
   it('does not expose an unconfirmed global memory to a direct reply', async () => {
@@ -219,19 +221,22 @@ describe('natural-language planning/kernel path', () => {
     expect(output).not.toContain('泄露了未确认记忆。');
   });
 
-  it('recalls persisted conversation history in the next direct reply', async () => {
+  it('lets the PlanningAgent own dialogue memory without replaying persisted history', async () => {
     let turn = 0;
+    let nativeThreadMarker: string | null = null;
+    const receivedInputs: string[] = [];
     const harness = createSession('sess_direct_history', context => {
       turn += 1;
-      const recalledFirstReply = JSON.stringify(context).includes('暗号是青鸟');
+      receivedInputs.push(context.userInput);
+      if (turn === 1 && context.userInput.includes('青鸟')) nativeThreadMarker = '青鸟';
       return plan({
         action: 'direct_reply',
         reason: '延续当前对话',
         response: {
           directReply: turn === 1
             ? '好的，暗号是青鸟。'
-            : recalledFirstReply
-              ? '你刚才的暗号是青鸟。'
+            : nativeThreadMarker
+              ? `你刚才的暗号是${nativeThreadMarker}。`
               : '我没有找到刚才的暗号。',
         },
         task: {
@@ -252,6 +257,10 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('我刚才说的暗号是什么？', { awaitAsyncWork: true });
 
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你刚才的暗号是青鸟。');
+    expect(receivedInputs).toEqual([
+      '请记住，暗号是青鸟。',
+      '我刚才说的暗号是什么？',
+    ]);
   });
 
   it('authorizes a durable task, dispatches the executor, and audits the decision', async () => {

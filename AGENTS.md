@@ -34,7 +34,7 @@ For deeper current architecture context, read `docs/current/technical-overview.m
 - `npm test`: run the full Vitest suite once.
 - `npm run test:watch`: run Vitest in watch mode.
 - `npm run lint`: type-check with `tsc --noEmit`.
-- `npm run smoke:metaclaw`: execute the real-task smoke script in `scripts/`.
+- `npm run smoke:metaclaw`: run the default two-turn native Codex Planner-session smoke; pass `--scenario artifact` for the executor artifact gate.
 
 ## Coding Style & Naming Conventions
 

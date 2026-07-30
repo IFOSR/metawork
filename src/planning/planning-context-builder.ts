@@ -16,23 +16,13 @@ export class PlanningContextBuilder {
 
   build(input: {
     userInput: string;
-    initialContext?: PlanningContext['initialContext'];
     pendingAuthorizationRequest?: PlanningContext['pendingAuthorizationRequest'];
   }): PlanningContext {
     return {
       userInput: input.userInput,
-      initialContext: input.initialContext ?? {
-        longTermMemories: [],
-        conversationHistory: [],
-      },
       request: {
         sessionId: this.deps.sessionId,
         source: this.deps.requestSource,
-      },
-      permissions: {
-        allowDurableTask: true,
-        allowFileModification: true,
-        allowExternalGateway: true,
       },
       pendingAuthorizationRequest: input.pendingAuthorizationRequest ?? null,
       executorCatalog: this.getExecutorCatalog(),

@@ -7,16 +7,7 @@ import type { PlanningContext } from '../../src/planning/planning-types.js';
 function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
   return {
     userInput: '实现一个功能',
-    initialContext: {
-      longTermMemories: [],
-      conversationHistory: [],
-    },
     request: { sessionId: 'session_test', source: 'test' },
-    permissions: {
-      allowDurableTask: true,
-      allowFileModification: true,
-      allowExternalGateway: true,
-    },
     pendingAuthorizationRequest: null,
     executorCatalog: getPlannerExecutorCatalog(),
     timeoutMs: 5_000,
@@ -29,6 +20,7 @@ function runner(run: (prompt: string) => Promise<string>) {
     run: vi.fn(async (prompt: string) => ({
       output: await run(prompt),
       toolCalls: [],
+      threadId: null,
       durationMs: 1,
     })),
   };
@@ -73,7 +65,7 @@ const VALID_PLAN = JSON.stringify({
 });
 
 describe('CodexPlanningAgent', () => {
-  it('includes initial long-term memory and conversation history in the startup prompt', async () => {
+  it('sends only the current user input instead of reconstructing a conversation prompt', async () => {
     let receivedPrompt = '';
     const agent = new CodexPlanningAgent({
       runner: runner(async prompt => {
@@ -82,26 +74,11 @@ describe('CodexPlanningAgent', () => {
       }),
     });
 
-    await agent.plan(context({
-      initialContext: {
-        longTermMemories: [{
-          id: 'pref_name',
-          type: 'identity',
-          scope: 'global',
-          subject: null,
-          content: '我的名字是咸蛋超人',
-        }],
-        conversationHistory: [{
-          userInput: '暗号是什么？',
-          systemOutput: '暗号是青鸟。',
-          createdAt: '2026-07-15T00:00:00.000Z',
-          source: 'session',
-        }],
-      },
-    }));
+    await agent.plan(context());
 
-    expect(receivedPrompt).toContain('我的名字是咸蛋超人');
-    expect(receivedPrompt).toContain('暗号是青鸟。');
+    expect(receivedPrompt).toBe('实现一个功能');
+    expect(receivedPrompt).not.toContain('session_test');
+    expect(receivedPrompt).not.toContain('workspace-engineering');
   });
 
   it('parses a v4 tool-grounded work graph and priority', async () => {
@@ -195,7 +172,7 @@ describe('CodexPlanningAgent', () => {
     }));
   });
 
-  it('injects the host file-modification authorization boundary into the prompt', async () => {
+  it('does not inject host authorization metadata into the user message', async () => {
     let receivedPrompt = '';
     const agent = new CodexPlanningAgent({ runner: runner(async prompt => {
       receivedPrompt = prompt;
@@ -209,6 +186,7 @@ describe('CodexPlanningAgent', () => {
       },
     }));
 
-    expect(receivedPrompt).toContain('"allowFileModification":false');
+    expect(receivedPrompt).toBe('实现一个功能');
+    expect(receivedPrompt).not.toContain('allowFileModification');
   });
 });

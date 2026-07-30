@@ -19,13 +19,13 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
 - 已实现并测试 Agentic Loop 核心层：聚合执行器结果、检查证据、发现不满足验收的部分并反馈重试。
-- 向 PlanningAgent 提供有界的已确认全局偏好和近期会话历史；Runtime 不执行隐式语义召回。
+- 每个活动 MetaClaw session 绑定一个原生 Codex Planner thread；已确认偏好和运行时事实通过只读 Planner MCP 按需查询。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
 - 交互式 TUI 会展示用户提交内容、当前任务、planning/policy 里程碑、执行准备、work-unit dispatch、执行器进度和最终任务结果，让用户能看到核心执行路径，而不是只看到最后答案。
 - TUI 输入框支持常见终端编辑行为：空格、多行输入、左右光标移动、按光标位置 Backspace 删除前一个字符，以及终端发出原始 Delete escape sequence 时的向前删除。
-- 提供 `npm run smoke:anyfusion` 真实端到端烟测，实际启动 AnyFusion CLI、执行器、文件产物捕获和回归检查。
+- 提供 `npm run smoke:anyfusion` 烟测，默认验证同一原生 Codex Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
 
@@ -73,7 +73,7 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 Codex `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-Codex `PlanningAgent` 使用专用 runner，而不复用 Executor adapter。Planner 拥有独立 `CODEX_HOME`、核心 Skill、生成的 output schema、JSONL/tool event 解析、只读 sandbox 和专用 MCP；失败时安全澄清，不走规则兜底。
+Codex `PlanningAgent` 使用专用 runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个原生 Codex thread：首轮捕获 `thread.started.thread_id`，后续通过 `codex exec resume` 续轮。Codex 自己管理对话历史；MetaClaw 不再从 SQLite interaction 重建提示词。Planner 仍使用独立 `CODEX_HOME`、原生 developer instructions、核心 Skill、output schema、只读 sandbox 和专用 MCP。
 
 ### 普通问答路径
 
@@ -90,7 +90,7 @@ flowchart LR
   Answer --> UI[TUI 或飞书]
 ```
 
-这条路径仍然是语义驱动。用户说“继续”或“你刚才回答了一半”时，由 PlanningAgent（只读沙箱）自己通过只读工具查看最近会话上下文与运行时事实来理解主题，并把最终用户可见答案写入 `response.directReply`。runtime 原样交付这段文本，不再为一次回复调用第二次 executor。
+这条路径仍然是语义驱动。原生 Codex thread 保留“继续”或“你刚才回答了一半”等对话上下文；持久 MetaClaw 事实仍通过 MCP 显式查询。PlanningAgent 把最终答案写入 `response.directReply`，runtime 原样交付。
 
 ### 持久任务路径
 
@@ -137,11 +137,11 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。每次调用 PlanningAgent 前，AnyFusion 会注入有数量上限的已确认全局长期记忆和当前 session 的对话历史。direct reply 会持久化为 interaction，并在后续轮次自动进入召回上下文。
+- Conversation：即时回答，不创建持久任务。原生 Codex thread 负责对话连续性；direct reply 持久化为审计事实，但不会被回放进后续提示词。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：AnyFusion 在规划前装配有界长期记忆和最近对话历史，PlanningAgent 生成 `response.directReply`，runtime 直接交付该答案，不 claim executor work unit。飞书最终回复会等待 direct reply 输出 settle 后再发送，避免只有过程卡片而没有最终答案。
+当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的原生 Codex thread，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
 [AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
 
@@ -211,8 +211,9 @@ npm run smoke:anyfusion
 看到 `anyfusion --help` 能打印 CLI 帮助，并且 `npm run smoke:anyfusion` 最后输出下面内容，才说明安装后真实用户路径可用：
 
 ```text
-AnyFusion real task smoke passed.
-Artifact: /tmp/.../smoke-result.md
+MetaClaw native Planner session smoke passed.
+Scenario: planner-session
+Native session: /var/lib/metaclaw/codex/planner/sessions/...jsonl
 ```
 
 `setup.sh` 会安装 AnyFusion 本身、构建 CLI、执行 `npm link`、生成 `~/.metaclaw/config.yaml`，并自动检测当前系统里的 Executor。
@@ -236,7 +237,7 @@ codex
 - `~/.metaclaw/config.yaml` 已生成。
 - 新开一个 shell 后，`anyfusion --help` 可用。
 - 默认 executor 命令可用，例如 `codex --help`。
-- `npm run smoke:anyfusion` 通过，并打印生成的 artifact 路径。
+- `npm run smoke:anyfusion` 通过，并打印原生 Planner session 路径。
 
 setup 可选参数：
 
@@ -844,7 +845,7 @@ anyfusion --script /tmp/anyfusion-flow.txt
 
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
 
-`npm run smoke:anyfusion` 是功能交付前必须优先跑的真实端到端烟测。它会构建 AnyFusion，用隔离的临时 `METACLAW_HOME` 和工作目录启动 `node dist/index.js --script`，提交一个真实任务，让配置的 executor 创建文件产物，并检查产物路径和文件内容。默认 smoke 配置使用 `codex`；要切换执行器和场景，可以运行 `npm run smoke:anyfusion -- --executor pi --scenario python-hello`，或设置 `METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:anyfusion`。新的 runtime 功能应该通过这条烟测路径；如果不能跑，必须明确说明失败或跳过原因。
+`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个原生 Codex session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。
 
 针对性测试：
 
