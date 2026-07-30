@@ -289,7 +289,7 @@ export class WorkspacePublicationWorker {
         return {
           type: 'conflicted',
           event: {
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'merge_conflict_observed',
             id: `event_${conflictChainId}_${ordinal}`,
             correlationId: publication.id,

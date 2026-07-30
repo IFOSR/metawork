@@ -21,6 +21,7 @@ import type { CommandCatalog, CommandCompletion, CommandContext } from '../comma
 import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
+import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
 import { ExecutorAdminService } from '../executor/executor-admin-service.js';
@@ -59,7 +60,7 @@ import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
-import type { PlanningAgentPlan } from '../planning/planning-types.js';
+import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
 import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
@@ -104,7 +105,7 @@ function startupOrphanEvent(input: {
   occurredAt: string;
 }): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'execution_outcome',
     id: `startup_orphan_${input.attemptId}`,
     correlationId: input.task.id,
@@ -214,6 +215,7 @@ export class MetaclawSession {
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
   private readonly sessionKernelRuntime: SessionKernelRuntime;
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
@@ -236,6 +238,7 @@ export class MetaclawSession {
       agentClassLookup: this.agentClassService,
       attemptSandbox: this.attemptSandbox,
       attemptSandboxRepository: this.attemptSandboxRepository,
+      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
@@ -259,12 +262,30 @@ export class MetaclawSession {
       this.workGraphRevisionRepo,
       this.taskExecutionEvidenceRepo,
     );
+    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
+    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
       60_000,
-      name => this.executionRuntime.isExecutorAvailable(name),
+      async (name, mode) => {
+        const result = await this.executionRuntime.probeExecutor(name);
+        if (mode === 'claim' && !result.available && result.failure) {
+          kernelExecutorStatusProjector.recordExecutionOutcome({
+            agentClassName: name,
+            attemptId: `claim_probe_${generateInteractionId()}`,
+            outcome: 'failed',
+            failure: result.failure,
+          });
+        }
+        return result.available;
+      },
     );
-    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
+    this.executorRecoveryRefreshService = new ExecutorRecoveryRefreshService({
+      statusRepo: this.kernelExecutorStatusRepo,
+      statusProjector: kernelExecutorStatusProjector,
+      probe: (name, previousFailure) => this.executionRuntime.probeExecutor(name, previousFailure),
+      onRecovered: (name, checkId) => this.kernelExecutionRuntime.executorRecovered(name, checkId),
+    });
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
@@ -367,7 +388,7 @@ export class MetaclawSession {
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
       persistenceService: this.persistenceService,
-      kernelExecutorStatusProjector: new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo),
+      kernelExecutorStatusProjector,
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
@@ -530,15 +551,16 @@ export class MetaclawSession {
 
     this.initialized = true;
     this.initialization = resumeStartupTasks
-      ? this.recoverDurableStartup().then(recovered => {
+      ? this.recoverDurableStartup().then(async recovered => {
           for (const task of recovered) {
             this.appendOutput(
               `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞（由 Kernel 持久恢复收敛）`,
               `→ 可执行 /task recovery ${task.id} 查看不确定项`,
             );
           }
+          await this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' });
         })
-      : Promise.resolve();
+      : this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' }).then(() => undefined);
     this.refreshRuntimeState();
     this.notify();
   }
@@ -781,6 +803,58 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
+  private async planWithExecutorRecovery(context: PlanningContext): Promise<PlanningAgentPlan> {
+    const planning = this.planningAgent.plan(context);
+    const refresh = this.executorRecoveryRefreshService.refresh({ trigger: 'planning_cycle' });
+    let plan = await planning;
+    const report = await refresh;
+    if (report.recovered.length === 0 || !plan.workGraph) return plan;
+    const relevantRecovered = report.recovered.filter(name =>
+      plan.workGraph?.subtasks.some(subtask =>
+        subtask.preferredAgentClassList.some(candidate => candidate === name)
+      )
+    );
+    if (relevantRecovered.length === 0) return plan;
+
+    const repairContext = this.planningContextBuilder.build({
+      userInput: [
+        'Executor availability changed while the preceding proposal was being prepared.',
+        `Recovered AgentClasses: ${relevantRecovered.join(', ')}`,
+        'Revise the immediately preceding proposal once in this same Planner thread.',
+        'Return a complete replacement plan, preserving the user intent and full static eligible canonical sets.',
+        `Previous proposal: ${JSON.stringify(plan)}`,
+        `Current Executor status: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
+      ].join('\n\n').slice(0, 24_000),
+    });
+    plan = await this.planningAgent.plan(repairContext);
+    return plan;
+  }
+
+  private planHasAvailabilityExhaustion(plan: PlanningAgentPlan): boolean {
+    if (!plan.workGraph) return false;
+    const unavailable = new Set(
+      this.kernelExecutorStatusRepo.list()
+        .filter(status => status.classHealth === 'error' || status.classHealth === 'disabled')
+        .map(status => status.agentClassName),
+    );
+    return plan.workGraph.subtasks.some(subtask =>
+      subtask.preferredAgentClassList.length === 0
+      || subtask.preferredAgentClassList.every(name => unavailable.has(name))
+    );
+  }
+
+  private async requestAvailabilityExplanation(plan: PlanningAgentPlan): Promise<PlanningAgentPlan> {
+    return this.planningAgent.plan(this.planningContextBuilder.build({
+      userInput: [
+        'The immediately preceding proposal cannot be admitted because at least one Subtask has no currently available eligible Executor.',
+        'Explain the current recovery-check failures to the user in natural language.',
+        'Return a direct_reply plan only. Do not create or revise a Task.',
+        `Deferred proposal: ${JSON.stringify(plan)}`,
+        `Executor status and recent recovery checks: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
+      ].join('\n\n').slice(0, 24_000),
+    }));
+  }
+
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
     this.appendOutput('【MetaClaw｜理解用户请求】');
     const pendingPermission = this.permissionRepository.findOldestPending();
@@ -795,10 +869,13 @@ export class MetaclawSession {
         reason: pendingPermission.request.reason,
       } : null,
     });
-    const plan = await this.planningAgent.plan(context);
+    let plan = await this.planWithExecutorRecovery(context);
+    if (this.planHasAvailabilityExhaustion(plan)) {
+      plan = await this.requestAvailabilityExplanation(plan);
+    }
     const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'plan_proposed',
       id: eventId,
       correlationId: plan.id,
@@ -885,9 +962,12 @@ export class MetaclawSession {
     const context = this.planningContextBuilder.build({
       userInput: request,
     });
-    const plan = await this.planningAgent.plan(context);
+    const plan = await this.planWithExecutorRecovery(context);
+    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
+      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
+      : null;
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'plan_proposed',
       id: `replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -900,6 +980,7 @@ export class MetaclawSession {
       generationId: decision.action.generationId,
       proposalSource: 'replan',
       targetGraphRevision: decision.action.sourceRevision + 1,
+      availabilityExplanation,
     };
   }
 
@@ -925,9 +1006,12 @@ export class MetaclawSession {
     const context = this.planningContextBuilder.build({
       userInput: request,
     });
-    const plan = await this.planningAgent.plan(context);
+    const plan = await this.planWithExecutorRecovery(context);
+    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
+      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
+      : null;
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'plan_proposed',
       id: `merge_replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -940,6 +1024,7 @@ export class MetaclawSession {
       generationId: revision.generationId,
       proposalSource: 'conflict_replan',
       targetGraphRevision: revision.revision + 1,
+      availabilityExplanation,
     };
   }
 
@@ -949,7 +1034,7 @@ export class MetaclawSession {
     userInput = event.proposal.task.goal ?? '',
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
@@ -1085,8 +1170,14 @@ export class MetaclawSession {
   }
 
   private async handleCommand(userInput: string): Promise<boolean> {
+    if (/^\/task\s+(resume|recover|recovery)\b/iu.test(userInput)) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
+    }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
     this.appendOutput(result.content);
+    if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
+    }
 
     if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
       this.appendOutput(...this.executorAdminService.startWizard());
@@ -1229,7 +1320,7 @@ export class MetaclawSession {
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
     const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'recovery_resolution_requested',
       id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
       correlationId: input.taskId,
@@ -1283,7 +1374,7 @@ export class MetaclawSession {
     const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
     const effect = this.effectOutboxRepo.find(recoveryItemId);
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
       item: application
@@ -1302,6 +1393,10 @@ export class MetaclawSession {
       activeExecutions: this.executionRuntime,
       taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
+      refreshExecutors: agentClassNames => this.executorRecoveryRefreshService.refresh({
+        trigger: 'manual',
+        agentClassNames,
+      }),
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
       config: this.deps.config,
@@ -1311,6 +1406,9 @@ export class MetaclawSession {
   private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
     const result = await this.executorAdminService.handlePendingWizardInput(userInput);
     this.appendOutput(...result.lines);
+    if (result.handled) {
+      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
+    }
     return result.handled;
   }
 
@@ -1453,7 +1551,7 @@ export class MetaclawSession {
             now,
           );
           this.kernelWorkflowRepo.enqueue({
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'sandbox_lost',
             id: `sandbox_lost_${record.attemptId}`,
             correlationId: record.taskId,

@@ -271,7 +271,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
   }
 
   private insertEvent(event: KernelEvent, availableAt: string): boolean {
-    if (event.schemaVersion !== 4) {
+    if (event.schemaVersion !== 5) {
       throw new Error(`unsupported Kernel event schema version ${event.schemaVersion}`);
     }
     const result = this.db.prepare(`
@@ -330,20 +330,20 @@ function rowToApplication(row: ApplicationRow): KernelDecisionApplicationRecord 
 }
 
 function parseCurrentEvent(raw: string, storedSchemaVersion?: number): KernelEvent {
-  if (storedSchemaVersion !== undefined && storedSchemaVersion !== 4) {
+  if (storedSchemaVersion !== undefined && storedSchemaVersion !== 5) {
     throw new Error(`unsupported Kernel event schema version ${storedSchemaVersion}`);
   }
   return parseCurrentKernelValue<KernelEvent>(raw, 'event');
 }
 
 function parseCurrentDecision(raw: string, storedSchemaVersion: number): KernelDecision {
-  if (storedSchemaVersion !== 4) {
+  if (storedSchemaVersion !== 5) {
     throw new Error(`unsupported Kernel decision schema version ${storedSchemaVersion}`);
   }
   return parseCurrentKernelValue<KernelDecision>(raw, 'decision');
 }
 
-function parseCurrentKernelValue<T extends { schemaVersion: 4 }>(
+function parseCurrentKernelValue<T extends { schemaVersion: 5 }>(
   raw: string,
   kind: string,
 ): T {
@@ -352,7 +352,7 @@ function parseCurrentKernelValue<T extends { schemaVersion: 4 }>(
     typeof value !== 'object'
     || value === null
     || !('schemaVersion' in value)
-    || value.schemaVersion !== 4
+    || value.schemaVersion !== 5
   ) {
     const version = typeof value === 'object' && value !== null && 'schemaVersion' in value
       ? String(value.schemaVersion)

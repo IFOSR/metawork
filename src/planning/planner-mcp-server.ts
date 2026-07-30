@@ -180,7 +180,8 @@ export class PlannerDataReader {
 
   listExecutorStatus() {
     const rows = this.db.prepare(`
-      SELECT a.name, s.class_health, s.recent_attempts_json, s.updated_at
+      SELECT a.name, s.class_health, s.recent_attempts_json,
+             s.recent_recovery_checks_json, s.updated_at
       FROM agent_classes a
       LEFT JOIN kernel_executor_status s ON s.agent_class_name = a.name
       WHERE a.kind = 'executor'
@@ -192,6 +193,7 @@ export class PlannerDataReader {
         agentClassName: String(row.name),
         classHealth: typeof row.class_health === 'string' ? row.class_health : 'unverified',
         recentAttempts: safeJson(row.recent_attempts_json, []).slice(0, 3),
+        recentRecoveryChecks: safeJson(row.recent_recovery_checks_json, []).slice(0, 3),
         updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
       })),
     };

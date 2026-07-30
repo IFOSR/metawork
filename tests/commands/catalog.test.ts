@@ -230,6 +230,7 @@ describe('CommandCatalog', () => {
 /task index rebuild
 /task index search
 /executor list
+/executor refresh
 /executor show
 /executor register <executorName>
 /executor register wizard

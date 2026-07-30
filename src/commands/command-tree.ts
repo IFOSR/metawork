@@ -37,6 +37,7 @@ import {
 } from './memory-commands.js';
 import {
   listExecutors,
+  refreshExecutors,
   registerExecutor,
   startExecutorRegisterWizard,
   unregisterExecutor,
@@ -316,6 +317,14 @@ function executorNodes(): CommandNode[] {
 
   return [
     action({ name: 'list', summary: '列出 Executor', effect: '读取 AgentClass 与 WorkUnit 注册信息。', usage: '/executor list', run: listExecutors }),
+    action({
+      name: 'refresh',
+      summary: '重新检查 error Executor',
+      effect: '只探测 error 且未禁用的 Executor，并允许 error 恢复为 healthy。',
+      usage: '/executor refresh [executorName|all]',
+      arguments: [executorRef(true)],
+      run: refreshExecutors,
+    }),
     action({
       name: 'show', summary: '查看 Executor 类型详情', effect: '展示 AgentClass 静态配置、runtime binding 和当前工作的 WorkUnit。',
       usage: '/executor show <executorName>', arguments: [executorRef()],

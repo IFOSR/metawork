@@ -2,7 +2,7 @@ import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot 
 
 export interface KernelDecisionLedgerRecord {
   id: string;
-  schemaVersion: 4;
+  schemaVersion: 5;
   eventId: string;
   eventType: KernelEvent['type'];
   correlationId: string;
@@ -187,7 +187,7 @@ function ledgerRecord(
 ): KernelDecisionLedgerRecord {
   return {
     id: nextDecision.id,
-    schemaVersion: 4,
+    schemaVersion: 5,
     eventId: event.id,
     eventType: event.type,
     correlationId: event.correlationId,

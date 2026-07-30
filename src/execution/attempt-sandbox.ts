@@ -45,6 +45,7 @@ export interface AttemptSandboxRecord {
 
 export interface AttemptSandboxPort {
   resolveImage(imageRef: string): Promise<string>;
+  probeControlNetwork?(controlNetwork: string): Promise<void>;
   create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord>;
   start(containerId: string): Promise<void>;
   wait(containerId: string): Promise<number>;

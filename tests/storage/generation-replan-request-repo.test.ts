@@ -89,7 +89,7 @@ describe('GenerationReplanRequestRepo', () => {
     });
     repo.markPlanning(request.id, 'quiescence-token', now);
     const event: KernelEvent = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'dispatch_requested',
       id: 'event-replan-result',
       correlationId: request.id,

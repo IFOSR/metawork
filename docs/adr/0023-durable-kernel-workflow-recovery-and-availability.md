@@ -41,6 +41,16 @@ External effects use an outbox. Unknown delivery without provider idempotency be
 
 Kernel contract v3 extends the same durable workflow with `permission_requested`, `permission_resolution_received`, `partition_conflict_observed` and `sandbox_lost`. Permission grants/denials/escalations, partition waits and workspace-attempt recovery are Decision actions, not Runtime policy. Runtime persists and checkpoints before pausing or destroying an attempt; duplicate request/event/apply identities reuse the prior Decision, grant, lease or outbox effect. Startup reconciles Docker labels with SQLite before accepting input and converts missing or leftover sandboxes into normalized events. ADR-0024 owns the detailed resource, workspace and elevation contracts.
 
+### Executor error recovery amendment (2026-07-30)
+
+Kernel wire/ledger contract v5 closes the availability-replan lifecycle. Planning and recovery refresh start concurrently; plan admission waits for refresh completion. If an Executor used by the proposal recovers, Planner may revise the proposal once in the same native Codex thread. A second availability change does not start an unbounded repair loop.
+
+An existing Task whose replan has no usable eligible Executor is not rejected as if it were a new request. Kernel authorizes `defer_task_plan_for_availability`: the Task becomes `blocked` with a `kernel_availability` dependency, the generation replan request becomes `waiting_for_availability`, and the exact Planner proposal plus natural-language explanation are persisted. Initial requests in the same condition produce a Planner direct reply and do not create a Task.
+
+Successful recovery emits a durable `executor_recovered` fact. Kernel revalidates the current Task, generation/revision, deferred proposal and current Executor projection. A stale, cancelled, or still-exhausted proposal is a `no_op`; an executable proposal authorizes `activate_deferred_task_plan`. Runtime activates that graph revision, resolves the replan request, removes the availability blocker and moves the Task to `ready`, without immediately dispatching or inserting a recovery notification into the conversation.
+
+Recovery refresh is event-driven at session startup, each planning cycle, Task recovery/resume, Executor configuration changes and `/executor refresh [name|all]`. It never runs as a periodic background health loop.
+
 ## LangGraph Boundary
 
 LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.

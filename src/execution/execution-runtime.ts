@@ -1,5 +1,10 @@
 // Resolves executor adapters and runs claimed subtask specs through the execution result normalization path.
-import type { ExecutorAdapter, ExecutorInput, ExecutorProgressEvent } from '../executor/adapter.js';
+import type {
+  ExecutorAdapter,
+  ExecutorInput,
+  ExecutorProbeResult,
+  ExecutorProgressEvent,
+} from '../executor/adapter.js';
 import type { AgentClass, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
@@ -35,6 +40,7 @@ export interface ExecutorRegistryDeps {
   agentClassLookup: AgentClassLookupPort;
   attemptSandbox: AttemptSandboxPort;
   attemptSandboxRepository?: AttemptSandboxRepositoryPort;
+  controlNetwork?: string;
 }
 
 export interface ExecutorRegistrationInspection {
@@ -64,18 +70,74 @@ export class ExecutorRegistry {
     return { configured, bindingSource: configured ? 'sandbox' : 'unbound', adapterName: configured ? name : null };
   }
 
-  async isAvailable(name: string): Promise<boolean> {
+  async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    if (!agentClass) return false;
+    if (!agentClass) {
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'agent_class_not_found',
+          summary: `AgentClass ${name} is not registered`,
+        },
+      };
+    }
     if (agentClass.executionImageRef && !agentClass.resolvedImageId) {
-      const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
-      if (!imageId.startsWith('sha256:')) return false;
-      this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
+      try {
+        const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
+        if (!imageId.startsWith('sha256:')) {
+          return {
+            available: false,
+            failure: {
+              kind: 'configuration',
+              scope: 'agent_class',
+              code: 'executor_image_not_immutable',
+              summary: `Executor image for ${name} did not resolve to an immutable image ID`,
+            },
+          };
+        }
+        this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
+      } catch (error) {
+        return {
+          available: false,
+          failure: {
+            kind: 'adapter',
+            scope: 'agent_class',
+            code: 'executor_image_probe_failed',
+            summary: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
     }
     const adapter = this.resolve(name);
-    if (!adapter) return false;
-    const available = await adapter.isAvailable();
-    return available !== false;
+    if (!adapter) {
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'executor_adapter_unbound',
+          summary: `No Executor Adapter is configured for AgentClass ${name}`,
+        },
+      };
+    }
+    try {
+      await this.deps.attemptSandbox.probeControlNetwork?.(
+        this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+      );
+    } catch (error) {
+      return {
+        available: false,
+        failure: {
+          kind: 'adapter',
+          scope: 'agent_class',
+          code: 'executor_control_network_unavailable',
+          summary: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+    return adapter.probe(previousFailure);
   }
 }
 
@@ -106,8 +168,12 @@ export class ExecutionRuntime implements ActiveExecutionControl {
 
   constructor(private readonly registry: ExecutorRegistry) {}
 
-  isExecutorAvailable(name: string): Promise<boolean> {
-    return this.registry.isAvailable(name);
+  async isExecutorAvailable(name: string): Promise<boolean> {
+    return (await this.registry.probe(name)).available;
+  }
+
+  probeExecutor(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
+    return this.registry.probe(name, previousFailure);
   }
 
   supportsResponseOnly(name: string): boolean {

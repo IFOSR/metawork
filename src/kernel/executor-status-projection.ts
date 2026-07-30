@@ -10,10 +10,27 @@ export interface RecentExecutionAttempt {
   failure: KernelFailure | null;
 }
 
+export type ExecutorRecoveryRefreshTrigger =
+  | 'session_start'
+  | 'planning_cycle'
+  | 'task_recovery'
+  | 'executor_changed'
+  | 'manual';
+
+export interface RecentExecutorRecoveryCheck {
+  checkId: string;
+  trigger: ExecutorRecoveryRefreshTrigger;
+  startedAt: string;
+  completedAt: string;
+  outcome: 'recovered' | 'still_error' | 'probe_timeout';
+  failure: KernelFailure | null;
+}
+
 export interface KernelExecutorStatusProjection {
   agentClassName: string;
   classHealth: AgentClassHealth;
   recentAttempts: RecentExecutionAttempt[];
+  recentRecoveryChecks: RecentExecutorRecoveryCheck[];
   updatedAt: string;
 }
 
@@ -51,6 +68,27 @@ export function projectExecutionOutcome(
           ? 'error'
           : current?.classHealth ?? 'unverified',
     recentAttempts: [attempt, ...(current?.recentAttempts ?? [])].slice(0, 10),
+    recentRecoveryChecks: current?.recentRecoveryChecks ?? [],
+    updatedAt: input.completedAt,
+  };
+}
+
+export function projectRecoveryCheck(
+  current: KernelExecutorStatusProjection,
+  input: RecentExecutorRecoveryCheck,
+): KernelExecutorStatusProjection {
+  if (current.recentRecoveryChecks.some(check => check.checkId === input.checkId)) return current;
+  const check: RecentExecutorRecoveryCheck = {
+    ...input,
+    failure: input.failure ? kernelFailure(input.failure) : null,
+  };
+  return {
+    ...current,
+    classHealth: current.classHealth === 'error' && input.outcome === 'recovered'
+      ? 'healthy'
+      : current.classHealth,
+    recentAttempts: current.recentAttempts,
+    recentRecoveryChecks: [check, ...current.recentRecoveryChecks].slice(0, 10),
     updatedAt: input.completedAt,
   };
 }

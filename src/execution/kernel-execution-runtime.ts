@@ -145,7 +145,7 @@ export class KernelExecutionRuntime {
 
   async cancelTask(taskId: string, reason = 'explicit Task cancellation command'): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'task_cancel_requested',
       id: `task_cancel_${generateInteractionId()}`,
       correlationId: taskId,
@@ -163,7 +163,7 @@ export class KernelExecutionRuntime {
     reason = 'explicit Subtask cancellation command',
   ): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'subtasks_cancel_requested',
       id: `subtasks_cancel_${generateInteractionId()}`,
       correlationId: taskId,
@@ -178,7 +178,7 @@ export class KernelExecutionRuntime {
 
   async acceptPartialResult(taskId: string): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'partial_result_acceptance_requested',
       id: `partial_accept_${generateInteractionId()}`,
       correlationId: taskId,
@@ -191,6 +191,74 @@ export class KernelExecutionRuntime {
 
   async recoverCancellations(taskId?: string): Promise<void> {
     await this.deps.cancellationCoordinator.recover(taskId);
+  }
+
+  async executorRecovered(agentClassName: string, recoveryCheckId: string): Promise<void> {
+    for (const request of this.deps.generationReplanRepo.listWaitingForAvailability()) {
+      const task = this.deps.taskRuntimeService.findTask(request.taskId);
+      const activeRevision = this.deps.workGraphRevisionRepo.findActive(request.taskId);
+      const event: Extract<KernelEvent, { type: 'executor_recovered' }> = {
+        schemaVersion: 5,
+        type: 'executor_recovered',
+        id: `executor_recovered_${recoveryCheckId}_${request.id}`,
+        correlationId: request.id,
+        causationId: recoveryCheckId,
+        occurredAt: new Date().toISOString(),
+        sessionId: this.deps.sessionId,
+        taskId: request.taskId,
+        agentClassName,
+        recoveryCheckId,
+      };
+      const workflow = new DurableKernelWorkflow({
+        kernel: this.deps.controlKernel,
+        buildSnapshot: () => ({
+          schemaVersion: 5,
+          type: 'availability_recovery',
+          task: task ? { id: task.id, status: task.status } : null,
+          activeGenerationId: activeRevision?.generationId ?? null,
+          activeGraphRevision: activeRevision?.revision ?? null,
+          deferredPlan: request.deferredPlan,
+          executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
+        }),
+        store: this.deps.kernelWorkflowStore,
+        clock: { now: () => new Date().toISOString() },
+        runtime: {
+          apply: async decision => {
+            if (decision.action.type === 'no_op') return null;
+            if (decision.action.type !== 'activate_deferred_task_plan') {
+              throw new Error(`Availability recovery Runtime cannot apply ${decision.action.type}`);
+            }
+            const currentRequest = this.deps.generationReplanRepo.find(decision.action.replanRequestId);
+            const currentTask = this.deps.taskRuntimeService.findTask(decision.action.taskId);
+            if (currentRequest?.status !== 'waiting_for_availability' || currentTask?.status !== 'blocked') {
+              return null;
+            }
+            const result = this.deps.workGraphRuntimeService.apply({
+              task: currentTask,
+              userPrompt: currentRequest.deferredPlan?.requestText ?? currentTask.goal,
+              sessionId: this.deps.sessionId,
+              authorizedWorkGraph: decision.action.workGraph,
+              authorization: {
+                decisionId: decision.id,
+                generationId: decision.action.generationId,
+                revision: decision.action.graphRevision,
+                source: decision.action.proposalSource,
+                automaticReplan: true,
+              },
+            });
+            if (result.outcome === 'not_executable') return null;
+            this.deps.generationReplanRepo.resolve(currentRequest.id, new Date().toISOString());
+            this.deps.taskRuntimeService.unblockTask(currentTask.id);
+            this.deps.callbacks.refreshRuntimeState();
+            return null;
+          },
+        },
+        acceptedEventTypes: ['executor_recovered'],
+        acceptedActions: ['activate_deferred_task_plan', 'no_op'],
+        taskId: request.taskId,
+      });
+      await workflow.submit(event);
+    }
   }
 
   getSingleActiveTaskId(): string | null {
@@ -429,7 +497,7 @@ export class KernelExecutionRuntime {
       : subtasks.find(subtask => frontier.includes(subtask.id));
     const recoverySafety = deriveRecoverySafety(recoverySubtask?.requiredCapabilities ?? []);
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'dispatch',
       task: task ? { id: task.id, status: task.status } : null,
       runningTaskId: this.deps.taskRuntimeService.getCurrentRunningTask()?.id
@@ -746,6 +814,29 @@ export class KernelExecutionRuntime {
         },
       );
     }
+    if (action.type === 'defer_task_plan_for_availability') {
+      const request = this.deps.generationReplanRepo.findByGeneration(
+        action.taskId,
+        action.proposalEvent.generationId,
+        action.proposalEvent.targetGraphRevision - 1,
+      );
+      if (!request) throw new Error('generation replan request is missing for availability deferral');
+      if (!this.deps.generationReplanRepo.deferForAvailability(
+        request.id,
+        action.proposalEvent,
+        action.explanation,
+        new Date().toISOString(),
+      )) {
+        return null;
+      }
+      await this.blockTask(
+        action.taskId,
+        action.explanation,
+        input.finishExecution,
+        'kernel_availability',
+      );
+      return null;
+    }
     if (action.type === 'authorize_task_plan') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
       if (!task) throw new Error(`replan Task not found: ${action.taskId}`);
@@ -786,7 +877,7 @@ export class KernelExecutionRuntime {
     event: Omit<KernelEvent, keyof import('../kernel/control-kernel.js').KernelEventEnvelope | 'schemaVersion' | 'id' | 'correlationId' | 'causationId' | 'occurredAt' | 'sessionId'> & Record<string, unknown>,
   ): KernelEvent {
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: `event_${decision.id}_${String(event.type)}`,
       correlationId: decision.eventId,
       causationId: decision.id,
@@ -945,7 +1036,7 @@ export class KernelExecutionRuntime {
       | 'sessionId' | 'taskId' | 'subtaskId' | 'attemptId'> & Record<string, unknown>,
   ): KernelEvent {
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: `event_${item.attemptId}_${String(event.type)}`,
       correlationId: item.decisionId,
       causationId: item.decisionId,
@@ -1007,7 +1098,7 @@ export class KernelExecutionRuntime {
     const attemptFacts: KernelAttemptFact[] = [];
     const stableFacts = this.buildDispatchStableFacts();
     const initialEvent: KernelEvent = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'dispatch_requested',
       id: `dispatch_event_${executionId}`,
       correlationId: request.kernelDecisionId ?? executionId,
@@ -1020,14 +1111,14 @@ export class KernelExecutionRuntime {
     const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'plan_proposed'
       ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)
       : event.type === 'partition_conflict_observed' ? {
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'partition',
           conflictConfirmed: event.conflictingLeaseIds.length > 0,
           workspaceId: null,
           checkpointId: null,
         }
       : event.type === 'sandbox_lost' ? {
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'sandbox_recovery',
           workspaceExists: Boolean(event.workspaceId),
           workspaceId: event.workspaceId,
@@ -1035,7 +1126,7 @@ export class KernelExecutionRuntime {
           activeLeaseIds: [],
         }
       : event.type === 'timer_tick' ? {
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'timer',
           task: { id: task.id, status: task.status },
           wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
@@ -1091,7 +1182,7 @@ export class KernelExecutionRuntime {
         'block_work', 'park_for_replan', 'complete_task', 'request_replan',
         'queue_generation_replan',
         'request_merge_replan',
-        'authorize_task_plan', 'no_op',
+        'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
         'wait_for_partition', 'recover_workspace_attempt',
       ],
       taskId,
@@ -1141,7 +1232,7 @@ export class KernelExecutionRuntime {
           ),
         );
         await input.workflow.submit({
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'dispatch_requested',
           id: `publication_dispatch_${input.executionId}_${lastIntegrated?.publicationId
             ?? activeRevision.revision}`,
@@ -1197,7 +1288,7 @@ export class KernelExecutionRuntime {
       });
       const occurredAt = new Date().toISOString();
       const event: Extract<KernelEvent, { type: 'execution_outcome' }> = {
-        schemaVersion: 4,
+        schemaVersion: 5,
         type: 'execution_outcome',
         id: `heartbeat_event_${workUnit.claimedAttemptId}`,
         correlationId: task.id,
@@ -1261,7 +1352,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(...lines);
     };
     const initialEvent: KernelEvent = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'timer_tick',
       id: `timer_event_${input.blockedDecisionId}_${input.occurredAt}`,
       correlationId: input.blockedDecisionId,
@@ -1286,14 +1377,14 @@ export class KernelExecutionRuntime {
       buildSnapshot: event => event.type === 'plan_proposed'
         ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)
         : event.type === 'partition_conflict_observed' ? {
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'partition',
             conflictConfirmed: event.conflictingLeaseIds.length > 0,
             workspaceId: null,
             checkpointId: null,
           }
         : event.type === 'sandbox_lost' ? {
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'sandbox_recovery',
             workspaceExists: Boolean(event.workspaceId),
             workspaceId: event.workspaceId,
@@ -1301,7 +1392,7 @@ export class KernelExecutionRuntime {
             activeLeaseIds: [],
           }
         : event.type === 'timer_tick' ? {
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'timer',
             task: { id: task.id, status: task.status },
             wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
@@ -1340,7 +1431,7 @@ export class KernelExecutionRuntime {
         'block_work', 'park_for_replan', 'complete_task', 'request_replan',
         'queue_generation_replan',
         'request_merge_replan',
-        'authorize_task_plan', 'no_op',
+        'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
         'wait_for_partition', 'recover_workspace_attempt',
       ],
       taskId: task.id,

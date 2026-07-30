@@ -54,16 +54,25 @@ export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
     return this.runner.run(['image', 'inspect', '--format', '{{.Id}}', imageRef]);
   }
 
+  async probeControlNetwork(controlNetwork: string): Promise<void> {
+    if (!controlNetwork.trim() || controlNetwork === 'host' || controlNetwork === 'none') {
+      throw new Error('attempt sandbox requires a dedicated MetaClaw control network');
+    }
+    const internal = await this.runner.run([
+      'network', 'inspect', '--format', '{{.Internal}}', controlNetwork,
+    ]);
+    if (internal.trim().toLowerCase() !== 'true') {
+      throw new Error('MetaClaw control network must be Docker-internal');
+    }
+  }
+
   async create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord> {
     this.validateCreateInput(input);
     const currentImageId = await this.resolveImage(input.imageRef);
     if (currentImageId !== input.resolvedImageId) {
       throw new Error(`AgentClass image drift: expected ${input.resolvedImageId}, got ${currentImageId}`);
     }
-    const internal = await this.runner.run(['network', 'inspect', '--format', '{{.Internal}}', input.controlNetwork]);
-    if (internal.trim().toLowerCase() !== 'true') {
-      throw new Error('MetaClaw control network must be Docker-internal to prevent direct public/private egress');
-    }
+    await this.probeControlNetwork(input.controlNetwork);
 
     const labels = {
       [MANAGED_LABEL]: 'true',

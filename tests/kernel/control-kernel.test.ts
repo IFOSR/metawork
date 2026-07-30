@@ -5,7 +5,7 @@ import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
 const event: KernelEvent = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   type: 'plan_proposed',
   id: 'event_plan_1',
   correlationId: 'request_1',
@@ -36,7 +36,7 @@ const event: KernelEvent = {
 };
 
 const snapshot: KernelSnapshot = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
@@ -56,7 +56,7 @@ describe('ControlKernel', () => {
 
     expect(first).toEqual(second);
     expect(first).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: 'decision_event_plan_1',
       eventId: 'event_plan_1',
       action: { type: 'deliver_direct_reply', response: 'Hello' },
@@ -95,6 +95,82 @@ describe('ControlKernel', () => {
     expect(new ControlKernel().decide(replanEvent, replanSnapshot).action).toMatchObject({
       type: 'authorize_task_plan', taskId: 'task_1', generationId: 'generation_1',
       graphRevision: 2, proposalSource: 'replan',
+    });
+  });
+
+  it('defers an exhausted replan and activates it only after the current frontier is available', () => {
+    const proposal = workGraphPlan({
+      goal: 'Finish remaining work',
+      overrides: {
+        task: {
+          binding: 'reference', taskId: 'task_1', control: 'none', scope: null,
+          title: 'Task', goal: 'Finish remaining work', includeRecentConversationContext: false,
+          priority: { level: 'normal', reason: 'automatic replan' },
+        },
+      },
+    });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    const replanEvent: Extract<KernelEvent, { type: 'plan_proposed' }> = {
+      ...event,
+      id: 'event_replan_waiting',
+      correlationId: 'replan_request_1',
+      taskId: 'task_1',
+      proposal,
+      generationId: 'generation_1',
+      proposalSource: 'replan',
+      targetGraphRevision: 2,
+      availabilityExplanation: 'The configured Executors are currently unavailable.',
+    };
+    const errorStatuses = proposal.workGraph!.subtasks[0]!.preferredAgentClassList.map(agentClassName => ({
+      agentClassName,
+      classHealth: 'error' as const,
+      recentAttempts: [],
+      recentRecoveryChecks: [],
+      updatedAt: event.occurredAt,
+    }));
+    const admission: Extract<KernelSnapshot, { type: 'plan_admission' }> = {
+      ...snapshot,
+      tasks: [{ id: 'task_1', status: 'running' }],
+      runningTaskId: 'task_1',
+      executorStatuses: errorStatuses,
+      v5WorkGraphTaskIds: ['task_1'],
+    };
+    expect(new ControlKernel().decide(replanEvent, admission).action).toMatchObject({
+      type: 'defer_task_plan_for_availability',
+      taskId: 'task_1',
+      explanation: 'The configured Executors are currently unavailable.',
+    });
+
+    const recoveredName = proposal.workGraph!.subtasks[0]!.preferredAgentClassList[0]!;
+    const recoveryEvent: Extract<KernelEvent, { type: 'executor_recovered' }> = {
+      schemaVersion: 5,
+      type: 'executor_recovered',
+      id: 'executor_recovered_1',
+      correlationId: 'replan_request_1',
+      causationId: 'recovery_check_1',
+      occurredAt: '2026-07-30T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      agentClassName: recoveredName,
+      recoveryCheckId: 'recovery_check_1',
+    };
+    const recoverySnapshot: Extract<KernelSnapshot, { type: 'availability_recovery' }> = {
+      schemaVersion: 5,
+      type: 'availability_recovery',
+      task: { id: 'task_1', status: 'blocked' },
+      activeGenerationId: 'generation_1',
+      activeGraphRevision: 1,
+      deferredPlan: replanEvent,
+      executorStatuses: errorStatuses.map(status => status.agentClassName === recoveredName
+        ? { ...status, classHealth: 'healthy' as const }
+        : status),
+    };
+    expect(new ControlKernel().decide(recoveryEvent, recoverySnapshot).action).toMatchObject({
+      type: 'activate_deferred_task_plan',
+      taskId: 'task_1',
+      replanRequestId: 'replan_request_1',
+      generationId: 'generation_1',
+      graphRevision: 2,
     });
   });
 
@@ -145,7 +221,7 @@ describe('ControlKernel', () => {
 
   it('authorizes one atomic downstream cancellation closure and rejects a closure containing done work', () => {
     const controlSnapshot: Extract<KernelSnapshot, { type: 'task_control' }> = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'task_control',
       task: { id: 'task_1', status: 'running' },
       generationId: 'generation_task_1_1',
@@ -203,7 +279,7 @@ describe('ControlKernel', () => {
 
   it('accepts partial results only after cancellation has quiesced with at least one completed node', () => {
     const partialSnapshot: Extract<KernelSnapshot, { type: 'task_control' }> = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'task_control',
       task: { id: 'task_1', status: 'blocked' },
       generationId: 'generation_task_1_1',
@@ -245,12 +321,12 @@ describe('ControlKernel', () => {
   it('authorizes explicit recovery resolution but refuses unsafe effect retry', () => {
     const kernel = new ControlKernel();
     const recoveryEvent: KernelEvent = {
-      schemaVersion: 4, type: 'recovery_resolution_requested', id: 'recovery_event_1',
+      schemaVersion: 5, type: 'recovery_resolution_requested', id: 'recovery_event_1',
       correlationId: 'task_1', causationId: null, occurredAt: '2026-07-21T00:00:00.000Z',
       sessionId: 'session_1', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
     };
     const unsafe: KernelSnapshot = {
-      schemaVersion: 4, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
+      schemaVersion: 5, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
       item: { id: 'effect_1', kind: 'effect', status: 'uncertain', retrySafe: false },
     };
     expect(kernel.decide(recoveryEvent, unsafe).action).toEqual({
@@ -424,7 +500,7 @@ describe('ControlKernel', () => {
       sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
     });
     const timerSnapshot: KernelSnapshot = {
-      schemaVersion: 4, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      schemaVersion: 5, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
       capacityAgentClasses: ['codex-cli'], executorStatuses: [],
       nativeContinuationAgentClasses: ['codex-cli'],
@@ -447,7 +523,7 @@ describe('ControlKernel', () => {
       ...dispatchSnapshot(), runningTaskId: 'task_other',
     }).action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1' });
     expect(kernel.decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
-      schemaVersion: 4, type: 'invalid', reason: 'corrupt snapshot',
+      schemaVersion: 5, type: 'invalid', reason: 'corrupt snapshot',
     }).action.type).toBe('block_work');
   });
 
@@ -456,7 +532,7 @@ describe('ControlKernel', () => {
     const request = permissionRequest();
     const permissionEvent = runtimeEvent({ type: 'permission_requested', attemptId: request.attemptId, request });
     const base: Extract<KernelSnapshot, { type: 'permission' }> = {
-      schemaVersion: 4, type: 'permission', request, requestStatus: 'pending', currentGrants: [],
+      schemaVersion: 5, type: 'permission', request, requestStatus: 'pending', currentGrants: [],
       rules: [], userAuthorizationFingerprints: [], previouslyDeniedFingerprints: [], attemptActive: true,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     };
@@ -483,7 +559,7 @@ describe('ControlKernel', () => {
       resolution: 'approve', source: 'command', plannerPlanId: null,
     });
     const decision = new ControlKernel().decide(resolution, {
-      schemaVersion: 4, type: 'permission', request, requestStatus: 'pending', rules: [], currentGrants: [],
+      schemaVersion: 5, type: 'permission', request, requestStatus: 'pending', rules: [], currentGrants: [],
       userAuthorizationFingerprints: [], previouslyDeniedFingerprints: [], attemptActive: false,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     });
@@ -498,7 +574,7 @@ describe('ControlKernel', () => {
     expect(kernel.decide(runtimeEvent({
       type: 'partition_conflict_observed', attemptId: 'attempt-1', claims: [], conflictingLeaseIds: ['lease-1'],
     }), {
-      schemaVersion: 4, type: 'partition', conflictConfirmed: true, workspaceId: 'workspace-1', checkpointId: null,
+      schemaVersion: 5, type: 'partition', conflictConfirmed: true, workspaceId: 'workspace-1', checkpointId: null,
     }).action).toEqual({
       type: 'wait_for_partition', taskId: 'task_1', subtaskId: 'subtask_1', conflictingLeaseIds: ['lease-1'],
     });
@@ -506,7 +582,7 @@ describe('ControlKernel', () => {
       type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
     }), {
-      schemaVersion: 4, type: 'sandbox_recovery', workspaceExists: true,
+      schemaVersion: 5, type: 'sandbox_recovery', workspaceExists: true,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1', activeLeaseIds: [],
     }).action).toMatchObject({ type: 'recover_workspace_attempt', workspaceId: 'workspace-1' });
   });
@@ -529,7 +605,7 @@ function runtimeEvent<T extends Omit<KernelEvent, keyof import('../../src/kernel
   value: T,
 ): KernelEvent {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: `event_${value.type}`,
     correlationId: 'correlation_1',
     causationId: null,
@@ -546,7 +622,7 @@ function dispatchSnapshot(
   status: 'ready' | 'awaiting_integration' | 'awaiting_decision' | 'done' = 'ready',
 ): Extract<KernelSnapshot, { type: 'dispatch' }> {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'dispatch',
     task: { id: 'task_1', status: 'running' },
     runningTaskId: 'task_1',

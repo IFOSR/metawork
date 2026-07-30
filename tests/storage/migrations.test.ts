@@ -10,7 +10,7 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 27 }]);
+      .toEqual([{ version: 28 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -27,6 +27,7 @@ describe('current SQLite baseline', () => {
       'workspace_publications',
       'workspace_merge_attempts',
       'generation_replan_requests',
+      'kernel_executor_status',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
     }
@@ -46,6 +47,13 @@ describe('current SQLite baseline', () => {
       'revocation_requested_at',
       'revocation_reason',
     ]));
+    expect((db.prepare('PRAGMA table_info(kernel_executor_status)').all() as Array<{ name: string }>)
+      .map(column => column.name)).toContain('recent_recovery_checks_json');
+    expect((db.prepare('PRAGMA table_info(generation_replan_requests)').all() as Array<{ name: string }>)
+      .map(column => column.name)).toEqual(expect.arrayContaining([
+      'deferred_plan_json',
+      'availability_explanation',
+    ]));
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -57,7 +65,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 27',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 28',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

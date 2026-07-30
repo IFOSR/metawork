@@ -180,7 +180,7 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
 
 function directReplyEvent(): KernelEvent {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'plan_proposed',
     id: 'event_1',
     correlationId: 'correlation_1',
@@ -202,14 +202,14 @@ function directReplyEvent(): KernelEvent {
 
 function planSnapshot(): KernelSnapshot {
   return {
-    schemaVersion: 4, type: 'plan_admission', tasks: [], runningTaskId: null,
+    schemaVersion: 5, type: 'plan_admission', tasks: [], runningTaskId: null,
     executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
   };
 }
 
 function ledgerRecord(event: KernelEvent, snapshot: KernelSnapshot, decision: KernelDecision): KernelDecisionLedgerRecord {
   return {
-    id: decision.id, schemaVersion: 4, eventId: event.id, eventType: event.type,
+    id: decision.id, schemaVersion: 5, eventId: event.id, eventType: event.type,
     correlationId: event.correlationId, causationId: event.causationId, sessionId: event.sessionId,
     taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
     action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,

@@ -378,3 +378,143 @@ SQLite、完整测试和 smoke 不在 Windows 宿主机运行。
 - 清理目标是减少模块和行为，不要用新的 service、adapter 或 compatibility facade 替换旧代码。
 - 如果删除某条旧路径会暴露当前功能实际上依赖它，应先确认该功能是否属于首次发布目标；只有属于目标时才保留最小实现。
 - 历史归档文档可以保留作为决策记录，但 current overview、CONTEXT、ISSUES 和 docs map 必须只描述清理后的现行架构。
+
+## 11. 2026-07-30 真实 Docker 调试暴露的运行态闭环缺陷
+
+> 状态：已确认，待逐项解决
+> 记录范围：只记录现场现象、持久化事实、直接原因和暴露出的架构缺口；本节暂不确定修改方案。
+> 现场环境：Windows 宿主机通过 `docker/shell.ps1` 启动持久 SSH/TUI 容器，由容器内 Runtime 通过 Docker socket 创建 attempt sandbox。
+
+### 11.1 事故现场与已确认事实
+
+用户提交“生成 Hello World Python 文件”任务后，TUI 和 `/tasks` 长时间将 Task 显示为 `RUNNING`，原因显示为“等待调度”，并持续显示 `Executor: codex 执行中...`。但 Planner 通过只读运行时信息查询后确认，Executor 实际没有开始执行用户要求的 Python 文件创建命令。
+
+现场容器和 SQLite 持久化事实表明：
+
+1. `metaclaw-shell` 已挂载 Docker socket，但只连接默认 `bridge` 网络；
+2. Runtime 默认要求名为 `metaclaw-control` 的 control network，现场 Docker 中不存在该网络；
+3. AgentClass/WorkUnit probe 先记录了 `probe_succeeded`；
+4. Kernel 随后授权并派发 `codex-cli` attempt；
+5. attempt 依次记录 `claimed`、`attempt_started`、`running`，之后在创建 sandbox 时因 `docker network inspect ... metaclaw-control` 失败；
+6. Executor attempt receipt 已正确、不可变地落为 `executor_failed`，错误码为 `sandbox_configuration_failure`，详细原因是 `network metaclaw-control not found`；
+7. 失败后 Kernel 先产生 `queue_generation_replan`，在 generation quiescence 后又产生 `request_replan`；
+8. Planner 确实执行了自动重规划并提交新计划；
+9. 因原子任务唯一候选 `codex-cli` 已被投影为不健康，Kernel 在新计划准入时产生 `reject_request`，原因为 `no healthy canonical AgentClass remains`；
+10. 从该次 `reject_request` 到用户手动取消任务之间，没有任何 `block_work`、`park_for_replan`、`complete_task` 或 `cancel_task` 决策，原 Task 一直保留为 `running`；
+11. generation replan request 同样一直停留在 `submitted`，直到用户手动取消 Task 时才被改为 `cancelled`。
+
+因此，本次“命令执行中途被打断”的用户观感并不准确：用户命令本身尚未进入 sandbox 执行，失败发生在 sandbox 启动前的 control network 检查阶段。attempt 层已经知道失败，悬空的是 Task 聚合状态和用户可见运行态。
+
+### 11.2 缺陷一：attempt 已终结，Task 仍可永久保持 `running`
+
+当前 attempt terminal 机制正确保存了失败回执，Kernel 也消费了失败 outcome 并发起自动重规划。但自动重规划产生的 `plan_proposed` 仍复用通用 plan admission；当该计划不满足准入条件时，Kernel 返回普通 `reject_request`。
+
+Session 对 `reject_request` 的应用只执行两件事：
+
+- 输出 Kernel 拒绝原因；
+- 刷新当前 runtime state。
+
+该分支不会处理已有 Task，不会改变 Task 状态，也不会终结或失败对应的 generation replan request。`reject_request` 因此同时承担了两种语义不同的场景：
+
+- 拒绝尚未创建 Task 的初始用户请求；
+- 拒绝一个已经处于 `running` 状态的 Task 的内部自动重规划结果。
+
+第一种场景不需要 Task 状态迁移；第二种场景必须使已有执行闭环。当前实现没有表达这一区别，导致 durable attempt 事实已经终结、Kernel 自动恢复预算已经消耗、系统也不存在可继续执行的工作时，Task 仍可以永久保持 `running`。
+
+这不是单纯的展示错误。Task 聚合本身已经与 attempt receipt、dispatch item、AgentClass health 和 generation replan request 等持久化事实不一致。
+
+### 11.3 缺陷二：AgentClass 可用性探针没有覆盖实际派发前置条件
+
+当前 Executor/AgentClass 可用性检查主要验证：
+
+- AgentClass 是否存在；
+- execution image、resolved image ID 和 permission profile 是否齐全；
+- Docker 中能否解析到预期镜像；
+- adapter 是否可构造。
+
+它不验证实际 sandbox 创建所需的 control network 是否存在、属性是否符合要求，也不验证承载 Runtime 控制服务的容器能否以约定主机名被 attempt sandbox 访问。
+
+因此，系统可以先把 WorkUnit 标记为 `probe_succeeded` 和 `running`，再在第一次真正使用 control network 时立即失败。当前的“AgentClass 可用”事实只代表镜像和 adapter 表面可用，不代表该 AgentClass 在当前部署拓扑中具备一次完整 attempt 的启动条件。
+
+`docker/shell.ps1` 与 Runtime 默认值之间也存在启动契约漂移：
+
+- Runtime 默认使用 `METACLAW_CONTROL_NETWORK ?? 'metaclaw-control'`；
+- evidence、capability 和 model gateway 默认公布主机名 `metaclaw-control`；
+- `docker/shell.ps1` 当前挂载了 Docker socket，但没有建立上述 network，也没有为 shell/control 容器注册上述网络身份。
+
+真实 smoke 使用的启动拓扑和日常 SSH/TUI 调试入口因而不是同一条部署链路，smoke 通过不能证明 `docker/shell.ps1` 启动的系统具备相同前置条件。
+
+### 11.4 缺陷三：Kernel fallback 与自动重规划均发生过，但最终失败没有收口
+
+本次子任务的 `preferredAgentClassList` 只有 `codex-cli`。Kernel fallback 只会在该列表中选择尚未尝试且当前可用的候选，不会把未被计划授权、能力不匹配的 `pi-agent` 临时当成替代 Executor。
+
+因此本次没有切换 Executor 是当前授权模型的直接结果，不是 fallback 分支没有运行。唯一候选耗尽后，Kernel 按设计使用了一次 automatic generation replan；Planner 也确实完成了该次重规划。
+
+真正未闭环的阶段发生在“重规划结果再次无法准入”之后：
+
+- Kernel 知道原候选已经耗尽；
+- Kernel 知道 automatic replan budget 已经使用；
+- plan admission 知道新图中没有健康 canonical AgentClass；
+- generation replan request 知道 Planner 已提交结果；
+- 但没有一个分支负责把这些事实收束为原 Task 的非运行状态。
+
+这表明 execution failure recovery 和 plan admission 虽然各自有局部决策，但跨越两者的 generation replan 生命周期没有完整的终态模型。
+
+### 11.5 缺陷四：任务查询只解释 Task 行，没有验证运行事实
+
+`/tasks` 和相关 Task 展示以 Task 表的 `status` 为主要事实来源。对于 `ready` 或 `running` Task，如果没有 `lastSchedulingReason`，当前展示会回退为“等待调度”。
+
+该查询没有验证：
+
+- 是否仍存在 active dispatch item；
+- 是否仍存在 claimed/running WorkUnit；
+- 是否仍存在未终结 attempt；
+- 最新 attempt receipt 是否已经失败；
+- 是否存在 pending/planning generation replan；
+- 是否还有可运行的 work graph frontier。
+
+所以一旦 Task 聚合未被正确迁移，查询层会继续给出形式上合理、实际错误的解释。本次 Planner 后续能够通过 MCP 查询到真实失败原因，说明底层诊断事实已经存在；但普通 Task 状态投影没有把这些事实组合成一致的用户可见状态。
+
+### 11.6 缺陷五：TUI 把 Task `running` 误当成 Executor 正在运行
+
+TUI 的等待动画由 `runtimeState.runningTaskId` 驱动，而不是由真实 active attempt 或 `runningExecutorName` 驱动。只要 Task 仍标记为 `running`，动画计时器就会每 350ms 更新一次。
+
+当 `runningExecutorName` 已经清空时，TUI 又回退显示配置中的默认 Executor 命令名，因此产生了 `Executor: codex 执行中...` 的假象。该文本不是 Executor progress event，也不是新的派发记录，只是 UI 根据粗粒度 Task 状态生成的动画。
+
+在当前 Windows PowerShell → SSH PTY → Ink TUI 的组合下，该动态行没有稳定地原位重绘，而是反复出现在终端历史中，形成大量：
+
+```text
+Executor: codex 执行中.
+Executor: codex 执行中..
+Executor: codex 执行中...
+```
+
+状态悬空使动画永不停止，终端重绘行为又把一个错误状态放大成持续刷屏。这里同时存在运行态语义错误和终端展示问题，不能把刷屏简单视为 Executor 重复执行。
+
+### 11.7 本次事故暴露出的架构层债务
+
+Phase 6 已建立 durable workflow、attempt receipt、Kernel decision ledger、WorkUnit、dispatch item 和 generation replan 等可靠性事实。本次事故说明这些事实“能够分别持久化”不等于系统已经具备端到端的一致状态模型。
+
+当前缺口集中在以下边界：
+
+1. **部署前置条件与 AgentClass health 的边界**：镜像存在被当成可执行，但 control plane 拓扑并未纳入可用性事实；
+2. **attempt terminal 与 Task aggregate 的边界**：attempt 能正确终结，但 Task 不保证随恢复流程最终进入可解释状态；
+3. **execution recovery 与 plan admission 的边界**：自动重规划可发起、可提交、可拒绝，但拒绝后的已有 Task 没有终态责任方；
+4. **durable facts 与 read projection 的边界**：诊断事实完整存在，普通任务查询却只读取单一聚合字段；
+5. **Task lifecycle 与 UI liveness 的边界**：Task 的业务状态被直接解释为 Executor 活动状态。
+
+因此不能仅通过补一条 Docker network 创建命令或修改一段展示文案宣布问题解决。即使基础设施启动成功，现有状态模型仍允许其他失败路径再次制造“attempt 已终结但 Task 永久 running”的同类事故。后续处理应逐项建立和验证这些边界的不变量，再决定具体实现；本节暂不记录修改方案。
+
+### 11.8 2026-07-30：Executor `error` 永久自锁与 availability replan 生命周期已收口
+
+本批次针对 11.2、11.3、11.4 暴露出的共同根因完成了结构性修复：
+
+- `error` 改为可重新验证的观测状态；只有 `disabled` 是管理锁。恢复刷新只检查 enabled + error，并且只允许 `error → healthy`；
+- boolean `isAvailable()` 被结构化 `probe()` 取代，恢复证据与真实 attempt 历史分开保存；control network、镜像和 provider 配置进入实际启动前置检查；
+- planning 与 error refresh 并行，Kernel 准入前汇合；相关 Executor 恢复时，同一原生 Codex Planner thread 最多修订一次；
+- 已有 Task 的 availability-exhausted replan 不再走普通 `reject_request`，而是持久化为 `waiting_for_availability` 和 deferred proposal，并由 Kernel 将 Task 阻塞为 `kernel_availability`；
+- Executor 恢复后提交 durable `executor_recovered` 事实。Kernel 对最新 Task/generation/revision/frontier 重新准入，合法时只激活 revision 并把 Task 转为 `ready`，不立即派发；
+- Planner MCP 可读取 bounded、脱敏的 recent recovery checks，用户询问时 Planner 有足够事实解释失败原因；
+- SQLite 首次发布基线升级到 v28，Kernel wire/ledger 升级到 v5，Docker shell 数据卷同步到 v28。
+
+11.5 的跨事实查询一致性与 11.6 的 TUI liveness 展示仍是独立技术债，本批次没有用恢复机制掩盖或顺带重写它们。

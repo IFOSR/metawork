@@ -93,7 +93,7 @@ function batchDecision(): KernelDecision & {
   action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
 } {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: 'decision-batch',
     eventId: 'event-batch',
     reason: 'test',
@@ -117,7 +117,7 @@ function batchDecision(): KernelDecision & {
 
 function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'execution_outcome',
     id: `event-${item.attemptId}`,
     correlationId: 'test',

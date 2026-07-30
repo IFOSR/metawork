@@ -59,7 +59,7 @@ export class TaskCancellationCoordinator {
       ? this.deps.subtaskRepo.listActiveByTask(taskId)
       : this.deps.subtaskRepo.listByTask(taskId);
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       type: 'task_control',
       task: task ? { id: task.id, status: task.status } : null,
       generationId: revision?.generationId ?? null,

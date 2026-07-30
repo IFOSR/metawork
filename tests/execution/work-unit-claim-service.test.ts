@@ -197,7 +197,7 @@ describe('WorkUnitClaimService', () => {
       },
     });
 
-    expect(probe).toHaveBeenCalledWith('codex-cli');
+    expect(probe).toHaveBeenCalledWith('codex-cli', 'claim');
     expect(claim?.workUnit).toMatchObject({ agentClassName: 'codex-cli', state: 'claimed' });
     expect(repo.listEvents(claim!.workUnit.id).map(event => event.eventType)).toEqual([
       'probe_started',

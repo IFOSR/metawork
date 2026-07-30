@@ -14,6 +14,12 @@ export interface CommandContext {
   activeExecutions: ActiveExecutionControl;
   taskControl: TaskControlPort;
   readServices: CommandReadServices;
+  refreshExecutors?(agentClassNames?: string[]): Promise<{
+    checked: string[];
+    recovered: string[];
+    stillError: string[];
+    skipped: string[];
+  }>;
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;

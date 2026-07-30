@@ -156,7 +156,7 @@ function cancellationOutcome(
   now: string,
 ): KernelEvent {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'execution_outcome',
     id: event.id,
     correlationId: dispatch.decisionId,

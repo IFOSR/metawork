@@ -53,7 +53,45 @@ describe('KernelExecutorStatusProjector', () => {
       failure: { kind: 'adapter', scope: 'agent_class', code: 'binding_invalid', summary: 'adapter binding invalid' },
     });
     expect(repo.findByAgentClassName('codex-cli')?.classHealth).toBe('error');
+    const attemptsBeforeRecovery = repo.findByAgentClassName('codex-cli')?.recentAttempts;
+    const recovery = projector.recordRecoveryCheck({
+      agentClassName: 'codex-cli',
+      checkId: 'recovery_1',
+      trigger: 'planning_cycle',
+      startedAt: '2026-07-30T00:00:00.000Z',
+      completedAt: '2026-07-30T00:00:01.000Z',
+      outcome: 'recovered',
+    });
+    expect(recovery?.classHealth).toBe('healthy');
+    expect(recovery?.recentAttempts).toEqual(attemptsBeforeRecovery);
+    expect(recovery?.recentRecoveryChecks).toMatchObject([
+      { checkId: 'recovery_1', outcome: 'recovered', trigger: 'planning_cycle' },
+    ]);
     projector.recordExecutionOutcome({ agentClassName: 'codex-cli', attemptId: 'attempt_success', outcome: 'succeeded' });
     expect(repo.findByAgentClassName('codex-cli')?.classHealth).toBe('healthy');
+  });
+
+  it('never automatically recovers a disabled class', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new KernelExecutorStatusRepo(db);
+    repo.upsert({
+      agentClassName: 'codex-cli',
+      classHealth: 'disabled',
+      recentAttempts: [],
+      recentRecoveryChecks: [],
+      updatedAt: '2026-07-30T00:00:00.000Z',
+    });
+    const projector = new KernelExecutorStatusProjector(repo);
+    expect(projector.recordRecoveryCheck({
+      agentClassName: 'codex-cli',
+      checkId: 'recovery_disabled',
+      trigger: 'manual',
+      startedAt: '2026-07-30T00:00:00.000Z',
+      completedAt: '2026-07-30T00:00:01.000Z',
+      outcome: 'recovered',
+    })?.classHealth).toBe('disabled');
+    expect(repo.findByAgentClassName('codex-cli')?.recentRecoveryChecks).toEqual([]);
   });
 });

@@ -170,3 +170,23 @@ export async function unregisterExecutor(
   agentClassRepo.delete(name);
   return { type: 'text', content: `Unregistered Executor AgentClass: ${name}` };
 }
+
+export async function refreshExecutors(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  if (!context.refreshExecutors) {
+    return { type: 'text', content: 'Executor recovery refresh is not available in this host.' };
+  }
+  const target = stringArg(args, 'executorName');
+  const report = await context.refreshExecutors(target && target !== 'all' ? [target] : undefined);
+  return {
+    type: 'text',
+    content: [
+      `Recovery refresh checked: ${report.checked.join(', ') || '-'}`,
+      `Recovered: ${report.recovered.join(', ') || '-'}`,
+      `Still error: ${report.stillError.join(', ') || '-'}`,
+      `Skipped (not error/unknown): ${report.skipped.join(', ') || '-'}`,
+    ].join('\n'),
+  };
+}

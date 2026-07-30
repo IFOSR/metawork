@@ -5,6 +5,7 @@ export type GenerationReplanRequestStatus =
   | 'pending_quiescence'
   | 'planning'
   | 'submitted'
+  | 'waiting_for_availability'
   | 'resolved'
   | 'cancelled'
   | 'failed';
@@ -18,6 +19,8 @@ export interface GenerationReplanRequestRecord {
   triggerDecisionId: string;
   quiescenceToken: string | null;
   errorSummary: string | null;
+  deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
+  availabilityExplanation: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,6 +34,8 @@ interface ReplanRow {
   trigger_decision_id: string;
   quiescence_token: string | null;
   error_summary: string | null;
+  deferred_plan_json: string | null;
+  availability_explanation: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -92,7 +97,7 @@ export class GenerationReplanRequestRepo {
     const row = this.db.prepare(`
       SELECT * FROM generation_replan_requests
       WHERE task_id = ? AND generation_id = ?
-        AND status IN ('pending_quiescence', 'planning', 'submitted')
+        AND status IN ('pending_quiescence', 'planning', 'submitted', 'waiting_for_availability')
       ORDER BY source_revision DESC
       LIMIT 1
     `).get(taskId, generationId) as ReplanRow | undefined;
@@ -118,6 +123,30 @@ export class GenerationReplanRequestRepo {
       SET status = 'submitted', submitted_at = ?, updated_at = ?
       WHERE id = ? AND status = 'planning' AND quiescence_token = ?
     `).run(now, now, id, quiescenceToken).changes === 1;
+  }
+
+  deferForAvailability(
+    id: string,
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    explanation: string,
+    now: string,
+  ): boolean {
+    return this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'waiting_for_availability',
+          deferred_plan_json = ?,
+          availability_explanation = ?,
+          updated_at = ?
+      WHERE id = ? AND status IN ('planning', 'submitted')
+    `).run(JSON.stringify(event), explanation, now, id).changes === 1;
+  }
+
+  listWaitingForAvailability(): GenerationReplanRequestRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM generation_replan_requests
+      WHERE status = 'waiting_for_availability'
+      ORDER BY created_at
+    `).all() as ReplanRow[]).map(rowToRecord);
   }
 
   submitPlan(
@@ -176,7 +205,7 @@ export class GenerationReplanRequestRepo {
     this.db.prepare(`
       UPDATE generation_replan_requests
       SET status = 'resolved', resolved_at = ?, updated_at = ?
-      WHERE id = ? AND status IN ('planning', 'submitted')
+      WHERE id = ? AND status IN ('planning', 'submitted', 'waiting_for_availability')
     `).run(now, now, id);
   }
 
@@ -186,7 +215,7 @@ export class GenerationReplanRequestRepo {
       SET status = 'cancelled', cancelled_at = ?, updated_at = ?,
           error_summary = ?
       WHERE task_id = ?
-        AND status IN ('pending_quiescence', 'planning', 'submitted')
+        AND status IN ('pending_quiescence', 'planning', 'submitted', 'waiting_for_availability')
     `).run(now, now, `cancelled by ${decisionId}`, taskId).changes;
   }
 
@@ -209,6 +238,10 @@ function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {
     triggerDecisionId: row.trigger_decision_id,
     quiescenceToken: row.quiescence_token,
     errorSummary: row.error_summary,
+    deferredPlan: row.deferred_plan_json
+      ? JSON.parse(row.deferred_plan_json) as Extract<KernelEvent, { type: 'plan_proposed' }>
+      : null,
+    availabilityExplanation: row.availability_explanation,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

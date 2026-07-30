@@ -102,6 +102,8 @@ export class SessionKernelRuntime {
       case 'escalate_capability':
       case 'wait_for_partition':
       case 'recover_workspace_attempt':
+      case 'defer_task_plan_for_availability':
+      case 'activate_deferred_task_plan':
         throw new Error(`${decision.action.type} must be applied by the execution Runtime`);
     }
   }

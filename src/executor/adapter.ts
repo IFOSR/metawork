@@ -1,5 +1,6 @@
 // Defines the shared executor adapter contract, inputs, and progress events.
 import type { ExecutorResult } from '../core/types.js';
+import type { KernelFailure } from '../core/kernel-failure.js';
 import type { SubtaskExecutionContext } from '../execution/subtask-execution-context.js';
 import type { ParsedSkillUsageEvent } from './skill-usage-event-parser.js';
 
@@ -37,11 +38,16 @@ export interface ExecutorProgressEvent {
   skillEvent?: ParsedSkillUsageEvent;
 }
 
+export interface ExecutorProbeResult {
+  available: boolean;
+  failure: KernelFailure | null;
+}
+
 export interface ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation?: boolean;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
   executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
-  isAvailable(): Promise<boolean>;
+  probe(previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult>;
   abort(attemptId?: string): void;
 }

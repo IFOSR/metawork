@@ -161,9 +161,15 @@ describe('PlannerDataReader', () => {
     });
     const now = '2026-07-10T00:00:00.000Z';
     db.prepare(`
-      INSERT INTO kernel_executor_status (agent_class_name, class_health, recent_attempts_json, updated_at)
-      VALUES ('codex-cli', 'healthy', ?, ?)
-    `).run(JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]), now);
+      INSERT INTO kernel_executor_status (
+        agent_class_name, class_health, recent_attempts_json, recent_recovery_checks_json, updated_at
+      )
+      VALUES ('codex-cli', 'healthy', ?, ?, ?)
+    `).run(
+      JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]),
+      JSON.stringify([{ checkId: 'check_1', trigger: 'planning_cycle', outcome: 'recovered', failure: null }]),
+      now,
+    );
 
     expect(reader.getRuntimeState()).toMatchObject({
       focus: { taskId: task.id },
@@ -176,6 +182,11 @@ describe('PlannerDataReader', () => {
         agentClassName: 'codex-cli',
         classHealth: 'healthy',
         recentAttempts: [expect.objectContaining({ failureKind: 'network' })],
+        recentRecoveryChecks: [expect.objectContaining({
+          checkId: 'check_1',
+          trigger: 'planning_cycle',
+          outcome: 'recovered',
+        })],
       }),
     ]));
     expect(JSON.stringify(status)).not.toContain('sensitive-runtime-token');

@@ -95,7 +95,7 @@ function setup() {
 
 function outcomeEvent(now: string): KernelEvent {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     type: 'execution_outcome',
     id: 'event_attempt-terminal_execution_outcome',
     correlationId: 'decision-terminal',

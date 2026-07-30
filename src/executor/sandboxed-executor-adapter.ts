@@ -199,12 +199,90 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
     }
   }
 
-  async isAvailable(): Promise<boolean> {
-    if (!this.agentClass.executionImageRef || !this.agentClass.resolvedImageId || !this.agentClass.permissionProfileId) return false;
+  async probe(
+    previousFailure?: import('../core/kernel-failure.js').KernelFailure | null,
+  ): Promise<import('./adapter.js').ExecutorProbeResult> {
+    if (!this.agentClass.executionImageRef || !this.agentClass.resolvedImageId || !this.agentClass.permissionProfileId) {
+      return {
+        available: false,
+        failure: {
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'agent_class_sandbox_unconfigured',
+          summary: `AgentClass ${this.name} has no verified image or permission profile`,
+        },
+      };
+    }
     try {
-      return await this.sandbox.resolveImage(this.agentClass.executionImageRef) === this.agentClass.resolvedImageId;
-    } catch {
-      return false;
+      const imageId = await this.sandbox.resolveImage(this.agentClass.executionImageRef);
+      if (imageId !== this.agentClass.resolvedImageId) {
+        return {
+          available: false,
+          failure: {
+            kind: 'configuration',
+            scope: 'agent_class',
+            code: 'agent_class_image_drift',
+            summary: `AgentClass ${this.name} image does not match its pinned image ID`,
+          },
+        };
+      }
+      const provider = this.providerEnvironment();
+      if (!provider.OPENAI_BASE_URL || !provider.OPENAI_API_KEY) {
+        return {
+          available: false,
+          failure: {
+            kind: 'authentication',
+            scope: 'agent_class',
+            code: 'provider_configuration_missing',
+            summary: 'OPENAI_BASE_URL and OPENAI_API_KEY are required',
+          },
+        };
+      }
+      if (previousFailure && ['authentication', 'network'].includes(previousFailure.kind)) {
+        try {
+          const baseUrl = provider.OPENAI_BASE_URL.endsWith('/')
+            ? provider.OPENAI_BASE_URL
+            : `${provider.OPENAI_BASE_URL}/`;
+          const response = await fetch(new URL('models', baseUrl), {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${provider.OPENAI_API_KEY}` },
+          });
+          if (!response.ok) {
+            return {
+              available: false,
+              failure: {
+                kind: response.status === 401 || response.status === 403
+                  ? 'authentication'
+                  : 'network',
+                scope: 'agent_class',
+                code: `provider_probe_http_${response.status}`,
+                summary: `Provider validation returned HTTP ${response.status}`,
+              },
+            };
+          }
+        } catch (error) {
+          return {
+            available: false,
+            failure: {
+              kind: 'network',
+              scope: 'agent_class',
+              code: 'provider_remote_probe_failed',
+              summary: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
+      }
+      return { available: true, failure: null };
+    } catch (error) {
+      return {
+        available: false,
+        failure: {
+          kind: 'adapter',
+          scope: 'agent_class',
+          code: 'executor_local_probe_failed',
+          summary: error instanceof Error ? error.message : String(error),
+        },
+      };
     }
   }
 

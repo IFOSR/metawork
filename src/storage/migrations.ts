@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 27;
+const CURRENT_SCHEMA_VERSION = 28;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -282,6 +282,7 @@ CREATE TABLE kernel_executor_status (
         agent_class_name TEXT PRIMARY KEY,
         class_health TEXT NOT NULL DEFAULT 'unverified',
         recent_attempts_json TEXT NOT NULL DEFAULT '[]',
+        recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL,
         FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
       );
@@ -723,12 +724,14 @@ CREATE TABLE generation_replan_requests (
             generation_id TEXT NOT NULL,
             source_revision INTEGER NOT NULL,
             status TEXT NOT NULL CHECK(status IN (
-              'pending_quiescence', 'planning', 'submitted',
+              'pending_quiescence', 'planning', 'submitted', 'waiting_for_availability',
               'resolved', 'cancelled', 'failed'
             )),
             trigger_decision_id TEXT NOT NULL,
             quiescence_token TEXT,
             error_summary TEXT,
+            deferred_plan_json TEXT,
+            availability_explanation TEXT,
             planning_started_at TEXT,
             submitted_at TEXT,
             resolved_at TEXT,

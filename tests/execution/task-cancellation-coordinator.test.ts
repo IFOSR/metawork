@@ -206,7 +206,7 @@ describe('TaskCancellationCoordinator', () => {
       attemptSandboxRepository: sandboxRepo,
     });
     const decision: KernelDecision = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: 'decision-task-cancel',
       eventId: 'event-task-cancel',
       reason: 'user requested cancellation',
@@ -277,7 +277,7 @@ describe('TaskCancellationCoordinator', () => {
     });
     const dispatch = new KernelDispatchItemRepo(db);
     dispatch.insertBatch({
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: 'decision-subtask-dispatch',
       eventId: 'event-subtask-dispatch',
       reason: 'test',
@@ -315,7 +315,7 @@ describe('TaskCancellationCoordinator', () => {
     });
 
     coordinator.apply({
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: 'decision-subtask-cancel',
       eventId: 'event-subtask-cancel',
       reason: 'cancel root branch',
@@ -377,7 +377,7 @@ function dispatchDecision(taskId: string): KernelDecision & {
   action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
 } {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: 'decision-dispatch-cancel',
     eventId: 'event-dispatch-cancel',
     reason: 'test',

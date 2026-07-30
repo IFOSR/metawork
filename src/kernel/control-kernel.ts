@@ -46,7 +46,7 @@ export type KernelAttemptPayload =
   | null;
 
 export interface KernelEventEnvelope {
-  schemaVersion: 4;
+  schemaVersion: 5;
   id: string;
   correlationId: string;
   causationId: string | null;
@@ -89,6 +89,12 @@ export type KernelEvent =
       generationId: string;
       proposalSource: 'initial' | 'replan' | 'conflict_replan';
       targetGraphRevision: number;
+      availabilityExplanation?: string | null;
+    })
+  | (KernelEventEnvelope & {
+      type: 'executor_recovered';
+      agentClassName: string;
+      recoveryCheckId: string;
     })
   | (KernelEventEnvelope & { type: 'dispatch_requested'; reason: string })
   | (KernelEventEnvelope & {
@@ -215,7 +221,7 @@ export interface KernelDispatchItemFact {
 
 export type KernelSnapshot =
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'plan_admission';
       tasks: KernelTaskFact[];
       runningTaskId: string | null;
@@ -226,7 +232,7 @@ export type KernelSnapshot =
       pendingAuthorizationRequest: { requestId: string; taskId: string } | null;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'dispatch';
       task: KernelTaskFact | null;
       runningTaskId: string | null;
@@ -256,7 +262,7 @@ export type KernelSnapshot =
       generationQuiescent: boolean;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'task_control';
       task: KernelTaskFact | null;
       generationId: string | null;
@@ -266,7 +272,7 @@ export type KernelSnapshot =
       partialCancellation: boolean;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'timer';
       task: KernelTaskFact | null;
       wakeAuthorized: boolean;
@@ -278,7 +284,7 @@ export type KernelSnapshot =
       defaultResourceGrant: ResourceClaim[];
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'recovery';
       task: KernelTaskFact | null;
       item: {
@@ -289,12 +295,12 @@ export type KernelSnapshot =
       } | null;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'invalid';
       reason: string;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'permission';
       request: NormalizedCapabilityRequest | null;
       requestStatus: 'pending' | 'granted' | 'denied' | 'expired' | null;
@@ -307,19 +313,28 @@ export type KernelSnapshot =
       checkpointId: string | null;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'partition';
       conflictConfirmed: boolean;
       workspaceId: string | null;
       checkpointId: string | null;
     }
   | {
-      schemaVersion: 4;
+      schemaVersion: 5;
       type: 'sandbox_recovery';
       workspaceExists: boolean;
       workspaceId: string | null;
       checkpointId: string | null;
       activeLeaseIds: string[];
+    }
+  | {
+      schemaVersion: 5;
+      type: 'availability_recovery';
+      task: KernelTaskFact | null;
+      activeGenerationId: string | null;
+      activeGraphRevision: number | null;
+      deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
+      executorStatuses: KernelExecutorStatusProjection[];
     };
 
 export type KernelDecisionAction =
@@ -369,6 +384,23 @@ export type KernelDecisionAction =
       generationId: string;
       sourceRevision: number;
       requestId: string;
+    }
+  | {
+      type: 'defer_task_plan_for_availability';
+      taskId: string;
+      proposalEvent: Extract<KernelEvent, { type: 'plan_proposed' }>;
+      unavailableAgentClassNames: string[];
+      explanation: string;
+    }
+  | {
+      type: 'activate_deferred_task_plan';
+      taskId: string;
+      replanRequestId: string;
+      task: KernelPlanProposal['task'];
+      workGraph: WorkGraphProposal;
+      generationId: string;
+      graphRevision: number;
+      proposalSource: 'replan';
     }
   | {
       type: 'cancel_task';
@@ -435,7 +467,7 @@ export type KernelDecisionAction =
     };
 
 export interface KernelDecision {
-  schemaVersion: 4;
+  schemaVersion: 5;
   id: string;
   eventId: string;
   action: KernelDecisionAction;
@@ -454,6 +486,11 @@ export class ControlKernel {
     switch (event.type) {
       case 'plan_proposed':
         return this.decidePlan(event, snapshot as Extract<KernelSnapshot, { type: 'plan_admission' }>);
+      case 'executor_recovered':
+        return this.decideAvailabilityRecovery(
+          event,
+          snapshot as Extract<KernelSnapshot, { type: 'availability_recovery' }>,
+        );
       case 'dispatch_requested':
         return this.decideDispatch(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'capacity_signal':
@@ -571,6 +608,21 @@ export class ControlKernel {
       })),
     } satisfies WorkGraphProposal;
     if (workGraph.subtasks.some(subtask => subtask.preferredAgentClassList.length === 0)) {
+      if (event.proposalSource === 'replan' && proposal.task.taskId) {
+        const unavailableAgentClassNames = [...new Set(
+          proposal.workGraph.subtasks.flatMap(subtask =>
+            subtask.preferredAgentClassList.filter(name => unavailable.has(name))
+          ),
+        )];
+        return decision(event, {
+          type: 'defer_task_plan_for_availability',
+          taskId: proposal.task.taskId,
+          proposalEvent: event,
+          unavailableAgentClassNames,
+          explanation: event.availabilityExplanation
+            ?? 'The revised plan is waiting because every eligible Executor for at least one Subtask is unavailable.',
+        }, 'latest replan proposal deferred until Executor availability recovers');
+      }
       return decision(event, { type: 'reject_request' }, 'no healthy canonical AgentClass remains');
     }
     const violations = validateWorkGraphStructure(workGraph);
@@ -626,6 +678,52 @@ export class ControlKernel {
       }, 'all runnable Subtasks lack an available authorized AgentClass');
     }
     return decision(event, { type: 'dispatch_batch', taskId: event.taskId, items }, 'dispatch batch authorized');
+  }
+
+  private decideAvailabilityRecovery(
+    event: Extract<KernelEvent, { type: 'executor_recovered' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'availability_recovery' }>,
+  ): KernelDecision {
+    const deferred = snapshot.deferredPlan;
+    if (
+      !event.taskId
+      || !snapshot.task
+      || snapshot.task.id !== event.taskId
+      || snapshot.task.status !== 'blocked'
+      || !deferred
+      || deferred.taskId !== event.taskId
+      || deferred.proposalSource !== 'replan'
+      || deferred.targetGraphRevision !== (snapshot.activeGraphRevision ?? 0) + 1
+      || deferred.generationId !== snapshot.activeGenerationId
+      || !deferred.proposal.workGraph
+    ) {
+      return decision(event, { type: 'no_op' }, 'deferred availability proposal is missing, stale, or cancelled');
+    }
+    const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
+    const workGraph = {
+      ...deferred.proposal.workGraph,
+      subtasks: deferred.proposal.workGraph.subtasks.map(subtask => ({
+        ...subtask,
+        preferredAgentClassList: subtask.preferredAgentClassList.filter(name => !unavailable.has(name)),
+      })),
+    } satisfies WorkGraphProposal;
+    if (workGraph.subtasks.some(subtask => subtask.preferredAgentClassList.length === 0)) {
+      return decision(event, { type: 'no_op' }, 'recovered Executor does not make the deferred frontier executable');
+    }
+    const violations = validateWorkGraphStructure(workGraph);
+    if (violations.length > 0) {
+      return decision(event, { type: 'no_op' }, 'deferred availability proposal no longer validates');
+    }
+    return decision(event, {
+      type: 'activate_deferred_task_plan',
+      taskId: event.taskId,
+      replanRequestId: event.correlationId,
+      task: deferred.proposal.task,
+      workGraph,
+      generationId: deferred.generationId,
+      graphRevision: deferred.targetGraphRevision,
+      proposalSource: deferred.proposalSource,
+    }, 'deferred availability proposal is executable again');
   }
 
   private decideCapacity(event: Extract<KernelEvent, { type: 'capacity_signal' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
@@ -1101,11 +1199,12 @@ export class ControlKernel {
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
-  return { schemaVersion: 4, id: `decision_${event.id}`, eventId: event.id, action, reason };
+  return { schemaVersion: 5, id: `decision_${event.id}`, eventId: event.id, action, reason };
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
+  if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
   if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';

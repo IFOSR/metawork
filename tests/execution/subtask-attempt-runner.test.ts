@@ -123,7 +123,7 @@ function setup(rawResponse: string) {
     if (dispatchItems.find(input.attemptId)) return;
     const now = '2026-07-28T00:00:00.000Z';
     dispatchItems.insertBatch({
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: `decision_${input.attemptId}`,
       eventId: `dispatch_${input.attemptId}`,
       reason: 'test dispatch authorization',
@@ -187,7 +187,7 @@ function authorizeRunningAttempt(
 ): void {
   const now = '2026-07-28T00:00:00.000Z';
   setupResult.dispatchItems.insertBatch({
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: `decision_${attemptId}`,
     eventId: `dispatch_${attemptId}`,
     reason: 'test dispatch authorization',

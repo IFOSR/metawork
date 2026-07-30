@@ -6,22 +6,22 @@ import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kern
 
 function createRecord() {
   const event: KernelEvent = {
-    schemaVersion: 4, type: 'timer_tick', id: 'event_1', correlationId: 'correlation_1', causationId: null,
+    schemaVersion: 5, type: 'timer_tick', id: 'event_1', correlationId: 'correlation_1', causationId: null,
     occurredAt: '2026-07-20T00:00:00.000Z', sessionId: 'session_1', taskId: 'task_1', subtaskId: 'subtask_1',
     wakeKind: 'capacity', sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:00:00.000Z', retry: null,
   };
   const snapshot: KernelSnapshot = {
-    schemaVersion: 4, type: 'timer', capacityBlockedAt: null, recheckAfterMs: 1000,
+    schemaVersion: 5, type: 'timer', capacityBlockedAt: null, recheckAfterMs: 1000,
     task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
     nativeContinuationAgentClasses: [],
     capacityAgentClasses: [], executorStatuses: [],
     defaultResourceGrant: [],
   };
   const decision: KernelDecision = {
-    schemaVersion: 4, id: 'decision_event_1', eventId: event.id, action: { type: 'no_op' }, reason: 'nothing due',
+    schemaVersion: 5, id: 'decision_event_1', eventId: event.id, action: { type: 'no_op' }, reason: 'nothing due',
   };
   return {
-    id: decision.id, schemaVersion: 4 as const, eventId: event.id, eventType: event.type,
+    id: decision.id, schemaVersion: 5 as const, eventId: event.id, eventType: event.type,
     correlationId: event.correlationId, causationId: event.causationId, sessionId: event.sessionId,
     taskId: event.taskId ?? null, subtaskId: event.subtaskId ?? null, attemptId: event.attemptId ?? null,
     event, snapshot, decision, action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,

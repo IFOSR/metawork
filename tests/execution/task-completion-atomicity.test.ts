@@ -97,7 +97,7 @@ describe('Task completion atomicity', () => {
       },
     } as never);
     const decision: KernelDecision = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: 'decision-complete',
       eventId: 'event-complete',
       reason: 'all Subtasks completed',

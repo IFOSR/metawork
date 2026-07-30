@@ -225,7 +225,10 @@ describe('ExecutionRuntime', () => {
     const sandbox = createSandbox();
     const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptSandbox: sandbox });
 
-    await expect(registry.isAvailable('codex-cli')).resolves.toBe(true);
+    await expect(registry.probe('codex-cli')).resolves.toEqual({
+      available: true,
+      failure: null,
+    });
     expect(sandbox.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
     expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
   });
@@ -244,14 +247,21 @@ describe('ExecutionRuntime', () => {
     });
     const registry = createRegistry([unresolved], sandbox);
 
-    await expect(registry.isAvailable('codex-cli')).rejects.toThrow(
-      'Cannot connect to the Docker daemon',
-    );
+    await expect(registry.probe('codex-cli')).resolves.toMatchObject({
+      available: false,
+      failure: {
+        code: 'executor_image_probe_failed',
+        summary: expect.stringContaining('Cannot connect to the Docker daemon'),
+      },
+    });
   });
 
   it('is unavailable when the AgentClass does not exist', async () => {
     const registry = createRegistry([], createSandbox());
-    await expect(registry.isAvailable('missing')).resolves.toBe(false);
+    await expect(registry.probe('missing')).resolves.toMatchObject({
+      available: false,
+      failure: { code: 'agent_class_not_found' },
+    });
   });
 
   it('runs a claimed subtask through the sandboxed adapter for the claimed AgentClass', async () => {

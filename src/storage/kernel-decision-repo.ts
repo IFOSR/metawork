@@ -90,7 +90,7 @@ function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
   const decision = parseCurrentKernelValue<KernelDecision>(row.decision_json, 'decision');
   return {
     id: row.id,
-    schemaVersion: 4,
+    schemaVersion: 5,
     eventId: row.event_id,
     eventType: row.event_type,
     correlationId: row.correlation_id,
@@ -108,13 +108,13 @@ function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
   };
 }
 
-function assertCurrentSchema(schemaVersion: number, kind: string): asserts schemaVersion is 4 {
-  if (schemaVersion !== 4) {
+function assertCurrentSchema(schemaVersion: number, kind: string): asserts schemaVersion is 5 {
+  if (schemaVersion !== 5) {
     throw new Error(`unsupported Kernel ${kind} schema version ${schemaVersion}`);
   }
 }
 
-function parseCurrentKernelValue<T extends { schemaVersion: 4 }>(
+function parseCurrentKernelValue<T extends { schemaVersion: 5 }>(
   raw: string,
   kind: string,
 ): T {
@@ -123,7 +123,7 @@ function parseCurrentKernelValue<T extends { schemaVersion: 4 }>(
     typeof value !== 'object'
     || value === null
     || !('schemaVersion' in value)
-    || value.schemaVersion !== 4
+    || value.schemaVersion !== 5
   ) {
     const version = typeof value === 'object' && value !== null && 'schemaVersion' in value
       ? String(value.schemaVersion)

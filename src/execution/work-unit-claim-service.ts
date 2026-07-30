@@ -19,7 +19,10 @@ export class WorkUnitClaimService {
   constructor(
     private readonly workUnitRepo: WorkUnitRepo,
     private readonly leaseMs = 60_000,
-    private readonly probeExecutor: (agentClassName: string) => Promise<boolean> = async () => false,
+    private readonly probeExecutor: (
+      agentClassName: string,
+      mode: 'claim' | 'capacity',
+    ) => Promise<boolean> = async () => false,
   ) {}
 
   async claim(input: {
@@ -33,7 +36,7 @@ export class WorkUnitClaimService {
     );
     if (!workUnit) {
       for (const agentClassName of input.subtask.preferredAgentClassList) {
-        workUnit = await this.provisionExecutor(agentClassName);
+        workUnit = await this.provisionExecutor(agentClassName, 'claim');
         if (workUnit) break;
       }
     }
@@ -77,7 +80,7 @@ export class WorkUnitClaimService {
 
   async probe(agentClassName: string): Promise<boolean> {
     if (this.workUnitRepo.findIdleByKind('executor', [agentClassName])) return true;
-    return Boolean(await this.provisionExecutor(agentClassName));
+    return Boolean(await this.provisionExecutor(agentClassName, 'capacity'));
   }
 
   isClaimCurrent(workUnitId: string, attemptId: string, requiredState?: WorkUnit['state']): boolean {
@@ -161,7 +164,10 @@ export class WorkUnitClaimService {
     this.releaseOrphanedAttempt(input);
   }
 
-  private async provisionExecutor(agentClassName: string): Promise<WorkUnit | null> {
+  private async provisionExecutor(
+    agentClassName: string,
+    mode: 'claim' | 'capacity',
+  ): Promise<WorkUnit | null> {
     const now = new Date().toISOString();
     const id = `executor-${sanitizeId(agentClassName)}-${generateInteractionId()}`;
     this.workUnitRepo.upsert({
@@ -181,7 +187,7 @@ export class WorkUnitClaimService {
     let available = false;
     let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
-      available = await this.probeExecutor(agentClassName);
+      available = await this.probeExecutor(agentClassName, mode);
     } catch (error) {
       available = false;
       const detail = error instanceof Error ? error.message : String(error);

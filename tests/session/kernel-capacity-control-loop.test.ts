@@ -59,9 +59,20 @@ describe('Kernel capacity control loop', () => {
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
     expect(new KernelExecutorStatusProjector(new KernelExecutorStatusRepo(db)).list()
-      .find(item => item.agentClassName === 'codex-cli')?.recentAttempts ?? []).toEqual([]);
+      .find(item => item.agentClassName === 'codex-cli')).toMatchObject({
+      classHealth: 'error',
+      recentAttempts: [expect.objectContaining({
+        failure: expect.objectContaining({ code: 'executor_image_probe_failed' }),
+      })],
+    });
 
     available.value = true;
+    await session.submit('/executor refresh codex-cli', {
+      awaitAsyncWork: true,
+    });
+    expect(new KernelExecutorStatusRepo(db).list()
+      .find(item => item.agentClassName === 'codex-cli')?.classHealth).toBe('healthy');
+
     const handled = await session.maybeReconcileBlockedTasksOnTimer(Date.now() + 10_000);
 
     expect(handled).toBe(true);

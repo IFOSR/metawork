@@ -150,7 +150,7 @@ export class SubtaskAttemptRunner {
       nextSubtaskStatus: 'awaiting_decision',
       subtaskError: 'WorkUnit heartbeat lost',
       event: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         type: 'execution_outcome',
         id: `event_${dispatch.attemptId}_execution_outcome`,
         correlationId: dispatch.decisionId,
@@ -585,7 +585,7 @@ export class SubtaskAttemptRunner {
             candidateCommit: repairedCommit.commit,
           },
           event: {
-            schemaVersion: 4,
+            schemaVersion: 5,
             type: 'execution_outcome',
             id: `event_${dispatchItem.attemptId}_execution_outcome`,
             correlationId: dispatchItem.decisionId,
@@ -756,7 +756,7 @@ export class SubtaskAttemptRunner {
           createdAt: completedAt,
         },
         event: {
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'execution_outcome',
           id: `event_${dispatchItem.attemptId}_execution_outcome`,
           correlationId: dispatchItem.decisionId,
@@ -1014,7 +1014,7 @@ export class SubtaskAttemptRunner {
           createdAt: completedAt,
         },
         event: {
-          schemaVersion: 4,
+          schemaVersion: 5,
           type: 'execution_outcome',
           id: `event_${dispatchItem.attemptId}_execution_outcome`,
           correlationId: dispatchItem.decisionId,
@@ -1131,7 +1131,7 @@ export class SubtaskAttemptRunner {
       nextSubtaskStatus: 'awaiting_decision',
       subtaskError: input.errorDetail,
       event: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         type: 'handoff_contract_failed',
         id: `event_${dispatch.attemptId}_handoff_contract_failed`,
         correlationId: dispatch.decisionId,
@@ -1201,7 +1201,7 @@ export class SubtaskAttemptRunner {
       nextSubtaskStatus: 'awaiting_decision',
       subtaskError: input.errorDetail,
       event: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         type: 'execution_outcome',
         id: `event_${dispatch.attemptId}_execution_outcome`,
         correlationId: dispatch.decisionId,
