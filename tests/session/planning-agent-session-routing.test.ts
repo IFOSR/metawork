@@ -78,7 +78,7 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
         riskLevel: 'low',
       }],
     },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
     ...overrides,
   };
 }

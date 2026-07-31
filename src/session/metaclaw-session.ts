@@ -5,6 +5,7 @@ import type {
   Config,
   GuidanceProposal,
   RuntimeState,
+  Subtask,
   Task,
   TaskRecoveryTrigger,
 } from '../core/types.js';
@@ -59,7 +60,7 @@ import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
+import { createDefaultPlanningAgent } from '../planning/anyfusion-planning-agent.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
@@ -161,6 +162,13 @@ export interface PlannerTuiSnapshot {
     title: string;
     goal: string;
     status: Task['status'];
+    blockingReason: string | null;
+    subtasks: Array<{
+      id: string;
+      title: string;
+      status: Subtask['status'];
+      preferredAgentClassList: string[];
+    }>;
   }>;
   executorStatuses: KernelExecutorStatusProjection[];
 }
@@ -540,18 +548,27 @@ export class MetaclawSession {
         plannerState: { ...snapshot.plannerState },
         recentOutput: snapshot.output.slice(-100),
       },
-      taskPool: this.taskRuntimeService.listTasks().map(task => ({
+      taskPool: this.taskRuntimeService.listTasks().slice(0, 100).map(task => ({
         id: task.id,
         title: task.title,
         goal: task.goal,
         status: task.status,
+        blockingReason: (task.lastInterruptionReason
+          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+          || '').slice(0, 500) || null,
+        subtasks: this.subtaskRepo.listByTask(task.id).slice(0, 100).map(subtask => ({
+          id: subtask.id,
+          title: subtask.title,
+          status: subtask.status,
+          preferredAgentClassList: [...subtask.preferredAgentClassList],
+        })),
       })),
       executorStatuses: this.kernelExecutorStatusRepo.list(),
     };
   }
 
   /**
-   * Accepts a Planner proposal emitted by the native Codex Stop hook. The Planner
+   * Accepts a Planner proposal emitted by the AnyFusion-Pi host protocol. The Planner
    * remains untrusted with respect to state: schema and semantic validation happen
    * here, then the existing plan_proposed -> DurableKernelWorkflow path remains the
    * only state-changing route.

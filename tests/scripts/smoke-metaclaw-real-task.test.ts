@@ -92,7 +92,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(turns[2]).toBe('/exit');
   });
 
-  it('requires the second reply to recall the marker from one native Codex session', async () => {
+  it('requires the second reply to recall the marker from one persisted AnyFusion-Pi session', async () => {
     const smoke = await loadSmokeScript();
 
     expect(smoke.verifyPlannerSessionScenario({
@@ -112,6 +112,6 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(() => smoke.verifyPlannerSessionScenario({
       interactions: [{ userInput: '刚才的测试口令是什么？', systemOutput: smoke.plannerMemoryMarker }],
       sessionFiles: ['/planner/sessions/one.jsonl', '/planner/sessions/two.jsonl'],
-    })).toThrow(/exactly one native Codex session/);
+    })).toThrow(/exactly one persisted AnyFusion-Pi session/);
   });
 });

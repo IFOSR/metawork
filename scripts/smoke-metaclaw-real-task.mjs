@@ -209,12 +209,12 @@ export function verifyPythonHelloScenario(input) {
 export function verifyPlannerSessionScenario(input) {
   if (input.sessionFiles.length !== 1) {
     throw new Error(
-      `Smoke failed: expected exactly one native Codex session file for two turns, found ${input.sessionFiles.length}`,
+      `Smoke failed: expected exactly one persisted AnyFusion-Pi session file for two turns, found ${input.sessionFiles.length}`,
     );
   }
   const recall = input.interactions.find(row => String(row.userInput ?? '').includes('刚才的测试口令是什么'));
   if (!recall || !String(recall.systemOutput ?? '').includes(plannerMemoryMarker)) {
-    throw new Error('Smoke failed: the second Planner reply did not recall the marker from its native Codex session');
+    throw new Error('Smoke failed: the second Planner reply did not recall the marker from its persisted AnyFusion-Pi session');
   }
   return { nativeSessionPath: input.sessionFiles[0] };
 }
@@ -346,8 +346,10 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
         shell: process.platform === 'win32',
       });
     }
+    const plannerSessionDir = join(metaclawHome, 'anyfusion-planner', 'sessions');
     const childEnv = {
       METACLAW_HOME: metaclawHome,
+      METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
       METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v6.schema.json'),
     };
     if (executorCommand === 'pi') {
@@ -370,7 +372,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       ? verifyPlannerSessionScenario({
         interactions: readPlannerInteractions(repoRoot, metaclawHome),
         sessionFiles: findFiles(
-          join(env.METACLAW_PLANNER_CODEX_HOME, 'sessions'),
+          plannerSessionDir,
           filePath => filePath.endsWith('.jsonl'),
         ),
       })
@@ -415,9 +417,9 @@ function runDockerSmoke(rawArgs, env) {
   const suffix = `${process.pid}-${Date.now()}`;
   const network = `metaclaw-smoke-${suffix}`;
   const control = `metaclaw-smoke-control-${suffix}`;
-  const runtimeImage = 'metaclaw-runtime:phase5';
+  const runtimeImage = 'metaclaw-runtime:planner-pi';
   const mounts = [
-    ['docker/planner-codex.env', '/run/metaclaw/env/planner-codex.env'],
+    ['docker/planner-pi.env', '/run/metaclaw/env/planner-pi.env'],
     ['docker/executor-codex.env', '/run/metaclaw/env/executor-codex.env'],
     ['docker/executor-pi.env', '/run/metaclaw/env/executor-pi.env'],
   ];
@@ -428,7 +430,15 @@ function runDockerSmoke(rawArgs, env) {
   }
 
   try {
-    run('docker', ['build', '-f', 'docker/Dockerfile.runtime', '-t', runtimeImage, '.'], { cwd: repoRoot });
+    run('docker', [
+      'build',
+      '--build-arg', env.ANYFUSION_PI_IMAGE
+        ? `ANYFUSION_PI_IMAGE=${env.ANYFUSION_PI_IMAGE}`
+        : 'ANYFUSION_PI_IMAGE=anyfusion-pi-planner:dev',
+      '-f', 'docker/Dockerfile.runtime',
+      '-t', runtimeImage,
+      '.',
+    ], { cwd: repoRoot });
     if (!plannerOnly) {
       run('docker', ['build', '-f', 'docker/Dockerfile.attempt-codex', '-t', 'metaclaw-executor-codex:phase5', '.'], { cwd: repoRoot });
       run('docker', ['build', '-f', 'docker/Dockerfile.attempt-pi', '-t', 'metaclaw-executor-pi:phase5', '.'], { cwd: repoRoot });
@@ -478,7 +488,7 @@ function buildHelp() {
     '',
     'Environment variables:',
     '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
-    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn native Codex memory).',
+    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
     '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; ordinary smoke runs create the control container automatically.',

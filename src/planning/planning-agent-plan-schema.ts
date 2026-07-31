@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const PLANNER_SOURCE = 'codex-planner';
+export const PLANNER_SOURCE = 'anyfusion-planner';
 
 const ACTION_VALUES = [
   'direct_reply',
@@ -136,7 +136,7 @@ const PlanShapeSchema = z.object({
 /** Strict parser for raw Planner JSON. It never supplies semantic defaults. */
 export const PlanningAgentPlanSchema = PlanShapeSchema;
 
-/** Canonical structured-output contract used to generate Codex --output-schema. */
+/** Canonical structured-output contract shared by AnyFusion Planner transports. */
 export const PlanningAgentPlanOutputSchema = PlanShapeSchema;
 
 export type PlanningAgentPlanCandidate = z.infer<typeof PlanningAgentPlanSchema>;

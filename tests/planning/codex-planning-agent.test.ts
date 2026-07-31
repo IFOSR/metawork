@@ -61,7 +61,7 @@ const VALID_PLAN = JSON.stringify({
       riskLevel: 'medium',
     }],
   },
-  source: 'codex-planner',
+  source: 'anyfusion-planner',
 });
 
 describe('CodexPlanningAgent', () => {
@@ -79,6 +79,17 @@ describe('CodexPlanningAgent', () => {
     expect(receivedPrompt).toBe('实现一个功能');
     expect(receivedPrompt).not.toContain('session_test');
     expect(receivedPrompt).not.toContain('workspace-engineering');
+  });
+
+  it('accepts the AnyFusion displayText plus plan envelope', async () => {
+    const agent = new CodexPlanningAgent({
+      runner: runner(async () => JSON.stringify({ displayText: '已生成计划', plan: JSON.parse(VALID_PLAN) })),
+    });
+
+    const result = await agent.plan(context());
+
+    expect(result.id).toBe('plan_1');
+    expect(result.source).toBe('anyfusion-planner');
   });
 
   it('parses a v4 tool-grounded work graph and priority', async () => {

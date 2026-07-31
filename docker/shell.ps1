@@ -23,7 +23,7 @@
 # After -SetupSsh, `ssh metaclaw` (host alias) and VS Code Remote-SSH connect
 # with no password. The key lives in .tmp\ssh_key (gitignored).
 #
-# Source edits require `-Rebuild`: runtime code, Codex homes, skills, and the
+# Source edits require `-Rebuild`: runtime code, Planner homes, skills, and the
 # entrypoint are baked into the image. Only workspace outputs and MetaClaw data
 # use named volumes; host build/config directories are never bind-mounted.
 #
@@ -53,18 +53,18 @@ $repoRoot    = Split-Path -Parent $PSScriptRoot
 # The SSH layer sits on the hermetic runtime image. Build-BaseImage compiles the
 # runtime from source; Build-Image only adds the SSH server.
 $baseImage   = 'metaclaw-runtime'
-$anyFusionCodexImage = 'anyfusion-codex:local'
-$anyFusionCodexRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Codex'
+$anyFusionPiImage = 'anyfusion-pi-planner:local'
+$anyFusionPiRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Pi'
 $imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
 $sshPort     = 2222
 $sshUser     = 'root'
 $sshPassword = 'metaclaw'   # only used to print a reminder; ssh prompts for it
-$plannerEnvFile = Join-Path $repoRoot 'docker\planner-codex.env'
+$plannerEnvFile = Join-Path $repoRoot 'docker\planner-pi.env'
 $codexExecutorEnvFile = Join-Path $repoRoot 'docker\executor-codex.env'
 $piExecutorEnvFile = Join-Path $repoRoot 'docker\executor-pi.env'
-$plannerEnvContainerPath = '/run/metaclaw/env/planner-codex.env'
+$plannerEnvContainerPath = '/run/metaclaw/env/planner-pi.env'
 $codexExecutorEnvContainerPath = '/run/metaclaw/env/executor-codex.env'
 $piExecutorEnvContainerPath = '/run/metaclaw/env/executor-pi.env'
 $workspaceVolume = 'metaclaw-shell-workspace'
@@ -273,17 +273,17 @@ function Test-Prereqs {
     }
 }
 
-# Build the pinned downstream Codex TUI fork used only by the Planner surface.
-function Build-AnyFusionCodexImage {
+# Build the pinned AnyFusion-Pi Planner fork used only by the Planner surface.
+function Build-AnyFusionPiImage {
     param([switch]$Force)
-    if (-not $Force -and (Test-ImageExists $anyFusionCodexImage)) { return }
-    $dockerfile = Join-Path $anyFusionCodexRoot 'Dockerfile.release'
+    if (-not $Force -and (Test-ImageExists $anyFusionPiImage)) { return }
+    $dockerfile = Join-Path $anyFusionPiRoot 'Dockerfile.anyfusion-planner'
     if (-not (Test-Path $dockerfile)) {
-        Write-Error "Missing AnyFusion-Codex sibling repository or Dockerfile.release at $anyFusionCodexRoot."
+        Write-Error "Missing AnyFusion-Pi sibling repository or Dockerfile.anyfusion-planner at $anyFusionPiRoot."
         exit 1
     }
-    Write-Host ("Building Planner TUI image " + $anyFusionCodexImage + " ...") -ForegroundColor Yellow
-    docker build -f $dockerfile -t $anyFusionCodexImage $anyFusionCodexRoot
+    Write-Host ("Building AnyFusion Planner image " + $anyFusionPiImage + " ...") -ForegroundColor Yellow
+    docker build -f $dockerfile -t $anyFusionPiImage $anyFusionPiRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -291,9 +291,9 @@ function Build-AnyFusionCodexImage {
 function Build-BaseImage {
     param([switch]$Force)
     if (-not $Force -and (Test-ImageExists $baseImage)) { return }
-    Build-AnyFusionCodexImage -Force:$Force
+    Build-AnyFusionPiImage -Force:$Force
     Write-Host ("Base image " + $baseImage + " not found, building hermetic runtime image ...") -ForegroundColor Yellow
-    docker build --build-arg ANYFUSION_CODEX_IMAGE=$anyFusionCodexImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
+    docker build --build-arg ANYFUSION_PI_IMAGE=$anyFusionPiImage -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $baseImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -398,17 +398,7 @@ function Start-ShellContainer {
     # - internal control network + alias: attempt sandboxes reach model/evidence
     #   gateways as hostname `metaclaw-control`
     #
-    # --security-opt seccomp=unconfined is granted ONCE here, at container
-    # creation. The read-only planner Codex sandboxes shell execution with
-    # bubblewrap, which needs unprivileged user namespaces; Docker's default
-    # seccomp profile blocks the `unshare` syscall bwrap uses, so without this
-    # the planner's shell tool fails closed ("No permissions to create a new
-    # namespace") and it cannot read repository files. This only loosens THIS
-    # container's syscall filter and is a create-time flag: subsequent
-    # `docker start` (stop/resume) reuse it with no extra grant. Rebuilding the
-    # image and creating a fresh container re-applies it here.
     docker run -d --name $container `
-      --security-opt seccomp=unconfined `
       --network bridge `
       -p "${sshPort}:22" `
       --entrypoint /bin/bash `
@@ -534,7 +524,7 @@ function Clear-StaleHostKey {
 function Enter-Tui {
     Wait-SshReady
     Clear-StaleHostKey
-    Write-Host ("Launching AnyFusion Codex TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
+    Write-Host ("Launching AnyFusion Planner TUI over SSH (port " + $sshPort + ")...") -ForegroundColor Cyan
     Write-Host "Tip: /exit to leave the TUI; Ctrl+C to force-quit. Container keeps running." -ForegroundColor DarkGray
     $args = Ssh-CommonArgs
     $args += @('-t', 'cd /workspace && node /app/dist/index.js')

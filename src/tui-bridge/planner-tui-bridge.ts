@@ -6,8 +6,13 @@ import type {
   PlannerTuiSnapshot,
   SessionSnapshot,
 } from '../session/metaclaw-session.js';
-
-const MAX_JSONL_LINE_BYTES = 1_048_576;
+import {
+  ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES,
+  ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+  isPlannerHostRequest,
+  type PlannerHostMessage,
+  type PlannerHostRequest,
+} from './planner-host-protocol.js';
 
 export interface PlannerTuiBridgeSession {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
@@ -21,29 +26,15 @@ export interface PlannerTuiBridgeDeps {
   logger?: Pick<Console, 'warn'>;
 }
 
-type BridgeRequest = {
-  type: 'subscribe' | 'snapshot' | 'planner_stop' | 'ping';
-  requestId?: string;
-  userInput?: unknown;
-  plan?: unknown;
-};
-
-type BridgeMessage =
-  | { type: 'snapshot'; snapshot: PlannerTuiSnapshot }
-  | { type: 'response'; requestId: string | null; ok: true; result: unknown }
-  | {
-      type: 'response';
-      requestId: string | null;
-      ok: false;
-      error: { code: string; message: string; details?: string[] };
-    };
+type BridgeMessage = PlannerHostMessage<PlannerTuiSnapshot>;
 
 /**
  * Trusted local Application-Shell bridge for the native Planner TUI.
  *
- * It has no database, Kernel, scheduler, or executor dependency. `planner_stop`
- * is only a proposal handoff: MetaclawSession revalidates the v6 plan and remains
- * responsible for the existing DurableKernelWorkflow submission.
+ * It has no database, Kernel, scheduler, or executor dependency. A
+ * `proposal_submit` message is only a proposal handoff: MetaclawSession
+ * revalidates the v6 plan and remains responsible for the existing
+ * DurableKernelWorkflow submission.
  */
 export class PlannerTuiBridge {
   private server: Server | null = null;
@@ -100,7 +91,7 @@ export class PlannerTuiBridge {
 
     socket.on('data', chunk => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > MAX_JSONL_LINE_BYTES) {
+      if (Buffer.byteLength(buffer) > ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES) {
         this.write(socket, this.errorResponse(null, 'line_too_large', 'JSONL request exceeds 1 MiB'));
         buffer = '';
         return;
@@ -120,10 +111,12 @@ export class PlannerTuiBridge {
   }
 
   private handleLine(socket: Socket, line: string): void {
-    let request: BridgeRequest;
+    let request: PlannerHostRequest;
     try {
       const value: unknown = JSON.parse(line);
-      if (!isBridgeRequest(value)) throw new Error('request.type must be a supported string');
+      if (!isPlannerHostRequest(value)) {
+        throw new Error('request must use AnyFusionPlannerHostProtocol v1 and a supported type');
+      }
       request = value;
     } catch (error) {
       this.write(socket, this.errorResponse(null, 'invalid_request', (error as Error).message));
@@ -131,76 +124,113 @@ export class PlannerTuiBridge {
     }
 
     switch (request.type) {
+      case 'hello':
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'hello',
+          requestId: request.requestId,
+          accepted: true,
+          capabilities: ['snapshot_get', 'snapshot_subscribe', 'proposal_submit', 'ping', 'shutdown'],
+        });
+        return;
       case 'ping':
-        this.write(socket, this.successResponse(request.requestId, { pong: true }));
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'pong',
+          requestId: request.requestId,
+        });
         return;
-      case 'snapshot':
-        this.write(socket, this.successResponse(request.requestId, this.deps.session.getPlannerTuiSnapshot()));
+      case 'snapshot_get':
+        this.write(socket, this.snapshotMessage(request.requestId));
         return;
-      case 'subscribe': {
+      case 'snapshot_subscribe': {
         const alreadySubscribed = Boolean(this.unsubscribeSession);
         this.subscribers.add(socket);
-        this.write(socket, this.successResponse(request.requestId, { subscribed: true }));
-        if (alreadySubscribed) {
-          this.write(socket, { type: 'snapshot', snapshot: this.deps.session.getPlannerTuiSnapshot() });
-        } else {
-          this.ensureSessionSubscription();
-        }
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'subscribed',
+          requestId: request.requestId,
+        });
+        if (alreadySubscribed) this.write(socket, this.snapshotMessage(null));
+        else this.ensureSessionSubscription();
         return;
       }
-      case 'planner_stop':
-        if (typeof request.userInput !== 'string') {
-          this.write(socket, this.errorResponse(request.requestId, 'invalid_request', 'planner_stop.userInput must be a string'));
+      case 'proposal_submit':
+        if (request.sessionId.length === 0 || request.turnId.length === 0 || request.userInput.length === 0) {
+          this.write(socket, this.errorResponse(request.requestId, 'invalid_request', 'proposal_submit correlation and user input are required'));
           return;
         }
-        this.enqueuePlannerStop(socket, request.requestId, request.userInput, request.plan);
+        this.enqueueProposal(socket, request);
+        return;
+      case 'shutdown':
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'shutdown',
+          requestId: request.requestId,
+          accepted: true,
+        });
+        socket.end();
         return;
     }
   }
 
-  private enqueuePlannerStop(
-    socket: Socket,
-    requestId: string | undefined,
-    userInput: string,
-    plan: unknown,
-  ): void {
+  private enqueueProposal(socket: Socket, request: Extract<PlannerHostRequest, { type: 'proposal_submit' }>): void {
     this.submissionQueue = this.submissionQueue
       .catch(() => undefined)
       .then(async () => {
-        const result = await this.deps.session.submitPlannerTuiPlan(userInput, plan);
+        const result = await this.deps.session.submitPlannerTuiPlan(request.userInput, request.plan);
         if (!result.accepted) {
-          this.write(socket, this.errorResponse(
-            requestId,
-            'plan_rejected',
-            'Planner proposal failed v6 validation',
-            result.errors,
-          ));
+          this.write(socket, {
+            protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+            type: 'proposal_result',
+            requestId: request.requestId,
+            turnId: request.turnId,
+            accepted: false,
+            error: {
+              code: 'plan_rejected',
+              message: 'Planner proposal failed v6 validation',
+              ...(result.errors.length > 0 ? { details: result.errors } : {}),
+            },
+          });
           return;
         }
-        this.write(socket, this.successResponse(requestId, {
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'proposal_result',
+          requestId: request.requestId,
+          turnId: request.turnId,
           accepted: true,
           planId: result.planId,
-        }));
+        });
       })
       .catch(error => {
         this.deps.logger?.warn(`Planner TUI bridge proposal failed: ${(error as Error).message}`);
-        this.write(socket, this.errorResponse(
-          requestId,
-          'proposal_submission_failed',
-          (error as Error).message,
-        ));
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'proposal_result',
+          requestId: request.requestId,
+          turnId: request.turnId,
+          accepted: false,
+          error: { code: 'proposal_submission_failed', message: (error as Error).message },
+        });
       });
   }
 
   private ensureSessionSubscription(): void {
     if (this.unsubscribeSession) return;
     this.unsubscribeSession = this.deps.session.subscribe(() => {
-      const message: BridgeMessage = {
-        type: 'snapshot',
-        snapshot: this.deps.session.getPlannerTuiSnapshot(),
-      };
+      const message = this.snapshotMessage(null);
       for (const socket of this.subscribers) this.write(socket, message);
     });
+  }
+
+  private snapshotMessage(requestId: string | null): BridgeMessage {
+    return {
+      protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+      type: 'snapshot',
+      requestId,
+      snapshot: this.deps.session.getPlannerTuiSnapshot(),
+    };
   }
 
   private removeClient(socket: Socket): void {
@@ -214,20 +244,16 @@ export class PlannerTuiBridge {
     this.unsubscribeSession = null;
   }
 
-  private successResponse(requestId: string | undefined, result: unknown): BridgeMessage {
-    return { type: 'response', requestId: requestId ?? null, ok: true, result };
-  }
-
   private errorResponse(
-    requestId: string | undefined | null,
+    requestId: string | null,
     code: string,
     message: string,
     details?: string[],
   ): BridgeMessage {
     return {
-      type: 'response',
-      requestId: requestId ?? null,
-      ok: false,
+      protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+      type: 'error',
+      requestId,
       error: { code, message, ...(details?.length ? { details } : {}) },
     };
   }
@@ -248,10 +274,4 @@ export class PlannerTuiBridge {
       throw error;
     }
   }
-}
-
-function isBridgeRequest(value: unknown): value is BridgeRequest {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const type = (value as { type?: unknown }).type;
-  return type === 'subscribe' || type === 'snapshot' || type === 'planner_stop' || type === 'ping';
 }

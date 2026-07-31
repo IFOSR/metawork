@@ -41,7 +41,7 @@ function outputPlan() {
         riskLevel: 'low',
       }],
     },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   };
 }
 

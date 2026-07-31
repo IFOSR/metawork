@@ -137,7 +137,7 @@ async function main() {
 
   const plannerTuiSocketPath = (process.env.METACLAW_PLANNER_TUI_SOCKET
     ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
-  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-codex';
+  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
   if (process.env.METACLAW_STANDBY_TUI !== '1') {
     const plannerTuiSession = new MetaclawSession({

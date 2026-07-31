@@ -48,7 +48,7 @@ replacing those semantics.
 
 ## Active Delivery
 
-- [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): pending review and implementation. The plan replaces the failed Codex-fork route with a full `AnyFusion-Pi` Planner fork, one unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, a read-only Task dashboard, and strict Planner/Kernel/Executor process separation.
+- [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): implementation in progress. The plan replaces the failed Codex-fork route with a full `AnyFusion-Pi` Planner fork, one unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, a read-only Task dashboard, and strict Planner/Kernel/Executor process separation.
 
 ## Future Roadmap
 
@@ -82,8 +82,8 @@ It is historical review context, not an active issue tracker or architecture map
 
 ## Operational Notes
 
-- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): the checked-in runtime still uses the Codex Planner configuration until the active Pi migration plan is implemented. Treat this as transitional state, not the target architecture; Executor Codex/Pi configuration remains independent from the Planner migration.
-- The current `QC` code still contains the frozen AnyFusion-Codex TUI wiring from the failed migration route. Do not add features to it; the active Pi migration plan owns selective rollback and replacement. The original Ink source, tests, and dependencies remain a standby module and must not be deleted.
+- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): the checked-in runtime now consumes the self-contained AnyFusion-Pi Planner image and keeps Planner, Executor Codex, and Executor Pi provider/config boundaries independent.
+- The failed AnyFusion-Codex Planner wiring has been removed from active source, Docker templates, and smoke scripts. The archived migration plan and Git history remain the rollback/audit record; the original Ink source, tests, and dependencies remain a standby module and must not be deleted.
 - [Tech Debt](tech-debt/): the active post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents

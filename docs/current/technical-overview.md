@@ -6,7 +6,7 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-07-30): PlanningAgentPlan v6, Work
+> Current implementation baseline (2026-07-31): PlanningAgentPlan v6, Work
 > Graph v5, Kernel event/snapshot/decision contract v5, Completion Protocol v2,
 > and fresh-install-only SQLite schema v28.
 
@@ -20,13 +20,13 @@ It is built for teams who need agents to do more than answer the current turn. A
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
 - Validates every Subtask through Completion Protocol v2, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
-- Binds each live MetaClaw session to one native Codex Planner thread; confirmed preferences and runtime facts stay queryable through the read-only Planner MCP.
+- Binds each live MetaClaw session to one persisted AnyFusion-Pi Planner session; MetaClaw-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
-- Uses the downstream AnyFusion-Codex native TUI as the default local conversation surface, retaining Codex-native threads, history, resume/fork/archive, compaction, commands, completion, MCP, approval, interrupt, and tool rendering.
-- Adds a responsive read-only AnyFusion Task panel without moving Task, Kernel, or Executor authority into the TUI; the original Ink UI remains source-preserved as a standby module.
-- Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one native Codex Planner session; artifact scenarios remain available explicitly.
+- Uses the sibling AnyFusion-Pi fork as the default local Planner conversation surface, with a self-contained Node 22 runtime and AnyFusion-managed provider/model configuration.
+- Adds a responsive read-only AnyFusion Task dashboard over the versioned host bridge without moving Task, Kernel, or Executor authority into the TUI. Live disconnect/reconnect and server PTY visual acceptance remain migration work; the original Ink UI remains source-preserved as a standby module.
+- Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
 
@@ -68,9 +68,9 @@ flowchart LR
 
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, sandbox or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
-The Codex `PlanningAgent` uses a dedicated runner rather than an Executor adapter. One live MetaClaw session maps to one native Codex thread: the first turn captures `thread.started.thread_id`, and later turns use `codex exec resume`. Codex owns dialogue history; MetaClaw does not rebuild it from SQLite interactions. The Planner runs with a separate `CODEX_HOME`, native developer instructions, core Planner Skill, generated output schema, read-only sandbox, and dedicated Planner MCP. Confirmed preferences, routing, authorization and runtime facts are read on demand through MCP. Invalid output is repaired once in the same thread; timeout, MCP failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
+The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One live MetaClaw session maps to one persisted Pi session file. Non-interactive surfaces launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize turns targeting the same session so only one process writes that file at a time. The Planner fork owns dialogue history and fixed system instructions; MetaClaw does not rebuild history from SQLite interactions. Provider/model selection and Planner tools are fixed by AnyFusion. Invalid output is repaired once within the existing planning path; timeout, RPC failure, or repeated schema failure returns a safe clarification without a legacy rule fallback.
 
-The local native TUI and the non-interactive PlanningAgent runner use the same modified Planner binary but remain separate processes. `PlannerTuiBridge` is a trusted local Application-Shell adapter over a mode-`0600` Unix JSONL socket. It publishes a bounded Task-pool/focused-Task projection to the TUI and serializes Stop-hook proposal submissions. `MetaclawSession` always reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before reusing the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. The bridge cannot write the database or directly call Kernel, scheduling, Execution, or Executor APIs.
+The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same Planner implementation but remain separate controlled processes. `PlannerTuiBridge` is a trusted local Application-Shell adapter over a mode-`0600` Unix JSONL host socket. It publishes a bounded Task-pool/focused-Task projection and accepts versioned proposal envelopes. `MetaclawSession` always reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before reusing the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. The bridge cannot write the database or directly call Kernel, scheduling, Execution, or Executor APIs.
 
 Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
 inspects only enabled AgentClasses whose persisted class health is already
@@ -84,7 +84,7 @@ resume/recovery, Executor configuration changes, and
 
 Planning and recovery refresh begin concurrently, but Kernel admission waits for
 both. If a preferred/eligible class recovered, the Planner may revise the
-proposal once in the same native Codex thread. If an existing Task still has no
+proposal once in the same persisted AnyFusion-Pi Planner session. If an existing Task still has no
 usable eligible class, Kernel persists the exact proposal as
 `waiting_for_availability` and blocks the Task with a structured availability
 fact. A later `executor_recovered` event re-admits that proposal and moves the
@@ -106,7 +106,7 @@ flowchart LR
   Answer --> UI[TUI or Feishu]
 ```
 
-This path is still semantic. The native Codex thread preserves dialogue such as "continue" or "you stopped halfway"; durable MetaClaw facts remain explicit MCP queries. The PlanningAgent writes the final user-visible answer into `response.directReply`, and runtime surfaces it as-is.
+This path is still semantic. The persisted AnyFusion-Pi Planner session preserves dialogue such as "continue" or "you stopped halfway"; durable MetaClaw facts remain explicit MCP queries. The PlanningAgent writes the final user-visible answer into `response.directReply`, and runtime surfaces it as-is.
 
 ### Durable Task Path
 
@@ -152,11 +152,11 @@ Feishu progress is intentionally split into AnyFusion milestones and concrete ex
 
 The conversation/task boundary matters:
 
-- Conversation: answer now, do not create durable state. The native Codex thread owns dialogue continuity. Direct replies are persisted as audit facts, not replayed into later prompts.
+- Conversation: answer now, do not create durable state. The persisted AnyFusion-Pi Planner session owns dialogue continuity. Direct replies are persisted as audit facts, not replayed into later prompts.
 - Task control: inspect or change existing task state. Good for "what is running?", "resume that task", or "clear blocked tasks".
 - Durable task: create or continue work that needs execution, persistence, artifacts, recovery, scheduling, or later retrieval.
 
-The current direct-reply path is explicit: MetaClaw sends the current turn through the bound native Codex thread, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
+The current direct-reply path is explicit: MetaClaw sends the current turn through the bound persisted AnyFusion-Pi Planner session, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
 The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
 
@@ -475,14 +475,14 @@ Start the TUI:
 anyfusion
 ```
 
-The default command launches the pinned AnyFusion-Codex native TUI:
+The default command launches the pinned AnyFusion-Pi Planner TUI:
 
-- Codex owns the native conversation thread, transcript history, resume/fork/archive lifecycle, compaction, slash commands, completion, MCP interaction, approvals, interrupts, and tool rendering.
-- AnyFusion branding is presentation-only; the executable remains `codex` and Codex protocol/configuration identifiers remain compatible.
-- At wide terminal widths, a right-side Task panel shows the global Task pool and focused Task/Subtask/Executor/blocking projection received from the local bridge. At narrow widths the panel disappears and the native conversation layout remains single-column.
-- The panel is read-only. It cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
-- Direct replies and clarifications render as normal conversation content. A proposal renders a human-readable summary while the raw v6 JSON remains an internal Planner/Stop-hook artifact.
-- Bridge failure, stale data, or malformed data degrades the panel only and must not terminate the Codex conversation.
+- AnyFusion-Pi owns the conversation transcript, resume/fork/archive lifecycle, compaction, slash commands, completion, interrupt handling, and read-only tool rendering.
+- The executable is `anyfusion-planner`; user-visible Pi/Earendil branding and upstream account/update flows are disabled in the fork.
+- The local host bridge delivers a bounded global Task pool plus focused Task/Subtask/Executor/blocking projection. Wide and medium terminals render the dashboard beside the transcript; narrow terminals hide it and keep ordinary conversation usable. Initial loading, unavailable, and malformed/stale snapshot states degrade the panel without mutating Task state.
+- The projection and dashboard are read-only. They cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
+- Direct replies and clarifications render as normal conversation content. A proposal renders `displayText`; the raw v6 plan remains internal and is submitted once through the versioned host protocol.
+- Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
 - Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and receives no migration feature work.
 
 Or use the project helper:
@@ -535,23 +535,11 @@ anyfusion --connect
 
 ### Running in Docker (Windows / containerized)
 
-On Windows, the `docker/` workflow runs the container as an SSH server so the native TUI
-receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH.
-The runtime consumes a separately built, pinned AnyFusion-Codex Linux artifact for the Planner TUI
-and non-interactive PlanningAgent. Executor attempts remain on the stock Codex attempt image; Pi
-is retained as an executor candidate. Planner and Executor keep separate homes and provider files. Docker mounts `planner-codex.env`, `executor-codex.env`, and
-`executor-pi.env` read-only. Planner Codex, Executor Codex, and Executor Pi load
-only their assigned provider file, and `docker/entrypoint.sh` renders each config
-template with the base URL from that file.
+On Windows, the `docker/` workflow runs the Linux container as an SSH server so the native TUI receives a genuine PTY and `/workspace` remains available through shell or VS Code Remote-SSH. Deployment support is Linux-container/server only; Windows is a host for Docker validation, not a native Planner target. The runtime consumes a separately built, pinned `anyfusion-pi-planner` image for the Planner TUI and non-interactive PlanningAgent. The MetaClaw control process stays on Node 20 while the copied Planner artifact carries its own Node 22 runtime. Executor attempts remain on their canonical Codex/Pi images. Docker mounts `planner-pi.env`, `executor-codex.env`, and `executor-pi.env` read-only, and `docker/entrypoint.sh` renders isolated Planner/Executor configs from the assigned base URL.
 
-The hermetic runtime image contains the CLI, Planner MCP, generated v6 schema, Planner Skill,
-Stop-hook adapter, native-TUI bridge, and isolated Planner/Executor Codex templates.
-`docker/Dockerfile.runtime` copies `/usr/local/bin/codex` from the prebuilt
-`anyfusion-codex:local` artifact into `/opt/anyfusion-codex/bin/codex`; this repository does not
-compile the Rust fork. Host `dist`, Codex/PI configs, and entrypoint are not mounted. Source changes
-require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. In the maintained Windows debugging workflow, the trusted shell Runtime mounts the Docker Desktop Unix socket and automatically recreates older shell containers that lack this mount. Executor attempts are sibling containers created through that trusted Engine endpoint. They mount source, inputs, handoffs and `.git` read-only, mount only their private `/workspace` read-write, use a tmpfs `/tmp`, and never receive the Docker socket or provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for the maintained Windows Docker + SSH workflow, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
+The hermetic runtime image contains the MetaClaw CLI, generated v6 schema, versioned host bridge, and isolated Planner/Executor templates. `docker/Dockerfile.runtime` copies `/opt/anyfusion-planner` from the prebuilt Planner image; MetaClaw does not install or run the Planner package under Node 20. The Pi executor remains in the separate Node 22 attempt image. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. Executor attempts are sibling containers created through the trusted Engine endpoint, with source, inputs, handoffs and `.git` read-only, a private writable `/workspace`, tmpfs `/tmp`, no Docker socket, and no real provider credential. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH validation, and see [Phase 5 Runtime Security](phase-5-runtime-security.md) for network, image and Engine requirements.
 
-Local validation for this repository covers TypeScript build/lint, the full Docker Vitest suite, Unix-socket bridge behavior, Stop-hook syntax, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux compilation, native Codex TUI interaction, responsive panel behavior, real Stop-hook end-to-end delivery, and the final release artifact are validated in the separate `MetaAny/anyfusion-codex` server handoff.
+Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies Node 20/Node 22 isolation, Planner RPC JSONL, entrypoint config separation, and the final pinned artifact.
 
 ## Configuration
 
@@ -729,7 +717,7 @@ Useful commands:
 
 The main TUI obtains completion state from the same `CommandCatalog` used by `/help`, validation, and execution. `Up`/`Down` selects a candidate, `Tab` completes only the token at the cursor, and `Enter` submits only a complete valid command. Directory nodes, missing arguments, and invalid dynamic references remain in the editor. Flat legacy entrypoints and aliases are not registered.
 
-The AnyFusion-Codex downstream TUI is the default local surface. Native Codex owns conversation interaction; MetaClaw owns the read-only Task projection and all durable Task/Kernel/Executor facts. The old Ink TUI remains intact under `src/tui/` and can be selected with `METACLAW_STANDBY_TUI=1`, but it is explicitly a standby module rather than a second actively maintained frontend. Feishu and Gateway remain backend delivery surfaces and do not depend on which local TUI is active.
+The AnyFusion-Pi Planner TUI is the default local surface. The fork owns conversation interaction; MetaClaw owns the read-only Task projection and all durable Task/Kernel/Executor facts. The old Ink TUI remains intact under `src/tui/` and can be selected with `METACLAW_STANDBY_TUI=1`, but it is explicitly a standby module rather than a second actively maintained frontend. Feishu and Gateway remain backend delivery surfaces and do not depend on which local TUI is active.
 
 ## Task Search
 
@@ -767,7 +755,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 ## Complex Task Strategy And Agentic Loop
 
-AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `CodexPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
+AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
 In the active session path, proposed nodes become persisted v5 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product creates one current SQLite v28 schema and rejects pre-release databases; it does not create or dual-read legacy Planning, Subtask or worktree audit tables. The schema contains durable inbox/application/outbox and graph revisions, resource/workspace/permission/sandbox records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
@@ -875,12 +863,12 @@ npm run lint
 npm run smoke:anyfusion
 ```
 
-`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one native Codex session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`.
+`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`.
 
 Targeted tests:
 
 ```bash
-npm test -- tests/planning/planner-codex-runner.test.ts
+npm test -- tests/planner-process-runner.test.ts
 npm test -- tests/session/planning-agent-session-routing.test.ts
 npm test -- tests/session/planning-kernel-path.test.ts
 npm test -- tests/kernel/control-kernel.test.ts
@@ -908,7 +896,7 @@ src/
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Explicit preferences, deterministic conversation context, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
-├── planning/       # PlanningAgent interface (CodexPlanningAgent), context builder, plan schema/vocabulary, validation
+├── planning/       # PlanningAgent interface (AnyFusionPlanningAgent), context builder, plan schema/vocabulary, validation
 ├── resource/       # Partition identity, conflicts, permission profiles, grants, and capability-use rules
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
 ├── storage/        # SQLite migrations and repositories

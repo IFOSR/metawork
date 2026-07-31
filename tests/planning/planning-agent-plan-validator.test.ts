@@ -43,7 +43,7 @@ function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: { reason: 'capability-minimal work graph', subtasks },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   };
 }
 

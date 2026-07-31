@@ -1,13 +1,54 @@
 # AnyFusion Pi Planner 与原生 TUI 迁移计划
 
-> 状态：待审核；尚未开始实现
+> 状态：实施中（Phase 0/1/2/3/4/5 核心路径已落地；Phase 3 reconnect 与 Phase 6 发布验收未完成）
 > 计划日期：2026-07-31
-> 完成日期：待实施完成后补写
+> 完成日期：待全部完成标准满足后补写
 > 目标产品名：AnyFusion；`MetaClaw` / `metaclaw` 继续作为内部运行时名称与兼容 CLI alias
 > Pi fork 本地路径：`D:\Internships\AnyInt\AnyFusion-Pi`，与 `MetaClaw` 平级
-> 初始上游基线候选：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`
+> 固定上游基线：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`
 > 前序失败方案：[AnyFusion Codex 原生 TUI 定制迁移计划](../archive/plans/2026-07-30-codex-native-tui-migration.md)
 > 核心边界：Pi 是 Planner 对话、查询和智能规划载体；MetaClaw Kernel 仍是唯一决策者，Execution/Executor 仍是唯一执行方
+
+## 实施进度（2026-07-31）
+
+已落地：
+
+- 建立 `D:\Internships\AnyInt\AnyFusion-Pi` 完整 fork，固定上游基线 `ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`；
+- 新增 deterministic `npm run build:offline`，直接使用锁定的 model catalogs；本机源码构建约 7–9 秒，不涉及 Codex/Rust 大型编译；
+- 交付自包含 Node 22 Linux Planner image `anyfusion-pi-planner:dev`；缓存重建约 12 秒；
+- 用户可见 CLI、帮助、配置目录和 binary 已切换为 AnyFusion Planner / `.anyfusion` / `anyfusion-planner`，并固定 system prompt、Provider/Model 和 Planner policy；
+- interactive 与 RPC 入口仅保留对话及有界只读能力，禁止 shell、edit/write、任意 Provider/Model 切换、登录、自更新、扩展和包管理绕过路径；
+- AnyFusion-Pi 已实现 v6 proposal envelope、interactive proposal 提交、accepted/rejected 展示，以及 versioned Unix JSONL host client；
+- MetaClaw 已交付 `PlannerProcessRunner`：使用真实 Pi `--mode rpc`、stdin/stdout JSONL、每 turn 受控 child lifecycle、同 session writer 串行化、1 MiB 单行上限、只读 tool trace、credential redaction 与 fail-closed timeout/exit/protocol handling；
+- MetaClaw host bridge 已支持 mode-`0600` Unix socket、snapshot projection 和 proposal handoff，并修复初次 `snapshot_subscribe` 重复发送初始 snapshot 的 race；snapshot 现包含 bounded Task pool、focused Task、Subtask preferred AgentClass、blocking reason 与 Executor health；
+- AnyFusion-Pi 已接入响应式只读 dashboard：宽/中终端与 transcript 并排显示，窄终端自动隐藏；展示 focused Task、Subtask、Executor、blocking/last-event 和 Task pool，并提供 loading、unavailable、malformed/stale snapshot 降级；
+- MetaClaw runtime 默认入口已切换到 AnyFusion-Pi；Node 20 control process 与 Planner 自带 Node 22 runtime 仅通过 JSON/JSONL、Unix socket、环境变量和文件边界通信；
+- Docker 已隔离 Planner、Executor Codex、Executor Pi 的 env/config/base URL；API key 不写入 SSH `/etc/environment`，Planner control container 不再使用 Codex Planner 所需的 `seccomp=unconfined`；
+- 已移除 active source/Docker/smoke 中的旧 Codex Planner runner、Stop Hook、lock/config 和 fallback 资产；Executor Codex、Executor Pi、Ink standby TUI 及兼容 re-export 保留；
+- `CONTEXT.md`、ADR-0015、当前中英文技术总览、runtime security、`AGENTS.md` 与文档索引已同步到 AnyFusion-Pi 边界。
+
+本轮验证证据：
+
+- AnyFusion-Pi `npm run check` 全部通过；dashboard/host/policy/envelope 聚焦测试 8 项通过，Windows host 上 Unix socket 用例按规则跳过 1 项；
+- AnyFusion-Pi offline TypeScript build 再次通过，本轮约 8 秒；Planner Docker build 的实际源码编译阶段约 4.1–4.4 秒，最近两次完整 image rebuild 约 48–72 秒，变化主要来自 npm install cache 与 artifact copy/export；
+- MetaClaw `npm run lint` 通过；
+- Linux Docker 聚焦回归：10 个测试文件、53 个测试全部通过；
+- 最终 runtime image `anyfusion-metaclaw-planner:dev` 在 dashboard/snapshot 更新后缓存重建约 50 秒；此前非缓存层重建为 147 秒、首次完整构建约 241 秒，主要耗时始终是 Debian apt、Executor Codex npm 安装及 artifact copy/export，而不是 Pi 大型源码编译；
+- 容器内版本确认：MetaClaw control `v20.20.2`、Planner `v22.23.2`、AnyFusion Planner `0.80.2`，未出现把 Planner package 安装到 Node 20 的 engine warning；
+- `docker/entrypoint.sh` 与 `persist-ssh-environment.sh` Bash 语法通过，三套 Provider 配置隔离 smoke 返回 `entrypoint-ok`；
+- 实际 `anyfusion-planner --mode rpc` 的 correlated `get_state` JSONL smoke 返回成功；
+- `docker/shell.ps1` PowerShell parser 与关键参数检查通过：sibling `AnyFusion-Pi`、`Dockerfile.anyfusion-planner`、`ANYFUSION_PI_IMAGE`、`planner-pi.env` 均存在，旧 Codex Planner 与 `seccomp=unconfined` 标记不存在。
+
+仍未完成，不得把本计划标为完成：
+
+1. dashboard 的 live disconnect detection、自动 reconnect/backoff、snapshot age 显示，以及 Linux 服务器真实 PTY 视觉验收；响应式布局、Task/Subtask/Executor/blocking 投影和初始降级状态已经完成；
+2. 用户可见品牌 inventory 的全量收尾与自动化 gate；
+3. proposal duplicate、bounded repair、timeout、crash/unavailable 等完整 interactive/headless 端到端联调；
+4. Gateway、Feishu 与 `npm run smoke:metaclaw` 的真实 Provider smoke（涉及网络与调用费用，本轮未执行）；
+5. interactive/RPC surface takeover、session resume/fork/archive/compaction 和损坏恢复的完整 single-writer 证明；
+6. 至少一次真实 upstream 前进/rebase rehearsal；
+7. Linux artifact digest、两个仓库 closing commit、服务器真实 PTY smoke 和观察期记录；
+8. 发布前依赖安全分流：当前 Docker `npm ci` 分别报告 Planner image 4 项和 MetaClaw builder 9 项 audit finding（MetaClaw 含 1 项 critical）；本轮未执行可能破坏锁文件/上游兼容性的自动 `npm audit fix`。
 
 ## 计划目的
 

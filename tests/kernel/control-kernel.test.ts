@@ -31,7 +31,7 @@ const event: KernelEvent = {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: null,
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
   },
 };
 

@@ -31,8 +31,29 @@ function snapshot(output: string[] = []): PlannerTuiSnapshot {
       recentOutput: output,
     },
     taskPool: [
-      { id: 'task_current', title: 'Current task', goal: 'Current goal', status: 'running' },
-      { id: 'task_ready', title: 'Ready task', goal: 'Ready goal', status: 'ready' },
+      {
+        id: 'task_current',
+        title: 'Current task',
+        goal: 'Current goal',
+        status: 'running',
+        blockingReason: null,
+        subtasks: [
+          {
+            id: 'subtask_current',
+            title: 'Current subtask',
+            status: 'running',
+            preferredAgentClassList: ['codex-cli'],
+          },
+        ],
+      },
+      {
+        id: 'task_ready',
+        title: 'Ready task',
+        goal: 'Ready goal',
+        status: 'ready',
+        blockingReason: null,
+        subtasks: [],
+      },
     ],
     executorStatuses: [],
   };
@@ -119,7 +140,7 @@ describe('PlannerTuiBridge', () => {
     await Promise.all(bridges.splice(0).map(bridge => bridge.stop()));
   });
 
-  itIfUnix('streams a read-only session/task projection and forwards Stop-hook proposals only through the session port', async () => {
+  itIfUnix('streams a read-only session/task projection and forwards Planner host proposals only through the session port', async () => {
     const session = new FakePlannerTuiSession();
     const socketPath = join(tmpdir(), `metaclaw-planner-tui-${process.pid}-${Date.now()}.sock`);
     const bridge = new PlannerTuiBridge({ socketPath, session });
@@ -129,12 +150,22 @@ describe('PlannerTuiBridge', () => {
     const socket = await connect(socketPath);
     sockets.push(socket);
     const received = collectJsonLines(socket);
-    socket.write(`${JSON.stringify({ type: 'subscribe', requestId: 'sub-1' })}
+    socket.write(`${JSON.stringify({ protocolVersion: 1, type: 'snapshot_subscribe', requestId: 'sub-1' })}
 `);
     const initial = await received.waitFor(2);
     expect(initial).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'response', requestId: 'sub-1', ok: true }),
-      expect.objectContaining({ type: 'snapshot', snapshot: expect.objectContaining({ taskPool: expect.any(Array) }) }),
+      expect.objectContaining({ protocolVersion: 1, type: 'subscribed', requestId: 'sub-1' }),
+      expect.objectContaining({
+        type: 'snapshot',
+        snapshot: expect.objectContaining({
+          taskPool: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'task_current',
+              subtasks: [expect.objectContaining({ id: 'subtask_current', status: 'running' })],
+            }),
+          ]),
+        }),
+      }),
     ]));
 
     session.emit(snapshot(['Kernel delivered a reply']));
@@ -145,16 +176,19 @@ describe('PlannerTuiBridge', () => {
     }));
 
     socket.write(`${JSON.stringify({
-      type: 'planner_stop',
+      protocolVersion: 1,
+      type: 'proposal_submit',
       requestId: 'stop-1',
+      turnId: 'turn-1',
+      sessionId: 'session-test',
       userInput: 'Create a task',
       plan: { schemaVersion: 6 },
     })}
 `);
     const complete = await received.waitFor(4);
     expect(complete.at(-1)).toEqual(expect.objectContaining({
-      type: 'response', requestId: 'stop-1', ok: true,
-      result: { accepted: true, planId: 'plan_from_tui' },
+      protocolVersion: 1, type: 'proposal_result', requestId: 'stop-1', turnId: 'turn-1',
+      accepted: true, planId: 'plan_from_tui',
     }));
     expect(session.submissions).toEqual([{ userInput: 'Create a task', plan: { schemaVersion: 6 } }]);
   });
@@ -171,14 +205,15 @@ describe('PlannerTuiBridge', () => {
     sockets.push(socket);
     const received = collectJsonLines(socket);
     socket.write(`${JSON.stringify({
-      type: 'planner_stop', requestId: 'stop-invalid', userInput: 'Bad plan', plan: {},
+      protocolVersion: 1, type: 'proposal_submit', requestId: 'stop-invalid', turnId: 'turn-invalid',
+      sessionId: 'session-test', userInput: 'Bad plan', plan: {},
     })}
 `);
 
     const messages = await received.waitFor(1);
     expect(messages[0]).toEqual(expect.objectContaining({
-      type: 'response', requestId: 'stop-invalid', ok: false,
-      error: expect.objectContaining({ code: 'plan_rejected', details: ['schemaVersion: expected 6'] }),
+      protocolVersion: 1, type: 'proposal_result', requestId: 'stop-invalid',
+      turnId: 'turn-invalid', accepted: false, error: expect.objectContaining({ code: 'plan_rejected', details: ['schemaVersion: expected 6'] }),
     }));
     expect(session.submissions).toEqual([{ userInput: 'Bad plan', plan: {} }]);
   });

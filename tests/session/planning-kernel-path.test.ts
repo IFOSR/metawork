@@ -70,7 +70,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         riskLevel: 'low',
       }],
     },
-    source: 'codex-planner',
+    source: 'anyfusion-planner',
     ...overrides,
   };
 }
@@ -158,7 +158,7 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
 // observable side effects the seam is responsible for: a persisted
 // planning_decisions audit row for every turn, plus the task/executor outcome.
 describe('natural-language planning/kernel path', () => {
-  it('submits a native TUI Stop-hook plan through existing Kernel workflow without invoking the runner', async () => {
+  it('submits a native TUI proposal through existing Kernel workflow without invoking the runner', async () => {
     let plannerCalls = 0;
     const harness = createSession('sess_native_tui_handoff', () => {
       plannerCalls += 1;

@@ -1,0 +1,12 @@
+{
+  "providers": {
+    "anyint": {
+      "baseUrl": "__OPENAI_BASE_URL__",
+      "api": "openai-completions",
+      "apiKey": "$OPENAI_API_KEY",
+      "models": [
+        { "id": "gpt-5.6-luna" }
+      ]
+    }
+  }
+}
