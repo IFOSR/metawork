@@ -956,3 +956,20 @@ AnyFusion-Pi 是 MetaClaw 自用组件，不设定期升级、不建立公共 re
 - upstream rebase rehearsal：未执行，列为发布跟踪项；
 - 观察期与已知限制：远端服务器观察期、dashboard reconnect/age、Gateway/Feishu surface smoke 和 dependency audit 分流待后续；
 - AnyFusion-Codex：失败方案已归档于 `docs/archive/plans/2026-07-30-codex-native-tui-migration.md`，本次不删除 Executor Codex 或其他兼容资产。
+
+### 2026-08-01 proposal envelope corrective validation
+
+- Root cause: the configured Planner model could return a complete `PlanningAgentPlan v6` inside `{ "displayText", "plan" }` while omitting only the envelope's final `}` at EOF. The assistant message was persisted with `stopReason: "stop"`, so this was a model formatting defect rather than token truncation; strict JSON parsing then produced `Planner response did not contain a PlanningAgentPlan v6 proposal.`
+- AnyFusion-Pi correction commit: `e86f543b fix(planner): recover truncated proposal envelopes`.
+- Recovery remains presentation-adapter-only: it repairs exactly one missing trailing object close when braces/arrays/strings are otherwise balanced. More extensive truncation and unterminated strings remain rejected, and every recovered plan still passes MetaClaw's authoritative v6 schema and policy validation.
+- `docker/shell.ps1` now binds SSH only to `127.0.0.1:2222` and recreates a shell whose bound image ID no longer matches `metaclaw-tui-ssh`, preventing silent reuse of a stale TUI container after image rebuilds.
+- Linux validation after the correction:
+  - AnyFusion-Pi Node 22/fd 10.2 image: no-write Biome check (740 files), full `npm run check`, full `./test.sh`, and `npm run build:offline` passed;
+  - MetaClaw Linux image: `npm run lint`, full test suite (703 passed / 15 skipped), and Node 20 `npm run build` passed;
+  - isolated PTY reproduction changed from the exact warning to `REPRO_GREEN_PROPOSAL_ACCEPTED`;
+  - formal `metaclaw-shell` image ID matched the current tag, SSH inspection showed only `127.0.0.1:2222`, and the same user request created an accepted v6 Task/Work Graph. The one-off smoke task was then cancelled through `/task clear all`.
+- Corrected Linux artifacts:
+  - `anyfusion-pi-planner:local@sha256:0e65b6ef297bbd49cc78d8004747471f9c4025010008256deee9030515a20442`;
+  - `metaclaw-runtime:latest@sha256:f98e1c281841c8ec58b5fa97fb7302c6260449bab6eced3ef8bf0cb5dccdb4dc`;
+  - `metaclaw-tui-ssh:latest@sha256:7519e7d522ab522a1aa8f0944487ebaff9105f449b9c6aae4914546117c71758`.
+- MetaClaw correction commit: the local commit containing this completion record; not pushed.

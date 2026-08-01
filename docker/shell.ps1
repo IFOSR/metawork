@@ -7,7 +7,9 @@
 # works, and you also get a general-purpose shell for inspecting /workspace
 # output files. VS Code Remote-SSH can open the same /workspace as a folder.
 #
-# The container's main process is sshd, so it stays up across sessions. Login:
+# The container's main process is sshd, so it stays up across sessions. The
+# published port is loopback-only; this local workflow is not a remote SSH service.
+# Login:
 #   user: root   password: metaclaw   port: 2222
 #
 # Usage:
@@ -58,6 +60,7 @@ $anyFusionPiRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Pi'
 $imageTag    = 'metaclaw-tui-ssh'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
+$sshBindHost = '127.0.0.1'
 $sshPort     = 2222
 $sshUser     = 'root'
 $sshPassword = 'metaclaw'   # only used to print a reminder; ssh prompts for it
@@ -101,6 +104,23 @@ function Test-ContainerExists {
 # Mounts are fixed when a container is created. Detect shells created before the
 # Runtime gained Docker Engine access so the default workflow does not silently
 # restart a container that can never provision executor sandboxes.
+function Test-ContainerUsesCurrentImage {
+    if (-not (Test-ContainerExists)) { return $false }
+    $containerImage = docker inspect --format '{{.Image}}' $container 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $tagImage = docker image inspect --format '{{.Id}}' $imageTag 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (([string]$containerImage).Trim() -eq ([string]$tagImage).Trim())
+}
+
+function Test-ContainerHasLoopbackSshBinding {
+    if (-not (Test-ContainerExists)) { return $false }
+    $hostIps = docker inspect --format '{{range (index .HostConfig.PortBindings "22/tcp")}}{{println .HostIp}}{{end}}' $container 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $bindings = @($hostIps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    return ($bindings.Count -gt 0 -and @($bindings | Where-Object { ([string]$_).Trim() -ne $sshBindHost }).Count -eq 0)
+}
+
 function Test-ContainerHasDockerSocket {
     if (-not (Test-ContainerExists)) { return $false }
     $destinations = docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' $container 2>$null
@@ -400,7 +420,7 @@ function Start-ShellContainer {
     #
     docker run -d --name $container `
       --network bridge `
-      -p "${sshPort}:22" `
+      -p "${sshBindHost}:${sshPort}:22" `
       --entrypoint /bin/bash `
       --mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock' `
       -v "${workspaceVolume}:/workspace" `
@@ -440,7 +460,7 @@ function Start-ShellContainer {
     # Ensure SSH sessions see control-plane env even when the image still has an
     # older persist-ssh-environment.sh (before the next -Rebuild).
     Ensure-ControlEnvironmentInContainer -HostPathMap $hostPathMap
-    Write-Host ("SSH container ready on localhost:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
+    Write-Host ("SSH container ready on 127.0.0.1:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
     Write-Host ("Control network: " + $controlNetwork + " (alias " + $controlHost + ").") -ForegroundColor DarkGray
     if (Test-Path $sshKeyPath) {
         Write-Host "Passwordless login active (key at .tmp\ssh_key)." -ForegroundColor Green
@@ -452,6 +472,16 @@ function Ensure-ContainerRunning {
     Ensure-ControlNetwork
     Ensure-AttemptImages
     if (Test-ContainerExists) {
+        if (-not (Test-ContainerUsesCurrentImage)) {
+            Write-Host "Container uses an older image; recreating it from $imageTag..." -ForegroundColor Yellow
+            Start-ShellContainer
+            return
+        }
+        if (-not (Test-ContainerHasLoopbackSshBinding)) {
+            Write-Host "Container SSH is not loopback-only; recreating it safely..." -ForegroundColor Yellow
+            Start-ShellContainer
+            return
+        }
         if (-not (Test-ContainerHasDockerSocket)) {
             Write-Host "Container predates the Docker socket mount; recreating it..." -ForegroundColor Yellow
             Start-ShellContainer
