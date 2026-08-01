@@ -63,6 +63,8 @@ class FakePlannerTuiSession implements PlannerTuiBridgeSession {
   current = snapshot();
   readonly listeners = new Set<(value: SessionSnapshot) => void>();
   readonly submissions: Array<{ userInput: string; plan: unknown }> = [];
+  readonly commands: string[] = [];
+  readonly completions: Array<{ text: string; cursor: number }> = [];
   result: PlannerTuiPlanSubmissionResult = { accepted: true, errors: [], planId: 'plan_from_tui' };
 
   subscribe(listener: (value: SessionSnapshot) => void): () => void {
@@ -75,9 +77,29 @@ class FakePlannerTuiSession implements PlannerTuiBridgeSession {
     return this.current;
   }
 
+  completeCommand(text: string, cursor = text.length) {
+    this.completions.push({ text, cursor });
+    return {
+      state: 'incomplete' as const,
+      suggestions: [{
+        value: 'list',
+        label: 'list',
+        description: '列出任务',
+        replacement: { start: 6, end: cursor, text: 'list' },
+      }],
+      hint: '/task <list|show>',
+      error: null,
+    };
+  }
+
   async submitPlannerTuiPlan(userInput: string, plan: unknown): Promise<PlannerTuiPlanSubmissionResult> {
     this.submissions.push({ userInput, plan });
     return this.result;
+  }
+
+  async submitPlannerTuiCommand(command: string): Promise<{ exitRequested: boolean; output: string[] }> {
+    this.commands.push(command);
+    return { exitRequested: command === '/exit', output: [`> ${command}`, 'MetaClaw command result'] };
   }
 
   emit(next: PlannerTuiSnapshot): void {
@@ -191,6 +213,44 @@ describe('PlannerTuiBridge', () => {
       accepted: true, planId: 'plan_from_tui',
     }));
     expect(session.submissions).toEqual([{ userInput: 'Create a task', plan: { schemaVersion: 6 } }]);
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1, type: 'command_complete', requestId: 'complete-1', text: '/task ', cursor: 6,
+    })}
+`);
+    const completion = await received.waitFor(5);
+    expect(completion.at(-1)).toEqual({
+      protocolVersion: 1,
+      type: 'command_completion',
+      requestId: 'complete-1',
+      completion: {
+        state: 'incomplete',
+        suggestions: [{
+          value: 'list',
+          label: 'list',
+          description: '列出任务',
+          replacement: { start: 6, end: 6, text: 'list' },
+        }],
+        hint: '/task <list|show>',
+        error: null,
+      },
+    });
+    expect(session.completions).toEqual([{ text: '/task ', cursor: 6 }]);
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1, type: 'command_submit', requestId: 'command-1', command: '/help',
+    })}
+`);
+    const commandComplete = await received.waitFor(6);
+    expect(commandComplete.at(-1)).toEqual({
+      protocolVersion: 1,
+      type: 'command_result',
+      requestId: 'command-1',
+      accepted: true,
+      exitRequested: false,
+      output: ['> /help', 'MetaClaw command result'],
+    });
+    expect(session.commands).toEqual(['/help']);
   });
 
   itIfUnix('returns validation failures from the Session without retrying or granting a write surface', async () => {

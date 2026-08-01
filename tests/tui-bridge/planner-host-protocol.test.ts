@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isPlannerHostRequest } from '../../src/tui-bridge/planner-host-protocol.js';
 
 describe('AnyFusionPlannerHostProtocol v1', () => {
-  it('accepts a correlated v1 proposal and rejects drift', () => {
+  it('accepts correlated command/proposal requests and rejects drift', () => {
     expect(isPlannerHostRequest({
       protocolVersion: 1,
       type: 'proposal_submit',
@@ -12,6 +12,32 @@ describe('AnyFusionPlannerHostProtocol v1', () => {
       userInput: 'create task',
       plan: {},
     })).toBe(true);
+    expect(isPlannerHostRequest({
+      protocolVersion: 1,
+      type: 'command_complete',
+      requestId: 'complete-1',
+      text: '/task ',
+      cursor: 6,
+    })).toBe(true);
+    expect(isPlannerHostRequest({
+      protocolVersion: 1,
+      type: 'command_complete',
+      requestId: 'complete-invalid',
+      text: '/task',
+      cursor: 99,
+    })).toBe(false);
+    expect(isPlannerHostRequest({
+      protocolVersion: 1,
+      type: 'command_submit',
+      requestId: 'command-1',
+      command: '/help',
+    })).toBe(true);
+    expect(isPlannerHostRequest({
+      protocolVersion: 1,
+      type: 'command_submit',
+      requestId: 'command-invalid',
+      command: 'help',
+    })).toBe(false);
     expect(isPlannerHostRequest({ protocolVersion: 2, type: 'ping', requestId: 'request-2' })).toBe(false);
     expect(isPlannerHostRequest({ protocolVersion: 1, type: 'planner_stop', requestId: 'legacy' })).toBe(false);
   });

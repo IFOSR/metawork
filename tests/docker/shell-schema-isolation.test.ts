@@ -13,7 +13,7 @@ describe('Docker shell SQLite schema isolation', () => {
 
     expect(version).toBeTruthy();
     expect(shell).toContain(
-      `$dataVolume = 'metaclaw-shell-data-v${version}'`,
+      `$dataVolume = 'metaclaw-shell-data-v${version}-anyfusion-planner'`,
     );
   });
 

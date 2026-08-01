@@ -59,12 +59,17 @@ function completeTurn(child: FakeRpcProcess, requestId: unknown, output = '{"ok"
 
 describe('PlannerProcessRunner', () => {
   it('uses the AnyFusion Pi RPC boundary and returns the final assistant message', async () => {
-    let seen: { command: string; args: string[]; request?: Record<string, unknown> } | undefined;
+    let seen: {
+      command: string;
+      args: string[];
+      request?: Record<string, unknown>;
+      env?: NodeJS.ProcessEnv;
+    } | undefined;
     const runner = new PlannerProcessRunner({
       command: 'anyfusion-planner',
       sessionDir: '/tmp/anyfusion-planner-test',
-      spawn: ((command: string, args: string[]) => {
-        seen = { command, args };
+      spawn: ((command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        seen = { command, args, env: options.env };
         return createRpcProcess((request, child) => {
           seen = { ...seen!, request };
           completeTurn(child, request.id);
@@ -88,6 +93,8 @@ describe('PlannerProcessRunner', () => {
     expect(seen?.args).not.toContain('--model');
     expect(seen?.args).not.toContain('--print');
     expect(seen?.request).toMatchObject({ type: 'prompt', message: 'hello' });
+    expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toContain('"codex-cli"');
+    expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toContain('"workspace-engineering"');
   });
 
   it('fails closed when Pi rejects prompt preflight and redacts the error', async () => {

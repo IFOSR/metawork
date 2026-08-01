@@ -1,15 +1,15 @@
 # AnyFusion Pi Planner 与原生 TUI 迁移计划
 
-> 状态：实施中（Phase 0/1/2/3/4/5 核心路径已落地；Phase 3 reconnect 与 Phase 6 发布验收未完成）
+> 状态：首期 Linux 实现与本机 Docker 验收完成；发布观察、reconnect 和 upstream rebase 为后续项
 > 计划日期：2026-07-31
-> 完成日期：待全部完成标准满足后补写
+> 完成日期：2026-08-01（首期实现与本机 Linux Docker 验收）
 > 目标产品名：AnyFusion；`MetaClaw` / `metaclaw` 继续作为内部运行时名称与兼容 CLI alias
 > Pi fork 本地路径：`D:\Internships\AnyInt\AnyFusion-Pi`，与 `MetaClaw` 平级
 > 固定上游基线：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`
 > 前序失败方案：[AnyFusion Codex 原生 TUI 定制迁移计划](../archive/plans/2026-07-30-codex-native-tui-migration.md)
 > 核心边界：Pi 是 Planner 对话、查询和智能规划载体；MetaClaw Kernel 仍是唯一决策者，Execution/Executor 仍是唯一执行方
 
-## 实施进度（2026-07-31）
+## 实施进度（2026-08-01）
 
 已落地：
 
@@ -21,35 +21,35 @@
 - AnyFusion-Pi 已实现 v6 proposal envelope、interactive proposal 提交、accepted/rejected 展示，以及 versioned Unix JSONL host client；
 - MetaClaw 已交付 `PlannerProcessRunner`：使用真实 Pi `--mode rpc`、stdin/stdout JSONL、每 turn 受控 child lifecycle、同 session writer 串行化、1 MiB 单行上限、只读 tool trace、credential redaction 与 fail-closed timeout/exit/protocol handling；
 - MetaClaw host bridge 已支持 mode-`0600` Unix socket、snapshot projection 和 proposal handoff，并修复初次 `snapshot_subscribe` 重复发送初始 snapshot 的 race；snapshot 现包含 bounded Task pool、focused Task、Subtask preferred AgentClass、blocking reason 与 Executor health；
+- 已恢复 Pi TUI 中的 MetaClaw 确定性 slash commands：`command_submit/command_result` 仅透传用户原始命令，执行仍唯一经过 `MetaclawSession → InputController → CommandCatalog`；Pi 不持有命令语义或 mutation API；
+- 已恢复旧 Ink TUI 的完整命令补全契约：`command_complete` / `command_completion` 直接复用 `MetaclawSession.completeCommand()`，Pi 薄适配器复用原生异步请求、`AbortSignal`、候选列表、Tab、上下键和 stale-request 丢弃，并按 MetaClaw 返回的 replacement range 应用根命令、子命令及动态 Task/Executor 候选；Enter 提交前再次拒绝 `incomplete` / `invalid`；
+- 已增加轻量 AnyFusion 欢迎组件：像素风品牌字、Planner 版本、MetaClaw 连接状态、模型/工作区、focused Task/任务数摘要；quiet startup 仍保留品牌和状态，不引入动画或第二套布局系统；
 - AnyFusion-Pi 已接入响应式只读 dashboard：宽/中终端与 transcript 并排显示，窄终端自动隐藏；展示 focused Task、Subtask、Executor、blocking/last-event 和 Task pool，并提供 loading、unavailable、malformed/stale snapshot 降级；
 - MetaClaw runtime 默认入口已切换到 AnyFusion-Pi；Node 20 control process 与 Planner 自带 Node 22 runtime 仅通过 JSON/JSONL、Unix socket、环境变量和文件边界通信；
 - Docker 已隔离 Planner、Executor Codex、Executor Pi 的 env/config/base URL；API key 不写入 SSH `/etc/environment`，Planner control container 不再使用 Codex Planner 所需的 `seccomp=unconfined`；
 - 已移除 active source/Docker/smoke 中的旧 Codex Planner runner、Stop Hook、lock/config 和 fallback 资产；Executor Codex、Executor Pi、Ink standby TUI 及兼容 re-export 保留；
 - `CONTEXT.md`、ADR-0015、当前中英文技术总览、runtime security、`AGENTS.md` 与文档索引已同步到 AnyFusion-Pi 边界。
 
-本轮验证证据：
+本轮最终验证证据（全部测试和行为验证均在 Linux Docker 内执行；Windows 宿主只发起 Docker 命令和读取结果）：
 
-- AnyFusion-Pi `npm run check` 全部通过；dashboard/host/policy/envelope 聚焦测试 8 项通过，Windows host 上 Unix socket 用例按规则跳过 1 项；
-- AnyFusion-Pi offline TypeScript build 再次通过，本轮约 8 秒；Planner Docker build 的实际源码编译阶段约 4.1–4.4 秒，最近两次完整 image rebuild 约 48–72 秒，变化主要来自 npm install cache 与 artifact copy/export；
-- MetaClaw `npm run lint` 通过；
-- Linux Docker 聚焦回归：10 个测试文件、53 个测试全部通过；
-- 最终 runtime image `anyfusion-metaclaw-planner:dev` 在 dashboard/snapshot 更新后缓存重建约 50 秒；此前非缓存层重建为 147 秒、首次完整构建约 241 秒，主要耗时始终是 Debian apt、Executor Codex npm 安装及 artifact copy/export，而不是 Pi 大型源码编译；
-- 容器内版本确认：MetaClaw control `v20.20.2`、Planner `v22.23.2`、AnyFusion Planner `0.80.2`，未出现把 Planner package 安装到 Node 20 的 engine warning；
-- `docker/entrypoint.sh` 与 `persist-ssh-environment.sh` Bash 语法通过，三套 Provider 配置隔离 smoke 返回 `entrypoint-ok`；
-- 实际 `anyfusion-planner --mode rpc` 的 correlated `get_state` JSONL smoke 返回成功；
-- `docker/shell.ps1` PowerShell parser 与关键参数检查通过：sibling `AnyFusion-Pi`、`Dockerfile.anyfusion-planner`、`ANYFUSION_PI_IMAGE`、`planner-pi.env` 均存在，旧 Codex Planner 与 `seccomp=unconfined` 标记不存在。
+- AnyFusion-Pi 使用 Node 22 / Debian trixie CI 镜像通过 `npm run check`：Biome 检查 740 个文件且无自动修复，pinned dependencies、TS relative imports、shrinkwrap、`tsgo --noEmit` 与 browser smoke 全部通过；
+- AnyFusion-Pi `./test.sh` 全量无密钥测试通过：agent 168 项、AI 412 项通过/727 项 Provider E2E 跳过、coding-agent 1283 项通过/44 项按既有环境规则跳过、TUI 690 项通过；随后 `npm run build:offline` 通过；
+- AnyFusion-Pi 对 standalone Pi package lifecycle、project resources、custom themes/skills 与 project trust 的上游测试套件做了显式 fork exclusion；Planner policy、CLI 拒绝、固定 `.anyfusion` namespace 和只读资源测试覆盖产品边界，没有增加兼容模式或恢复这些能力；
+- `fd` 使用 Linux `fd 10.2.0`；find/tool regressions 共 79 项通过，确认此前 bookworm `fd 8.x` 失败属于测试镜像版本问题；
+- MetaClaw Linux Docker 内 `npm run lint`、全量测试和 Node 20 target build 全部通过：183 个测试文件通过、4 个文件按既有条件跳过，703 项通过、15 项跳过；
+- `npm run smoke:metaclaw` 的容器内等价执行通过原生 Planner 双轮会话：同一 AnyFusion-Pi persisted session 正确记住并返回测试口令；
+- artifact smoke 通过真实 Planner → authoritative validation → Kernel → Codex Executor 链路，在受管 workspace 创建并验证 `smoke-result.md`；
+- 最终私网 SSH PTY 验证使用无宿主端口、禁用密码登录、无 Docker socket 的临时拓扑：欢迎页显示 AnyFusion 像素品牌、`Planner v0.80.2`、MetaClaw connecting/connected 与 `Tasks 0`；输入 `/ta` 后按 Tab，编辑器直接应用 `/task ` 并立即显示 `dashboard/list/clear/show/pause`；
+- 一次性真实规划行为验证通过：输入“在 `/workspace/hello.py` 新建文件，内容为打印 Hello world。”后显示“规划提案已通过 MetaClaw 校验：`plan-create-hello-py`”，Task 路由为 `codex-cli`；未出现缺失 `task.priority`、错误 `pi-agent` 路由或 preferred canonical set 拒绝；无 Docker socket 的 PTY 安全拓扑随后按预期把已接受任务标记为 blocked，不影响本次 Planner proposal 验收；
+- 最终镜像边界确认：AnyFusion Planner Node `v22.23.2`，MetaClaw control Node `v20.20.2`；镜像 ID 分别为 `anyfusion-pi-planner:dev@sha256:76e67678ba0da06c0a65b62ea5d59654eed2550cd32d9bf86fd29bfd24454391`、`metaclaw-runtime:latest@sha256:2bd4dd8deeab320a36917f07a740c85eec67c9688b8565c496796df6bae8d09a`、`metaclaw-tui-ssh:local@sha256:233610ffcab142b3b4d859e0bc004355254a40962934df04d1d23435d0f7602e`。
 
-仍未完成，不得把本计划标为完成：
+首期提交后的发布跟踪项（不回退本次实现完成状态）：
 
-1. dashboard 的 live disconnect detection、自动 reconnect/backoff、snapshot age 显示，以及 Linux 服务器真实 PTY 视觉验收；响应式布局、Task/Subtask/Executor/blocking 投影和初始降级状态已经完成；
-2. 用户可见品牌 inventory 的全量收尾与自动化 gate；
-3. proposal duplicate、bounded repair、timeout、crash/unavailable 等完整 interactive/headless 端到端联调；
-4. Gateway、Feishu 与 `npm run smoke:metaclaw` 的真实 Provider smoke（涉及网络与调用费用，本轮未执行）；
-5. interactive/RPC surface takeover、session resume/fork/archive/compaction 和损坏恢复的完整 single-writer 证明；
-6. 至少一次真实 upstream 前进/rebase rehearsal；
-7. Linux artifact digest、两个仓库 closing commit、服务器真实 PTY smoke 和观察期记录；
-8. 发布前依赖安全分流：当前 Docker `npm ci` 分别报告 Planner image 4 项和 MetaClaw builder 9 项 audit finding（MetaClaw 含 1 项 critical）；本轮未执行可能破坏锁文件/上游兼容性的自动 `npm audit fix`。
-
+1. dashboard live disconnect detection、自动 reconnect/backoff 与 snapshot age；
+2. Gateway/Feishu 各自 surface 的真实 Provider 观察性 smoke；核心 RPC Planner session 已由双轮 smoke 覆盖；
+3. 至少一次真实 upstream 前进/rebase rehearsal；
+4. 远端 Linux 服务器部署后的观察期、视觉抽检和 artifact registry digest；当前记录的是本机 Docker content ID；
+5. 依赖安全分流：当前 Planner install 报告 4 项 audit finding，MetaClaw builder 报告 9 项（含 1 项 critical）；不得在未评估 upstream/lockfile 影响时直接执行自动 `npm audit fix`。
 ## 计划目的
 
 以一个完整 fork 的 Pi 仓库替换已经终止的 AnyFusion-Codex Planner TUI 路线，交付：
@@ -514,7 +514,7 @@ AnyFusion 管理所有 Planner runtime 配置：
 - 不直接读取 SQLite；
 - 不从 Pi conversation 推断状态；
 - 不提供 start/stop/retry/switch executor mutation button；
-- 用户的 Task 控制意图仍通过自然语言 Planner proposal 或现有确定性命令进入 MetaClaw；
+- 用户的 Task 控制意图仍通过自然语言 Planner proposal 或现有确定性命令进入 MetaClaw；显式 slash command 只由 Pi TUI 原样传输，并由 MetaClaw `CommandCatalog` 解释和执行；
 - dashboard polling/subscription 必须 bounded；
 - stale snapshot 必须显示时间/状态，不伪装为实时事实。
 
@@ -710,9 +710,10 @@ Phase 0 基线目标：
 - 在 AnyFusion-Pi 增加 protocol client；
 - 接入 snapshot_get/subscribe；
 - 展示 Task/Subtask/Executor/diagnostics；
+- 接入 `command_complete/command_completion` 与 `command_submit/command_result`：前者只读取 MetaClaw CommandCatalog 补全状态，后者只透传用户明确输入的现有 MetaClaw 命令；
 - 实现 loading、stale、unavailable、reconnect；
 - 验证 dashboard failure 不影响 conversation；
-- 不增加 mutation message。
+- 不增加 Planner-authored 或通用 mutation message；命令 mutation 仍只发生在 MetaClaw 既有 CommandCatalog/Application-Shell 路径。
 
 ### Phase 4：Proposal finalizer 与统一 PlanningAgent
 
@@ -942,15 +943,16 @@ AnyFusion-Pi 是 MetaClaw 自用组件，不设定期升级、不建立公共 re
 
 ## 完成记录
 
-实施完成后必须补写：
-
-- 完成日期；
-- 最终 Pi upstream commit/tag；
-- AnyFusion-Pi closing commit；
-- MetaClaw closing commit；
-- Linux artifact digest；
-- Docker build/test 数据；
-- interactive/Gateway/Feishu smoke 结果；
-- upstream rebase 演练结果；
-- 观察期和已知限制；
-- 是否另立 AnyFusion-Codex archive/delete 计划。
+- 完成日期：2026-08-01（首期实现与本机 Linux Docker 验收）；
+- 最终 Pi upstream：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`；
+- AnyFusion-Pi closing commit：`d9e22904 feat(planner): complete native TUI integration`；
+- MetaClaw closing commit：包含本完成记录的本地提交；
+- Linux artifact content ID：
+  - `anyfusion-pi-planner:dev@sha256:76e67678ba0da06c0a65b62ea5d59654eed2550cd32d9bf86fd29bfd24454391`；
+  - `metaclaw-runtime:latest@sha256:2bd4dd8deeab320a36917f07a740c85eec67c9688b8565c496796df6bae8d09a`；
+  - `metaclaw-tui-ssh:local@sha256:233610ffcab142b3b4d859e0bc004355254a40962934df04d1d23435d0f7602e`；
+- Docker build/test：AnyFusion-Pi check、`./test.sh`、offline build 全部通过；MetaClaw lint、703 项全量测试和 Node 20 build 全部通过；
+- smoke：Planner 双轮 persisted-session smoke、真实 Codex artifact smoke、私网 SSH PTY welcome/dashboard/completion smoke、一次性 `hello.py` 有效 proposal 全部通过；
+- upstream rebase rehearsal：未执行，列为发布跟踪项；
+- 观察期与已知限制：远端服务器观察期、dashboard reconnect/age、Gateway/Feishu surface smoke 和 dependency audit 分流待后续；
+- AnyFusion-Codex：失败方案已归档于 `docs/archive/plans/2026-07-30-codex-native-tui-migration.md`，本次不删除 Executor Codex 或其他兼容资产。

@@ -71,7 +71,7 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
-$dataVolume = 'metaclaw-shell-data-v28'
+$dataVolume = 'metaclaw-shell-data-v28-anyfusion-planner'
 $controlNetwork = 'metaclaw-control'
 $controlHost = 'metaclaw-control'
 $codexAttemptImage = 'metaclaw-executor-codex:phase5'
@@ -185,7 +185,7 @@ function Ensure-SshKey {
     if (Test-Path $sshKeyPath) { return }
     New-Item -ItemType Directory -Force -Path $sshKeyDir | Out-Null
     Write-Host "Generating dedicated SSH key for passwordless login..." -ForegroundColor Yellow
-    & ssh-keygen -t ed25519 -N '""' -f $sshKeyPath -C 'metaclaw-shell' -q
+    & ssh-keygen -t ed25519 -N '' -f $sshKeyPath -C 'metaclaw-shell' -q
     if ($LASTEXITCODE -ne 0) {
         Write-Error "ssh-keygen failed."
         exit 1

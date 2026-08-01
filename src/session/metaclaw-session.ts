@@ -179,6 +179,11 @@ export interface PlannerTuiPlanSubmissionResult {
   planId: string | null;
 }
 
+export interface PlannerTuiCommandSubmissionResult {
+  exitRequested: boolean;
+  output: string[];
+}
+
 interface FocusContext {
   kind: 'conversation' | 'task';
   taskId: string | null;
@@ -564,6 +569,26 @@ export class MetaclawSession {
         })),
       })),
       executorStatuses: this.kernelExecutorStatusRepo.list(),
+    };
+  }
+
+  /**
+   * Executes an explicit slash command from the native Planner TUI through the
+   * existing Application-Shell command path. The Pi process only transports the
+   * user's command; CommandCatalog and MetaclawSession retain all validation and
+   * state-changing authority.
+   */
+  async submitPlannerTuiCommand(rawCommand: string): Promise<PlannerTuiCommandSubmissionResult> {
+    await this.initialization;
+    const command = rawCommand.trim();
+    if (!/^\/\S/u.test(command)) {
+      throw new Error('Planner TUI commands must start with /');
+    }
+    const outputStart = this.output.length;
+    const result = await this.inputController.submit(command, { awaitAsyncWork: true });
+    return {
+      exitRequested: result.exitRequested,
+      output: this.output.slice(outputStart),
     };
   }
 

@@ -82,6 +82,8 @@ flowchart LR
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理；无效输出只在现有 planning path 内修复一次，超时、RPC 失败或重复 schema 失败均安全退回澄清，不进入旧规则 fallback。
 
+本地 AnyFusion-Pi TUI 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 获取有界只读 Task 投影、提交版本化提案、请求 `command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab 和上下键；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。Pi 只展示补全数据或执行结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
+
 Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
 enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
 刷新进行合并，单次 probe 最长 30 秒，并把有界、脱敏的恢复证据和真实
@@ -764,8 +766,8 @@ AnyFusion 会：
 
 主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
 
-AnyFusion-Pi 下游原生 TUI 是默认本地入口。Planner fork 持有会话交互，MetaClaw 只向
-面板投影只读 Task 状态，并继续独占所有持久化 Task、Kernel 和 Executor 权限。
+AnyFusion-Pi 下游原生 TUI 是默认本地入口。Planner fork 持有会话交互；MetaClaw 向
+面板投影只读 Task 状态，并继续独占确定性命令执行以及所有持久化 Task、Kernel 和 Executor 权限。Pi TUI 通过 host bridge 查询完整 MetaClaw 命令树，使用 Pi 原生补全 UI 展示候选并应用 MetaClaw 返回的 replacement range，提交前再次校验，再透传用户原始输入；它不维护第二套 CommandCatalog。AnyFusion 像素风欢迎组件在 quiet startup 下仍保留，展示 Planner 版本、bridge 状态、模型/工作区与有界任务摘要。
 原 Ink TUI 完整保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它是
 备用模块而不是第二套持续维护的前端。飞书与 Gateway 是后端交付面，不依赖本地使用哪套 TUI。
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
+import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import type { PlanningContext } from './planning-types.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
@@ -113,6 +114,7 @@ export class PlannerProcessRunner implements PlannerRunner {
           ANYFUSION_PLANNER_REQUEST_SOURCE: context.request.source,
           ANYFUSION_PLANNER_SCHEMA_PATH: process.env.ANYFUSION_PLANNER_SCHEMA_PATH
             ?? process.env.METACLAW_PLANNER_SCHEMA_PATH,
+          ANYFUSION_PLANNER_CATALOG_JSON: JSON.stringify(getPlannerExecutorCatalog()),
         },
       });
       let stdoutBuffer = '';

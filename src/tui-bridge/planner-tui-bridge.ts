@@ -1,7 +1,9 @@
 import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
+import type { CommandCompletion } from '../commands/catalog.js';
 import type {
+  PlannerTuiCommandSubmissionResult,
   PlannerTuiPlanSubmissionResult,
   PlannerTuiSnapshot,
   SessionSnapshot,
@@ -17,6 +19,8 @@ import {
 export interface PlannerTuiBridgeSession {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
   getPlannerTuiSnapshot(): PlannerTuiSnapshot;
+  completeCommand(text: string, cursor?: number): CommandCompletion;
+  submitPlannerTuiCommand(command: string): Promise<PlannerTuiCommandSubmissionResult>;
   submitPlannerTuiPlan(userInput: string, rawPlan: unknown): Promise<PlannerTuiPlanSubmissionResult>;
 }
 
@@ -130,7 +134,7 @@ export class PlannerTuiBridge {
           type: 'hello',
           requestId: request.requestId,
           accepted: true,
-          capabilities: ['snapshot_get', 'snapshot_subscribe', 'proposal_submit', 'ping', 'shutdown'],
+          capabilities: ['snapshot_get', 'snapshot_subscribe', 'command_complete', 'command_submit', 'proposal_submit', 'ping', 'shutdown'],
         });
         return;
       case 'ping':
@@ -155,6 +159,17 @@ export class PlannerTuiBridge {
         else this.ensureSessionSubscription();
         return;
       }
+      case 'command_complete':
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'command_completion',
+          requestId: request.requestId,
+          completion: this.deps.session.completeCommand(request.text, request.cursor),
+        });
+        return;
+      case 'command_submit':
+        this.enqueueCommand(socket, request);
+        return;
       case 'proposal_submit':
         if (request.sessionId.length === 0 || request.turnId.length === 0 || request.userInput.length === 0) {
           this.write(socket, this.errorResponse(request.requestId, 'invalid_request', 'proposal_submit correlation and user input are required'));
@@ -172,6 +187,32 @@ export class PlannerTuiBridge {
         socket.end();
         return;
     }
+  }
+
+  private enqueueCommand(socket: Socket, request: Extract<PlannerHostRequest, { type: 'command_submit' }>): void {
+    this.submissionQueue = this.submissionQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const result = await this.deps.session.submitPlannerTuiCommand(request.command);
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'command_result',
+          requestId: request.requestId,
+          accepted: true,
+          exitRequested: result.exitRequested,
+          output: result.output,
+        });
+      })
+      .catch(error => {
+        this.deps.logger?.warn(`Planner TUI command failed: ${(error as Error).message}`);
+        this.write(socket, {
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'command_result',
+          requestId: request.requestId,
+          accepted: false,
+          error: { code: 'command_submission_failed', message: (error as Error).message },
+        });
+      });
   }
 
   private enqueueProposal(socket: Socket, request: Extract<PlannerHostRequest, { type: 'proposal_submit' }>): void {
