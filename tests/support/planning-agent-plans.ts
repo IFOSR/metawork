@@ -158,7 +158,10 @@ export function clarificationPlan(question: string, overrides: Partial<PlanningA
 }
 
 // A PlanningAgent stub returning a fixed plan (or a queue of plans, one per turn).
-export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent & { plan: ReturnType<typeof vi.fn> } {
+export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent & {
+  plan: ReturnType<typeof vi.fn>;
+  submit: ReturnType<typeof vi.fn>;
+} {
   const plan = vi.fn();
   if (plans.length <= 1) {
     plan.mockResolvedValue(plans[0] ?? directReplyPlan());
@@ -168,5 +171,16 @@ export function stubPlanningAgent(...plans: PlanningAgentPlan[]): PlanningAgent 
     }
     plan.mockResolvedValue(plans[plans.length - 1]!);
   }
-  return { plan } as PlanningAgent & { plan: ReturnType<typeof vi.fn> };
+  return planningAgentFromPlanMock(plan);
+}
+
+export function planningAgentFromPlanMock(plan: ReturnType<typeof vi.fn>): PlanningAgent & {
+  plan: ReturnType<typeof vi.fn>;
+  submit: ReturnType<typeof vi.fn>;
+} {
+  const submit = vi.fn(async (context, submitter) => submitter.submit(await plan(context)));
+  return { plan, submit } as PlanningAgent & {
+    plan: ReturnType<typeof vi.fn>;
+    submit: ReturnType<typeof vi.fn>;
+  };
 }

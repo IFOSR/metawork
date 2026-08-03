@@ -1,42 +1,45 @@
 import type { CommandCompletion } from '../commands/catalog.js';
+import type { PlannerProposalPurpose, PlannerProposalResult } from '../planning/planner-proposal.js';
 
-export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 1 as const;
+export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 2 as const;
 export const ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES = 1_048_576;
 
 export type PlannerHostMode = 'interactive' | 'rpc';
 
 export type PlannerHostRequest =
-  | { protocolVersion: 1; type: 'hello'; requestId: string; runtimeVersion: string; sessionId: string; mode: PlannerHostMode }
-  | { protocolVersion: 1; type: 'ping'; requestId: string }
-  | { protocolVersion: 1; type: 'snapshot_get'; requestId: string }
-  | { protocolVersion: 1; type: 'snapshot_subscribe'; requestId: string }
-  | { protocolVersion: 1; type: 'command_complete'; requestId: string; text: string; cursor: number }
-  | { protocolVersion: 1; type: 'command_submit'; requestId: string; command: string }
+  | { protocolVersion: 2; type: 'hello'; requestId: string; runtimeVersion: string; sessionId: string; mode: PlannerHostMode }
+  | { protocolVersion: 2; type: 'ping'; requestId: string }
+  | { protocolVersion: 2; type: 'snapshot_get'; requestId: string }
+  | { protocolVersion: 2; type: 'snapshot_subscribe'; requestId: string }
+  | { protocolVersion: 2; type: 'command_complete'; requestId: string; text: string; cursor: number }
+  | { protocolVersion: 2; type: 'command_submit'; requestId: string; command: string }
   | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'proposal_submit';
       requestId: string;
       turnId: string;
       sessionId: string;
       userInput: string;
+      submissionId: string;
+      purpose: PlannerProposalPurpose;
       plan: unknown;
     }
-  | { protocolVersion: 1; type: 'shutdown'; requestId: string };
+  | { protocolVersion: 2; type: 'shutdown'; requestId: string };
 
 export type PlannerHostMessage<TSnapshot = unknown> =
   | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'hello';
       requestId: string;
       accepted: true;
       capabilities: string[];
     }
-  | { protocolVersion: 1; type: 'pong'; requestId: string }
-  | { protocolVersion: 1; type: 'snapshot'; requestId: string | null; snapshot: TSnapshot }
-  | { protocolVersion: 1; type: 'subscribed'; requestId: string }
-  | { protocolVersion: 1; type: 'command_completion'; requestId: string; completion: CommandCompletion }
+  | { protocolVersion: 2; type: 'pong'; requestId: string }
+  | { protocolVersion: 2; type: 'snapshot'; requestId: string | null; snapshot: TSnapshot }
+  | { protocolVersion: 2; type: 'subscribed'; requestId: string }
+  | { protocolVersion: 2; type: 'command_completion'; requestId: string; completion: CommandCompletion }
   | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'command_result';
       requestId: string;
       accepted: true;
@@ -44,31 +47,21 @@ export type PlannerHostMessage<TSnapshot = unknown> =
       output: string[];
     }
   | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'command_result';
       requestId: string;
       accepted: false;
       error: { code: string; message: string; details?: string[] };
     }
   | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'proposal_result';
       requestId: string;
-      turnId: string;
-      accepted: true;
-      planId: string | null;
+      result: PlannerProposalResult;
     }
+  | { protocolVersion: 2; type: 'shutdown'; requestId: string; accepted: true }
   | {
-      protocolVersion: 1;
-      type: 'proposal_result';
-      requestId: string;
-      turnId: string;
-      accepted: false;
-      error: { code: string; message: string; details?: string[] };
-    }
-  | { protocolVersion: 1; type: 'shutdown'; requestId: string; accepted: true }
-  | {
-      protocolVersion: 1;
+      protocolVersion: 2;
       type: 'error';
       requestId: string | null;
       error: { code: string; message: string; details?: string[] };
@@ -90,6 +83,18 @@ export function isPlannerHostRequest(value: unknown): value is PlannerHostReques
   if (candidate.type === 'command_submit') {
     const command = (value as { command?: unknown }).command;
     return typeof command === 'string' && /^\/\S/u.test(command.trim());
+  }
+  if (candidate.type === 'proposal_submit') {
+    const request = value as {
+      turnId?: unknown; sessionId?: unknown; userInput?: unknown;
+      submissionId?: unknown; purpose?: unknown; plan?: unknown;
+    };
+    return typeof request.turnId === 'string' && request.turnId.length > 0
+      && typeof request.sessionId === 'string' && request.sessionId.length > 0
+      && typeof request.userInput === 'string' && request.userInput.trim().length > 0
+      && typeof request.submissionId === 'string' && request.submissionId.length > 0
+      && (request.purpose === 'kernel' || request.purpose === 'validation')
+      && request.plan !== undefined;
   }
   return candidate.type === 'hello'
     || candidate.type === 'ping'

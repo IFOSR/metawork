@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const artifactExpectedLine = 'MetaClaw real task smoke passed.';
-export const plannerMemoryMarker = 'native-thread-memory-7f3c9a';
+export const plannerMemoryMarker = 'planner-memory-sunrise';
 const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello']);
 
 export function readOption(args, name) {
@@ -67,7 +67,9 @@ export function parsePositiveInteger(value, fallback) {
 export function installPiConfig(input = {}) {
   const repoRoot = input.repoRoot ?? process.cwd();
   const targetHome = input.targetHome ?? homedir();
-  const sourceDir = input.sourceDir ?? join(repoRoot, 'docker', 'pi-config');
+  const repoSourceDir = join(repoRoot, 'docker', 'pi-config');
+  const sourceDir = input.sourceDir
+    ?? (existsSync(repoSourceDir) ? repoSourceDir : '/opt/metaclaw/pi-config');
   const targetDir = join(targetHome, '.pi', 'agent');
 
   for (const fileName of ['models.json', 'settings.json']) {
@@ -97,8 +99,8 @@ export function bootstrapExecutor(input) {
 export function buildScenarioScript(scenario) {
   if (scenario === 'planner-session') {
     return [
-      `请记住本次会话测试口令是 ${plannerMemoryMarker}。只回复“已记住”，不要创建任务。`,
-      '刚才的测试口令是什么？只回复口令，不要查询任务或创建任务。',
+      `请记住本次会话测试短语是 ${plannerMemoryMarker}。只回复“已记住”，不要创建任务。`,
+      '刚才的测试短语是什么？只回复短语，不要查询任务或创建任务。',
       '/exit',
       '',
     ].join('\n');
@@ -113,9 +115,7 @@ export function buildScenarioScript(scenario) {
   }
 
   return [
-    "Create a Python file named hello_world.py inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path.",
-    'The Python file content must include exactly this line: print("hello world")',
-    'Run the file with python3 and report the stdout.',
+    "Create a Python file named hello_world.py inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must be exactly this line: print(\"hello world\"). Run the file with python3 and report the stdout.",
     '/exit',
     '',
   ].join('\n');
@@ -184,7 +184,10 @@ export function verifyArtifactScenario(input) {
 }
 
 export function verifyPythonHelloScenario(input) {
-  const pythonFile = findPythonHelloFile(input.workdir);
+  const pythonFile = [input.workdir, input.metaclawHome]
+    .filter(Boolean)
+    .map(root => findPythonHelloFile(root))
+    .find(Boolean) ?? null;
   if (!pythonFile) {
     throw new Error('Smoke failed: no Python file containing print("hello world") was found in the workdir');
   }
@@ -212,9 +215,9 @@ export function verifyPlannerSessionScenario(input) {
       `Smoke failed: expected exactly one persisted AnyFusion-Pi session file for two turns, found ${input.sessionFiles.length}`,
     );
   }
-  const recall = input.interactions.find(row => String(row.userInput ?? '').includes('刚才的测试口令是什么'));
+  const recall = input.interactions.find(row => String(row.userInput ?? '').includes('刚才的测试短语是什么'));
   if (!recall || !String(recall.systemOutput ?? '').includes(plannerMemoryMarker)) {
-    throw new Error('Smoke failed: the second Planner reply did not recall the marker from its persisted AnyFusion-Pi session');
+    throw new Error(`Smoke failed: the second Planner reply did not recall the marker from its persisted AnyFusion-Pi session. Observed output: ${String(recall?.systemOutput ?? '<missing>')}`);
   }
   return { nativeSessionPath: input.sessionFiles[0] };
 }
@@ -378,7 +381,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       })
       : scenario === 'artifact'
         ? verifyArtifactScenario({ output, workdir })
-        : verifyPythonHelloScenario({ output, workdir });
+        : verifyPythonHelloScenario({ output, workdir, metaclawHome });
 
     process.stdout.write([
       scenario === 'planner-session'

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 28;
+const CURRENT_SCHEMA_VERSION = 29;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -265,6 +265,35 @@ CREATE TABLE planner_runs (
         created_at TEXT NOT NULL,
         completed_at TEXT
       );
+
+CREATE TABLE planner_proposal_turns (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        user_input TEXT NOT NULL,
+        accepted_submission_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, turn_id)
+      );
+
+CREATE TABLE planner_proposal_submissions (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        submission_id TEXT NOT NULL,
+        plan_fingerprint TEXT NOT NULL,
+        plan_id TEXT,
+        event_id TEXT,
+        status TEXT NOT NULL CHECK (status IN ('submitting', 'uncertain', 'accepted', 'rejected')),
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, turn_id, submission_id),
+        UNIQUE (event_id),
+        FOREIGN KEY (session_id, turn_id)
+          REFERENCES planner_proposal_turns(session_id, turn_id) ON DELETE CASCADE
+      );
+CREATE INDEX idx_planner_proposal_submissions_turn
+  ON planner_proposal_submissions(session_id, turn_id, created_at);
 
 CREATE TABLE planner_tool_calls (
         id TEXT PRIMARY KEY,

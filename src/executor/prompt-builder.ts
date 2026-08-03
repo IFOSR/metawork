@@ -57,7 +57,19 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '',
     'Completion protocol:',
     context.completionContract.marker,
-    '{"schemaVersion":2,"status":"completed","subtaskId":"<authorized id>","acceptanceEvidence":[{"key":"<exact acceptance key>","evidence":["..."]}],"artifacts":[],"handoffs":[]}',
+    JSON.stringify({
+      schemaVersion: 2,
+      status: 'completed',
+      subtaskId: context.currentSubtask.id,
+      acceptanceEvidence: context.currentSubtask.acceptance.map(item => ({
+        key: item.key,
+        evidence: [`<evidence for ${item.key}>`],
+      })),
+      artifacts: [],
+      handoffs: [],
+    }),
+    'Copy every acceptanceEvidence key from this concrete template exactly; replace only the evidence text.',
+    'The JSON property name "key" is literal ASCII schema syntax, not a secret; never translate, redact, rename, or convert it into a map key.',
     'artifacts MUST be a JSON array of absolute path strings only (for example ["/workspace/result.md"]); never emit artifact objects.',
     'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
   ];

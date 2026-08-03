@@ -2,7 +2,7 @@
   "providers": {
     "anyint": {
       "baseUrl": "__OPENAI_BASE_URL__",
-      "api": "openai-completions",
+      "api": "openai-responses",
       "apiKey": "$OPENAI_API_KEY",
       "models": [
         {

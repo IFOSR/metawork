@@ -11,11 +11,13 @@ interface FakeRpcProcess extends EventEmitter {
   kill: ReturnType<typeof vi.fn>;
 }
 
-function emitJson(child: FakeRpcProcess, event: Record<string, unknown>): void {
-  child.stdout.write(JSON.stringify(event) + '\n');
+function emitJson(child: FakeRpcProcess, value: unknown): void {
+  child.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-function createRpcProcess(onCommand: (command: Record<string, unknown>, child: FakeRpcProcess) => void): FakeRpcProcess {
+function createRpcProcess(
+  onCommand: (request: Record<string, unknown>, child: FakeRpcProcess) => void,
+): FakeRpcProcess {
   const child = new EventEmitter() as FakeRpcProcess;
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
@@ -36,29 +38,37 @@ function createRpcProcess(onCommand: (command: Record<string, unknown>, child: F
   return child;
 }
 
-function completeTurn(child: FakeRpcProcess, requestId: unknown, output = '{"ok":true}'): void {
+function acceptedResult(label: string) {
+  return {
+    status: 'accepted' as const,
+    turnId: `turn-${label}`,
+    submissionId: `submission-${label}`,
+    planId: `plan-${label}`,
+    outcome: 'proposal_validated' as const,
+    displayText: 'validated',
+    taskId: null,
+    kernel: null,
+  };
+}
+
+function completeTurn(child: FakeRpcProcess, requestId: unknown, label = 'one'): void {
+  const plan = { id: `plan-${label}`, schemaVersion: 6 };
+  const result = acceptedResult(label);
   emitJson(child, { type: 'response', command: 'prompt', success: true, id: requestId });
   emitJson(child, {
-    type: 'tool_execution_start',
-    toolCallId: 'tool-1',
-    toolName: 'read',
-    args: { path: '/workspace/CONTEXT.md' },
+    type: 'tool_execution_start', toolCallId: 'tool-1',
+    toolName: 'submit_planning_proposal', args: { plan },
   });
   emitJson(child, {
-    type: 'tool_execution_end',
-    toolCallId: 'tool-1',
-    toolName: 'read',
-    result: { lines: 10 },
+    type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'submit_planning_proposal',
+    result: { content: [{ type: 'text', text: JSON.stringify(result) }], details: result, terminate: true },
     isError: false,
   });
-  emitJson(child, {
-    type: 'agent_end',
-    messages: [{ role: 'assistant', content: [{ type: 'text', text: output }] }],
-  });
+  emitJson(child, { type: 'agent_end', messages: [] });
 }
 
 describe('PlannerProcessRunner', () => {
-  it('uses the AnyFusion Pi RPC boundary and returns the final assistant message', async () => {
+  it('returns only an accepted native proposal tool result, not assistant text', async () => {
     let seen: {
       command: string;
       args: string[];
@@ -80,20 +90,16 @@ describe('PlannerProcessRunner', () => {
     const result = await runner.run('hello', {
       timeoutMs: 1000,
       request: { sessionId: 'session-1', source: 'session' },
-    } as never);
+    } as never, 'validation');
 
     expect(result).toMatchObject({
-      output: '{"ok":true}',
+      proposalResult: { status: 'accepted', outcome: 'proposal_validated' },
+      submittedPlan: { id: 'plan-one', schemaVersion: 6 },
       threadId: join('/tmp/anyfusion-planner-test', 'session-1.jsonl'),
-      toolCalls: [{ toolName: 'read', status: 'completed' }],
+      toolCalls: [{ toolName: 'submit_planning_proposal', status: 'completed' }],
     });
-    expect(seen?.command).toBe('anyfusion-planner');
-    expect(seen?.args).toEqual(expect.arrayContaining(['--mode', 'rpc', '--session']));
-    expect(seen?.args).not.toContain('--provider');
-    expect(seen?.args).not.toContain('--model');
-    expect(seen?.args).not.toContain('--print');
     expect(seen?.request).toMatchObject({ type: 'prompt', message: 'hello' });
-    expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toContain('"codex-cli"');
+    expect(seen?.env?.ANYFUSION_PLANNER_TURN_PURPOSE).toBe('validation');
     expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toContain('"workspace-engineering"');
   });
 
@@ -102,10 +108,7 @@ describe('PlannerProcessRunner', () => {
       sessionDir: '/tmp/anyfusion-planner-test',
       spawn: (() => createRpcProcess((request, child) => {
         emitJson(child, {
-          type: 'response',
-          command: 'prompt',
-          success: false,
-          id: request.id,
+          type: 'response', command: 'prompt', success: false, id: request.id,
           error: 'api_key=planner-secret Authorization: Bearer bearer-secret',
         });
       }) as never) as never,
@@ -114,14 +117,14 @@ describe('PlannerProcessRunner', () => {
     const error = await runner.run('hello', {
       timeoutMs: 1000,
       request: { sessionId: 'session-error', source: 'gateway' },
-    } as never).catch(reason => reason as Error);
+    } as never, 'kernel').catch(reason => reason as Error);
 
     expect(error.message).toContain('[REDACTED]');
     expect(error.message).not.toContain('planner-secret');
     expect(error.message).not.toContain('bearer-secret');
   });
 
-  it('serializes concurrent turns that target the same Pi session', async () => {
+  it('serializes concurrent turns targeting the same persisted Pi session', async () => {
     const children: FakeRpcProcess[] = [];
     const requests: Record<string, unknown>[] = [];
     const spawn = vi.fn(() => {
@@ -129,30 +132,69 @@ describe('PlannerProcessRunner', () => {
       children.push(child);
       return child as never;
     });
-    const runner = new PlannerProcessRunner({
-      sessionDir: '/tmp/anyfusion-planner-test',
-      spawn: spawn as never,
-    });
+    const runner = new PlannerProcessRunner({ sessionDir: '/tmp/anyfusion-planner-test', spawn: spawn as never });
     const context = {
       timeoutMs: 1000,
       request: { sessionId: 'shared-session', source: 'gateway' },
     } as never;
 
-    const first = runner.run('first', context);
-    const second = runner.run('second', context);
-    await vi.waitFor(() => {
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(requests).toHaveLength(1);
+    const first = runner.run('first', context, 'validation');
+    const second = runner.run('second', context, 'validation');
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+    completeTurn(children[0]!, requests[0]!.id, 'first');
+    await expect(first).resolves.toMatchObject({ submittedPlan: { id: 'plan-first' } });
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+    completeTurn(children[1]!, requests[1]!.id, 'second');
+    await expect(second).resolves.toMatchObject({ submittedPlan: { id: 'plan-second' } });
+  });
+
+  it('does not accept agent_end after only a rejected proposal result', async () => {
+    const runner = new PlannerProcessRunner({
+      sessionDir: '/tmp/anyfusion-planner-test',
+      spawn: (() => createRpcProcess((request, child) => {
+        const rejected = {
+          status: 'rejected', turnId: 'turn-1', submissionId: 'submission-1', planId: null,
+          rejectionType: 'validation', issues: ['missing priority'], kernel: null,
+        };
+        emitJson(child, { type: 'response', command: 'prompt', success: true, id: request.id });
+        emitJson(child, { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'submit_planning_proposal', args: { plan: {} } });
+        emitJson(child, { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'submit_planning_proposal', result: { details: rejected }, isError: false });
+        emitJson(child, { type: 'agent_end', messages: [] });
+      }) as never) as never,
     });
 
-    completeTurn(children[0]!, requests[0]!.id, 'first-output');
-    await expect(first).resolves.toMatchObject({ output: 'first-output' });
-    await vi.waitFor(() => {
-      expect(spawn).toHaveBeenCalledTimes(2);
-      expect(requests).toHaveLength(2);
+    await expect(runner.run('hello', {
+      timeoutMs: 1000,
+      request: { sessionId: 'session-rejected', source: 'gateway' },
+    } as never, 'kernel')).rejects.toThrow('without an accepted submit_planning_proposal');
+  });
+
+  it('reports a redacted Planner model error instead of misclassifying it as a missing proposal', async () => {
+    const runner = new PlannerProcessRunner({
+      sessionDir: '/tmp/anyfusion-planner-test',
+      spawn: (() => createRpcProcess((request, child) => {
+        emitJson(child, { type: 'response', command: 'prompt', success: true, id: request.id });
+        emitJson(child, {
+          type: 'agent_end',
+          messages: [{
+            role: 'assistant',
+            content: [],
+            stopReason: 'error',
+            errorMessage: '401 Incorrect API key provided: sk-planner-secret',
+          }],
+          willRetry: false,
+        });
+      }) as never) as never,
     });
 
-    completeTurn(children[1]!, requests[1]!.id, 'second-output');
-    await expect(second).resolves.toMatchObject({ output: 'second-output' });
+    const error = await runner.run('hello', {
+      timeoutMs: 1000,
+      request: { sessionId: 'session-model-error', source: 'gateway' },
+    } as never, 'kernel').catch(reason => reason as Error);
+
+    expect(error.message).toContain('Planner model failed');
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).not.toContain('planner-secret');
+    expect(error.message).not.toContain('without an accepted submit_planning_proposal');
   });
 });

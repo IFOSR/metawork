@@ -3,6 +3,17 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Docker shell SQLite schema isolation', () => {
+  it('uses the Responses API for the fixed Planner model', () => {
+    const models = JSON.parse(
+      readFileSync(resolve('docker/planner-pi-config/models.json'), 'utf-8'),
+    ) as { providers: { anyint: { api: string; models: Array<{ id: string }> } } };
+
+    expect(models.providers.anyint.api).toBe('openai-responses');
+    expect(models.providers.anyint.models).toContainEqual(
+      expect.objectContaining({ id: 'gpt-5.6-luna' }),
+    );
+  });
+
   it('uses a data volume scoped to the current pre-release schema', () => {
     const migrations = readFileSync(
       resolve('src/storage/migrations.ts'),

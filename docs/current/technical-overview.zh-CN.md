@@ -4,7 +4,7 @@
 
 > 当前实现基线（2026-07-31）：PlanningAgentPlan v6、Work Graph
 > v5、Kernel event/snapshot/decision contract v5、Completion Protocol v2，
-> 以及只支持全新安装的 SQLite schema v28。`KernelWorkflow` 串行完成
+> 以及只支持全新安装的 SQLite schema v29。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
@@ -80,9 +80,9 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v6 `PlanningAgentPlan`。Work Graph 继续使用 v5，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理；无效输出只在现有 planning path 内修复一次，超时、RPC 失败或重复 schema 失败均安全退回澄清，不进入旧规则 fallback。
+AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
-本地 AnyFusion-Pi TUI 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 获取有界只读 Task 投影、提交版本化提案、请求 `command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab 和上下键；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。Pi 只展示补全数据或执行结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
+本地 AnyFusion-Pi TUI 与 RPC runner 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 和 Host Protocol v2 共用同一 proposal 工具链。bridge 还提供有界只读 Task 投影、`command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab、上下键和 tool-call 机制；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。MetaClaw 持久化 proposal submission，实现 rejected revision、accepted turn lock、identical replay 和 conflict；Pi 只展示补全数据或权威结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
 
 Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
 enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
@@ -532,7 +532,7 @@ anyfusion
 - 可执行命令为 `anyfusion-planner`；fork 禁用用户可见的 Pi/Earendil 品牌、账号登录、自更新和任意 Provider/Model 切换。
 - 本地 host bridge 传递有界的全局 Task 池以及当前 Task/Subtask/Executor/blocking 投影。宽/中终端在 transcript 右侧显示 dashboard；窄终端自动隐藏并保持普通对话可用。初始 loading、unavailable 和 malformed/stale snapshot 只降级面板，不修改 Task 状态。
 - 当前投影和 dashboard 都是只读的，不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
-- direct reply 与 clarification 按普通对话展示；proposal 只展示 `displayText`，原始 v6 plan 通过版本化 host protocol 每轮最多提交一次。
+- direct reply 与 clarification 由 accepted tool result 展示；rejected proposal 可在同一 Agent turn 修订，首个 accepted submission 终止本轮并展示 MetaClaw 权威 `displayText`。
 - bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
 - 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
 
@@ -796,7 +796,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 ## PlanningAgent、ControlKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并产出严格 v6 `PlanningAgentPlan`。Work Graph 仍为 v5；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v6 `PlanningAgentPlan`。Work Graph 仍为 v5；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、期望输出、required agent-class kind 和候选 executor agent classes。
@@ -811,7 +811,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v28 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 一次包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 v5 `Subtask` revision。未发布产品只创建当前唯一 SQLite v29 schema，并拒绝 pre-release 数据库；不再创建或双读旧 Planning、Subtask、worktree audit 表。当前 schema 增加持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/sandbox、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

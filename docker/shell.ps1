@@ -74,7 +74,7 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
-$dataVolume = 'metaclaw-shell-data-v28-anyfusion-planner'
+$dataVolume = 'metaclaw-shell-data-v29-anyfusion-planner'
 $controlNetwork = 'metaclaw-control'
 $controlHost = 'metaclaw-control'
 $codexAttemptImage = 'metaclaw-executor-codex:phase5'

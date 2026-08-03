@@ -98,6 +98,19 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('rejects an empty non-null task reference instead of authorizing it as a new Task', () => {
+    const proposal = workGraphPlan({ goal: 'Create an artifact' });
+    proposal.task.taskId = '';
+
+    expect(new ControlKernel().decide({ ...event, proposal }, {
+      ...snapshot,
+      eligibleContextRefKeys: ['current_user_input'],
+    })).toMatchObject({
+      action: { type: 'reject_request' },
+      reason: 'task not found: ',
+    });
+  });
+
   it('defers an exhausted replan and activates it only after the current frontier is available', () => {
     const proposal = workGraphPlan({
       goal: 'Finish remaining work',

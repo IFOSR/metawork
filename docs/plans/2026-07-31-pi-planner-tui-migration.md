@@ -1,15 +1,15 @@
 # AnyFusion Pi Planner 与原生 TUI 迁移计划
 
-> 状态：首期 Linux 实现与本机 Docker 验收完成；发布观察、reconnect 和 upstream rebase 为后续项
+> 状态：已完成；结构化 proposal 工具、提交生命周期清理及 Linux Docker 最终验收全部通过
 > 计划日期：2026-07-31
-> 完成日期：2026-08-01（首期实现与本机 Linux Docker 验收）
+> 完成日期：2026-08-03（结构化提交链路与最终 Linux Docker 验收完成）
 > 目标产品名：AnyFusion；`MetaClaw` / `metaclaw` 继续作为内部运行时名称与兼容 CLI alias
 > Pi fork 本地路径：`D:\Internships\AnyInt\AnyFusion-Pi`，与 `MetaClaw` 平级
 > 固定上游基线：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`
 > 前序失败方案：[AnyFusion Codex 原生 TUI 定制迁移计划](../archive/plans/2026-07-30-codex-native-tui-migration.md)
 > 核心边界：Pi 是 Planner 对话、查询和智能规划载体；MetaClaw Kernel 仍是唯一决策者，Execution/Executor 仍是唯一执行方
 
-## 实施进度（2026-08-01）
+## 实施进度（截至 2026-08-03）
 
 已落地：
 
@@ -18,7 +18,7 @@
 - 交付自包含 Node 22 Linux Planner image `anyfusion-pi-planner:dev`；缓存重建约 12 秒；
 - 用户可见 CLI、帮助、配置目录和 binary 已切换为 AnyFusion Planner / `.anyfusion` / `anyfusion-planner`，并固定 system prompt、Provider/Model 和 Planner policy；
 - interactive 与 RPC 入口仅保留对话及有界只读能力，禁止 shell、edit/write、任意 Provider/Model 切换、登录、自更新、扩展和包管理绕过路径；
-- AnyFusion-Pi 已实现 v6 proposal envelope、interactive proposal 提交、accepted/rejected 展示，以及 versioned Unix JSONL host client；
+- AnyFusion-Pi 已实现受限原生 `submit_planning_proposal({ plan })` 工具、interactive/RPC 共用提交、accepted/rejected/conflict/transport-uncertain 展示，以及 AnyFusion Planner Host Protocol v2 client；assistant 文本 envelope、尾括号修复和外层 validation repair 已删除；
 - MetaClaw 已交付 `PlannerProcessRunner`：使用真实 Pi `--mode rpc`、stdin/stdout JSONL、每 turn 受控 child lifecycle、同 session writer 串行化、1 MiB 单行上限、只读 tool trace、credential redaction 与 fail-closed timeout/exit/protocol handling；
 - MetaClaw host bridge 已支持 mode-`0600` Unix socket、snapshot projection 和 proposal handoff，并修复初次 `snapshot_subscribe` 重复发送初始 snapshot 的 race；snapshot 现包含 bounded Task pool、focused Task、Subtask preferred AgentClass、blocking reason 与 Executor health；
 - 已恢复 Pi TUI 中的 MetaClaw 确定性 slash commands：`command_submit/command_result` 仅透传用户原始命令，执行仍唯一经过 `MetaclawSession → InputController → CommandCatalog`；Pi 不持有命令语义或 mutation API；
@@ -32,16 +32,17 @@
 
 本轮最终验证证据（全部测试和行为验证均在 Linux Docker 内执行；Windows 宿主只发起 Docker 命令和读取结果）：
 
-- AnyFusion-Pi 使用 Node 22 / Debian trixie CI 镜像通过 `npm run check`：Biome 检查 740 个文件且无自动修复，pinned dependencies、TS relative imports、shrinkwrap、`tsgo --noEmit` 与 browser smoke 全部通过；
+- AnyFusion-Pi 使用 Node 22 / Debian trixie CI 镜像通过 `npm run check`：Biome 检查 742 个文件且无自动修复，pinned dependencies、TS relative imports、shrinkwrap、`tsgo --noEmit` 与 browser smoke 全部通过；
 - AnyFusion-Pi `./test.sh` 全量无密钥测试通过：agent 168 项、AI 412 项通过/727 项 Provider E2E 跳过、coding-agent 1283 项通过/44 项按既有环境规则跳过、TUI 690 项通过；随后 `npm run build:offline` 通过；
 - AnyFusion-Pi 对 standalone Pi package lifecycle、project resources、custom themes/skills 与 project trust 的上游测试套件做了显式 fork exclusion；Planner policy、CLI 拒绝、固定 `.anyfusion` namespace 和只读资源测试覆盖产品边界，没有增加兼容模式或恢复这些能力；
 - `fd` 使用 Linux `fd 10.2.0`；find/tool regressions 共 79 项通过，确认此前 bookworm `fd 8.x` 失败属于测试镜像版本问题；
-- MetaClaw Linux Docker 内 `npm run lint`、全量测试和 Node 20 target build 全部通过：183 个测试文件通过、4 个文件按既有条件跳过，703 项通过、15 项跳过；
-- `npm run smoke:metaclaw` 的容器内等价执行通过原生 Planner 双轮会话：同一 AnyFusion-Pi persisted session 正确记住并返回测试口令；
+- MetaClaw Linux Docker 内 `npm run lint`、全量测试和 Node 20 target build 全部通过：184 个测试文件通过、4 个文件按既有条件跳过，717 项通过、15 项跳过；
+- `npm run smoke:metaclaw` 的容器内等价执行通过原生 Planner 双轮会话：同一 AnyFusion-Pi persisted session 正确记住并返回测试短语；
 - artifact smoke 通过真实 Planner → authoritative validation → Kernel → Codex Executor 链路，在受管 workspace 创建并验证 `smoke-result.md`；
 - 最终私网 SSH PTY 验证使用无宿主端口、禁用密码登录、无 Docker socket 的临时拓扑：欢迎页显示 AnyFusion 像素品牌、`Planner v0.80.2`、MetaClaw connecting/connected 与 `Tasks 0`；输入 `/ta` 后按 Tab，编辑器直接应用 `/task ` 并立即显示 `dashboard/list/clear/show/pause`；
-- 一次性真实规划行为验证通过：输入“在 `/workspace/hello.py` 新建文件，内容为打印 Hello world。”后显示“规划提案已通过 MetaClaw 校验：`plan-create-hello-py`”，Task 路由为 `codex-cli`；未出现缺失 `task.priority`、错误 `pi-agent` 路由或 preferred canonical set 拒绝；无 Docker socket 的 PTY 安全拓扑随后按预期把已接受任务标记为 blocked，不影响本次 Planner proposal 验收；
-- 最终镜像边界确认：AnyFusion Planner Node `v22.23.2`，MetaClaw control Node `v20.20.2`；镜像 ID 分别为 `anyfusion-pi-planner:dev@sha256:76e67678ba0da06c0a65b62ea5d59654eed2550cd32d9bf86fd29bfd24454391`、`metaclaw-runtime:latest@sha256:2bd4dd8deeab320a36917f07a740c85eec67c9688b8565c496796df6bae8d09a`、`metaclaw-tui-ssh:local@sha256:233610ffcab142b3b4d859e0bc004355254a40962934df04d1d23435d0f7602e`。
+- 一次性真实 `python-hello` 行为验证通过：Planner 在一个 turn 内提交有效 v6 proposal，Kernel 接受并持久化 Task/Work Graph，后台 Codex Executor 在受管 workspace 创建 `hello_world.py`；文件内容精确为 `print("hello world")`，独立执行输出 `hello world`；
+- Planner MCP smoke 通过，8 个只读工具均可发现；proposal 提交仍唯一经过结构化 Host Protocol v2 与 `MetaclawSession.submitPlannerProposal()`；
+- 最终镜像边界确认：AnyFusion Planner Node `v22.23.2`，MetaClaw control Node `v20.20.2`；镜像 ID 分别为 `anyfusion-pi-planner:local@sha256:eda1044d278d8742612802f51a9846f374e64023977c6129a147cc89c22dd392`、`metaclaw-runtime:latest@sha256:8736b5cf141dd0ac3e4eadbd7f5adf927f380649d8375fc5097baef8294659d8`、`metaclaw-tui-ssh:latest@sha256:8a526ed3a22250611cc581ca4a4097d2dc79f1578db14381cca2fa489a1f1668`。
 
 首期提交后的发布跟踪项（不回退本次实现完成状态）：
 
@@ -58,7 +59,7 @@
 2. 由 AnyFusion 固定管理模型、Provider、权限和发布版本的 Planner runtime；
 3. 统一服务本地 TUI、Gateway、Feishu 和其他非交互入口的唯一 Planner 实现；
 4. 只读 AnyFusion Task/Subtask/Executor 看板；
-5. 经版本化 JSON 协议向 MetaClaw 提交 PlanningAgentPlan proposal；
+5. 经 Pi 原生结构化工具和版本化 JSON 协议向 MetaClaw 提交 PlanningAgentPlan proposal；
 6. 保持既有 Kernel、Work Graph、Storage、Execution、Executor、sandbox 和 Git publication 语义不变；
 7. 保留 MetaClaw 现有 Ink TUI 源码、测试与依赖作为 standby 模块。
 
@@ -228,7 +229,7 @@ D:\Internships\AnyInt\AnyFusion-Pi
 - 固定模型和 Provider 配置；
 - Planner-only tool catalog；
 - read-only dashboard client；
-- proposal envelope finalizer；
+- 受限原生 `submit_planning_proposal` 工具；
 - interactive 和 RPC 两种运行模式；
 - Linux build、test、package；Linux Planner artifact 仅服务 MetaClaw Docker（无公共发布渠道）；
 - upstream pin、patch series 和按需升级说明。
@@ -255,7 +256,7 @@ AnyFusion-Pi interactive process (Node 22, Linux)
   - conversation/session/history/compact
   - Planner-only read/query tools
   - read-only Task dashboard
-  - proposal envelope finalizer
+  - runtime-bound proposal tool
         |
         | mode-0600 Unix socket, versioned JSONL
         v
@@ -296,7 +297,7 @@ same validation -> same Kernel path
 - PlanningAgentPlan v6 contract；
 - tool policy；
 - Provider/model 配置；
-- repair/clarification 规则；
+- rejection/revision/clarification 规则；
 - session format；
 - audit vocabulary。
 
@@ -340,24 +341,21 @@ Pi interactive TUI 必须独占终端 stdin/stdout，因此：
 
 协议必须有独立版本，不直接复用 Pi 内部 event type 作为 MetaClaw contract。
 
-建议首版：
+当前版本：
 
 ```text
-AnyFusionPlannerHostProtocol v1
+AnyFusionPlannerHostProtocol v2
 ```
 
 最小消息：
 
 - `hello`：协议版本、runtime version、session identity、mode；
 - `ping` / `pong`；
-- `prompt`：backend surface 提交用户输入；
-- `interrupt`：只中断 Planner turn，不取消 Task/Executor；
 - `snapshot_get`；
 - `snapshot_subscribe`；
 - `snapshot`：只读 Planner-safe projection；
-- `proposal_submit`：用户输入、raw plan、turn/session correlation；
-- `proposal_result`：accepted/rejected、errors、plan id；
-- `planner_event`：bounded、redacted 的状态/错误事件；
+- `proposal_submit`：runtime identity、purpose 和 raw v6 plan；
+- `proposal_result`：accepted/rejected/conflict/transport_uncertain 与 Kernel 权威结果；
 - `shutdown`。
 
 协议要求：
@@ -372,35 +370,38 @@ AnyFusionPlannerHostProtocol v1
 - 不传输数据库 handle、Repository 对象、Kernel object 或 Executor control capability；
 - 协议 fixture 同时在两个仓库验证，防止 silent drift。
 
-## Proposal finalizer
+## 原生 Proposal 工具
 
 ### 目标
 
-Pi native conversation 必须保留用户友好的自然语言显示，同时每个需要进入 MetaClaw 的 turn 产生一个严格的 PlanningAgentPlan v6 proposal。
+Pi native conversation 必须保留用户友好的自然语言显示，同时每个语义 turn 通过受限原生工具提交严格的 PlanningAgentPlan v6 proposal。
 
 ### 建议实现
 
-在 AnyFusion-Pi fork 内增加 Planner 专属 finalizer：
+在 AnyFusion-Pi fork 内通过现有 custom tool composition seam 固定注入：
 
-1. system prompt 要求模型返回内部 proposal envelope；
-2. `agent_end` 后由 AnyFusion extension/composition adapter 读取最终 assistant message；
-3. adapter 提取 raw v6 plan，不直接修改任何业务状态；
-4. 用户可见 transcript 只渲染 display text、clarification 或 direct reply，不显示内部 JSON；
-5. raw plan 经 Host Protocol 交给 MetaClaw；
-6. MetaClaw 使用现有 catalog、pending authorization 和 `PlanningAgentPlanSchema` 重新校验；
-7. 只有验证通过才进入现有 `plan_proposed` 路径。
+```ts
+submit_planning_proposal({ plan: PlanningAgentPlanV6 })
+```
 
-禁止为了 structured output 修改 Pi agent loop、message persistence protocol 或 MetaClaw Kernel contract。若 extension/composition seam 无法实现，应先做窄 fork seam；若仍需广泛修改 agent core，必须停止并重新评审。
+1. 模型只能提供 `plan`；`sessionId`、`turnId`、`userInput` 和 deterministic `submissionId` 由 Pi runtime 注入；
+2. native TUI 和 RPC 使用同一 tool、host protocol 和 MetaClaw submission path；
+3. MetaClaw 使用现有 catalog、pending authorization、`PlanningAgentPlanSchema` 和 KernelWorkflow 重新校验并授权；
+4. rejected 作为当前 ReAct turn 的结构化 tool result 返回，Agent 自然修正后可再次调用；
+5. 第一个 accepted proposal 锁定 turn，工具 `terminate: true`，直接渲染 MetaClaw 权威结果；
+6. identical submission 幂等重放；accepted 后 different submission 返回 conflict；
+7. 不读取最终 assistant text，不解析 envelope，不修复 JSON 尾括号，不增加 proposal 专用 retry、repair prompt 或外层协调循环。
+
+该实现不修改 Pi agent loop、message persistence protocol 或 MetaClaw Kernel contract，只使用 Pi 原生 tool 注册、执行和 terminate 机制。
 
 ### 失败语义
 
-- raw plan 缺失或语法错误：同一 Planner turn 最多一次受控 repair；
-- repair 后仍无效：返回 clarification/fail closed；
-- MetaClaw authoritative validation 拒绝：TUI 显示拒绝原因，不产生 Kernel event；
-- bridge unavailable：对话可显示 unavailable，但不得假装 Task 已创建或控制已执行；
-- duplicate proposal：通过 turn/request id 去重；
+- schema/semantic validation 拒绝：返回结构化 issues，不产生 Kernel event；Agent 可在同 turn 自然修订；
+- Kernel `reject_request`：返回结构化 Kernel reason，不锁定 turn；
+- bridge/Kernel acknowledgement 不确定：返回 `transport_uncertain`，不得映射为 rejection，不得假装 Task 已创建或控制已执行；
+- identical proposal：返回持久化的同一结果；accepted 后 different proposal：返回 conflict；
 - Planner timeout/crash：保留 conversation recovery 信息，不合成 fallback plan；
-- 不恢复旧 schema，不增加 keyword fallback 或第二个 natural-language parser。
+- 不恢复旧 schema，不增加 keyword fallback、第二个 natural-language parser 或 assistant-text proposal parser。
 
 ## Planner 工具与权限
 
@@ -568,7 +569,7 @@ AnyFusion 管理所有 Planner runtime 配置：
 4. `feat(planner): enforce AnyFusion model and tool policy`
 5. `feat(tui): add AnyFusion Planner layout`
 6. `feat(tui): add read-only Task dashboard`
-7. `feat(planner): add proposal envelope finalizer`
+7. `feat(planner): add native proposal submission tool`
 8. `feat(protocol): add AnyFusion Planner host adapter`
 9. `test: add branding, protocol and Planner boundary coverage`
 10. `build: package pinned Linux Planner artifact`
@@ -633,7 +634,7 @@ Phase 0 基线目标：
 
 - mode-`0600` Unix JSONL local bridge；
 - `PlannerTuiSnapshot` 的只读 Session projection 思路；
-- `submitPlannerTuiPlan` 中重新执行 v6 schema/semantic validation；
+- `submitPlannerProposal` 中重新执行 v6 schema/semantic validation；
 - proposal submission serialization；
 - default native Planner process + standby Ink mode selection；
 - planning-to-kernel path regression tests。
@@ -715,11 +716,11 @@ Phase 0 基线目标：
 - 验证 dashboard failure 不影响 conversation；
 - 不增加 Planner-authored 或通用 mutation message；命令 mutation 仍只发生在 MetaClaw 既有 CommandCatalog/Application-Shell 路径。
 
-### Phase 4：Proposal finalizer 与统一 PlanningAgent
+### Phase 4：原生 Proposal 工具与统一 PlanningAgent
 
-- 实现 proposal envelope finalizer；
+- 实现 runtime-bound `submit_planning_proposal`；
 - MetaClaw authoritative validation；
-- 一次 bounded repair；
+- rejection 在同一 ReAct turn 自然反馈和修订，无 proposal 专用 retry；
 - 替换 Codex PlanningAgent/runner；
 - Gateway/Feishu 使用 Pi RPC；
 - local TUI 使用同一 system prompt、schema、tool policy 和 model；
@@ -743,7 +744,7 @@ Phase 0 基线目标：
 - 验证 Gateway/Feishu RPC；
 - 验证 session resume/fork/archive/compaction；
 - 验证 dashboard degradation；
-- 验证 proposal reject/repair/timeout/crash；
+- 验证 proposal reject/revision/conflict/transport-uncertain/timeout/crash；
 - 运行 bounded 观察期；
 - 不删除 AnyFusion-Codex 或 Ink TUI；
 - 观察期后再单独决定废弃仓库清理。
@@ -823,8 +824,9 @@ AnyFusion-Pi 是 MetaClaw 自用组件，不设定期升级、不建立公共 re
 - valid proposal accepted；
 - invalid schema rejected；
 - catalog/authorization semantic failure rejected；
-- one repair then clarification；
-- duplicate turn id 去重；
+- validation/Kernel rejection 后同 turn 修订；
+- accepted replay、accepted turn lock 和 different-submission conflict；
+- transport uncertain 与 validation rejection 严格区分；
 - oversized/malformed JSONL rejected；
 - socket permission `0600`；
 - protocol version mismatch rejected；
@@ -943,21 +945,24 @@ AnyFusion-Pi 是 MetaClaw 自用组件，不设定期升级、不建立公共 re
 
 ## 完成记录
 
-- 完成日期：2026-08-01（首期实现与本机 Linux Docker 验收）；
+- 完成日期：2026-08-03（结构化提交链路与本机 Linux Docker 最终验收）；
 - 最终 Pi upstream：`earendil-works/pi@ec6311beb5b24fc918e5031173608447582d7262` / `0.80.2`；
-- AnyFusion-Pi closing commit：`d9e22904 feat(planner): complete native TUI integration`；
+- AnyFusion-Pi TUI 基线提交：`d9e22904 feat(planner): complete native TUI integration`；
+- AnyFusion-Pi structured proposal closing commit：`b0d5ff784fab feat(planner): submit structured proposals natively`；
 - MetaClaw closing commit：包含本完成记录的本地提交；
 - Linux artifact content ID：
-  - `anyfusion-pi-planner:dev@sha256:76e67678ba0da06c0a65b62ea5d59654eed2550cd32d9bf86fd29bfd24454391`；
-  - `metaclaw-runtime:latest@sha256:2bd4dd8deeab320a36917f07a740c85eec67c9688b8565c496796df6bae8d09a`；
-  - `metaclaw-tui-ssh:local@sha256:233610ffcab142b3b4d859e0bc004355254a40962934df04d1d23435d0f7602e`；
-- Docker build/test：AnyFusion-Pi check、`./test.sh`、offline build 全部通过；MetaClaw lint、703 项全量测试和 Node 20 build 全部通过；
-- smoke：Planner 双轮 persisted-session smoke、真实 Codex artifact smoke、私网 SSH PTY welcome/dashboard/completion smoke、一次性 `hello.py` 有效 proposal 全部通过；
+  - `anyfusion-pi-planner:local@sha256:eda1044d278d8742612802f51a9846f374e64023977c6129a147cc89c22dd392`；
+  - `metaclaw-runtime:latest@sha256:8736b5cf141dd0ac3e4eadbd7f5adf927f380649d8375fc5097baef8294659d8`；
+  - `metaclaw-tui-ssh:latest@sha256:8a526ed3a22250611cc581ca4a4097d2dc79f1578db14381cca2fa489a1f1668`；
+- Docker build/test：AnyFusion-Pi check、`./test.sh`、offline build 全部通过；MetaClaw lint、717 项全量测试和 Node 20 build 全部通过；
+- smoke：Planner 双轮 persisted-session smoke、真实 Codex artifact smoke、Planner MCP smoke、私网 SSH PTY welcome/dashboard/completion smoke及真实 `python-hello` 执行全部通过；
 - upstream rebase rehearsal：未执行，列为发布跟踪项；
 - 观察期与已知限制：远端服务器观察期、dashboard reconnect/age、Gateway/Feishu surface smoke 和 dependency audit 分流待后续；
 - AnyFusion-Codex：失败方案已归档于 `docs/archive/plans/2026-07-30-codex-native-tui-migration.md`，本次不删除 Executor Codex 或其他兼容资产。
 
-### 2026-08-01 proposal envelope corrective validation
+### 2026-08-01 文本 envelope 修复（已废弃历史）
+
+该修复曾用于缓解 assistant 文本 JSON 尾括号缺失，但没有消除文本解析链路的脆弱性。2026-08-02 的原生 proposal 工具迁移已删除 envelope parser、尾括号恢复和外层 repair；以下内容只保留为根因与镜像验证历史，不代表当前实现。
 
 - Root cause: the configured Planner model could return a complete `PlanningAgentPlan v6` inside `{ "displayText", "plan" }` while omitting only the envelope's final `}` at EOF. The assistant message was persisted with `stopReason: "stop"`, so this was a model formatting defect rather than token truncation; strict JSON parsing then produced `Planner response did not contain a PlanningAgentPlan v6 proposal.`
 - AnyFusion-Pi correction commit: `e86f543b fix(planner): recover truncated proposal envelopes`.
@@ -973,3 +978,23 @@ AnyFusion-Pi 是 MetaClaw 自用组件，不设定期升级、不建立公共 re
   - `metaclaw-runtime:latest@sha256:f98e1c281841c8ec58b5fa97fb7302c6260449bab6eced3ef8bf0cb5dccdb4dc`;
   - `metaclaw-tui-ssh:latest@sha256:7519e7d522ab522a1aa8f0944487ebaff9105f449b9c6aae4914546117c71758`.
 - MetaClaw correction commit: the local commit containing this completion record; not pushed.
+
+### 2026-08-02 原生 proposal 工具迁移
+
+- AnyFusion-Pi 固定注入 `submit_planning_proposal({ plan })`；模型只提供 v6 plan，runtime 注入 session/turn/user input/submission identity；
+- native TUI 与 RPC 共用 Host Protocol v2 和 `MetaclawSession.submitPlannerProposal()`；
+- validation/Kernel rejection 作为当前 ReAct turn 的结构化反馈返回，不设 proposal 专用 retry、repair prompt 或外层协调循环；
+- accepted 后 terminate 并锁定 turn；相同 submission 持久化幂等重放，不同 submission 返回 conflict；
+- `transport_uncertain` 与 rejection 分离，要求 identical replay；schema 29 持久化 proposal turn/submission 状态；
+- assistant-text envelope parser、尾括号修复、agent-end finalizer 和 deprecated `submitPlannerTuiPlan` 兼容入口已删除；
+- 所有构建、测试、smoke 与真实交互仅在 Linux Docker 中执行；最终测试数量、镜像 digest 和两仓 closing commit 已在完成记录中补录。
+
+### 2026-08-03 提交生命周期纠正与第四步清理
+
+- `proposal_submit` 在 MetaClaw validation、Kernel 授权及 Task/Work Graph 持久化成功后立即返回 `accepted + taskId`，不等待 Executor；Executor 在后台启动，后续进度或失败仅通过已有 snapshot/事件投影报告；
+- `transport_uncertain` 只表示 Kernel 授权或持久化结果不确定；`in_flight` 有显式结构化结果，不依赖数据库 `INSERT OR IGNORE` 偶然兜底；
+- PlanningAgentPlan 在 MetaClaw Session 摄入边界唯一归一化，空白 `taskId` 规范为 `null`；Kernel 存在性检查和 Task Engine 主键写入继续 fail-closed，Pi 的联合类型 coercion 则优先按 JavaScript 实际类型匹配 `anyOf` 成员；
+- Bridge 删除 `sessions.get('*')` 与可选 session 兼容路径，只允许精确匹配已绑定真实 session；错误 session 有负向测试并 fail-closed；
+- `PlanningAgent.submit` 改为强制接口，删除 Session 外层 `plan -> submit` fallback、外层 repair/recovery loop 和旧 Codex planning alias；Native TUI 与 RPC 只保留同一结构化提交入口；
+- 删除无调用方的 `llm-json` 文本 JSON 截取器、旧 planner envelope、尾括号修复及未使用的终态判断 helper；保留 Kernel 内部重规划仍需要的 `PlannerProposalPurpose: 'validation'`；
+- 最终 Linux Docker 验收：AnyFusion-Pi `npm run check` 与 `./test.sh` 全量通过；MetaClaw lint、184 个测试文件/717 项测试、Node 20 build 全部通过；Session、Artifact、Planner MCP 和真实 `python-hello` smoke 全部通过。

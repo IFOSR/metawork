@@ -14,6 +14,7 @@ import {
   completionResponseFromSandboxInput,
   FakeAttemptSandbox,
 } from '../support/fake-attempt-sandbox.js';
+import { planningAgentFromPlanMock } from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -92,9 +93,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
-    const planningAgent = {
-      plan: vi.fn().mockResolvedValue(workGraphPlan()),
-    };
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan()));
 
     const session = new MetaclawSession({
       taskEngine,
@@ -124,8 +123,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const attemptSandbox = new FakeAttemptSandbox();
-    const planningAgent = {
-      plan: vi.fn().mockResolvedValue(workGraphPlan({
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
         action: 'clarification',
         confidence: 0.2,
         reason: '低置信度',
@@ -141,8 +139,7 @@ describe('MetaclawSession planning-agent routing', () => {
           priority: null,
         },
         workGraph: null,
-      })),
-    };
+      })));
 
     const session = new MetaclawSession({
       taskEngine,
@@ -176,8 +173,7 @@ describe('MetaclawSession planning-agent routing', () => {
       rawOutput: completionResponseFromSandboxInput(input, '已修改代码并完成实现。')
         .replace('tests were not run: deterministic fake sandbox', 'implementation completed'),
     }));
-    const planningAgent = {
-      plan: vi.fn().mockResolvedValue(workGraphPlan({
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
         reason: '修改仓库代码',
         task: {
           binding: 'new',
@@ -189,8 +185,7 @@ describe('MetaclawSession planning-agent routing', () => {
           includeRecentConversationContext: false,
           priority: { level: 'normal', reason: 'test work graph priority' },
         },
-      })),
-    };
+      })));
 
     const session = new MetaclawSession({
       taskEngine,

@@ -5,7 +5,16 @@ function input() {
   return {
     context: {
       taskBackground: { id: 'task', title: 'Task', goal: 'Top-level goal', instruction: 'background_only' as const },
-      currentSubtask: { id: 'a', title: 'A', goal: 'Only do A', expectedOutput: 'summary' as const, acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }] },
+      currentSubtask: {
+        id: 'a',
+        title: 'A',
+        goal: 'Only do A',
+        expectedOutput: 'summary' as const,
+        acceptance: [
+          { key: 'done', description: 'done', requiredEvidence: [] },
+          { key: 'verified', description: 'verified', requiredEvidence: [] },
+        ],
+      },
       incomingHandoffs: [],
       outgoingHandoffRequirements: [{ toSubtaskId: 'b', requiredItems: [{ key: 'summary', type: 'text' as const, description: 'summary' }] }],
       selectedEvidence: [{ ref: { kind: 'current_user_input' as const }, evidenceId: 'e1', title: 'Current input', content: 'selected evidence only', truncated: false }],
@@ -34,5 +43,14 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).toContain('<!-- metaclaw:completion:v2 -->');
     expect(prompt).not.toContain('conversationHistory');
     expect(prompt).not.toContain('executionContextBundle');
+  });
+
+  it('renders a concrete completion template with every authorized acceptance key', () => {
+    const prompt = buildExecutorContextPrompt(input());
+    expect(prompt).toContain('"subtaskId":"a"');
+    expect(prompt).toContain('"key":"done"');
+    expect(prompt).toContain('"key":"verified"');
+    expect(prompt).not.toContain('<exact acceptance key>');
+    expect(prompt).toContain('property name "key" is literal ASCII schema syntax');
   });
 });

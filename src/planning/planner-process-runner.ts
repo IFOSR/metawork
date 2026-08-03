@@ -7,6 +7,7 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import type { PlanningContext } from './planning-types.js';
+import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
 
@@ -19,14 +20,19 @@ export interface PlannerToolCallTrace {
 }
 
 export interface PlannerRunResult {
-  output: string;
+  proposalResult: Extract<PlannerProposalResult, { status: 'accepted' }>;
+  submittedPlan: unknown;
   toolCalls: PlannerToolCallTrace[];
   threadId: string | null;
   durationMs: number;
 }
 
 export interface PlannerRunner {
-  run(prompt: string, context: PlanningContext): Promise<PlannerRunResult>;
+  run(
+    prompt: string,
+    context: PlanningContext,
+    purpose: PlannerProposalPurpose,
+  ): Promise<PlannerRunResult>;
 }
 
 type SpawnFn = typeof spawn;
@@ -51,7 +57,11 @@ export class PlannerProcessRunner implements PlannerRunner {
 
   constructor(private readonly deps: PlannerProcessRunnerDeps = {}) {}
 
-  async run(prompt: string, context: PlanningContext): Promise<PlannerRunResult> {
+  async run(
+    prompt: string,
+    context: PlanningContext,
+    purpose: PlannerProposalPurpose,
+  ): Promise<PlannerRunResult> {
     const sessionId = context.request.sessionId;
     const previous = this.sessionQueues.get(sessionId) ?? Promise.resolve();
     let release!: () => void;
@@ -61,7 +71,7 @@ export class PlannerProcessRunner implements PlannerRunner {
     await previous.catch(() => undefined);
 
     try {
-      return await this.runRpc(prompt, context);
+      return await this.runRpc(prompt, context, purpose);
     } finally {
       release();
       if (this.sessionQueues.get(sessionId) === tail) {
@@ -70,7 +80,11 @@ export class PlannerProcessRunner implements PlannerRunner {
     }
   }
 
-  private async runRpc(prompt: string, context: PlanningContext): Promise<PlannerRunResult> {
+  private async runRpc(
+    prompt: string,
+    context: PlanningContext,
+    purpose: PlannerProposalPurpose,
+  ): Promise<PlannerRunResult> {
     const startedAt = Date.now();
     const command = this.deps.command
       ?? process.env.METACLAW_PLANNER_COMMAND
@@ -112,6 +126,9 @@ export class PlannerProcessRunner implements PlannerRunner {
           ANYFUSION_PLANNER_SESSION_DIR: sessionDir,
           ANYFUSION_PLANNER_SESSION_ID: context.request.sessionId,
           ANYFUSION_PLANNER_REQUEST_SOURCE: context.request.source,
+          ANYFUSION_PLANNER_TURN_PURPOSE: purpose,
+          ANYFUSION_BRIDGE_SOCKET: process.env.METACLAW_PLANNER_HOST_SOCKET
+            ?? process.env.METACLAW_PLANNER_TUI_SOCKET,
           ANYFUSION_PLANNER_SCHEMA_PATH: process.env.ANYFUSION_PLANNER_SCHEMA_PATH
             ?? process.env.METACLAW_PLANNER_SCHEMA_PATH,
           ANYFUSION_PLANNER_CATALOG_JSON: JSON.stringify(getPlannerExecutorCatalog()),
@@ -122,6 +139,8 @@ export class PlannerProcessRunner implements PlannerRunner {
       let settled = false;
       let promptAccepted = false;
       let pendingResult: PlannerRunResult | null = null;
+      let terminalProposalResult: Extract<PlannerProposalResult, { status: 'accepted' }> | null = null;
+      let submittedPlan: unknown;
       const toolCalls: PlannerToolCallTrace[] = [];
       const toolStarts = new Map<string, Record<string, unknown>>();
 
@@ -163,28 +182,43 @@ export class PlannerProcessRunner implements PlannerRunner {
         if (event.type === 'tool_execution_start') {
           const toolCallId = String(event.toolCallId ?? toolStarts.size + 1);
           toolStarts.set(toolCallId, event);
+          if (event.toolName === 'submit_planning_proposal' && isRecord(event.args)) {
+            submittedPlan = event.args.plan;
+          }
           return;
         }
         if (event.type === 'tool_execution_end') {
           const toolCallId = String(event.toolCallId ?? toolCalls.length + 1);
           const start = toolStarts.get(toolCallId);
+          const toolName = String(event.toolName ?? start?.toolName ?? 'unknown');
           toolCalls.push({
             sequence: toolCalls.length + 1,
-            toolName: String(event.toolName ?? start?.toolName ?? 'unknown'),
+            toolName,
             status: event.isError === true ? 'failed' : 'completed',
             argumentsSummary: summarizeValue(start?.args),
             resultSummary: summarizeValue(event.result),
           });
+          if (toolName === 'submit_planning_proposal') {
+            const proposalResult = extractPlannerProposalResult(event.result);
+            if (proposalResult?.status === 'accepted') terminalProposalResult = proposalResult;
+          }
           return;
         }
         if (event.type === 'agent_end') {
-          const output = extractLastAssistantText(event.messages);
-          if (!output) {
-            fail(new Error('AnyFusion Planner RPC completed without a final assistant message'));
+          const modelError = extractPlannerModelError(event);
+          if (modelError) {
+            fail(new Error(
+              `AnyFusion Planner model failed: ${truncateText(redactSensitiveText(modelError), 500)}`,
+            ));
+            return;
+          }
+          if (!terminalProposalResult || submittedPlan === undefined) {
+            fail(new Error('AnyFusion Planner RPC completed without an accepted submit_planning_proposal tool result'));
             return;
           }
           pendingResult = {
-            output,
+            proposalResult: terminalProposalResult,
+            submittedPlan,
             toolCalls,
             threadId: sessionPath,
             durationMs: Date.now() - startedAt,
@@ -251,18 +285,33 @@ function parsePlannerArgs(value: string | undefined): string[] | undefined {
   return parsed;
 }
 
-function extractLastAssistantText(value: unknown): string {
-  if (!Array.isArray(value)) return '';
-  for (const message of [...value].reverse()) {
-    if (!isRecord(message) || message.role !== 'assistant' || !Array.isArray(message.content)) continue;
-    const text = message.content
-      .map(part => isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : '')
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-    if (text) return text;
+function extractPlannerProposalResult(value: unknown): PlannerProposalResult | null {
+  if (!isRecord(value)) return null;
+  const candidate = isRecord(value.details) ? value.details : value;
+  if (candidate.status === 'accepted'
+    && typeof candidate.turnId === 'string'
+    && typeof candidate.submissionId === 'string'
+    && typeof candidate.planId === 'string'
+    && typeof candidate.outcome === 'string'
+    && typeof candidate.displayText === 'string') {
+    return candidate as unknown as PlannerProposalResult;
   }
-  return '';
+  if (candidate.status === 'rejected' || candidate.status === 'conflict' || candidate.status === 'transport_uncertain') {
+    return candidate as unknown as PlannerProposalResult;
+  }
+  return null;
+}
+
+function extractPlannerModelError(event: Record<string, unknown>): string | null {
+  if (!Array.isArray(event.messages)) return null;
+  for (let index = event.messages.length - 1; index >= 0; index -= 1) {
+    const message = event.messages[index];
+    if (!isRecord(message) || message.role !== 'assistant') continue;
+    if (typeof message.errorMessage === 'string' && message.errorMessage.trim()) {
+      return message.errorMessage;
+    }
+  }
+  return null;
 }
 
 function summarizeValue(value: unknown): Record<string, unknown> {

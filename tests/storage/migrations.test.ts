@@ -10,7 +10,7 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 28 }]);
+      .toEqual([{ version: 29 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -28,6 +28,8 @@ describe('current SQLite baseline', () => {
       'workspace_merge_attempts',
       'generation_replan_requests',
       'kernel_executor_status',
+      'planner_proposal_turns',
+      'planner_proposal_submissions',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
     }
@@ -54,6 +56,19 @@ describe('current SQLite baseline', () => {
       'deferred_plan_json',
       'availability_explanation',
     ]));
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_planner_proposal_submissions_turn'
+    `).get()).toEqual({ name: 'idx_planner_proposal_submissions_turn' });
+    expect(db.prepare('PRAGMA foreign_key_list(planner_proposal_submissions)').all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          table: 'planner_proposal_turns', from: 'session_id', to: 'session_id', on_delete: 'CASCADE',
+        }),
+        expect.objectContaining({
+          table: 'planner_proposal_turns', from: 'turn_id', to: 'turn_id', on_delete: 'CASCADE',
+        }),
+      ]));
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -65,7 +80,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 28',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 29',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

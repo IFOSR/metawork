@@ -1,10 +1,8 @@
-import { extractJsonObject } from '../core/llm-json.js';
 import { PlannerProcessRunner, type PlannerRunner, type PlannerToolCallTrace } from './planner-process-runner.js';
-import { generateInteractionId } from '../utils/id.js';
-import { PLANNER_SOURCE, PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
-import { validatePlanningAgentPlan } from './planning-agent-plan-validator.js';
+import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
 import type { PlanningAgent } from './planning-agent.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
+import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 
 export interface AnyFusionPlanningAgentDeps {
   runner: PlannerRunner;
@@ -23,75 +21,69 @@ export interface AnyFusionPlanningAgentDeps {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Deep Planner process adapter. Proposal validation/revision happens inside the
+ * Pi tool loop; this module never parses assistant text and never owns a repair
+ * loop.
+ */
 export class AnyFusionPlanningAgent implements PlanningAgent {
   constructor(private readonly deps: AnyFusionPlanningAgentDeps) {}
 
+  async submit(context: PlanningContext): Promise<PlannerProposalResult> {
+    try {
+      return (await this.run(context, 'kernel')).proposalResult;
+    } catch (error) {
+      return {
+        status: 'transport_uncertain',
+        turnId: 'unknown',
+        submissionId: 'unknown',
+        retryableByReplay: true,
+        message: `Planner unavailable: ${(error as Error).message}`,
+      };
+    }
+  }
+
   async plan(context: PlanningContext): Promise<PlanningAgentPlan> {
+    const result = await this.run(context, 'validation');
+    if (result.proposalResult.status !== 'accepted'
+      || result.proposalResult.outcome !== 'proposal_validated') {
+      throw new Error(`Planner proposal did not reach validated terminal state: ${result.proposalResult.status}`);
+    }
+    const parsed = PlanningAgentPlanSchema.safeParse(result.submittedPlan);
+    if (!parsed.success) {
+      throw new Error('Planner tool completed without a valid PlanningAgentPlan v6 argument');
+    }
+    return parsed.data as PlanningAgentPlan;
+  }
+
+  private async run(context: PlanningContext, purpose: PlannerProposalPurpose) {
     const effectiveContext = {
       ...context,
       timeoutMs: context.timeoutMs > 0 ? context.timeoutMs : DEFAULT_TIMEOUT_MS,
     };
-    let lastErrors: string[] = [];
     const auditRun = this.deps.audit?.start(context.request.sessionId, context.request.source);
     const startedAt = Date.now();
-    const toolCalls: PlannerToolCallTrace[] = [];
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const prompt = attempt === 0
-        ? this.buildPrompt(effectiveContext)
-        : this.buildRepairPrompt(effectiveContext, lastErrors);
-      let raw: string;
-      try {
-        const result = await this.deps.runner.run(prompt, effectiveContext);
-        raw = result.output;
-        toolCalls.push(...result.toolCalls);
-      } catch (error) {
-        if (auditRun) this.finishAudit({
-          id: auditRun.id,
-          status: 'failed',
-          attemptCount: attempt + 1,
-          durationMs: Date.now() - startedAt,
-          errorSummary: (error as Error).message,
-          toolCalls,
-        });
-        return this.safeClarification(`Planner unavailable: ${(error as Error).message}`);
-      }
-
-      try {
-        const extracted = extractJsonObject(raw);
-        const candidateOutput = isRecord(extracted) && isRecord(extracted.plan) ? extracted.plan : extracted;
-        const parsed = PlanningAgentPlanSchema.safeParse(candidateOutput);
-        if (!parsed.success) {
-          lastErrors = parsed.error.issues.map(issue => issue.message);
-          continue;
-        }
-        const candidate = parsed.data as PlanningAgentPlan;
-        const validation = validatePlanningAgentPlan(candidate, effectiveContext.executorCatalog);
-        if (validation.valid) {
-          if (auditRun) this.finishAudit({
-            id: auditRun.id,
-            status: 'completed',
-            attemptCount: attempt + 1,
-            durationMs: Date.now() - startedAt,
-            toolCalls,
-          });
-          return candidate;
-        }
-        lastErrors = validation.errors;
-      } catch {
-        lastErrors = ['planner output was not a parseable JSON object'];
-      }
+    try {
+      const result = await this.deps.runner.run(context.userInput, effectiveContext, purpose);
+      if (auditRun) this.finishAudit({
+        id: auditRun.id,
+        status: 'completed',
+        attemptCount: result.toolCalls.filter(call => call.toolName === 'submit_planning_proposal').length,
+        durationMs: Date.now() - startedAt,
+        toolCalls: result.toolCalls,
+      });
+      return result;
+    } catch (error) {
+      if (auditRun) this.finishAudit({
+        id: auditRun.id,
+        status: 'failed',
+        attemptCount: 0,
+        durationMs: Date.now() - startedAt,
+        errorSummary: (error as Error).message,
+        toolCalls: [],
+      });
+      throw error;
     }
-
-    if (auditRun) this.finishAudit({
-      id: auditRun.id,
-      status: 'failed',
-      attemptCount: 2,
-      durationMs: Date.now() - startedAt,
-      errorSummary: lastErrors.join('; '),
-      toolCalls,
-    });
-    return this.safeClarification(`Planner output failed validation: ${lastErrors.join('; ')}`);
   }
 
   private finishAudit(
@@ -103,51 +95,13 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
       // Audit persistence is best effort and must not replace the planning result.
     }
   }
-
-  private safeClarification(reason: string): PlanningAgentPlan {
-    return {
-      id: `plan_${generateInteractionId()}`,
-      schemaVersion: 6,
-      action: 'clarification',
-      confidence: 0,
-      reason,
-      clarificationQuestion: '规划服务暂时无法可靠理解该请求，请重试或更明确地说明目标。',
-      response: { directReply: null },
-      task: {
-        binding: 'none',
-        taskId: null,
-        control: 'none',
-        scope: null,
-        title: null,
-        goal: null,
-        includeRecentConversationContext: false,
-        priority: null,
-      },
-      risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-      authorizationResolution: null,
-      workGraph: null,
-      source: PLANNER_SOURCE,
-    };
-  }
-
-  private buildPrompt(context: PlanningContext): string {
-    return context.userInput;
-  }
-
-  private buildRepairPrompt(_context: PlanningContext, errors: string[]): string {
-    return [
-      '上一个回答未通过 PlanningAgentPlan v6 校验。请基于同一对话修正全部错误，只返回完整 JSON：',
-      ...errors.map(error => `- ${error}`),
-    ].join('\n');
-  }
 }
 
 export function createDefaultPlanningAgent(
   deps: Partial<AnyFusionPlanningAgentDeps> = {},
 ): AnyFusionPlanningAgent {
-  return new AnyFusionPlanningAgent({ runner: deps.runner ?? new PlannerProcessRunner(), audit: deps.audit });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return new AnyFusionPlanningAgent({
+    runner: deps.runner ?? new PlannerProcessRunner(),
+    audit: deps.audit,
+  });
 }
