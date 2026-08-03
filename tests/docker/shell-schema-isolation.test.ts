@@ -61,4 +61,25 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(persistEnv).toContain('METACLAW_CONTROL_HOST');
     expect(persistEnv).toContain('METACLAW_DOCKER_HOST_PATH_MAP');
   });
+
+  it('clears only builtin Executor image pins after starting the persistent shell container', () => {
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+
+    expect(shell).toContain('function Reset-BuiltinExecutorImagePins');
+    expect(shell).toContain(
+      "UPDATE agent_classes SET resolved_image_id = NULL WHERE name IN (?, ?)",
+    );
+    expect(shell).toContain(".run('codex-cli', 'pi-agent')");
+
+    const startContainer = shell.slice(
+      shell.indexOf('function Start-ShellContainer'),
+      shell.indexOf('function Ensure-ContainerRunning'),
+    );
+    expect(startContainer.indexOf('docker run -d')).toBeLessThan(
+      startContainer.indexOf('Reset-BuiltinExecutorImagePins'),
+    );
+    expect(startContainer.indexOf('Reset-BuiltinExecutorImagePins')).toBeLessThan(
+      startContainer.indexOf('SSH container ready'),
+    );
+  });
 });

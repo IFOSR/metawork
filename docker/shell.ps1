@@ -397,6 +397,35 @@ function Ensure-AttemptImages {
     }
 }
 
+# Attempt images are rebuilt in place under stable local tags. A persisted
+# resolved_image_id from the previous container would therefore look like image
+# drift even though this bootstrap intentionally supplied the new canonical
+# images. Clear only the two builtin pins after container start; the existing
+# Executor probe remains responsible for resolving and persisting current IDs.
+function Reset-BuiltinExecutorImagePins {
+    if (-not (Test-ContainerExists)) { return }
+    $bootstrapScript = @'
+const { existsSync } = require('node:fs');
+const Database = require('better-sqlite3');
+const dbPath = '/data/metaclaw/metaclaw.db';
+if (!existsSync(dbPath)) process.exit(0);
+const db = new Database(dbPath);
+try {
+  const table = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'agent_classes');
+  if (table) {
+    db.prepare('UPDATE agent_classes SET resolved_image_id = NULL WHERE name IN (?, ?)').run('codex-cli', 'pi-agent');
+  }
+} finally {
+  db.close();
+}
+'@
+    docker exec -w /app $container node -e $bootstrapScript 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'Failed to reset builtin Executor image pins.'
+        exit $LASTEXITCODE
+    }
+}
+
 function Start-ShellContainer {
     # Remove any stale container with the same name (silent if none exists).
     if (Test-ContainerExists) {
@@ -460,6 +489,7 @@ function Start-ShellContainer {
     # Ensure SSH sessions see control-plane env even when the image still has an
     # older persist-ssh-environment.sh (before the next -Rebuild).
     Ensure-ControlEnvironmentInContainer -HostPathMap $hostPathMap
+    Reset-BuiltinExecutorImagePins
     Write-Host ("SSH container ready on 127.0.0.1:" + $sshPort + " (user=" + $sshUser + " password=" + $sshPassword + ").") -ForegroundColor Green
     Write-Host ("Control network: " + $controlNetwork + " (alias " + $controlHost + ").") -ForegroundColor DarkGray
     if (Test-Path $sshKeyPath) {
@@ -496,6 +526,11 @@ function Ensure-ContainerRunning {
         if ($running -ne 'true') {
             Write-Host "Container exists but is stopped, starting it..." -ForegroundColor Yellow
             docker start $container | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to start container."
+                exit $LASTEXITCODE
+            }
+            Reset-BuiltinExecutorImagePins
         }
         return
     }
