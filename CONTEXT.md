@@ -91,12 +91,12 @@ The sole execution-structure fact for one task generation: a v5 revisioned DAG o
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:
-The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing keyed requirements, Planner-selected evidence, sibling identities marked out of scope, workspace/attempt identity, completion contract, and evidence-tool availability.
+The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing requirements, Planner-selected evidence, sibling titles marked out of scope, workspace boundaries, the completion-report contract, and evidence-tool availability. Runtime retains Task/Subtask/attempt/WorkUnit identities and all acceptance/handoff keys outside model output.
 _Avoid_: Task prompt passthrough, conversation history, task-level memory bundle, sibling goals
 
 **Completion Protocol**:
-The required final Executor response contract: non-empty clean Markdown followed by exactly one `metaclaw:completion:v2` strict JSON envelope. Runtime validates acceptance evidence, exact handoffs, budgets, and artifact containment, then strips the envelope from every user-facing and memory-facing result.
-_Avoid_: best-effort trailer, inferred handoff, visible machine block
+The required final Executor response contract: non-empty clean Markdown followed by exactly one `metaclaw:completion:v2` strict identity-free JSON report containing only `evidence` and `artifacts`, or a controlled `failure`. Runtime injects the bound schema/Subtask/attempt/WorkUnit identities, acceptance keys, and exact outgoing handoffs before validation, then strips the report from every user-facing and memory-facing result.
+_Avoid_: model-supplied identity/key fields, legacy envelope fallback, best-effort trailer, visible machine block
 
 **Execution Evidence**:
 The attempt-bound, Task-scoped read-only port for eligible user input, user materials, and confirmed preferences. Ordinary assistant/Executor output and dependency results are not generally searchable; an explicitly authorized assistant interaction is exact-get only.

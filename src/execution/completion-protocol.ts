@@ -5,7 +5,7 @@ import type { Subtask } from '../core/types.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
 
 export const COMPLETION_MARKER_V2 = '<!-- metaclaw:completion:v2 -->';
-const MAX_ENVELOPE_BYTES = 128 * 1024;
+const MAX_REPORT_BYTES = 128 * 1024;
 
 const TextItemSchema = z.object({
   key: z.string(),
@@ -16,6 +16,11 @@ const ArtifactItemSchema = z.object({
   key: z.string(),
   type: z.literal('artifact'),
   paths: z.array(z.string()),
+}).strict();
+const FailureSchema = z.object({
+  kind: z.enum(['capability_mismatch', 'task_failed', 'quality_failed']),
+  code: z.string().trim().min(1).max(96),
+  summary: z.string().trim().min(1).max(320),
 }).strict();
 const CompletedEnvelopeSchema = z.object({
   schemaVersion: z.literal(2),
@@ -35,17 +40,20 @@ const FailedEnvelopeSchema = z.object({
   schemaVersion: z.literal(2),
   status: z.literal('failed'),
   subtaskId: z.string(),
-  failure: z.object({
-    kind: z.enum(['capability_mismatch', 'task_failed', 'quality_failed']),
-    code: z.string().trim().min(1).max(96),
-    summary: z.string().trim().min(1).max(320),
-  }).strict(),
+  failure: FailureSchema,
 }).strict();
 const CompletionEnvelopeSchema = z.discriminatedUnion('status', [CompletedEnvelopeSchema, FailedEnvelopeSchema]);
+const CompletedReportSchema = z.object({
+  evidence: z.array(z.string().trim().min(1).max(1_000)).min(1).max(4),
+  artifacts: z.array(z.string().min(1).max(1_024)).max(40),
+}).strict();
+const FailedReportSchema = z.object({ failure: FailureSchema }).strict();
+const CompletionReportSchema = z.union([CompletedReportSchema, FailedReportSchema]);
 
 export type CompletionEnvelopeV2 = z.infer<typeof CompletionEnvelopeSchema>;
 export type CompletedEnvelopeV2 = z.infer<typeof CompletedEnvelopeSchema>;
 export type CompletionHandoffV2 = CompletedEnvelopeV2['handoffs'][number];
+type CompletionReport = z.infer<typeof CompletionReportSchema>;
 
 export type CompletionContractErrorCode =
   | 'completion_acceptance_mismatch'
@@ -88,6 +96,11 @@ export interface IncomingHandoffUsage {
   artifactPaths: number;
 }
 
+type ParsedCompletionReportResult =
+  | { ok: true; body: string; report: CompletionReport }
+  | Extract<CompletionProtocolResult, { ok: false }>;
+type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
+
 /** Parses, strips and deterministically verifies the exact v2 completion trailer. */
 export function validateCompletionProtocol(input: {
   rawResponse: string;
@@ -101,7 +114,8 @@ export function validateCompletionProtocol(input: {
   if (!parsed.ok) return parsed;
 
   const violations: CompletionContractViolation[] = [];
-  const { body, envelope } = parsed;
+  const { body } = parsed;
+  const envelope = materializeCompletionEnvelope(parsed.report, input.subtask, input.outgoingHandoffs);
   if (envelope.subtaskId !== input.subtask.id) {
     violations.push(contractViolation('completion_subtask_mismatch', 'subtaskId', `expected ${input.subtask.id}, received ${envelope.subtaskId}`));
   }
@@ -126,38 +140,68 @@ export function validateCompletionProtocol(input: {
   };
 }
 
-function parseCompletion(rawResponse: string): CompletionProtocolResult {
+function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
   const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V2.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
   if (markerMatches.length !== 1) {
     return failure('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`);
   }
   const markerIndex = markerMatches[0]!.index!;
   const body = rawResponse.slice(0, markerIndex).trim();
-  const rawEnvelope = rawResponse.slice(markerIndex + COMPLETION_MARKER_V2.length).trimStart();
+  const rawReport = rawResponse.slice(markerIndex + COMPLETION_MARKER_V2.length).trimStart();
   if (!body) return failure('completion_malformed', 'body', 'completion body must be non-empty');
-  if (!rawEnvelope || Buffer.byteLength(rawEnvelope, 'utf8') > MAX_ENVELOPE_BYTES) {
-    return failure('completion_budget_exceeded', 'envelope', 'completion envelope is empty or exceeds 128 KiB');
+  if (!rawReport || Buffer.byteLength(rawReport, 'utf8') > MAX_REPORT_BYTES) {
+    return failure('completion_budget_exceeded', 'report', 'completion report is empty or exceeds 128 KiB');
   }
   let candidate: unknown;
   try {
-    candidate = JSON.parse(rawEnvelope);
+    candidate = JSON.parse(rawReport);
   } catch (error) {
-    return failure('completion_malformed', 'envelope', `completion envelope is not strict JSON: ${error instanceof Error ? error.message : String(error)}`);
+    return failure('completion_malformed', 'report', `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const parsed = CompletionEnvelopeSchema.safeParse(candidate);
-  if (!parsed.success) {
+  const report = CompletionReportSchema.safeParse(candidate);
+  if (!report.success) {
     return {
       ok: false,
       body,
       envelope: null,
-      violations: parsed.error.issues.map(issue => contractViolation(
+      violations: report.error.issues.map(issue => contractViolation(
         'completion_malformed',
-        issue.path.join('.') || 'envelope',
+        issue.path.join('.') || 'report',
         issue.message,
       )),
     };
   }
-  return { ok: true, body, envelope: parsed.data, normalizedArtifacts: [], warnings: [] };
+  return { ok: true, body, report: report.data };
+}
+
+function materializeCompletionEnvelope(
+  report: CompletionReport,
+  subtask: Subtask,
+  outgoingHandoffs: OutgoingHandoffContract[],
+): CompletionEnvelopeV2 {
+  if ('failure' in report) {
+    return {
+      schemaVersion: 2,
+      status: 'failed',
+      subtaskId: subtask.id,
+      failure: report.failure,
+    };
+  }
+  const evidence = [...report.evidence];
+  const artifacts = [...report.artifacts];
+  return {
+    schemaVersion: 2,
+    status: 'completed',
+    subtaskId: subtask.id,
+    acceptanceEvidence: subtask.acceptance.map(item => ({ key: item.key, evidence: [...evidence] })),
+    artifacts,
+    handoffs: outgoingHandoffs.map(contract => ({
+      toSubtaskId: contract.toSubtaskId,
+      items: contract.requiredItems.map(item => item.type === 'text'
+        ? { key: item.key, type: 'text' as const, value: evidence.join('\n') }
+        : { key: item.key, type: 'artifact' as const, paths: [...artifacts] }),
+    })),
+  };
 }
 
 function validateAcceptance(
@@ -167,7 +211,6 @@ function validateAcceptance(
 ): void {
   const expected = new Set(subtask.acceptance.map(item => item.key));
   const actual = new Set<string>();
-  let total = 0;
   for (const [index, item] of envelope.acceptanceEvidence.entries()) {
     if (actual.has(item.key)) violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.key`, `duplicate acceptance key ${item.key}`));
     actual.add(item.key);
@@ -175,7 +218,6 @@ function validateAcceptance(
       violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence`, 'acceptance evidence must contain 1 to 4 entries'));
     }
     for (const [evidenceIndex, evidence] of item.evidence.entries()) {
-      total += evidence.length;
       if (!evidence.trim() || evidence.length > 1_000) {
         violations.push(contractViolation('completion_budget_exceeded', `acceptanceEvidence.${index}.evidence.${evidenceIndex}`, 'evidence must contain 1 to 1000 characters'));
       }
@@ -184,7 +226,6 @@ function validateAcceptance(
   if (!sameSet(expected, actual)) {
     violations.push(contractViolation('completion_acceptance_mismatch', 'acceptanceEvidence', `acceptance keys must equal authorized keys: ${[...expected].sort().join(', ')}`));
   }
-  if (total > 12_000) violations.push(contractViolation('completion_budget_exceeded', 'acceptanceEvidence', 'acceptance evidence exceeds 12000 characters'));
 }
 
 function validateHandoffs(
@@ -338,7 +379,7 @@ function sameMap(left: Map<string, string>, right: Map<string, string>): boolean
   return left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
 }
 
-function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolResult {
+function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolFailure {
   return { ok: false, body: null, envelope: null, violations: [contractViolation(code, path, message)] };
 }
 

@@ -50,6 +50,12 @@ Phase 2 stays serial. Phase 3 introduces a `handoff_contract_failed` Kernel even
 
 ADR-0024 delivers the deferred workspace contract. Each Task generation + Subtask now owns a persistent workspace whose immutable checkpoint manifest is the versioned `workspace_state`. A downstream Subtask may compose state only from its completed direct dependencies; Runtime must block a conflict and submit a normalized Kernel fact rather than absorb sibling or user-working-tree state implicitly. Git workspace state identifies the MetaClaw-managed commit/branch/diff facts, while non-Git state identifies the workspace URI, checkpoint and content-addressed objects. Large bodies remain outside SQLite.
 
+### Identity-free Completion Protocol v2 amendment (2026-08-03)
+
+The model-facing Completion Protocol is hard-upgraded to one identity-free report. A successful report contains only bounded `evidence` strings and `artifacts` paths; a failed report contains only the controlled `failure` object. The model does not emit schema version/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or outgoing handoff identities and keys.
+
+Runtime owns the attempt binding and authorized acceptance/handoff contracts. It deterministically materializes the internal v2 completion envelope: every authorized acceptance criterion receives the submitted evidence, text handoff items receive the evidence report, and artifact handoff items receive the validated top-level artifact set. Existing contract, budget, artifact-containment, receipt, candidate, and publication checks consume that authoritative envelope unchanged. The previous model-supplied envelope is rejected rather than dual-read or repaired.
+
 ## Consequences
 
 - Existing non-terminal v3 graphs cannot be executed under the new handoff contract and must be parked for natural-language replanning.

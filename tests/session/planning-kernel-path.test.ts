@@ -714,9 +714,6 @@ describe('natural-language planning/kernel path', () => {
         seedPriorGenerationEvidence(db, input.taskId);
         return {
           rawOutput: `failed\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-            schemaVersion: 2,
-            status: 'failed',
-            subtaskId: input.subtaskId,
             failure: { kind: 'task_failed', code: 'implementation_failed', summary: 'approach exhausted' },
           })}`,
         };

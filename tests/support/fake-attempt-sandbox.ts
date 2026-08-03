@@ -6,19 +6,6 @@ import type {
 } from '../../src/execution/attempt-sandbox.js';
 import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
 
-interface AcceptanceCriterion {
-  key: string;
-}
-
-interface HandoffRequirement {
-  toSubtaskId: string;
-  requiredItems: Array<{
-    key: string;
-    type: 'text' | 'artifact';
-    description: string;
-  }>;
-}
-
 export interface FakeAttemptSandboxResponse {
   body?: string;
   artifacts?: string[];
@@ -83,9 +70,6 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
     if (response.failure) {
       return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-        schemaVersion: 2,
-        status: 'failed',
-        subtaskId: input.subtaskId,
         failure: response.failure,
       })}`;
     }
@@ -132,44 +116,12 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
 }
 
 export function completionResponseFromSandboxInput(
-  input: CreateAttemptSandboxInput,
+  _input: CreateAttemptSandboxInput,
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  const prompt = input.args.at(-1) ?? '';
-  const acceptance = parsePromptSection<AcceptanceCriterion[]>(
-    prompt,
-    'Acceptance contract:',
-    'Incoming direct handoffs:',
-  );
-  const outgoingHandoffs = parsePromptSection<HandoffRequirement[]>(
-    prompt,
-    'Outgoing handoff requirements (do not infer downstream goals):',
-    'Planner-selected evidence:',
-  );
   return `${body}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
-    schemaVersion: 2,
-    status: 'completed',
-    subtaskId: input.subtaskId,
-    acceptanceEvidence: acceptance.map(criterion => ({
-      key: criterion.key,
-      evidence: ['tests were not run: deterministic fake sandbox'],
-    })),
+    evidence: ['tests were not run: deterministic fake sandbox'],
     artifacts,
-    handoffs: outgoingHandoffs.map(contract => ({
-      toSubtaskId: contract.toSubtaskId,
-      items: contract.requiredItems.map(item => item.type === 'text'
-        ? { key: item.key, type: 'text', value: `${body} (${item.description})` }
-        : { key: item.key, type: 'artifact', paths: artifacts }),
-    })),
   })}`;
-}
-
-function parsePromptSection<T>(prompt: string, startLabel: string, endLabel: string): T {
-  const start = prompt.indexOf(`${startLabel}\n`);
-  const end = prompt.indexOf(`\n\n${endLabel}`, start);
-  if (start < 0 || end < 0) {
-    throw new Error(`fake sandbox could not parse prompt section ${startLabel}`);
-  }
-  return JSON.parse(prompt.slice(start + startLabel.length + 1, end)) as T;
 }

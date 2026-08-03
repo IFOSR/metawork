@@ -903,7 +903,7 @@ export class SubtaskAttemptRunner {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
-      const prompt = buildCorrectionPrompt(source.rawResponse, input.completionContract, input.violations);
+      const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
       const result = await this.deps.executionRuntime.runResponseOnly(input.agentClassName, prompt, 128 * 1024);
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
@@ -1362,17 +1362,34 @@ function buildReceipt(input: {
 
 function buildCorrectionPrompt(
   rawResponse: string,
-  completionContract: unknown,
   violations: CompletionContractViolation[],
 ): string {
+  const guidance = [...new Set(violations.map(violation => correctionGuidance(violation.code)))];
   return [
     'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
     'Return non-empty Markdown followed by exactly one completion trailer.',
     `Trailer marker: ${COMPLETION_MARKER_V2}`,
-    `Completion contract:\n${JSON.stringify(completionContract, null, 2)}`,
-    `Violations:\n${JSON.stringify(violations, null, 2)}`,
+    'Successful report schema: {"evidence":["<concise evidence>"],"artifacts":["/absolute/path"]}',
+    'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
+    'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
+    `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
     `Original response:\n${rawResponse}`,
   ].join('\n\n');
+}
+
+function correctionGuidance(code: CompletionContractViolation['code']): string {
+  switch (code) {
+    case 'completion_artifact_invalid':
+      return 'List only existing absolute artifact paths inside the authorized workspace target.';
+    case 'completion_artifact_required':
+      return 'Include at least one produced artifact path.';
+    case 'completion_patch_evidence_missing':
+      return 'State test evidence or explicitly state that tests were not run.';
+    case 'completion_budget_exceeded':
+      return 'Keep evidence concise (one to four entries, at most 1000 characters each) and artifacts bounded.';
+    default:
+      return 'Return exactly one strict identity-free report matching one of the schemas above.';
+  }
 }
 
 function boundedRecoveryPacket(
