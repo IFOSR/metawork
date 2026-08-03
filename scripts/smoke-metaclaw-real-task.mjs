@@ -13,8 +13,12 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import Database from 'better-sqlite3';
 
 const artifactExpectedLine = 'MetaClaw real task smoke passed.';
+const pythonHelloFileName = 'hello.py';
+const pythonHelloSource = 'print("Hello world")';
+const pythonHelloOutput = 'Hello world';
 export const plannerMemoryMarker = 'planner-memory-sunrise';
 const scenarioNames = new Set(['planner-session', 'artifact', 'python-hello']);
 
@@ -115,31 +119,10 @@ export function buildScenarioScript(scenario) {
   }
 
   return [
-    "Create a Python file named hello_world.py inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must be exactly this line: print(\"hello world\"). Run the file with python3 and report the stdout.",
+    `请在当前工作区新建 ${pythonHelloFileName}，内容严格为一行 ${pythonHelloSource}。使用 python3 运行该文件，并确认标准输出严格为 ${pythonHelloOutput}。`,
     '/exit',
     '',
   ].join('\n');
-}
-
-export function extractArtifactPath(output) {
-  const markdownLink = output.match(/\[[^\]]*smoke-result\.md\]\(([^)]+smoke-result\.md)\)/);
-  if (markdownLink?.[1]) {
-    return markdownLink[1].trim();
-  }
-  const inlineCode = output.match(/`([^`\n]+smoke-result\.md)`/);
-  if (inlineCode?.[1]) {
-    return inlineCode[1].trim();
-  }
-  const match = output.match(/-\s+([^\n]+smoke-result\.md)/);
-  return match?.[1]?.trim() ?? null;
-}
-
-export function findPythonHelloFile(workdir) {
-  const candidates = findFiles(workdir, filePath => filePath.endsWith('.py'));
-  return candidates.find(filePath => {
-    const content = readFileSync(filePath, 'utf-8');
-    return content.includes('print("hello world")');
-  }) ?? null;
 }
 
 export function findPythonCommand() {
@@ -153,14 +136,157 @@ export function findPythonCommand() {
   throw new Error('Smoke failed: neither python3 nor python is available for independent verification');
 }
 
-export function verifyArtifactScenario(input) {
-  const artifactPath = extractArtifactPath(input.output);
-  if (!artifactPath) {
+export function readAuthoritativeTaskState(metaclawHome) {
+  const dbPath = join(metaclawHome, 'metaclaw.db');
+  if (!existsSync(dbPath)) {
+    throw new Error(`Smoke failed: authoritative database does not exist: ${dbPath}`);
+  }
+
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return {
+      acceptedProposalCount: Number(db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM planner_proposal_submissions
+        WHERE status = 'accepted'
+      `).get().count),
+      tasks: db.prepare(`
+        SELECT id, status, title, artifacts_json AS artifactsJson
+        FROM tasks
+        ORDER BY created_at, id
+      `).all(),
+      subtasks: db.prepare(`
+        SELECT id, task_id AS taskId, status, error, artifacts_json AS artifactsJson
+        FROM subtasks
+        ORDER BY created_at, id
+      `).all(),
+      receipts: db.prepare(`
+        SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
+               terminal_state AS terminalState, error_code AS errorCode,
+               error_detail AS errorDetail, completed_at AS completedAt
+        FROM executor_attempt_receipts
+        ORDER BY completed_at DESC, attempt_id
+      `).all(),
+      publications: db.prepare(`
+        SELECT id, task_id AS taskId, subtask_id AS subtaskId, status,
+               error_summary AS errorSummary
+        FROM workspace_publications
+        ORDER BY created_at, id
+      `).all(),
+      dispatchItems: db.prepare(`
+        SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
+               status, error_summary AS errorSummary
+        FROM kernel_dispatch_items
+        ORDER BY created_at, attempt_id
+      `).all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? '[]'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatAuthoritativeFailure(state) {
+  return JSON.stringify({
+    acceptedProposalCount: state.acceptedProposalCount,
+    tasks: state.tasks,
+    subtasks: state.subtasks,
+    receipts: state.receipts,
+    publications: state.publications,
+    dispatchItems: state.dispatchItems,
+  });
+}
+
+export function buildSmokeConfig(input) {
+  const templatePath = input.templatePath ?? join(input.repoRoot, 'docker', 'tui-config.yaml');
+  if (!existsSync(templatePath)) {
+    throw new Error(`Smoke failed: shell config template does not exist: ${templatePath}`);
+  }
+  return readFileSync(templatePath, 'utf-8')
+    .replace(/^(\s*command:)\s*.*$/m, `$1 ${input.executorCommand}`)
+    .replace(/^(\s*timeout:)\s*.*$/m, `$1 ${input.executorTimeout}`)
+    .replace(/^(\s*max_duration:)\s*.*$/m, `$1 ${input.executorMaxDuration}`);
+}
+
+export function verifyAuthoritativeTaskState(state) {
+  if (!state) {
+    throw new Error('Smoke failed: authoritative Task state was not provided');
+  }
+  if (state.acceptedProposalCount !== 1) {
+    throw new Error(`Smoke failed: expected exactly one accepted proposal, found ${state.acceptedProposalCount}`);
+  }
+  if (state.tasks.length !== 1) {
+    throw new Error(`Smoke failed: expected exactly one authoritative Task, found ${state.tasks.length}`);
+  }
+
+  const task = state.tasks[0];
+  if (task.status !== 'done') {
     throw new Error([
-      'Smoke failed: MetaClaw output did not include smoke-result.md artifact path.',
-      'Captured MetaClaw output:',
-      String(input.output).slice(-4000),
+      `Smoke failed: authoritative Task ${task.id} is ${task.status}, not done.`,
+      `Authoritative state: ${formatAuthoritativeFailure(state)}`,
     ].join('\n'));
+  }
+
+  const subtasks = state.subtasks.filter(subtask => subtask.taskId === task.id);
+  if (subtasks.length === 0) {
+    throw new Error(`Smoke failed: authoritative Task ${task.id} has no Subtasks`);
+  }
+  const unfinishedSubtask = subtasks.find(subtask => subtask.status !== 'done');
+  if (unfinishedSubtask) {
+    throw new Error(`Smoke failed: authoritative Subtask ${unfinishedSubtask.id} is ${unfinishedSubtask.status}, not done`);
+  }
+
+  for (const subtask of subtasks) {
+    const latestReceipt = state.receipts.find(receipt => (
+      receipt.taskId === task.id && receipt.subtaskId === subtask.id
+    ));
+    if (!latestReceipt || latestReceipt.terminalState !== 'completed') {
+      throw new Error([
+        `Smoke failed: latest receipt for Subtask ${subtask.id} is ${latestReceipt?.terminalState ?? 'missing'}, not completed.`,
+        `Authoritative state: ${formatAuthoritativeFailure(state)}`,
+      ].join('\n'));
+    }
+  }
+
+  const publications = state.publications.filter(publication => publication.taskId === task.id);
+  if (publications.length === 0) {
+    throw new Error(`Smoke failed: authoritative Task ${task.id} has no workspace publication`);
+  }
+  const unfinishedPublication = publications.find(publication => publication.status !== 'integrated');
+  if (unfinishedPublication) {
+    throw new Error(`Smoke failed: workspace publication ${unfinishedPublication.id} is ${unfinishedPublication.status}, not integrated`);
+  }
+
+  const dispatchItems = state.dispatchItems.filter(item => item.taskId === task.id);
+  if (dispatchItems.length === 0) {
+    throw new Error(`Smoke failed: authoritative Task ${task.id} has no dispatch items`);
+  }
+  const unfinishedDispatch = dispatchItems.find(item => item.status !== 'terminal');
+  if (unfinishedDispatch) {
+    throw new Error(`Smoke failed: dispatch ${unfinishedDispatch.attemptId} is ${unfinishedDispatch.status}, not terminal`);
+  }
+
+  return {
+    taskId: task.id,
+    artifacts: subtasks.flatMap(subtask => parseJsonArray(subtask.artifactsJson)),
+  };
+}
+
+export function verifyArtifactScenario(input) {
+  const authoritative = verifyAuthoritativeTaskState(input.authoritativeState);
+  const artifactPath = authoritative.artifacts
+    .map(String)
+    .find(artifact => artifact.replaceAll('\\', '/').endsWith('/smoke-result.md'));
+  if (!artifactPath) {
+    throw new Error('Smoke failed: authoritative Subtask artifacts do not include smoke-result.md');
   }
 
   if (!existsSync(artifactPath)) {
@@ -180,16 +306,23 @@ export function verifyArtifactScenario(input) {
     throw new Error('Smoke failed: task summary used an empty quoted artifact path');
   }
 
-  return { artifactPath };
+  return { artifactPath, taskId: authoritative.taskId };
 }
 
 export function verifyPythonHelloScenario(input) {
-  const pythonFile = [input.workdir, input.metaclawHome]
-    .filter(Boolean)
-    .map(root => findPythonHelloFile(root))
-    .find(Boolean) ?? null;
+  const authoritative = verifyAuthoritativeTaskState(input.authoritativeState);
+  const pythonFile = authoritative.artifacts
+    .map(String)
+    .find(artifact => artifact.replaceAll('\\', '/').endsWith(`/${pythonHelloFileName}`));
   if (!pythonFile) {
-    throw new Error('Smoke failed: no Python file containing print("hello world") was found in the workdir');
+    throw new Error(`Smoke failed: authoritative Subtask artifacts do not include ${pythonHelloFileName}`);
+  }
+  if (!existsSync(pythonFile)) {
+    throw new Error(`Smoke failed: published artifact does not exist: ${pythonFile}`);
+  }
+  const source = readFileSync(pythonFile, 'utf-8').trimEnd();
+  if (source !== pythonHelloSource) {
+    throw new Error(`Smoke failed: ${pythonFile} content was ${JSON.stringify(source)}, expected ${JSON.stringify(pythonHelloSource)}`);
   }
 
   const pythonCommand = findPythonCommand();
@@ -202,11 +335,11 @@ export function verifyPythonHelloScenario(input) {
     throw new Error(`Smoke failed: independent Python run failed with exit code ${result.status}: ${result.stderr ?? ''}`);
   }
 
-  if ((result.stdout ?? '').trim() !== 'hello world') {
+  if ((result.stdout ?? '').trim() !== pythonHelloOutput) {
     throw new Error(`Smoke failed: independent Python stdout was "${(result.stdout ?? '').trim()}"`);
   }
 
-  return { artifactPath: pythonFile, pythonCommand };
+  return { artifactPath: pythonFile, pythonCommand, taskId: authoritative.taskId };
 }
 
 export function verifyPlannerSessionScenario(input) {
@@ -230,14 +363,20 @@ export function run(command, args, options = {}) {
       ...(options.env ?? {}),
     },
     encoding: 'utf-8',
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: 100 * 1024 * 1024,
     shell: options.shell ?? false,
   });
+
+  if (options.logPath) {
+    writeFileSync(options.logPath, `${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+  }
 
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
-    throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+    const termination = result.error?.message
+      ?? (result.signal ? `terminated by ${result.signal}` : `exit code ${result.status}`);
+    throw new Error(`${command} ${args.join(' ')} failed: ${termination}`);
   }
 
   return result;
@@ -287,7 +426,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     runDockerSmoke(rawArgs, env);
     return;
   }
-  const repoRoot = resolve(process.cwd());
+  const repoRoot = resolve(env.METACLAW_SMOKE_REPO_ROOT ?? process.cwd());
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     process.stdout.write(buildHelp());
     return;
@@ -301,44 +440,42 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
   );
   const executorTimeout = parsePositiveInteger(
     readOption(rawArgs, '--timeout') ?? env.METACLAW_SMOKE_TIMEOUT,
-    executorCommand === 'pi' ? 900 : 120,
+    900,
   );
   const executorMaxDuration = parsePositiveInteger(
     readOption(rawArgs, '--max-duration') ?? env.METACLAW_SMOKE_MAX_DURATION,
-    executorCommand === 'pi' ? 3600 : 300,
+    3600,
   );
 
   const smokeRoot = env.METACLAW_SMOKE_ROOT ? resolve(env.METACLAW_SMOKE_ROOT) : tmpdir();
   mkdirSync(smokeRoot, { recursive: true });
-  const metaclawHome = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-home-'));
-  const executorHome = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-executor-home-'));
-  const workdir = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-work-'));
-  const scriptDir = mkdtempSync(join(smokeRoot, 'metaclaw-smoke-script-'));
+  const metaclawHome = env.METACLAW_HOME
+    ? resolve(env.METACLAW_HOME)
+    : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-home-'));
+  const executorHome = env.METACLAW_SMOKE_EXECUTOR_HOME
+    ? resolve(env.METACLAW_SMOKE_EXECUTOR_HOME)
+    : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-executor-home-'));
+  const workdir = env.METACLAW_SMOKE_WORKDIR
+    ? resolve(env.METACLAW_SMOKE_WORKDIR)
+    : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-work-'));
+  const scriptDir = env.METACLAW_SMOKE_SCRIPT_DIR
+    ? resolve(env.METACLAW_SMOKE_SCRIPT_DIR)
+    : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-script-'));
+  for (const directory of [metaclawHome, executorHome, workdir, scriptDir]) {
+    mkdirSync(directory, { recursive: true });
+  }
   const scriptPath = join(scriptDir, 'script.txt');
+  const outputPath = join(scriptDir, 'metaclaw-output.log');
+  let succeeded = false;
 
   try {
-    writeFileSync(join(metaclawHome, 'config.yaml'), [
-      'version: 1',
-      'executor:',
-      `  command: ${executorCommand}`,
-      `  timeout: ${executorTimeout}`,
-      `  max_duration: ${executorMaxDuration}`,
-      'orchestration:',
-      '  reminder_enabled: false',
-      '  reminder_throttle: 300',
-      '  top_k_preferences: 5',
-      '  blocked_recheck_enabled: false',
-      'ui:',
-      '  language: zh-CN',
-      '  dashboard_on_start: false',
-      'integrations:',
-      '  markdown_preview:',
-      '    enabled: false',
-      'notifications:',
-      '  feishu:',
-      '    enabled: false',
-      '',
-    ].join('\n'));
+    writeFileSync(join(metaclawHome, 'config.yaml'), buildSmokeConfig({
+      repoRoot,
+      templatePath: env.METACLAW_SMOKE_CONFIG_TEMPLATE,
+      executorCommand,
+      executorTimeout,
+      executorMaxDuration,
+    }));
 
     bootstrapExecutor({ executorCommand, executorHome, repoRoot });
     writeFileSync(scriptPath, buildScenarioScript(scenario));
@@ -363,6 +500,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     const runResult = run('node', [join(repoRoot, 'dist/index.js'), '--script', scriptPath], {
       cwd: workdir,
       env: childEnv,
+      logPath: outputPath,
     });
 
     const output = `${runResult.stdout ?? ''}\n${runResult.stderr ?? ''}`;
@@ -370,6 +508,10 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       process.stderr.write(output);
       throw new Error('Smoke failed: expected route/execution output to mention pi-agent');
     }
+
+    const authoritativeState = scenario === 'planner-session'
+      ? null
+      : readAuthoritativeTaskState(metaclawHome);
 
     const verification = scenario === 'planner-session'
       ? verifyPlannerSessionScenario({
@@ -380,8 +522,8 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
         ),
       })
       : scenario === 'artifact'
-        ? verifyArtifactScenario({ output, workdir })
-        : verifyPythonHelloScenario({ output, workdir, metaclawHome });
+        ? verifyArtifactScenario({ output, workdir, authoritativeState })
+        : verifyPythonHelloScenario({ output, workdir, authoritativeState });
 
     process.stdout.write([
       scenario === 'planner-session'
@@ -395,14 +537,25 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
       `Workdir: ${workdir}`,
       '',
     ].join('\n'));
+    succeeded = true;
   } catch (error) {
     const plannerDiagnostics = readPlannerDiagnostics(repoRoot, metaclawHome);
     if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
+    process.stderr.write([
+      'Smoke failed; diagnostics were preserved:',
+      `  METACLAW_HOME: ${metaclawHome}`,
+      `  Workdir: ${workdir}`,
+      `  Output: ${outputPath}`,
+      '',
+    ].join('\n'));
     throw error;
   } finally {
-    rmSync(metaclawHome, { recursive: true, force: true });
-    rmSync(executorHome, { recursive: true, force: true });
-    rmSync(scriptDir, { recursive: true, force: true });
+    if (succeeded && env.METACLAW_SMOKE_MANAGED_BY_HOST !== 'true') {
+      rmSync(metaclawHome, { recursive: true, force: true });
+      rmSync(executorHome, { recursive: true, force: true });
+      rmSync(workdir, { recursive: true, force: true });
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -417,10 +570,16 @@ function runDockerSmoke(rawArgs, env) {
   );
   const plannerOnly = scenario === 'planner-session';
   const smokeRoot = mkdtempSync(join(tmpdir(), 'metaclaw-docker-smoke-'));
+  const dataRoot = join(smokeRoot, 'data');
+  const workspaceRoot = join(smokeRoot, 'workspace');
+  const auxiliaryRoot = join(smokeRoot, 'auxiliary');
+  for (const directory of [dataRoot, workspaceRoot, auxiliaryRoot]) {
+    mkdirSync(directory, { recursive: true });
+  }
   const suffix = `${process.pid}-${Date.now()}`;
   const network = `metaclaw-smoke-${suffix}`;
   const control = `metaclaw-smoke-control-${suffix}`;
-  const runtimeImage = 'metaclaw-runtime:planner-pi';
+  const runtimeImage = 'metaclaw-runtime';
   const mounts = [
     ['docker/planner-pi.env', '/run/metaclaw/env/planner-pi.env'],
     ['docker/executor-codex.env', '/run/metaclaw/env/executor-codex.env'],
@@ -432,12 +591,13 @@ function runDockerSmoke(rawArgs, env) {
     }
   }
 
+  let succeeded = false;
   try {
     run('docker', [
       'build',
       '--build-arg', env.ANYFUSION_PI_IMAGE
         ? `ANYFUSION_PI_IMAGE=${env.ANYFUSION_PI_IMAGE}`
-        : 'ANYFUSION_PI_IMAGE=anyfusion-pi-planner:dev',
+        : 'ANYFUSION_PI_IMAGE=anyfusion-pi-planner:local',
       '-f', 'docker/Dockerfile.runtime',
       '-t', runtimeImage,
       '.',
@@ -449,8 +609,10 @@ function runDockerSmoke(rawArgs, env) {
     }
     const createArgs = [
       'create', '--name', control, '--network', 'bridge',
-      '--workdir', '/app',
-      '--mount', `type=bind,src=${smokeRoot},dst=/smoke`,
+      '--workdir', '/workspace',
+      '--mount', `type=bind,src=${workspaceRoot},dst=/workspace`,
+      '--mount', `type=bind,src=${dataRoot},dst=/data`,
+      '--mount', `type=bind,src=${auxiliaryRoot},dst=/smoke`,
       ...(!plannerOnly ? [
         '--mount', 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock',
       ] : []),
@@ -459,10 +621,21 @@ function runDockerSmoke(rawArgs, env) {
       ]),
       '-e', 'METACLAW_SMOKE_IN_DOCKER=true',
       '-e', 'METACLAW_SMOKE_SKIP_BUILD=true',
+      '-e', 'METACLAW_SMOKE_REPO_ROOT=/app',
+      '-e', 'METACLAW_SMOKE_CONFIG_TEMPLATE=/opt/metaclaw/default-config.yaml',
       '-e', 'METACLAW_SMOKE_ROOT=/smoke',
+      '-e', 'METACLAW_SMOKE_EXECUTOR_HOME=/smoke/executor-home',
+      '-e', 'METACLAW_SMOKE_SCRIPT_DIR=/smoke/script',
+      '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
+      '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
+      '-e', 'METACLAW_HOME=/data/metaclaw',
       ...(!plannerOnly ? [
         '-e', `METACLAW_CONTROL_NETWORK=${network}`,
-        '-e', `METACLAW_DOCKER_HOST_PATH_MAP=${JSON.stringify({ '/smoke': smokeRoot })}`,
+        '-e', `METACLAW_DOCKER_HOST_PATH_MAP=${JSON.stringify({
+          '/data': dataRoot,
+          '/workspace': workspaceRoot,
+          '/smoke': auxiliaryRoot,
+        })}`,
         '-e', 'METACLAW_CONTROL_HOST=metaclaw-control',
       ] : []),
       runtimeImage,
@@ -476,12 +649,17 @@ function runDockerSmoke(rawArgs, env) {
     const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
+    succeeded = true;
   } finally {
     spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
     if (!plannerOnly) {
       spawnSync('docker', ['network', 'rm', network], { cwd: repoRoot, encoding: 'utf8' });
     }
-    rmSync(smokeRoot, { recursive: true, force: true });
+    if (succeeded) {
+      rmSync(smokeRoot, { recursive: true, force: true });
+    } else {
+      process.stderr.write(`Docker smoke diagnostics preserved at: ${smokeRoot}\n`);
+    }
   }
 }
 

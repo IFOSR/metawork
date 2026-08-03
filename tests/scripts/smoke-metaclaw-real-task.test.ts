@@ -24,6 +24,26 @@ async function loadSmokeScript() {
   return import('../../scripts/smoke-metaclaw-real-task.mjs');
 }
 
+function authoritativeSuccessState(artifactPath: string) {
+  return {
+    acceptedProposalCount: 1,
+    tasks: [{ id: 'task-1', status: 'done' }],
+    subtasks: [{
+      id: 'subtask-1',
+      taskId: 'task-1',
+      status: 'done',
+      artifactsJson: JSON.stringify([artifactPath]),
+    }],
+    receipts: [{
+      taskId: 'task-1',
+      subtaskId: 'subtask-1',
+      terminalState: 'completed',
+    }],
+    publications: [{ id: 'publication-1', taskId: 'task-1', status: 'integrated' }],
+    dispatchItems: [{ attemptId: 'attempt-1', taskId: 'task-1', status: 'terminal' }],
+  };
+}
+
 describe('smoke-metaclaw-real-task helpers', () => {
   it('parses executor, scenario, and integer options', async () => {
     const smoke = await loadSmokeScript();
@@ -53,35 +73,70 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(readFileSync(join(targetDir, 'settings.json'), 'utf-8')).toContain('defaultModel');
   });
 
-  it('finds Python hello-world evidence independently of executor output', async () => {
+  it('derives smoke configuration from the same template used by shell.ps1', async () => {
+    const smoke = await loadSmokeScript();
+    const dockerDir = join(tempRoot, 'docker');
+    mkdirSync(dockerDir, { recursive: true });
+    writeFileSync(join(dockerDir, 'tui-config.yaml'), [
+      'executor:',
+      '  command: codex',
+      '  timeout: 900',
+      '  max_duration: 3600',
+      'ui:',
+      '  dashboard_on_start: true',
+      '',
+    ].join('\n'));
+
+    const config = smoke.buildSmokeConfig({
+      repoRoot: tempRoot,
+      executorCommand: 'pi',
+      executorTimeout: 901,
+      executorMaxDuration: 3601,
+    });
+
+    expect(config).toContain('command: pi');
+    expect(config).toContain('timeout: 901');
+    expect(config).toContain('max_duration: 3601');
+    expect(config).toContain('dashboard_on_start: true');
+  });
+
+  it('verifies the authoritative Subtask artifact and its exact stdout', async () => {
+    const smoke = await loadSmokeScript();
+    const workdir = join(tempRoot, 'work');
+    const artifactDir = join(tempRoot, 'managed-task-workspace');
+    mkdirSync(workdir, { recursive: true });
+    mkdirSync(artifactDir, { recursive: true });
+    const artifactPath = join(artifactDir, 'hello.py');
+    writeFileSync(artifactPath, 'print("Hello world")\n');
+
+    expect(smoke.verifyPythonHelloScenario({
+      workdir,
+      authoritativeState: authoritativeSuccessState(artifactPath),
+    })).toMatchObject({ artifactPath, taskId: 'task-1' });
+  });
+
+  it('rejects a runnable Python artifact when the authoritative Task is blocked', async () => {
     const smoke = await loadSmokeScript();
     const workdir = join(tempRoot, 'work');
     mkdirSync(workdir, { recursive: true });
-    writeFileSync(join(workdir, 'hello_world.py'), 'print("hello world")\n');
+    writeFileSync(join(workdir, 'hello.py'), 'print("Hello world")\n');
 
-    expect(smoke.findPythonHelloFile(workdir)).toBe(join(workdir, 'hello_world.py'));
-  });
-
-  it('verifies Python hello artifacts stored below the managed MetaClaw home', async () => {
-    const smoke = await loadSmokeScript();
-    const metaclawHome = join(tempRoot, 'managed-home');
-    const artifactDir = join(metaclawHome, 'workspace-store', 'workspaces', 'task', 'files');
-    const workdir = join(tempRoot, 'empty-workdir');
-    mkdirSync(artifactDir, { recursive: true });
-    mkdirSync(workdir, { recursive: true });
-    writeFileSync(join(artifactDir, 'hello_world.py'), 'print("hello world")\n');
-
-    expect(smoke.verifyPythonHelloScenario({ workdir, metaclawHome }))
-      .toMatchObject({ artifactPath: join(artifactDir, 'hello_world.py') });
-  });
-
-  it('extracts the artifact path from the Executor markdown-link result', async () => {
-    const smoke = await loadSmokeScript();
-
-    expect(smoke.extractArtifactPath('绝对路径：[smoke-result.md](/tmp/smoke-result.md)'))
-      .toBe('/tmp/smoke-result.md');
-    expect(smoke.extractArtifactPath('已创建文件：`/tmp/smoke-result.md`'))
-      .toBe('/tmp/smoke-result.md');
+    expect(() => smoke.verifyPythonHelloScenario({
+      workdir,
+      authoritativeState: {
+        acceptedProposalCount: 1,
+        tasks: [{ id: 'task-1', status: 'blocked' }],
+        subtasks: [{ id: 'subtask-1', taskId: 'task-1', status: 'blocked' }],
+        receipts: [{
+          taskId: 'task-1',
+          subtaskId: 'subtask-1',
+          terminalState: 'contract_blocked',
+          errorCode: 'completion_patch_evidence_missing',
+        }],
+        publications: [],
+        dispatchItems: [],
+      },
+    })).toThrow(/authoritative Task task-1 is blocked/);
   });
 
   it('directs artifact output to the runtime-authorized target instead of the process cwd', async () => {
@@ -110,9 +165,9 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const turns = smoke.buildScenarioScript('python-hello').trim().split('\n');
 
     expect(turns).toHaveLength(2);
-    expect(turns[0]).toContain('hello_world.py');
-    expect(turns[0]).toContain('print("hello world")');
-    expect(turns[0]).toContain('Run the file with python3');
+    expect(turns[0]).toContain('hello.py');
+    expect(turns[0]).toContain('print("Hello world")');
+    expect(turns[0]).toContain('python3');
     expect(turns[1]).toBe('/exit');
   });
 
