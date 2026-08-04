@@ -131,7 +131,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
           taskId: 'task-1',
           subtaskId: 'subtask-1',
           terminalState: 'contract_blocked',
-          errorCode: 'completion_patch_evidence_missing',
+          errorCode: 'completion_no_change_reason_mismatch',
         }],
         publications: [],
         dispatchItems: [],

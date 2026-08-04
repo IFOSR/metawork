@@ -10,7 +10,7 @@ function input(): ExecutorInput {
         id: 'internal-subtask-id',
         title: 'A',
         goal: 'Only do A',
-        expectedOutput: 'summary' as const,
+        deliveryKind: 'report' as const,
         acceptance: [
           { key: 'secret_acceptance_key_one', description: 'file exists', requiredEvidence: [] },
           { key: 'secret_acceptance_key_two', description: 'output verified', requiredEvidence: [] },
@@ -50,8 +50,8 @@ describe('Subtask execution prompt layering', () => {
 
   it('renders an identity-free completion report while Runtime owns all authoritative identities and keys', () => {
     const prompt = buildExecutorContextPrompt(input());
-    expect(prompt).toContain('{"evidence":["<concise evidence that the work and checks succeeded>"],"artifacts":[]}');
-    expect(prompt).toContain('Runtime injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities');
+    expect(prompt).toContain('{"evidence":["<concise evidence that the work and checks succeeded>"],"noChangeReason":null}');
+    expect(prompt).toContain('Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities');
     for (const internalValue of [
       'internal-task-id',
       'internal-subtask-id',

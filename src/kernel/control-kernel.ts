@@ -59,7 +59,7 @@ export interface KernelEventEnvelope {
 
 export interface KernelPlanProposal {
   id: string;
-  schemaVersion: 6;
+  schemaVersion: 7;
   action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'authorization_resolution' | 'no_action';
   confidence: number;
   reason: string;

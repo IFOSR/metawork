@@ -4,7 +4,7 @@ import type {
   AttemptSandboxRecord,
   CreateAttemptSandboxInput,
 } from '../../src/execution/attempt-sandbox.js';
-import { COMPLETION_MARKER_V2 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 
 export interface FakeAttemptSandboxResponse {
   body?: string;
@@ -69,7 +69,7 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     if (response.rawOutput !== undefined) return response.rawOutput;
     if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
     if (response.failure) {
-      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+      return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
         failure: response.failure,
       })}`;
     }
@@ -116,12 +116,15 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
 }
 
 export function completionResponseFromSandboxInput(
-  _input: CreateAttemptSandboxInput,
+  input: CreateAttemptSandboxInput,
   body = 'completed',
   artifacts: string[] = [],
 ): string {
-  return `${body}\n\n${COMPLETION_MARKER_V2}\n${JSON.stringify({
+  const isEdit = input.args.join('\n').includes('Delivery kind: edit');
+  return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
     evidence: ['tests were not run: deterministic fake sandbox'],
-    artifacts,
+    noChangeReason: isEdit && artifacts.length === 0
+      ? 'The deterministic test executor made no workspace changes.'
+      : null,
   })}`;
 }

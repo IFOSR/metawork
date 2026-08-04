@@ -66,10 +66,10 @@ thread. Codex owns dialogue history and compaction. MetaClaw keeps only the
 in-process `sessionId -> threadId` resume handle for this pre-release scope; it
 does not replay a second model conversation.
 
-Stable Planner authority is registered through native Codex mechanisms:
+In that superseded Codex design, stable Planner authority was registered through native Codex mechanisms:
 `developer_instructions`, the `metaclaw-planner` Skill, the structured output
-schema, and the session-scoped read-only MCP. Each turn sends only the current
-user input; one validation repair sends only validation errors in the same
+schema, and the session-scoped read-only MCP. Each turn sent only the current
+user input; one validation repair sent only validation errors in the same
 thread. Confirmed preferences, canonical routing facts, exact pending
 authorization, task/runtime state and diagnostics are queried through MCP when
 needed rather than serialized into every prompt.
@@ -89,9 +89,38 @@ session writer has settled. Concurrent turns for the same session are serialized
 The interactive TUI uses the same AnyFusion-Pi semantic implementation and a
 separate versioned host protocol for read-only snapshots and proposal submission.
 
-The Planner returns an envelope containing user-visible `displayText` and an
-internal v6 plan. MetaClaw remains the only schema/semantic validator and the only
-component allowed to emit `plan_proposed` into `DurableKernelWorkflow`. Bridge
-or RPC failure is reported as unavailable and never implies that a Task was
-created. MetaClaw Node 20 and Planner Node 22 remain isolated processes; they
-share no source modules or in-process objects.
+The Planner submits an internal v7 plan through the Pi-native
+`submit_planning_proposal({ plan })` tool. MetaClaw remains the only
+schema/semantic validator and the only component allowed to emit
+`plan_proposed` into `DurableKernelWorkflow`. Bridge or RPC failure is reported
+as unavailable and never implies that a Task was created. MetaClaw Node 20 and
+Planner Node 22 remain isolated processes; they share no source modules or
+in-process objects.
+
+## Amendment: Pi Planner behavior parity (2026-08-03)
+
+Native TUI and RPC now use one AnyFusion-Pi Planner bootstrap. The fork injects
+one fixed `metaclaw-planner/SKILL.md` exactly once behind a small stable system
+prompt. Dynamic facts are not serialized into that prompt: the Planner receives
+only seven allowlisted read-only MetaClaw MCP tools (`search_tasks`,
+`get_task_context`, `get_current_session_context`, `get_planning_context`,
+`get_runtime_state`, `list_executor_status`, and `get_executor_diagnostics`) and
+four Pi-native repository readers (`read`, `grep`, `find`, and `ls`) rooted at
+`/workspace`. Extra MCP tools and external Skills, extensions, MCP configuration,
+prompt templates, model controls, package installation, and updates remain
+unavailable.
+
+MetaClaw injects its absolute Node 20 executable and compiled Planner MCP entry
+path. Pi's Node 22 runtime never substitutes `process.execPath`. Missing fixed
+tools fail before the first turn. A mid-turn MCP transport loss locks proposal
+submission, aborts the current agent loop, and is retried only by reconnecting
+before the next user turn. Ordinary MCP domain errors remain ordinary tool
+results. Proposal-host uncertainty retains its independent idempotent replay
+contract.
+
+PlanningAgentPlan v7 is exposed only through the proposal tool schema. Rejected
+plans remain natural tool feedback inside the same Pi ReAct loop. The retired
+Codex Stop hook, model text output schema, JSON extraction/trailer repair,
+fixed validation repair count, outer repair prompt/loop, generic read-only shell,
+catalog environment injection, and unused `get_session_interaction` exposure are
+not compatibility paths.

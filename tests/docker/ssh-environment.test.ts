@@ -38,7 +38,7 @@ describe.skipIf(process.platform === 'win32')('SSH login environment', () => {
             ANYFUSION_PLANNER_HOME: '/test/anyfusion/planner',
         METACLAW_PLANNER_HOME: '/test/anyfusion/planner',
             METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
+            METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v7.schema.json',
             METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
           },
         },
@@ -53,7 +53,7 @@ describe.skipIf(process.platform === 'win32')('SSH login environment', () => {
         ANYFUSION_PLANNER_HOME: '/test/anyfusion/planner',
             METACLAW_PLANNER_HOME: '/test/anyfusion/planner',
         METACLAW_EXECUTOR_CODEX_HOME: '/test/codex/executor',
-        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v6.schema.json',
+        METACLAW_PLANNER_SCHEMA_PATH: '/test/schema/planning-agent-plan-v7.schema.json',
         METACLAW_PLANNER_WORKDIR: '/test/workdir/planner',
       });
       const persisted = Object.fromEntries(readEnvironmentFile(environmentPath));

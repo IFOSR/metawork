@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import { buildPlannerMcpLaunchEnv } from '../planning/planner-mcp-launch-env.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 
 export interface PlannerTuiProcessOptions {
@@ -29,7 +29,7 @@ export async function runPlannerTuiProcess(options: PlannerTuiProcessOptions): P
       ANYFUSION_PLANNER_MODE: '1',
       ANYFUSION_PLANNER_SCHEMA_PATH: process.env.ANYFUSION_PLANNER_SCHEMA_PATH
         ?? process.env.METACLAW_PLANNER_SCHEMA_PATH,
-      ANYFUSION_PLANNER_CATALOG_JSON: JSON.stringify(getPlannerExecutorCatalog()),
+      ...buildPlannerMcpLaunchEnv(),
     },
   });
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {

@@ -83,7 +83,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     write(socket, {
       protocolVersion: 2, type: 'proposal_submit', requestId: 'proposal-1',
       turnId: 'turn-1', sessionId: 'session-1', userInput: 'hello',
-      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 6 },
+      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 7 },
     });
 
     expect(await read(socket)).toMatchObject({
@@ -152,7 +152,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     write(socket, {
       protocolVersion: 2, type: 'proposal_submit', requestId: 'proposal-1',
       turnId: 'turn-1', sessionId: 'session-1', userInput: 'hello',
-      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 6 },
+      submissionId: 'submission-1', purpose: 'kernel', plan: { schemaVersion: 7 },
     });
 
     expect(await read(socket)).toMatchObject({

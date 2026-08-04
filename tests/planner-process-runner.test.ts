@@ -52,7 +52,7 @@ function acceptedResult(label: string) {
 }
 
 function completeTurn(child: FakeRpcProcess, requestId: unknown, label = 'one'): void {
-  const plan = { id: `plan-${label}`, schemaVersion: 6 };
+  const plan = { id: `plan-${label}`, schemaVersion: 7 };
   const result = acceptedResult(label);
   emitJson(child, { type: 'response', command: 'prompt', success: true, id: requestId });
   emitJson(child, {
@@ -94,13 +94,18 @@ describe('PlannerProcessRunner', () => {
 
     expect(result).toMatchObject({
       proposalResult: { status: 'accepted', outcome: 'proposal_validated' },
-      submittedPlan: { id: 'plan-one', schemaVersion: 6 },
+      submittedPlan: { id: 'plan-one', schemaVersion: 7 },
       threadId: join('/tmp/anyfusion-planner-test', 'session-1.jsonl'),
       toolCalls: [{ toolName: 'submit_planning_proposal', status: 'completed' }],
     });
     expect(seen?.request).toMatchObject({ type: 'prompt', message: 'hello' });
     expect(seen?.env?.ANYFUSION_PLANNER_TURN_PURPOSE).toBe('validation');
-    expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toContain('"workspace-engineering"');
+    expect(seen?.env?.METACLAW_PLANNER_SESSION_ID).toBe('session-1');
+    expect(seen?.env?.ANYFUSION_PLANNER_CATALOG_JSON).toBeUndefined();
+    expect(seen?.env?.ANYFUSION_PLANNER_MCP_COMMAND).toBe(process.execPath);
+    expect(JSON.parse(seen?.env?.ANYFUSION_PLANNER_MCP_ARGS_JSON ?? '[]')).toEqual([
+      expect.stringMatching(/planner-mcp\.js$/),
+    ]);
   });
 
   it('fails closed when Pi rejects prompt preflight and redacts the error', async () => {

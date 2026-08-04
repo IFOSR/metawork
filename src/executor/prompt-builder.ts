@@ -20,7 +20,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '',
     `Current Subtask: ${context.currentSubtask.title}`,
     `Operative goal: ${context.currentSubtask.goal}`,
-    `Expected output: ${context.currentSubtask.expectedOutput}`,
+    `Delivery kind: ${context.currentSubtask.deliveryKind}`,
     'Acceptance requirements (Runtime owns their internal keys):',
     JSON.stringify(context.currentSubtask.acceptance.map(item => ({
       description: item.description,
@@ -66,11 +66,11 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     context.completionContract.marker,
     JSON.stringify({
       evidence: ['<concise evidence that the work and checks succeeded>'],
-      artifacts: [],
+      noChangeReason: null,
     }),
-    'Return only evidence and artifact paths. Runtime injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
+    'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
+    'For edit delivery, set noChangeReason to null when files changed; when no files need to change, provide a concise non-empty reason. For report delivery it must be null and the workspace must remain unchanged.',
     'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
-    'artifacts MUST be a JSON array of absolute path strings only (for example ["/workspace/result.md"]); never emit artifact objects.',
     'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
   ];
   return lines.join('\n');

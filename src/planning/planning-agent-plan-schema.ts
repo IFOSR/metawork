@@ -20,7 +20,7 @@ const TASK_CONTROL_VALUES = [
 ] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
 const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
-const EXPECTED_OUTPUT_VALUES = ['analysis', 'patch', 'artifact', 'review', 'summary'] as const;
+const DELIVERY_KIND_VALUES = ['edit', 'report'] as const;
 const ROUTING_CAPABILITY_VALUES = ['current-web-research', 'workspace-engineering'] as const;
 const BUILTIN_EXECUTOR_VALUES = ['codex-cli', 'pi-agent'] as const;
 const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
@@ -90,7 +90,7 @@ const SubtaskSchema = z.object({
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_VALUES)).min(1),
   preferredAgentClassList: z.array(z.enum(BUILTIN_EXECUTOR_VALUES)).min(1),
-  expectedOutput: z.enum(EXPECTED_OUTPUT_VALUES),
+  deliveryKind: z.enum(DELIVERY_KIND_VALUES),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
 }).strict();
@@ -107,7 +107,7 @@ const AuthorizationResolutionSchema = z.object({
 
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(6),
+  schemaVersion: z.literal(7),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),

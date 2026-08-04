@@ -46,7 +46,7 @@ function createConfig(): Config {
 function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -74,7 +74,7 @@ function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgen
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
         preferredAgentClassList: ['codex-cli'],
-        expectedOutput: 'patch',
+        deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and provide test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -162,7 +162,7 @@ describe('MetaclawSession planning-agent routing', () => {
     expect(session.getSnapshot().output.join('\n')).toContain('请明确是聊天还是创建任务。');
   });
 
-  it('blocks repo execution completion when verifier acceptance criteria lack test evidence', async () => {
+  it('does not apply removed text heuristics when structured acceptance evidence is present', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-verifier');
@@ -203,27 +203,21 @@ describe('MetaclawSession planning-agent routing', () => {
     await session.submit('修改仓库代码实现一个功能', { awaitAsyncWork: true });
 
     const [task] = taskRepo.findAll();
-    expect(task.status).toBe('blocked');
-    expect(task.summary).toBe('');
-    expect(task.dependencies).toEqual([expect.objectContaining({
-      taskId: task.id,
-      type: 'manual',
-      status: 'waiting',
-      description: 'response-only correction is unavailable or already exhausted',
-    })]);
+    expect(task.status).toBe('done');
+    expect(task.dependencies).toEqual([]);
     expect(db.prepare('SELECT status, result FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({
-      status: 'blocked',
-      result: '',
+      status: 'done',
+      result: '已修改代码并完成实现。',
     });
     expect(db.prepare('SELECT terminal_state, error_code FROM executor_attempt_receipts').get()).toEqual({
-      terminal_state: 'contract_blocked',
-      error_code: 'completion_patch_evidence_missing',
+      terminal_state: 'completed',
+      error_code: null,
     });
     expect(db.prepare(`
       SELECT state, claimed_task_id, claimed_subtask_id, claimed_attempt_id
       FROM work_units WHERE agent_class_kind = 'executor'
     `).get()).toEqual({
-      state: 'failed',
+      state: 'idle',
       claimed_task_id: null,
       claimed_subtask_id: null,
       claimed_attempt_id: null,
@@ -231,9 +225,9 @@ describe('MetaclawSession planning-agent routing', () => {
     expect(db.prepare(`
       SELECT COUNT(*) AS count FROM task_events
       WHERE task_id = ? AND event_type = 'phase2_execution_blocked'
-    `).get(task.id)).toEqual({ count: 1 });
+    `).get(task.id)).toEqual({ count: 0 });
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('response-only correction is unavailable or already exhausted');
-    expect(output).not.toContain('completed 1 Subtask(s)');
+    expect(output).toContain('completed 1 Subtask(s)');
+    expect(output).not.toContain('response-only correction is unavailable or already exhausted');
   });
 });

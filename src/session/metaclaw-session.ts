@@ -726,7 +726,7 @@ export class MetaclawSession {
         ? validation.errors
         : !parsedPlan.success
           ? parsedPlan.error.issues.map(issue => issue.message)
-          : ['PlanningAgentPlan v6 validation failed'];
+          : ['PlanningAgentPlan v7 validation failed'];
       const rejected: PlannerProposalResult & { status: 'rejected' } = {
         status: 'rejected',
         turnId: normalizedTurnId,
@@ -750,7 +750,7 @@ export class MetaclawSession {
         submissionId: submission.submissionId,
         planId: plan.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v6 proposal validated by MetaClaw.',
+        displayText: 'PlanningAgentPlan v7 proposal validated by MetaClaw.',
         taskId: plan.task.taskId,
         kernel: null,
       };

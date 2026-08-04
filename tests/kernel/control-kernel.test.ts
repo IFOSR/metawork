@@ -18,7 +18,7 @@ const event: KernelEvent = {
   targetGraphRevision: 1,
   proposal: {
     id: 'plan_1',
-    schemaVersion: 6,
+    schemaVersion: 7,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',

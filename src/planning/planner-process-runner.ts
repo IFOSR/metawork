@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 import type { PlanningContext } from './planning-types.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
+import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
 
@@ -125,13 +125,14 @@ export class PlannerProcessRunner implements PlannerRunner {
           ANYFUSION_PLANNER_HOME: plannerHome,
           ANYFUSION_PLANNER_SESSION_DIR: sessionDir,
           ANYFUSION_PLANNER_SESSION_ID: context.request.sessionId,
+          METACLAW_PLANNER_SESSION_ID: context.request.sessionId,
           ANYFUSION_PLANNER_REQUEST_SOURCE: context.request.source,
           ANYFUSION_PLANNER_TURN_PURPOSE: purpose,
           ANYFUSION_BRIDGE_SOCKET: process.env.METACLAW_PLANNER_HOST_SOCKET
             ?? process.env.METACLAW_PLANNER_TUI_SOCKET,
           ANYFUSION_PLANNER_SCHEMA_PATH: process.env.ANYFUSION_PLANNER_SCHEMA_PATH
             ?? process.env.METACLAW_PLANNER_SCHEMA_PATH,
-          ANYFUSION_PLANNER_CATALOG_JSON: JSON.stringify(getPlannerExecutorCatalog()),
+          ...buildPlannerMcpLaunchEnv(),
         },
       });
       let stdoutBuffer = '';

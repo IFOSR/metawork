@@ -17,7 +17,7 @@ function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
 
 const VALID_PLAN = {
   id: 'plan_1',
-  schemaVersion: 6,
+  schemaVersion: 7,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: '需要执行',
@@ -36,7 +36,7 @@ const VALID_PLAN = {
       id: 'impl', title: '实现', goal: '实现并测试', dependencies: [],
       contextRefs: [{ kind: 'current_user_input' }],
       requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'], expectedOutput: 'patch',
+      preferredAgentClassList: ['codex-cli'], deliveryKind: 'edit',
       acceptance: [{ key: 'tests_pass', description: '测试通过', requiredEvidence: ['test result'] }],
       riskLevel: 'medium',
     }],
@@ -73,7 +73,7 @@ describe('AnyFusionPlanningAgent native proposal tool adapter', () => {
 
     const result = await agent.plan(context());
 
-    expect(result).toMatchObject({ id: 'plan_1', schemaVersion: 6, action: 'plan_work_graph' });
+    expect(result).toMatchObject({ id: 'plan_1', schemaVersion: 7, action: 'plan_work_graph' });
     expect(plannerRunner.run).toHaveBeenCalledWith('实现一个功能', expect.any(Object), 'validation');
     expect(plannerRunner.run).toHaveBeenCalledTimes(1);
   });

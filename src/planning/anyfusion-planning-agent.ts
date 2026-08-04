@@ -51,7 +51,7 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
     }
     const parsed = PlanningAgentPlanSchema.safeParse(result.submittedPlan);
     if (!parsed.success) {
-      throw new Error('Planner tool completed without a valid PlanningAgentPlan v6 argument');
+      throw new Error('Planner tool completed without a valid PlanningAgentPlan v7 argument');
     }
     return parsed.data as PlanningAgentPlan;
   }
