@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlannerProposalResult, PlannerProposalSubmission } from '../../src/planning/planner-proposal.js';
 import type {
   PlannerTuiExecutorResult,
+  PlannerTuiPermissionRequest,
   PlannerTuiSnapshot,
   SessionSnapshot,
 } from '../../src/session/metaclaw-session.js';
@@ -13,6 +14,7 @@ import { PlannerTuiBridge, type PlannerTuiBridgeSession } from '../../src/tui-br
 
 class FakeSession implements PlannerTuiBridgeSession {
   readonly executorResults: PlannerTuiExecutorResult[] = [];
+  readonly permissionRequests: PlannerTuiPermissionRequest[] = [];
   private readonly listeners = new Set<(snapshot: SessionSnapshot) => void>();
   readonly submitPlannerProposal = vi.fn(async (submission: PlannerProposalSubmission): Promise<PlannerProposalResult> => ({
     status: 'accepted',
@@ -23,6 +25,9 @@ class FakeSession implements PlannerTuiBridgeSession {
     displayText: 'authoritative reply',
     taskId: null,
     kernel: { decisionId: 'decision-1', action: 'deliver_direct_reply', reason: 'reply' },
+  }));
+  readonly resolvePlannerTuiPermission = vi.fn(async (_requestId: string, resolution: 'approve' | 'deny') => ({
+    status: 'resolved' as const, resolution, message: 'recorded',
   }));
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
@@ -41,6 +46,10 @@ class FakeSession implements PlannerTuiBridgeSession {
       artifacts: [...result.artifacts],
       warnings: [...result.warnings],
     }));
+  }
+
+  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
+    return this.permissionRequests.map(request => ({ ...request }));
   }
 
   private sessionSnapshot(): SessionSnapshot {
@@ -246,7 +255,59 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     expect((resultMessage.result as { report: string }).report).toContain('Executor report truncated');
     socket.destroy();
   });
+
+  it('projects, closes, and resolves interactive permission requests', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-permissions.sock`);
+    const session = new FakeSession();
+    session.permissionRequests.push(permissionRequest('permission-1'));
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+    const socket = await connect(socketPath);
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'interactive' });
+    expect(await read(socket)).toMatchObject({ capabilities: expect.arrayContaining(['permission_request']) });
+    write(socket, { protocolVersion: 2, type: 'snapshot_subscribe', requestId: 'subscribe-1' });
+    const initial = await readMany(socket, 3);
+    expect(initial.map(message => message.type)).toEqual(['snapshot', 'permission_request', 'subscribed']);
+    write(socket, { protocolVersion: 2, type: 'permission_resolve', requestId: 'resolve-1', permissionRequestId: 'permission-1', resolution: 'approve' });
+    expect(await read(socket)).toMatchObject({ type: 'permission_result', result: { status: 'resolved', resolution: 'approve' } });
+    expect(session.resolvePlannerTuiPermission).toHaveBeenCalledWith('permission-1', 'approve');
+    session.permissionRequests.splice(0);
+    session.emit();
+    const closed = await readMany(socket, 2);
+    expect(closed.map(message => message.type)).toEqual(['snapshot', 'permission_request_closed']);
+    socket.destroy();
+  });
+
+  it('does not project or accept permission requests on rpc sockets', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-rpc-permissions.sock`);
+    const session = new FakeSession();
+    session.permissionRequests.push(permissionRequest('permission-1'));
+    const bridge = new PlannerTuiBridge({ socketPath });
+    bridges.push(bridge);
+    bridge.registerSession('session-1', session);
+    await bridge.start();
+    const socket = await connect(socketPath);
+    write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello-1', runtimeVersion: 'test', sessionId: 'session-1', mode: 'rpc' });
+    await read(socket);
+    write(socket, { protocolVersion: 2, type: 'permission_resolve', requestId: 'resolve-1', permissionRequestId: 'permission-1', resolution: 'deny' });
+    expect(await read(socket)).toMatchObject({ type: 'error', error: { code: 'interactive_required' } });
+    expect(session.resolvePlannerTuiPermission).not.toHaveBeenCalled();
+    socket.destroy();
+  });
 });
+
+function permissionRequest(permissionRequestId: string): PlannerTuiPermissionRequest {
+  return {
+    schemaVersion: 1, permissionRequestId, taskId: 'task-1', taskTitle: 'Task',
+    generationId: 'generation-1', subtaskId: 'subtask-1', subtaskTitle: 'Subtask',
+    attemptId: 'attempt-1', executorName: 'codex-cli', permissionProfileId: 'restricted-coding',
+    capability: 'network', resource: 'https://example.com', operation: 'GET', reason: 'Fetch docs',
+    suggestedScope: 'once', escalationReason: 'User approval required',
+    createdAt: '2026-08-04T00:00:00.000Z', expiresAt: '2026-08-05T00:00:00.000Z',
+  };
+}
 
 function executorResult(publicationId: string): PlannerTuiExecutorResult {
   return {

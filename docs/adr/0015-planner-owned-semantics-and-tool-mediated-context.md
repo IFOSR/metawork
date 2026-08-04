@@ -147,3 +147,13 @@ semantic turn: it must not trigger, steer, continue, or elicit a Planner respons
 or proposal. The Planner may cite them only when the current user explicitly asks
 about a result, output, artifact, or status. This exception does not grant Pi any
 Task, storage, Kernel, scheduler, Execution, Executor, or Git mutation authority.
+
+## Amendment: interactive permission review is not Planner semantics (2026-08-04)
+
+The local interactive Pi surface does not expose `/permission` and must reject
+Planner-authored `authorization_resolution` before proposal-turn persistence.
+Host Protocol v2 may project an exact current-session escalated request into a
+transient native Selector. Arrival, dismissal, closure, and resolution are not
+conversation messages or semantic turns and never enter the Pi branch or LLM
+context. RPC, Feishu, and Session Planner surfaces retain exact natural-language
+authorization under the existing request-ID and Task validation contract.

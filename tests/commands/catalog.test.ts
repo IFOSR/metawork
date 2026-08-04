@@ -246,8 +246,6 @@ describe('CommandCatalog', () => {
 /executor refresh
 /executor show
 /executor feedback
-/permission approve
-/permission deny
 /memory list
 /memory search
 /memory add

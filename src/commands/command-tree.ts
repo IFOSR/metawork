@@ -371,34 +371,6 @@ function learningNodes(): CommandNode[] {
   ];
 }
 
-function permissionNodes(): CommandNode[] {
-  const requestReference = dynamicReference(
-    'requestId',
-    'Pending permission request',
-    context => (context.db.prepare(`
-      SELECT id, capability, operation, reason FROM permission_requests
-      WHERE status IN ('pending', 'escalated') ORDER BY created_at, id
-    `).all() as Array<{ id: string; capability: string; operation: string; reason: string }>).map(row => ({
-      id: row.id,
-      label: row.id,
-      description: `${row.capability}/${row.operation}: ${row.reason}`,
-    })),
-  );
-  const resolvePermission = (resolution: 'approve' | 'deny') => action({
-    name: resolution,
-    summary: resolution === 'approve' ? 'Approve exact permission request' : 'Deny exact permission request',
-    effect: 'Submit permission_resolution_received; this does not write a grant directly.',
-    usage: `/permission ${resolution} <requestId>`,
-    arguments: [requestReference],
-    run: async args => ({
-      type: 'directive',
-      content: `Permission ${resolution} submitted for ${stringArg(args, 'requestId')}.`,
-      directive: { kind: 'resolve-permission', requestId: stringArg(args, 'requestId'), resolution },
-    }),
-  });
-  return [resolvePermission('approve'), resolvePermission('deny')];
-}
-
 function profileNodes(): CommandNode[] {
   const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
   return [
@@ -410,7 +382,6 @@ function profileNodes(): CommandNode[] {
 
 export function createDefaultCommandCatalog(): CommandCatalog {
   return new CommandCatalog([
-    { kind: 'group', name: 'permission', summary: 'Runtime permission decisions', category: 'common', children: permissionNodes() },
     { kind: 'group', name: 'task', summary: '任务查看与控制', category: 'common', children: taskNodes() },
     { kind: 'group', name: 'executor', summary: 'Executor 查看与反馈', category: 'common', children: executorNodes() },
     { kind: 'group', name: 'memory', summary: '记忆与审查策略', category: 'common', children: memoryNodes() },
