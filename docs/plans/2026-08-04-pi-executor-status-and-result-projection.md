@@ -42,7 +42,7 @@
 - MetaClaw Linux Docker 聚焦测试通过：SQLite publication 查询和 Unix socket Host bridge 共 2 个文件、7 项测试通过；覆盖 session/task 范围、integrated 过滤、稳定排序、完整 artifacts、backlog/增量/每 socket 去重及 1 MiB 截断。
 - `npm run smoke:metaclaw` 通过 native Planner 双轮 session 场景；`npm run smoke:metaclaw -- --scenario artifact` 通过真实 Planner → Kernel → Codex Executor → integrated artifact 链路。
 - MetaClaw `npm run lint` 已执行，但被本任务开始前即存在的无关类型错误阻塞：`src/execution/completion-protocol.ts` 的 completion envelope narrowing，以及 `src/execution/subtask-attempt-runner.ts` 的 `WorkspaceDelta`/`Record<string, unknown>` 不兼容；本次修改文件未出现在错误列表。
-- 双仓库 `git diff --check` 通过。本任务未授权创建 commit，因此没有 closing commit；由后续显式发布步骤补记。
+- 双仓库 `git diff --check` 通过。MetaClaw closing implementation commit：`4fd021e`（`feat: project executor results to planner host`）；AnyFusion-Pi 对应提交：`0774f0b5`（`fix: restore executor status and result display`）。
 
 ## 非目标
 
