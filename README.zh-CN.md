@@ -110,7 +110,6 @@ AnyFusion 会识别请求、在需要时创建持久任务、授权工作图、�
 | 任务范围 | 一个活跃顶层任务，内部支持具备依赖关系的多个 Subtask |
 | 调度方式 | 单一活跃顶层 Task 内按确定性 batch 并行运行最多四个隔离 attempt |
 | 兼容性 | CLI、配置和 Runtime contract 在稳定版前可能继续演进 |
-| Planner 状态 | AnyFusion-Pi Planner 行为等价与 PlanningAgentPlan v7 已完成；Linux Docker 全量验证、smoke 和最终用户实测均已通过 |
 
 AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证任务控制平面、工作图契约、专业 Agent 路由、验收模型与实际运行流程，再逐步形成稳定兼容性承诺。
 
@@ -125,7 +124,6 @@ AnyFusion 当前不会被描述为 Production Ready。Preview 阶段用于验证
 | [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | 当前版本范围、部署状态和已知限制 |
 | [Changelog](CHANGELOG.md) | 版本生命周期和重要变更 |
 | [文档地图](docs/README.md) | 当前文档、历史材料和贡献者文档索引 |
-| [Pi Planner 行为等价性技术债](docs/tech-debt/planner-pi-migration-parity-debt.md) | PlanningAgentPlan v7、Completion v3、Linux Docker 验收与最终用户验证记录；已于 2026-08-04 关闭 |
 
 ## 许可证
 
