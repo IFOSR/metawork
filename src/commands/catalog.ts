@@ -478,7 +478,7 @@ export class CommandCatalog {
   }
 
   async execute(input: string, context: CommandContext): Promise<CommandResult> {
-    const trimmed = normalizeTargetFirstTaskControl(input.trim());
+    const trimmed = input.trim();
     if (!trimmed.startsWith('/')) return { type: 'text', content: '无效命令' };
     const tokens = lexCommand(trimmed);
     if (tokens.some(token => !token.closed)) {
@@ -925,18 +925,4 @@ export class CommandCatalog {
   private invalid(error: string): ParseActionResult {
     return { state: 'invalid', args: { positionals: {}, options: {} }, hint: null, error };
   }
-}
-
-function normalizeTargetFirstTaskControl(input: string): string {
-  const subtaskCancellation = input.match(
-    /^\/task\s+(\S+)\s+subtask\s+cancel\s+(.+)$/,
-  );
-  if (subtaskCancellation) {
-    return `/task subtask-cancel ${subtaskCancellation[1]} ${subtaskCancellation[2]}`;
-  }
-  const partialAcceptance = input.match(/^\/task\s+(\S+)\s+accept-partial$/);
-  if (partialAcceptance) {
-    return `/task accept-partial ${partialAcceptance[1]}`;
-  }
-  return input;
 }
