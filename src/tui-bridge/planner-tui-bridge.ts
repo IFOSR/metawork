@@ -5,6 +5,7 @@ import type { CommandCompletion } from '../commands/catalog.js';
 import type { PlannerProposalPurpose, PlannerProposalResult, PlannerProposalSubmission } from '../planning/planner-proposal.js';
 import type {
   PlannerTuiCommandSubmissionResult,
+  PlannerTuiExecutorResult,
   PlannerTuiSnapshot,
   SessionSnapshot,
 } from '../session/metaclaw-session.js';
@@ -19,6 +20,7 @@ import {
 export interface PlannerTuiBridgeSession {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
   getPlannerTuiSnapshot(): PlannerTuiSnapshot;
+  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[];
   completeCommand(text: string, cursor?: number): CommandCompletion;
   submitPlannerTuiCommand(command: string): Promise<PlannerTuiCommandSubmissionResult>;
   submitPlannerProposal(
@@ -32,8 +34,9 @@ export interface PlannerTuiBridgeDeps {
   logger?: Pick<Console, 'warn'>;
 }
 
-type BridgeMessage = PlannerHostMessage<PlannerTuiSnapshot>;
+type BridgeMessage = PlannerHostMessage<PlannerTuiSnapshot, PlannerTuiExecutorResult>;
 type BoundClient = { sessionId: string; mode: 'interactive' | 'rpc' };
+const TRUNCATED_REPORT_SUFFIX = '\n\n> Executor report truncated to fit the 1 MiB Planner Host frame.';
 
 /**
  * Shared local Proposal Host for every AnyFusion-Pi surface.
@@ -49,6 +52,7 @@ export class PlannerTuiBridge {
   private readonly bindings = new Map<Socket, BoundClient>();
   private readonly sessions = new Map<string, PlannerTuiBridgeSession>();
   private readonly subscriberCleanup = new Map<Socket, () => void>();
+  private readonly sentExecutorResultIds = new Map<Socket, Set<string>>();
   private readonly submissionQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: PlannerTuiBridgeDeps) {}
@@ -90,6 +94,7 @@ export class PlannerTuiBridge {
     this.bindings.clear();
     for (const cleanup of this.subscriberCleanup.values()) cleanup();
     this.subscriberCleanup.clear();
+    this.sentExecutorResultIds.clear();
     const server = this.server;
     this.server = null;
     if (server) {
@@ -150,7 +155,8 @@ export class PlannerTuiBridge {
         accepted: true,
         capabilities: [
           'snapshot_get', 'snapshot_subscribe', 'command_complete', 'command_submit',
-          'proposal_submit', 'proposal_idempotency', 'proposal_turn_lock', 'ping', 'shutdown',
+          'proposal_submit', 'proposal_idempotency', 'proposal_turn_lock', 'executor_result',
+          'ping', 'shutdown',
         ],
       });
       return;
@@ -262,8 +268,14 @@ export class PlannerTuiBridge {
 
   private subscribeSocket(socket: Socket, session: PlannerTuiBridgeSession): void {
     this.subscriberCleanup.get(socket)?.();
-    const unsubscribe = session.subscribe(() => this.write(socket, this.snapshotMessage(null, session)));
+    const publish = () => {
+      this.write(socket, this.snapshotMessage(null, session));
+      this.writeExecutorResults(socket, session);
+    };
+    const unsubscribe = session.subscribe(publish);
     this.subscriberCleanup.set(socket, unsubscribe);
+    this.sentExecutorResultIds.set(socket, this.sentExecutorResultIds.get(socket) ?? new Set());
+    this.writeExecutorResults(socket, session);
   }
 
   private snapshotMessage(requestId: string | null, session: PlannerTuiBridgeSession): BridgeMessage {
@@ -277,6 +289,49 @@ export class PlannerTuiBridge {
     this.bindings.delete(socket);
     this.subscriberCleanup.get(socket)?.();
     this.subscriberCleanup.delete(socket);
+    this.sentExecutorResultIds.delete(socket);
+  }
+
+  private writeExecutorResults(socket: Socket, session: PlannerTuiBridgeSession): void {
+    const sent = this.sentExecutorResultIds.get(socket) ?? new Set<string>();
+    this.sentExecutorResultIds.set(socket, sent);
+    for (const result of session.getPlannerTuiExecutorResults()) {
+      if (sent.has(result.publicationId)) continue;
+      this.write(socket, this.boundedExecutorResultMessage(result));
+      sent.add(result.publicationId);
+    }
+  }
+
+  private boundedExecutorResultMessage(result: PlannerTuiExecutorResult): BridgeMessage {
+    const build = (report: string, reportTruncated: boolean): BridgeMessage => ({
+      protocolVersion: 2,
+      type: 'executor_result',
+      requestId: null,
+      result: { ...result, report, reportTruncated },
+    });
+    const full = build(result.report, false);
+    if (this.messageBytes(full) <= ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES) return full;
+
+    const codePoints = [...result.report];
+    let low = 0;
+    let high = codePoints.length;
+    let bounded = build(TRUNCATED_REPORT_SUFFIX.trimStart(), true);
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const prefix = codePoints.slice(0, middle).join('').trimEnd();
+      const candidate = build(`${prefix}${TRUNCATED_REPORT_SUFFIX}`, true);
+      if (this.messageBytes(candidate) <= ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES) {
+        bounded = candidate;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return bounded;
+  }
+
+  private messageBytes(message: BridgeMessage): number {
+    return Buffer.byteLength(`${JSON.stringify(message)}\n`);
   }
 
   private errorResponse(

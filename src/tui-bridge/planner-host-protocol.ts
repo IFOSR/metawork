@@ -26,7 +26,7 @@ export type PlannerHostRequest =
     }
   | { protocolVersion: 2; type: 'shutdown'; requestId: string };
 
-export type PlannerHostMessage<TSnapshot = unknown> =
+export type PlannerHostMessage<TSnapshot = unknown, TExecutorResult = unknown> =
   | {
       protocolVersion: 2;
       type: 'hello';
@@ -36,6 +36,7 @@ export type PlannerHostMessage<TSnapshot = unknown> =
     }
   | { protocolVersion: 2; type: 'pong'; requestId: string }
   | { protocolVersion: 2; type: 'snapshot'; requestId: string | null; snapshot: TSnapshot }
+  | { protocolVersion: 2; type: 'executor_result'; requestId: null; result: TExecutorResult }
   | { protocolVersion: 2; type: 'subscribed'; requestId: string }
   | { protocolVersion: 2; type: 'command_completion'; requestId: string; completion: CommandCompletion }
   | {

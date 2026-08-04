@@ -187,6 +187,24 @@ export interface PlannerTuiSnapshot {
   executorStatuses: KernelExecutorStatusProjection[];
 }
 
+/** A durable, presentation-only result projected from an integrated workspace publication. */
+export interface PlannerTuiExecutorResult {
+  schemaVersion: 1;
+  publicationId: string;
+  taskId: string;
+  taskTitle: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  report: string;
+  artifacts: string[];
+  warnings: string[];
+  integrationCommit: string | null;
+  completedAt: string;
+  reportTruncated: boolean;
+}
+
 export interface PlannerTuiCommandSubmissionResult {
   exitRequested: boolean;
   output: string[];
@@ -270,6 +288,7 @@ export class MetaclawSession {
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
+  private readonly publicationRepo: WorkspacePublicationRepo;
   private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
@@ -373,7 +392,7 @@ export class MetaclawSession {
         : process.cwd());
     const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
     const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
-    const publicationRepo = new WorkspacePublicationRepo(deps.db);
+    this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
     const cancellationCoordinator = new TaskCancellationCoordinator({
       db: deps.db,
@@ -382,7 +401,7 @@ export class MetaclawSession {
       taskEventRepo: this.taskEventRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
       dispatchItemRepo,
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       resourceLeaseService,
       workUnitClaimService: this.workUnitClaimService,
@@ -438,7 +457,7 @@ export class MetaclawSession {
         dispatchItemRepo,
         taskRuntimeService: this.taskRuntimeService,
       }),
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
       executionProgressService: this.executionProgressService,
@@ -588,6 +607,34 @@ export class MetaclawSession {
       })),
       executorStatuses: this.kernelExecutorStatusRepo.list(),
     };
+  }
+
+  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
+    const taskIds = [...new Set(
+      this.kernelDecisionRepo.listBySession(this.deps.sessionId)
+        .map(decision => decision.taskId)
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    )];
+    return this.publicationRepo.listIntegratedByTaskIds(taskIds).map(publication => {
+      const task = this.taskRuntimeService.findTask(publication.taskId);
+      const subtask = this.subtaskRepo.findById(publication.subtaskId);
+      return {
+        schemaVersion: 1,
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        taskTitle: task?.title ?? publication.taskId,
+        subtaskId: publication.subtaskId,
+        subtaskTitle: subtask?.title ?? publication.subtaskId,
+        attemptId: publication.sourceAttemptId,
+        executorName: publication.agentClassName,
+        report: publication.originalCompletion.body,
+        artifacts: [...publication.originalCompletion.artifacts],
+        warnings: [...publication.originalCompletion.warnings],
+        integrationCommit: publication.integrationCommit,
+        completedAt: publication.updatedAt,
+        reportTruncated: false,
+      };
+    });
   }
 
   /**
