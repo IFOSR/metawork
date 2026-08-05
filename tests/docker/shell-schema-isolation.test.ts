@@ -38,15 +38,44 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(ci).toContain('node-version: 22.19.0');
   });
 
-  it('uses the Responses API for the fixed Planner model', () => {
-    const models = JSON.parse(
+  it('uses the Responses API with one supported model across Planner and Executors', () => {
+    const plannerModels = JSON.parse(
       readFileSync(resolve('docker/planner-pi-config/models.json'), 'utf-8'),
-    ) as { providers: { anyint: { api: string; models: Array<{ id: string }> } } };
-
-    expect(models.providers.anyint.api).toBe('openai-responses');
-    expect(models.providers.anyint.models).toContainEqual(
-      expect.objectContaining({ id: 'gpt-5.6-luna' }),
+    ) as {
+      providers: { anyint: { api: string; models: Array<{ id: string; thinkingLevelMap?: unknown }> } };
+    };
+    const plannerSettings = JSON.parse(
+      readFileSync(resolve('docker/planner-pi-config/settings.json'), 'utf-8'),
+    ) as { defaultModel: string; defaultThinkingLevel: string };
+    const piModels = JSON.parse(
+      readFileSync(resolve('docker/pi-config/models.json'), 'utf-8'),
+    ) as {
+      providers: { anyint: { api: string; models: Array<{ id: string; thinkingLevelMap?: unknown }> } };
+    };
+    const piSettings = JSON.parse(
+      readFileSync(resolve('docker/pi-config/settings.json'), 'utf-8'),
+    ) as { defaultModel: string; defaultThinkingLevel: string };
+    const codexConfig = readFileSync(
+      resolve('docker/codex-config/executor/config.toml'),
+      'utf-8',
     );
+    const model = 'gpt-5.6-terra';
+
+    expect(plannerModels.providers.anyint.api).toBe('openai-responses');
+    expect(plannerModels.providers.anyint.models).toContainEqual(
+      expect.objectContaining({ id: model }),
+    );
+    expect(plannerSettings.defaultModel).toBe(model);
+    expect(plannerSettings.defaultThinkingLevel).toBe('high');
+    expect(plannerModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(piModels.providers.anyint.api).toBe('openai-responses');
+    expect(piModels.providers.anyint.models).toContainEqual(
+      expect.objectContaining({ id: model }),
+    );
+    expect(piSettings.defaultModel).toBe(model);
+    expect(piSettings.defaultThinkingLevel).toBe('high');
+    expect(piModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
+    expect(codexConfig).toContain(`model = "${model}"`);
   });
 
   it('uses a data volume scoped to the current pre-release schema', () => {
@@ -72,6 +101,21 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(shell).toContain('function Test-ContainerHasDockerSocket');
     expect(shell).toContain('if (-not (Test-ContainerHasDockerSocket))');
     expect(shell).toContain('Start-ShellContainer');
+  });
+
+  it('refreshes rendered provider configs from mounted env files before interactive entry', () => {
+    const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+
+    expect(shell).toContain('function Refresh-ContainerProviderConfigs');
+    expect(shell).toContain('docker exec $container /opt/metaclaw/entrypoint.sh :');
+
+    const mainDispatch = shell.slice(shell.indexOf('# --- main dispatch ---'));
+    expect(mainDispatch.indexOf('Ensure-ContainerRunning')).toBeLessThan(
+      mainDispatch.indexOf('Refresh-ContainerProviderConfigs'),
+    );
+    expect(mainDispatch.indexOf('Refresh-ContainerProviderConfigs')).toBeLessThan(
+      mainDispatch.indexOf('if ($Bash)'),
+    );
   });
 
   it('bootstraps the Docker-internal control-plane topology used by attempt sandboxes', () => {

@@ -517,6 +517,17 @@ function Ensure-ContainerRunning {
     Start-ShellContainer
 }
 
+# Provider env files are bind-mounted and may change while the persistent shell
+# container keeps running. Re-render Planner and Executor configs before each
+# interactive entry so a new base URL is never paired with stale credentials.
+function Refresh-ContainerProviderConfigs {
+    docker exec $container /opt/metaclaw/entrypoint.sh : 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'Failed to refresh provider configs from mounted env files.'
+        exit $LASTEXITCODE
+    }
+}
+
 # Wait until sshd is accepting connections on the published port (it starts a
 # moment after `docker run` returns). Times out after ~15s. Uses bash for its
 # /dev/tcp support (the image's default sh is dash, which lacks /dev/tcp).
@@ -614,5 +625,6 @@ if ($SetupSsh) { Invoke-SetupSsh; return }
 
 # Default + -Exec + -Bash all need a running container.
 Ensure-ContainerRunning
+Refresh-ContainerProviderConfigs
 
 if ($Bash) { Enter-Bash } else { Enter-Tui }
