@@ -39,13 +39,13 @@ root. Detailed ownership and dependency rules live in
 
 | Area | Start here |
 | --- | --- |
-| Planning and native Codex thread | [`src/planning/`](src/planning/) |
+| Planning and AnyFusion-Pi session | [`src/planning/`](src/planning/) |
 | Pure policy and graph rules | [`src/kernel/`](src/kernel/), [`src/work-graph/`](src/work-graph/) |
 | Application Shell | [`src/session/`](src/session/) |
 | Attempts, recovery, sandbox, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
 | Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
-| CLI, commands, and Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui/`](src/tui/) |
+| CLI, commands, native TUI bridge, and standby Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
 | Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
@@ -53,14 +53,16 @@ Main entry points:
 
 - [`src/index.ts`](src/index.ts) — composition and mode selection.
 - [`src/session/metaclaw-session.ts`](src/session/metaclaw-session.ts) — Application Shell.
-- [`src/planning/codex-planning-agent.ts`](src/planning/codex-planning-agent.ts) and
-  [`src/planning/planner-codex-runner.ts`](src/planning/planner-codex-runner.ts) — Planner boundary.
+- [`src/planning/anyfusion-planning-agent.ts`](src/planning/anyfusion-planning-agent.ts) and
+  [`src/planning/planner-process-runner.ts`](src/planning/planner-process-runner.ts) — Planner boundary.
 - [`src/kernel/control-kernel.ts`](src/kernel/control-kernel.ts) and
   [`src/kernel/kernel-workflow.ts`](src/kernel/kernel-workflow.ts) — policy and
   durable control seam.
 - [`src/execution/kernel-execution-runtime.ts`](src/execution/kernel-execution-runtime.ts) and
   [`src/execution/subtask-attempt-runner.ts`](src/execution/subtask-attempt-runner.ts) — execution chain.
-- [`src/tui/app.tsx`](src/tui/app.tsx) — current Ink UI.
+- [`src/tui-bridge/planner-tui-bridge.ts`](src/tui-bridge/planner-tui-bridge.ts) and
+  [`src/tui-bridge/planner-tui-process.ts`](src/tui-bridge/planner-tui-process.ts) — default native Planner TUI adapter.
+- [`src/tui/app.tsx`](src/tui/app.tsx) — preserved standby Ink UI; it is not the default local surface.
 - [`src/gateway/server.ts`](src/gateway/server.ts) and
   [`src/gateway/feishu-runtime.ts`](src/gateway/feishu-runtime.ts) — remote surfaces.
 
@@ -72,9 +74,13 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
   belong in `CONTEXT.md`, not this file.
-- The Ink TUI is supported. Do not remove its editor, completion, panels,
-  progress, Guidance, Feishu, or activity-state behavior without an approved
-  replacement plan.
+- The sibling AnyFusion-Pi fork is the default local Planner surface. Its Task panel and
+  bridge are presentation/Application-Shell adapters only: they may project state and hand a
+  Planner proposal to the existing validation path, but may not mutate storage, schedule work,
+  authorize execution, or control an Executor.
+- The Ink TUI under `src/tui/` is a preserved standby module. Do not delete its editor,
+  completion, panels, progress, Guidance, Feishu, activity-state behavior, tests, or Ink/React
+  dependencies. Do not invest migration work in it unless a separate restoration plan is approved.
 - Do not add a second semantic router, Runtime-owned recovery policy, Planner
   storage mutation, or pre-release compatibility path without an ADR.
 - Persistence changes must follow `CONTEXT.md` and update repositories and Docker
@@ -101,6 +107,8 @@ docker run --rm metaclaw-test
 Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliable
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
+
+For the AnyFusion-Pi migration, local Docker validation covers this TypeScript repository, the Node 20/Node 22 process boundary, Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` and a self-contained Linux image; do not replace it with a host-global Pi install or run Planner code inside the MetaClaw Node 20 process.
 
 ## Code, Plans, And Commits
 

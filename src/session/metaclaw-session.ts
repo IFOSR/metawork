@@ -5,6 +5,7 @@ import type {
   Config,
   GuidanceProposal,
   RuntimeState,
+  Subtask,
   Task,
   TaskRecoveryTrigger,
 } from '../core/types.js';
@@ -38,7 +39,11 @@ import { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
 import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
-import { PermissionWorkflowService } from '../execution/permission-workflow-service.js';
+import {
+  isPermissionRequestActive,
+  permissionRequestExpiresAt,
+  PermissionWorkflowService,
+} from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
 import { buildPermissionRules } from '../resource/index.js';
 import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
@@ -59,8 +64,12 @@ import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import { createDefaultPlanningAgent } from '../planning/codex-planning-agent.js';
+import { createDefaultPlanningAgent } from '../planning/anyfusion-planning-agent.js';
+import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
+import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
+import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
 import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
+import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
@@ -71,12 +80,24 @@ import { GenerationReplanRequestRepo } from '../storage/generation-replan-reques
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
+import { PlannerProposalRepo } from '../storage/planner-proposal-repo.js';
+import {
+  createPlannerProposalSubmissionId,
+  plannerProposalFingerprint,
+  type PlannerProposalPurpose,
+  type PlannerProposalResult,
+  type PlannerProposalSubmission,
+} from '../planning/planner-proposal.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+
+export interface PlannerHostRegistrar {
+  registerSession(sessionId: string, session: MetaclawSession): () => void;
+}
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
@@ -90,6 +111,7 @@ export interface MetaclawSessionDeps {
   notifier?: NotificationService;
   sourceRoot?: string;
   attemptSandbox?: AttemptSandboxPort;
+  plannerHost?: PlannerHostRegistrar;
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -141,6 +163,80 @@ export interface SessionSnapshot {
     status: 'idle' | 'running';
   };
   latestGuidance: GuidanceState | null;
+}
+
+/** A bounded, read-only projection for the native Planner TUI bridge. */
+export interface PlannerTuiSnapshot {
+  schemaVersion: 1;
+  session: {
+    id: string;
+    focusedTask: SessionSnapshot['currentTask'];
+    runtimeState: RuntimeState;
+    plannerState: SessionSnapshot['plannerState'];
+    recentOutput: string[];
+  };
+  taskPool: Array<{
+    id: string;
+    title: string;
+    goal: string;
+    status: Task['status'];
+    blockingReason: string | null;
+    subtasks: Array<{
+      id: string;
+      title: string;
+      status: Subtask['status'];
+      preferredAgentClassList: string[];
+    }>;
+  }>;
+  executorStatuses: KernelExecutorStatusProjection[];
+}
+
+/** A durable, presentation-only result projected from an integrated workspace publication. */
+export interface PlannerTuiExecutorResult {
+  schemaVersion: 1;
+  publicationId: string;
+  taskId: string;
+  taskTitle: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  report: string;
+  artifacts: string[];
+  warnings: string[];
+  integrationCommit: string | null;
+  completedAt: string;
+  reportTruncated: boolean;
+}
+
+export interface PlannerTuiPermissionRequest {
+  schemaVersion: 1;
+  permissionRequestId: string;
+  taskId: string;
+  taskTitle: string;
+  generationId: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  permissionProfileId: string;
+  capability: string;
+  resource: string;
+  operation: string;
+  reason: string;
+  suggestedScope: 'once' | 'attempt';
+  escalationReason: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type PlannerTuiPermissionResolutionResult =
+  | { status: 'resolved' | 'replayed'; resolution: 'approve' | 'deny'; message: string }
+  | { status: 'conflict'; resolution: null; message: string };
+
+export interface PlannerTuiCommandSubmissionResult {
+  exitRequested: boolean;
+  output: string[];
 }
 
 interface FocusContext {
@@ -220,10 +316,14 @@ export class MetaclawSession {
   private readonly sessionKernelRuntime: SessionKernelRuntime;
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
+  private readonly plannerProposalRepo: PlannerProposalRepo;
+  private readonly publicationRepo: WorkspacePublicationRepo;
+  private unregisterPlannerHost: (() => void) | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
     this.sessionStateRepo = new SessionStateRepo(deps.db);
+    this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
     this.taskRuntimeService = new TaskRuntimeService({
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
@@ -321,7 +421,7 @@ export class MetaclawSession {
         : process.cwd());
     const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
     const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
-    const publicationRepo = new WorkspacePublicationRepo(deps.db);
+    this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
     const cancellationCoordinator = new TaskCancellationCoordinator({
       db: deps.db,
@@ -330,7 +430,7 @@ export class MetaclawSession {
       taskEventRepo: this.taskEventRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
       dispatchItemRepo,
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       resourceLeaseService,
       workUnitClaimService: this.workUnitClaimService,
@@ -386,7 +486,7 @@ export class MetaclawSession {
         dispatchItemRepo,
         taskRuntimeService: this.taskRuntimeService,
       }),
-      publicationRepo,
+      publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
       executionProgressService: this.executionProgressService,
@@ -419,6 +519,7 @@ export class MetaclawSession {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
         refreshRuntimeState: () => this.refreshRuntimeState(),
+        startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
       },
     });
     this.sessionKernelRuntime = new SessionKernelRuntime({
@@ -450,6 +551,12 @@ export class MetaclawSession {
     // make the catalog readable even for non-UI hosts that do not call the
     // optional dashboard-oriented initialize() lifecycle hook.
     this.seedAgentRuntime();
+    this.unregisterPlannerHost = deps.plannerHost?.registerSession(deps.sessionId, this) ?? null;
+  }
+
+  dispose(): void {
+    this.unregisterPlannerHost?.();
+    this.unregisterPlannerHost = null;
   }
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
@@ -489,6 +596,391 @@ export class MetaclawSession {
 
   completeCommand(text: string, cursor = text.length): CommandCompletion {
     return this.commandCatalog.complete({ text, cursor, context: this.getCommandContext() });
+  }
+
+  /**
+   * Returns presentation-only state for the native Planner TUI. This deliberately
+   * reads through existing Session services; the bridge has no repository, Kernel,
+   * scheduling, or executor write surface.
+   */
+  getPlannerTuiSnapshot(): PlannerTuiSnapshot {
+    const snapshot = this.getSnapshot();
+    return {
+      schemaVersion: 1,
+      session: {
+        id: this.deps.sessionId,
+        focusedTask: snapshot.currentTask ? { ...snapshot.currentTask } : null,
+        runtimeState: {
+          ...snapshot.runtimeState,
+          readyTaskIds: [...snapshot.runtimeState.readyTaskIds],
+          blockedTaskIds: [...snapshot.runtimeState.blockedTaskIds],
+          parkedTaskIds: [...snapshot.runtimeState.parkedTaskIds],
+        },
+        plannerState: { ...snapshot.plannerState },
+        recentOutput: snapshot.output.slice(-100),
+      },
+      taskPool: this.taskRuntimeService.listTasks().slice(0, 100).map(task => ({
+        id: task.id,
+        title: task.title,
+        goal: task.goal,
+        status: task.status,
+        blockingReason: (task.lastInterruptionReason
+          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+          || '').slice(0, 500) || null,
+        subtasks: this.subtaskRepo.listByTask(task.id).slice(0, 100).map(subtask => ({
+          id: subtask.id,
+          title: subtask.title,
+          status: subtask.status,
+          preferredAgentClassList: [...subtask.preferredAgentClassList],
+        })),
+      })),
+      executorStatuses: this.kernelExecutorStatusRepo.list(),
+    };
+  }
+
+  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
+    const taskIds = [...new Set(
+      this.kernelDecisionRepo.listBySession(this.deps.sessionId)
+        .map(decision => decision.taskId)
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    )];
+    return this.publicationRepo.listIntegratedByTaskIds(taskIds).map(publication => {
+      const task = this.taskRuntimeService.findTask(publication.taskId);
+      const subtask = this.subtaskRepo.findById(publication.subtaskId);
+      return {
+        schemaVersion: 1,
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        taskTitle: task?.title ?? publication.taskId,
+        subtaskId: publication.subtaskId,
+        subtaskTitle: subtask?.title ?? publication.subtaskId,
+        attemptId: publication.sourceAttemptId,
+        executorName: publication.agentClassName,
+        report: publication.originalCompletion.body,
+        artifacts: [...publication.originalCompletion.artifacts],
+        warnings: [...publication.originalCompletion.warnings],
+        integrationCommit: publication.integrationCommit,
+        completedAt: publication.updatedAt,
+        reportTruncated: false,
+      };
+    });
+  }
+
+  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
+    const now = new Date().toISOString();
+    const decisions = this.kernelDecisionRepo.listBySession(this.deps.sessionId);
+    const appliedEscalations = new Map(decisions
+      .filter(record => record.action === 'escalate_capability'
+        && this.kernelWorkflowRepo.isDecisionApplied(record.id))
+      .map(record => [record.correlationId, record]));
+    return this.permissionRepository.listEscalated()
+      .filter(record => appliedEscalations.has(record.request.id))
+      .filter(record => !this.kernelDecisionRepo.listByCorrelation(record.request.id)
+        .some(decision => decision.event.type === 'permission_resolution_received'
+          && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
+      .filter(record => isPermissionRequestActive(record.createdAt, now))
+      .map(record => {
+        const escalation = appliedEscalations.get(record.request.id)!;
+        return {
+          schemaVersion: 1,
+          permissionRequestId: record.request.id,
+          taskId: record.request.taskId,
+          taskTitle: this.taskRuntimeService.findTask(record.request.taskId)?.title ?? record.request.taskId,
+          generationId: record.request.generationId,
+          subtaskId: record.request.subtaskId,
+          subtaskTitle: this.subtaskRepo.findById(record.request.subtaskId)?.title ?? record.request.subtaskId,
+          attemptId: record.request.attemptId,
+          executorName: record.request.agentClassName,
+          permissionProfileId: record.request.permissionProfileId,
+          capability: record.request.capability,
+          resource: record.request.resource,
+          operation: record.request.operation,
+          reason: record.request.reason,
+          suggestedScope: record.request.suggestedScope,
+          escalationReason: escalation.reason,
+          createdAt: record.createdAt,
+          expiresAt: permissionRequestExpiresAt(record.createdAt)!,
+        };
+      });
+  }
+
+  async resolvePlannerTuiPermission(
+    permissionRequestId: string,
+    resolution: 'approve' | 'deny',
+  ): Promise<PlannerTuiPermissionResolutionResult> {
+    await this.initialization;
+    const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
+    const escalation = decisions.find(record => record.sessionId === this.deps.sessionId
+      && record.action === 'escalate_capability'
+      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
+    if (!escalation) {
+      return { status: 'conflict', resolution: null, message: 'Permission request does not belong to this session.' };
+    }
+    const appliedResolution = decisions.find(record => record.event.type === 'permission_resolution_received'
+      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
+    if (appliedResolution?.event.type === 'permission_resolution_received') {
+      if (appliedResolution.sessionId === this.deps.sessionId
+        && appliedResolution.event.resolution === resolution
+        && appliedResolution.event.source === 'button') {
+        return { status: 'replayed', resolution, message: 'Permission resolution was already recorded.' };
+      }
+      return { status: 'conflict', resolution: null, message: 'Permission request was already resolved.' };
+    }
+    const record = this.permissionRepository.findRequest(permissionRequestId);
+    if (!record || record.status !== 'escalated') {
+      return { status: 'conflict', resolution: null, message: 'Permission request is no longer escalated.' };
+    }
+    if (!isPermissionRequestActive(record.createdAt, new Date().toISOString())) {
+      return { status: 'conflict', resolution: null, message: 'Permission request has expired.' };
+    }
+    await this.resolvePermission({ requestId: permissionRequestId, resolution, source: 'button' });
+    this.notify();
+    return { status: 'resolved', resolution, message: 'Permission resolution recorded.' };
+  }
+
+  /**
+   * Executes an explicit slash command from the native Planner TUI through the
+   * existing Application-Shell command path. The Pi process only transports the
+   * user's command; CommandCatalog and MetaclawSession retain all validation and
+   * state-changing authority.
+   */
+  async submitPlannerTuiCommand(rawCommand: string): Promise<PlannerTuiCommandSubmissionResult> {
+    await this.initialization;
+    const command = rawCommand.trim();
+    if (!/^\/\S/u.test(command)) {
+      throw new Error('Planner TUI commands must start with /');
+    }
+    const outputStart = this.output.length;
+    const result = await this.inputController.submit(command, { awaitAsyncWork: true });
+    return {
+      exitRequested: result.exitRequested,
+      output: this.output.slice(outputStart),
+    };
+  }
+
+  /**
+   * Accepts a Planner proposal emitted by the AnyFusion-Pi host protocol. The Planner
+   * remains untrusted with respect to state: schema and semantic validation happen
+   * here, then the existing plan_proposed -> DurableKernelWorkflow path remains the
+   * only state-changing route.
+   */
+  async submitPlannerProposal(
+    submission: PlannerProposalSubmission,
+    purpose: PlannerProposalPurpose = 'kernel',
+  ): Promise<PlannerProposalResult> {
+    await this.initialization;
+    const normalizedInput = submission.userInput.trim();
+    const normalizedSessionId = submission.sessionId.trim();
+    const normalizedTurnId = submission.turnId.trim();
+    if (!normalizedInput || !normalizedSessionId || !normalizedTurnId) {
+      return {
+        status: 'rejected',
+        turnId: normalizedTurnId || submission.turnId,
+        submissionId: submission.submissionId,
+        planId: null,
+        rejectionType: 'validation',
+        issues: ['sessionId, turnId, and userInput must not be empty'],
+        kernel: null,
+      };
+    }
+    if (normalizedSessionId !== this.deps.sessionId) {
+      return {
+        status: 'conflict',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner proposal session does not match the bound MetaClaw session.',
+      };
+    }
+    const expectedSubmissionId = createPlannerProposalSubmissionId(
+      normalizedSessionId, normalizedTurnId, submission.plan,
+    );
+    if (submission.submissionId !== expectedSubmissionId) {
+      return {
+        status: 'conflict',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner proposal submissionId does not match the runtime-derived plan fingerprint.',
+      };
+    }
+
+    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    if (submission.runtimeMode === 'interactive'
+      && typeof normalizedPlan === 'object' && normalizedPlan !== null
+      && 'action' in normalizedPlan && normalizedPlan.action === 'authorization_resolution') {
+      return {
+        status: 'rejected',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        planId: 'id' in normalizedPlan && typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
+        rejectionType: 'validation',
+        issues: ['Interactive permission decisions must use the host permission selector.'],
+        kernel: null,
+      };
+    }
+
+    const turn = this.plannerProposalRepo.ensureTurn(normalizedSessionId, normalizedTurnId, normalizedInput);
+    if (turn.conflict) {
+      return {
+        status: 'conflict',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner proposal turnId was already bound to different user input.',
+      };
+    }
+    if (turn.created && purpose === 'kernel'
+      && submission.runtimeMode !== 'rpc' && submission.runtimeMode !== 'session') {
+      this.appendUserInput(normalizedInput);
+    }
+
+    const context = this.buildPlanningContext(normalizedInput);
+    const validation = validatePlanningAgentPlan(
+      normalizedPlan,
+      context.executorCatalog,
+      context.pendingAuthorizationRequest
+        ? {
+            requestId: context.pendingAuthorizationRequest.requestId,
+            taskId: context.pendingAuthorizationRequest.taskId,
+          }
+        : null,
+    );
+    const parsedPlan = PlanningAgentPlanSchema.safeParse(normalizedPlan);
+    const planId = parsedPlan.success ? parsedPlan.data.id : null;
+    const eventId = parsedPlan.success && purpose === 'kernel'
+      ? `plan_event_${submission.submissionId}`
+      : null;
+    const reservation = this.plannerProposalRepo.reserveSubmission({
+      sessionId: normalizedSessionId,
+      turnId: normalizedTurnId,
+      submissionId: submission.submissionId,
+      planFingerprint: plannerProposalFingerprint(submission.plan),
+      planId,
+      eventId,
+    });
+    if (reservation.kind === 'replay') return reservation.result;
+    if (reservation.kind === 'in_flight') {
+      const latest = this.plannerProposalRepo.getSubmission(
+        normalizedSessionId, normalizedTurnId, submission.submissionId,
+      );
+      if (latest?.result) return latest.result;
+      return {
+        status: 'transport_uncertain',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        retryableByReplay: true,
+        message: 'The same Planner proposal is still being durably applied; replay the identical submission.',
+      };
+    }
+    if (reservation.kind === 'conflict') {
+      return {
+        status: 'conflict',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: reservation.acceptedSubmissionId,
+        message: 'This Planner turn already has a different authoritative submission.',
+      };
+    }
+
+    if (!validation.valid || !parsedPlan.success) {
+      const issues = !validation.valid
+        ? validation.errors
+        : !parsedPlan.success
+          ? parsedPlan.error.issues.map(issue => issue.message)
+          : ['PlanningAgentPlan v7 validation failed'];
+      const rejected: PlannerProposalResult & { status: 'rejected' } = {
+        status: 'rejected',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        planId,
+        rejectionType: 'validation',
+        issues,
+        kernel: null,
+      };
+      this.plannerProposalRepo.completeSubmission(
+        normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
+      );
+      return rejected;
+    }
+
+    const plan = parsedPlan.data as PlanningAgentPlan;
+    if (purpose === 'validation') {
+      const accepted: PlannerProposalResult & { status: 'accepted' } = {
+        status: 'accepted',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        planId: plan.id,
+        outcome: 'proposal_validated',
+        displayText: 'PlanningAgentPlan v7 proposal validated by MetaClaw.',
+        taskId: plan.task.taskId,
+        kernel: null,
+      };
+      this.plannerProposalRepo.completeSubmission(
+        normalizedSessionId, normalizedTurnId, submission.submissionId, accepted,
+      );
+      return accepted;
+    }
+
+    const outputStart = this.output.length;
+    try {
+      const kernelResult = await this.submitValidatedPlanningAgentPlan(
+        normalizedInput, plan, context, eventId!,
+      );
+      const application = kernelResult.decision
+        ? this.kernelWorkflowRepo.findApplicationByDecisionId(kernelResult.decision.id)
+        : null;
+      if (!kernelResult.decision || application?.status !== 'applied') {
+        this.plannerProposalRepo.markUncertain(
+          normalizedSessionId, normalizedTurnId, submission.submissionId,
+        );
+        return {
+          status: 'transport_uncertain',
+          turnId: normalizedTurnId,
+          submissionId: submission.submissionId,
+          retryableByReplay: true,
+          message: 'MetaClaw has not yet confirmed the authoritative Kernel application; replay the same submission.',
+        };
+      }
+      if (kernelResult.decision.action.type === 'reject_request') {
+        const rejected: PlannerProposalResult & { status: 'rejected' } = {
+          status: 'rejected',
+          turnId: normalizedTurnId,
+          submissionId: submission.submissionId,
+          planId: plan.id,
+          rejectionType: 'kernel',
+          issues: [kernelResult.decision.reason],
+          kernel: {
+            decisionId: kernelResult.decision.id,
+            action: 'reject_request',
+            reason: kernelResult.decision.reason,
+          },
+        };
+        this.plannerProposalRepo.completeSubmission(
+          normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
+        );
+        return rejected;
+      }
+      const accepted = this.toAcceptedPlannerProposalResult(
+        normalizedTurnId, submission.submissionId, plan, kernelResult.decision,
+        this.output.slice(outputStart),
+      );
+      this.plannerProposalRepo.completeSubmission(
+        normalizedSessionId, normalizedTurnId, submission.submissionId, accepted,
+      );
+      return accepted;
+    } catch (error) {
+      this.plannerProposalRepo.markUncertain(
+        normalizedSessionId, normalizedTurnId, submission.submissionId,
+      );
+      return {
+        status: 'transport_uncertain',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        retryableByReplay: true,
+        message: `MetaClaw proposal transport is uncertain: ${(error as Error).message}`,
+      };
+    }
   }
 
   private reconcileLatestGuidance(): void {
@@ -810,33 +1302,6 @@ export class MetaclawSession {
     this.agentClassService.seedDefaults();
   }
 
-  private async planWithExecutorRecovery(context: PlanningContext): Promise<PlanningAgentPlan> {
-    const planning = this.runPlanningAgent(context);
-    const refresh = this.executorRecoveryRefreshService.refresh({ trigger: 'planning_cycle' });
-    let plan = await planning;
-    const report = await refresh;
-    if (report.recovered.length === 0 || !plan.workGraph) return plan;
-    const relevantRecovered = report.recovered.filter(name =>
-      plan.workGraph?.subtasks.some(subtask =>
-        subtask.preferredAgentClassList.some(candidate => candidate === name)
-      )
-    );
-    if (relevantRecovered.length === 0) return plan;
-
-    const repairContext = this.planningContextBuilder.build({
-      userInput: [
-        'Executor availability changed while the preceding proposal was being prepared.',
-        `Recovered AgentClasses: ${relevantRecovered.join(', ')}`,
-        'Revise the immediately preceding proposal once in this same Planner thread.',
-        'Return a complete replacement plan, preserving the user intent and full static eligible canonical sets.',
-        `Previous proposal: ${JSON.stringify(plan)}`,
-        `Current Executor status: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
-      ].join('\n\n').slice(0, 24_000),
-    });
-    plan = await this.runPlanningAgent(repairContext);
-    return plan;
-  }
-
   private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
     this.activePlannerRuns += 1;
     this.notify();
@@ -848,35 +1313,9 @@ export class MetaclawSession {
     }
   }
 
-  private planHasAvailabilityExhaustion(plan: PlanningAgentPlan): boolean {
-    if (!plan.workGraph) return false;
-    const unavailable = new Set(
-      this.kernelExecutorStatusRepo.list()
-        .filter(status => status.classHealth === 'error' || status.classHealth === 'disabled')
-        .map(status => status.agentClassName),
-    );
-    return plan.workGraph.subtasks.some(subtask =>
-      subtask.preferredAgentClassList.length === 0
-      || subtask.preferredAgentClassList.every(name => unavailable.has(name))
-    );
-  }
-
-  private async requestAvailabilityExplanation(plan: PlanningAgentPlan): Promise<PlanningAgentPlan> {
-    return this.runPlanningAgent(this.planningContextBuilder.build({
-      userInput: [
-        'The immediately preceding proposal cannot be admitted because at least one Subtask has no currently available eligible Executor.',
-        'Explain the current recovery-check failures to the user in natural language.',
-        'Return a direct_reply plan only. Do not create or revise a Task.',
-        `Deferred proposal: ${JSON.stringify(plan)}`,
-        `Executor status and recent recovery checks: ${JSON.stringify(this.kernelExecutorStatusRepo.list())}`,
-      ].join('\n\n').slice(0, 24_000),
-    }));
-  }
-
-  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
-    this.appendOutput('【MetaClaw｜理解用户请求】');
+  private buildPlanningContext(userInput: string): PlanningContext {
     const pendingPermission = this.permissionRepository.findOldestPending();
-    const context = this.planningContextBuilder.build({
+    return this.planningContextBuilder.build({
       userInput,
       pendingAuthorizationRequest: pendingPermission ? {
         requestId: pendingPermission.request.id,
@@ -887,11 +1326,14 @@ export class MetaclawSession {
         reason: pendingPermission.request.reason,
       } : null,
     });
-    let plan = await this.planWithExecutorRecovery(context);
-    if (this.planHasAvailabilityExhaustion(plan)) {
-      plan = await this.requestAvailabilityExplanation(plan);
-    }
-    const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
+  }
+
+  private async submitValidatedPlanningAgentPlan(
+    userInput: string,
+    plan: PlanningAgentPlan,
+    context: PlanningContext,
+    eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
+  ): Promise<{ decision: KernelDecision | null }> {
     const event: KernelEvent = {
       schemaVersion: 5,
       type: 'plan_proposed',
@@ -921,7 +1363,10 @@ export class MetaclawSession {
         'record_permission_resolution',
       ],
     });
-    await workflow.submit(event);
+    const workflowResult = await workflow.submit(event);
+    const decision = workflowResult.decisions.find(candidate => candidate.eventId === eventId)
+      ?? this.kernelDecisionRepo.findByEventId(eventId)?.decision
+      ?? null;
     if (plan.action === 'authorization_resolution' && plan.authorizationResolution) {
       await this.resolvePermission({
         requestId: plan.authorizationResolution.requestId,
@@ -930,6 +1375,80 @@ export class MetaclawSession {
         plannerPlanId: plan.id,
       });
     }
+    return { decision };
+  }
+
+  private toAcceptedPlannerProposalResult(
+    turnId: string,
+    submissionId: string,
+    plan: PlanningAgentPlan,
+    decision: KernelDecision,
+    outputLines: string[],
+  ): Extract<PlannerProposalResult, { status: 'accepted' }> {
+    const outcome = decision.action.type === 'authorize_task_plan'
+      ? 'task_authorized'
+      : decision.action.type === 'authorize_task_control'
+        ? 'task_control_authorized'
+        : decision.action.type === 'deliver_direct_reply'
+          ? 'direct_reply_delivered'
+          : decision.action.type === 'request_clarification'
+            ? 'clarification_requested'
+            : decision.action.type === 'record_permission_resolution'
+              ? 'authorization_recorded'
+              : 'no_action';
+    const displayText = outputLines.join('\n').trim() || (
+      decision.action.type === 'deliver_direct_reply'
+        ? decision.action.response
+        : decision.action.type === 'request_clarification'
+          ? decision.action.question
+          : decision.action.type === 'authorize_task_plan'
+            ? `规划已通过 MetaClaw 授权，任务 ${decision.action.taskId} 已创建。`
+            : '规划提案已由 MetaClaw 接受。'
+    );
+    return {
+      status: 'accepted',
+      turnId,
+      submissionId,
+      planId: plan.id,
+      outcome,
+      displayText,
+      taskId: 'taskId' in decision.action ? decision.action.taskId : plan.task.taskId,
+      kernel: { decisionId: decision.id, action: decision.action.type, reason: decision.reason },
+    };
+  }
+
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    this.appendOutput('【MetaClaw｜理解用户请求】');
+    const context = this.buildPlanningContext(userInput);
+    const turnId = `turn_${generateInteractionId()}`;
+    this.activePlannerRuns += 1;
+    this.notify();
+    let result: PlannerProposalResult;
+    try {
+      result = await this.planningAgent.submit(context, {
+        submit: plan => this.submitPlannerProposal({
+          sessionId: this.deps.sessionId,
+          turnId,
+          userInput,
+          submissionId: createPlannerProposalSubmissionId(this.deps.sessionId, turnId, plan),
+          plan,
+          runtimeMode: 'session',
+        }),
+      });
+    } finally {
+      this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.notify();
+    }
+    if (result.status === 'accepted') return true;
+    if (result.status === 'rejected') {
+      this.appendOutput(this.presentation.formatKernelRejection(result.issues.join('; ')));
+      return true;
+    }
+    if (result.status === 'conflict') {
+      this.appendOutput(`规划回合冲突：${result.message}`);
+      return true;
+    }
+    this.appendOutput(`Warning: 规划提案传输状态不确定；请重放同一请求。${result.message}`);
     return true;
   }
 
@@ -980,10 +1499,7 @@ export class MetaclawSession {
     const context = this.planningContextBuilder.build({
       userInput: request,
     });
-    const plan = await this.planWithExecutorRecovery(context);
-    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
-      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
-      : null;
+    const plan = await this.runPlanningAgent(context);
     return {
       schemaVersion: 5,
       type: 'plan_proposed',
@@ -998,7 +1514,7 @@ export class MetaclawSession {
       generationId: decision.action.generationId,
       proposalSource: 'replan',
       targetGraphRevision: decision.action.sourceRevision + 1,
-      availabilityExplanation,
+      availabilityExplanation: null,
     };
   }
 
@@ -1024,10 +1540,7 @@ export class MetaclawSession {
     const context = this.planningContextBuilder.build({
       userInput: request,
     });
-    const plan = await this.planWithExecutorRecovery(context);
-    const availabilityExplanation = this.planHasAvailabilityExhaustion(plan)
-      ? (await this.requestAvailabilityExplanation(plan)).response.directReply
-      : null;
+    const plan = await this.runPlanningAgent(context);
     return {
       schemaVersion: 5,
       type: 'plan_proposed',
@@ -1042,7 +1555,7 @@ export class MetaclawSession {
       generationId: revision.generationId,
       proposalSource: 'conflict_replan',
       targetGraphRevision: revision.revision + 1,
-      availabilityExplanation,
+      availabilityExplanation: null,
     };
   }
 
@@ -1114,11 +1627,23 @@ export class MetaclawSession {
     );
   }
 
-  private async prepareTaskExecution(
+  private prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-  ): Promise<void> {
+  ): void {
     return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request);
+  }
+
+  private startBackgroundExecution(taskId: string, launch: () => Promise<void>): void {
+    const scheduled = new Promise<void>(resolveWork => {
+      setTimeout(() => {
+        void launch().catch(error => {
+          this.appendOutput(`Executor background failure for ${taskId}: ${(error as Error).message}`);
+          this.refreshRuntimeState();
+        }).finally(resolveWork);
+      }, 0);
+    });
+    this.trackBackgroundWork(scheduled);
   }
 
   private appendOutput(...lines: string[]): void {
@@ -1240,10 +1765,6 @@ export class MetaclawSession {
       await this.resolveTaskRecovery(result.directive);
     }
 
-    if (result.type === 'directive' && result.directive.kind === 'resolve-permission') {
-      await this.resolvePermission(result.directive);
-    }
-
     return false;
   }
 
@@ -1262,7 +1783,7 @@ export class MetaclawSession {
   private async resolvePermission(input: {
     requestId: string;
     resolution: 'approve' | 'deny';
-    source?: 'command' | 'button' | 'planner';
+    source: 'button' | 'planner';
     plannerPlanId?: string | null;
   }): Promise<void> {
     const record = this.permissionRepository.findRequest(input.requestId);
@@ -1314,7 +1835,7 @@ export class MetaclawSession {
     await workflow.resolve({
       requestId: input.requestId,
       resolution: input.resolution,
-      source: input.source ?? 'command',
+      source: input.source,
       plannerPlanId: input.plannerPlanId ?? null,
     });
   }

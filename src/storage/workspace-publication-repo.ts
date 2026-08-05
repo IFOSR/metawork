@@ -11,7 +11,7 @@ export interface WorkspacePublicationCompletion {
       | { key: string; type: 'artifact'; paths: string[] }
     >;
   }>;
-  completionSchemaVersion: 2;
+  completionSchemaVersion: 3;
 }
 
 export type WorkspacePublicationStatus =
@@ -143,6 +143,17 @@ export class WorkspacePublicationRepo {
       WHERE task_id = ? AND generation_id = ? AND subtask_id = ?
     `).get(taskId, generationId, subtaskId) as PublicationRow | undefined;
     return row ? rowToPublication(row) : null;
+  }
+
+  listIntegratedByTaskIds(taskIds: readonly string[]): WorkspacePublicationRecord[] {
+    const uniqueTaskIds = [...new Set(taskIds.map(taskId => taskId.trim()).filter(Boolean))].sort();
+    if (uniqueTaskIds.length === 0) return [];
+    const placeholders = uniqueTaskIds.map(() => '?').join(', ');
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE status = 'integrated' AND task_id IN (${placeholders})
+      ORDER BY updated_at ASC, id ASC
+    `).all(...uniqueTaskIds) as PublicationRow[]).map(rowToPublication);
   }
 
   findNextBlocking(taskId: string, generationId: string): WorkspacePublicationRecord | null {

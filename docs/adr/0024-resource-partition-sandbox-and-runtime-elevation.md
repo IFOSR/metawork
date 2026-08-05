@@ -44,7 +44,9 @@ The initial product guarantee ends at the sandbox profile and this authorization
 
 ### User authorization
 
-PlanningAgentPlan v6 adds only an authorization-resolution action for a pending exact request; Work Graph remains v5. Planner may interpret an ordinary-language approve/deny response but cannot change the request target or scope. Deterministic commands and connector actions produce the same `permission_resolution_received` event. User input records an authorization fact; ControlKernel still issues the final bounded grant.
+PlanningAgentPlan v7 retains only an authorization-resolution action for a pending exact request; Work Graph v6 does not add resource authority. Planner may interpret an ordinary-language approve/deny response but cannot change the request target or scope. Deterministic commands and connector actions produce the same `permission_resolution_received` event. User input records an authorization fact; ControlKernel still issues the final bounded grant.
+
+For the local interactive Pi surface, the exact request is projected only after its escalation Decision application is durable and remains valid for 24 hours. Pi uses a transient native button Selector and submits only request ID plus approve/deny with `source: button`; it never stores the request or resolution in conversation context. The shared `/permission` command and interactive Planner authorization proposal are unavailable. An applied resolution Decision is authoritative even when recovery intentionally leaves the request row escalated. Same-button replay is idempotent; opposite, cross-session, resolved, stale, and expired submissions conflict. Feishu, RPC, and Session Planner retain the exact natural-language path described above.
 
 ### Persistence and recovery
 

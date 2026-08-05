@@ -41,6 +41,10 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return row ? parseCurrentEvent(row.event_json, row.schema_version) : null;
   }
 
+  findApplicationByDecisionId(decisionId: string): KernelDecisionApplicationRecord | null {
+    return this.findApplication(decisionId);
+  }
+
   listCapacitySignals(
     taskId: string,
     cycleId: string,
@@ -167,6 +171,13 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       if (result.changes !== 1) throw new Error(`Kernel application cannot be completed: ${decisionId}`);
     });
     complete();
+  }
+
+  isDecisionApplied(decisionId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT status FROM kernel_decision_applications WHERE decision_id = ?
+    `).get(decisionId) as { status: KernelApplicationStatus } | undefined;
+    return row?.status === 'applied';
   }
 
   markApplicationFailed(
@@ -333,6 +344,7 @@ function parseCurrentEvent(raw: string, storedSchemaVersion?: number): KernelEve
   if (storedSchemaVersion !== undefined && storedSchemaVersion !== 5) {
     throw new Error(`unsupported Kernel event schema version ${storedSchemaVersion}`);
   }
+
   return parseCurrentKernelValue<KernelEvent>(raw, 'event');
 }
 

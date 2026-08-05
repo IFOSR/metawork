@@ -42,9 +42,16 @@ replacing those semantics.
 
 ## Completed Roadmap
 
+- [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): completed unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, read-only Task dashboard, native command completion, and strict Planner/Kernel/Executor process separation.
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
-- [Executor error recovery refresh](plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
+- [Executor error recovery refresh](archive/plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
+
+## Active Delivery
+
+- [Active permission review](plans/2026-08-04-active-permission-review.md): projects current-session durable permission requests to a transient Pi native Selector while preserving Kernel authorization and non-interactive natural-language resolution.
+- [Command surface and task selection cleanup](plans/2026-08-04-command-surface-and-task-selection-cleanup.md): first-batch removal of non-functional command surfaces, richer Executor/Profile facts, and title-first Task completion in AnyFusion-Pi.
+- [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
 
 ## Future Roadmap
 
@@ -70,18 +77,17 @@ The completed [Executor probe diagnostics and Docker shell fix plan](archive/pla
 
 The completed [Planner native Codex session integration plan](archive/plans/2026-07-29-planner-native-codex-session-integration.md) records session-to-thread binding, native resume, Planner-only prompts and the two-turn memory smoke.
 
+The failed [AnyFusion Codex native TUI migration](archive/plans/2026-07-30-codex-native-tui-migration.md) records the abandoned downstream Codex TUI route. Its Planner/Kernel/Executor boundaries remain historical design input, but its Rust build and release cost made the implementation route unacceptable; the Pi migration plan is now authoritative for replacement work.
+
 The [2026-06-30 temporary issue handoff](archive/ISSUES-2026-06-30-temp-handover.md)
 is archived because several entries reference modules removed by later cleanup.
 It is historical review context, not an active issue tracker or architecture map.
 
 ## Operational Notes
 
-- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): run the TUI in a container with a real PTY, browse `/workspace` files, and configure the separate Planner Codex, Executor Codex, and Executor Pi provider files under `docker/`. The default planner + executor is Codex (`gpt-5.6-luna`); Pi is retained as an executor candidate.
-- The Ink TUI remains a supported implementation. A possible future
-  Codex-native UI direction is exploratory and does not authorize removing the
-  current input, completion, task/guidance, progress, Feishu, or background-pool
-  behavior.
-- [Tech Debt](tech-debt/): the active post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
+- [Docker + SSH runtime](current/technical-overview.md#running-in-docker-windows--containerized): the checked-in runtime now consumes the self-contained AnyFusion-Pi Planner image and keeps Planner, Executor Codex, and Executor Pi provider/config boundaries independent.
+- The failed AnyFusion-Codex Planner wiring has been removed from active source, Docker templates, and smoke scripts. The archived migration plan and Git history remain the rollback/audit record; the original Ink source, tests, and dependencies remain a standby module and must not be deleted.
+- [Tech Debt](tech-debt/): [Pi Planner behavior parity and PlanningAgentPlan v7](tech-debt/planner-pi-migration-parity-debt.md) closed on 2026-08-04 after Linux Docker acceptance and final user verification. The post-Phase-6 first-release cleanup handoff is tracked in [redundancy and compatibility cleanup](tech-debt/post-phase6-first-release-redundancy-cleanup.md). Active command/TUI work is tracked in the [UX backlog](tech-debt/task-command-and-tui-ux-backlog.md), with visible command placeholders listed in [pending command implementations](tech-debt/pending-command-implementations.md). The closed [natural-language inference inventory](archive/tech-debt/nl-keyword-semantic-inference-debt.md) is retained as historical input to the completed P0 cleanup. The closed [Kernel decision authority record](archive/tech-debt/kernel-decision-authority-scattered-in-runtime-debt.md) documents how Phase 3–5 converged every strategic decision onto `ControlKernel`. The closed [LangGraph durable workflow evaluation](archive/tech-debt/langgraph-durable-workflow-adoption-candidates.md) records why Phase 4 retained the smaller self-owned workflow. Closed capability and workspace-partition records also remain under [archive/tech-debt/](archive/tech-debt/).
 
 ## For Agents
 
