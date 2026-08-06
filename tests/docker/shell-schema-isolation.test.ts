@@ -12,6 +12,11 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(runtimeDockerfile).toContain('COPY --from=anyfusion-pi . .');
     expect(runtimeDockerfile).toContain('exec /usr/local/bin/node /opt/anyfusion-planner/app/');
     expect(runtimeDockerfile).toContain('test ! -e /opt/anyfusion-planner/node');
+    expect(runtimeDockerfile).toContain('@openai/codex@0.144.1');
+    expect(runtimeDockerfile).toContain('@earendil-works/pi-coding-agent@0.80.2');
+    expect(runtimeDockerfile).toContain('/app/dist/pi-attempt-tools.ts /opt/metaclaw/pi-attempt-tools.ts');
+    expect(runtimeDockerfile).toContain('/app/dist/capability-request-cli.js');
+    expect(runtimeDockerfile).toContain('/app/dist/capability-use-cli.js');
     expect(runtimeDockerfile).not.toContain('ANYFUSION_PI_IMAGE');
     expect(runtimeDockerfile).not.toContain('FROM ${ANYFUSION_PI_IMAGE}');
     expect(shell).toContain('docker build --build-context "anyfusion-pi=$anyFusionPiRoot"');
@@ -92,14 +97,14 @@ describe('Docker shell SQLite schema isolation', () => {
     );
   });
 
-  it('mounts the Docker socket and recreates stale containers without that mount', () => {
+  it('uses the worktree backend without mounting the Docker socket', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
+    const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
 
-    expect(shell).toContain(
-      "--mount 'type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock'",
-    );
-    expect(shell).toContain('function Test-ContainerHasDockerSocket');
-    expect(shell).toContain('if (-not (Test-ContainerHasDockerSocket))');
+    expect(shell).toContain('-e METACLAW_EXECUTOR_BACKEND=worktree');
+    expect(runtimeDockerfile).toContain('METACLAW_EXECUTOR_BACKEND=worktree');
+    expect(shell).not.toContain('/var/run/docker.sock');
+    expect(shell).not.toContain('function Test-ContainerHasDockerSocket');
     expect(shell).toContain('Start-ShellContainer');
   });
 
@@ -118,47 +123,32 @@ describe('Docker shell SQLite schema isolation', () => {
     );
   });
 
-  it('bootstraps the Docker-internal control-plane topology used by attempt sandboxes', () => {
+  it('does not bootstrap sibling-container topology for the default demo', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const persistEnv = readFileSync(resolve('docker/persist-ssh-environment.sh'), 'utf-8');
+    const smoke = readFileSync(resolve('scripts/smoke-metaclaw-real-task.mjs'), 'utf-8');
 
-    expect(shell).toContain("$controlNetwork = 'metaclaw-control'");
-    expect(shell).toContain("$controlHost = 'metaclaw-control'");
-    expect(shell).toContain('docker network create --internal $controlNetwork');
     expect(shell).toContain('--network bridge');
-    expect(shell).toContain('docker network connect --alias $controlHost $controlNetwork $container');
-    expect(shell).toContain('-e METACLAW_CONTROL_NETWORK=$controlNetwork');
-    expect(shell).toContain('-e METACLAW_CONTROL_HOST=$controlHost');
-    expect(shell).toContain('-e "METACLAW_DOCKER_HOST_PATH_MAP=$hostPathMap"');
-    expect(shell).toContain('function Build-DockerHostPathMap');
-    expect(shell).toContain('function Ensure-AttemptImages');
-    expect(shell).toContain('function Test-ContainerHasControlNetwork');
-    expect(shell).toContain('function Test-ContainerHasBridgeNetwork');
-    expect(shell).toContain('function Test-ContainerHasControlEnv');
-    expect(shell).toContain('if (-not (Test-ContainerHasControlNetwork)');
-    expect(persistEnv).toContain('METACLAW_CONTROL_NETWORK');
-    expect(persistEnv).toContain('METACLAW_CONTROL_HOST');
-    expect(persistEnv).toContain('METACLAW_DOCKER_HOST_PATH_MAP');
+    expect(shell).not.toContain('docker network create --internal');
+    expect(shell).not.toContain('function Build-DockerHostPathMap');
+    expect(shell).not.toContain('function Ensure-AttemptImages');
+    expect(shell).not.toContain('Dockerfile.attempt-codex');
+    expect(shell).not.toContain('Dockerfile.attempt-pi');
+    expect(smoke).toContain("'-e', 'METACLAW_EXECUTOR_BACKEND=worktree'");
+    expect(smoke).toContain("'-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`");
+    expect(smoke).not.toContain('src=//var/run/docker.sock');
+    expect(smoke).not.toContain("['network', 'create', '--internal'");
+    expect(smoke).not.toContain("['network', 'connect'");
+    expect(smoke).not.toContain("'docker/Dockerfile.attempt-codex'");
+    expect(smoke).not.toContain("'docker/Dockerfile.attempt-pi'");
+    expect(persistEnv).toContain('METACLAW_EXECUTOR_BACKEND');
+    expect(persistEnv).not.toContain('METACLAW_DOCKER_HOST_PATH_MAP');
   });
 
-  it('clears only builtin Executor image pins after starting the persistent shell container', () => {
+  it('does not mutate persisted Executor image pins in worktree mode', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
 
-    expect(shell).toContain('function Reset-BuiltinExecutorImagePins');
-    expect(shell).toContain(
-      "UPDATE agent_classes SET resolved_image_id = NULL WHERE name IN (?, ?)",
-    );
-    expect(shell).toContain(".run('codex-cli', 'pi-agent')");
-
-    const startContainer = shell.slice(
-      shell.indexOf('function Start-ShellContainer'),
-      shell.indexOf('function Ensure-ContainerRunning'),
-    );
-    expect(startContainer.indexOf('docker run -d')).toBeLessThan(
-      startContainer.indexOf('Reset-BuiltinExecutorImagePins'),
-    );
-    expect(startContainer.indexOf('Reset-BuiltinExecutorImagePins')).toBeLessThan(
-      startContainer.indexOf('SSH container ready'),
-    );
+    expect(shell).not.toContain('function Reset-BuiltinExecutorImagePins');
+    expect(shell).not.toContain('UPDATE agent_classes SET resolved_image_id');
   });
 });
