@@ -1,0 +1,55 @@
+{
+  "name": "anyfusion",
+  "version": "1.2.0-preview.0",
+  "description": "A company-backed AI Task OS for durable, policy-governed agent workflows.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IFOSR/metawork.git"
+  },
+  "bin": {
+    "anyfusion": "./dist/index.js",
+    "metaclaw": "./dist/index.js",
+    "request_capability": "./dist/capability-request-cli.js",
+    "use_capability": "./dist/capability-use-cli.js"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v7.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "setup:native": "node scripts/install-native-macos.mjs",
+    "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
+    "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.71.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^11.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "dayjs": "^1.11.0",
+    "ink": "^5.0.0",
+    "js-yaml": "^4.3.0",
+    "nanoid": "^5.0.0",
+    "pino": "^9.0.0",
+    "react": "^18.3.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/js-yaml": "^4.0.0",
+    "@types/react": "^18.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "private": true
+}

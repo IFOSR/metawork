@@ -1,0 +1,18 @@
+{
+  "providers": {
+    "anyint": {
+      "baseUrl": "__OPENAI_BASE_URL__",
+      "api": "openai-responses",
+      "apiKey": "$OPENAI_API_KEY",
+      "models": [
+        {
+          "id": "gpt-5.6-terra",
+          "reasoning": true,
+          "compat": {
+            "supportsReasoningEffort": true
+          }
+        }
+      ]
+    }
+  }
+}

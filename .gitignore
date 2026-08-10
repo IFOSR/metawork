@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.db
+.DS_Store
+coverage/
+projects/
+.tmp/
+.tmp-*/
+.deepseek/
+metaclaw-tasks/
+docker/*.env
+!docker/*.env.example
+.claude/
+docs/competitive-analysis/
+.agents/skills/research-metaclaw-competitors/
+docs/sales/

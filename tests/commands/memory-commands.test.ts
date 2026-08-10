@@ -1,0 +1,103 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../src/storage/migrations.js';
+import { PreferenceRepo } from '../../src/storage/preference-repo.js';
+import { MemoryEngine } from '../../src/memory/memory-engine.js';
+import { addMemory, editMemory, listMemories } from '../../src/commands/memory-commands.js';
+import type { CommandContext, ResolvedCommandArgs } from '../../src/commands/catalog.js';
+
+function createTestDb() {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  runMigrations(db);
+  return db;
+}
+
+function args(
+  positionals: ResolvedCommandArgs['positionals'],
+  options: ResolvedCommandArgs['options'] = {},
+): ResolvedCommandArgs {
+  return { positionals, options };
+}
+
+describe('memory commands', () => {
+  let engine: MemoryEngine;
+  let db: Database.Database;
+  let context: CommandContext;
+
+  beforeEach(() => {
+    db = createTestDb();
+    const prefRepo = new PreferenceRepo(db);
+    engine = new MemoryEngine(prefRepo);
+    context = { memoryEngine: engine, db } as never;
+  });
+
+  it('supports editing an existing preference', async () => {
+    const pref = engine.addManual({
+      content: '输出用 Markdown 格式',
+      scope: 'global',
+      type: 'style',
+    });
+
+    const result = await editMemory(args({ memoryId: pref.id, content: '输出用表格格式' }), context);
+
+    expect(result.content).toContain('已更新偏好');
+    expect(engine.list()[0].content).toBe('输出用表格格式');
+  });
+
+  it('supports adding a scoped preference with subject flags', async () => {
+    const result = await addMemory(
+      args(
+        { content: '给张总的邮件用正式语气' },
+        { scope: 'contact', type: 'contact', subject: '张总' },
+      ),
+      context,
+    );
+
+    expect(result.content).toContain('已添加偏好');
+
+    const pref = engine.list()[0];
+    expect(pref.scope).toBe('contact');
+    expect(pref.type).toBe('contact');
+    expect(pref.subject).toBe('张总');
+    expect(pref.content).toBe('给张总的邮件用正式语气');
+  });
+
+  it('supports editing scope and subject for an existing preference', async () => {
+    const pref = engine.addManual({
+      content: '当前任务保留表格结构',
+      scope: 'global',
+      type: 'style',
+    });
+
+    const result = await editMemory(
+      args(
+        { memoryId: pref.id, content: '当前任务保留表格结构并增加风险栏目' },
+        { scope: 'task-local', type: 'style', subject: 'task_demo123' },
+      ),
+      context,
+    );
+
+    expect(result.content).toContain('已更新偏好');
+
+    const updated = engine.list()[0];
+    expect(updated.scope).toBe('task-local');
+    expect(updated.subject).toBe('task_demo123');
+    expect(updated.content).toBe('当前任务保留表格结构并增加风险栏目');
+  });
+
+  it('shows scope and subject in the default memory list output', async () => {
+    engine.addManual({
+      content: 'Phoenix 项目统一使用 Phoenix 术语',
+      scope: 'project',
+      type: 'domain',
+      subject: 'Phoenix',
+    });
+
+    const result = await listMemories(args({}), context);
+
+    expect(result.content).toContain('[project]');
+    expect(result.content).toContain('(Phoenix)');
+    expect(result.content).toContain('Phoenix 项目统一使用 Phoenix 术语');
+  });
+});

@@ -1,0 +1,63 @@
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
+import { describe, expect, it } from 'vitest';
+
+const projectRoot = resolve(__dirname, '../..');
+
+function readSource(path: string): string {
+  return readFileSync(resolve(projectRoot, path), 'utf-8');
+}
+
+function coreFileExists(path: string): boolean {
+  return existsSync(resolve(projectRoot, path));
+}
+
+describe('execution module architecture boundaries', () => {
+  it('keeps execution runtime implementation in src/execution and out of core', () => {
+    const runtimeFiles = [
+      'execution-runtime',
+    ];
+
+    for (const file of runtimeFiles) {
+      expect(coreFileExists(`src/execution/${file}.ts`)).toBe(true);
+      expect(coreFileExists(`src/core/${file}.ts`)).toBe(false);
+    }
+  });
+
+  it('does not retain retired strategy and orchestration implementations', () => {
+    const retiredFiles = [
+      'src/core/execution-strategy-planner.ts',
+      'src/core/execution-policy.ts',
+      'src/execution/agentic-loop-controller.ts',
+      'src/execution/multi-executor-orchestrator.ts',
+    ];
+
+    for (const file of retiredFiles) {
+      expect(coreFileExists(file)).toBe(false);
+    }
+  });
+
+  it('keeps execution aggregation implementation in src/execution and out of core', () => {
+    const implementationSource = readSource('src/execution/execution-aggregator.ts');
+
+    expect(implementationSource).toContain('export class ExecutionAggregator');
+    expect(implementationSource).toContain('export interface ExecutionAggregationInput');
+    expect(coreFileExists('src/core/execution-aggregator.ts')).toBe(false);
+  });
+
+  it('keeps execution progress tracking implementation in src/execution and out of core', () => {
+    const implementationSource = readSource('src/execution/execution-progress-service.ts');
+
+    expect(implementationSource).toContain('export class ExecutionProgressService');
+    expect(implementationSource).toContain('export interface ExecutionProgressTracker');
+    expect(coreFileExists('src/core/execution-progress-service.ts')).toBe(false);
+  });
+
+  it('keeps persistent workspace implementation in src/execution and removes the legacy target service', () => {
+    const implementationSource = readSource('src/execution/workspace-store.ts');
+
+    expect(implementationSource).toContain('export class WorkspaceStore');
+    expect(coreFileExists('src/execution/workspace-target-service.ts')).toBe(false);
+    expect(coreFileExists('src/core/workspace-target-service.ts')).toBe(false);
+  });
+});
