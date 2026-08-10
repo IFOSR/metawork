@@ -41,4 +41,4 @@ installing or modifying the user's existing Codex and Pi CLIs.
   directory, connected to MetaClaw, reached `planner idle`, and exited cleanly
   through `/exit` without a model request.
 
-Closing commit: Pending.
+Closing commit: `7a5603b`.
