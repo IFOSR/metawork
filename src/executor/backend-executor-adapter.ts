@@ -2,12 +2,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentClass, ExecutorResult } from '../core/types.js';
-import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
-import { DEFAULT_ATTEMPT_SANDBOX_LIMITS } from '../execution/attempt-sandbox.js';
+import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
+import { DEFAULT_ATTEMPT_EXECUTION_LIMITS } from '../execution/attempt-execution-backend.js';
 import type { ExecutorAdapter, ExecutorInput } from './adapter.js';
 import { buildCodexNonInteractiveArgs } from './codex-args.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
-import type { AttemptSandboxRepositoryPort } from '../execution/repositories.js';
+import type { AttemptExecutionRepositoryPort } from '../execution/repositories.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { AttemptModelGatewayServer } from '../execution/attempt-model-gateway.js';
 import { normalizeExecutorFailure } from './error-utils.js';
@@ -19,7 +19,7 @@ const EXECUTOR_PROVIDER_ENV_KEYS = [
   'PI_TELEMETRY',
 ] as const;
 
-const SANDBOX_SAFE_PROVIDER_ENV_KEYS = [
+const BACKEND_SAFE_PROVIDER_ENV_KEYS = [
   'PI_SKIP_VERSION_CHECK',
   'PI_TELEMETRY',
 ] as const;
@@ -29,27 +29,29 @@ interface NativeExecutorEnvironment {
   temporaryRoot: string;
 }
 
-export class SandboxedExecutorAdapter implements ExecutorAdapter {
+export class BackendExecutorAdapter implements ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation = false;
   private readonly activeContainers = new Map<string, string>();
 
   constructor(
     private readonly agentClass: AgentClass,
-    private readonly sandbox: AttemptSandboxPort,
-    private readonly repository?: AttemptSandboxRepositoryPort,
+    private readonly backend: AttemptExecutionBackend,
+    private readonly repository?: AttemptExecutionRepositoryPort,
   ) {
     this.name = agentClass.name;
   }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     const startedAt = Date.now();
-    const binding = input.sandbox;
-    if (!binding) return failed('sandbox binding is required', 'sandbox_binding_missing', startedAt);
-    if (!this.agentClass.permissionProfileId) {
-      return failed(`AgentClass ${this.name} has no permission profile`, 'agent_class_sandbox_unconfigured', startedAt);
+    const binding = input.executionBinding;
+    if (!binding) {
+      return failed('execution binding is required', 'execution_binding_missing', startedAt);
     }
-    const worktreeBackend = (this.sandbox.kind ?? 'container') === 'worktree';
+    if (!this.agentClass.permissionProfileId) {
+      return failed(`AgentClass ${this.name} has no permission profile`, 'agent_class_execution_unconfigured', startedAt);
+    }
+    const worktreeBackend = (this.backend.kind ?? 'container') === 'worktree';
     if (worktreeBackend && !['codex-cli', 'pi-agent'].includes(this.name)) {
       return failed(
         `Worktree execution supports only canonical Codex and Pi AgentClasses: ${this.name}`,
@@ -57,8 +59,8 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         startedAt,
       );
     }
-    const nativePaths = (this.sandbox.pathMode
-      ?? (this.sandbox.kind === 'worktree' ? 'native' : 'container')) === 'native';
+    const nativePaths = (this.backend.pathMode
+      ?? (this.backend.kind === 'worktree' ? 'native' : 'container')) === 'native';
     const usesDockerProxy = !nativePaths && this.agentClass.permissionProfileId === 'public-web-research';
     const executionWorkspacePath = nativePaths ? binding.workspacePath : '/workspace';
     const resultPath = join(binding.workspacePath, '.metaclaw', 'results', `${binding.attemptId}.md`);
@@ -94,7 +96,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       if (!upstreamBaseUrl || !upstreamApiKey) {
         throw new Error('attempt model gateway requires OPENAI_BASE_URL and OPENAI_API_KEY');
       }
-      const sandboxProviderEnvironment = Object.fromEntries(SANDBOX_SAFE_PROVIDER_ENV_KEYS.flatMap(key => {
+      const backendProviderEnvironment = Object.fromEntries(BACKEND_SAFE_PROVIDER_ENV_KEYS.flatMap(key => {
         const value = providerEnvironment[key];
         return value ? [[key, value]] : [];
       }));
@@ -104,15 +106,15 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         advertisedHost: nativePaths ? '127.0.0.1' : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control',
       });
       const gateway = await modelGateway.start();
-      sandboxProviderEnvironment.OPENAI_BASE_URL = gateway.baseUrl;
-      sandboxProviderEnvironment.OPENAI_API_KEY = gateway.apiKey;
+      backendProviderEnvironment.OPENAI_BASE_URL = gateway.baseUrl;
+      backendProviderEnvironment.OPENAI_API_KEY = gateway.apiKey;
       const nativeExecutor = nativePaths
         ? await this.prepareNativeExecutorEnvironment(upstreamBaseUrl, gateway.baseUrl)
         : null;
       nativeExecutorTemporaryRoot = nativeExecutor?.temporaryRoot ?? null;
       const imageRef = this.agentClass.executionImageRef ?? `worktree:${this.name}`;
-      const resolvedImageId = this.agentClass.resolvedImageId ?? await this.sandbox.resolveImage(imageRef);
-      const record = await this.sandbox.create({
+      const resolvedImageId = this.agentClass.resolvedImageId ?? await this.backend.resolveImage(imageRef);
+      const record = await this.backend.create({
         attemptId: binding.attemptId,
         taskId: binding.taskId,
         generationId: binding.generationId,
@@ -126,7 +128,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         args,
         environment: {
           ...nativeExecutor?.environment,
-          ...sandboxProviderEnvironment,
+          ...backendProviderEnvironment,
           METACLAW_ATTEMPT_ID: binding.attemptId,
           METACLAW_CAPABILITY_MCP_URL: binding.capabilityBinding?.mcpUrl ?? '',
           METACLAW_CAPABILITY_URL: binding.capabilityBinding?.jsonUrl ?? '',
@@ -153,7 +155,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         controlNetwork: binding.controlNetwork,
         egressMode: usesDockerProxy ? 'proxy' : 'disabled',
         nestedSandbox: !nativePaths && this.name === 'codex-cli' ? 'codex-workspace-write' : undefined,
-        limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
+        limits: DEFAULT_ATTEMPT_EXECUTION_LIMITS,
       });
       const createdAt = new Date().toISOString();
       this.repository?.create({
@@ -177,12 +179,12 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         updatedAt: createdAt,
       });
       this.activeContainers.set(binding.attemptId, record.containerId);
-      binding.onContainerCreated?.(record.containerId);
-      input.onProgress?.({ kind: 'status', text: `${this.sandbox.kind ?? 'container'} execution ${record.containerId.slice(0, 12)} started` });
-      await this.sandbox.start(record.containerId);
+      binding.onExecutionCreated?.(record.containerId);
+      input.onProgress?.({ kind: 'status', text: `${this.backend.kind ?? 'container'} execution ${record.containerId.slice(0, 12)} started` });
+      await this.backend.start(record.containerId);
       this.repository?.update(binding.attemptId, { status: 'running', updatedAt: new Date().toISOString() });
-      const exitCode = await this.sandbox.wait(record.containerId);
-      const logs = await this.sandbox.logs(record.containerId);
+      const exitCode = await this.backend.wait(record.containerId);
+      const logs = await this.backend.logs(record.containerId);
       this.repository?.update(binding.attemptId, {
         status: 'exited', exitCode, resultCollectedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       });
@@ -194,20 +196,20 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         const runtimeWorkspacePath = binding.workspacePath.replaceAll('\\', '/');
         output = output.replaceAll(/\/workspace(?=\/|[\s`"')\]}]|$)/gu, runtimeWorkspacePath);
       }
-      await this.sandbox.remove(record.containerId);
+      await this.backend.remove(record.containerId);
       this.repository?.update(binding.attemptId, { status: 'removed', cleanupStatus: 'removed', updatedAt: new Date().toISOString() });
       this.activeContainers.delete(binding.attemptId);
       return exitCode === 0 && output
         ? { success: true, output, exitCode, durationMs: Date.now() - startedAt }
-        : failedExecution(logs.trim() || `sandbox exited with code ${exitCode}`, startedAt, exitCode);
+        : failedExecution(logs.trim() || `execution backend exited with code ${exitCode}`, startedAt, exitCode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       let cleanupError: string | null = null;
       const activeContainerId = this.activeContainers.get(binding.attemptId) ?? null;
       if (activeContainerId) {
         try {
-          await this.sandbox.stop(activeContainerId);
-          await this.sandbox.remove(activeContainerId);
+          await this.backend.stop(activeContainerId);
+          await this.backend.remove(activeContainerId);
           this.repository?.update(binding.attemptId, {
             status: 'removed', cleanupStatus: 'removed', cleanupError: null, updatedAt: new Date().toISOString(),
           });
@@ -221,7 +223,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         });
       }
       this.activeContainers.delete(binding.attemptId);
-      return failed(message, 'sandbox_configuration_failure', startedAt);
+      return failed(message, 'execution_backend_configuration_failure', startedAt);
     } finally {
       await modelGateway?.close().catch(() => undefined);
       if (nativeExecutorTemporaryRoot) {
@@ -233,7 +235,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
   async probe(
     previousFailure?: import('../core/kernel-failure.js').KernelFailure | null,
   ): Promise<import('./adapter.js').ExecutorProbeResult> {
-    if (this.sandbox.kind === 'worktree' && !['codex-cli', 'pi-agent'].includes(this.name)) {
+    if (this.backend.kind === 'worktree' && !['codex-cli', 'pi-agent'].includes(this.name)) {
       return {
         available: false,
         failure: {
@@ -250,25 +252,25 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
         failure: {
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'agent_class_sandbox_unconfigured',
+          code: 'agent_class_execution_unconfigured',
           summary: `AgentClass ${this.name} has no verified image or permission profile`,
         },
       };
     }
     try {
-      if (this.sandbox.kind !== 'worktree') {
+      if (this.backend.kind !== 'worktree') {
         if (!this.agentClass.executionImageRef || !this.agentClass.resolvedImageId) {
           return {
             available: false,
             failure: {
               kind: 'configuration',
               scope: 'agent_class',
-              code: 'agent_class_sandbox_unconfigured',
+              code: 'agent_class_execution_unconfigured',
               summary: `AgentClass ${this.name} has no verified image or permission profile`,
             },
           };
         }
-        const imageId = await this.sandbox.resolveImage(this.agentClass.executionImageRef);
+        const imageId = await this.backend.resolveImage(this.agentClass.executionImageRef);
         if (imageId !== this.agentClass.resolvedImageId) {
           return {
             available: false,
@@ -346,7 +348,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       ? [this.activeContainers.get(attemptId)].filter((id): id is string => Boolean(id))
       : [...this.activeContainers.values()];
     for (const containerId of containerIds) {
-      void this.sandbox.stop(containerId).catch(() => undefined);
+      void this.backend.stop(containerId).catch(() => undefined);
     }
   }
 
@@ -367,7 +369,7 @@ export class SandboxedExecutorAdapter implements ExecutorAdapter {
       });
       const runtimeMcpArgs: string[] = [];
       const evidenceMcpUrl = input.context.evidenceTools.binding?.mcpUrl;
-      const capabilityMcpUrl = input.sandbox?.capabilityBinding?.mcpUrl;
+      const capabilityMcpUrl = input.executionBinding?.capabilityBinding?.mcpUrl;
       if (evidenceMcpUrl) {
         runtimeMcpArgs.push(
           '-c', `mcp_servers.metaclaw_evidence.url=${JSON.stringify(evidenceMcpUrl)}`,

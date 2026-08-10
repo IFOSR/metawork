@@ -1,34 +1,34 @@
-import type { AttemptSandboxPort } from './attempt-sandbox.js';
-import type { AttemptSandboxPersistenceRecord, AttemptSandboxRepositoryPort } from './repositories.js';
+import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
+import type { AttemptExecutionPersistenceRecord, AttemptExecutionRepositoryPort } from './repositories.js';
 
-export interface AttemptSandboxReconciliation {
+export interface AttemptExecutionReconciliation {
   orphanContainerIds: string[];
-  lostAttempts: AttemptSandboxPersistenceRecord[];
-  exitedAttempts: AttemptSandboxPersistenceRecord[];
+  lostAttempts: AttemptExecutionPersistenceRecord[];
+  exitedAttempts: AttemptExecutionPersistenceRecord[];
 }
 
 /** Reconciles trusted Docker labels with durable attempt records at control-plane startup. */
-export class AttemptSandboxReconciler {
+export class AttemptExecutionBackendReconciler {
   constructor(
-    private readonly sandbox: AttemptSandboxPort,
-    private readonly repository: AttemptSandboxRepositoryPort,
+    private readonly backend: AttemptExecutionBackend,
+    private readonly repository: AttemptExecutionRepositoryPort,
   ) {}
 
   async reconcile(input: {
-    checkpoint(record: AttemptSandboxPersistenceRecord): Promise<void>;
-  }): Promise<AttemptSandboxReconciliation> {
-    const managed = await this.sandbox.listManaged();
+    checkpoint(record: AttemptExecutionPersistenceRecord): Promise<void>;
+  }): Promise<AttemptExecutionReconciliation> {
+    const managed = await this.backend.listManaged();
     const active = this.repository.listActive();
     const managedById = new Map(managed.map(record => [record.containerId, record]));
     const activeByContainer = new Map(active.map(record => [record.containerId, record]));
     const orphanContainerIds: string[] = [];
-    const lostAttempts: AttemptSandboxPersistenceRecord[] = [];
-    const exitedAttempts: AttemptSandboxPersistenceRecord[] = [];
+    const lostAttempts: AttemptExecutionPersistenceRecord[] = [];
+    const exitedAttempts: AttemptExecutionPersistenceRecord[] = [];
 
     for (const container of managed) {
       if (activeByContainer.has(container.containerId)) continue;
-      await this.sandbox.stop(container.containerId);
-      await this.sandbox.remove(container.containerId);
+      await this.backend.stop(container.containerId);
+      await this.backend.remove(container.containerId);
       orphanContainerIds.push(container.containerId);
     }
 
@@ -51,8 +51,8 @@ export class AttemptSandboxReconciler {
       } else {
         lostAttempts.push(record);
       }
-      await this.sandbox.stop(container.containerId);
-      await this.sandbox.remove(container.containerId);
+      await this.backend.stop(container.containerId);
+      await this.backend.remove(container.containerId);
       this.repository.update(record.attemptId, {
         status: 'removed', cleanupStatus: 'removed', updatedAt: new Date().toISOString(),
       });

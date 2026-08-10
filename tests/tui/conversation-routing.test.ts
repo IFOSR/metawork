@@ -12,7 +12,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, directReplyPlan, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -67,8 +67,8 @@ async function typeAndSubmit(text: string) {
   await flushUpdates();
 }
 
-async function waitForExecutorCall(attemptSandbox: FakeAttemptSandbox) {
-  for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+async function waitForExecutorCall(attemptExecutionBackend: FakeAttemptExecutionBackend) {
+  for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 10));
     await flushUpdates();
   }
@@ -87,14 +87,14 @@ describe('App conversation routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '你好，我在。' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '你好，我在。' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_routing',
@@ -112,7 +112,7 @@ describe('App conversation routing', () => {
     await flushUpdates();
     await flushUpdates();
 
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(app.lastFrame()).toContain('【MetaClaw｜理解用户请求】');
     expect(app.lastFrame()).toContain('这是一条测试直接回答');
@@ -134,7 +134,7 @@ describe('App conversation routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => ({
       body: ['第一轮回复', '第二轮回复'][attemptIndex],
     }));
 
@@ -143,7 +143,7 @@ describe('App conversation routing', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_visible_user_turn_break',
@@ -201,7 +201,7 @@ describe('App conversation routing', () => {
       },
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '最容易被替代的是通用 prompt 编排，最难被替代的是调度、状态与恢复。',
     }));
 
@@ -210,7 +210,7 @@ describe('App conversation routing', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_focus',
@@ -224,13 +224,13 @@ describe('App conversation routing', () => {
 
     await typeAndSubmit('未来最容易被基座模型替代的模块是什么');
     await typeAndSubmit('可以，继续');
-    await waitForExecutorCall(attemptSandbox);
+    await waitForExecutorCall(attemptExecutionBackend);
     for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('最容易被替代的是通用 prompt 编排'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
 
-    expect(attemptSandbox.create).toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).toHaveBeenCalled();
     expect(app.lastFrame()).toContain('最容易被替代的是通用 prompt 编排');
     expect(app.lastFrame()).not.toContain(`关联到任务 #${parkedTask.id}`);
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('parked');
@@ -248,7 +248,7 @@ describe('App conversation routing', () => {
     const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
     }));
 
@@ -257,7 +257,7 @@ describe('App conversation routing', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_conversation_followup_task',
@@ -298,10 +298,10 @@ describe('App conversation routing', () => {
 
     await typeAndSubmit('未来随着基座模型的能力越来越强，是否还需要 harness');
     await typeAndSubmit('把刚才那段回答整理成三点结论');
-    await waitForExecutorCall(attemptSandbox);
+    await waitForExecutorCall(attemptExecutionBackend);
 
-    expect(attemptSandbox.create).toHaveBeenCalled();
-    const followUpCall = attemptSandbox.create.mock.calls
+    expect(attemptExecutionBackend.create).toHaveBeenCalled();
+    const followUpCall = attemptExecutionBackend.create.mock.calls
       .map(call => call[0])
       .find(input => input.taskId !== parkedTaskId);
     expect(followUpCall).toBeDefined();

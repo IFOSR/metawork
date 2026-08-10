@@ -1,19 +1,20 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
-  AttemptSandboxPort,
-  AttemptSandboxRecord,
-  CreateAttemptSandboxInput,
-} from './attempt-sandbox.js';
+  AttemptExecutionBackend,
+  AttemptExecutionRecord,
+  CreateAttemptExecutionInput,
+} from './attempt-execution-backend.js';
 
 const execFileAsync = promisify(execFile);
+// Retained for compatibility with schema-v30 recovery and existing containers.
 const MANAGED_LABEL = 'io.metaclaw.attempt-sandbox';
 
 export interface DockerCommandRunner {
   run(args: string[]): Promise<string>;
 }
 
-export interface DockerCliAttemptSandboxOptions {
+export interface DockerCliAttemptExecutionBackendOptions {
   /** Maps paths visible in a containerized control plane to paths understood by the sibling-container Engine. */
   sourcePathMappings?: Record<string, string>;
 }
@@ -36,14 +37,14 @@ interface DockerInspectPayload {
   Config: { Labels?: Record<string, string> };
 }
 
-export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
+export class DockerCliAttemptExecutionBackend implements AttemptExecutionBackend {
   readonly kind = 'container' as const;
   readonly pathMode = 'container' as const;
   private readonly sourcePathMappings: Array<[string, string]>;
 
   constructor(
     private readonly runner: DockerCommandRunner = new DockerCliCommandRunner(),
-    options: DockerCliAttemptSandboxOptions = {},
+    options: DockerCliAttemptExecutionBackendOptions = {},
   ) {
     const mappings = options.sourcePathMappings ?? mappingsFromEnvironment();
     this.sourcePathMappings = Object.entries(mappings)
@@ -68,7 +69,7 @@ export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
     }
   }
 
-  async create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord> {
+  async create(input: CreateAttemptExecutionInput): Promise<AttemptExecutionRecord> {
     this.validateCreateInput(input);
     const currentImageId = await this.resolveImage(input.imageRef);
     if (currentImageId !== input.resolvedImageId) {
@@ -138,7 +139,7 @@ export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
     await this.runner.run(['unpause', containerId]);
   }
 
-  async inspect(containerId: string): Promise<AttemptSandboxRecord | null> {
+  async inspect(containerId: string): Promise<AttemptExecutionRecord | null> {
     try {
       const output = await this.runner.run(['inspect', containerId]);
       const payload = (JSON.parse(output) as DockerInspectPayload[])[0];
@@ -165,15 +166,15 @@ export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
     await this.runner.run(['rm', containerId]);
   }
 
-  async listManaged(): Promise<AttemptSandboxRecord[]> {
+  async listManaged(): Promise<AttemptExecutionRecord[]> {
     const ids = (await this.runner.run([
       'ps', '-aq', '--filter', `label=${MANAGED_LABEL}=true`,
     ])).split(/\s+/u).filter(Boolean);
     const records = await Promise.all(ids.map(id => this.inspect(id)));
-    return records.filter((record): record is AttemptSandboxRecord => Boolean(record));
+    return records.filter((record): record is AttemptExecutionRecord => Boolean(record));
   }
 
-  private validateCreateInput(input: CreateAttemptSandboxInput): void {
+  private validateCreateInput(input: CreateAttemptExecutionInput): void {
     if (!input.resolvedImageId.startsWith('sha256:')) {
       throw new Error('resolved image ID must be immutable');
     }
@@ -208,7 +209,7 @@ export class DockerCliAttemptSandboxAdapter implements AttemptSandboxPort {
     }
   }
 
-  private fromInspect(payload: DockerInspectPayload): AttemptSandboxRecord {
+  private fromInspect(payload: DockerInspectPayload): AttemptExecutionRecord {
     const status = payload.State.Paused
       ? 'paused'
       : payload.State.Status === 'running'

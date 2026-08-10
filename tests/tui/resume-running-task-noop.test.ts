@@ -16,7 +16,7 @@ import {
   workGraphPlan,
   taskControlPlan,
 } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -95,7 +95,7 @@ describe('App resume-running task noop', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const runningDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ wait: runningDeferred.promise }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ wait: runningDeferred.promise }));
 
     // Turn 1 creates the durable task; turn 2 references the now-running task and
     // asks to continue it. The running task id is only known after turn 1, so the
@@ -121,7 +121,7 @@ describe('App resume-running task noop', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_resume_running_noop',
@@ -143,11 +143,11 @@ describe('App resume-running task noop', () => {
     const createdTask = taskRepo.findByStatus('running')[0];
     expect(createdTask).toBeTruthy();
     const taskId = createdTask!.id;
-    await waitForCondition(() => attemptSandbox.create.mock.calls.length === 1);
+    await waitForCondition(() => attemptExecutionBackend.create.mock.calls.length === 1);
 
     await typeAndSubmit('把之前挂起的任务继续完成');
 
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
     expect(taskRepo.findByStatus('ready')).toHaveLength(0);
     expect(taskRepo.findAll()).toHaveLength(1);
     expect(app.lastFrame()).toContain(`任务 #${taskId} 已在执行中，无需再次排队`);

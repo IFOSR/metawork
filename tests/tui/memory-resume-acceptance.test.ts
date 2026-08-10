@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -102,11 +102,11 @@ describe('Round 1 memory resume acceptance', () => {
 
     let firstExecuteResolved = false;
     const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred];
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => ({
       body: ['首次执行', '会议纪要已总结', '季度复盘已恢复完成'][attemptIndex],
       wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
     }));
-    attemptSandbox.stop.mockImplementation(async () => {
+    attemptExecutionBackend.stop.mockImplementation(async () => {
       if (!firstExecuteResolved) {
         firstExecuteResolved = true;
         firstDeferred.resolve({
@@ -125,7 +125,7 @@ describe('Round 1 memory resume acceptance', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_memory_resume_acceptance',
@@ -169,10 +169,10 @@ describe('Round 1 memory resume acceptance', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(attemptSandbox.create).toHaveBeenCalledTimes(3);
+      expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(3);
     });
 
-    const resumedInput = attemptSandbox.create.mock.calls[2][0];
+    const resumedInput = attemptExecutionBackend.create.mock.calls[2][0];
     const resumedPrompt = resumedInput.args.join(' ');
     expect(resumedInput.taskId).toBe(primaryTask.id);
     expect(resumedPrompt).toContain('当前任务固定使用表格结构并保留风险栏目');

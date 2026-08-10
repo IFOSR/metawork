@@ -12,7 +12,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -78,14 +78,14 @@ describe('App execution progress', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '调研完成' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '调研完成' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_execution_progress',
@@ -142,7 +142,7 @@ describe('App execution progress', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '调研完成',
       wait: new Promise<number>(resolve => setTimeout(() => resolve(0), 900)),
     }));
@@ -152,7 +152,7 @@ describe('App execution progress', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_execution_waiting_hint',

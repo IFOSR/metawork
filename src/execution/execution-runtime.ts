@@ -12,9 +12,9 @@ import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
 import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
 import type { AgentClassLookupPort } from '../executor/agent-class-lookup-port.js';
-import type { AttemptSandboxPort } from './attempt-sandbox.js';
-import { SandboxedExecutorAdapter } from '../executor/sandboxed-executor-adapter.js';
-import type { AttemptSandboxRepositoryPort } from './repositories.js';
+import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
+import { BackendExecutorAdapter } from '../executor/backend-executor-adapter.js';
+import type { AttemptExecutionRepositoryPort } from './repositories.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -38,14 +38,14 @@ export interface ExecutionResult {
 
 export interface ExecutorRegistryDeps {
   agentClassLookup: AgentClassLookupPort;
-  attemptSandbox: AttemptSandboxPort;
-  attemptSandboxRepository?: AttemptSandboxRepositoryPort;
+  attemptExecutionBackend: AttemptExecutionBackend;
+  attemptExecutionRepository?: AttemptExecutionRepositoryPort;
   controlNetwork?: string;
 }
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'sandbox' | 'worktree' | 'unbound';
+  bindingSource: 'container' | 'worktree' | 'unbound';
   adapterName: string | null;
 }
 
@@ -56,13 +56,13 @@ export class ExecutorRegistry {
   resolve(name: string): ExecutorAdapter | null {
     const agentClass = this.deps.agentClassLookup.findByName(name);
     return agentClass
-      ? new SandboxedExecutorAdapter(agentClass, this.deps.attemptSandbox, this.deps.attemptSandboxRepository)
+      ? new BackendExecutorAdapter(agentClass, this.deps.attemptExecutionBackend, this.deps.attemptExecutionRepository)
       : null;
   }
 
   inspect(name: string): ExecutorRegistrationInspection {
     const agentClass = this.deps.agentClassLookup.findByName(name);
-    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
+    const worktree = (this.deps.attemptExecutionBackend.kind ?? 'container') === 'worktree';
     const configured = Boolean(
       agentClass?.permissionProfileId
       && (worktree
@@ -71,7 +71,7 @@ export class ExecutorRegistry {
     );
     return {
       configured,
-      bindingSource: configured ? worktree ? 'worktree' : 'sandbox' : 'unbound',
+      bindingSource: configured ? worktree ? 'worktree' : 'container' : 'unbound',
       adapterName: configured ? name : null,
     };
   }
@@ -89,7 +89,7 @@ export class ExecutorRegistry {
         },
       };
     }
-    const worktree = (this.deps.attemptSandbox.kind ?? 'container') === 'worktree';
+    const worktree = (this.deps.attemptExecutionBackend.kind ?? 'container') === 'worktree';
     if (worktree && !['codex-cli', 'pi-agent'].includes(name)) {
       return {
         available: false,
@@ -103,7 +103,7 @@ export class ExecutorRegistry {
     }
     if (!worktree && agentClass.executionImageRef && !agentClass.resolvedImageId) {
       try {
-        const imageId = await this.deps.attemptSandbox.resolveImage(agentClass.executionImageRef);
+        const imageId = await this.deps.attemptExecutionBackend.resolveImage(agentClass.executionImageRef);
         if (!imageId.startsWith('sha256:')) {
           return {
             available: false,
@@ -142,7 +142,7 @@ export class ExecutorRegistry {
     }
     if (!worktree) {
       try {
-        await this.deps.attemptSandbox.probeControlNetwork?.(
+        await this.deps.attemptExecutionBackend.probeControlNetwork?.(
           this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
         );
       } catch (error) {

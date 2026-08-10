@@ -3,11 +3,11 @@ import type { ExecutorInput } from '../../src/executor/adapter.js';
 import type { AgentClass, Subtask, WorkUnit } from '../../src/core/types.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
 import type { AgentClassLookupPort } from '../../src/executor/agent-class-lookup-port.js';
-import type { AttemptSandboxPort, CreateAttemptSandboxInput, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
+import type { AttemptExecutionBackend, CreateAttemptExecutionInput, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 
-function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSandboxPort {
-  const record: AttemptSandboxRecord = {
+function createExecutionBackend(overrides: Partial<AttemptExecutionBackend> = {}): AttemptExecutionBackend {
+  const record: AttemptExecutionRecord = {
     containerId: 'container_test',
     imageId: 'sha256:test',
     status: 'created',
@@ -16,10 +16,10 @@ function createSandbox(overrides: Partial<AttemptSandboxPort> = {}): AttemptSand
   };
   return {
     resolveImage: vi.fn().mockResolvedValue('sha256:test'),
-    create: vi.fn().mockImplementation(async (_input: CreateAttemptSandboxInput) => record),
+    create: vi.fn().mockImplementation(async (_input: CreateAttemptExecutionInput) => record),
     start: vi.fn().mockResolvedValue(undefined),
     wait: vi.fn().mockResolvedValue(0),
-    logs: vi.fn().mockResolvedValue('sandbox output'),
+    logs: vi.fn().mockResolvedValue('execution output'),
     pause: vi.fn().mockResolvedValue(undefined),
     resume: vi.fn().mockResolvedValue(undefined),
     inspect: vi.fn().mockResolvedValue(record),
@@ -111,7 +111,7 @@ function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
   };
 }
 
-function createSandboxBinding(): NonNullable<ExecutorInput['sandbox']> {
+function createExecutionBinding(): NonNullable<ExecutorInput['executionBinding']> {
   return {
     attemptId: 'attempt_runtime',
     taskId: 'task_runtime',
@@ -128,11 +128,11 @@ function createSandboxBinding(): NonNullable<ExecutorInput['sandbox']> {
     gitMetadataPath: null,
     controlNetwork: 'metaclaw-control',
     capabilityBinding: null,
-    onContainerCreated: undefined,
+    onExecutionCreated: undefined,
   };
 }
 
-function createExecutorInput(withSandbox = true): Omit<ExecutorInput, 'onProgress'> {
+function createExecutorInput(withExecutionBinding = true): Omit<ExecutorInput, 'onProgress'> {
   const subtask = createSubtask();
   return {
     context: {
@@ -150,7 +150,7 @@ function createExecutorInput(withSandbox = true): Omit<ExecutorInput, 'onProgres
       completionContract: { marker: '<!-- metaclaw:completion:v2 -->', schemaVersion: 2 },
       evidenceTools: { availability: 'unavailable', reason: 'unit test' },
     },
-    ...(withSandbox ? { sandbox: createSandboxBinding() } : {}),
+    ...(withExecutionBinding ? { executionBinding: createExecutionBinding() } : {}),
   };
 }
 
@@ -166,13 +166,13 @@ function createLookup(agentClasses: AgentClass[]): AgentClassLookupPort {
   };
 }
 
-function createRegistry(agentClasses: AgentClass[], sandbox: AttemptSandboxPort): ExecutorRegistry {
-  return new ExecutorRegistry({ agentClassLookup: createLookup(agentClasses), attemptSandbox: sandbox });
+function createRegistry(agentClasses: AgentClass[], backend: AttemptExecutionBackend): ExecutorRegistry {
+  return new ExecutorRegistry({ agentClassLookup: createLookup(agentClasses), attemptExecutionBackend: backend });
 }
 
 describe('ExecutionRuntime', () => {
   it('returns a class-level configuration failure when no AgentClass is bound', async () => {
-    const registry = createRegistry([], createSandbox());
+    const registry = createRegistry([], createExecutionBackend());
     const runtime = new ExecutionRuntime(registry);
     const result = await runtime.run({
       taskId: 'task_runtime',
@@ -195,18 +195,18 @@ describe('ExecutionRuntime', () => {
     });
   });
 
-  it('resolves a configured AgentClass to a sandboxed adapter and reports sandbox binding source', () => {
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createSandbox());
+  it('resolves a configured AgentClass to the backend adapter and reports container binding source', () => {
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createExecutionBackend());
     expect(registry.resolve('codex-cli')?.name).toBe('codex-cli');
     expect(registry.inspect('codex-cli')).toEqual({
       configured: true,
-      bindingSource: 'sandbox',
+      bindingSource: 'container',
       adapterName: 'codex-cli',
     });
   });
 
   it('reports unbound when the AgentClass has no verified image or permission profile', () => {
-    const registry = createRegistry([createAgentClass('codex-cli')], createSandbox());
+    const registry = createRegistry([createAgentClass('codex-cli')], createExecutionBackend());
     expect(registry.inspect('codex-cli')).toEqual({
       configured: false,
       bindingSource: 'unbound',
@@ -222,14 +222,14 @@ describe('ExecutionRuntime', () => {
       permissionProfileId: 'workspace-engineering',
     };
     const lookup = createLookup([unresolved]);
-    const sandbox = createSandbox();
-    const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptSandbox: sandbox });
+    const backend = createExecutionBackend();
+    const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptExecutionBackend: backend });
 
     await expect(registry.probe('codex-cli')).resolves.toEqual({
       available: true,
       failure: null,
     });
-    expect(sandbox.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
+    expect(backend.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
     expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
   });
 
@@ -240,12 +240,12 @@ describe('ExecutionRuntime', () => {
       resolvedImageId: null,
       permissionProfileId: 'workspace-engineering',
     };
-    const sandbox = createSandbox({
+    const backend = createExecutionBackend({
       resolveImage: vi.fn().mockRejectedValue(
         new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock'),
       ),
     });
-    const registry = createRegistry([unresolved], sandbox);
+    const registry = createRegistry([unresolved], backend);
 
     await expect(registry.probe('codex-cli')).resolves.toMatchObject({
       available: false,
@@ -257,7 +257,7 @@ describe('ExecutionRuntime', () => {
   });
 
   it('is unavailable when the AgentClass does not exist', async () => {
-    const registry = createRegistry([], createSandbox());
+    const registry = createRegistry([], createExecutionBackend());
     await expect(registry.probe('missing')).resolves.toMatchObject({
       available: false,
       failure: { code: 'agent_class_not_found' },
@@ -265,8 +265,8 @@ describe('ExecutionRuntime', () => {
   });
 
   it('runs a claimed subtask through the sandboxed adapter for the claimed AgentClass', async () => {
-    const sandbox = createSandbox();
-    const registry = createRegistry([createConfiguredAgentClass('pi-agent')], sandbox);
+    const backend = createExecutionBackend();
+    const registry = createRegistry([createConfiguredAgentClass('pi-agent')], backend);
     const runtime = new ExecutionRuntime(registry);
     const result = await runtime.run({
       taskId: 'task_runtime',
@@ -284,16 +284,16 @@ describe('ExecutionRuntime', () => {
 
     expect(result.executorName).toBe('pi-agent');
     expect(result).toMatchObject({ status: 'success', error: null });
-    expect(sandbox.create).toHaveBeenCalledWith(expect.objectContaining({
+    expect(backend.create).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt_runtime',
       imageRef: 'metaclaw/test:latest',
       resolvedImageId: 'sha256:test',
     }));
   });
 
-  it('fails closed when the sandbox adapter reports a failure', async () => {
-    const sandbox = createSandbox({ wait: vi.fn().mockResolvedValue(1), logs: vi.fn().mockResolvedValue('boom') });
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], sandbox);
+  it('fails closed when the execution backend reports a failure', async () => {
+    const backend = createExecutionBackend({ wait: vi.fn().mockResolvedValue(1), logs: vi.fn().mockResolvedValue('boom') });
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], backend);
     const runtime = new ExecutionRuntime(registry);
     const result = await runtime.run({
       taskId: 'task_runtime',
@@ -313,7 +313,7 @@ describe('ExecutionRuntime', () => {
   });
 
   it('resolves a fresh adapter per run and tracks aborts per task token', async () => {
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createSandbox());
+    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createExecutionBackend());
     const runtime = new ExecutionRuntime(registry);
     const input = (executionId: string, taskId: string) => ({
       taskId,

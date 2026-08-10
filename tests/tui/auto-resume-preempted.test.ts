@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -98,11 +98,11 @@ describe('App auto-resume after preemption', () => {
 
     let firstExecuteResolved = false;
     const deferredResults = [firstDeferred, urgentDeferred, resumedDeferred, laterNormalDeferred];
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => ({
       body: ['first done', 'urgent done', 'resumed done', 'later done'][attemptIndex],
       wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
     }));
-    attemptSandbox.stop.mockImplementation(async containerId => {
+    attemptExecutionBackend.stop.mockImplementation(async containerId => {
       if (!firstExecuteResolved) {
         firstExecuteResolved = true;
         firstDeferred.resolve({
@@ -122,7 +122,7 @@ describe('App auto-resume after preemption', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_auto_resume',
@@ -155,9 +155,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 400,
     });
-    await waitForExecutorCallCount(attemptSandbox.create, 3);
+    await waitForExecutorCallCount(attemptExecutionBackend.create, 3);
 
-    expect(taskRepo.findById(attemptSandbox.create.mock.calls[2][0].taskId)?.title).toContain('主线研究任务');
+    expect(taskRepo.findById(attemptExecutionBackend.create.mock.calls[2][0].taskId)?.title).toContain('主线研究任务');
     expect(taskEngine['taskRepo'].findByStatus('running')[0]?.title).toContain('主线研究任务');
 
     resumedDeferred.resolve({
@@ -166,9 +166,9 @@ describe('App auto-resume after preemption', () => {
       exitCode: 0,
       durationMs: 500,
     });
-    await waitForExecutorCallCount(attemptSandbox.create, 4);
+    await waitForExecutorCallCount(attemptExecutionBackend.create, 4);
 
-    expect(taskRepo.findById(attemptSandbox.create.mock.calls[3][0].taskId)?.title).toContain('普通排队任务');
+    expect(taskRepo.findById(attemptExecutionBackend.create.mock.calls[3][0].taskId)?.title).toContain('普通排队任务');
 
     laterNormalDeferred.resolve({
       success: true,

@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentClass } from '../../src/core/types.js';
-import type { AttemptSandboxPort, CreateAttemptSandboxInput } from '../../src/execution/attempt-sandbox.js';
-import { SandboxedExecutorAdapter } from '../../src/executor/sandboxed-executor-adapter.js';
+import type { AttemptExecutionBackend, CreateAttemptExecutionInput } from '../../src/execution/attempt-execution-backend.js';
+import { BackendExecutorAdapter } from '../../src/executor/backend-executor-adapter.js';
 
-describe('SandboxedExecutorAdapter provider isolation', () => {
+describe('BackendExecutorAdapter provider isolation', () => {
   it('passes only the attempt gateway token instead of provider credentials', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-sandbox-provider-'));
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-execution-provider-'));
     const envFile = join(directory, 'executor-pi.env');
     writeFileSync(envFile, [
       'OPENAI_API_KEY=openai-provider-secret',
@@ -23,8 +23,8 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     ].join('\n'));
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
     vi.stubEnv('METACLAW_CONTROL_HOST', 'metaclaw-control');
-    const { sandbox, create } = sandboxPort();
-    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+    const { backend, create } = backendPort();
+    const adapter = new BackendExecutorAdapter(agentClass(), backend);
 
     try {
       const result = await adapter.execute(executorInput(directory));
@@ -48,20 +48,20 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
   });
 
   it('fails closed instead of injecting a credential without a gateway endpoint', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-sandbox-provider-'));
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-execution-provider-'));
     const envFile = join(directory, 'executor-pi.env');
     writeFileSync(envFile, 'OPENAI_API_KEY=unpaired-provider-secret\n');
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
     vi.stubEnv('OPENAI_BASE_URL', '');
-    const { sandbox, create } = sandboxPort();
-    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+    const { backend, create } = backendPort();
+    const adapter = new BackendExecutorAdapter(agentClass(), backend);
 
     try {
       const result = await adapter.execute(executorInput(directory));
 
       expect(result).toMatchObject({
         success: false,
-        failure: { code: 'sandbox_configuration_failure' },
+        failure: { code: 'execution_backend_configuration_failure' },
       });
       expect(create).not.toHaveBeenCalled();
     } finally {
@@ -86,15 +86,15 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     writeFileSync(join(piAgentHome, 'settings.json'), '{}');
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
     vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
-    const { sandbox, create } = sandboxPort('worktree');
+    const { backend, create } = backendPort('worktree');
     let attemptHome = '';
     let renderedModels = '';
-    create.mockImplementation(async (input: CreateAttemptSandboxInput) => {
+    create.mockImplementation(async (input: CreateAttemptExecutionInput) => {
       attemptHome = input.environment.HOME;
       renderedModels = readFileSync(join(attemptHome, '.pi', 'agent', 'models.json'), 'utf8');
-      return sandboxRecord('sha256:pi');
+      return executionRecord('sha256:pi');
     });
-    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+    const adapter = new BackendExecutorAdapter(agentClass(), backend);
 
     try {
       const result = await adapter.execute(executorInput(directory));
@@ -132,8 +132,8 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
     vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', piHome);
     vi.stubEnv('METACLAW_PI_ATTEMPT_EXTENSION', '/native/anyfusion/pi-attempt-tools.ts');
-    const { sandbox, create } = sandboxPort('worktree');
-    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+    const { backend, create } = backendPort('worktree');
+    const adapter = new BackendExecutorAdapter(agentClass(), backend);
 
     try {
       const result = await adapter.execute(executorInput(directory));
@@ -167,15 +167,15 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     ].join('\n'));
     vi.stubEnv('METACLAW_CODEX_EXECUTOR_ENV_FILE', envFile);
     vi.stubEnv('METACLAW_EXECUTOR_CODEX_HOME', codexHome);
-    const { sandbox, create } = sandboxPort('worktree');
+    const { backend, create } = backendPort('worktree');
     let attemptHome = '';
     let renderedConfig = '';
-    create.mockImplementation(async (input: CreateAttemptSandboxInput) => {
+    create.mockImplementation(async (input: CreateAttemptExecutionInput) => {
       attemptHome = input.environment.CODEX_HOME;
       renderedConfig = readFileSync(join(attemptHome, 'config.toml'), 'utf8');
-      return sandboxRecord('sha256:codex');
+      return executionRecord('sha256:codex');
     });
-    const adapter = new SandboxedExecutorAdapter({
+    const adapter = new BackendExecutorAdapter({
       ...agentClass(),
       name: 'codex-cli',
       domains: ['coding'],
@@ -184,7 +184,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
       executionImageRef: 'metaclaw-executor-codex:phase5',
       resolvedImageId: 'sha256:codex',
       permissionProfileId: 'workspace-engineering',
-    }, sandbox);
+    }, backend);
 
     try {
       const result = await adapter.execute(executorInput(directory));
@@ -204,12 +204,12 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
   });
 
   it('rejects noncanonical AgentClasses in the worktree backend', async () => {
-    const { sandbox, create } = sandboxPort('worktree');
-    const adapter = new SandboxedExecutorAdapter({
+    const { backend, create } = backendPort('worktree');
+    const adapter = new BackendExecutorAdapter({
       ...agentClass(),
       name: 'custom-executor',
       runtimeCommand: 'custom-executor',
-    }, sandbox);
+    }, backend);
 
     const result = await adapter.execute(executorInput('.'));
 
@@ -221,7 +221,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
   });
 
   it('runs the same AgentClass concurrently and aborts only the requested attempt', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-sandbox-concurrency-'));
+    const directory = mkdtempSync(join(tmpdir(), 'metaclaw-execution-concurrency-'));
     const envFile = join(directory, 'executor-pi.env');
     writeFileSync(envFile, [
       'OPENAI_API_KEY=provider-secret',
@@ -229,7 +229,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
     ].join('\n'));
     vi.stubEnv('METACLAW_PI_EXECUTOR_ENV_FILE', envFile);
     const waitResolvers = new Map<string, (exitCode: number) => void>();
-    const create = vi.fn(async (input: CreateAttemptSandboxInput) => ({
+    const create = vi.fn(async (input: CreateAttemptExecutionInput) => ({
       containerId: `container_${input.attemptId}`,
       imageId: 'sha256:pi',
       status: 'created' as const,
@@ -237,7 +237,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
       labels: {},
     }));
     const stop = vi.fn().mockResolvedValue(undefined);
-    const sandbox: AttemptSandboxPort = {
+    const backend: AttemptExecutionBackend = {
       resolveImage: vi.fn().mockResolvedValue('sha256:pi'),
       create,
       start: vi.fn().mockResolvedValue(undefined),
@@ -252,7 +252,7 @@ describe('SandboxedExecutorAdapter provider isolation', () => {
       remove: vi.fn().mockResolvedValue(undefined),
       listManaged: vi.fn().mockResolvedValue([]),
     };
-    const adapter = new SandboxedExecutorAdapter(agentClass(), sandbox);
+    const adapter = new BackendExecutorAdapter(agentClass(), backend);
 
     try {
       const first = adapter.execute(executorInput(directory, 'attempt_1', 'subtask_1'));
@@ -284,14 +284,14 @@ function agentClass(): AgentClass {
   };
 }
 
-function sandboxPort(kind: 'container' | 'worktree' = 'container'): {
-  sandbox: AttemptSandboxPort;
+function backendPort(kind: 'container' | 'worktree' = 'container'): {
+  backend: AttemptExecutionBackend;
   create: ReturnType<typeof vi.fn>;
 } {
-  const create = vi.fn(async (_input: CreateAttemptSandboxInput) => sandboxRecord('sha256:pi'));
+  const create = vi.fn(async (_input: CreateAttemptExecutionInput) => executionRecord('sha256:pi'));
   return {
     create,
-    sandbox: {
+    backend: {
       kind,
       pathMode: kind === 'worktree' ? 'native' : 'container',
       resolveImage: vi.fn().mockResolvedValue('sha256:pi'), create,
@@ -304,7 +304,7 @@ function sandboxPort(kind: 'container' | 'worktree' = 'container'): {
   };
 }
 
-function sandboxRecord(imageId: string) {
+function executionRecord(imageId: string) {
   return {
     containerId: 'container_1', imageId, status: 'created' as const,
     exitCode: null, labels: {},
@@ -332,7 +332,7 @@ function executorInput(
       completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'test' },
     },
-    sandbox: {
+    executionBinding: {
       attemptId, taskId: 'task_1', generationId: 'generation_1', subtaskId,
       workUnitId: `work_unit_${attemptId}`, leaseToken: `lease_${attemptId}`, idempotencyKey: `attempt:${attemptId}`,
       workspacePath: join(root, `workspace-${attemptId}`), workspaceId: `workspace_${subtaskId}`, sourcePath: join(root, 'source'),

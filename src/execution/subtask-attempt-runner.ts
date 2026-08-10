@@ -42,7 +42,7 @@ import {
   type WorkspaceState,
 } from './workspace-change-tracker.js';
 import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from './workspace-store.js';
-import type { AttemptSandboxPort } from './attempt-sandbox.js';
+import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
 import {
   buildPermissionRules,
   type PermissionRepositoryPort,
@@ -81,7 +81,7 @@ export interface SubtaskAttemptRunnerDeps {
   executionRuntime: ExecutionRuntime;
   agentClassService: AgentClassService;
   workspaceStore: WorkspaceStore;
-  attemptSandbox: AttemptSandboxPort;
+  attemptExecutionBackend: AttemptExecutionBackend;
   resourceLeaseService: ResourceLeaseService;
   permissionRepository: PermissionRepositoryPort;
   kernelWorkflowStore: KernelWorkflowStore;
@@ -347,7 +347,11 @@ export class SubtaskAttemptRunner {
         updatedAt: workspaceNow,
       });
       await mkdir(join(workspace.filesPath, '.metaclaw', 'results'), { recursive: true });
-      await this.deps.workspaceStore.prepareForSandbox(workspace);
+      const containerExecutionBackend = this.deps.attemptExecutionBackend.pathMode === 'container'
+        || this.deps.attemptExecutionBackend.kind === 'container';
+      if (containerExecutionBackend) {
+        await this.deps.workspaceStore.prepareForContainerExecution(workspace);
+      }
       const inputsPath = join(workspace.rootPath, 'inputs');
       const handoffsPath = join(workspace.rootPath, 'handoffs');
       await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
@@ -385,7 +389,7 @@ export class SubtaskAttemptRunner {
         now: startedAt,
       });
       const evidenceToolsAvailable = input.agentClassName === 'codex-cli' || input.agentClassName === 'pi-agent';
-      const attemptControlHost = this.deps.attemptSandbox.pathMode === 'native'
+      const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
         ? '127.0.0.1'
         : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';
       const built = this.contextBuilder.build({
@@ -449,7 +453,7 @@ export class SubtaskAttemptRunner {
         context: capabilityContext,
         repository: this.deps.permissionRepository,
         resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
-        sandbox: this.deps.attemptSandbox,
+        executionBackend: this.deps.attemptExecutionBackend,
         workflowStore: this.deps.kernelWorkflowStore,
         rules: buildPermissionRules({
           permissionProfileId: capabilityContext.permissionProfileId,
@@ -474,7 +478,7 @@ export class SubtaskAttemptRunner {
           },
           onEscalation: async request => {
             claim.markWaiting(`permission request ${request.id} requires Planner or user review`);
-            if (capabilityContext.containerId) await this.deps.attemptSandbox.stop(capabilityContext.containerId);
+            if (capabilityContext.containerId) await this.deps.attemptExecutionBackend.stop(capabilityContext.containerId);
           },
           onRecoveryAuthorized: async () => undefined,
         },
@@ -489,7 +493,7 @@ export class SubtaskAttemptRunner {
         spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, deliveryKind: subtask.deliveryKind },
         executorInput: {
           context: built.context,
-          sandbox: {
+          executionBinding: {
             attemptId,
             taskId: task.id,
             generationId: subtask.generationId,
@@ -505,9 +509,9 @@ export class SubtaskAttemptRunner {
             gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
             controlNetwork: this.deps.controlNetwork,
             capabilityBinding,
-            onContainerCreated: containerId => {
+            onExecutionCreated: containerId => {
               capabilityContext.containerId = containerId;
-              this.dispatchItemRepo.markSandbox(attemptId, containerId, new Date().toISOString());
+              this.dispatchItemRepo.markBackendExecution(attemptId, containerId, new Date().toISOString());
             },
           },
           recovery: {

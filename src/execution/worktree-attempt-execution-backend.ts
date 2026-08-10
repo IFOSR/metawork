@@ -2,17 +2,18 @@ import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import type {
-  AttemptSandboxPort,
-  AttemptSandboxRecord,
-  CreateAttemptSandboxInput,
-} from './attempt-sandbox.js';
+  AttemptExecutionBackend,
+  AttemptExecutionRecord,
+  CreateAttemptExecutionInput,
+} from './attempt-execution-backend.js';
 
+// Retained for compatibility with schema-v30 recovery and existing Docker labels.
 const MANAGED_LABEL = 'io.metaclaw.attempt-sandbox';
 const MAX_LOG_BYTES = 16 * 1024 * 1024;
 
 interface WorktreeAttempt {
-  input: CreateAttemptSandboxInput;
-  record: AttemptSandboxRecord;
+  input: CreateAttemptExecutionInput;
+  record: AttemptExecutionRecord;
   workspacePath: string;
   child: ChildProcess | null;
   logs: string;
@@ -23,11 +24,11 @@ interface WorktreeAttempt {
 /**
  * Runs an Executor CLI as a child process in its already-isolated Git worktree.
  *
- * This deliberately implements the existing AttemptSandboxPort so the durable
+ * This deliberately implements the existing AttemptExecutionBackend so the durable
  * attempt, cancellation, checkpoint, and recovery paths remain unchanged while
  * the Runtime moves away from sibling Executor containers.
  */
-export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
+export class WorktreeAttemptExecutionBackend implements AttemptExecutionBackend {
   readonly kind = 'worktree' as const;
   readonly pathMode = 'native' as const;
   private readonly attempts = new Map<string, WorktreeAttempt>();
@@ -42,7 +43,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     // Docker-internal network check is only meaningful for container attempts.
   }
 
-  async create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord> {
+  async create(input: CreateAttemptExecutionInput): Promise<AttemptExecutionRecord> {
     const workspace = input.mounts.find(mount => mount.target === '/workspace');
     if (!workspace || workspace.mode !== 'rw') {
       throw new Error('worktree attempt requires one writable /workspace binding');
@@ -64,7 +65,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
       'io.metaclaw.lease-token': input.leaseToken,
       'io.metaclaw.idempotency-key': input.idempotencyKey,
     };
-    const record: AttemptSandboxRecord = {
+    const record: AttemptExecutionRecord = {
       containerId,
       imageId: await this.resolveImage(input.imageRef),
       status: 'created',
@@ -150,7 +151,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     attempt.record.status = 'running';
   }
 
-  async inspect(containerId: string): Promise<AttemptSandboxRecord | null> {
+  async inspect(containerId: string): Promise<AttemptExecutionRecord | null> {
     const attempt = this.attempts.get(containerId);
     return attempt ? { ...attempt.record, labels: { ...attempt.record.labels } } : null;
   }
@@ -190,7 +191,7 @@ export class WorktreeAttemptSandboxAdapter implements AttemptSandboxPort {
     this.attempts.delete(containerId);
   }
 
-  async listManaged(): Promise<AttemptSandboxRecord[]> {
+  async listManaged(): Promise<AttemptExecutionRecord[]> {
     return [...this.attempts.values()].map(attempt => ({
       ...attempt.record,
       labels: { ...attempt.record.labels },

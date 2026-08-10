@@ -11,7 +11,7 @@ import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -35,7 +35,7 @@ function createConfig(): Config {
 }
 
 describe('Session skill usage observability', () => {
-  it('does not misclassify sandbox lifecycle output as SkillUsageEvents or expose it to users', async () => {
+  it('does not misclassify execution-backend lifecycle output as SkillUsageEvents or expose it to users', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -43,12 +43,12 @@ describe('Session skill usage observability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '完成' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '完成' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_skill_usage',
@@ -62,7 +62,7 @@ describe('Session skill usage observability', () => {
 
     const events = new SkillUsageEventRepo(db).listByTask(taskRepo.findByStatus('done')[0].id);
     expect(events).toEqual([]);
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('【Executor: codex-cli｜最终结果｜#');

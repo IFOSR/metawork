@@ -1,4 +1,4 @@
-export interface AttemptSandboxPersistenceRecord {
+export interface AttemptExecutionPersistenceRecord {
   attemptId: string;
   taskId: string;
   generationId: string;
@@ -19,13 +19,13 @@ export interface AttemptSandboxPersistenceRecord {
   updatedAt: string;
 }
 
-export interface AttemptSandboxRepositoryPort {
-  create(record: AttemptSandboxPersistenceRecord): AttemptSandboxPersistenceRecord;
-  find(attemptId: string): AttemptSandboxPersistenceRecord | null;
-  findByContainerId(containerId: string): AttemptSandboxPersistenceRecord | null;
-  listActive(): AttemptSandboxPersistenceRecord[];
+export interface AttemptExecutionRepositoryPort {
+  create(record: AttemptExecutionPersistenceRecord): AttemptExecutionPersistenceRecord;
+  find(attemptId: string): AttemptExecutionPersistenceRecord | null;
+  findByContainerId(containerId: string): AttemptExecutionPersistenceRecord | null;
+  listActive(): AttemptExecutionPersistenceRecord[];
   update(attemptId: string, changes: Partial<Pick<
-    AttemptSandboxPersistenceRecord,
+    AttemptExecutionPersistenceRecord,
     'status' | 'exitCode' | 'resultCollectedAt' | 'cleanupStatus' | 'cleanupError' | 'updatedAt'
   >>): void;
 }

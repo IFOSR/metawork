@@ -1,260 +1,294 @@
 <p align="center">
-  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="88" align="middle" /></a>
-  <img src="docs/assets/brand-times.svg" alt="x" height="88" align="middle" />
-  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="88" align="middle" /></a>
+  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="80" align="middle" /></a>
+  <img src="docs/assets/brand-times.svg" alt="x" height="80" align="middle" />
+  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="80" align="middle" /></a>
 </p>
 
 <div align="center">
 
 # AnyFusion
 
-**AI Task Control Plane for Durable, Governed Agent Workflows**
+**MetaWork Server for durable, governed multi-agent execution**
 
-Turn long-running enterprise work into persistent, policy-governed task graphs executed by specialized agents.
+AnyFusion turns natural-language objectives into persistent work graphs,
+authorizes every strategic state change through a deterministic Control Kernel,
+and executes approved subtasks with isolated Planner and Executor runtimes.
 
-<strong>AnyFusion is a strategic open-source initiative backed by AnyInt and MetaFusion. It is currently deployed for limited internal pilot use.</strong><br /><br />
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
-[![Internal Pilot](https://img.shields.io/badge/deployment-Internal%20Pilot-6366F1)](docs/releases/v1.2.0-preview.0.md#current-deployment-status)
-[![CI](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaAny/AnyFusion/actions/workflows/ci.yml)
+[![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
 
-[Overview](#an-operating-system-for-long-running-agent-work) · [Capabilities](#core-capabilities) · [How It Works](#how-it-works) · [Quick Start](#quick-start) · [Status](#project-status) · [中文](README.zh-CN.md)
+[Install](#installation) · [Architecture](#core-architecture) ·
+[Features](#core-features) · [Development](#development) ·
+[中文](README.zh-CN.md)
 
 </div>
 
-## An operating system for long-running agent work
+## What This Repository Contains
 
-Most agent tools optimize a single interactive session. Enterprise work is different: it can span hours or days, cross repositories and business domains, depend on several specialist agents, pause on missing inputs, and still need a controlled path to completion.
+This repository is the AnyFusion MetaWork Server. It owns durable Task state,
+Planner-to-Kernel authorization, Work Graph execution, Executor lifecycle,
+verification, Git publication, Gateway surfaces, and delivery.
 
-AnyFusion is a local-first task control plane between people, business surfaces, and agent runtimes. It preserves the objective and execution state, decomposes complex work into a dependency-aware graph, routes each unit to an appropriate agent class, governs every state-changing decision, and records the evidence required to resume, verify, and deliver the result.
+The product is local-first and designed for work that must survive process
+restarts, span multiple specialist agents, pause for missing resources or user
+authorization, and produce auditable evidence rather than only a chat reply.
 
-It is designed for workflows where continuity, control, and accountability matter more than producing one more chat response.
+The current release boundary is one active top-level Task. That Task may contain
+dependency-aware Subtasks, with up to four independent attempts running
+concurrently.
 
-## Core Capabilities
+## Installation
 
-| Capability | What it provides |
-| --- | --- |
-| **Durable task scheduling** | Persistent task and subtask lifecycles, dependency readiness, blocking, parking, resumption, cancellation, and recovery across process or session boundaries. |
-| **Policy-governed planning** | Natural-language planning is separated from authorization: the Planner proposes, the Control Kernel decides, and the Runtime applies only approved side effects. |
-| **Dependency-aware work graphs** | Complex objectives become explicit DAGs with acceptance criteria, typed dependencies, scoped context, and durable handoff contracts between work units. |
-| **Specialized-agent orchestration** | Capability-based routing maps each subtask to ordered agent-class candidates such as Codex, Pi, Hermes, or organization-specific vertical agents without embedding routing policy in prompts. |
-| **Worktree execution** | Canonical Codex and Pi attempts run as short-lived child processes in persistent private Git worktrees; the existing Docker attempt backend remains an explicit compatibility option. |
-| **Verification and accountability** | Structured completion contracts capture acceptance evidence, artifacts, handoffs, attempt receipts, and audit events before results are exposed or delivered. |
-| **Operational memory and delivery** | Explicitly confirmed preferences, deterministic task search, terminal workflows, Gateway surfaces, and Feishu delivery remain connected to the same durable task state. |
+### Supported Native Path
 
-## Built for complex enterprise workflows
+The current native installer targets macOS and does not require Docker.
 
-AnyFusion is intended to coordinate long-running work that crosses specialist boundaries, for example:
+Required:
 
-- **Engineering delivery:** planning, implementation, test execution, review, documentation, and artifact delivery across dedicated engineering agents.
-- **Research and analysis:** source collection, domain-specific analysis, evidence review, synthesis, and report generation with explicit dependency handoffs.
-- **Business operations:** intake from enterprise messaging, controlled specialist processing, human clarification when required, verification, and final delivery through the original channel.
+- Node.js `>=22.19.0`
+- npm
+- Git
+- macOS native build tools for `better-sqlite3`
+- Existing `codex` and `pi` commands on `PATH`
+- An OpenAI-compatible provider URL and API key
 
-The executor layer is adapter-based, so organizations can register vertical agents while keeping task state, routing facts, policy decisions, and completion evidence under one control plane.
-
-## How It Works
-
-```mermaid
-flowchart LR
-  Intake[People / TUI / CLI / Gateway / Feishu] --> Session[MetaClaw Session<br/>Application Shell]
-  Session --> Planning[AnyFusion-Pi Planning Agent<br/>Isolated process and session]
-  Planning --> Workflow[Durable Kernel Workflow<br/>Inbox / ledger / application]
-  Workflow --> Kernel[Control Kernel<br/>Policy and authorization]
-  Kernel --> Runtime[Execution Runtime<br/>Frontier / dispatch / recovery]
-  Runtime --> Agents[Worktree Executor Processes<br/>Codex / Pi]
-  Agents --> Verify[Verification and Delivery<br/>Evidence / artifacts / handoffs]
-
-  State[(Persistent Task State<br/>memory / attempts / audit)]
-  Planning <--> State
-  Workflow <--> State
-  Runtime <--> State
-  Verify --> State
-```
-
-Three boundaries keep the workflow governable:
-
-1. **The Planner proposes; it never grants itself execution authority.**
-2. **The Control Kernel makes deterministic policy decisions from explicit runtime facts.**
-3. **The Runtime executes scoped decisions and reports normalized outcomes for the next decision.**
-
-Work graphs model independent branches, specialist assignments, and typed dependency delivery. The durable Kernel workflow serializes authorization and application, while up to four independent attempts inside the one active top-level Task may run concurrently. Resource partitioning, durable leases, persistent workspaces, short-lived Executor processes, deterministic Git publication, crash recovery, and event-driven Executor error recovery are active.
-
-## Quick Start
-
-### Native macOS installation (no Docker)
-
-The current Developer Preview runs natively on macOS with Node.js 22.19+.
-Docker Desktop is not required. Executor attempts run as local child processes,
-each with its own managed Git worktree.
-
-The Planner is currently maintained in the separate AnyFusion-Pi fork and has
-not yet been bundled into a single binary. The native preview therefore builds
-both repositories once. Keep them next to each other as shown below.
-
-1. Install the system prerequisites:
+Install prerequisites:
 
 ```bash
-brew install node@22 git ripgrep fd python@3.12
+xcode-select --install
+brew install node@22 git
 export PATH="$(brew --prefix node@22)/bin:$PATH"
-node --version # must be v22.19.0 or newer
+
+node --version
+npm --version
+git --version
+codex --version
+pi --version
 ```
 
-2. Clone and build the Runtime and Planner:
+Clone and install:
 
 ```bash
-mkdir -p "$HOME/anyfusion-src"
-cd "$HOME/anyfusion-src"
+git clone https://github.com/IFOSR/metawork.git
+cd metawork
 
-git clone https://github.com/MetaAny/AnyFusion.git
-git clone --branch codex/anyfusion-planner \
-  https://github.com/MetaAny/AnyFusion-Pi.git
-
-cd "$HOME/anyfusion-src/AnyFusion-Pi"
-npm ci --ignore-scripts
-npm run build:offline
-
-cd "$HOME/anyfusion-src/AnyFusion"
-npm ci
-npm run build
-
-# Canonical worktree Executors. The Planner uses the separately built fork above.
-npm install -g --ignore-scripts \
-  @openai/codex@0.144.1 \
-  @earendil-works/pi-coding-agent@0.80.2
-```
-
-3. Create the native provider configuration. Replace the two placeholder
-values before running these commands:
-
-```bash
 export ANYFUSION_PROVIDER_KEY='replace-with-your-key'
 export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
-export ANYFUSION_CONFIG_HOME="$HOME/.config/anyfusion"
 
-mkdir -p \
-  "$ANYFUSION_CONFIG_HOME/planner" \
-  "$ANYFUSION_CONFIG_HOME/codex" \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent" \
-  "$HOME/.local/bin"
-
-cat > "$ANYFUSION_CONFIG_HOME/provider.env" <<EOF
-OPENAI_API_KEY=$ANYFUSION_PROVIDER_KEY
-OPENAI_BASE_URL=$ANYFUSION_PROVIDER_URL
-PI_SKIP_VERSION_CHECK=1
-PI_TELEMETRY=0
-EOF
-chmod 600 "$ANYFUSION_CONFIG_HOME/provider.env"
-
-cd "$HOME/anyfusion-src/AnyFusion"
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/planner-pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/planner/models.json"
-cp docker/planner-pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/planner/settings.json"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/codex-config/executor/config.toml \
-  > "$ANYFUSION_CONFIG_HOME/codex/config.toml"
-
-sed "s|__OPENAI_BASE_URL__|$ANYFUSION_PROVIDER_URL|g" \
-  docker/pi-config/models.json \
-  > "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/models.json"
-cp docker/pi-config/settings.json \
-  "$ANYFUSION_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+./setup.sh
 ```
 
-4. Install a native launcher:
+The installer:
 
-```bash
-cat > "$HOME/.local/bin/anyfusion" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+- Builds MetaWork and AnyFusion-Pi in separate dependency trees.
+- Installs AnyFusion-Pi under `metawork/planner/AnyFusion-Pi`.
+- Installs the launcher at `~/.local/bin/anyfusion`.
+- Writes AnyFusion-only configuration under `~/.config/anyfusion`.
+- Stores runtime state under `~/.local/share/anyfusion`.
+- Preserves a dirty nested AnyFusion-Pi checkout instead of overwriting it.
+- Does not install, upgrade, downgrade, link, or reconfigure Codex or Pi.
+- Does not read or write the user's `~/.codex` or `~/.pi` homes.
 
-ANYFUSION_SOURCE_ROOT="${ANYFUSION_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion}"
-ANYFUSION_PI_SOURCE_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$HOME/anyfusion-src/AnyFusion-Pi}"
-ANYFUSION_CONFIG_HOME="${ANYFUSION_CONFIG_HOME:-$HOME/.config/anyfusion}"
-
-export METACLAW_HOME="${METACLAW_HOME:-$HOME/.local/share/anyfusion}"
-export METACLAW_EXECUTOR_BACKEND=worktree
-export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
-export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
-export METACLAW_PLANNER_WORKDIR="$PWD"
-export METACLAW_PLANNER_HOME="$ANYFUSION_CONFIG_HOME/planner"
-export ANYFUSION_PLANNER_HOME="$METACLAW_PLANNER_HOME"
-export METACLAW_PLANNER_SESSION_DIR="$METACLAW_HOME/planner-sessions"
-export METACLAW_PLANNER_SCHEMA_PATH="$ANYFUSION_SOURCE_ROOT/dist/planning-agent-plan-v7.schema.json"
-export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
-export METACLAW_PLANNER_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_CODEX_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_PI_EXECUTOR_ENV_FILE="$ANYFUSION_CONFIG_HOME/provider.env"
-export METACLAW_EXECUTOR_CODEX_HOME="$ANYFUSION_CONFIG_HOME/codex"
-export METACLAW_EXECUTOR_PI_HOME="$ANYFUSION_CONFIG_HOME/pi-home"
-export METACLAW_PI_ATTEMPT_EXTENSION="$ANYFUSION_SOURCE_ROOT/dist/pi-attempt-tools.ts"
-export PI_SKIP_VERSION_CHECK=1
-export PI_TELEMETRY=0
-
-exec node "$ANYFUSION_SOURCE_ROOT/dist/index.js" "$@"
-EOF
-
-chmod +x "$HOME/.local/bin/anyfusion"
-grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null \
-  || echo 'export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"' >> "$HOME/.zshrc"
-export PATH="$HOME/.local/bin:$(brew --prefix node@22)/bin:$PATH"
-```
-
-5. Open the repository or directory that AnyFusion should operate on, then
-start the TUI:
+Open a new shell after installation. Start AnyFusion from the directory the
+Planner should inspect:
 
 ```bash
 cd /path/to/your/project
 anyfusion
 ```
 
-Runtime state is stored under `~/.local/share/anyfusion`. Executor changes are
-made in managed Subtask worktrees and published through the existing Git
-publication path. Do not set `METACLAW_EXECUTOR_BACKEND=docker` for the native
-macOS installation.
+The launcher's working directory is the user's current directory. It is not
+forced to the MetaWork repository or a fixed `/workspace`.
 
-After pulling changes later, rebuild both source trees with
-`npm run build:offline` in AnyFusion-Pi and `npm run build` in AnyFusion.
-
-Then give AnyFusion a multi-step objective in natural language:
+### Native Runtime Layout
 
 ```text
-Analyze these contracts, assign legal and commercial review to the appropriate specialist agents, and deliver a consolidated risk matrix with supporting evidence.
+metawork/
+└── planner/
+    └── AnyFusion-Pi/          # separate Planner source and dependency tree
+
+~/.local/bin/
+└── anyfusion                  # launcher
+
+~/.config/anyfusion/
+├── provider.env              # mode 0600
+├── planner/                  # isolated Planner model/settings home
+├── codex/                    # AnyFusion Codex template home
+└── pi-home/                  # AnyFusion Pi template home
+
+~/.local/share/anyfusion/
+├── metaclaw.db               # durable runtime state
+├── planner-sessions/
+└── workspaces/
 ```
 
-AnyFusion classifies the request, creates a durable task when required, authorizes the work graph, dispatches ready work units, validates their completion contracts, and preserves the resulting evidence and artifacts. Run `npm run smoke:anyfusion` separately when credentials are available for a live end-to-end validation.
+Each Executor attempt receives another private temporary runtime home derived
+from the AnyFusion template. Executor processes use the Subtask Git worktree as
+`cwd`; runtime homes and working directories are separate contracts.
+
+### Other Platforms
+
+Linux and WSL2 remain development/runtime environments, but the current
+productized native installer is macOS-specific. Docker is retained only as an
+explicit compatibility and CI validation path; it is not required for normal
+native installation.
+
+## Core Architecture
+
+```mermaid
+flowchart LR
+  Client[CLI / TUI / Gateway / Feishu] --> Session[MetaclawSession<br/>Application Shell]
+  Session --> Planner[AnyFusion-Pi Planner<br/>isolated process]
+  Planner --> Proposal[PlanningAgentPlan v7]
+  Proposal --> Workflow[DurableKernelWorkflow<br/>inbox / ledger / application]
+  Workflow --> Kernel[ControlKernel v5<br/>pure policy decisions]
+  Kernel --> Runtime[Execution Runtime<br/>authorized side effects]
+  Runtime --> Supervisor[Attempt Supervisor<br/>up to four attempts]
+  Supervisor --> Adapter[BackendExecutorAdapter]
+  Adapter --> Backend[AttemptExecutionBackend<br/>worktree or container]
+  Backend --> Executors[Codex / Pi Executor]
+  Executors --> Verify[Completion Protocol v3<br/>evidence / artifacts]
+  Verify --> Publish[Deterministic Git Publication]
+  Publish --> Delivery[Gateway / TUI / Feishu Delivery]
+
+  Store[(SQLite v30<br/>Tasks / graph / decisions / attempts / audit)]
+  Session <--> Store
+  Workflow <--> Store
+  Runtime <--> Store
+```
+
+### Authority Boundaries
+
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| **Planner** | Natural-language understanding, Task binding proposals, Work Graph proposals, direct replies | Scheduling, authorization, storage mutation, Executor control |
+| **Control Kernel** | Admission, dispatch, retry, fallback, cancellation, recovery, permission and publication policy | Repositories, process launch, clocks, raw logs |
+| **Runtime** | Applying Kernel decisions, persistence, WorkUnits, leases, workspaces, processes and normalized observations | Independent retry, fallback, replan or routing policy |
+| **Executor Adapter** | One authorized attempt, probe/abort, command lifecycle and result normalization | Task state or strategic decisions |
+| **Gateway** | Client and integration connectivity | Planner, Kernel or Executor policy |
+
+The fixed control loop is:
+
+```text
+Planner proposes
+  -> ControlKernel decides
+  -> Runtime applies
+  -> Executor performs one authorized attempt
+  -> Runtime reports normalized facts
+  -> ControlKernel decides the next action
+```
+
+There is no second semantic router or hidden Runtime-owned retry loop.
+
+## Core Features
+
+### Durable Task OS
+
+- Persistent Task and Subtask state across sessions and process restarts.
+- One active top-level Task with dependency-aware concurrent Subtasks.
+- Durable inbox, immutable Kernel decision ledger, idempotent application and
+  recovery.
+- Task search, resume context, cancellation fences, partial acceptance and
+  explicit blocked/parked states.
+
+### Planner and Work Graph
+
+- AnyFusion-Pi runs as a separate Planner process with its own session history.
+- Planner repository inspection is read-only and rooted at the user's launch
+  directory.
+- Planning produces strict `PlanningAgentPlan v7` proposals.
+- Work Graph v6 models DAG topology, acceptance criteria, typed handoffs,
+  delivery kind and ordered AgentClass preferences.
+- Planner proposals are revalidated before entering the Kernel workflow.
+
+### Governed Execution
+
+- `ControlKernel.decide(event, snapshot)` is the only strategic decision seam.
+- Deterministic frontier batches support up to four concurrent child attempts.
+- Codex and Pi use existing local CLI binaries without sharing personal homes.
+- Worktree execution is the default trusted native backend.
+- The Docker backend remains an explicit compatibility mode and is the only
+  backend described as a container sandbox.
+- Resource leases, permission requests, bounded grants and cancellation cleanup
+  are persisted and recoverable.
+
+### Verification and Publication
+
+- Completion Protocol v3 requires structured evidence or a controlled failure.
+- Runtime computes the authoritative workspace delta.
+- Successful attempts produce immutable receipts and candidate Git commits.
+- Publication integrates candidates in deterministic order.
+- Results, artifacts and handoffs become visible only after publication
+  succeeds.
+- Merge conflicts use bounded Kernel-authorized repair and replan paths.
+
+### Connectivity and Delivery
+
+- Native AnyFusion-Pi TUI is the default local surface.
+- Local Gateway supports multiple terminal/client connections.
+- Feishu integration provides remote intake, progress and artifact delivery.
+- Presentation surfaces receive bounded projections and do not write Kernel or
+  storage state directly.
+
+## Development
+
+```bash
+npm install
+npm run lint
+npm test
+npm run build
+npm run start
+```
+
+Focused native installer validation:
+
+```bash
+npm test -- tests/scripts/native-install-lib.test.ts
+bash -n setup.sh
+```
+
+Live Planner smoke testing requires valid provider credentials and the
+AnyFusion-Pi source:
+
+```bash
+npm run smoke:anyfusion
+npm run smoke:anyfusion -- --scenario artifact
+```
+
+Do not use the smoke command as a substitute for focused module tests. See
+[AGENTS.md](AGENTS.md) and [CONTEXT.md](CONTEXT.md) before changing architecture
+or runtime contracts.
 
 ## Project Status
 
 | Area | Current state |
 | --- | --- |
-| Release | `v1.2.0-preview.0` |
+| Version | `v1.2.0-preview.0` |
 | Maturity | Developer Preview |
-| Deployment | Limited internal pilot use |
-| Task scope | One active top-level task with dependency-aware subtasks |
-| Dispatch | Deterministic batches with up to four concurrent isolated attempts inside the active top-level Task |
-| Compatibility | CLI, configuration, and runtime contracts may evolve before a stable release |
+| Runtime | Node.js `>=22.19.0`, TypeScript ESM |
+| Planner contract | PlanningAgentPlan v7 |
+| Work Graph contract | v6 |
+| Kernel contract | v5 |
+| Completion contract | v3 |
+| Persistence | SQLite schema v30 |
+| Canonical Executors | Codex CLI and Pi Agent |
 
-AnyFusion is not presented as Production Ready. The preview is intended to validate the task control plane, work-graph contracts, specialist routing, verification model, and operational workflow before stable compatibility commitments are made.
+This is not a stable production release. Installation, configuration and
+extension contracts may change before the first stable version.
 
 ## Documentation
 
 | Resource | Purpose |
 | --- | --- |
-| [Technical Overview](docs/current/technical-overview.md) | Runtime architecture, operational setup, modules, and implementation details |
-| [Runtime Security](docs/current/phase-5-runtime-security.md) | Worktree Executor processes, Docker compatibility attempts, persistent workspaces, image profiles, and runtime elevation |
-| [Architecture Decisions](docs/adr/README.md) | Accepted boundaries and authoritative design decisions |
-| [Concurrency Roadmap](docs/plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md) | Control-plane, resource-partitioning, recovery, and parallel scheduling plan |
-| [Preview Release Notes](docs/releases/v1.2.0-preview.0.md) | Current release scope, deployment status, and known limitations |
-| [Changelog](CHANGELOG.md) | Versioned lifecycle and notable changes |
-| [Documentation Map](docs/README.md) | Index of current, historical, and contributor-facing documentation |
+| [Current Technical Overview](docs/current/technical-overview.md) | Full runtime, deployment, configuration and repository overview |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Workspaces, resource leases, permission boundaries and execution backends |
+| [Architecture Decisions](docs/adr/README.md) | Accepted decisions and authority matrix |
+| [Server Upgrade Design](docs/plans/2026-08-07-metawork-server-upgrade-technical-design.md) | Target Server installer, unified configuration and extensibility design |
+| [Documentation Map](docs/README.md) | Current docs, plans, technical debt and archives |
 
 ## License
 
 AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Copyright 2026 The AnyFusion Contributors.
-
-<p align="center"><sub>Hosted by MetaAny as a neutral open-source home.</sub></p>

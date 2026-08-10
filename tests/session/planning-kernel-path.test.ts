@@ -22,13 +22,13 @@ import { PlannerProposalRepo } from '../../src/storage/planner-proposal-repo.js'
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
 import type {
-  FakeAttemptSandboxResponder,
-  FakeAttemptSandboxResponse,
-} from '../support/fake-attempt-sandbox.js';
+  FakeAttemptExecutionResponder,
+  FakeAttemptExecutionResponse,
+} from '../support/fake-attempt-execution-backend.js';
 import {
-  completionResponseFromSandboxInput,
-  FakeAttemptSandbox,
-} from '../support/fake-attempt-sandbox.js';
+  completionResponseFromExecutionInput,
+  FakeAttemptExecutionBackend,
+} from '../support/fake-attempt-execution-backend.js';
 import { planningAgentFromPlanMock } from '../support/planning-agent-plans.js';
 
 function createConfig(): Config {
@@ -85,8 +85,8 @@ function createSession(
   sessionId: string,
   planningPlan: PlanningAgentPlan | ((context: PlanningContext) => PlanningAgentPlan | Promise<PlanningAgentPlan>),
   responder?: (
-    ...args: [...Parameters<FakeAttemptSandboxResponder>, Database.Database]
-  ) => FakeAttemptSandboxResponse | Promise<FakeAttemptSandboxResponse>,
+    ...args: [...Parameters<FakeAttemptExecutionResponder>, Database.Database]
+  ) => FakeAttemptExecutionResponse | Promise<FakeAttemptExecutionResponse>,
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -94,14 +94,14 @@ function createSession(
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
   const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
-  const attemptSandbox = new FakeAttemptSandbox(
+  const attemptExecutionBackend = new FakeAttemptExecutionBackend(
     (input, attemptIndex) => responder?.(input, attemptIndex, db) ?? { body: 'done' },
   );
   const session = new MetaclawSession({
     taskEngine,
     memoryEngine,
     orchestration: new OrchestrationEngine(taskEngine),
-    attemptSandbox,
+    attemptExecutionBackend,
     db,
     config: createConfig(),
     sessionId,
@@ -118,7 +118,7 @@ function createSession(
     session,
     taskRepo,
     memoryEngine,
-    attemptSandbox,
+    attemptExecutionBackend,
     kernelDecisionRepo: new KernelDecisionRepo(db),
     sessionId,
   };
@@ -323,7 +323,7 @@ describe('natural-language planning/kernel path', () => {
       expect(harness.taskRepo.findAll()).toHaveLength(1);
       expect(harness.db.prepare('SELECT COUNT(*) AS count FROM work_graph_revisions').get())
         .toEqual({ count: 1 });
-      expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
+      expect(harness.attemptExecutionBackend.create).not.toHaveBeenCalled();
       await executorStarted;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
@@ -571,7 +571,7 @@ describe('natural-language planning/kernel path', () => {
 
     const [createdTask] = harness.taskRepo.findAll();
     expect(createdTask).toBeDefined();
-    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(harness.attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     const audits = harness.kernelDecisionRepo.listBySession('sess_durable');
     expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
@@ -747,7 +747,7 @@ describe('natural-language planning/kernel path', () => {
           })}`,
         };
       }
-      return { rawOutput: completionResponseFromSandboxInput(input, 'replanned work done') };
+      return { rawOutput: completionResponseFromExecutionInput(input, 'replanned work done') };
     });
 
     await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
@@ -758,7 +758,7 @@ describe('natural-language planning/kernel path', () => {
     expect(replanRequest).not.toContain('evidence_prior_generation');
     expect(replanRequest).not.toContain('must not leak into the current generation');
     expect(contextBuildCalls).toBe(3);
-    expect(harness.attemptSandbox.create).toHaveBeenCalledTimes(2);
+    expect(harness.attemptExecutionBackend.create).toHaveBeenCalledTimes(2);
     expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
     expect(harness.db.prepare(`
       SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
@@ -792,7 +792,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('你好呀', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
+    expect(harness.attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('你好，我是 MetaClaw。');
     const audits = harness.kernelDecisionRepo.listBySession('sess_direct');
     expect(audits).toHaveLength(1);
@@ -822,7 +822,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('今天星期几', { awaitAsyncWork: true });
 
     expect(decideSpy).toHaveBeenCalledTimes(1);
-    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
+    expect(harness.attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(harness.session.getSnapshot().output.join('\n')).toContain('今天是星期四。');
     const audits = harness.kernelDecisionRepo.listBySession('sess_shortcircuit');
     expect(audits).toHaveLength(1);
@@ -841,7 +841,7 @@ describe('natural-language planning/kernel path', () => {
     await harness.session.submit('这个可能要处理一下', { awaitAsyncWork: true });
 
     expect(harness.taskRepo.findAll()).toHaveLength(0);
-    expect(harness.attemptSandbox.create).not.toHaveBeenCalled();
+    expect(harness.attemptExecutionBackend.create).not.toHaveBeenCalled();
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('请明确是聊天还是创建任务。');
     expect(output).not.toContain('统一意图裁决置信度不足');

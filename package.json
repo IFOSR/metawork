@@ -4,6 +4,10 @@
   "description": "A company-backed AI Task OS for durable, policy-governed agent workflows.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IFOSR/metawork.git"
+  },
   "bin": {
     "anyfusion": "./dist/index.js",
     "metaclaw": "./dist/index.js",
@@ -16,6 +20,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "setup:native": "node scripts/install-native-macos.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
     "start": "node dist/index.js"

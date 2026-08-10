@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -117,7 +117,7 @@ describe('App guidance blocks', () => {
     taskEngine.transition(startupTask.id, 'ready');
 
     const startupDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'startup done',
       wait: startupDeferred.promise.then(result => result.exitCode),
     }));
@@ -127,7 +127,7 @@ describe('App guidance blocks', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_startup',
@@ -159,7 +159,7 @@ describe('App guidance blocks', () => {
     const firstDeferred = createDeferredResult();
     const secondDeferred = createDeferredResult();
     const deferredResults = [firstDeferred, secondDeferred];
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => ({
       body: ['第一项任务完成', '第二项任务完成'][attemptIndex],
       wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
     }));
@@ -169,7 +169,7 @@ describe('App guidance blocks', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_completion',
@@ -218,7 +218,7 @@ describe('App guidance blocks', () => {
     });
 
     const deferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '阻塞解除后已恢复执行',
       wait: deferred.promise.then(result => result.exitCode),
     }));
@@ -228,7 +228,7 @@ describe('App guidance blocks', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_unblock',
@@ -280,7 +280,7 @@ describe('App guidance blocks', () => {
     });
 
     const deferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '已恢复主线任务',
       wait: deferred.promise.then(result => result.exitCode),
     }));
@@ -290,7 +290,7 @@ describe('App guidance blocks', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_resume_parked',

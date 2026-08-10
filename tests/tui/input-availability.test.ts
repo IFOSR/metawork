@@ -18,7 +18,7 @@ import {
   stubPlanningAgent,
   workGraphPlan,
 } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -85,14 +85,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_input_history',
@@ -148,14 +148,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_multiline_editor',
@@ -205,14 +205,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_normal_backspace',
@@ -245,14 +245,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_raw_lf_submit',
@@ -285,14 +285,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_command_suggestions',
@@ -329,13 +329,13 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_command_group_suggestions',
@@ -385,7 +385,7 @@ describe('App input availability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const firstDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
       ? { body: 'first done', wait: firstDeferred.promise.then(result => result.exitCode) }
       : { body: 'queued done' });
 
@@ -394,7 +394,7 @@ describe('App input availability', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_test',
@@ -454,7 +454,7 @@ describe('App input availability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const executorDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'done',
       wait: executorDeferred.promise.then(result => result.exitCode),
     }));
@@ -469,7 +469,7 @@ describe('App input availability', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_processing_status',
@@ -492,7 +492,7 @@ describe('App input availability', () => {
     expect(app.lastFrame()).toContain('status: processing');
 
     resolvePlan(workGraphPlan({ goal: '生成一个状态报告', matchedBoundary: ['repo_execution'] }));
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     await flushUpdates();
@@ -531,7 +531,7 @@ describe('App input availability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const firstDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
       ? { body: 'first done', wait: firstDeferred.promise.then(result => result.exitCode) }
       : { body: 'urgent done' });
 
@@ -540,7 +540,7 @@ describe('App input availability', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_test',
@@ -590,7 +590,7 @@ describe('App input availability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const firstDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
       ? { body: 'first done', wait: firstDeferred.promise.then(result => result.exitCode) }
       : { body: 'queued done' });
     const planningAgent = planningAgentFromPlanMock(
@@ -604,7 +604,7 @@ describe('App input availability', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_llm_stalled_while_running',
@@ -653,7 +653,7 @@ describe('App input availability', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const piDeferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Pi Agent done',
       wait: piDeferred.promise.then(result => result.exitCode),
     }));
@@ -663,7 +663,7 @@ describe('App input availability', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_routed_executor_status',
@@ -684,7 +684,7 @@ describe('App input availability', () => {
 
     expect(app.lastFrame()).toContain('status: running codex-cli');
     expect(app.lastFrame()).not.toContain('status: running pi-agent');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     piDeferred.resolve({
       success: true,
@@ -709,14 +709,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_enter_completes',
@@ -736,7 +736,7 @@ describe('App input availability', () => {
     expect(app.lastFrame()).not.toContain('> /task ');
     expect(app.lastFrame()).not.toContain('未知命令');
     expect(app.lastFrame()).not.toContain('/undefined');
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
 
     app.unmount();
     app.cleanup();
@@ -749,13 +749,13 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_middle_cursor_submit',
@@ -792,14 +792,14 @@ describe('App input availability', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'done' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_tab_completes',
@@ -823,7 +823,7 @@ describe('App input availability', () => {
 
     expect(app.lastFrame()).toContain('> /task ');
     expect(app.lastFrame()).not.toContain('未知命令');
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
 
     app.unmount();
     app.cleanup();

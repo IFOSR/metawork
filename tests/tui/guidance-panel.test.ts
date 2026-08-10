@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config, ExecutorResult } from '../../src/core/types.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -117,7 +117,7 @@ describe('App guidance panel', () => {
     taskEngine.transition(startupTask.id, 'ready');
 
     const deferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'startup done',
       wait: deferred.promise.then(result => result.exitCode),
     }));
@@ -127,7 +127,7 @@ describe('App guidance panel', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_panel',
@@ -159,7 +159,7 @@ describe('App guidance panel', () => {
     const firstDeferred = createDeferredResult();
     const secondDeferred = createDeferredResult();
     const deferredResults = [firstDeferred, secondDeferred];
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => ({
       body: ['第一项任务完成', '第二项任务完成'][attemptIndex],
       wait: deferredResults[attemptIndex].promise.then(result => result.exitCode),
     }));
@@ -169,7 +169,7 @@ describe('App guidance panel', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_guidance_panel_completion',

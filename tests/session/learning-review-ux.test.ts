@@ -9,7 +9,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { LearningCandidateRepo } from '../../src/storage/learning-candidate-repo.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -44,12 +44,12 @@ describe('Learning candidate session review UX', () => {
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-os-tests');
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_learning_review',
@@ -80,6 +80,6 @@ describe('Learning candidate session review UX', () => {
     expect(snapshot).toContain('复用飞书回复截断调试流程');
     expect(snapshot).toContain('已批准学习候选 #lc_session_1');
     expect(repo.findById('lc_session_1')?.status).toBe('approved');
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 });

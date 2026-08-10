@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type {
-  AttemptSandboxPersistenceRecord,
-  AttemptSandboxRepositoryPort,
+  AttemptExecutionPersistenceRecord,
+  AttemptExecutionRepositoryPort,
 } from '../execution/repositories.js';
 
 interface Row {
@@ -14,7 +14,7 @@ interface Row {
   container_id: string;
   image_ref: string;
   image_id: string;
-  status: AttemptSandboxPersistenceRecord['status'];
+  status: AttemptExecutionPersistenceRecord['status'];
   lease_token: string;
   labels_json: string;
   exit_code: number | null;
@@ -25,7 +25,7 @@ interface Row {
   updated_at: string;
 }
 
-function fromRow(row: Row): AttemptSandboxPersistenceRecord {
+function fromRow(row: Row): AttemptExecutionPersistenceRecord {
   return {
     attemptId: row.attempt_id,
     taskId: row.task_id,
@@ -48,10 +48,11 @@ function fromRow(row: Row): AttemptSandboxPersistenceRecord {
   };
 }
 
-export class SqliteAttemptSandboxRepository implements AttemptSandboxRepositoryPort {
+export class SqliteAttemptExecutionRepository implements AttemptExecutionRepositoryPort {
   constructor(private readonly db: Database.Database) {}
 
-  create(record: AttemptSandboxPersistenceRecord): AttemptSandboxPersistenceRecord {
+  create(record: AttemptExecutionPersistenceRecord): AttemptExecutionPersistenceRecord {
+    // `attempt_sandboxes` is the schema-v30 physical name retained for database compatibility.
     this.db.prepare(`
       INSERT INTO attempt_sandboxes (
         attempt_id, task_id, generation_id, subtask_id, work_unit_id,
@@ -70,23 +71,23 @@ export class SqliteAttemptSandboxRepository implements AttemptSandboxRepositoryP
     return this.find(record.attemptId)!;
   }
 
-  find(attemptId: string): AttemptSandboxPersistenceRecord | null {
+  find(attemptId: string): AttemptExecutionPersistenceRecord | null {
     const row = this.db.prepare('SELECT * FROM attempt_sandboxes WHERE attempt_id = ?').get(attemptId) as Row | undefined;
     return row ? fromRow(row) : null;
   }
 
-  findByContainerId(containerId: string): AttemptSandboxPersistenceRecord | null {
+  findByContainerId(containerId: string): AttemptExecutionPersistenceRecord | null {
     const row = this.db.prepare('SELECT * FROM attempt_sandboxes WHERE container_id = ?').get(containerId) as Row | undefined;
     return row ? fromRow(row) : null;
   }
 
-  listActive(): AttemptSandboxPersistenceRecord[] {
+  listActive(): AttemptExecutionPersistenceRecord[] {
     return (this.db.prepare(`
       SELECT * FROM attempt_sandboxes WHERE status IN ('created', 'running', 'paused') ORDER BY created_at, attempt_id
     `).all() as Row[]).map(fromRow);
   }
 
-  update(attemptId: string, changes: Parameters<AttemptSandboxRepositoryPort['update']>[1]): void {
+  update(attemptId: string, changes: Parameters<AttemptExecutionRepositoryPort['update']>[1]): void {
     const existing = this.find(attemptId);
     if (!existing) return;
     this.db.prepare(`

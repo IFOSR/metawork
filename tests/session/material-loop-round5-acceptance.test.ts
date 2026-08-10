@@ -10,7 +10,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -48,7 +48,7 @@ describe('Round 5 material loop acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Phoenix 周报结论：主线推进稳定，风险集中在联调和测试数据。',
     }));
     const result = await runScriptedSession({
@@ -60,7 +60,7 @@ describe('Round 5 material loop acceptance', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round5_materials',

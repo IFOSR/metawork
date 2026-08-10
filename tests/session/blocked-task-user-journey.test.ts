@@ -11,7 +11,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { NotificationService } from '../../src/notifications/types.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -53,14 +53,14 @@ describe('blocked task user journey', () => {
     const notifier: NotificationService = {
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
       ? { body: '沙箱未产出任何可交付结果', exitCode: 1 }
       : { body: '阻塞解除后已完成用户旅程验收报告' });
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_blocked_user_journey',
@@ -90,7 +90,7 @@ describe('blocked task user journey', () => {
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);

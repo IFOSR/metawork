@@ -28,7 +28,7 @@ Architecture shortcuts:
 - AgentClass definitions/status: [ADR-0018](docs/adr/0018-supported-routing-contracts-and-unified-executor-definitions.md), [ADR-0017](docs/adr/0017-kernel-executor-status-projection.md)
 - Work Graph/publication: [ADR-0021](docs/adr/0021-work-graph-v4-subtask-execution-contract.md), [ADR-0025](docs/adr/0025-single-task-concurrency-and-git-publication.md), [ADR-0026](docs/adr/0026-phase-6-single-task-reliability-closure.md)
 - Kernel/recovery: [ADR-0022](docs/adr/0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](docs/adr/0023-durable-kernel-workflow-recovery-and-availability.md)
-- Sandbox/resources: [ADR-0024](docs/adr/0024-resource-partition-sandbox-and-runtime-elevation.md), [runtime security](docs/current/phase-5-runtime-security.md)
+- Execution backends/resources: [ADR-0024](docs/adr/0024-resource-partition-sandbox-and-runtime-elevation.md), [runtime security](docs/current/phase-5-runtime-security.md)
 - Single-Task boundary: [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md), [future roadmap](docs/plans/future-multi-task-scheduling-roadmap.md)
 
 ## Repository Map
@@ -42,7 +42,7 @@ root. Detailed ownership and dependency rules live in
 | Planning and AnyFusion-Pi session | [`src/planning/`](src/planning/) |
 | Pure policy and graph rules | [`src/kernel/`](src/kernel/), [`src/work-graph/`](src/work-graph/) |
 | Application Shell | [`src/session/`](src/session/) |
-| Attempts, recovery, sandbox, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
+| Attempts, recovery, execution backends, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
 | Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
 | CLI, commands, native TUI bridge, and standby Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
@@ -74,7 +74,7 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
   belong in `CONTEXT.md`, not this file.
-- The sibling AnyFusion-Pi fork is the default local Planner surface. Its Task panel and
+- The nested `planner/AnyFusion-Pi` fork is the default local Planner surface. Its Task panel and
   bridge are presentation/Application-Shell adapters only: they may project state and hand a
   Planner proposal to the existing validation path, but may not mutate storage, schedule work,
   authorize execution, or control an Executor.
@@ -108,7 +108,14 @@ Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliabl
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
 
-For the AnyFusion-Pi integration, local Docker validation covers both repositories in one Node 22.19+ runtime image, their isolated dependency trees and processes, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel handoff, and unchanged core regressions. The Pi fork uses `npm run build:offline` through the required `anyfusion-pi` BuildKit context; do not add a prebuilt Planner-image fallback, embed a second Node runtime, use a host-global Pi install, or run Planner code inside the MetaClaw process.
+For the AnyFusion-Pi integration, native macOS installation keeps the nested
+Planner repository, dependency tree, process, home, and sessions isolated while
+using the directory where the user starts AnyFusion as the read-only workspace.
+Docker validation still covers both repositories in one Node 22.19+ runtime
+image, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel
+handoff, and unchanged core regressions. The Pi fork uses
+`npm run build:offline`; do not use a host-global Pi package as Planner or run
+Planner code inside the MetaClaw process.
 
 ## Code, Plans, And Commits
 

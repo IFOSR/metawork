@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -185,15 +185,22 @@ describe('Completion Protocol v3', () => {
         requiredItems: [{ key: 'files', type: 'artifact', description: 'changed files' }],
       }],
     });
+    const realWorkspaceRoot = realpathSync(workspaceRoot);
     expect(result).toMatchObject({
       ok: true,
-      normalizedArtifacts: [join(workspaceRoot, 'created.md'), join(workspaceRoot, 'nested', 'modified.md')],
+      normalizedArtifacts: [
+        join(realWorkspaceRoot, 'created.md'),
+        join(realWorkspaceRoot, 'nested', 'modified.md'),
+      ],
       envelope: {
         handoffs: [{
           toSubtaskId: 'task_b',
           items: [{
             key: 'files', type: 'artifact',
-            paths: [join(workspaceRoot, 'created.md'), join(workspaceRoot, 'nested', 'modified.md')],
+            paths: [
+              join(realWorkspaceRoot, 'created.md'),
+              join(realWorkspaceRoot, 'nested', 'modified.md'),
+            ],
           }],
         }],
       },

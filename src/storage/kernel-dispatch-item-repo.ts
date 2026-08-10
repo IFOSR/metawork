@@ -23,7 +23,7 @@ export interface KernelDispatchItemRecord {
   resourceGrant: ResourceClaim[];
   status: KernelDispatchItemStatus;
   workUnitId: string | null;
-  sandboxContainerId: string | null;
+  backendExecutionId: string | null;
   launchStartedAt: string | null;
   terminalAt: string | null;
   cancellationDecisionId: string | null;
@@ -177,12 +177,12 @@ export class KernelDispatchItemRepo {
     `).run(workUnitId, now, attemptId).changes === 1;
   }
 
-  markSandbox(attemptId: string, containerId: string, now: string): void {
+  markBackendExecution(attemptId: string, executionId: string, now: string): void {
     this.db.prepare(`
       UPDATE kernel_dispatch_items
       SET sandbox_container_id = ?, status = 'running', updated_at = ?
       WHERE attempt_id = ? AND status IN ('launching', 'running')
-    `).run(containerId, now, attemptId);
+    `).run(executionId, now, attemptId);
   }
 
   markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
@@ -321,7 +321,7 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     resourceGrant: JSON.parse(row.resource_grant_json) as ResourceClaim[],
     status: row.status,
     workUnitId: row.work_unit_id,
-    sandboxContainerId: row.sandbox_container_id,
+    backendExecutionId: row.sandbox_container_id,
     launchStartedAt: row.launch_started_at,
     terminalAt: row.terminal_at,
     cancellationDecisionId: row.cancellation_decision_id,

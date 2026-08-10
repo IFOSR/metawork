@@ -12,7 +12,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -87,7 +87,7 @@ describe('scripted session', () => {
       '2026-04-20T10:00:00.000Z',
     );
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复处理' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已恢复处理' }));
     const result = await runScriptedSession({
       inputs: [
         `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
@@ -96,14 +96,14 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted',
       contextRecaller,
     });
 
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已提交恢复请求，并附带资源 /tmp/evidence-v3.pdf`);
     expect(result.output.join('\n')).toContain('work graph is missing; replanning is required');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('parked');
@@ -117,7 +117,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
     }));
     const result = await runScriptedSession({
@@ -128,7 +128,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_detail',
@@ -160,7 +160,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已发送给客户' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已发送给客户' }));
     const result = await runScriptedSession({
       inputs: [
         '直接把邮件发给客户',
@@ -168,7 +168,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_risky_gate',
@@ -183,7 +183,7 @@ describe('scripted session', () => {
       ),
     });
 
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain('该操作存在较高风险，请明确确认是否继续执行。');
     expect(result.output.join('\n')).not.toContain('risk confirmation required');
   });
@@ -195,7 +195,7 @@ describe('scripted session', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox(input => {
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => {
         const artifactDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
         const artifactPath = resolve(artifactDir!, 'artifact-note.md');
         mkdirSync(artifactDir!, { recursive: true });
@@ -212,7 +212,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_artifact',
@@ -236,7 +236,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(input => {
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => {
         const targetDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
         const artifactPath = resolve(targetDir!, 'landing-page.html');
         mkdirSync(targetDir!, { recursive: true });
@@ -253,7 +253,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_html_artifact',
@@ -278,7 +278,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
     }));
     const result = await runScriptedSession({
@@ -288,7 +288,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_fallback',
@@ -312,7 +312,7 @@ describe('scripted session', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       rawOutput: [
           '⏱ Timeout — denying command',
           '',
@@ -334,7 +334,7 @@ describe('scripted session', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_undeliverable',

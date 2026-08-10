@@ -16,6 +16,9 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Changed
 
+- Added native macOS setup for the isolated nested AnyFusion-Pi Planner,
+  current-directory read-only inspection, and AnyFusion-only Executor homes
+  without installing or modifying existing Codex/Pi CLIs.
 - Advanced the current pre-release baseline to Kernel wire/ledger v5 and
   fresh-install SQLite schema v29 with durable Planner proposal turn/submission identity and accepted-turn locking.
 - Completed deterministic asynchronous dispatch of up to four isolated attempts
@@ -53,5 +56,5 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/MetaAny/AnyFusion/compare/v1.2.0-preview.0...HEAD
-[1.2.0-preview.0]: https://github.com/MetaAny/AnyFusion/releases/tag/v1.2.0-preview.0
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.0...HEAD
+[1.2.0-preview.0]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.0

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AttemptSandboxPort } from './attempt-sandbox.js';
+import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
 import type { CapabilityResourceResolverPort } from './capability-resource-resolver.js';
 import {
   capabilityRequestFingerprint,
@@ -59,7 +59,7 @@ export class PermissionWorkflowService {
     context: PermissionAttemptContext;
     repository: PermissionRepositoryPort;
     resolver: CapabilityResourceResolverPort;
-    sandbox: AttemptSandboxPort;
+    executionBackend: AttemptExecutionBackend;
     workflowStore: KernelWorkflowStore;
     kernel?: ControlKernel;
     rules: PermissionRule[];
@@ -91,7 +91,7 @@ export class PermissionWorkflowService {
     request.fingerprint = capabilityRequestFingerprint(request);
     const record = this.deps.repository.createRequest(request, now);
     if (record.status !== 'pending') return this.requestResult(record);
-    await this.deps.sandbox.pause(this.deps.context.containerId);
+    await this.deps.executionBackend.pause(this.deps.context.containerId);
     try {
       const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
       this.deps.context.checkpointId = checkpointId;
@@ -265,8 +265,10 @@ export class PermissionWorkflowService {
   }
 
   private async resumeIfPresent(): Promise<void> {
-    const sandbox = await this.deps.sandbox.inspect(this.deps.context.containerId);
-    if (sandbox?.status === 'paused') await this.deps.sandbox.resume(this.deps.context.containerId);
+    const execution = await this.deps.executionBackend.inspect(this.deps.context.containerId);
+    if (execution?.status === 'paused') {
+      await this.deps.executionBackend.resume(this.deps.context.containerId);
+    }
   }
 
   private requestResult(record: PermissionRequestRecord): {

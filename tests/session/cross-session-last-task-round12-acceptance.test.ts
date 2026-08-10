@@ -11,7 +11,7 @@ import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -49,12 +49,12 @@ describe('cross-session last-task continuation', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox1 = new FakeAttemptSandbox(() => ({ body: '智谱投资分析已完成' }));
+    const attemptExecutionBackend1 = new FakeAttemptExecutionBackend(() => ({ body: '智谱投资分析已完成' }));
     const session1 = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox: attemptSandbox1,
+      attemptExecutionBackend: attemptExecutionBackend1,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_a',
@@ -68,7 +68,7 @@ describe('cross-session last-task continuation', () => {
     await session1.submit('智谱这家公司从现在看是否值得投资？你怎么看？', { awaitAsyncWork: true });
     await session1.submit('/exit', { awaitAsyncWork: true });
 
-    const attemptSandbox2 = new FakeAttemptSandbox(() => ({ body: 'follow-up 已执行' }));
+    const attemptExecutionBackend2 = new FakeAttemptExecutionBackend(() => ({ body: 'follow-up 已执行' }));
     // The planner sees session1's completed task in recentTasks and pins it by
     // taskId. Runtime then forks a follow-up from that referenced done task —
     // no session-pointer guessing, no 'last_task_continuation' control.
@@ -77,7 +77,7 @@ describe('cross-session last-task continuation', () => {
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox: attemptSandbox2,
+      attemptExecutionBackend: attemptExecutionBackend2,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_b',
@@ -90,8 +90,8 @@ describe('cross-session last-task continuation', () => {
     session2.initialize();
     await session2.submit('继续之前的任务', { awaitAsyncWork: true });
 
-    expect(attemptSandbox2.create).toHaveBeenCalledTimes(1);
-    const followUpInput = attemptSandbox2.create.mock.calls[0]![0];
+    expect(attemptExecutionBackend2.create).toHaveBeenCalledTimes(1);
+    const followUpInput = attemptExecutionBackend2.create.mock.calls[0]![0];
     expect(followUpInput.taskId).not.toBe(completedTaskId);
   });
 
@@ -117,12 +117,12 @@ describe('cross-session last-task continuation', () => {
       pauseReason: '等待继续',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '历史任务已恢复' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '历史任务已恢复' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_e',
@@ -135,6 +135,6 @@ describe('cross-session last-task continuation', () => {
     session.initialize();
     await session.submit('继续之前的任务', { awaitAsyncWork: true });
 
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
   });
 });

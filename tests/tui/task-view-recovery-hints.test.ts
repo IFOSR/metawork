@@ -11,7 +11,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -96,14 +96,14 @@ describe('App task view recovery hints', () => {
       status: 'waiting',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_task_view_recovery_hints',
@@ -143,14 +143,14 @@ describe('App task view recovery hints', () => {
       status: 'waiting',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_task_view_link_materials',

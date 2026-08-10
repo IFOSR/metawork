@@ -10,7 +10,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 
@@ -21,8 +21,8 @@ describe('Kernel capacity control loop', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
     const available = { value: false };
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'capacity recovered' }));
-    attemptSandbox.resolveImage.mockImplementation(async () => {
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'capacity recovered' }));
+    attemptExecutionBackend.resolveImage.mockImplementation(async () => {
       if (!available.value) throw new Error('image unavailable');
       return `sha256:${'a'.repeat(64)}`;
     });
@@ -41,7 +41,7 @@ describe('Kernel capacity control loop', () => {
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config,
       sessionId: 'session_capacity',
@@ -55,7 +55,7 @@ describe('Kernel capacity control loop', () => {
 
     const [task] = taskRepo.findAll();
     expect(task.status).toBe('blocked');
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
     expect(new KernelExecutorStatusProjector(new KernelExecutorStatusRepo(db)).list()
@@ -77,7 +77,7 @@ describe('Kernel capacity control loop', () => {
 
     expect(handled).toBe(true);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_batch' }, { action: 'complete_task' }]));
   });

@@ -13,7 +13,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -101,14 +101,14 @@ describe('App persisted v4 resume integration', () => {
     });
     taskRepo.update(parkedTask.id, { lastInterruptionReason: '被任务 #task_high 抢占' });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '恢复完成' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '恢复完成' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_resume',
@@ -128,8 +128,8 @@ describe('App persisted v4 resume integration', () => {
     await flushUpdates();
 
     await waitFor(() => {
-      expect(attemptSandbox.create).toHaveBeenCalled();
-      const executionCall = attemptSandbox.create.mock.calls
+      expect(attemptExecutionBackend.create).toHaveBeenCalled();
+      const executionCall = attemptExecutionBackend.create.mock.calls
         .find(call => call[0].taskId === parkedTask.id);
       const prompt = executionCall?.[0].args.at(-1);
       expect(prompt).toContain('Background goal: 完成分析摘要');

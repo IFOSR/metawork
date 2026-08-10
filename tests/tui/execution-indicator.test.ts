@@ -17,7 +17,7 @@ import {
   stubPlanningAgent,
   workGraphPlan,
 } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -110,7 +110,7 @@ describe('App execution indicator', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox: new FakeAttemptSandbox(),
+        attemptExecutionBackend: new FakeAttemptExecutionBackend(),
         db,
         config: createConfig(),
         sessionId: 'sess_planner_indicator',
@@ -150,7 +150,7 @@ describe('App execution indicator', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '执行完成',
       wait: deferred.promise.then(result => result.exitCode),
     }));
@@ -160,7 +160,7 @@ describe('App execution indicator', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_test',
@@ -182,10 +182,10 @@ describe('App execution indicator', () => {
     const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
     await flushUpdates();
 
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    expect(attemptSandbox.create).toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).toHaveBeenCalled();
     expect(app.frames.some(frame => frame.includes('当前执行 1 | 待执行 0 | 已挂起 0 | 阻塞 0'))).toBe(true);
 
     deferred.resolve({
@@ -236,14 +236,14 @@ describe('App execution indicator', () => {
       },
     });
 
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_parked_summary',
@@ -269,7 +269,7 @@ describe('App execution indicator', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const deferred = createDeferredResult();
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '执行完成',
       wait: deferred.promise.then(result => result.exitCode),
     }));
@@ -279,7 +279,7 @@ describe('App execution indicator', () => {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_last_event',

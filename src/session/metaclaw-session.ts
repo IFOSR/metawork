@@ -30,14 +30,14 @@ import { ExecutionProgressService } from '../execution/execution-progress-servic
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
-import { DockerCliAttemptSandboxAdapter } from '../execution/docker-cli-attempt-sandbox-adapter.js';
-import { WorktreeAttemptSandboxAdapter } from '../execution/worktree-attempt-sandbox-adapter.js';
-import type { AttemptSandboxPort } from '../execution/attempt-sandbox.js';
+import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
+import { WorktreeAttemptExecutionBackend } from '../execution/worktree-attempt-execution-backend.js';
+import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { SqlitePermissionRepository } from '../storage/permission-repo.js';
-import { SqliteAttemptSandboxRepository } from '../storage/attempt-sandbox-repo.js';
+import { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import {
@@ -47,7 +47,7 @@ import {
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
 import { buildPermissionRules } from '../resource/index.js';
-import { AttemptSandboxReconciler } from '../execution/attempt-sandbox-reconciler.js';
+import { AttemptExecutionBackendReconciler } from '../execution/attempt-execution-backend-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
 import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
@@ -111,7 +111,7 @@ export interface MetaclawSessionDeps {
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
   sourceRoot?: string;
-  attemptSandbox?: AttemptSandboxPort;
+  attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
 }
 
@@ -247,10 +247,10 @@ interface FocusContext {
 
 const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
 
-function createDefaultAttemptSandbox(): AttemptSandboxPort {
+function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
-  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptSandboxAdapter();
-  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptSandboxAdapter();
+  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
+  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptExecutionBackend();
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }
 
@@ -315,9 +315,9 @@ export class MetaclawSession {
   private readonly workspaceStore: WorkspaceStore;
   private readonly workspaceRetentionService: WorkspaceRetentionService;
   private workspaceRetentionSweep: Promise<void> | null = null;
-  private readonly attemptSandbox: AttemptSandboxPort;
+  private readonly attemptExecutionBackend: AttemptExecutionBackend;
   private readonly permissionRepository: SqlitePermissionRepository;
-  private readonly attemptSandboxRepository: SqliteAttemptSandboxRepository;
+  private readonly attemptExecutionRepository: SqliteAttemptExecutionRepository;
   private readonly workspaceRepository: SqliteWorkspaceRepository;
   private readonly kernelExecutionRuntime: KernelExecutionRuntime;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
@@ -337,9 +337,9 @@ export class MetaclawSession {
       taskRepo: deps.taskEngine.getTaskRepo(),
     });
     this.agentClassService = new AgentClassService({ db: deps.db });
-    this.attemptSandbox = deps.attemptSandbox ?? createDefaultAttemptSandbox();
+    this.attemptExecutionBackend = deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
-    this.attemptSandboxRepository = new SqliteAttemptSandboxRepository(deps.db);
+    this.attemptExecutionRepository = new SqliteAttemptExecutionRepository(deps.db);
     this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
     this.workspaceStore = new WorkspaceStore(resolve(resolveMetaclawDir(), 'workspace-store'));
     this.workspaceRetentionService = new WorkspaceRetentionService(
@@ -348,8 +348,8 @@ export class MetaclawSession {
     );
     const executorRegistry = new ExecutorRegistry({
       agentClassLookup: this.agentClassService,
-      attemptSandbox: this.attemptSandbox,
-      attemptSandboxRepository: this.attemptSandboxRepository,
+      attemptExecutionBackend: this.attemptExecutionBackend,
+      attemptExecutionRepository: this.attemptExecutionRepository,
       controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
@@ -443,8 +443,8 @@ export class MetaclawSession {
       resourceLeaseService,
       workUnitClaimService: this.workUnitClaimService,
       activeExecutions: this.executionRuntime,
-      attemptSandbox: this.attemptSandbox,
-      attemptSandboxRepository: this.attemptSandboxRepository,
+      attemptExecutionBackend: this.attemptExecutionBackend,
+      attemptExecutionRepository: this.attemptExecutionRepository,
     });
     this.attemptRunner = new SubtaskAttemptRunner({
       db: deps.db,
@@ -455,7 +455,7 @@ export class MetaclawSession {
       executionRuntime: this.executionRuntime,
       agentClassService: this.agentClassService,
       workspaceStore: this.workspaceStore,
-      attemptSandbox: this.attemptSandbox,
+      attemptExecutionBackend: this.attemptExecutionBackend,
       resourceLeaseService,
       permissionRepository: this.permissionRepository,
       kernelWorkflowStore: this.kernelWorkflowRepo,
@@ -1796,8 +1796,8 @@ export class MetaclawSession {
   }): Promise<void> {
     const record = this.permissionRepository.findRequest(input.requestId);
     if (!record) throw new Error(`permission request not found: ${input.requestId}`);
-    const sandbox = this.attemptSandboxRepository.find(record.request.attemptId);
-    const workspaceId = sandbox?.workspaceId
+    const attemptExecution = this.attemptExecutionRepository.find(record.request.attemptId);
+    const workspaceId = attemptExecution?.workspaceId
       ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
     const task = this.taskRuntimeService.findTask(record.request.taskId);
     const resourceRegistrations = new Map((task?.resources ?? []).map((resource, index) => [
@@ -1813,13 +1813,13 @@ export class MetaclawSession {
         attemptId: record.request.attemptId,
         agentClassName: record.request.agentClassName,
         permissionProfileId: record.request.permissionProfileId,
-        containerId: sandbox?.containerId ?? '',
+        containerId: attemptExecution?.containerId ?? '',
         workspaceId,
         checkpointId: null,
       },
       repository: this.permissionRepository,
       resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
-      sandbox: this.attemptSandbox,
+      executionBackend: this.attemptExecutionBackend,
       workflowStore: this.kernelWorkflowRepo,
       kernel: this.controlKernel,
       rules: buildPermissionRules({
@@ -2035,11 +2035,11 @@ export class MetaclawSession {
 
   private async recoverDurableStartup(): Promise<Task[]> {
     const now = new Date().toISOString();
-    const sandboxLossAttemptIds = new Set<string>();
+    const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.workUnitClaimService.listOrphanedClaims();
     const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
     const requiresAttemptReconciliation = claimedOrphans.length > 0
-      || this.attemptSandboxRepository.listActive().length > 0
+      || this.attemptExecutionRepository.listActive().length > 0
       || this.taskRuntimeService.listTasksByStatus('running').some(task =>
         dispatchItems.listByTask(task.id).some(item =>
           ['launching', 'running', 'cancelling', 'uncertain'].includes(item.status)
@@ -2049,9 +2049,9 @@ export class MetaclawSession {
     try {
       if (requiresAttemptReconciliation) {
         const checkpointIds = new Map<string, string | null>();
-        const reconciliation = await new AttemptSandboxReconciler(
-          this.attemptSandbox,
-          this.attemptSandboxRepository,
+        const reconciliation = await new AttemptExecutionBackendReconciler(
+          this.attemptExecutionBackend,
+          this.attemptExecutionRepository,
         ).reconcile({
           checkpoint: async record => {
             const persisted = this.workspaceRepository.find(record.workspaceId);
@@ -2086,15 +2086,15 @@ export class MetaclawSession {
           },
         });
         for (const record of [...reconciliation.lostAttempts, ...reconciliation.exitedAttempts]) {
-          if (sandboxLossAttemptIds.has(record.attemptId)) continue;
-          sandboxLossAttemptIds.add(record.attemptId);
+          if (backendLossAttemptIds.has(record.attemptId)) continue;
+          backendLossAttemptIds.add(record.attemptId);
           const dispatchItem = dispatchItems.find(record.attemptId);
           if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
             continue;
           }
           dispatchItems.markUncertain(
             record.attemptId,
-            `sandbox ${record.containerId} was reconciled during startup`,
+            `execution backend ${record.containerId} was reconciled during startup`,
             now,
           );
           this.kernelWorkflowRepo.enqueue({
@@ -2136,7 +2136,7 @@ export class MetaclawSession {
       }
       this.appendOutput(
         `恢复阻塞：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
-        '已保留现有 sandbox、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
+        '已保留现有执行后端实例、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
       );
       return blocked;
     }
@@ -2195,7 +2195,7 @@ export class MetaclawSession {
           subtaskId: workUnit.claimedSubtaskId,
           attemptId: workUnit.claimedAttemptId,
         });
-        if (!sandboxLossAttemptIds.has(workUnit.claimedAttemptId)) {
+        if (!backendLossAttemptIds.has(workUnit.claimedAttemptId)) {
           this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
             sessionId: this.deps.sessionId,
             task,

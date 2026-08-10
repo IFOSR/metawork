@@ -3,10 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$(uname -s)" = "Darwin" ]; then
+  exec node "$SCRIPT_DIR/scripts/install-native-macos.mjs"
+fi
+
 METACLAW_HOME="${METACLAW_HOME:-$HOME/.metaclaw}"
 CONFIG_FILE="$METACLAW_HOME/config.yaml"
 INSTALL_MODE="${METACLAW_INSTALL_MODE:-link}"
-INSTALL_CODEX="${METACLAW_INSTALL_CODEX:-auto}"
 INTERACTIVE="${METACLAW_SETUP_INTERACTIVE:-auto}"
 
 RED='\033[0;31m'
@@ -86,32 +89,13 @@ executor_profile_name() {
 
 executor_install_hint() {
   case "$1" in
-    codex) echo "npm install -g @openai/codex" ;;
-    pi) echo "npm install -g @earendil-works/pi-coding-agent" ;;
+    codex) echo "请按 OpenAI 官方说明独立安装 Codex CLI" ;;
+    pi) echo "请按 Pi 官方说明独立安装 pi CLI" ;;
     hermes) echo "请按 Hermes 官方说明安装 hermes CLI" ;;
     claude) echo "请按 Claude Code 官方说明安装 claude CLI" ;;
     deepseek-tui) echo "请按 DeepSeek TUI 项目说明安装 deepseek-tui" ;;
     openclaw) echo "请按 OpenClaw 项目说明安装 openclaw" ;;
     *) echo "请安装 $1 并确保命令在 PATH 中" ;;
-  esac
-}
-
-can_auto_install_executor() {
-  [ "$1" = "codex" ] || [ "$1" = "pi" ]
-}
-
-install_executor_command() {
-  case "$1" in
-    codex)
-      npm install -g @openai/codex
-      ;;
-    pi)
-      npm install -g @earendil-works/pi-coding-agent
-      ;;
-    *)
-      log_warn "$(executor_label "$1") 暂不支持 setup 自动安装：$(executor_install_hint "$1")"
-      return 1
-      ;;
   esac
 }
 
@@ -246,22 +230,7 @@ ensure_selected_executors() {
       continue
     fi
 
-    if can_auto_install_executor "$command_name"; then
-      printf "%s 未安装。是否现在安装？[Y/n] " "$(executor_label "$command_name")"
-      local answer
-      read -r answer
-      answer="${answer:-Y}"
-      case "$answer" in
-        y|Y|yes|YES)
-          install_executor_command "$command_name"
-          ;;
-        *)
-          log_warn "跳过安装 $(executor_label "$command_name")"
-          ;;
-      esac
-    else
-      log_warn "$(executor_label "$command_name") 未安装，setup 暂不自动安装。$(executor_install_hint "$command_name")"
-    fi
+    log_warn "$(executor_label "$command_name") 未安装；setup 不会修改 Executor 安装。$(executor_install_hint "$command_name")"
   done
 
   detect_executors
@@ -347,32 +316,6 @@ select_default_executor_command() {
   echo ""
 }
 
-install_codex_cli_if_needed() {
-  if command_exists codex; then
-    return
-  fi
-
-  case "$INSTALL_CODEX" in
-    auto|true|1|yes) ;;
-    false|0|no|skip)
-      log_warn "未检测到任何 Executor，且 METACLAW_INSTALL_CODEX=$INSTALL_CODEX，跳过 Codex CLI 安装"
-      return
-      ;;
-    *)
-      log_error "METACLAW_INSTALL_CODEX 只能是 auto/true/false"
-      exit 1
-      ;;
-  esac
-
-  log_warn "未检测到可用 Executor，正在默认安装 OpenAI Codex CLI..."
-  npm install -g @openai/codex
-
-  if ! command_exists codex; then
-    log_error "Codex CLI 安装后仍未在 PATH 中找到 codex。请检查 npm global bin 目录。"
-    exit 1
-  fi
-}
-
 setup_executors_noninteractive() {
   DEFAULT_EXECUTOR=""
   detect_executors
@@ -380,8 +323,6 @@ setup_executors_noninteractive() {
     log_info "检测到 Executor：${DETECTED_EXECUTORS[*]}"
   else
     log_warn "未检测到 codex/pi/hermes/claude/deepseek-tui/openclaw"
-    install_codex_cli_if_needed
-    detect_executors
   fi
 
   DEFAULT_EXECUTOR="$(select_default_executor_command)"
@@ -394,12 +335,7 @@ setup_executors_interactive() {
   ensure_selected_executors
 
   if [ "${#AVAILABLE_SELECTED_COMMANDS[@]}" -eq 0 ]; then
-    log_warn "所选 Executor 均不可用，尝试默认安装 Codex CLI"
-    install_codex_cli_if_needed
-    detect_executors
-    if command_exists codex; then
-      AVAILABLE_SELECTED_COMMANDS=("codex")
-    fi
+    log_warn "所选 Executor 均不可用；setup 不会自动安装或修改 Codex/Pi"
   fi
 
   select_default_executor_interactively
@@ -505,7 +441,7 @@ main() {
   default_executor="$DEFAULT_EXECUTOR"
 
   if [ -z "$default_executor" ]; then
-    log_error "没有可用 Executor。请安装 Codex CLI 后重试：npm install -g @openai/codex"
+    log_error "没有可用 Executor。请独立安装并配置 Codex 或 Pi 后重试。"
     exit 1
   fi
 

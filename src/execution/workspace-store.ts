@@ -136,12 +136,17 @@ export class WorkspaceStore {
     await this.copyDirectory(sourceRoot, sourceRoot, workspace.filesPath);
   }
 
-  async prepareForSandbox(workspace: WorkspaceHandle, uid = 1000, gid = 1000): Promise<void> {
+  async prepareForContainerExecution(
+    workspace: WorkspaceHandle,
+    ownership: { uid: number; gid: number } = { uid: 1000, gid: 1000 },
+  ): Promise<void> {
     await this.assertManagedWorkspace(workspace);
     const visit = async (path: string): Promise<void> => {
       const info = await lstat(path);
-      if (info.isSymbolicLink()) throw new Error(`sandbox workspace rejects symlink: ${path}`);
-      if (process.platform !== 'win32') await chown(path, uid, gid);
+      if (info.isSymbolicLink()) throw new Error(`execution workspace rejects symlink: ${path}`);
+      if (process.platform !== 'win32') {
+        await chown(path, ownership.uid, ownership.gid);
+      }
       const mode = info.isDirectory()
         ? 0o770
         : (info.mode & 0o111) !== 0 ? 0o770 : 0o660;

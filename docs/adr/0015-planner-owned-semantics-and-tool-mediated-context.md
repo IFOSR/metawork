@@ -106,9 +106,10 @@ only seven allowlisted read-only MetaClaw MCP tools (`search_tasks`,
 `get_task_context`, `get_current_session_context`, `get_planning_context`,
 `get_runtime_state`, `list_executor_status`, and `get_executor_diagnostics`) and
 four Pi-native repository readers (`read`, `grep`, `find`, and `ls`) rooted at
-`/workspace`. Extra MCP tools and external Skills, extensions, MCP configuration,
-prompt templates, model controls, package installation, and updates remain
-unavailable.
+the Planner process working directory. Native launch uses the directory where
+the user starts AnyFusion; container launch may still use `/workspace`. Extra
+MCP tools and external Skills, extensions, MCP configuration, prompt templates,
+model controls, package installation, and updates remain unavailable.
 
 MetaClaw injects the shared image's absolute Node executable and compiled
 Planner MCP entry path. The Planner artifact carries no private Node runtime and

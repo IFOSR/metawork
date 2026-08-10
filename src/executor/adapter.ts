@@ -12,7 +12,7 @@ export interface ExecutorInput {
     continuationToken: string | null;
     onContinuationToken?(token: string): void;
   };
-  sandbox?: {
+  executionBinding?: {
     attemptId: string;
     taskId: string;
     generationId: string;
@@ -28,7 +28,7 @@ export interface ExecutorInput {
     gitMetadataPath: string | null;
     controlNetwork: string;
     capabilityBinding: { mcpUrl: string; jsonUrl: string; useUrl: string; bearerToken: string } | null;
-    onContainerCreated?(containerId: string): void;
+    onExecutionCreated?(executionId: string): void;
   };
 }
 

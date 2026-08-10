@@ -12,7 +12,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -82,14 +82,14 @@ describe('App risky action gate', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已发送给客户' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已发送给客户' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_risky_gate',
@@ -106,7 +106,7 @@ describe('App risky action gate', () => {
     await submitLine('直接把邮件发给客户');
 
     await flushUpdates();
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(app.lastFrame()).toContain('该操作存在较高风险，请明确确认是否继续执行。');
     expect(app.lastFrame()).not.toContain('risk confirmation required');
 
@@ -122,14 +122,14 @@ describe('App risky action gate', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已发送给客户' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已发送给客户' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_risky_confirm',
@@ -148,7 +148,7 @@ describe('App risky action gate', () => {
 
     await submitLine('直接把邮件发给客户');
     await submitLine('确认执行');
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
@@ -157,7 +157,7 @@ describe('App risky action gate', () => {
       await flushUpdates();
     }
 
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
     expect(app.lastFrame()).toContain('已发送给客户');
 
     app.unmount();

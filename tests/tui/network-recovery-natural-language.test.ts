@@ -13,7 +13,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -84,14 +84,14 @@ describe('App network recovery natural-language control', () => {
       status: 'waiting',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已恢复执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已恢复执行' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_network_nl_recovery',
@@ -107,13 +107,13 @@ describe('App network recovery natural-language control', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 100 && attemptSandbox.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
 
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    expect(attemptSandbox.create.mock.calls[0][0].taskId).toBe(blockedTask.id);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create.mock.calls[0][0].taskId).toBe(blockedTask.id);
     expect(app.lastFrame()).toContain('阻塞已解除，任务重新具备执行条件');
 
     app.unmount();

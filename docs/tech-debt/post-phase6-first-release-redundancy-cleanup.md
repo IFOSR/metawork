@@ -58,12 +58,12 @@
 实际交付的行为变化：
 
 - 4.1：删除 `src/commands/router.ts` 与旧 `CommandHandler`/`CommandContext`，`command-tree.ts` 不再把结构化参数回拼成 `string[]`，`legacyContext`/`convertLegacyResult`/`invokeLegacy`/`legacyAction` 全部删除；`/task`、`/executor`、`/memory`、`/learning`、`/profile` 直接绑定 `CommandAction.execute`。命令集合与外部行为不变。
-- 4.2：`ExecutorRegistry` 只解析 AgentClass → `SandboxedExecutorAdapter`，删除 `allowHostTestAdapters`、`defaultExecutor`/`defaultExecutorFactory`、`executorFactory`、`ExecutorAdapterRegistry` 与 `createDefaultExecutorAdapterRegistry`；删除 `custom-cli.ts`、`claude-code.ts`、`codex-cli.ts`、`hermes-agent.ts`、`deepseek-tui.ts`、`openclaw.ts`、`command-line-adapter.ts`、`response-only-cli.ts`；`ExecutorAdapter` 接口收紧为 `name`/`supportsContinuation?`/`execute`/`executeResponseOnly?`/`isAvailable`/`abort`。`MetaclawSessionDeps.executor` 与 `CommandContext.executor` 一并删除。
+- 4.2：`ExecutorRegistry` 只解析 AgentClass → `BackendExecutorAdapter`，删除 `allowHostTestAdapters`、`defaultExecutor`/`defaultExecutorFactory`、`executorFactory`、`ExecutorAdapterRegistry` 与 `createDefaultExecutorAdapterRegistry`；删除 `custom-cli.ts`、`claude-code.ts`、`codex-cli.ts`、`hermes-agent.ts`、`deepseek-tui.ts`、`openclaw.ts`、`command-line-adapter.ts`、`response-only-cli.ts`；`ExecutorAdapter` 接口收紧为 `name`/`supportsContinuation?`/`execute`/`executeResponseOnly?`/`isAvailable`/`abort`。`MetaclawSessionDeps.executor` 与 `CommandContext.executor` 一并删除。
 - 4.3：删除 `Config.integrations.feishu` 类型、`resolveFeishuGatewayConfig` 的 legacy fallback、`migrateLegacyFeishuConfigFileToGateway` 及 `src/index.ts` 中两次迁移调用；保留 `integrations.markdown_preview`。
 - 4.4：`parseFeishuTaskOutputLine` 删除旧 `+ #task...` 分支，只接受当前带 Executor identity 的格式。
-- Session 现在消费已有的 `MetaclawSessionDeps.attemptSandbox` seam；41 个 session/TUI 测试迁移到共享 fake `AttemptSandboxPort`，不再注入 host `ExecutorAdapter`。
+- Session 现在消费已有的 `MetaclawSessionDeps.attemptExecutionBackend` seam；41 个 session/TUI 测试迁移到共享 fake `AttemptExecutionBackend`，不再注入 host `ExecutorAdapter`。
 - 删除失效的 `availableExecutorCommands`/`availableCommands` command-probe seam，以及 command context 中残留的 `executor` 和 `bindingSource: default` 测试 fixture。
-- `SandboxedExecutorAdapter` 对非零 sandbox 退出日志调用统一的 adapter-boundary failure normalizer，使 network、timeout、permission 和 unknown failure 继续进入对应的 Kernel retry/recovery 策略。
+- `BackendExecutorAdapter` 对非零 execution-backend 退出日志调用统一的 adapter-boundary failure normalizer，使 network、timeout、permission 和 unknown failure 继续进入对应的 Kernel retry/recovery 策略。
 
 行为影响（供后续批次注意）：因 4.2 删除了 Executor 侧 skill 安装/更新/停用/废弃能力，`/learning promote` 对 `skill`、`skill_patch`、`skill_disable`、`skill_deprecation` 候选现在一律写入 `unsupported` 审计（`executorName: 'sandboxed'`）并返回“当前 executor 不支持 …”，不再存在成功安装路径。`task_memory_card` 候选的沉淀行为不变。
 
@@ -247,11 +247,11 @@
 - Claude/Hermes/DeepSeek/OpenClaw host adapters
 - `NODE_ENV === 'test'` 时绕过 sandbox 的执行路径
 
-生产 attempt 在具备 `attemptSandbox + agentClassLookup` 时使用 `SandboxedExecutorAdapter`，上述逻辑主要由测试保活。
+生产 attempt 在具备 `attemptExecutionBackend + agentClassLookup` 时使用 `BackendExecutorAdapter`，上述逻辑主要由测试保活。
 
 建议：
 
-1. `ExecutorRegistry` 只解析 AgentClass → `SandboxedExecutorAdapter`；
+1. `ExecutorRegistry` 只解析 AgentClass → `BackendExecutorAdapter`；
 2. 测试通过窄 fake port 注入结果，不再启动旧 host adapters；
 3. 删除 `src/executor/custom-cli.ts`、`claude-code.ts`、`hermes-agent.ts`、`deepseek-tui.ts`、`openclaw.ts`；
 4. 删除 `createDefaultExecutorAdapterRegistry` 中非 canonical 注册；
@@ -355,7 +355,7 @@
 - Task 完成不会通过正则静默写入偏好或模式；
 - 命令树不再把结构化参数回拼为旧 `string[]`；
 - Feishu 只接受首次发布配置和输出协议；
-- Executor 生产与测试都围绕 AgentClass/sandbox seam，不保留 host CLI 产品路径；
+- Executor 生产与测试都围绕 AgentClass/execution-backend seam，不保留绕过 backend 的 host CLI 产品路径；
 - 首次发布 schema 不包含无消费者的 recall embedding/guidance/legacy workspace 表；
 - 删除一个模块时不存在“只为旧测试继续存在”的生产文件；
 - 不影响 Phase 6 的 DAG 并发、attempt 隔离、Git publication、取消、恢复和完成门。

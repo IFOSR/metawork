@@ -23,7 +23,7 @@ import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
-import type { AttemptSandboxPort } from '../../src/execution/attempt-sandbox.js';
+import type { AttemptExecutionBackend } from '../../src/execution/attempt-execution-backend.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 
 function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
@@ -81,10 +81,12 @@ function setup(rawResponse: string) {
     supportsResponseOnly: vi.fn().mockReturnValue(true),
     runResponseOnly: vi.fn(),
   };
-  const attemptSandbox: AttemptSandboxPort = {
+  const attemptExecutionBackend: AttemptExecutionBackend = {
+    kind: 'worktree',
+    pathMode: 'native',
     resolveImage: vi.fn(), create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
     pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), remove: vi.fn(), listManaged: vi.fn(),
-  } as unknown as AttemptSandboxPort;
+  } as unknown as AttemptExecutionBackend;
   const fixtureRoot = `/tmp/metaclaw-phase2-attempt-runner/${randomUUID()}`;
   const sourceRoot = join(fixtureRoot, 'source');
   mkdirSync(sourceRoot, { recursive: true });
@@ -99,7 +101,7 @@ function setup(rawResponse: string) {
     executionRuntime: executionRuntime as never,
     agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
     workspaceStore,
-    attemptSandbox,
+    attemptExecutionBackend,
     resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
     permissionRepository: new SqlitePermissionRepository(db),
     kernelWorkflowStore: new KernelWorkflowRepo(db),
@@ -569,7 +571,7 @@ describe('SubtaskAttemptRunner', () => {
       .run(JSON.stringify(['report.pdf']), 'task_phase2');
     let permissionResult: { status: string; grantId: string | null } | null = null;
     setupResult.executionRuntime.run.mockImplementationOnce(async (invocation: any) => {
-      const binding = invocation.executorInput.sandbox.capabilityBinding;
+      const binding = invocation.executorInput.executionBinding.capabilityBinding;
       const response = await fetch(binding.jsonUrl, {
         method: 'POST',
         headers: {
@@ -617,7 +619,7 @@ describe('SubtaskAttemptRunner', () => {
     });
     let permissionResult: { status: string; grantId: string | null } | null = null;
     setupResult.executionRuntime.run.mockImplementationOnce(async (invocation: any) => {
-      const binding = invocation.executorInput.sandbox.capabilityBinding;
+      const binding = invocation.executorInput.executionBinding.capabilityBinding;
       const response = await fetch(binding.jsonUrl, {
         method: 'POST',
         headers: {

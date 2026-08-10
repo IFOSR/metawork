@@ -13,7 +13,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -60,14 +60,14 @@ describe('Round 8 inline web links acceptance', () => {
     const plan = workGraphPlan({ goal: 'Use the Task resources to prepare the Phoenix weekly summary.' });
     plan.workGraph!.subtasks[0]!.contextRefs = [{ kind: 'task_resource', locator: weeklyPath }, { kind: 'task_resource', locator: weeklyUrl }];
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: `本周完成 Phoenix 核心模块联调。 | ${weeklyUrl}`,
     }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round8_inline_links',

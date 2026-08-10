@@ -5,7 +5,7 @@ import { PermissionWorkflowService } from '../../src/execution/permission-workfl
 import type { NormalizedCapabilityRequest, PermissionRequestRecord } from '../../src/resource/index.js';
 
 describe('PermissionWorkflowService', () => {
-  it('pauses the sandbox before checkpointing a permission suspension', async () => {
+  it('pauses the execution backend before checkpointing a permission suspension', async () => {
     const order: string[] = [];
     let normalized: NormalizedCapabilityRequest | null = null;
     let status: PermissionRequestRecord['status'] = 'pending';
@@ -25,7 +25,7 @@ describe('PermissionWorkflowService', () => {
       context: context(),
       repository,
       resolver: { resolve: vi.fn().mockReturnValue({ kind: 'logical', namespace: 'test', key: 'resource' }) },
-      sandbox: {
+      executionBackend: {
         pause: vi.fn().mockImplementation(async () => { order.push('pause'); }),
         inspect: vi.fn().mockResolvedValue({ status: 'paused' }),
         resume: vi.fn().mockImplementation(async () => { order.push('resume'); }),
@@ -90,7 +90,7 @@ describe('PermissionWorkflowService', () => {
     })).resolves.toMatchObject({ status: 'granted', grantId: 'grant_1' });
   });
 
-  it('resumes a paused sandbox when checkpoint creation fails', async () => {
+  it('resumes a paused execution backend when checkpoint creation fails', async () => {
     const order: string[] = [];
     let normalized: NormalizedCapabilityRequest | null = null;
     const service = new PermissionWorkflowService({
@@ -103,7 +103,7 @@ describe('PermissionWorkflowService', () => {
         }),
       },
       resolver: { resolve: vi.fn().mockReturnValue({ kind: 'logical', namespace: 'test', key: 'resource' }) },
-      sandbox: {
+      executionBackend: {
         pause: vi.fn().mockImplementation(async () => { order.push('pause'); }),
         inspect: vi.fn().mockResolvedValue({ status: 'paused' }),
         resume: vi.fn().mockImplementation(async () => { order.push('resume'); }),

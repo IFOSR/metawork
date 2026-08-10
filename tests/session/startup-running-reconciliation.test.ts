@@ -10,7 +10,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
@@ -64,15 +64,15 @@ describe('session startup running-task reconciliation', () => {
       summary: '已完成一半',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '自动恢复成功' }));
-    attemptSandbox.listManaged.mockRejectedValue(
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '自动恢复成功' }));
+    attemptExecutionBackend.listManaged.mockRejectedValue(
       new Error('sandbox must not be consulted without attempt ownership'),
     );
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_startup_reconcile',
@@ -83,8 +83,8 @@ describe('session startup running-task reconciliation', () => {
     await session.waitForAsyncWork();
     const snapshot = session.getSnapshot();
 
-    expect(attemptSandbox.listManaged).not.toHaveBeenCalled();
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.listManaged).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
     expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
@@ -119,13 +119,13 @@ describe('session startup running-task reconciliation', () => {
       createdAt: '2026-07-28T00:00:00.000Z',
       updatedAt: '2026-07-28T00:00:00.000Z',
     });
-    const attemptSandbox = new FakeAttemptSandbox();
-    attemptSandbox.listManaged.mockRejectedValue(new Error('Docker daemon unavailable'));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
+    attemptExecutionBackend.listManaged.mockRejectedValue(new Error('Docker daemon unavailable'));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_recovery_blocked',
@@ -135,7 +135,7 @@ describe('session startup running-task reconciliation', () => {
     session.initialize();
     await session.waitForAsyncWork();
 
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(workUnits.findById('executor-recovery-blocked')).toMatchObject({
       state: 'running',
       claimedTaskId: runningTask.id,
@@ -229,12 +229,12 @@ describe('session startup running-task reconciliation', () => {
         SELECT RAISE(ABORT, 'injected terminal seal failure');
       END
     `);
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_terminal_seal_blocked',

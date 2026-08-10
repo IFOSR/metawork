@@ -32,7 +32,7 @@ class MemoryDispatchItems {
         resourceGrant: item.defaultResourceGrant,
         status: 'pending_launch',
         workUnitId: null,
-        sandboxContainerId: null,
+        backendExecutionId: null,
         launchStartedAt: null,
         terminalAt: null,
         errorSummary: null,

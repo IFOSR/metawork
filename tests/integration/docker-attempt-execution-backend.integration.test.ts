@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DockerCliAttemptSandboxAdapter } from '../../src/execution/docker-cli-attempt-sandbox-adapter.js';
-import { DEFAULT_ATTEMPT_SANDBOX_LIMITS } from '../../src/execution/attempt-sandbox.js';
+import { DockerCliAttemptExecutionBackend } from '../../src/execution/docker-cli-attempt-execution-backend.js';
+import { DEFAULT_ATTEMPT_EXECUTION_LIMITS } from '../../src/execution/attempt-execution-backend.js';
 
 const exec = promisify(execFile);
 const enabled = process.env.METACLAW_RUN_DOCKER_INTEGRATION === 'true';
@@ -33,7 +33,7 @@ suite('Docker attempt sandbox integration', () => {
     const gitMetadata = join(root, 'git-metadata');
     await Promise.all([workspace, source, inputs, handoffs, gitMetadata].map(path => mkdir(path, { recursive: true })));
     await writeFile(join(source, 'source.txt'), 'immutable\n');
-    const sandbox = new DockerCliAttemptSandboxAdapter();
+    const sandbox = new DockerCliAttemptExecutionBackend();
     const imageRef = process.env.METACLAW_TEST_ATTEMPT_IMAGE ?? 'metaclaw-executor-codex:phase5';
     const imageId = await sandbox.resolveImage(imageRef);
     const record = await sandbox.create({
@@ -58,7 +58,7 @@ suite('Docker attempt sandbox integration', () => {
         { source: handoffs, target: '/handoffs', mode: 'ro' },
         { source: gitMetadata, target: '/workspace/.git', mode: 'ro' },
       ],
-      controlNetwork: network, egressMode: 'disabled', limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
+      controlNetwork: network, egressMode: 'disabled', limits: DEFAULT_ATTEMPT_EXECUTION_LIMITS,
     });
     await sandbox.start(record.containerId);
     expect(await sandbox.wait(record.containerId)).toBe(0);
@@ -78,7 +78,7 @@ suite('Docker attempt sandbox integration', () => {
   });
 
   it('runs two isolated attempt containers concurrently without sharing workspaces', async () => {
-    const sandbox = new DockerCliAttemptSandboxAdapter();
+    const sandbox = new DockerCliAttemptExecutionBackend();
     const imageRef = process.env.METACLAW_TEST_ATTEMPT_IMAGE ?? 'metaclaw-executor-codex:phase5';
     const imageId = await sandbox.resolveImage(imageRef);
     const records = await Promise.all(['a', 'b'].map(async suffix => {
@@ -112,7 +112,7 @@ suite('Docker attempt sandbox integration', () => {
         ],
         controlNetwork: network,
         egressMode: 'disabled',
-        limits: DEFAULT_ATTEMPT_SANDBOX_LIMITS,
+        limits: DEFAULT_ATTEMPT_EXECUTION_LIMITS,
       });
       return { suffix, workspace, record };
     }));

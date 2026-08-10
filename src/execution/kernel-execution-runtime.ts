@@ -580,7 +580,7 @@ export class KernelExecutionRuntime {
           taskId,
           activeRevision?.generationId ?? null,
         ).some(reason => [
-          'sandbox',
+          'execution_backend',
           'work_unit',
           'resource_lease',
           'attempt_receipt',
@@ -691,7 +691,7 @@ export class KernelExecutionRuntime {
     if (action.type === 'recover_workspace_attempt') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
       const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
-      if (!task || !subtask) throw new Error('sandbox recovery target no longer exists');
+      if (!task || !subtask) throw new Error('execution-backend recovery target no longer exists');
       if (subtask.status !== 'done' && subtask.status !== 'cancelled') {
         this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', {
           error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,

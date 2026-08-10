@@ -1,12 +1,12 @@
 import { vi } from 'vitest';
 import type {
-  AttemptSandboxPort,
-  AttemptSandboxRecord,
-  CreateAttemptSandboxInput,
-} from '../../src/execution/attempt-sandbox.js';
+  AttemptExecutionBackend,
+  AttemptExecutionRecord,
+  CreateAttemptExecutionInput,
+} from '../../src/execution/attempt-execution-backend.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 
-export interface FakeAttemptSandboxResponse {
+export interface FakeAttemptExecutionResponse {
   body?: string;
   artifacts?: string[];
   exitCode?: number;
@@ -19,24 +19,24 @@ export interface FakeAttemptSandboxResponse {
   };
 }
 
-export type FakeAttemptSandboxResponder = (
-  input: CreateAttemptSandboxInput,
+export type FakeAttemptExecutionResponder = (
+  input: CreateAttemptExecutionInput,
   attemptIndex: number,
-) => FakeAttemptSandboxResponse | Promise<FakeAttemptSandboxResponse>;
+) => FakeAttemptExecutionResponse | Promise<FakeAttemptExecutionResponse>;
 
-export class FakeAttemptSandbox implements AttemptSandboxPort {
-  private readonly records = new Map<string, AttemptSandboxRecord>();
-  private readonly inputs = new Map<string, CreateAttemptSandboxInput>();
-  private readonly responses = new Map<string, FakeAttemptSandboxResponse>();
+export class FakeAttemptExecutionBackend implements AttemptExecutionBackend {
+  private readonly records = new Map<string, AttemptExecutionRecord>();
+  private readonly inputs = new Map<string, CreateAttemptExecutionInput>();
+  private readonly responses = new Map<string, FakeAttemptExecutionResponse>();
   private attemptIndex = 0;
 
-  constructor(private readonly responder: FakeAttemptSandboxResponder = () => ({})) {}
+  constructor(private readonly responder: FakeAttemptExecutionResponder = () => ({})) {}
 
   readonly resolveImage = vi.fn(async (_imageRef: string) => `sha256:${'a'.repeat(64)}`);
 
-  readonly create = vi.fn(async (input: CreateAttemptSandboxInput) => {
-    const containerId = `fake-sandbox-${input.attemptId}`;
-    const record: AttemptSandboxRecord = {
+  readonly create = vi.fn(async (input: CreateAttemptExecutionInput) => {
+    const containerId = `fake-execution-${input.attemptId}`;
+    const record: AttemptExecutionRecord = {
       containerId,
       imageId: input.resolvedImageId,
       status: 'created',
@@ -67,13 +67,13 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
     const input = this.requireInput(containerId);
     const response = this.requireResponse(containerId);
     if (response.rawOutput !== undefined) return response.rawOutput;
-    if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake sandbox failed';
+    if ((response.exitCode ?? 0) !== 0) return response.body ?? 'fake execution backend failed';
     if (response.failure) {
       return `${response.body ?? response.failure.summary}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
         failure: response.failure,
       })}`;
     }
-    return completionResponseFromSandboxInput(input, response.body, response.artifacts);
+    return completionResponseFromExecutionInput(input, response.body, response.artifacts);
   });
 
   readonly pause = vi.fn(async (containerId: string) => {
@@ -96,33 +96,33 @@ export class FakeAttemptSandbox implements AttemptSandboxPort {
 
   readonly listManaged = vi.fn(async () => [...this.records.values()]);
 
-  private requireInput(containerId: string): CreateAttemptSandboxInput {
+  private requireInput(containerId: string): CreateAttemptExecutionInput {
     const input = this.inputs.get(containerId);
-    if (!input) throw new Error(`unknown fake sandbox ${containerId}`);
+    if (!input) throw new Error(`unknown fake execution backend ${containerId}`);
     return input;
   }
 
-  private requireResponse(containerId: string): FakeAttemptSandboxResponse {
+  private requireResponse(containerId: string): FakeAttemptExecutionResponse {
     const response = this.responses.get(containerId);
-    if (!response) throw new Error(`unknown fake sandbox ${containerId}`);
+    if (!response) throw new Error(`unknown fake execution backend ${containerId}`);
     return response;
   }
 
-  private updateRecord(containerId: string, changes: Partial<AttemptSandboxRecord>): void {
+  private updateRecord(containerId: string, changes: Partial<AttemptExecutionRecord>): void {
     const current = this.records.get(containerId);
-    if (!current) throw new Error(`unknown fake sandbox ${containerId}`);
+    if (!current) throw new Error(`unknown fake execution backend ${containerId}`);
     this.records.set(containerId, { ...current, ...changes });
   }
 }
 
-export function completionResponseFromSandboxInput(
-  input: CreateAttemptSandboxInput,
+export function completionResponseFromExecutionInput(
+  input: CreateAttemptExecutionInput,
   body = 'completed',
   artifacts: string[] = [],
 ): string {
   const isEdit = input.args.join('\n').includes('Delivery kind: edit');
   return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
-    evidence: ['tests were not run: deterministic fake sandbox'],
+    evidence: ['tests were not run: deterministic fake execution backend'],
     noChangeReason: isEdit && artifacts.length === 0
       ? 'The deterministic test executor made no workspace changes.'
       : null,

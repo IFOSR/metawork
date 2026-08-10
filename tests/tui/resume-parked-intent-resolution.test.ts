@@ -13,7 +13,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { planningAgentFromPlanMock, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 const inputCapture = vi.hoisted(() => ({
   handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => Promise<void> | void),
@@ -95,14 +95,14 @@ describe('App parked task intent resolution', () => {
 
     let parkedTaskId = '';
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '继续输出 memory 调研内容' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '继续输出 memory 调研内容' }));
 
     const app = render(
       React.createElement(App, {
         taskEngine,
         memoryEngine,
         orchestration,
-        attemptSandbox,
+        attemptExecutionBackend,
         db,
         config: createConfig(),
         sessionId: 'sess_resume_parked_intent',
@@ -142,9 +142,9 @@ describe('App parked task intent resolution', () => {
 
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await flushUpdates();
-    await waitForExecutorCall(attemptSandbox.create);
+    await waitForExecutorCall(attemptExecutionBackend.create);
 
-    expect(attemptSandbox.create.mock.calls.some(call =>
+    expect(attemptExecutionBackend.create.mock.calls.some(call =>
       call[0].taskId === parkedTask.id
     )).toBe(true);
 

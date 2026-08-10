@@ -21,7 +21,7 @@ function createHarness() {
   const runtimeInspector = {
     inspectExecutorRegistration: vi.fn(() => ({
       configured: true,
-      bindingSource: 'sandbox' as const,
+      bindingSource: 'container' as const,
       adapterName: 'codex-cli',
     })),
   };
@@ -109,7 +109,7 @@ describe('command fact queries', () => {
 
     expect(result.content).toContain('Executor AgentClass：codex-cli');
     expect(result.content).toContain('配置状态: 已配置');
-    expect(result.content).toContain('runtime binding: sandbox');
+    expect(result.content).toContain('runtime binding: container');
     expect(result.content).toContain('wu-running');
     expect(result.content).not.toContain('wu-idle');
     expect(runtimeInspector.inspectExecutorRegistration).toHaveBeenCalledWith('codex-cli');

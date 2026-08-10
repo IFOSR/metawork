@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { ActiveExecutionControl } from './active-execution-control.js';
-import type { AttemptSandboxPort } from './attempt-sandbox.js';
-import type { AttemptSandboxRepositoryPort } from './repositories.js';
+import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
+import type { AttemptExecutionRepositoryPort } from './repositories.js';
 import type { KernelDecision, KernelSnapshot } from '../kernel/control-kernel.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -29,7 +29,7 @@ type CancellationDecision = KernelDecision & {
 /**
  * Owns the durable cancellation fence and the asynchronous resource drain.
  * Callers submit one Kernel-authorized action; this module hides every storage
- * and sandbox ordering rule needed to make that action durable.
+ * and execution-backend ordering rule needed to make that action durable.
  */
 export class TaskCancellationCoordinator {
   private readonly taskEvents: TaskEventRecorder;
@@ -46,8 +46,8 @@ export class TaskCancellationCoordinator {
     resourceLeaseService: ResourceLeaseService;
     workUnitClaimService: WorkUnitClaimService;
     activeExecutions: ActiveExecutionControl;
-    attemptSandbox: AttemptSandboxPort;
-    attemptSandboxRepository: AttemptSandboxRepositoryPort;
+    attemptExecutionBackend: AttemptExecutionBackend;
+    attemptExecutionRepository: AttemptExecutionRepositoryPort;
   }) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
   }
@@ -205,18 +205,18 @@ export class TaskCancellationCoordinator {
     const cancelling = this.deps.dispatchItemRepo.listCancelling(taskId);
     for (const item of cancelling) {
       this.deps.activeExecutions.abortAttempt(item.taskId, item.attemptId);
-      const sandbox = this.deps.attemptSandboxRepository.find(item.attemptId);
+      const attemptExecution = this.deps.attemptExecutionRepository.find(item.attemptId);
       try {
-        if (sandbox && ['created', 'running', 'paused'].includes(sandbox.status)) {
-          await this.deps.attemptSandbox.stop(sandbox.containerId);
+        if (attemptExecution && ['created', 'running', 'paused'].includes(attemptExecution.status)) {
+          await this.deps.attemptExecutionBackend.stop(attemptExecution.containerId);
         }
-        const observed = sandbox
-          ? await this.deps.attemptSandbox.inspect(sandbox.containerId)
+        const observed = attemptExecution
+          ? await this.deps.attemptExecutionBackend.inspect(attemptExecution.containerId)
           : null;
         if (observed && observed.status !== 'exited') continue;
-        if (sandbox) {
-          await this.deps.attemptSandbox.remove(sandbox.containerId);
-          this.deps.attemptSandboxRepository.update(item.attemptId, {
+        if (attemptExecution) {
+          await this.deps.attemptExecutionBackend.remove(attemptExecution.containerId);
+          this.deps.attemptExecutionRepository.update(item.attemptId, {
             status: 'removed',
             cleanupStatus: 'removed',
             updatedAt: new Date().toISOString(),
@@ -238,7 +238,7 @@ export class TaskCancellationCoordinator {
       this.deps.dispatchItemRepo.markCancelled(
         item.attemptId,
         now,
-        'cancelled after sandbox exit was confirmed',
+        'cancelled after execution backend exit was confirmed',
       );
     }
 
@@ -284,7 +284,7 @@ export class TaskCancellationCoordinator {
       WHERE task_id = ?${generation}
         AND status IN ('created', 'running', 'paused')
       LIMIT 1
-    `).get(...parameters)) reasons.push('sandbox');
+    `).get(...parameters)) reasons.push('execution_backend');
     if (this.deps.workUnitClaimService.hasClaimedByTask(taskId)) reasons.push('work_unit');
     if (this.deps.db.prepare(`
       SELECT 1 FROM resource_leases

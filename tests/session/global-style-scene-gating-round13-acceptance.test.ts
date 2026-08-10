@@ -10,7 +10,7 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -54,13 +54,13 @@ describe('global style scene gating', () => {
       type: 'style',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: 'PPT 大纲已整理完成' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'PPT 大纲已整理完成' }));
 
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round13_global_style_scene',
@@ -76,7 +76,7 @@ describe('global style scene gating', () => {
     const output = session.getSnapshot().output.join('\n');
     expect(output).not.toContain('记忆召回确认');
     expect(output).not.toContain('用活泼的语气');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
   });
 
   it('不再按场景关键词自动采用全局风格偏好（语义归 Planner）', async () => {
@@ -98,13 +98,13 @@ describe('global style scene gating', () => {
       type: 'style',
     });
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '调研报告已完成' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '调研报告已完成' }));
 
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round13_formal_research_style_gate',
@@ -122,6 +122,6 @@ describe('global style scene gating', () => {
     expect(output).not.toContain('已自动采用记忆');
     expect(output).not.toContain('使用正式严谨的表达');
     expect(output).not.toContain('用活泼欢快的语气');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
   });
 });

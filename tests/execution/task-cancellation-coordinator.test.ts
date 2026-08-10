@@ -14,15 +14,15 @@ import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
-import { SqliteAttemptSandboxRepository } from '../../src/storage/attempt-sandbox-repo.js';
+import { SqliteAttemptExecutionRepository } from '../../src/storage/attempt-execution-backend-repo.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { TaskCancellationCoordinator } from '../../src/execution/task-cancellation-coordinator.js';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
-import type { AttemptSandboxPort, AttemptSandboxRecord } from '../../src/execution/attempt-sandbox.js';
+import type { AttemptExecutionBackend, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
 
 describe('TaskCancellationCoordinator', () => {
-  it('commits the Task fence first, then drains every attempt, publication, WorkUnit, lease, and sandbox', async () => {
+  it('commits the Task fence first, then drains every attempt, publication, WorkUnit, lease, and execution backend', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -75,7 +75,7 @@ describe('TaskCancellationCoordinator', () => {
       });
       dispatch.claimPending(`attempt-${suffix}`, now);
       dispatch.markRunning(`attempt-${suffix}`, `wu-${suffix}`, now);
-      dispatch.markSandbox(`attempt-${suffix}`, `container-${suffix}`, now);
+      dispatch.markBackendExecution(`attempt-${suffix}`, `container-${suffix}`, now);
     }
 
     const leases = new ResourceLeaseService(new SqliteResourceLeaseRepository(db));
@@ -121,9 +121,9 @@ describe('TaskCancellationCoordinator', () => {
     });
     publications.markApplying('publication-cancel', now);
 
-    const sandboxRepo = new SqliteAttemptSandboxRepository(db);
+    const executionRepo = new SqliteAttemptExecutionRepository(db);
     const workspaceRepo = new SqliteWorkspaceRepository(db);
-    const sandboxState = new Map<string, AttemptSandboxRecord>();
+    const executionState = new Map<string, AttemptExecutionRecord>();
     for (const suffix of ['left', 'right']) {
       workspaceRepo.upsert({
         id: `workspace-${suffix}`,
@@ -142,7 +142,7 @@ describe('TaskCancellationCoordinator', () => {
         createdAt: now,
         updatedAt: now,
       });
-      sandboxRepo.create({
+      executionRepo.create({
         attemptId: `attempt-${suffix}`,
         taskId: task.id,
         generationId: 'generation-cancel-1',
@@ -162,7 +162,7 @@ describe('TaskCancellationCoordinator', () => {
         createdAt: now,
         updatedAt: now,
       });
-      sandboxState.set(`container-${suffix}`, {
+      executionState.set(`container-${suffix}`, {
         containerId: `container-${suffix}`,
         imageId: 'sha256:test',
         status: 'running',
@@ -170,7 +170,7 @@ describe('TaskCancellationCoordinator', () => {
         labels: {},
       });
     }
-    const sandbox: AttemptSandboxPort = {
+    const backend: AttemptExecutionBackend = {
       resolveImage: vi.fn(),
       create: vi.fn(),
       start: vi.fn(),
@@ -180,15 +180,15 @@ describe('TaskCancellationCoordinator', () => {
       resume: vi.fn(),
       listManaged: vi.fn(),
       stop: vi.fn(async containerId => {
-        sandboxState.set(containerId, {
-          ...sandboxState.get(containerId)!,
+        executionState.set(containerId, {
+          ...executionState.get(containerId)!,
           status: 'exited',
           exitCode: 137,
         });
       }),
-      inspect: vi.fn(async containerId => sandboxState.get(containerId) ?? null),
-      remove: vi.fn(async containerId => { sandboxState.delete(containerId); }),
-    } as AttemptSandboxPort;
+      inspect: vi.fn(async containerId => executionState.get(containerId) ?? null),
+      remove: vi.fn(async containerId => { executionState.delete(containerId); }),
+    } as AttemptExecutionBackend;
     const abortAttempt = vi.fn().mockReturnValue(true);
     const coordinator = new TaskCancellationCoordinator({
       db,
@@ -202,8 +202,8 @@ describe('TaskCancellationCoordinator', () => {
       resourceLeaseService: leases,
       workUnitClaimService: new WorkUnitClaimService(workUnits),
       activeExecutions: { abortAttempt, abortTask: vi.fn() },
-      attemptSandbox: sandbox,
-      attemptSandboxRepository: sandboxRepo,
+      attemptExecutionBackend: backend,
+      attemptExecutionRepository: executionRepo,
     });
     const decision: KernelDecision = {
       schemaVersion: 5,
@@ -234,7 +234,7 @@ describe('TaskCancellationCoordinator', () => {
     expect(publications.find('publication-cancel')?.status).toBe('cancelled');
     expect(workUnits.findById('wu-left')?.claimedAttemptId).toBeNull();
     expect(new SqliteResourceLeaseRepository(db).findActive(now)).toEqual([]);
-    expect(sandboxRepo.listActive()).toEqual([]);
+    expect(executionRepo.listActive()).toEqual([]);
     expect(coordinator.completionBlockedReasons(task.id, 'generation-cancel-1')).toEqual([]);
   });
 
@@ -310,8 +310,8 @@ describe('TaskCancellationCoordinator', () => {
       resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
       workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
       activeExecutions: { abortAttempt, abortTask: vi.fn() },
-      attemptSandbox: {} as AttemptSandboxPort,
-      attemptSandboxRepository: new SqliteAttemptSandboxRepository(db),
+      attemptExecutionBackend: {} as AttemptExecutionBackend,
+      attemptExecutionRepository: new SqliteAttemptExecutionRepository(db),
     });
 
     coordinator.apply({

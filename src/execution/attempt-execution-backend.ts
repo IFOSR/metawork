@@ -1,18 +1,18 @@
-export type SandboxMountMode = 'ro' | 'rw';
+export type ExecutionMountMode = 'ro' | 'rw';
 
 /** Execution backends supported by the Runtime. */
-export type AttemptSandboxKind = 'container' | 'worktree';
+export type AttemptExecutionBackendKind = 'container' | 'worktree';
 
 /** Whether Executor prompts use container aliases or native Runtime paths. */
-export type AttemptSandboxPathMode = 'container' | 'native';
+export type AttemptExecutionPathMode = 'container' | 'native';
 
-export interface AttemptSandboxMount {
+export interface AttemptExecutionMount {
   source: string;
   target: string;
-  mode: SandboxMountMode;
+  mode: ExecutionMountMode;
 }
 
-export interface AttemptSandboxLimits {
+export interface AttemptExecutionLimits {
   cpus: number;
   memoryBytes: number;
   pids: number;
@@ -21,7 +21,7 @@ export interface AttemptSandboxLimits {
   logFiles: number;
 }
 
-export interface CreateAttemptSandboxInput {
+export interface CreateAttemptExecutionInput {
   attemptId: string;
   taskId: string;
   generationId: string;
@@ -34,14 +34,14 @@ export interface CreateAttemptSandboxInput {
   command: string;
   args: string[];
   environment: Record<string, string>;
-  mounts: AttemptSandboxMount[];
+  mounts: AttemptExecutionMount[];
   controlNetwork: string;
   egressMode: 'disabled' | 'proxy';
   nestedSandbox?: 'codex-workspace-write';
-  limits: AttemptSandboxLimits;
+  limits: AttemptExecutionLimits;
 }
 
-export interface AttemptSandboxRecord {
+export interface AttemptExecutionRecord {
   containerId: string;
   imageId: string;
   status: 'created' | 'running' | 'paused' | 'exited' | 'missing';
@@ -49,24 +49,24 @@ export interface AttemptSandboxRecord {
   labels: Record<string, string>;
 }
 
-export interface AttemptSandboxPort {
-  readonly kind?: AttemptSandboxKind;
-  readonly pathMode?: AttemptSandboxPathMode;
+export interface AttemptExecutionBackend {
+  readonly kind?: AttemptExecutionBackendKind;
+  readonly pathMode?: AttemptExecutionPathMode;
   resolveImage(imageRef: string): Promise<string>;
   probeControlNetwork?(controlNetwork: string): Promise<void>;
-  create(input: CreateAttemptSandboxInput): Promise<AttemptSandboxRecord>;
+  create(input: CreateAttemptExecutionInput): Promise<AttemptExecutionRecord>;
   start(containerId: string): Promise<void>;
   wait(containerId: string): Promise<number>;
   logs(containerId: string): Promise<string>;
   pause(containerId: string): Promise<void>;
   resume(containerId: string): Promise<void>;
-  inspect(containerId: string): Promise<AttemptSandboxRecord | null>;
+  inspect(containerId: string): Promise<AttemptExecutionRecord | null>;
   stop(containerId: string): Promise<void>;
   remove(containerId: string): Promise<void>;
-  listManaged(): Promise<AttemptSandboxRecord[]>;
+  listManaged(): Promise<AttemptExecutionRecord[]>;
 }
 
-export const DEFAULT_ATTEMPT_SANDBOX_LIMITS: AttemptSandboxLimits = {
+export const DEFAULT_ATTEMPT_EXECUTION_LIMITS: AttemptExecutionLimits = {
   cpus: 2,
   memoryBytes: 2 * 1024 * 1024 * 1024,
   pids: 256,

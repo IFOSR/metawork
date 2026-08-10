@@ -17,7 +17,7 @@ import {
   taskControlPlan,
 } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -54,12 +54,12 @@ describe('Round 3 task boundary acceptance', () => {
     const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
-    const attemptSandbox = new FakeAttemptSandbox();
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_direct_reply_runtime_state',
@@ -91,7 +91,7 @@ describe('Round 3 task boundary acceptance', () => {
 
     // No durable task is created, and the writable executor is never invoked.
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
 
     // While the reply was being delivered, the planner was surfaced as active.
     expect(observedDuringReply).toEqual(expect.objectContaining({
@@ -113,14 +113,14 @@ describe('Round 3 task boundary acceptance', () => {
     const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '三点结论：1. 强模型减少脚手架；2. 任务状态仍需系统层管理；3. 调度和恢复最难被替代。',
     }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round3_boundary',
@@ -166,8 +166,8 @@ describe('Round 3 task boundary acceptance', () => {
     // Turn 1 is a direct_reply (planner answers, no executor). Turn 2 is the
     // executable follow-up, so exactly one executor dispatch happens — for the
     // new follow-up task, not the old parked one.
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    const secondCall = attemptSandbox.create.mock.calls[0]![0];
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
+    const secondCall = attemptExecutionBackend.create.mock.calls[0]![0];
     const secondPrompt = secondCall.args.at(-1) ?? '';
     expect(secondCall.taskId).not.toBe(parkedTaskId);
     expect(secondPrompt).toContain('把刚才那段分析整理成三点结论');
@@ -188,12 +188,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_blocked_tasks',
@@ -226,7 +226,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(readyTask.id)?.status).toBe('ready');
     expect(taskRepo.findAll()).toHaveLength(2);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('answers blocked-task status queries from MetaClaw state without calling the executor', async () => {
@@ -237,12 +237,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_blocked_tasks',
@@ -272,7 +272,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('执行器网络连接失败，请检查网络或代理配置');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('answers no blocked tasks from MetaClaw state without creating a task', async () => {
@@ -283,12 +283,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_no_blocked_tasks',
@@ -305,7 +305,7 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('当前没有阻塞任务。');
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('answers current running task queries from MetaClaw state without creating a task', async () => {
@@ -316,12 +316,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_running_task',
@@ -343,7 +343,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('当前有 1 个正在执行的任务');
     expect(snapshot).toContain(`#${runningTask.id} [RUNNING] 正在生成报告`);
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('answers completion checks from MetaClaw state when no task is running', async () => {
@@ -354,12 +354,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_completion_no_running',
@@ -384,7 +384,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain(`最近完成：#${doneTask.id} 刚才的任务`);
     expect(snapshot).toContain('摘要：已经完成并生成最终结果');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('routes semantic scheduler-state questions to MetaClaw without requiring keyword coverage', async () => {
@@ -395,12 +395,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_semantic_scheduler_state',
@@ -417,7 +417,7 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('当前没有正在执行的任务。');
     expect(taskRepo.findAll()).toHaveLength(0);
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('keeps deliverable-content checks on the Executor side even when task words appear', async () => {
@@ -428,12 +428,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '检查完成：文档内容完整。' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '检查完成：文档内容完整。' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_deliverable_check_executor',
@@ -451,7 +451,7 @@ describe('Round 3 task boundary acceptance', () => {
     expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
     expect(snapshot).toContain('检查完成：文档内容完整。');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
   });
 
   it('keeps continuation/generation work on the Executor side instead of treating it as status', async () => {
@@ -462,12 +462,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '已继续生成预览版。' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已继续生成预览版。' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_generation_executor',
@@ -484,7 +484,7 @@ describe('Round 3 task boundary acceptance', () => {
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).toContain('已继续生成预览版。');
     expect(taskRepo.findAll()).toHaveLength(1);
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
   });
 
   it('handles natural language clearing of all manageable tasks and aborts running work', async () => {
@@ -495,12 +495,12 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '不应执行' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_all_tasks',
@@ -539,8 +539,8 @@ describe('Round 3 task boundary acceptance', () => {
     expect(taskRepo.findById(runningTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(parkedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(doneTask.id)?.status).toBe('done');
-    expect(attemptSandbox.stop).not.toHaveBeenCalled();
-    expect(attemptSandbox.create).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.stop).not.toHaveBeenCalled();
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 
   it('resumes an explicitly requested parked task instead of creating a new task when intent is misclassified', async () => {
@@ -551,13 +551,13 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '挂起任务已恢复' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '挂起任务已恢复' }));
     let parkedTaskId = '';
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_parked_without_new_task',
@@ -585,8 +585,8 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit(`重启挂起任务 ${parkedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    expect(attemptSandbox.create.mock.calls[0]![0].taskId).toBe(parkedTask.id);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create.mock.calls[0]![0].taskId).toBe(parkedTask.id);
     expect(session.getSnapshot().output.join('\n')).toContain('resume parked task');
   });
 
@@ -598,13 +598,13 @@ describe('Round 3 task boundary acceptance', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
 
-    const attemptSandbox = new FakeAttemptSandbox(() => ({ body: '阻塞任务已恢复' }));
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '阻塞任务已恢复' }));
     let blockedTaskId = '';
     const session = new MetaclawSession({
       taskEngine,
       memoryEngine,
       orchestration,
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_blocked_without_new_task',
@@ -632,8 +632,8 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit(`执行阻塞任务 ${blockedTask.id}`, { awaitAsyncWork: true });
 
     expect(taskRepo.findAll()).toHaveLength(beforeCount);
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(1);
-    expect(attemptSandbox.create.mock.calls[0]![0].taskId).toBe(blockedTask.id);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
+    expect(attemptExecutionBackend.create.mock.calls[0]![0].taskId).toBe(blockedTask.id);
     expect(session.getSnapshot().output.join('\n')).toContain('resume after capacity block');
   });
 });

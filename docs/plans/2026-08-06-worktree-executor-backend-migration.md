@@ -31,7 +31,7 @@ selected with `METACLAW_EXECUTOR_BACKEND=worktree` (default) or `docker`.
 
 ## Delivery Stages
 
-1. Add a worktree process implementation behind `AttemptSandboxPort` and make
+1. Add a worktree process implementation behind `AttemptExecutionBackend` and make
    Executor prompt paths backend-aware.
 2. Skip image pin and Docker-network probes for worktree attempts while keeping
    them mandatory for the Docker backend.

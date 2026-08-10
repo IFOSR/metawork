@@ -10,15 +10,15 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
-import { FakeAttemptSandbox } from '../support/fake-attempt-sandbox.js';
+import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
 describe('Kernel durable retry control loop', () => {
-  it('drains a persisted retry wake into one sandbox recovery-packet attempt and completion', async () => {
+  it('drains a persisted retry wake into one execution-backend recovery-packet attempt and completion', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-retry');
-    const attemptSandbox = new FakeAttemptSandbox((_input, attemptIndex) => attemptIndex === 0
+    const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
       ? {
           body: 'network unavailable',
           exitCode: 1,
@@ -42,7 +42,7 @@ describe('Kernel durable retry control loop', () => {
       taskEngine,
       memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
       orchestration: new OrchestrationEngine(taskEngine),
-      attemptSandbox,
+      attemptExecutionBackend,
       db,
       config,
       sessionId: 'session_retry',
@@ -67,8 +67,8 @@ describe('Kernel durable retry control loop', () => {
 
     expect(handled).toBe(true);
     expect(taskRepo.findById(task.id)?.status).toBe('done');
-    expect(attemptSandbox.create).toHaveBeenCalledTimes(2);
-    const retryPrompt = attemptSandbox.create.mock.calls[1]![0].args.at(-1);
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(2);
+    const retryPrompt = attemptExecutionBackend.create.mock.calls[1]![0].args.at(-1);
     expect(retryPrompt).toContain('Recovery mode: recovery_packet');
     expect(retryPrompt).toContain('Recovery packet:');
     expect(retryPrompt).toContain('执行器网络连接失败，请检查网络或代理配置');
