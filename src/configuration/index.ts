@@ -1,31 +1,46 @@
-export type ConfigurationRevisionId = string;
+export type ConfigurationRevisionId =
+  import('./types.js').ConfigurationRevisionId;
+export type ConfigurationSnapshot =
+  import('./types.js').ConfigurationSnapshot;
+export type PlannerConfigurationView =
+  import('./types.js').PlannerConfigurationView;
+export type KernelConfigurationView =
+  import('./types.js').KernelConfigurationView;
+export type RuntimePrivateConfigurationBinding =
+  import('./types.js').RuntimePrivateConfigurationBinding;
+export type ConfigurationServicePort =
+  import('./types.js').ConfigurationServicePort;
 
-export type ConfigurationSnapshot = Readonly<{
-  revisionId: ConfigurationRevisionId;
-  contentHash: string;
-}>;
-
-export type PlannerConfigurationView = Readonly<{
-  revisionId: ConfigurationRevisionId;
-}>;
-
-export type KernelConfigurationView = Readonly<{
-  revisionId: ConfigurationRevisionId;
-}>;
-
-export type RuntimePrivateConfigurationBinding = Readonly<{
-  revisionId: ConfigurationRevisionId;
-  bindingFingerprint: string;
-}>;
-
-export type ConfigurationServicePort = Readonly<{
-  getActiveSnapshot(): Promise<ConfigurationSnapshot>;
-  getSnapshot(revisionId: ConfigurationRevisionId): Promise<ConfigurationSnapshot>;
-  getPlannerView(revisionId: ConfigurationRevisionId): Promise<PlannerConfigurationView>;
-  getKernelView(revisionId: ConfigurationRevisionId): Promise<KernelConfigurationView>;
-  getRuntimeBinding(
-    revisionId: ConfigurationRevisionId,
-    agentClassId: string,
-    modelRef: string,
-  ): Promise<RuntimePrivateConfigurationBinding>;
-}>;
+export type {
+  A2aHarnessDefinition,
+  AgentClassDefinition,
+  AnyFusionConfigurationV2,
+  ContainerHarnessDefinition,
+  GatewayConfig,
+  HarnessDefinition,
+  HarnessDriverId,
+  HarnessKind,
+  KernelAgentClassConfiguration,
+  LocalCliHarnessDefinition,
+  LocalProcessHarnessDefinition,
+  ModelCapability,
+  ModelPolicy,
+  ModelProfile,
+  ModelReasoningLevel,
+  PermissionProfile,
+  PermissionProfileParameters,
+  PlannerModelProfile,
+  ProviderDefinition,
+  ProviderProtocol,
+  RuntimeConfigurationView,
+  RuntimePolicy,
+} from './types.js';
+export {
+  AnyFusionConfigurationV2Schema,
+  parseAnyFusionConfigurationV2,
+} from './schema.js';
+export {
+  buildKernelConfigurationView,
+  buildPlannerConfigurationView,
+  buildRuntimeConfigurationView,
+} from './projections.js';
