@@ -49,6 +49,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): fifteen TDD phases covering ADRs, unified paths, Configuration Service, migration, Planner v8, Kernel revision binding, Harness drivers, management surfaces, installer rollback, A2A and final release gates.
 - [Approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, single revisioned Configuration Service, Planner/Kernel/Runtime projections, isolated AgentClass runtimes, Gateway/Adapter convergence, migration and acceptance criteria.
 - [Native Planner installation](plans/2026-08-07-native-planner-installation.md): native macOS setup for the isolated nested `planner/AnyFusion-Pi` Planner, current-directory read-only inspection, AnyFusion-only configuration, and preservation of existing Codex/Pi installations.
 - [Node 22 single runtime image migration](plans/2026-08-05-node-22-single-runtime-image-migration.md): unifies MetaClaw and AnyFusion-Pi on one Node 22.19+ image and executable while preserving separate processes and dependency trees.
