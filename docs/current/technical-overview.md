@@ -10,6 +10,29 @@ It is built for teams who need agents to do more than answer the current turn. A
 > Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
 > and SQLite schema v30 with one transactional 29→30 migration.
 
+> Accepted Server upgrade transition (2026-08-11): ADR-0027 through ADR-0030
+> define the target revisioned Configuration Control Plane, generation-scoped
+> AgentClass/Model/Harness binding, future transport-only A2A seam, and signed
+> crash-recoverable native update transaction. These contracts are not current
+> runtime claims until the upgrade release gate completes.
+
+The transition keeps the existing ownership path:
+
+```text
+Planner proposes -> ControlKernel decides -> Runtime applies
+-> ExecutorAdapter transports one authorized attempt
+```
+
+The target configuration uses one immutable revision per Work Graph generation.
+All graph revisions, deferred recovery, decisions, dispatches, attempts and
+receipts remain pinned to that revision. Provider/Model health is a
+revision-scoped Kernel projection; Runtime and adapters report facts but do not
+choose fallback. Permission Profile semantics remain code-owned under
+Resource/Kernel policy. The target schema change is one transaction from v30 to
+v31, coordinated with signed release verification, Task-admission closure,
+dispatch quiescence, database backup, candidate health checks and rollback. A2A
+implementation is deferred to a separate roadmap.
+
 ## What AnyFusion Does
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.

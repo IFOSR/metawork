@@ -26,6 +26,65 @@ Executor recovery is event-driven rather than periodic. `ExecutorRecoveryRefresh
 
 When touching dispatch, update focused behavior tests around `ControlKernel`, `DurableKernelWorkflow`, the decision/application ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
 
+## Accepted Server Upgrade Transition
+
+The current implementation remains PlanningAgentPlan v7, Work Graph v6, Kernel
+wire v5 and SQLite schema v30 until the Server upgrade release gate completes.
+ADR-0027 through ADR-0030 are accepted transition authority, not a statement that
+the target runtime is already active.
+
+The target static configuration path is:
+
+```text
+~/.anyfusion/config/active
+  -> one immutable revision directory
+  -> config.yaml plus immutable Planner/Kernel/Runtime projections
+  -> revision-scoped generated Agent runtimes
+```
+
+`ConfigurationService` belongs to the Application Shell. Planning may consume
+only the Planner-safe projection, Kernel only the pure Kernel-safe facts supplied
+in snapshots, and Runtime only the private authorized binding. Configuration may
+not import Kernel or Runtime policy, mutate durable Task state, or become a
+second routing interpreter. Migration prepares an immutable candidate while the
+legacy authority remains unchanged, then performs one cutover after every
+consumer is ready; dual-read and dual-write paths are forbidden.
+
+One Work Graph generation pins one `configurationRevision`. Every graph revision,
+deferred availability proposal, Kernel decision, dispatch item, retry/fallback,
+recovery packet, attempt and receipt in that generation remains on the same
+revision. An active configuration change affects only a new generation. Runtime
+must fail closed rather than substitute the current active revision.
+
+The authorized execution identity is the complete AgentClass/Harness/Model/
+Permission Profile/revision tuple plus generation, Subtask and attempt kind.
+Provider, Model, AgentClass and binding health are dynamic Kernel-owned facts
+identified by revision or immutable binding fingerprint. Runtime and adapters
+only normalize probe/attempt facts; Kernel alone owns health interpretation,
+retry, fallback and recovery decisions. Permission rule grammar remains
+code-owned by Resource/Kernel policy under ADR-0024; configuration can reference
+only registered profiles and bounded parameters.
+
+The target database change is one transactional schema 30-to-31 migration. It
+must cover all new tables, columns, foreign keys, indexes and recoverable v7/v6
+payload conversion in one transaction. The native updater uses a signed manifest,
+an exclusive update lock, closed Task admission, dispatch quiescence, WAL
+checkpoint, verified database backup, cloned migration, immutable staging,
+candidate health check and crash-recoverable rollback. No program release,
+configuration revision, generated runtime or database schema may be activated as
+a mixed-version combination.
+
+Future A2A support may implement only the existing authorized-attempt transport
+seam:
+
+```text
+Planner -> ControlKernel -> Execution Runtime -> ExecutorAdapter -> transport
+```
+
+It is not part of the current Server upgrade release and may not introduce a
+second scheduler, router, retry loop, recovery ledger or Planner-to-Executor
+shortcut.
+
 ## Routing Language
 
 **Task**:

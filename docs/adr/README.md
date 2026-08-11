@@ -27,10 +27,26 @@ ADR-0025 is the current authority for Phase 6A single-Task runnable frontier, Ke
 
 ADR-0026 fixes Phase 6's final scope to reliable asynchronous concurrency inside one top-level Task. It preserves ADR-0011; multi-Task scheduling is a future independent roadmap rather than Phase 6 work.
 
+ADR-0027 through ADR-0030 govern the accepted MetaWork Server upgrade transition.
+They do not describe already-delivered behavior until the implementation plan's
+release gate is complete:
+
+- ADR-0027 owns the revisioned Configuration Control Plane, immutable activation,
+  and one-configuration-revision-per-Work-Graph-generation rule.
+- ADR-0028 owns Harness/Model/AgentClass routing bindings, revision-scoped health
+  identity, model fallback identity, and Permission Profile references.
+- ADR-0029 freezes remote Executor/A2A as a future transport adapter only.
+- ADR-0030 owns signed native releases and the crash-recoverable program,
+  configuration, generated-runtime, and database upgrade transaction.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Revisioned Configuration Control Plane | [ADR-0027](0027-configuration-control-plane-and-revision-authority.md) | Static configuration authority, immutable revision layout, generation-scoped revision pinning, projections, activation and one-way cutover |
+| AgentClass, Model and Harness routing | [ADR-0028](0028-agentclass-model-and-harness-routing-contract.md) | Authorized binding tuple, model policy, health identities, fallback attempt identity and Permission Profile ownership |
+| Future remote Executor transport | [ADR-0029](0029-executor-transport-and-a2a-boundary.md) | A2A transport-only boundary, authorized envelope and explicit deferral from the current release |
+| Native release trust and upgrade transaction | [ADR-0030](0030-native-release-trust-and-upgrade-transaction.md) | Signed manifest trust, update locking, quiescence, database backup/migration, activation, health checks and rollback |
 | Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair |
 | Phase 6 single-Task reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination, multi-attempt recovery/completion closure, and deferral of multi-Task scheduling |
 | Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |

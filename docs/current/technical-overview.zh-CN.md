@@ -9,6 +9,27 @@
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
 
+> 已接受的 Server 升级过渡契约（2026-08-11）：ADR-0027 至 ADR-0030
+> 定义目标 Configuration Control Plane、generation 级 AgentClass/Model/Harness
+> 绑定、future A2A transport seam，以及带签名和崩溃恢复的原生 update
+> transaction。在最终 release gate 完成前，这些是实施权威，不代表当前 runtime
+> 已经升级为 v8/v7/v31。
+
+升级保持唯一控制链：
+
+```text
+Planner 提案 -> ControlKernel 决策 -> Runtime 应用
+-> ExecutorAdapter 传输一个已授权 attempt
+```
+
+目标配置对每个 Work Graph generation 固定一个 immutable revision；graph
+revision、deferred recovery、decision、dispatch、attempt 和 receipt 都继续引用
+该 revision。Provider/Model health 是带 revision identity 的 Kernel 投影，
+Runtime 与 Adapter 只上报事实，不决定 fallback。Permission Profile 语义仍由
+Resource/Kernel 的代码契约拥有。数据库只允许一次 v30→v31 事务迁移，并与
+release 验签、关闭 Task admission、dispatch quiesce、数据库备份、candidate
+health check 和 rollback 协调。A2A 实现移入独立后续路线图。
+
 AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
 它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / ControlKernel / Durable KernelWorkflow / work-unit runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
@@ -126,8 +147,8 @@ flowchart LR
   Kernel --> Decision[KernelDecision<br/>plan_work_graph]
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>创建或绑定任务]
-  Task --> Scheduler[SchedulerEngine<br/>准备度、优先级、空闲恢复]
-  Scheduler --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
+  Task --> KernelRuntime[KernelExecutionRuntime<br/>构造 snapshot、应用 Decision]
+  KernelRuntime --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>持久化 Subtasks]
   WorkGraph --> Ready[Runnable frontier<br/>直接依赖已发布]
   Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
