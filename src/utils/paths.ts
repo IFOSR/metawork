@@ -1,10 +1,9 @@
 import { homedir } from 'os';
-import { resolve } from 'path';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
 
-export function resolveMetaclawDir(envMetaclawHome = process.env.METACLAW_HOME, userHome = homedir()): string {
-  if (envMetaclawHome && envMetaclawHome.trim().length > 0) {
-    return resolve(envMetaclawHome);
-  }
-
-  return resolve(userHome, '.metaclaw');
+export function resolveMetaclawDir(
+  envAnyFusionInstallRoot = process.env.ANYFUSION_INSTALL_ROOT,
+  userHome = homedir(),
+): string {
+  return resolveAnyFusionPaths(userHome, envAnyFusionInstallRoot).data;
 }
