@@ -1,8 +1,9 @@
 # MetaWork Server 升级总体技术设计
 
-Status: Proposed for final review
+Status: Approved
 Design date: 2026-08-07
-Last verified: 2026-08-10
+Approved: 2026-08-11
+Last verified: 2026-08-11
 Scope: Server 安装、配置、Planner、Kernel、Executor、Gateway 与现有冗余收敛
 Product note: AnyFusion 是公开产品名；`MetaClaw`、`metaclaw` 和 `Metaclaw*` 仍是内部运行时名称及兼容 CLI alias。本设计不在无关范围内重命名这些内部标识。
 
@@ -101,7 +102,7 @@ Planner proposes
 
 ### 3.1 当前实现与目标设计差距
 
-截至 2026-08-10，当前代码已经完成本机 Planner/Executor 进程隔离、
+截至 2026-08-11，当前代码已经完成本机 Planner/Executor 进程隔离、
 Planner nested 安装、Executor 独立 attempt Home、按用户启动目录运行
 Planner，以及 `AttemptExecutionBackend` 术语收敛。但本设计描述的是 Server
 升级完成后的目标架构，以下内容尚未全部实现：
@@ -320,6 +321,20 @@ Session domain fact
 - 不为了旧测试继续保留无生产调用的模块；
 - 不删除 Kernel ledger、attempt receipt、outbox、publication、lease 等可靠性事实。
 
+### 4.14 P1：Planner 进程生命周期重复
+
+当前非交互 Planner turn 使用 `PlannerProcessRunner`，默认本机 TUI 使用
+`runPlannerTuiProcess`。两条路径分别构造 command、args、environment、
+Home、session 和 process cleanup，存在协议和隔离行为漂移风险。
+
+建议：
+
+- 收敛为进程内 `PlannerProcessSupervisor`；
+- 统一 interactive 与 RPC 的 bootstrap、probe、timeout、shutdown；
+- 将 `PlannerTuiBridge` 的目标职责命名为 `PlannerHostBridge`；
+- 明确 Supervisor 和 Bridge 都属于 MetaWork Server 进程；
+- AnyFusion-Pi 保持唯一独立 Planner 子进程，不并入 Server 进程。
+
 ## 5. 目标总体架构
 
 ```text
@@ -354,7 +369,7 @@ Session domain fact
               v
         MetaclawSession
               |
-              +---- Planner Host Gateway
+              +---- Planner Host Bridge
               +---- DurableKernelWorkflow
               +---- Delivery / View Events
 ```
@@ -373,6 +388,38 @@ Session domain fact
 - Runtime side effects；
 - normalized facts；
 - durable recovery。
+
+### 5.1 进程边界
+
+默认交互模式只有两个主要操作系统进程：
+
+```text
+Process 1: MetaWork Server
+├── MetaclawSession
+├── PlannerProcessSupervisor
+├── PlannerHostBridge
+├── ControlKernel
+├── ExecutionRuntime
+└── ClientGateway
+          |
+          | Unix socket / JSONL RPC
+          v
+Process 2: AnyFusion-Pi Planner
+└── user-visible native TUI / Planner model loop
+```
+
+`MetaclawSession`、`PlannerProcessSupervisor` 和 `PlannerHostBridge` 都是
+MetaWork Server 进程内组件，不是独立进程。用户执行 `anyfusion` 时先启动
+MetaWork Server；Server 完成数据库、Kernel、Runtime 和 Gateway 初始化后，
+再启动受控的 AnyFusion-Pi 子进程。默认前台终端由 AnyFusion-Pi 原生 TUI
+占用，但 Proposal validation、Kernel authorization 和 Executor dispatch 仍由
+MetaWork Server 完成。
+
+交互模式使用一个持续运行的 AnyFusion-Pi TUI 子进程。Feishu、Gateway 和
+scripted session 使用短生命周期 RPC Planner 子进程，每个 planning turn 完成后
+退出，但复用 `data/planner-sessions/` 下的持久会话。两个模式共用
+`PlannerProcessSupervisor` 的环境构建、协议检查、Home、session 和进程清理
+逻辑，避免维护两套 spawn 路径。
 
 ## 6. 安装与目录布局
 
@@ -429,33 +476,35 @@ bootstrap
 建议布局：
 
 ```text
-~/.local/share/anyfusion/
-├── runtime/
-│   ├── current -> releases/<release-id>/metawork
+~/.anyfusion/
+├── app/
+│   ├── current -> releases/<release-id>/
 │   └── releases/
 │       └── <release-id>/
-│           └── metawork/
-│               ├── app/
-│               └── planner/
-│                   └── AnyFusion-Pi/
-├── state/
+│           ├── dist/
+│           ├── node_modules/
+│           ├── package.json
+│           ├── release-manifest.json
+│           └── planner/
+│               ├── packages/
+│               ├── node_modules/
+│               └── package.json
+├── config/
+│   ├── config.yaml
+│   └── secrets/
+├── data/
 │   ├── metaclaw.db
+│   ├── configuration-revisions/
 │   ├── planner-sessions/
-│   └── configuration-revisions/
-├── workspaces/
+│   └── execution-workspaces/
+├── generated/
+│   └── agent-runtime/
+│       ├── planner/
+│       └── executors/
+├── tmp/
+│   └── attempts/
 ├── logs/
 └── cache/
-
-~/.config/anyfusion/
-├── config.yaml
-├── secrets.env
-└── agent-homes/
-    ├── planner/
-    │   └── planner-default/
-    └── executors/
-        ├── codex-engineering/
-        ├── codex-review/
-        └── pi-research/
 
 ~/.local/bin/
 └── anyfusion
@@ -463,13 +512,24 @@ bootstrap
 
 关键约束：
 
-- Planner 路径位于 `<release>/metawork/planner/AnyFusion-Pi`。
+- `<release-id>/` 本身就是 MetaWork Server release 根目录，不再增加
+  `metawork/server/` 层级。
+- Planner 直接安装在 `<release-id>/planner/`；该目录本身就是
+  AnyFusion-Pi checkout/build 根目录，不再增加 `planner/AnyFusion-Pi/`
+  重复层级。
 - Planner 与 MetaWork 仍是两个 Node 进程和两个 dependency tree。
-- Runtime source、configuration、state、workspace 和 cache 明确分离。
-- `agent-homes/<agent-class-id>` 是 AgentClass 模板 Home。
-- 每次 attempt 继续从模板生成私有临时 Home。
+- 程序 release、configuration、durable data、generated artifact、temporary
+  attempt、workspace 和 cache 明确分离。
+- `generated/agent-runtime/<kind>/<agent-class-id>` 是从当前配置 revision
+  编译出的 AgentClass 运行模板，不是第二个配置源。
+- 每次 attempt 从模板生成 `tmp/attempts/<attempt-id>/home/` 私有 Home。
+- `data/execution-workspaces/` 存放 Task/Subtask 隔离工作副本，不是用户原始
+  项目目录，也不限制 Planner 的启动目录。
+- `~/.local/bin/anyfusion` 只是 launcher；Installer 必须检测 PATH 中已有的
+  `anyfusion`，不得静默覆盖不属于本次安装的命令。
 
-开发环境可通过 `ANYFUSION_INSTALL_ROOT` 覆盖安装根，但目录关系保持一致。
+`~/.local/share` 不是强制安装位置。开发环境可通过
+`ANYFUSION_INSTALL_ROOT` 覆盖 `~/.anyfusion`，但目录关系保持一致。
 
 ### 6.4 更新
 
@@ -526,7 +586,7 @@ Agent Configuration Store
 
 ### 7.2 权威介质
 
-第一阶段建议以 `~/.config/anyfusion/config.yaml` 为静态配置权威。
+第一阶段以 `~/.anyfusion/config/config.yaml` 为静态配置权威。
 
 要求：
 
@@ -544,14 +604,15 @@ Agent Configuration Store
 ### 7.3 配置模型
 
 ```yaml
-version: 2
+schemaVersion: 2
 
 providers:
   openai-international:
     protocol: openai-compatible
     baseUrl: https://example.com/v1
-    apiKeyRef: env:ANYFUSION_PROVIDER_KEY
+    apiKeyRef: keychain:anyfusion/openai-international
     region: international
+    enabled: true
 
 models:
   planner-best-international:
@@ -570,19 +631,25 @@ models:
 
 harnesses:
   anyfusion-pi:
+    kind: planner
     transport: local-process
-    commandRef: runtime:planner
-    protocol: anyfusion-planner-host-v2
+    commandRef: release:planner
+    adapter: anyfusion-planner-host-v2
+    enabled: true
 
   codex-cli:
+    kind: executor
     transport: local-cli
     command: codex
     adapter: codex-cli
+    enabled: true
 
   pi-cli:
+    kind: executor
     transport: local-cli
     command: pi
     adapter: pi-cli
+    enabled: true
 
 agentClasses:
   planner-default:
@@ -592,7 +659,7 @@ agentClasses:
       mode: auto
       allowedModelRefs:
         - planner-best-international
-    runtimeHomeRef: planner-default
+    generatedRuntimeRef: planner-default
     enabled: true
 
   codex-engineering:
@@ -604,7 +671,7 @@ agentClasses:
       allowedModelRefs:
         - engineering-fast
     permissionProfileRef: workspace-engineering
-    runtimeHomeRef: codex-engineering
+    generatedRuntimeRef: codex-engineering
     enabled: true
 
   codex-review:
@@ -615,7 +682,7 @@ agentClasses:
       mode: fixed
       modelRef: planner-best-international
     permissionProfileRef: restricted-custom
-    runtimeHomeRef: codex-review
+    generatedRuntimeRef: codex-review
     enabled: true
 ```
 
@@ -762,6 +829,10 @@ modelPolicy:
 - 每次 Planner turn 开始前解析为确定 Model Profile；
 - 将 resolved model 和 configuration revision 写入 Planner run audit；
 - 不允许 Planner 进程自行扫描用户个人模型配置。
+- 本 turn 内不得再次静默切换模型。
+
+`fixed` 模型不可用时，Planner turn 失败并返回结构化错误。除非用户显式配置
+fallback policy，否则不得自动改用其他模型。
 
 ### 8.2 Executor 模型
 
@@ -778,12 +849,28 @@ Runtime:
   inject exact model into isolated attempt home/args
 ```
 
+如果 Planner 只选择 AgentClass 而没有明确模型提议，Kernel 可以按照
+AgentClass 已配置的确定性顺序解析：
+
+```text
+Planner valid proposal
+  -> AgentClass defaultModelRef
+  -> first available allowed model
+  -> waiting_for_availability
+```
+
+这不是 Kernel 重新解释自然语言，而是对静态配置进行确定性授权。
+
 不得采用：
 
 - Executor 在启动后自由选择任意模型；
 - Adapter 根据自然语言重新判断模型；
 - Runtime 未经 Kernel 授权替换模型；
 - fallback AgentClass 复用未经授权的原模型。
+
+模型 fallback 必须显式配置，并由 Adapter 先上报 normalized failure fact，
+再由 Kernel 产生新的 Decision 和 attempt。Runtime 或 Adapter 不得在同一个
+attempt 内隐藏切换模型。`fixed` 默认禁用 fallback。
 
 ### 8.3 Contract 升级
 
@@ -793,15 +880,31 @@ Runtime:
 preferredAgentClassList
 ```
 
-目标 contract 应表达有序的 AgentClass/Model tuple，例如：
+目标 Planner contract 应表达 AgentClass 与模型提议：
 
-```yaml
-routePreferences:
-  - agentClassName: codex-engineering
-    modelProfileName: engineering-fast
-  - agentClassName: codex-review
-    modelProfileName: planner-best-international
+```ts
+interface ProposedExecutorBinding {
+  agentClassRef: string;
+  modelSelection:
+    | { mode: 'fixed-by-agent-class' }
+    | { mode: 'proposed'; modelRef: string; reason: string }
+    | { mode: 'agent-class-default' };
+}
 ```
+
+Kernel Decision 固化完整授权绑定：
+
+```ts
+interface AuthorizedExecutorBinding {
+  agentClassRef: string;
+  harnessRef: string;
+  modelRef: string;
+  permissionProfileRef: string;
+  configurationRevision: string;
+}
+```
+
+Runtime 只接受 `AuthorizedExecutorBinding`，不接受 Planner 原始模型提议。
 
 建议：
 
@@ -846,19 +949,25 @@ Planner 看到的是同一 AgentClass 定义加安全健康投影，而不是另
 建议逻辑接口：
 
 ```ts
-interface AgentConfigurationService {
-  getSnapshot(): ConfigurationSnapshot;
+interface ConfigurationService {
+  getActiveSnapshot(): Promise<ConfigurationSnapshot>;
+  createDraft(input: CreateDraftInput): Promise<ConfigurationDraft>;
+  validateDraft(id: string): Promise<ValidationReport>;
+  compileDraft(id: string): Promise<CompilationReport>;
+  probeDraft(id: string): Promise<ProbeReport>;
+  activateDraft(id: string): Promise<ConfigurationSnapshot>;
+  rollback(revisionId: string): Promise<ConfigurationSnapshot>;
+  diff(leftRevisionId: string, rightRevisionId: string): Promise<ConfigurationDiff>;
   getPlannerProjection(revisionId: string): PlannerAgentCatalog;
   getKernelProjection(revisionId: string): KernelAgentCatalog;
   getRuntimeBinding(agentClassId: string, modelProfileId: string, revisionId: string): RuntimeBinding;
-  validateCandidate(candidate: unknown): ConfigurationValidationResult;
-  apply(candidate: unknown, expectedRevisionId: string): ConfigurationApplyResult;
   exportRedacted(): unknown;
 }
 ```
 
 实现要求：
 
+- draft -> validate -> compile -> probe -> activate 生命周期；
 - optimistic concurrency；
 - atomic file replace；
 - schema validation；
@@ -869,6 +978,10 @@ interface AgentConfigurationService {
 - probe 与 apply 分离；
 - apply 后失败可 rollback。
 
+配置激活必须同时切换 active revision、三个 immutable projection 和
+`generated/agent-runtime/` 当前生成物。任一步失败均继续使用上一 active
+revision。
+
 ### 9.2 CLI
 
 建议命令：
@@ -877,14 +990,23 @@ interface AgentConfigurationService {
 anyfusion setup
 anyfusion configure
 anyfusion configure planner
+anyfusion config show|validate|diff|history|rollback
 anyfusion provider list|add|edit|test|remove
 anyfusion model list|add|edit|test|remove
-anyfusion agent list|show|add|edit|enable|disable|remove
+anyfusion executor list|show|add|edit|enable|disable|remove|test
+anyfusion planner show|configure|test
 anyfusion doctor
+anyfusion status
 anyfusion config export --redacted
 ```
 
 命令只调用 Configuration Service，不直接修改 YAML、env 或 SQLite。
+
+自动化部署支持：
+
+```text
+anyfusion config apply --file server-config.yaml --non-interactive
+```
 
 ### 9.3 配置变更语义
 
@@ -893,6 +1015,43 @@ anyfusion config export --redacted
 - 修改正在执行的 AgentClass：当前 attempt 固定旧 revision，新 attempt 使用新 revision。
 - disable AgentClass：Kernel 不再授权新 attempt；现有 attempt 的取消策略由显式操作决定。
 - 删除被 Task/receipt 引用的配置：只允许 tombstone，不物理删除历史定义。
+
+### 9.4 Server 管理 API
+
+本轮只在 Server 侧实现版本化 API，不开发 Desktop Client：
+
+```text
+GET  /api/v1/config/active
+GET  /api/v1/config/revisions
+GET  /api/v1/config/revisions/:id
+POST /api/v1/config/drafts
+PUT  /api/v1/config/drafts/:id
+POST /api/v1/config/drafts/:id/validate
+POST /api/v1/config/drafts/:id/probe
+POST /api/v1/config/drafts/:id/activate
+POST /api/v1/config/rollback
+
+GET  /api/v1/providers
+POST /api/v1/providers/:id/test
+GET  /api/v1/models
+GET  /api/v1/harnesses
+GET  /api/v1/agent-classes
+POST /api/v1/agent-classes/:id/probe
+GET  /api/v1/server/health
+```
+
+API 只返回脱敏数据。默认通过本地 Unix socket 暴露；可选 HTTP 管理面必须
+显式启用，默认绑定 loopback，并配置 TLS、认证、审计、rate limit 和 replay
+防护。Secret 字段只允许写入，不允许回读。
+
+配置生效结果必须明确区分：
+
+```text
+activated
+activated_restart_required
+saved_as_draft
+rejected
+```
 
 ## 10. Connectivity Plane
 
@@ -917,7 +1076,7 @@ Gateway 是逻辑连接平面，不是统一业务控制器。
 - progress/final delivery；
 - versioned View Events。
 
-### 10.2 Planner Host Gateway
+### 10.2 Planner Host Bridge
 
 承接：
 
@@ -927,6 +1086,25 @@ Gateway 是逻辑连接平面，不是统一业务控制器。
 - read-only projection；
 - command completion；
 - idempotency/turn lock。
+
+`PlannerHostBridge` 是 MetaWork Server 进程内的本地 Application-Shell
+adapter，不是独立进程，也不是拥有业务策略的通用 Gateway。它通过 mode
+`0600` Unix socket 为受控 AnyFusion-Pi 进程提供 bounded host capabilities。
+
+`PlannerProcessSupervisor` 统一当前 `PlannerProcessRunner` 与
+`runPlannerTuiProcess` 的重复生命周期逻辑，对外提供：
+
+```text
+startInteractive()
+runRpcTurn()
+probe()
+stop()
+```
+
+它统一 command、args、cwd、environment、Planner Home、session、schema、
+timeout 和 cleanup。用户执行 `anyfusion` 时先启动 MetaWork Server，再由
+Supervisor 启动 release 内 `planner/` 的 AnyFusion-Pi 子进程；用户看到的前台
+界面是 AnyFusion-Pi TUI，但控制权仍在 MetaWork Server。
 
 保持禁止：
 
@@ -1017,28 +1195,35 @@ interface HarnessDriver {
 
 ## 12. Runtime Home 隔离
 
-每个 AgentClass 必须有独立模板 Home：
+每个 AgentClass 必须有独立的 generated runtime 模板：
 
 ```text
-agent-homes/
-├── planner/planner-default/
-├── executors/codex-engineering/
-├── executors/codex-review/
-└── executors/pi-research/
+generated/agent-runtime/
+├── planner/
+│   └── planner-default/
+└── executors/
+    ├── codex-engineering/
+    ├── codex-review/
+    └── pi-research/
 ```
 
 每个 attempt 再生成私有 Home：
 
 ```text
-attempt-home/
-├── config rendered from exact configuration revision
-├── session
-├── model binding
-└── scoped credentials
+tmp/attempts/<attempt-id>/
+├── home/
+│   ├── config rendered from exact configuration revision
+│   ├── session
+│   └── model binding
+├── environment.json
+├── receipt.json
+└── logs/
 ```
 
 约束：
 
+- `generated/agent-runtime/` 是可重建的 Configuration Compiler 产物，不是
+  用户直接维护的配置，也不是第二套静态配置；
 - Codex 设置独立 `CODEX_HOME`；
 - Pi 设置独立 `HOME`、`PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR`；
 - Planner 设置独立 Planner Home 和 Session Directory；
@@ -1047,6 +1232,8 @@ attempt-home/
 - 同一 Harness 的两个 AgentClass 不共享 session、settings 或 provider file；
 - attempt 完成后按 retention policy 清理临时 Home；
 - 用户 `~/.codex`、`~/.pi` 永远不是 fallback。
+- `environment.json`、receipt 和日志必须脱敏，scoped credentials 只在启动
+  attempt 前解析并注入授权子进程。
 
 ## 13. View Event 与现有访问面协议
 
@@ -1086,7 +1273,8 @@ CLI、TUI、Gateway Client 和 Feishu 使用同一语义事件，各自渲染。
 优先级：
 
 1. macOS Keychain / Windows Credential Manager / Linux Secret Service；
-2. 无系统 secret store 时使用 mode-`0600` secrets file；
+2. 无系统 secret store 时使用 `~/.anyfusion/config/secrets/`，目录
+   mode `0700`、文件 mode `0600`；
 3. 配置文件只保存 `secretRef`。
 
 禁止：
@@ -1095,7 +1283,11 @@ CLI、TUI、Gateway Client 和 Feishu 使用同一语义事件，各自渲染。
 - secret 写入 Kernel snapshot；
 - secret 写入 decision ledger；
 - secret 写入 AgentClass 普通字段；
+- secret 写入 revision diff、View Event、attempt receipt 或日志；
 - 非受信客户端或 Gateway adapter 直接读取原始 secrets file。
+
+Runtime 只在启动 attempt 前解析本次授权所需的 scoped secrets，并只注入该
+子进程。临时 credential material 在 attempt 结束后按 retention policy 清理。
 
 ### 14.2 配置供应链
 
@@ -1109,6 +1301,12 @@ CLI、TUI、Gateway Client 和 Feishu 使用同一语义事件，各自渲染。
 - 禁止从任意 project URL 自动推断并执行 command。
 
 现有 ExecutorAdminService 的 GitHub README/package.json command inference 不进入新系统。
+
+本机 worktree backend 是受信任子进程执行载体，不等同于完整 OS sandbox。
+安全边界来自独立 execution workspace、private attempt Home、Permission
+Profile、scoped credentials、timeout/abort、Completion Protocol 和 Git
+publication gate。只有容器、Codex nested sandbox 或明确的系统级隔离能力
+可以使用 sandbox 术语。
 
 ## 15. 错误处理
 
@@ -1172,7 +1370,7 @@ pre-release 原则：
 
 ### 16.2 Planner 路径迁移
 
-当前 sibling：
+历史 sibling：
 
 ```text
 <parent>/MetaWork
@@ -1182,9 +1380,14 @@ pre-release 原则：
 目标：
 
 ```text
-<install-root>/metawork
+~/.anyfusion/app/releases/<release-id>/
+├── dist/
+├── node_modules/
+├── package.json
 └── planner/
-    └── AnyFusion-Pi
+    ├── packages/
+    ├── node_modules/
+    └── package.json
 ```
 
 迁移步骤：
@@ -1192,10 +1395,34 @@ pre-release 原则：
 1. 检测现有 sibling checkout；
 2. dirty checkout 不移动、不覆盖；
 3. 使用其 revision 作为安装输入或重新 clone pinned revision；
-4. 在新 nested path build；
+4. 将 AnyFusion-Pi checkout/build 直接安装到 release 的 `planner/`；
 5. doctor 验证 Host Protocol；
 6. 原 sibling checkout 保留给用户自行处理；
-7. launcher 只引用 nested installed path。
+7. launcher 只引用当前 release 内的 `planner/`。
+
+### 16.3 程序与配置回滚
+
+程序回滚和配置回滚是两个独立但需要兼容性检查的动作：
+
+```text
+program:
+  app/current -> app/releases/<previous-release-id>/
+
+configuration:
+  active revision -> previous compatible revision
+```
+
+回滚前必须检查：
+
+- 旧 Server 是否支持当前 database schema；
+- 旧 Server 是否支持目标 configuration schema；
+- 是否存在新版本创建但旧版本无法解释的运行中 Task；
+- 是否存在不可中断的 attempt；
+- Planner Host、Planning Plan、Work Graph 和 Kernel Decision protocol 是否兼容。
+
+数据库 migration 优先采用向前兼容策略。不可逆 migration 必须提供备份、
+恢复命令和明确维护窗口。release health check 失败时，Installer 自动恢复上一
+release 和上一 compatible active revision。
 
 ## 17. 分阶段实施
 
@@ -1211,10 +1438,12 @@ pre-release 原则：
 ### Phase 1：Installer Core
 
 - 统一 macOS/Linux installer；
-- Planner nested install；
+- Planner 直接 nested install 到 release 的 `planner/`；
 - release manifest；
 - staging/atomic activation/rollback；
-- 独立 Home；
+- `~/.anyfusion` 统一根目录；
+- generated Agent runtime 与 per-attempt private Home；
+- PATH 冲突检测；
 - install/configure/doctor CLI；
 - 删除旧 setup 假能力。
 
@@ -1237,6 +1466,8 @@ pre-release 原则：
 
 ### Phase 4：Executor Adapter 重构
 
+- `PlannerProcessSupervisor`；
+- `PlannerHostBridge`；
 - HarnessDriver；
 - Local CLI adapter；
 - backend strategy；
@@ -1252,7 +1483,7 @@ pre-release 原则：
 - Provider/Model probe；
 - AgentClass 管理命令；
 - doctor 与诊断输出；
-- versioned local Configuration API；
+- versioned local Configuration API，为 future Desktop 保留协议但不开发客户端；
 - 为现有 CLI/TUI、Gateway Client 和 Feishu 提供结构化 View Events。
 
 ### Phase 6：冗余清理
@@ -1264,7 +1495,8 @@ pre-release 原则：
 - 收敛 Guidance/Orchestration；
 - 收敛 Feishu notification/delivery；
 - 删除确认无生产消费者的 repo/service/schema；
--评估 standby Ink TUI retirement ADR。
+- 冻结并完整保留 standby Ink TUI；
+- 仅通过后续独立 retirement ADR 评估删除。
 
 ### Phase 7：Remote Executor
 
@@ -1293,13 +1525,20 @@ pre-release 原则：
 - clean install；
 - repeated install；
 - interrupted install；
+- staging recovery；
+- checksum/signature failure；
 - dirty Planner source；
 - missing Codex/Pi；
 - existing Codex/Pi hash/config unchanged；
-- Planner nested path；
+- Planner 直接位于 release `planner/`；
 - current-directory launch；
 - update/rollback；
-- non-interactive install。
+- non-interactive install；
+- shell PATH conflict；
+- existing npm-installed AnyFusion migration。
+
+安装前后必须校验用户 `codex`、`pi` 的 command path、version、binary hash，
+以及 `~/.codex`、`~/.pi` 内容 hash 不变。
 
 ### 18.3 路由
 
@@ -1315,21 +1554,39 @@ pre-release 原则：
 
 - 同一 Harness 两个 AgentClass 配置互不影响；
 - 不读取用户 `~/.codex` / `~/.pi`；
+- generated runtime 与 attempt Home 分离；
 - attempt session 隔离；
 - worktree cwd 不被 Home 替代；
 - cleanup/retention；
 - crash recovery。
 
-### 18.5 Server 管理面
+### 18.5 Planner 进程与 Bridge
+
+- `anyfusion` 先启动 MetaWork Server，再启动 AnyFusion-Pi TUI；
+- interactive 与 RPC 共用 `PlannerProcessSupervisor` bootstrap；
+- 同一 session 的 turn 串行写入；
+- Planner session 持久化；
+- 用户当前目录作为 Planner `cwd`；
+- `PlannerHostBridge` socket mode 为 `0600`；
+- proposal submission 幂等与 turn lock；
+- Planner View 不包含 secret；
+- Bridge 断线、重连、timeout 和进程退出清理；
+- Planner 不得直接启动 Executor。
+
+### 18.6 Server 管理面
 
 - Installer/Admin CLI 修改同一配置；
 - stale revision 冲突；
 - Server daemon restart/reconnect；
 - structured View Event；
 - config probe 不触发正式 Task；
-- 配置失败不影响运行中 attempt。
+- 配置失败不影响运行中 attempt；
+- local API schema/version rejection；
+- secret 字段不可回读；
+- authentication、rate limit 和 audit；
+- Gateway 不直接写 Repository 或调用 Executor。
 
-### 18.6 回归
+### 18.7 回归
 
 - PlanningAgent -> Kernel -> Runtime 主链；
 - single-Task admission；
@@ -1348,10 +1605,14 @@ pre-release 原则：
 ### 安装
 
 - 一句命令完成 Server 安装并进入终端配置向导。
-- Planner 位于 MetaWork 安装目录内部。
+- release 根目录直接包含 MetaWork Server 程序，Planner 位于同一 release
+  的 `planner/` 子目录。
 - 安装前后用户 Codex/Pi command、version、binary hash 和个人配置 hash 不变。
 - 可重新运行配置向导。
 - 可更新和 rollback。
+- 用户可在任意项目目录执行 `anyfusion`，先启动 MetaWork Server，再进入
+  受控 AnyFusion-Pi 原生 TUI。
+- `~/.local/share` 不是强制安装位置，默认用户级根目录为 `~/.anyfusion`。
 
 ### 配置
 
@@ -1361,6 +1622,7 @@ pre-release 原则：
 - Runtime 不使用 Executor name allowlist。
 - Harness、Model 和 AgentClass 可独立配置。
 - 同一 Harness 多个 AgentClass 使用独立 Home。
+- generated Agent runtime 是可重建产物，不构成第二配置源。
 
 ### 模型
 
@@ -1381,6 +1643,8 @@ pre-release 原则：
 - 不出现 Planner -> Executor 直连。
 - 不出现第二套 scheduler/retry/fallback。
 - Gateway 不拥有 Kernel policy。
+- `PlannerProcessSupervisor` 和 `PlannerHostBridge` 均位于 MetaWork Server
+  进程内，AnyFusion-Pi 是独立 Planner 子进程。
 - 动态健康与静态配置清晰分离。
 - 删除的冗余模块没有测试保活残留。
 
