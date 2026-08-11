@@ -18,14 +18,11 @@ const execFileAsync = promisify(execFile);
 export class PiCliDriver implements HarnessDriver {
   readonly id = 'pi-cli';
   private readonly runProbe: ProbeCommandRunner;
-  private readonly materializer: RuntimeHomeMaterializer;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
-    materializer?: RuntimeHomeMaterializer;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
-    this.materializer = dependencies.materializer ?? new RuntimeHomeMaterializer('/tmp/anyfusion-attempts');
   }
 
   async probe(): Promise<HarnessProbeResult> {
@@ -36,18 +33,22 @@ export class PiCliDriver implements HarnessDriver {
   }
 
   async materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome> {
-    const homePath = `${input.attemptRoot}/home`;
+    const materializer = new RuntimeHomeMaterializer(input.attemptsRoot);
+    const { homePath } = materializer.resolvePaths(input.attemptId);
     const agentPath = `${homePath}/.pi/agent`;
     const sessionPath = `${agentPath}/sessions`;
-    const home = await this.materializer.materialize({
-      ...input,
+    return materializer.materialize({
+      attemptId: input.attemptId,
+      revisionId: input.revisionId,
+      agentClassId: input.agentClassId,
+      bindingFingerprint: input.bindingFingerprint,
       environment: {
         HOME: homePath,
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
       },
+      homeDirectories: ['.pi/agent/sessions'],
     });
-    return home;
   }
 
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {

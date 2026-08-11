@@ -18,14 +18,11 @@ const execFileAsync = promisify(execFile);
 export class CodexCliDriver implements HarnessDriver {
   readonly id = 'codex-cli';
   private readonly runProbe: ProbeCommandRunner;
-  private readonly materializer: RuntimeHomeMaterializer;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
-    materializer?: RuntimeHomeMaterializer;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
-    this.materializer = dependencies.materializer ?? new RuntimeHomeMaterializer('/tmp/anyfusion-attempts');
   }
 
   async probe(): Promise<HarnessProbeResult> {
@@ -36,11 +33,15 @@ export class CodexCliDriver implements HarnessDriver {
   }
 
   async materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome> {
-    const home = await this.materializer.materialize({
-      ...input,
-      environment: { CODEX_HOME: `${input.attemptRoot}/home` },
+    const materializer = new RuntimeHomeMaterializer(input.attemptsRoot);
+    const { homePath } = materializer.resolvePaths(input.attemptId);
+    return materializer.materialize({
+      attemptId: input.attemptId,
+      revisionId: input.revisionId,
+      agentClassId: input.agentClassId,
+      bindingFingerprint: input.bindingFingerprint,
+      environment: { CODEX_HOME: homePath },
     });
-    return home;
   }
 
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {

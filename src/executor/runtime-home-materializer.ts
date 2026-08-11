@@ -5,8 +5,9 @@ import type {
   RuntimeHomeInput,
 } from './harness-driver.js';
 
-export interface RuntimeHomeMaterializationInput extends RuntimeHomeInput {
+export interface RuntimeHomeMaterializationInput extends Omit<RuntimeHomeInput, 'attemptsRoot'> {
   environment: Record<string, string>;
+  homeDirectories?: string[];
 }
 
 export class RuntimeHomeMaterializer {
@@ -15,12 +16,12 @@ export class RuntimeHomeMaterializer {
   async materialize(
     input: RuntimeHomeMaterializationInput,
   ): Promise<MaterializedRuntimeHome> {
-    const attemptId = safeSegment(input.attemptId, 'attemptId');
-    const attemptRoot = resolve(this.attemptsRoot, attemptId);
-    const homePath = join(attemptRoot, 'home');
-    const logsPath = join(attemptRoot, 'logs');
+    const { attemptRoot, homePath, logsPath } = this.resolvePaths(input.attemptId);
     await mkdir(homePath, { recursive: true, mode: 0o700 });
     await mkdir(logsPath, { recursive: true, mode: 0o700 });
+    for (const relativePath of input.homeDirectories ?? []) {
+      await mkdir(resolveInside(homePath, relativePath), { recursive: true, mode: 0o700 });
+    }
     await writeFile(
       join(attemptRoot, 'environment.json'),
       `${JSON.stringify({
@@ -40,6 +41,20 @@ export class RuntimeHomeMaterializer {
     );
     return { homePath, environment: { ...input.environment } };
   }
+
+  resolvePaths(attemptId: string): {
+    attemptRoot: string;
+    homePath: string;
+    logsPath: string;
+  } {
+    const safeAttemptId = safeSegment(attemptId, 'attemptId');
+    const attemptRoot = resolve(this.attemptsRoot, safeAttemptId);
+    return {
+      attemptRoot,
+      homePath: join(attemptRoot, 'home'),
+      logsPath: join(attemptRoot, 'logs'),
+    };
+  }
 }
 
 function safeSegment(value: string, label: string): string {
@@ -47,4 +62,15 @@ function safeSegment(value: string, label: string): string {
     throw new Error(`${label} is not a safe runtime identity`);
   }
   return value;
+}
+
+function resolveInside(root: string, relativePath: string): string {
+  if (!relativePath || relativePath.startsWith('/') || relativePath.includes('\0')) {
+    throw new Error('runtime home directory must be relative');
+  }
+  const resolved = resolve(root, relativePath);
+  if (!resolved.startsWith(`${resolve(root)}/`)) {
+    throw new Error('runtime home directory escapes attempt home');
+  }
+  return resolved;
 }

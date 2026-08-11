@@ -33,7 +33,7 @@ export interface RuntimeHomeInput {
   revisionId: string;
   agentClassId: string;
   bindingFingerprint: string;
-  attemptRoot: string;
+  attemptsRoot: string;
 }
 
 export interface MaterializedRuntimeHome {
