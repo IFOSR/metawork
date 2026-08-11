@@ -2,9 +2,14 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Deliver the approved native MetaWork Server upgrade with one installation root, one revisioned configuration authority, explicit Planner/Kernel/Runtime projections, isolated AgentClass runtimes, controlled AnyFusion-Pi lifecycle, and extensible local/A2A Executor transports.
+Status: Revised after parallel architecture review
+Plan date: 2026-08-11
+Last revised: 2026-08-11
+Execution gate: Tasks that remove legacy authority or mutate SQLite may not start until Task 1 ADRs and the complete schema 30-to-31 migration/rollback contract are accepted.
 
-**Architecture:** Add a Configuration Control Plane at the Application Shell boundary while preserving `Planner proposes -> Kernel decides -> Runtime applies -> Executor executes`. Cut consumers over in dependency order: configuration types and revisions, Planner projection, Kernel authorization, Runtime binding, then installers and management surfaces. Do not keep long-lived dual-read or dual-write compatibility paths.
+**Goal:** Deliver the native MetaWork Server upgrade with one installation root, one revisioned configuration authority, generation-scoped Planner/Kernel/Runtime bindings, isolated AgentClass runtimes, controlled AnyFusion-Pi lifecycle, and a signed transactional update/rollback path.
+
+**Architecture:** Add a Configuration Control Plane at the Application Shell boundary while preserving `Planner proposes -> Kernel decides -> Runtime applies -> Executor executes`. Prepare immutable revisions and new consumers without changing the current runtime authority, then perform one explicit cutover after Planner v8, Work Graph v7, Kernel authorization, recovery, Harness Drivers, and Runtime consumers are complete. Do not introduce dual-read or dual-write compatibility paths.
 
 **Tech Stack:** Node.js 22.19+, TypeScript ESM, Zod, js-yaml, better-sqlite3, Vitest, Unix sockets/JSONL, Git worktrees, native Codex/Pi CLIs, AnyFusion-Pi companion repository.
 
@@ -28,10 +33,18 @@ sed -n '1,260p' docs/plans/2026-08-07-metawork-server-upgrade-technical-design.m
 ```
 
 - Use TDD. Each production change starts with a focused failing test.
-- Run `npm run lint` after every task and the focused Vitest command listed below.
+- Run `npm run build`, `npm run lint`, and the focused Vitest command after every
+  task. A task is not complete if a deleted or renamed type/module leaves another
+  production consumer uncompilable.
+- Before deleting or renaming a production module, attach an `rg` inventory of
+  all imports and migrate every consumer in the same task.
 - Do not modify `~/.codex`, `~/.pi`, global Codex/Pi binaries, or user projects during tests.
 - Keep `src/tui/` and its tests intact. Do not include standby Ink TUI retirement.
 - Commit each task independently with the listed Conventional Commit subject.
+- Tasks 8 through 10 form one release integration phase. Each commit must remain
+  buildable, but none may be released or activated independently.
+- AnyFusion-Pi changes must use a separate clean worktree. Do not reuse or clean
+  a sibling checkout containing user changes.
 
 ### Task 1: Freeze Configuration And Routing Ownership
 
@@ -39,6 +52,7 @@ sed -n '1,260p' docs/plans/2026-08-07-metawork-server-upgrade-technical-design.m
 - Create: `docs/adr/0027-configuration-control-plane-and-revision-authority.md`
 - Create: `docs/adr/0028-agentclass-model-and-harness-routing-contract.md`
 - Create: `docs/adr/0029-executor-transport-and-a2a-boundary.md`
+- Create: `docs/adr/0030-native-release-trust-and-upgrade-transaction.md`
 - Modify: `docs/adr/README.md`
 - Modify: `CONTEXT.md`
 - Modify: `docs/current/technical-overview.md`
@@ -81,7 +95,7 @@ Expected: FAIL because `src/configuration/` and the declared public entry points
 ADR-0027 must establish:
 
 ```text
-~/.anyfusion/config/config.yaml
+~/.anyfusion/config/active/config.yaml
   -> ConfigurationService
   -> immutable ConfigurationSnapshot
   -> Planner/Kernel/Runtime projections
@@ -102,6 +116,26 @@ type ModelPolicy =
 
 ADR-0029 must state that A2A is an `ExecutorAdapter`, not a scheduler, router, or Planner-to-Executor shortcut.
 
+ADR-0027 must additionally establish:
+
+```text
+one configuration revision per Work Graph generation
+all graph revisions, decisions, deferred replans, dispatches, attempts and receipts
+remain pinned to that revision
+```
+
+ADR-0028 must define Provider/Model health identity, structured failure subjects,
+binding-fingerprint attempt history, and code-owned Permission Profile grammar.
+
+ADR-0030 must define the signed release trust root and one crash-recoverable update
+transaction:
+
+```text
+lock -> close admission -> quiesce dispatch -> drain -> stop surfaces
+-> WAL checkpoint/backup -> verify signed release -> migrate clone
+-> stage release/config/runtime -> switch -> start/health check -> commit
+```
+
 **Step 4: Add the initial module entry point**
 
 Create `src/configuration/index.ts` exporting only placeholder type-only ports. Do not add storage or runtime imports.
@@ -112,6 +146,7 @@ Run:
 
 ```bash
 npx vitest run tests/configuration/configuration-module-boundary.test.ts
+npm run build
 npm run lint
 ```
 
@@ -142,7 +177,7 @@ Cover the default layout:
 expect(resolveAnyFusionPaths('/Users/test')).toMatchObject({
   root: '/Users/test/.anyfusion',
   appCurrent: '/Users/test/.anyfusion/app/current',
-  configFile: '/Users/test/.anyfusion/config/config.yaml',
+  configFile: '/Users/test/.anyfusion/config/active/config.yaml',
   database: '/Users/test/.anyfusion/data/metaclaw.db',
   plannerSessions: '/Users/test/.anyfusion/data/planner-sessions',
   executionWorkspaces: '/Users/test/.anyfusion/data/execution-workspaces',
@@ -176,6 +211,7 @@ export interface AnyFusionPaths {
   root: string;
   appCurrent: string;
   releases: string;
+  data: string;
   configFile: string;
   secrets: string;
   database: string;
@@ -197,20 +233,36 @@ Use Zod for:
 
 ```ts
 {
+  manifestSchemaVersion,
   releaseId,
-  metaworkRevision,
-  plannerRevision,
-  configurationSchema,
-  plannerHostProtocol,
-  planningPlanSchema,
-  workGraphSchema,
-  kernelDecisionSchema,
-  databaseSchema,
-  checksums,
+  channel,
+  publishedAt,
+  expiresAt,
+  minimumInstallerVersion,
+  minimumNodeVersion,
+  platform,
+  arch,
+  metawork: { source, revision, url, byteSize, sha256 },
+  planner: { source, revision, url, byteSize, sha256 },
+  compatibility: {
+    configurationSchema,
+    plannerHostProtocol,
+    planningPlanSchema,
+    planningPlanSchemaHash,
+    workGraphSchema,
+    kernelDecisionSchema,
+    databaseSchema,
+  },
+  signature: { algorithm, keyId, value },
+  previousCompatibleRelease,
 }
 ```
 
-Reject missing revision pins and incompatible protocol versions before activation.
+Reject missing revision pins, wrong channel/platform/arch, expired manifests,
+unknown or revoked keys, invalid signatures, artifact hash/size mismatches, and
+incompatible protocol versions before executing downloaded payloads or activation.
+Default update forbids downgrade; explicit rollback may select only a previously
+verified compatible manifest.
 
 **Step 5: Route legacy path helper through the new value object**
 
@@ -220,6 +272,7 @@ Change `resolveMetaclawDir()` to return `paths.data` during the migration window
 
 ```bash
 npx vitest run tests/installation/paths.test.ts tests/installation/release-manifest.test.ts tests/utils/paths.test.ts
+npm run build
 npm run lint
 ```
 
@@ -269,8 +322,11 @@ Test:
 - Executor AgentClass must reference an Executor Harness;
 - `fixed` requires `modelRef`;
 - `auto` requires non-empty `allowedModelRefs`;
-- A2A Harness requires endpoint and auth reference;
 - local CLI Harness requires command and driver ID.
+- Permission Profiles reference code-owned, versioned profile IDs and expose only
+  schema-bounded parameters;
+- arbitrary permission DSL, commands, host paths, secret access, and policy
+  overrides fail validation.
 
 **Step 2: Run tests and verify failure**
 
@@ -293,6 +349,10 @@ export type ConfigurationSnapshot = {
 ```
 
 Keep Provider, ModelProfile, HarnessDefinition, AgentClassDefinition, PermissionProfile, RuntimePolicy, and GatewayConfig as separate referenced objects.
+
+PermissionProfile is a reference/configuration shape, not a policy interpreter.
+Resource/Kernel code owns grammar, canonicalization, grants, denials, and
+elevation semantics.
 
 **Step 4: Implement projections**
 
@@ -322,6 +382,7 @@ Move Planner-safe routing vocabulary into `src/routing/`. Keep pure capability v
 
 ```bash
 npx vitest run tests/configuration tests/routing/configuration-catalog.test.ts
+npm run build
 npm run lint
 ```
 
@@ -342,14 +403,14 @@ git commit -m "feat: add configuration schema and safe projections"
 - Create: `src/configuration/configuration-validator.ts`
 - Create: `src/configuration/configuration-diff.ts`
 - Create: `src/configuration/secret-store.ts`
+- Create: `src/configuration/keychain-secret-store.ts`
+- Create: `src/configuration/file-secret-store.ts`
+- Create: `src/configuration/activation-journal.ts`
 - Modify: `src/configuration/index.ts`
-- Modify: `src/storage/migrations.ts`
-- Create: `src/storage/configuration-revision-repo.ts`
 - Create: `tests/configuration/configuration-service.test.ts`
 - Create: `tests/configuration/file-configuration-repository.test.ts`
 - Create: `tests/configuration/secret-store.test.ts`
-- Create: `tests/storage/configuration-revision-repo.test.ts`
-- Modify: `tests/storage/migrations.test.ts`
+- Create: `tests/configuration/activation-journal.test.ts`
 
 **Step 1: Write failing service tests**
 
@@ -371,7 +432,10 @@ Assert:
 - stale expected revision returns `revision_conflict`;
 - rollback creates a new revision pointing to prior content;
 - diff is redacted;
-- atomic replacement never exposes a partial YAML file.
+- revision directories are immutable;
+- one active pointer is the only activation switch;
+- crash recovery resolves prepared/committed journals without mixed projections;
+- active pointers to missing or hash-mismatched revisions enter recovery-blocked.
 
 **Step 2: Run tests and verify failure**
 
@@ -381,39 +445,25 @@ npx vitest run tests/configuration/configuration-service.test.ts tests/configura
 
 Expected: FAIL.
 
-**Step 3: Add SQLite revision audit**
-
-Bump the SQLite schema once for this program:
-
-```sql
-CREATE TABLE configuration_revisions (
-  revision_id TEXT PRIMARY KEY,
-  schema_version INTEGER NOT NULL,
-  content_hash TEXT NOT NULL,
-  previous_revision_id TEXT,
-  source TEXT NOT NULL,
-  change_summary_json TEXT NOT NULL,
-  validation_json TEXT NOT NULL,
-  created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-```
-
-SQLite records audit metadata only. The active static configuration remains the YAML source of truth.
-
-**Step 4: Implement the file repository**
+**Step 3: Implement immutable revision activation**
 
 Use:
 
 ```text
-config.yaml.tmp
-  -> fsync
-  -> rename config.yaml
+stage revision directory
+  -> compile and hash config/projections/generated runtime
+  -> fsync files and directory
+  -> rename to immutable revisions/<revision-id>
+  -> write prepared journal
+  -> atomically replace the single active pointer
+  -> fsync parent
+  -> write committed journal
 ```
 
-Store immutable redacted revision copies under `data/configuration-revisions/`. Never write Secret values there.
+Do not add SQLite schema changes in this task. Keep revision audit behind a port;
+the only schema bump is owned by Task 8.
 
-**Step 5: Implement SecretStore**
+**Step 4: Implement SecretStore**
 
 Create a port with:
 
@@ -423,21 +473,28 @@ put(reference: SecretReference, value: string): Promise<void>;
 delete(reference: SecretReference): Promise<void>;
 ```
 
-Implement a mode-`0700` directory and mode-`0600` file fallback. Keep OS credential-manager adapters behind the same port for a later platform-specific task.
+Implement macOS Keychain using the `security` CLI. Implement the mode-`0700`
+directory/mode-`0600` file store only as an explicit fallback; failure to access
+Keychain must not silently downgrade. Linux may use a documented explicit file
+fallback until a Secret Service adapter is delivered.
 
-**Step 6: Run validation**
+Tests must prove secrets never appear in YAML, immutable revision directories,
+diffs, SQLite audit payloads, Planner/Kernel projections, receipts, argv, or logs.
+
+**Step 5: Run validation**
 
 ```bash
-npx vitest run tests/configuration tests/storage/configuration-revision-repo.test.ts tests/storage/migrations.test.ts
+npx vitest run tests/configuration
+npm run build
 npm run lint
 ```
 
 Expected: PASS.
 
-**Step 7: Commit**
+**Step 6: Commit**
 
 ```bash
-git add src/configuration src/storage tests/configuration tests/storage
+git add src/configuration tests/configuration
 git commit -m "feat: add revisioned configuration service"
 ```
 
@@ -459,13 +516,14 @@ git commit -m "feat: add revisioned configuration service"
 Assert:
 
 ```text
-generated/agent-runtime/planner/planner-default
-generated/agent-runtime/executors/codex-engineering
-generated/agent-runtime/executors/codex-review
-generated/agent-runtime/executors/pi-research
+generated/agent-runtime/<revision-id>/planner/planner-default
+generated/agent-runtime/<revision-id>/executors/codex-engineering
+generated/agent-runtime/<revision-id>/executors/codex-review
+generated/agent-runtime/<revision-id>/executors/pi-research
 ```
 
 Test that two AgentClasses using `codex-cli` receive different generated directories and different model/permission files.
+Assert referenced revision directories cannot be mutated or garbage-collected.
 
 **Step 2: Write failing attempt Home tests**
 
@@ -519,6 +577,7 @@ process.env.HOME fallback for Pi
 
 ```bash
 npx vitest run tests/configuration/configuration-compiler.test.ts tests/executor/runtime-home-materializer.test.ts tests/executor/codex-cli-driver.test.ts tests/executor/pi-cli-driver.test.ts
+npm run build
 npm run lint
 ```
 
@@ -531,7 +590,7 @@ git add src/configuration src/executor tests/configuration tests/executor
 git commit -m "feat: compile isolated agent runtimes"
 ```
 
-### Task 6: Migrate Legacy Configuration Once
+### Task 6: Inventory Legacy Configuration And Prepare One-Way Import
 
 **Files:**
 - Create: `src/configuration/legacy-configuration-reader.ts`
@@ -539,23 +598,25 @@ git commit -m "feat: compile isolated agent runtimes"
 - Create: `tests/configuration/configuration-migration-service.test.ts`
 - Modify: `src/utils/config.ts`
 - Modify: `tests/utils/config.test.ts`
-- Modify: `src/executor/agent-class-seeder.ts`
-- Modify: `tests/executor/agent-class-service.test.ts`
 
 **Step 1: Write failing migration tests**
 
 Build fixtures for:
 
 ```text
-legacy config.yaml
-provider.env
-Planner models.json/settings.json
-Codex config.toml
-Pi models.json/settings.json
+~/.metaclaw
+~/.config/anyfusion
+~/.local/share/anyfusion
+legacy ANYFUSION_CONFIG_HOME/ANYFUSION_BIN_HOME/ANYFUSION_PI_SOURCE_ROOT
+provider.env and old config.yaml/.env
+Planner/Codex/Pi generated model/settings files
 SQLite canonical AgentClasses
+historical sibling AnyFusion-Pi checkout
+existing npm/global anyfusion launcher
 ```
 
-Assert they produce one schema-v2 candidate and a redacted report.
+Assert they produce one schema-v2 candidate, a SecretStore import plan, source
+hash inventory, conflict report, and a redacted report.
 
 **Step 2: Test ambiguous inputs fail closed**
 
@@ -565,6 +626,8 @@ Examples:
 - unknown custom Executor command;
 - AgentClass model not present in any ModelProfile;
 - dirty or unreadable Planner configuration.
+- conflicting values from `~/.metaclaw` and native AnyFusion roots;
+- two legacy override variables selecting different roots.
 
 Expected error shape:
 
@@ -580,29 +643,35 @@ npx vitest run tests/configuration/configuration-migration-service.test.ts tests
 
 Expected: FAIL.
 
-**Step 4: Implement one-way migration**
+**Step 4: Implement deterministic dry-run import**
 
 The migration command must:
 
 ```text
 read legacy
   -> build candidate
+  -> build SecretStore import plan
+  -> record source hashes
   -> validate
   -> show redacted diff
-  -> require confirmation
-  -> activate revision
+  -> stage immutable candidate revision
 ```
 
-After activation, runtime code reads only ConfigurationService. Do not keep fallback reads from `provider.env`, Harness settings files, or SQLite AgentClass static fields.
+Repeated dry-runs against unchanged sources must produce the same candidate hash.
+Dirty sibling repositories are reported but never moved or overwritten. This task
+does not activate the candidate and does not change current runtime authority.
 
-**Step 5: Stop seeding static AgentClass authority**
+**Step 5: Prove legacy authority remains unchanged**
 
-Keep only dynamic WorkUnit initialization. If the current `work_units` foreign key requires legacy AgentClass rows, remove that foreign key in the same database migration rather than maintaining a shadow static catalog.
+Add tests proving this task does not stop AgentClass seeding, change existing
+Configuration readers, or mutate the SQLite schema. Legacy removal happens only
+in Task 10 after all new consumers are ready.
 
 **Step 6: Run validation**
 
 ```bash
-npx vitest run tests/configuration/configuration-migration-service.test.ts tests/utils/config.test.ts tests/executor/agent-class-service.test.ts tests/storage/migrations.test.ts
+npx vitest run tests/configuration/configuration-migration-service.test.ts tests/utils/config.test.ts
+npm run build
 npm run lint
 ```
 
@@ -611,25 +680,27 @@ Expected: PASS.
 **Step 7: Commit**
 
 ```bash
-git add src/configuration src/utils/config.ts src/executor/agent-class-seeder.ts src/storage tests
-git commit -m "feat: migrate legacy configuration to schema v2"
+git add src/configuration src/utils/config.ts tests/configuration tests/utils
+git commit -m "feat: prepare legacy configuration import"
 ```
 
 ### Task 7: Unify Planner Process Lifecycle And Host Bridge
 
 **Files:**
 - Create: `src/planning/planner-process-supervisor.ts`
+- Create: `src/planning/planner-audit-contract.ts`
 - Move: `src/tui-bridge/planner-tui-bridge.ts` to `src/tui-bridge/planner-host-bridge.ts`
 - Modify: `src/tui-bridge/planner-host-protocol.ts`
-- Delete: `src/planning/planner-process-runner.ts`
-- Delete: `src/tui-bridge/planner-tui-process.ts`
+- Modify: `src/planning/planner-process-runner.ts`
+- Modify: `src/tui-bridge/planner-tui-process.ts`
 - Modify: `src/planning/anyfusion-planning-agent.ts`
+- Modify: `src/storage/planner-run-repo.ts`
 - Modify: `src/session/metaclaw-session.ts`
 - Modify: `src/index.ts`
 - Create: `tests/planning/planner-process-supervisor.test.ts`
 - Move: `tests/tui-bridge/planner-tui-bridge.test.ts` to `tests/tui-bridge/planner-host-bridge.test.ts`
-- Delete: `tests/planner-process-runner.test.ts`
-- Delete: `tests/tui-bridge/planner-tui-process.test.ts`
+- Modify: `tests/planner-process-runner.test.ts`
+- Modify: `tests/tui-bridge/planner-tui-process.test.ts`
 
 **Step 1: Write failing supervisor tests**
 
@@ -662,15 +733,24 @@ npx vitest run tests/planning/planner-process-supervisor.test.ts tests/tui-bridg
 
 Expected: FAIL.
 
-**Step 3: Implement the supervisor**
+**Step 3: Extract shared Planner audit types**
+
+Move `PlannerToolCallTrace` and other persisted Planner audit types out of
+`planner-process-runner.ts` before changing process ownership. Update Storage and
+all other imports to use the independent audit contract.
+
+**Step 4: Implement the supervisor**
 
 Interactive mode inherits terminal stdio. RPC mode uses JSONL stdin/stdout and one short-lived child per turn. Preserve same-session serialization.
 
-**Step 4: Rename the Bridge**
+**Step 5: Rename the Bridge**
 
 Keep the Host Protocol unchanged unless ADR-0028 requires a version bump. The Bridge stays in the MetaWork Server process and exposes no generic mutation API.
 
-**Step 5: Update the AnyFusion-Pi companion**
+Keep the old runner/process modules as delegating wrappers until Task 10's atomic
+authority cutover. Do not delete them while production imports remain.
+
+**Step 6: Update the AnyFusion-Pi companion**
 
 Files in the AnyFusion-Pi repository:
 
@@ -681,12 +761,16 @@ Files in the AnyFusion-Pi repository:
 
 Only update protocol names/configuration inputs required by the host change. Do not move Kernel or Runtime logic into Pi.
 
-**Step 6: Run validation in both repositories**
+Use a new clean AnyFusion-Pi worktree pinned from the intended base commit. Do not
+clean, reset, or commit through the existing sibling checkout.
+
+**Step 7: Run validation in both repositories**
 
 MetaWork:
 
 ```bash
 npx vitest run tests/planning/planner-process-supervisor.test.ts tests/tui-bridge
+npm run build
 npm run lint
 ```
 
@@ -699,12 +783,12 @@ npm test --workspace @earendil-works/pi-coding-agent -- anyfusion-planner
 
 Expected: PASS.
 
-**Step 7: Commit both repositories**
+**Step 8: Commit both repositories**
 
 MetaWork:
 
 ```bash
-git add src/planning src/tui-bridge src/session src/index.ts tests
+git add src/planning src/tui-bridge src/session src/storage src/index.ts tests
 git commit -m "refactor: unify planner process lifecycle"
 ```
 
@@ -717,7 +801,7 @@ git commit -m "refactor: align planner host lifecycle"
 
 Record the AnyFusion-Pi commit in the release manifest fixture.
 
-### Task 8: Upgrade PlanningAgentPlan V8 And Work Graph V7
+### Task 8: Upgrade The Full Planning Chain And Apply The Single SQLite V31 Migration
 
 **Files:**
 - Modify: `src/planning/planning-agent-plan-schema.ts`
@@ -727,6 +811,14 @@ Record the AnyFusion-Pi commit in the release manifest fixture.
 - Modify: `src/work-graph/types.ts`
 - Modify: `src/work-graph/validation.ts`
 - Modify: `src/kernel/control-kernel.ts`
+- Modify: `src/execution/work-graph-runtime-service.ts`
+- Modify: `src/execution/kernel-execution-runtime.ts`
+- Modify: `src/execution/work-unit-claim-service.ts`
+- Modify: `src/session/metaclaw-session.ts`
+- Modify: `src/storage/subtask-repo.ts`
+- Modify: `src/storage/planner-run-repo.ts`
+- Modify: `src/storage/kernel-decision-repo.ts`
+- Modify: `src/storage/migrations.ts`
 - Modify: `src/generate-planner-schema.ts`
 - Modify: `package.json`
 - Modify: `tests/planning/planning-agent-plan-schema.test.ts`
@@ -734,6 +826,9 @@ Record the AnyFusion-Pi commit in the release manifest fixture.
 - Modify: `tests/planning/planning-context-builder.test.ts`
 - Modify: `tests/planning/work-graph-structure-rules.test.ts`
 - Modify: `tests/kernel/control-kernel.test.ts`
+- Modify: `tests/execution/work-graph-runtime-service.test.ts`
+- Modify: `tests/execution/kernel-execution-runtime.test.ts`
+- Modify: `tests/storage/migrations.test.ts`
 
 **Step 1: Write failing v8 tests**
 
@@ -749,7 +844,10 @@ executorBindings: Array<{
 }>;
 ```
 
-Test that the Zod schema is built from Planner Configuration View values instead of hard-coded `codex-cli` and `pi-agent` enums.
+The generated structural schema must use constrained strings for `agentClassRef`
+and `modelRef`, with no hard-coded or runtime-generated enum. Test separate
+revision-scoped semantic validation against PlannerConfigurationView for
+existence, enabled state, Harness compatibility, and ModelPolicy.
 
 **Step 2: Verify failure**
 
@@ -769,9 +867,37 @@ Work Graph schemaVersion = 7
 generated file = dist/planning-agent-plan-v8.schema.json
 ```
 
-Do not accept v7 after the cutover migration.
+Before implementation, use `rg` to inventory every consumer of
+`preferredAgentClassList`, Plan v7, Work Graph v6, persisted subtask bindings,
+claim payloads, dispatch payloads, Session projections, and recovery payloads.
+Migrate every production consumer in this task. Do not accept v7 after the
+cutover migration.
 
-**Step 4: Update AnyFusion-Pi Planner instructions**
+**Step 4: Implement the only SQLite schema bump**
+
+Implement one transactionally complete `30 -> 31` migration. No other task in
+this plan may change `CURRENT_SCHEMA_VERSION`. V31 must include:
+
+```text
+configuration_revisions audit table
+Planner run / Kernel decision / attempt receipt revision and binding columns
+Work Graph generation configuration revision
+deferred replan and dispatch revision/binding fields
+Provider/Model health projection tables or columns
+remove work_units -> agent_classes foreign key
+remove kernel_executor_status -> agent_classes foreign key
+all required indexes, constraints and immutable triggers
+recoverable Plan v7 -> v8 payload conversion
+recoverable Work Graph v6 -> v7 payload conversion
+deferred proposal, dispatch, Kernel event/snapshot JSON conversion
+imported revision backfill for recoverable records
+```
+
+Run against a real schema-30 fixture. An ambiguous AgentClass/model binding must
+rollback the whole migration. Validate `foreign_key_check`, index/trigger sets,
+row counts, terminal ledger hashes, and idempotent second startup.
+
+**Step 5: Update AnyFusion-Pi Planner instructions**
 
 Files:
 
@@ -782,7 +908,7 @@ Files:
 
 Remove canonical Executor names from prose. Require the Planner to use the supplied catalog and model policy.
 
-**Step 5: Run validation**
+**Step 6: Run two-repository contract validation**
 
 MetaWork:
 
@@ -801,12 +927,21 @@ npm test --workspace @earendil-works/pi-coding-agent -- anyfusion-planner
 
 Expected: PASS and `dist/planning-agent-plan-v8.schema.json` generated.
 
-**Step 6: Commit**
+The gate must additionally:
+
+```text
+generate the v8 schema and acceptance fixture in MetaWork
+have AnyFusion-Pi emit a proposal using that schema
+feed the proposal through the real MetaWork validator and Kernel admission
+pin both commits, Host Protocol, Plan/Graph versions and schema hash in a manifest fixture
+```
+
+**Step 7: Commit**
 
 MetaWork:
 
 ```bash
-git add src/planning src/work-graph src/kernel package.json tests
+git add src/planning src/work-graph src/kernel src/execution src/session src/storage src/generate-planner-schema.ts package.json tests
 git commit -m "feat: authorize AgentClass and model proposals"
 ```
 
@@ -817,7 +952,7 @@ git add packages/coding-agent/src/metaclaw-planner packages/coding-agent/src/any
 git commit -m "feat: emit Planner v8 executor bindings"
 ```
 
-### Task 9: Persist One Configuration Revision Through Kernel And Attempts
+### Task 9: Pin Configuration And Health Identity Through Kernel Recovery
 
 **Files:**
 - Modify: `src/kernel/control-kernel.ts`
@@ -825,10 +960,13 @@ git commit -m "feat: emit Planner v8 executor bindings"
 - Modify: `src/execution/kernel-execution-runtime.ts`
 - Modify: `src/execution/subtask-attempt-runner.ts`
 - Modify: `src/executor/adapter.ts`
-- Modify: `src/storage/migrations.ts`
+- Modify: `src/core/kernel-failure.ts`
+- Modify: `src/kernel/executor-status-projection.ts`
 - Modify: `src/storage/planner-run-repo.ts`
 - Modify: `src/storage/kernel-decision-repo.ts`
 - Modify: `src/storage/executor-attempt-receipt-repo.ts`
+- Modify: `src/storage/generation-replan-request-repo.ts`
+- Modify: `src/storage/dispatch-item-repo.ts`
 - Modify: `tests/kernel/control-kernel.test.ts`
 - Modify: `tests/kernel/kernel-workflow.test.ts`
 - Modify: `tests/execution/subtask-attempt-runner.test.ts`
@@ -842,11 +980,16 @@ Assert:
 
 ```ts
 plannerRun.configurationRevision
+  === generation.configurationRevision
+  === deferredReplan.configurationRevision
   === kernelDecision.configurationRevision
+  === dispatchItem.configurationRevision
   === attemptReceipt.configurationRevision;
 ```
 
-Test that Runtime rejects an `AuthorizedExecutorBinding` whose revision differs from the Decision revision.
+Test that every graph revision, retry, fallback, recovery packet, and attempt in
+one generation remains pinned after the active configuration changes. Runtime
+must reject a binding whose revision differs from the generation or Decision.
 
 **Step 2: Verify failure**
 
@@ -872,51 +1015,71 @@ interface AuthorizedExecutorBinding {
 
 Kernel validates this tuple against `KernelConfigurationView`. Runtime receives only the authorized binding.
 
-**Step 4: Add persistence fields**
+Derive a stable binding fingerprint from the full tuple plus generation/subtask.
+Use it in deterministic attempt identity and fallback history so two models under
+one AgentClass remain distinct attempts.
 
-Add explicit audit columns:
+**Step 4: Implement Provider/Model health facts**
 
-```text
-planner_runs.configuration_revision
-planner_runs.resolved_model_ref
-kernel_decisions.configuration_revision
-executor_attempt_receipts.configuration_revision
-executor_attempt_receipts.harness_ref
-executor_attempt_receipts.model_ref
-executor_attempt_receipts.permission_profile_ref
+Extend normalized failure identity to:
+
+```ts
+type KernelFailureSubject =
+  | { kind: 'attempt'; attemptId: string }
+  | { kind: 'task'; taskId: string }
+  | { kind: 'agent_class'; agentClassRef: string }
+  | { kind: 'provider'; providerRef: string }
+  | { kind: 'model'; providerRef: string; modelRef: string };
 ```
 
-Keep the Decision JSON authoritative for behavior; columns support audit/query.
+Add Kernel-owned AgentClass, Provider, Model, and binding health projections.
+Probe/recovery facts carry `configurationRevision`, subject identity, and probe
+generation. Runtime persists normalized facts but cannot choose fallback, reset
+cooldown, or substitute a model.
 
-**Step 5: Run validation**
+**Step 5: Fill the V31 audit fields**
+
+Use the columns already created by Task 8. Do not modify SQLite schema here.
+Decision JSON remains authoritative; audit columns support query and invariant
+checks.
+
+**Step 6: Run validation**
 
 ```bash
 npx vitest run tests/kernel tests/execution/subtask-attempt-runner.test.ts tests/storage
+npm run build
 npm run lint
 ```
 
 Expected: PASS.
 
-**Step 6: Commit**
+**Step 7: Commit**
 
 ```bash
 git add src/kernel src/execution src/executor/adapter.ts src/storage tests
 git commit -m "feat: bind execution to configuration revisions"
 ```
 
-### Task 10: Replace Name-Based Executor Dispatch With Harness Drivers
+### Task 10: Switch Harness Drivers And Perform The Atomic Authority Cutover
 
 **Files:**
 - Create: `src/executor/harness-driver-registry.ts`
 - Create: `src/executor/local-cli-executor-adapter.ts`
 - Create: `src/executor/container-compatibility-adapter.ts`
 - Modify: `src/execution/execution-runtime.ts`
+- Modify: `src/execution/kernel-execution-runtime.ts`
 - Modify: `src/executor/adapter.ts`
 - Delete: `src/executor/backend-executor-adapter.ts`
 - Delete: `src/executor/builtin-executor-catalog.ts`
 - Delete: `src/executor/executor-admin-service.ts`
+- Delete: `src/executor/agent-class-seeder.ts`
+- Delete: `src/planning/planner-process-runner.ts`
+- Delete: `src/tui-bridge/planner-tui-process.ts`
 - Modify: `src/executor/agent-class-service.ts`
 - Modify: `src/execution/attempt-model-gateway.ts`
+- Modify: `src/session/metaclaw-session.ts`
+- Modify: `src/commands/executor-commands.ts`
+- Modify: `src/utils/config.ts`
 - Modify: `tests/execution/execution-runtime.test.ts`
 - Modify: `tests/execution/execution-runtime-boundary.test.ts`
 - Create: `tests/executor/harness-driver-registry.test.ts`
@@ -924,6 +1087,9 @@ git commit -m "feat: bind execution to configuration revisions"
 - Modify: `tests/executor/executor-module-boundary.test.ts`
 - Delete: `tests/executor/backend-executor-adapter.test.ts`
 - Delete: `tests/executor/builtin-executor-catalog.test.ts`
+- Delete: `tests/planner-process-runner.test.ts`
+- Delete: `tests/tui-bridge/planner-tui-process.test.ts`
+- Create: `tests/architecture/configuration-authority-cutover.test.ts`
 
 **Step 1: Write failing registry tests**
 
@@ -936,16 +1102,26 @@ codex-cli -> codex-review
 
 Assert both resolve through the same driver but receive different RuntimeBindings and private Homes.
 
-**Step 2: Add a regression test for removed allowlists**
+**Step 2: Inventory and migrate every legacy consumer**
+
+Attach `rg` output for builtin catalog, AgentClassRepo/static fields,
+`provider.env`, Harness settings, PlannerProcessRunner, direct command writes,
+and name-based allowlists. Switch Planning, Kernel snapshot assembly, Session,
+Recovery, Commands, and Runtime to the new projections and driver registry.
+
+**Step 3: Add regression tests for removed authority**
 
 Read production source and assert it does not contain:
 
 ```text
 ['codex-cli', 'pi-agent'].includes
 worktree_executor_not_canonical
+provider.env as runtime configuration authority
+direct AgentClassRepo writes from commands or UI
+fallback reads from legacy Harness model/settings files
 ```
 
-**Step 3: Run tests and verify failure**
+**Step 4: Run tests and verify failure**
 
 ```bash
 npx vitest run tests/executor/harness-driver-registry.test.ts tests/executor/local-cli-executor-adapter.test.ts tests/execution/execution-runtime.test.ts
@@ -953,7 +1129,7 @@ npx vitest run tests/executor/harness-driver-registry.test.ts tests/executor/loc
 
 Expected: FAIL.
 
-**Step 4: Implement transport-neutral resolution**
+**Step 5: Implement transport-neutral resolution**
 
 Resolution becomes:
 
@@ -967,23 +1143,45 @@ AgentClassRef
 
 No Adapter may infer a Harness from the AgentClass name.
 
-**Step 5: Preserve container compatibility**
+**Step 6: Perform one atomic authority cutover**
+
+Execute exactly:
+
+```text
+import secrets and validate references
+  -> finalize staged revision from Task 6
+  -> publish Planner/Kernel/Runtime projections
+  -> publish revision-scoped generated runtime
+  -> atomically switch the single active pointer
+  -> run Configuration/Planner/Kernel/Runtime health checks
+  -> stop legacy AgentClass seeding and legacy readers
+  -> remove delegating Planner wrappers and obsolete catalog/admin modules
+```
+
+Do not dual-read. If validation or activation fails, the active pointer and all
+legacy authority remain unchanged. Historical revision artifacts remain until no
+generation, decision, dispatch, attempt, receipt, or recovery record references
+them.
+
+**Step 7: Preserve container compatibility**
 
 Move Docker behavior behind `ContainerCompatibilityAdapter`. Native installation and the default Runtime continue using `LocalCliExecutorAdapter`.
 
-**Step 6: Run validation**
+**Step 8: Run validation**
 
 ```bash
 npx vitest run tests/executor tests/execution/execution-runtime.test.ts tests/execution/execution-runtime-boundary.test.ts
+npx vitest run tests/architecture/configuration-authority-cutover.test.ts
+npm run build
 npm run lint
 ```
 
 Expected: PASS.
 
-**Step 7: Commit**
+**Step 9: Commit**
 
 ```bash
-git add src/executor src/execution tests/executor tests/execution
+git add src/executor src/execution src/planning src/tui-bridge src/session src/commands src/utils tests
 git commit -m "refactor: dispatch executors through harness drivers"
 ```
 
@@ -1067,6 +1265,12 @@ saved_as_draft
 rejected
 ```
 
+Define `/api/v1/server/health` as a versioned, bounded response covering release,
+database schema, active configuration revision, Planner protocol, Kernel
+workflow availability, dispatch quiescence, and blocking recovery state. Public
+HTTP management, TLS, remote authentication, and rate limiting are not delivered
+in this plan.
+
 **Step 6: Replace the legacy Executor wizard**
 
 Remove `start-executor-register-wizard` and direct `AgentClassRepo` writes. `/executor` slash commands become read-only Runtime status or ConfigurationService-backed administration.
@@ -1075,6 +1279,7 @@ Remove `start-executor-register-wizard` and direct `AgentClassRepo` writes. `/ex
 
 ```bash
 npx vitest run tests/cli tests/commands tests/gateway
+npm run build
 npm run lint
 ```
 
@@ -1091,6 +1296,7 @@ git commit -m "feat: add server configuration management surfaces"
 
 **Files:**
 - Create: `src/session/server-application.ts`
+- Create: `src/session/server-update-coordinator.ts`
 - Modify: `src/index.ts`
 - Modify: `src/session/metaclaw-session.ts`
 - Modify: `src/session/session-presentation-service.ts`
@@ -1103,6 +1309,7 @@ git commit -m "feat: add server configuration management surfaces"
 - Modify: `src/notifications/types.ts`
 - Modify: `src/delivery/verification-and-delivery-service.ts`
 - Create: `tests/session/server-application.test.ts`
+- Create: `tests/session/server-update-coordinator.test.ts`
 - Modify: `tests/guidance/orchestration.test.ts`
 - Modify: `tests/guidance/guidance-policy-engine.test.ts`
 - Modify: `tests/gateway/delivery.test.ts`
@@ -1120,6 +1327,23 @@ standby Ink TUI
 ```
 
 Assert shared startup/shutdown of database, ConfigurationService, PlannerHostBridge, Gateway, timers, and delivery.
+
+Test an explicit update lifecycle:
+
+```text
+acquireUpdateLease
+  -> closeTaskAdmission
+  -> quiesceDispatch
+  -> awaitIdle(timeout)
+  -> stopSurfaces/outbox/publication/timers
+  -> close database
+  -> startCandidate or restartPrevious
+  -> openTaskAdmission
+```
+
+`quiesceDispatch` must prevent new dispatch and must not reuse a drain loop that
+continues to kick pending attempts. Concurrent update requests allow one holder.
+Timeout aborts the update instead of force-killing attempts.
 
 **Step 2: Write failing Guidance ownership tests**
 
@@ -1147,7 +1371,7 @@ View/Domain Event -> DeliveryService -> CLI/Feishu/Gateway Adapter
 **Step 4: Run tests and verify failure**
 
 ```bash
-npx vitest run tests/session/server-application.test.ts tests/guidance tests/gateway/delivery.test.ts tests/notifications/feishu-notifier.test.ts
+npx vitest run tests/session/server-application.test.ts tests/session/server-update-coordinator.test.ts tests/guidance tests/gateway/delivery.test.ts tests/notifications/feishu-notifier.test.ts
 ```
 
 Expected: FAIL.
@@ -1164,6 +1388,7 @@ Run all `tests/tui/` unchanged. Do not delete source, tests, or dependencies.
 
 ```bash
 npx vitest run tests/session tests/guidance tests/gateway tests/notifications tests/tui
+npm run build
 npm run lint
 ```
 
@@ -1181,6 +1406,9 @@ git commit -m "refactor: consolidate server lifecycle and delivery"
 **Files:**
 - Create: `src/installation/installer-core.ts`
 - Create: `src/installation/release-manager.ts`
+- Create: `src/installation/release-verifier.ts`
+- Create: `src/installation/database-backup.ts`
+- Create: `src/installation/upgrade-journal.ts`
 - Create: `src/installation/configuration-wizard.ts`
 - Create: `src/installation/doctor.ts`
 - Create: `src/install-cli.ts`
@@ -1192,6 +1420,9 @@ git commit -m "refactor: consolidate server lifecycle and delivery"
 - Modify: `package.json`
 - Create: `tests/installation/installer-core.test.ts`
 - Create: `tests/installation/release-manager.test.ts`
+- Create: `tests/installation/release-verifier.test.ts`
+- Create: `tests/installation/database-backup.test.ts`
+- Create: `tests/installation/upgrade-journal.test.ts`
 - Create: `tests/installation/configuration-wizard.test.ts`
 - Modify: `tests/scripts/native-install-lib.test.ts`
 
@@ -1202,15 +1433,21 @@ Test:
 ```text
 bootstrap
   -> preflight
-  -> resolve manifest
+  -> acquire update lock and close admission
+  -> quiesce/drain/stop Server
+  -> resolve and verify signed manifest
   -> stage release
-  -> verify
+  -> checkpoint and back up database
+  -> migrate a cloned database
   -> install MetaWork
   -> install planner/
   -> configure
   -> compile
   -> doctor
   -> activate
+  -> start candidate
+  -> health check
+  -> reopen admission and commit journal
 ```
 
 Assert activation never occurs after any blocking failure.
@@ -1234,12 +1471,18 @@ Test:
 ```text
 stage new release
   -> dry-run config migration
+  -> WAL checkpoint and verified database backup
+  -> migrate cloned database
   -> doctor
-  -> switch app/current
+  -> switch database/config/generated/app pointers
+  -> start candidate with admission closed
   -> health check
 ```
 
-On failed health check, assert both `app/current` and active configuration revision return to compatible previous values.
+Inject failures after backup, migration, each pointer switch, restart, and health
+check. On failure, assert database hash/schema, `app/current`, active
+configuration revision, generated runtime revision, daemon version, and admission
+state all return to the compatible previous combination.
 
 **Step 4: Run tests and verify failure**
 
@@ -1249,11 +1492,34 @@ npx vitest run tests/installation tests/scripts/native-install-lib.test.ts
 
 Expected: FAIL.
 
-**Step 5: Implement one Installer Core**
+**Step 5: Implement the bootstrap trust root**
+
+`scripts/bootstrap-install.sh` contains only versioned trust-root material and a
+minimal verifier/downloader. It must verify the signed manifest before executing
+any downloaded shell or Node payload. Reject unknown/revoked keys, expired
+manifests, wrong channel/platform/arch, invalid signatures, and artifact hash or
+size mismatch. Local rollback uses the previously verified stored manifest and
+does not require the network.
+
+**Step 6: Implement one Installer Core**
 
 `scripts/bootstrap-install.sh` and `setup.sh` must both delegate to the same built `install-cli` entry. Delete the non-macOS legacy Bash Executor selection path.
 
-**Step 6: Implement the configuration wizard**
+The upgrade path must use `ServerUpdateCoordinator`; it cannot switch files under
+a running daemon. Before migration:
+
+```text
+PRAGMA wal_checkpoint(TRUNCATE)
+close database handles
+SQLite backup API -> data/backups/<upgrade-id>/metaclaw.db
+record database hash/schema/release/config revision
+```
+
+Run migration against a clone first. Health check must pass before reopening Task
+admission. Rollback restores database, configuration pointer, generated runtime
+pointer, `app/current`, old daemon, then health checks the restored system.
+
+**Step 7: Implement the configuration wizard**
 
 Wizard order:
 
@@ -1271,7 +1537,7 @@ activation
 
 Allow non-interactive input through a config file. Missing Executor commands create disabled profiles rather than failing the entire install.
 
-**Step 7: Run validation**
+**Step 8: Run validation**
 
 ```bash
 npx vitest run tests/installation tests/scripts/native-install-lib.test.ts
@@ -1281,83 +1547,77 @@ npm run lint
 
 Expected: PASS.
 
-**Step 8: Commit**
+**Step 9: Commit**
 
 ```bash
 git add src/installation src/install-cli.ts scripts setup.sh tsup.config.ts package.json tests
 git commit -m "feat: add transactional native server installer"
 ```
 
-### Task 14: Add The A2A Executor Adapter Behind The Existing Port
+### Task 14: Freeze The Remote Executor Seam And Defer A2A Delivery
 
 **Files:**
-- Create: `src/executor/a2a-executor-adapter.ts`
-- Create: `src/executor/a2a-protocol.ts`
-- Modify: `src/executor/harness-driver-registry.ts`
-- Modify: `src/configuration/schema.ts`
-- Modify: `src/configuration/projections.ts`
-- Create: `tests/executor/a2a-executor-adapter.test.ts`
-- Modify: `tests/configuration/schema.test.ts`
+- Modify: `docs/adr/0029-executor-transport-and-a2a-boundary.md`
+- Create: `docs/plans/future-a2a-executor-transport-roadmap.md`
+- Modify: `src/executor/adapter.ts`
 - Modify: `tests/executor/executor-module-boundary.test.ts`
 
-**Step 1: Write failing A2A mapping tests**
+**Step 1: Write the transport-seam boundary test**
 
-Test:
-
-```text
-AuthorizedAttemptInput
-  -> A2A task/message
-  -> remote status/artifacts
-  -> normalized ExecutorResult
-```
-
-Cover probe, execute, streaming or polling, cancel, transport loss, auth failure, incompatible Agent Card, and artifact reference validation.
-
-**Step 2: Add boundary tests**
-
-Assert the A2A Adapter cannot import:
+Assert the existing authorized attempt port is transport-neutral and contains the
+identity required by a future remote envelope:
 
 ```text
-ControlKernel
-MetaclawSession
-TaskRepo
-WorkGraphRuntimeService
+attemptId
+generationId
+configurationRevision
+bindingFingerprint
+authorized AgentClass/Harness/Model/Permission Profile
+resource/capability grant
+artifact provenance requirements
+idempotency key
 ```
 
-**Step 3: Run tests and verify failure**
+Do not create an A2A configuration variant or inactive production adapter.
+
+**Step 2: Freeze ownership**
+
+ADR-0029 must state that future A2A remains
+`Planner -> Kernel -> Runtime -> ExecutorAdapter -> transport`, and that remote
+transport cannot select models, AgentClasses, permission profiles, retry,
+fallback, or scheduling.
+
+**Step 3: Write the separate roadmap**
+
+The future plan must cover version negotiation, authentication/trust rotation,
+request idempotency, disconnect/poll/stream/cancel, uncertain outcomes, artifact
+integrity, remote permission/resource boundaries, and failure normalization.
+
+**Step 4: Run validation**
 
 ```bash
-npx vitest run tests/executor/a2a-executor-adapter.test.ts tests/executor/executor-module-boundary.test.ts tests/configuration/schema.test.ts
-```
-
-Expected: FAIL.
-
-**Step 4: Implement transport-only behavior**
-
-Static endpoint registration comes from Runtime-private Configuration View. Planner receives only safe capability and health projections.
-
-**Step 5: Run validation**
-
-```bash
-npx vitest run tests/executor tests/configuration
+npx vitest run tests/executor/executor-module-boundary.test.ts
+npm run build
 npm run lint
 ```
 
 Expected: PASS.
 
-**Step 6: Commit**
+**Step 5: Commit**
 
 ```bash
-git add src/executor src/configuration tests/executor tests/configuration
-git commit -m "feat: add A2A executor transport"
+git add docs/adr/0029-executor-transport-and-a2a-boundary.md docs/plans/future-a2a-executor-transport-roadmap.md src/executor/adapter.ts tests/executor/executor-module-boundary.test.ts
+git commit -m "docs: freeze future A2A executor boundary"
 ```
 
 ### Task 15: Remove Legacy Sources And Close The Release Gate
 
 **Files:**
-- Delete: `src/executor/agent-class-seeder.ts` if no dynamic initialization remains
-- Delete: `src/storage/agent-class-repo.ts` after migration consumers are gone
+- Verify deletion: `src/executor/agent-class-seeder.ts` if no dynamic initialization remains
+- Verify deletion: `src/storage/agent-class-repo.ts` after migration consumers are gone
 - Delete: obsolete tests that only preserve removed static AgentClass behavior
+- Modify: `.github/workflows/ci.yml`
+- Create: `.github/workflows/native-release-smoke.yml`
 - Modify: `src/core/types.ts`
 - Modify: `src/utils/config.ts`
 - Modify: `src/commands/global-commands.ts`
@@ -1410,7 +1670,7 @@ Delete old code and update tests to validate the new seams. Do not retain dead e
 The smoke must use a temporary HOME and fake Codex/Pi commands:
 
 ```text
-install
+clean install
   -> configure
   -> doctor
   -> start MetaWork
@@ -1419,11 +1679,24 @@ install
   -> Kernel authorize
   -> local Executor attempt
   -> receipt with matching revision
+  -> signed update from schema 30 to 31
+  -> daemon quiesce/restart
+  -> injected candidate health failure
+  -> restore database/config/generated/app and old daemon
 ```
 
 Hash fake user `~/.codex` and `~/.pi` before and after.
+Run legacy migration fixtures for both `~/.metaclaw` and native AnyFusion roots.
 
-**Step 5: Run focused release gates**
+**Step 5: Add native macOS and Linux release gates**
+
+The macOS job must use a temporary HOME and exercise real `better-sqlite3`, file
+permissions, symlinks, launcher execution, Keychain integration, Planner child
+processes, signed manifest verification, daemon drain/restart, schema 30-to-31
+migration, and failed-candidate rollback. Linux CI covers SecretStore fallback
+and POSIX compatibility. Docker does not replace native macOS acceptance.
+
+**Step 6: Run focused release gates**
 
 ```bash
 npm run lint
@@ -1444,7 +1717,7 @@ docker run --rm metaclaw-test
 
 Docker is CI validation only, not an installation prerequisite.
 
-**Step 6: Verify the AnyFusion-Pi companion**
+**Step 7: Verify the AnyFusion-Pi companion**
 
 ```bash
 cd ../AnyFusion-Pi
@@ -1455,7 +1728,11 @@ npm run build:offline
 
 Expected: PASS.
 
-**Step 7: Update plan completion metadata**
+Use the clean worktree created for Tasks 7-8. Verify the release manifest pins
+the tested MetaWork and AnyFusion-Pi commits, Host Protocol, Plan/Graph versions,
+and schema hash.
+
+**Step 8: Update plan completion metadata**
 
 Record:
 
@@ -1468,9 +1745,11 @@ AnyFusion-Pi pinned commit
 Known deferred work
 ```
 
-Do not mark the design complete until one-command installation and rollback have passed in a clean temporary HOME.
+Do not mark the design complete until one-command installation, signed update,
+database rollback, daemon restart, and both native macOS/Linux gates have passed
+in clean temporary HOMEs.
 
-**Step 8: Commit**
+**Step 9: Commit**
 
 ```bash
 git add -A
@@ -1481,15 +1760,24 @@ git commit -m "feat: complete MetaWork server upgrade"
 
 - `anyfusion` starts MetaWork Server first and presents the controlled AnyFusion-Pi TUI.
 - MetaWork release root contains `planner/` directly, with no `server/` or `planner/AnyFusion-Pi/` redundancy.
-- `~/.anyfusion/config/config.yaml` is the only static configuration authority.
-- Planner, Kernel, and Runtime use one immutable configuration revision per cycle.
+- `~/.anyfusion/config/active/config.yaml`, reached through the single active
+  revision pointer, is the only current static configuration authority.
+- Every Work Graph generation, including graph revisions, deferred recovery,
+  dispatches, retries/fallbacks and receipts, uses one immutable configuration revision.
 - Planner schema contains no hard-coded Executor names.
 - Runtime contains no AgentClass-name allowlist.
 - Harness, ModelProfile, AgentClass, PermissionProfile, and generated runtime are independent.
 - One local Harness supports multiple isolated AgentClasses.
 - Codex/Pi Executors never read or write user `~/.codex` or `~/.pi`.
 - Runtime and Adapter never decide retry, fallback, replan, or model substitution.
+- AgentClass, Provider, Model, and binding health use explicit revision-scoped identities.
 - Gateway and management surfaces never directly mutate Storage or call Executors.
-- Local CLI and A2A Executors use the same authorized attempt port.
+- The authorized attempt port is transport-neutral; A2A implementation remains
+  deferred to its separate roadmap.
+- Release manifests are signed and verified through a versioned trust root before
+  downloaded payload execution.
+- Schema 30-to-31 update and rollback restore database, configuration, generated
+  runtime, application release, daemon, and admission as one compatible combination.
+- Native macOS and Linux release gates pass.
 - Desktop Client code is absent; only versioned Server management contracts exist.
 - Standby Ink TUI source, tests, and dependencies remain intact.
