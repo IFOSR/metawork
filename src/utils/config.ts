@@ -69,7 +69,7 @@ const DEFAULT_CONFIG: Config = {
  */
 export function loadConfig(configPath: string): Config {
   loadEnvFileIfExists(join(dirname(configPath), '.env'));
-  const resolvedConfigPath = resolveExistingConfigPath(configPath);
+  const resolvedConfigPath = resolveLegacyConfigPath(configPath);
   if (!resolvedConfigPath) {
     return DEFAULT_CONFIG;
   }
@@ -156,7 +156,7 @@ function validateConfig(config: Config): Config {
   return config;
 }
 
-function resolveExistingConfigPath(configPath: string): string | null {
+export function resolveLegacyConfigPath(configPath: string): string | null {
   if (existsSync(configPath)) {
     return configPath;
   }

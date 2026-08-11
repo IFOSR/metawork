@@ -63,3 +63,9 @@ export type { SecretReference, SecretStore } from './secret-store.js';
 export { FileSecretStore } from './file-secret-store.js';
 export { KeychainSecretStore } from './keychain-secret-store.js';
 export { ConfigurationCompiler } from './configuration-compiler.js';
+export {
+  ConfigurationMigrationService,
+} from './configuration-migration-service.js';
+export {
+  LegacyConfigurationReader,
+} from './legacy-configuration-reader.js';
