@@ -44,3 +44,21 @@ export {
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
 } from './projections.js';
+export {
+  ConfigurationService,
+  compileConfigurationRevision,
+} from './configuration-service.js';
+export {
+  FileConfigurationRepository,
+  RecoveryBlockedError,
+  RevisionConflictError,
+} from './file-configuration-repository.js';
+export {
+  validateConfigurationCandidate,
+} from './configuration-validator.js';
+export {
+  diffConfigurations,
+} from './configuration-diff.js';
+export type { SecretReference, SecretStore } from './secret-store.js';
+export { FileSecretStore } from './file-secret-store.js';
+export { KeychainSecretStore } from './keychain-secret-store.js';
