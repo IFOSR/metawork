@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
 import { AttemptSupervisor } from '../../src/execution/attempt-supervisor.js';
 import type { KernelDispatchItemRecord } from '../../src/storage/kernel-dispatch-item-repo.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../../src/core/authorized-executor-binding.js';
+
+const authorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-cli-harness',
+  providerRef: 'openai',
+  modelRef: 'gpt-5-codex',
+  permissionProfileRef: 'workspace-engineering',
+  configurationRevision: 'configuration_revision_1',
+};
+const bindingFingerprint = authorizedExecutorBindingFingerprint(authorizedBinding);
 
 class MemoryDispatchItems {
   readonly records = new Map<string, KernelDispatchItemRecord>();
@@ -11,20 +25,28 @@ class MemoryDispatchItems {
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
     },
-    generationId: string,
+    bindingContext: {
+      generationId: string;
+      configurationRevision: string;
+      attempts: Readonly<Record<string, {
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+      }>>;
+    },
     now: string,
   ): KernelDispatchItemRecord[] {
     return decision.action.items.map(item => {
       const existing = this.records.get(item.attemptId);
       if (existing) return existing;
       const record: KernelDispatchItemRecord = {
+        ...bindingContext.attempts[item.attemptId]!,
         attemptId: item.attemptId,
         decisionId: decision.id,
         batchOrder: item.order,
         taskId: decision.action.taskId,
-        generationId,
+        generationId: bindingContext.generationId,
         subtaskId: item.subtaskId,
-        agentClassName: item.agentClassName,
+        configurationRevision: bindingContext.configurationRevision,
         attemptKind: item.attemptKind,
         sourceAttemptId: item.sourceAttemptId,
         recoveryMode: item.recoveryMode,
@@ -35,6 +57,9 @@ class MemoryDispatchItems {
         backendExecutionId: null,
         launchStartedAt: null,
         terminalAt: null,
+        cancellationDecisionId: null,
+        cancelRequestedAt: null,
+        cancelledAt: null,
         errorSummary: null,
         createdAt: now,
         updatedAt: now,
@@ -94,6 +119,7 @@ function batchDecision(): KernelDecision & {
 } {
   return {
     schemaVersion: 5,
+    configurationRevision: authorizedBinding.configurationRevision,
     id: 'decision-batch',
     eventId: 'event-batch',
     reason: 'test',
@@ -104,7 +130,8 @@ function batchDecision(): KernelDecision & {
         order,
         subtaskId: `subtask-${suffix}`,
         attemptId: `attempt-${suffix}`,
-        agentClassName: 'codex-cli',
+        authorizedBinding,
+        bindingFingerprint,
         attemptKind: 'primary' as const,
         sourceAttemptId: null,
         recoveryMode: 'fresh' as const,
@@ -118,6 +145,7 @@ function batchDecision(): KernelDecision & {
 function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
   return {
     schemaVersion: 5,
+    configurationRevision: item.configurationRevision,
     type: 'execution_outcome',
     id: `event-${item.attemptId}`,
     correlationId: 'test',
@@ -128,7 +156,8 @@ function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
     subtaskId: item.subtaskId,
     attemptId: item.attemptId,
     terminalKind: 'completed',
-    agentClassName: item.agentClassName,
+    authorizedBinding: item.authorizedBinding,
+    bindingFingerprint: item.bindingFingerprint,
     attemptKind: item.attemptKind,
     sourceAttemptId: item.sourceAttemptId,
     failure: null,
@@ -148,7 +177,7 @@ describe('AttemptSupervisor', () => {
     const submitted: string[] = [];
     const launched: string[] = [];
 
-    supervisor.enqueue(batchDecision(), 'generation-1', {
+    supervisor.enqueue(batchDecision(), bindingContext(batchDecision(), 'generation-1'), {
       run: async item => {
         launched.push(item.attemptId);
         running += 1;
@@ -182,13 +211,14 @@ describe('AttemptSupervisor', () => {
     const supervisor = new AttemptSupervisor(repository, 1);
     const launched: string[] = [];
 
-    supervisor.enqueue({
+    const decision = {
       ...batchDecision(),
       action: {
         ...batchDecision().action,
         items: [batchDecision().action.items[0]!],
       },
-    }, 'generation-1', {
+    };
+    supervisor.enqueue(decision, bindingContext(decision, 'generation-1'), {
       run: async item => {
         launched.push(item.attemptId);
         return outcomeEvent(item);
@@ -202,3 +232,20 @@ describe('AttemptSupervisor', () => {
     expect(repository.records.get('attempt-a')?.status).toBe('cancelling');
   });
 });
+
+function bindingContext(
+  decision: ReturnType<typeof batchDecision>,
+  generationId: string,
+) {
+  return {
+    generationId,
+    configurationRevision: decision.configurationRevision,
+    attempts: Object.fromEntries(decision.action.items.map(item => [
+      item.attemptId,
+      {
+        authorizedBinding: item.authorizedBinding,
+        bindingFingerprint: item.bindingFingerprint,
+      },
+    ])),
+  };
+}

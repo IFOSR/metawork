@@ -45,6 +45,8 @@ import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from 
 import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
 import {
   buildPermissionRules,
+  PERMISSION_PROFILE_IDS,
+  type PermissionProfileId,
   type PermissionRepositoryPort,
   type ResourceClaim,
 } from '../resource/index.js';
@@ -55,14 +57,23 @@ import { CapabilityRequestToolServer } from './capability-request-tool-server.js
 import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import { ManagedGitWorkspaceService, type ManagedGitWorkspace } from './managed-git-workspace.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import {
+  KernelDispatchItemRepo,
+  type KernelDispatchItemRecord,
+} from '../storage/kernel-dispatch-item-repo.js';
 import {
   WorkspacePublicationRepo,
   type WorkspacePublicationCompletion,
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
+
+export interface AuthorizedAttemptIdentity {
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
+}
 
 export type SubtaskAttemptOutcome =
   | { outcome: 'completed'; attemptId: string; output: string; artifacts: string[]; warnings: string[]; executorName: string; durationMs: number }
@@ -126,14 +137,10 @@ export class SubtaskAttemptRunner {
     taskId: string;
     subtaskId: string;
     workUnitId: string;
-    agentClassName: string;
-  }): void {
+  } & AuthorizedAttemptIdentity): void {
+    const dispatch = this.requireAuthorizedDispatch(input);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     if (!subtask || subtask.status === 'done' || this.receiptRepo.findByAttemptId(input.attemptId)) return;
-    const dispatch = this.dispatchItemRepo.find(input.attemptId);
-    if (!dispatch) {
-      throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
-    }
     const now = new Date().toISOString();
     const failure = {
       kind: 'heartbeat_lost' as const,
@@ -147,6 +154,7 @@ export class SubtaskAttemptRunner {
         startedAt: now,
         terminalState: 'heartbeat_lost',
         rawResponse: '',
+        agentClassName: dispatch.authorizedBinding.agentClassRef,
         errorCode: 'heartbeat_lost',
         errorDetail: 'WorkUnit lease expired before a terminal observation',
         failure,
@@ -156,6 +164,7 @@ export class SubtaskAttemptRunner {
       subtaskError: 'WorkUnit heartbeat lost',
       event: {
         schemaVersion: 5,
+        configurationRevision: dispatch.configurationRevision,
         type: 'execution_outcome',
         id: `event_${dispatch.attemptId}_execution_outcome`,
         correlationId: dispatch.decisionId,
@@ -166,7 +175,8 @@ export class SubtaskAttemptRunner {
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,
         terminalKind: 'failed',
-        agentClassName: dispatch.agentClassName,
+        authorizedBinding: dispatch.authorizedBinding,
+        bindingFingerprint: dispatch.bindingFingerprint,
         attemptKind: dispatch.attemptKind,
         sourceAttemptId: dispatch.sourceAttemptId,
         failure,
@@ -180,7 +190,6 @@ export class SubtaskAttemptRunner {
     executionId: string;
     taskId: string;
     subtaskId: string;
-    agentClassName: string;
     executionMode: ExecutionMode;
     attemptKind?: KernelAttemptKind;
     attemptPayload?: KernelAttemptPayload;
@@ -188,11 +197,14 @@ export class SubtaskAttemptRunner {
     recoveryMode?: KernelRecoveryMode;
     defaultResourceGrant: ResourceClaim[];
     onProgress?: ProgressCallback;
-  }): Promise<SubtaskAttemptOutcome> {
+  } & AuthorizedAttemptIdentity): Promise<SubtaskAttemptOutcome> {
     const attemptId = input.attemptId;
+    const dispatch = this.requireAuthorizedDispatch(input);
+    const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
-    const attemptKind = input.attemptKind ?? 'primary';
+    const attemptKind = dispatch.attemptKind;
+    const sourceAttemptId = dispatch.sourceAttemptId;
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
     if (
       !task
@@ -207,12 +219,31 @@ export class SubtaskAttemptRunner {
         reason: `Task or ${expectedStatus} Subtask no longer matches the authorized ${attemptKind} attempt`,
       };
     }
+    const sourceReceipt = sourceAttemptId
+      ? this.receiptRepo.findByAttemptId(sourceAttemptId)
+      : null;
+    if (
+      sourceAttemptId
+      && (
+        attemptKind === 'continuation'
+        || attemptKind === 'merge_repair'
+        || dispatch.recoveryMode === 'native_session'
+      )
+      && !sameReceiptBinding(sourceReceipt, dispatch)
+    ) {
+      return {
+        outcome: 'cancelled_or_stale',
+        attemptId,
+        reason: 'continuation binding does not match its source attempt',
+      };
+    }
     const claim = await this.deps.workUnitClaimService.claim({
       taskId: input.taskId,
-      subtask: { id: subtask.id, preferredAgentClassList: [input.agentClassName] },
+      subtask: { id: subtask.id },
+      authorizedBinding: dispatch.authorizedBinding,
       attemptId,
     });
-    if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName: input.agentClassName };
+    if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName };
 
     const leaseToken = `attempt_lease_${randomUUID()}`;
     const resourceClaim = this.deps.resourceLeaseService.claim({
@@ -257,21 +288,21 @@ export class SubtaskAttemptRunner {
     try {
       claim.startAttempt();
       if (attemptKind === 'merge_repair') {
-        if (input.attemptPayload?.protocol !== 'metaclaw:merge-repair:v1') {
+        if (dispatch.attemptPayload?.protocol !== 'metaclaw:merge-repair:v1') {
           throw new Error('merge repair attempt is missing metaclaw:merge-repair:v1 payload');
         }
         if (!this.publicationRepo.recordRepairAttempt(
-          input.attemptPayload.publicationId,
+          dispatch.attemptPayload.publicationId,
           new Date().toISOString(),
         )) {
-          throw new Error(`merge repair budget or publication state is stale: ${input.attemptPayload.publicationId}`);
+          throw new Error(`merge repair budget or publication state is stale: ${dispatch.attemptPayload.publicationId}`);
         }
       }
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
-      const agentClass = this.deps.agentClassService.listAgentClasses().find(item => item.name === input.agentClassName);
-      if (!agentClass || claim.workUnit.agentClassName !== input.agentClassName) {
-        throw new Error(`attempt AgentClass mismatch: ${input.agentClassName}`);
+      const agentClass = this.deps.agentClassService.listAgentClasses().find(item => item.name === agentClassName);
+      if (!agentClass || claim.workUnit.agentClassName !== agentClassName) {
+        throw new Error(`attempt AgentClass mismatch: ${agentClassName}`);
       }
       const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(input.taskId);
       const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(input.taskId);
@@ -293,7 +324,7 @@ export class SubtaskAttemptRunner {
         await this.managedGitWorkspace.applyDependencyStates(gitWorkspace, dependencyCommits);
       }
       if (attemptKind === 'merge_repair') {
-        const payload = input.attemptPayload;
+        const payload = dispatch.attemptPayload;
         if (payload?.protocol !== 'metaclaw:merge-repair:v1') {
           throw new Error('merge repair payload changed after authorization');
         }
@@ -371,24 +402,21 @@ export class SubtaskAttemptRunner {
       });
       const targetPath = workspace.filesPath;
       workspaceBaseline = captureWorkspaceState(workspace.filesPath);
-      const sourceRuntime = input.sourceAttemptId
-        ? this.attemptRuntimeRepo.find(input.sourceAttemptId)
+      const sourceRuntime = sourceAttemptId
+        ? this.attemptRuntimeRepo.find(sourceAttemptId)
         : null;
-      const sourceReceipt = input.sourceAttemptId
-        ? this.receiptRepo.findByAttemptId(input.sourceAttemptId)
-        : null;
-      const recoveryMode: KernelRecoveryMode = input.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
+      const recoveryMode: KernelRecoveryMode = dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
         ? 'recovery_packet'
-        : input.recoveryMode ?? 'fresh';
+        : dispatch.recoveryMode;
       this.attemptRuntimeRepo.start({
         attemptId,
-        sourceAttemptId: input.sourceAttemptId ?? null,
+        sourceAttemptId,
         workspaceRoot: workspace.filesPath,
         workspaceBaseline: { ...workspaceBaseline },
         recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
         now: startedAt,
       });
-      const evidenceToolsAvailable = input.agentClassName === 'codex-cli' || input.agentClassName === 'pi-agent';
+      const evidenceToolsAvailable = agentClassName === 'codex-cli' || agentClassName === 'pi-agent';
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
         ? '127.0.0.1'
         : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';
@@ -422,7 +450,7 @@ export class SubtaskAttemptRunner {
         } : undefined,
         recovery: {
           mode: recoveryMode,
-          sourceAttemptId: input.sourceAttemptId ?? null,
+          sourceAttemptId,
           packet: recoveryMode === 'fresh' ? null : boundedRecoveryPacket(sourceReceipt, sourceRuntime),
         },
       });
@@ -440,7 +468,10 @@ export class SubtaskAttemptRunner {
         subtaskId: subtask.id,
         attemptId,
         agentClassName: agentClass.name,
-        permissionProfileId: agentClass.permissionProfileId ?? 'restricted-custom' as const,
+        configurationRevision: dispatch.configurationRevision,
+        permissionProfileId: requirePermissionProfile(
+          dispatch.authorizedBinding.permissionProfileRef,
+        ),
         containerId: '',
         workspaceId: workspace.id,
         checkpointId: null as string | null,
@@ -609,6 +640,7 @@ export class SubtaskAttemptRunner {
           },
           event: {
             schemaVersion: 5,
+            configurationRevision: dispatchItem.configurationRevision,
             type: 'execution_outcome',
             id: `event_${dispatchItem.attemptId}_execution_outcome`,
             correlationId: dispatchItem.decisionId,
@@ -619,7 +651,8 @@ export class SubtaskAttemptRunner {
             subtaskId: dispatchItem.subtaskId,
             attemptId: dispatchItem.attemptId,
             terminalKind: 'completed',
-            agentClassName: dispatchItem.agentClassName,
+            authorizedBinding: dispatchItem.authorizedBinding,
+            bindingFingerprint: dispatchItem.bindingFingerprint,
             attemptKind: dispatchItem.attemptKind,
             sourceAttemptId: dispatchItem.sourceAttemptId,
             failure: null,
@@ -780,6 +813,7 @@ export class SubtaskAttemptRunner {
         },
         event: {
           schemaVersion: 5,
+          configurationRevision: dispatchItem.configurationRevision,
           type: 'execution_outcome',
           id: `event_${dispatchItem.attemptId}_execution_outcome`,
           correlationId: dispatchItem.decisionId,
@@ -790,7 +824,8 @@ export class SubtaskAttemptRunner {
           subtaskId: dispatchItem.subtaskId,
           attemptId: dispatchItem.attemptId,
           terminalKind: 'completed',
-          agentClassName: dispatchItem.agentClassName,
+          authorizedBinding: dispatchItem.authorizedBinding,
+          bindingFingerprint: dispatchItem.bindingFingerprint,
           attemptKind: dispatchItem.attemptKind,
           sourceAttemptId: dispatchItem.sourceAttemptId,
           failure: null,
@@ -850,7 +885,7 @@ export class SubtaskAttemptRunner {
       if (!this.receiptRepo.findByAttemptId(attemptId)) {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse, errorCode: 'attempt_exception', errorDetail: message,
         });
       }
@@ -909,10 +944,11 @@ export class SubtaskAttemptRunner {
     executionId: string;
     taskId: string;
     subtaskId: string;
-    agentClassName: string;
     completionContract: unknown;
     violations: CompletionContractViolation[];
-  }): Promise<SubtaskAttemptOutcome> {
+  } & AuthorizedAttemptIdentity): Promise<SubtaskAttemptOutcome> {
+    const dispatch = this.requireAuthorizedDispatch(input);
+    const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
@@ -923,28 +959,39 @@ export class SubtaskAttemptRunner {
       || subtask.status !== 'awaiting_decision'
       || !source
       || !sourceRuntime
-      || source.agentClassName !== input.agentClassName
     ) {
       return { outcome: 'cancelled_or_stale', attemptId: input.attemptId, reason: 'response-only correction source is stale' };
     }
+    if (
+      dispatch.attemptKind !== 'contract_correction'
+      || dispatch.sourceAttemptId !== input.sourceAttemptId
+      || !sameReceiptBinding(source, dispatch)
+    ) {
+      return {
+        outcome: 'cancelled_or_stale',
+        attemptId: input.attemptId,
+        reason: 'response-only correction binding does not match its source attempt',
+      };
+    }
     const claim = await this.deps.workUnitClaimService.claim({
       taskId: task.id,
-      subtask: { id: subtask.id, preferredAgentClassList: [input.agentClassName] },
+      subtask: { id: subtask.id },
+      authorizedBinding: dispatch.authorizedBinding,
       attemptId: input.attemptId,
     });
-    if (!claim) return { outcome: 'capacity_unavailable', attemptId: input.attemptId, agentClassName: input.agentClassName };
+    if (!claim) return { outcome: 'capacity_unavailable', attemptId: input.attemptId, agentClassName };
     const startedAt = new Date().toISOString();
     try {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
       const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
-      const result = await this.deps.executionRuntime.runResponseOnly(input.agentClassName, prompt, 128 * 1024);
+      const result = await this.deps.executionRuntime.runResponseOnly(agentClassName, prompt, 128 * 1024);
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse: result?.output ?? '', errorCode: 'correction_unavailable', errorDetail: error,
         });
         claim.markFailed(error);
@@ -983,7 +1030,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           subtaskId: subtask.id,
           workUnitId: claim.workUnit.id,
-          agentClassName: input.agentClassName,
+          agentClassName,
           startedAt,
           rawResponse: result.output,
           completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
@@ -999,7 +1046,7 @@ export class SubtaskAttemptRunner {
         const failure = completion.envelope.failure;
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 3,
           errorCode: failure.code, errorDetail: failure.summary,
         });
@@ -1022,7 +1069,7 @@ export class SubtaskAttemptRunner {
       const landing = this.terminalService.land({
         receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 3, warnings: completion.warnings,
         }, completedAt),
         expectedSubtaskStatus: 'running',
@@ -1034,7 +1081,7 @@ export class SubtaskAttemptRunner {
           generationId: subtask.generationId,
           subtaskId: subtask.id,
           sourceAttemptId: input.attemptId,
-          agentClassName: input.agentClassName,
+          agentClassName,
           candidateCommit: managedCommit.commit,
           completion: {
             body: completion.body,
@@ -1049,6 +1096,7 @@ export class SubtaskAttemptRunner {
         },
         event: {
           schemaVersion: 5,
+          configurationRevision: dispatchItem.configurationRevision,
           type: 'execution_outcome',
           id: `event_${dispatchItem.attemptId}_execution_outcome`,
           correlationId: dispatchItem.decisionId,
@@ -1059,7 +1107,8 @@ export class SubtaskAttemptRunner {
           subtaskId: dispatchItem.subtaskId,
           attemptId: dispatchItem.attemptId,
           terminalKind: 'completed',
-          agentClassName: dispatchItem.agentClassName,
+          authorizedBinding: dispatchItem.authorizedBinding,
+          bindingFingerprint: dispatchItem.bindingFingerprint,
           attemptKind: dispatchItem.attemptKind,
           sourceAttemptId: dispatchItem.sourceAttemptId,
           failure: null,
@@ -1089,14 +1138,14 @@ export class SubtaskAttemptRunner {
       return {
         outcome: 'completed', attemptId: input.attemptId, output: completion.body,
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
-        executorName: input.agentClassName, durationMs: result.durationMs,
+        executorName: agentClassName, durationMs: result.durationMs,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!this.receiptRepo.findByAttemptId(input.attemptId)) {
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
-          workUnitId: claim.workUnit.id, agentClassName: input.agentClassName, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse: '', errorCode: 'correction_exception', errorDetail: message,
         });
       }
@@ -1128,6 +1177,29 @@ export class SubtaskAttemptRunner {
     if (!this.receiptRepo.findByAttemptId(attemptId)) return false;
     const dispatch = this.dispatchItemRepo.find(attemptId);
     return Boolean(dispatch && ['terminal', 'cancelled'].includes(dispatch.status));
+  }
+
+  private requireAuthorizedDispatch(
+    input: {
+      attemptId: string;
+      taskId: string;
+      subtaskId: string;
+    } & AuthorizedAttemptIdentity,
+  ): KernelDispatchItemRecord {
+    const dispatch = this.dispatchItemRepo.find(input.attemptId);
+    if (!dispatch) {
+      throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
+    }
+    if (
+      dispatch.taskId !== input.taskId
+      || dispatch.subtaskId !== input.subtaskId
+      || dispatch.configurationRevision !== input.authorizedBinding.configurationRevision
+      || dispatch.bindingFingerprint !== input.bindingFingerprint
+      || !sameAuthorizedBinding(dispatch.authorizedBinding, input.authorizedBinding)
+    ) {
+      throw new Error(`authorized dispatch binding mismatch: ${input.attemptId}`);
+    }
+    return dispatch;
   }
 
   private landContractFailure(input: {
@@ -1166,6 +1238,7 @@ export class SubtaskAttemptRunner {
       subtaskError: input.errorDetail,
       event: {
         schemaVersion: 5,
+        configurationRevision: dispatch.configurationRevision,
         type: 'handoff_contract_failed',
         id: `event_${dispatch.attemptId}_handoff_contract_failed`,
         correlationId: dispatch.decisionId,
@@ -1176,7 +1249,8 @@ export class SubtaskAttemptRunner {
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,
         workUnitId: input.workUnitId,
-        agentClassName: input.agentClassName,
+        authorizedBinding: dispatch.authorizedBinding,
+        bindingFingerprint: dispatch.bindingFingerprint,
         contract: input.completionContract as never,
         violations: input.violations,
         receiptCount,
@@ -1236,6 +1310,7 @@ export class SubtaskAttemptRunner {
       subtaskError: input.errorDetail,
       event: {
         schemaVersion: 5,
+        configurationRevision: dispatch.configurationRevision,
         type: 'execution_outcome',
         id: `event_${dispatch.attemptId}_execution_outcome`,
         correlationId: dispatch.decisionId,
@@ -1246,7 +1321,8 @@ export class SubtaskAttemptRunner {
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,
         terminalKind: 'failed',
-        agentClassName: dispatch.agentClassName,
+        authorizedBinding: dispatch.authorizedBinding,
+        bindingFingerprint: dispatch.bindingFingerprint,
         attemptKind: dispatch.attemptKind,
         sourceAttemptId: dispatch.sourceAttemptId,
         failure,
@@ -1269,6 +1345,37 @@ function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV3['ite
     }
   }
   return { textCharacters, artifactPaths };
+}
+
+function sameReceiptBinding(
+  receipt: ExecutorAttemptReceipt | null,
+  dispatch: KernelDispatchItemRecord,
+): boolean {
+  return Boolean(
+    receipt
+    && receipt.configurationRevision === dispatch.configurationRevision
+    && receipt.bindingFingerprint === dispatch.bindingFingerprint
+    && sameAuthorizedBinding(receipt.authorizedBinding, dispatch.authorizedBinding),
+  );
+}
+
+function sameAuthorizedBinding(
+  left: AuthorizedExecutorBinding,
+  right: AuthorizedExecutorBinding,
+): boolean {
+  return left.agentClassRef === right.agentClassRef
+    && left.harnessRef === right.harnessRef
+    && left.providerRef === right.providerRef
+    && left.modelRef === right.modelRef
+    && left.permissionProfileRef === right.permissionProfileRef
+    && left.configurationRevision === right.configurationRevision;
+}
+
+function requirePermissionProfile(permissionProfileRef: string): PermissionProfileId {
+  if (!PERMISSION_PROFILE_IDS.includes(permissionProfileRef as PermissionProfileId)) {
+    throw new Error(`authorized permission profile is not supported: ${permissionProfileRef}`);
+  }
+  return permissionProfileRef as PermissionProfileId;
 }
 
 function deriveTopologyLayer(subtaskId: string, subtasks: Subtask[]): number {

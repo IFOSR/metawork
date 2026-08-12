@@ -3,6 +3,7 @@ import type {
   KernelDispatchItemRecord,
   KernelDispatchItemRepo,
 } from '../storage/kernel-dispatch-item-repo.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
 type AttemptSupervisorRepository = Pick<
   KernelDispatchItemRepo,
@@ -14,6 +15,15 @@ type AttemptSupervisorRepository = Pick<
   | 'markTerminal'
   | 'markUncertain'
 >;
+
+export interface AttemptSupervisorBindingContext {
+  generationId: string;
+  configurationRevision: string;
+  attempts: Readonly<Record<string, {
+    authorizedBinding: AuthorizedExecutorBinding;
+    bindingFingerprint: string;
+  }>>;
+}
 
 export interface AttemptSupervisorContext {
   run(item: KernelDispatchItemRecord): Promise<KernelEvent>;
@@ -42,11 +52,11 @@ export class AttemptSupervisor {
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
     },
-    generationId: string,
+    bindingContext: AttemptSupervisorBindingContext,
     context: AttemptSupervisorContext,
     now: string,
   ): void {
-    this.repository.insertBatch(decision, generationId, now);
+    this.repository.insertBatch(decision, bindingContext, now);
     this.contexts.set(decision.action.taskId, context);
     this.kick(decision.action.taskId);
   }

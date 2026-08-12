@@ -25,13 +25,52 @@ import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 import type { AttemptExecutionBackend } from '../../src/execution/attempt-execution-backend.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../../src/core/authorized-executor-binding.js';
 
-function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
+const configurationRevision = 'configuration_revision_1';
+const authorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-cli-harness',
+  providerRef: 'openai',
+  modelRef: 'gpt-5-codex',
+  permissionProfileRef: 'workspace-engineering',
+  configurationRevision,
+};
+const bindingFingerprint = authorizedExecutorBindingFingerprint(authorizedBinding);
+const alternateModelBinding: AuthorizedExecutorBinding = {
+  ...authorizedBinding,
+  modelRef: 'gpt-5.1-codex',
+};
+const piAuthorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'pi-agent',
+  harnessRef: 'pi-agent-harness',
+  providerRef: 'anthropic',
+  modelRef: 'claude-sonnet-4.5',
+  permissionProfileRef: 'public-web-research',
+  configurationRevision,
+};
+
+function attemptIdentity(binding = authorizedBinding) {
+  return {
+    authorizedBinding: binding,
+    bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+  };
+}
+
+function node(
+  id: string,
+  dependencies: Subtask['dependencies'] = [],
+  executorBindings: AuthorizedExecutorBinding[] = [authorizedBinding],
+): Subtask {
   return {
     id, taskId: 'task_phase2', graphRevision: 1, generationId: 'generation_phase2',
     title: id, goal: `complete ${id}`, status: 'ready',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'], deliveryKind: 'report',
+    executorBindings, deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
     result: '', artifacts: [], verification: { warnings: [], completionSchemaVersion: null }, error: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
@@ -41,6 +80,11 @@ function node(id: string, dependencies: Subtask['dependencies'] = []): Subtask {
 function setup(rawResponse: string) {
   const db = new Database(':memory:');
   runMigrations(db);
+  db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (?, ?, 'native', ?)
+  `).run(configurationRevision, 'sha256:test-configuration', '2026-07-17T00:00:00.000Z');
   const taskRepo = new TaskRepo(db);
   db.prepare(`
     INSERT INTO tasks (
@@ -56,6 +100,18 @@ function setup(rawResponse: string) {
     orchestration: new OrchestrationEngine(taskEngine),
   });
   const subtaskRepo = new SubtaskRepo(db);
+  new WorkGraphRevisionRepo(db).activate({
+    id: 'work_graph_revision_phase2_1',
+    taskId: 'task_phase2',
+    revision: 1,
+    generationId: 'generation_phase2',
+    configurationRevision,
+    authorizedDecisionId: null,
+    proposalSource: 'initial',
+    automaticReplan: false,
+    createdAt: '2026-07-17T00:00:00.000Z',
+    updatedAt: '2026-07-17T00:00:00.000Z',
+  });
   new AgentClassRepo(db).upsert(
     getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
   );
@@ -92,12 +148,14 @@ function setup(rawResponse: string) {
   mkdirSync(sourceRoot, { recursive: true });
   writeFileSync(join(sourceRoot, 'README.md'), 'fixture\n');
   const workspaceStore = new WorkspaceStore(join(fixtureRoot, 'store'));
+  const workUnitClaimService = new WorkUnitClaimService(workUnitRepo);
+  const claimAttempt = vi.spyOn(workUnitClaimService, 'claim');
   const attemptRunner = new SubtaskAttemptRunner({
     db,
     sessionId: 'session_1',
     taskRuntimeService,
     subtaskRepo,
-    workUnitClaimService: new WorkUnitClaimService(workUnitRepo),
+    workUnitClaimService,
     executionRuntime: executionRuntime as never,
     agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
     workspaceStore,
@@ -117,7 +175,9 @@ function setup(rawResponse: string) {
   const dispatchItems = new KernelDispatchItemRepo(db);
   const authorize = (input: {
     attemptId: string;
-    attemptKind?: 'primary' | 'retry' | 'fallback' | 'contract_correction' | 'merge_repair';
+    authorizedBinding: AuthorizedExecutorBinding;
+    bindingFingerprint: string;
+    attemptKind?: 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
     sourceAttemptId?: string | null;
     recoveryMode?: 'fresh' | 'native_session' | 'recovery_packet';
     attemptPayload?: Parameters<SubtaskAttemptRunner['run']>[0]['attemptPayload'];
@@ -126,6 +186,7 @@ function setup(rawResponse: string) {
     const now = '2026-07-28T00:00:00.000Z';
     dispatchItems.insertBatch({
       schemaVersion: 5,
+      configurationRevision: input.authorizedBinding.configurationRevision,
       id: `decision_${input.attemptId}`,
       eventId: `dispatch_${input.attemptId}`,
       reason: 'test dispatch authorization',
@@ -136,7 +197,8 @@ function setup(rawResponse: string) {
           order: 0,
           subtaskId: a.id,
           attemptId: input.attemptId,
-          agentClassName: 'codex-cli',
+          authorizedBinding: input.authorizedBinding,
+          bindingFingerprint: input.bindingFingerprint,
           attemptKind: input.attemptKind ?? 'primary',
           sourceAttemptId: input.sourceAttemptId ?? null,
           recoveryMode: input.recoveryMode ?? 'fresh',
@@ -144,7 +206,16 @@ function setup(rawResponse: string) {
           defaultResourceGrant,
         }],
       },
-    }, a.generationId, now);
+    }, {
+      generationId: a.generationId,
+      configurationRevision: input.authorizedBinding.configurationRevision,
+      attempts: {
+        [input.attemptId]: {
+          authorizedBinding: input.authorizedBinding,
+          bindingFingerprint: input.bindingFingerprint,
+        },
+      },
+    }, now);
     if (dispatchItems.claimPending(input.attemptId, now)) {
       dispatchItems.markRunning(input.attemptId, null, now);
     }
@@ -174,6 +245,7 @@ function setup(rawResponse: string) {
     taskRuntimeService,
     subtaskRepo,
     workUnitRepo,
+    claimAttempt,
     executionRuntime,
     dispatchItems,
     workflow: new KernelWorkflowRepo(db),
@@ -190,6 +262,7 @@ function authorizeRunningAttempt(
   const now = '2026-07-28T00:00:00.000Z';
   setupResult.dispatchItems.insertBatch({
     schemaVersion: 5,
+    configurationRevision,
     id: `decision_${attemptId}`,
     eventId: `dispatch_${attemptId}`,
     reason: 'test dispatch authorization',
@@ -200,7 +273,8 @@ function authorizeRunningAttempt(
         order: 0,
         subtaskId: setupResult.a.id,
         attemptId,
-        agentClassName: 'codex-cli',
+        authorizedBinding,
+        bindingFingerprint,
         attemptKind: 'primary',
         sourceAttemptId: null,
         recoveryMode: 'fresh',
@@ -208,7 +282,13 @@ function authorizeRunningAttempt(
         defaultResourceGrant: setupResult.defaultResourceGrant,
       }],
     },
-  }, setupResult.a.generationId, now);
+  }, {
+    generationId: setupResult.a.generationId,
+    configurationRevision,
+    attempts: {
+      [attemptId]: { authorizedBinding, bindingFingerprint },
+    },
+  }, now);
   expect(setupResult.dispatchItems.claimPending(attemptId, now)).not.toBeNull();
   expect(setupResult.dispatchItems.markRunning(attemptId, null, now)).toBe(true);
 }
@@ -226,7 +306,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'completed', output: 'A completed.' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
@@ -249,7 +329,14 @@ describe('SubtaskAttemptRunner', () => {
       type: 'execution_outcome',
       terminalKind: 'completed',
       attemptId: 'attempt_1',
+      configurationRevision,
+      authorizedBinding,
+      bindingFingerprint,
     });
+    expect(setupResult.claimAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt_1',
+      authorizedBinding,
+    }));
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'idle', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
@@ -260,7 +347,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome.outcome).toBe('contract_failed');
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
@@ -297,7 +384,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
@@ -346,7 +433,7 @@ describe('SubtaskAttemptRunner', () => {
       executionId: 'exec_1',
       taskId: 'task_phase2',
       subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli',
+      ...attemptIdentity(),
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
@@ -398,7 +485,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'contract_failed' });
     expect(outcome.outcome === 'contract_failed' ? outcome.violations : []).toContainEqual(expect.objectContaining({
@@ -414,7 +501,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'executor_failed', error: 'progress callback failed' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision' });
@@ -435,7 +522,7 @@ describe('SubtaskAttemptRunner', () => {
       executionId: 'exec_atomic_terminal',
       taskId: 'task_phase2',
       subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli',
+      ...attemptIdentity(),
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
@@ -448,6 +535,67 @@ describe('SubtaskAttemptRunner', () => {
     )).toMatchObject({
       type: 'execution_outcome',
       attemptId: 'attempt_atomic_terminal',
+      terminalKind: 'failed',
+    });
+  });
+
+  it('lands heartbeat loss with the exact authorized binding identity', () => {
+    const setupResult = setup(validResponse());
+    authorizeRunningAttempt(setupResult, 'attempt_heartbeat_lost');
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'running');
+
+    const runner = new SubtaskAttemptRunner({
+      db: setupResult.db,
+      sessionId: 'session_1',
+      taskRuntimeService: setupResult.taskRuntimeService,
+      subtaskRepo: setupResult.subtaskRepo,
+      workUnitClaimService: {
+        claim: vi.fn(),
+        isClaimCurrent: vi.fn(),
+      },
+      executionRuntime: setupResult.executionRuntime as never,
+      agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
+      workspaceStore: new WorkspaceStore(`/tmp/metaclaw-heartbeat-${randomUUID()}`),
+      attemptExecutionBackend: {
+        kind: 'worktree',
+        pathMode: 'native',
+      } as AttemptExecutionBackend,
+      resourceLeaseService: new ResourceLeaseService(
+        new SqliteResourceLeaseRepository(setupResult.db),
+      ),
+      permissionRepository: new SqlitePermissionRepository(setupResult.db),
+      kernelWorkflowStore: new KernelWorkflowRepo(setupResult.db),
+      workspaceRepository: new SqliteWorkspaceRepository(setupResult.db),
+      sourceRoot: '/tmp/metaclaw-heartbeat-source',
+      controlNetwork: 'metaclaw-control',
+    });
+
+    runner.landHeartbeatLost({
+      attemptId: 'attempt_heartbeat_lost',
+      executionId: 'exec_heartbeat_lost',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      workUnitId: 'executor-codex',
+      ...attemptIdentity(),
+    });
+
+    expect(setupResult.db.prepare(`
+      SELECT terminal_state, configuration_revision, authorized_binding_json,
+             binding_fingerprint
+      FROM executor_attempt_receipts
+      WHERE attempt_id = 'attempt_heartbeat_lost'
+    `).get()).toEqual({
+      terminal_state: 'heartbeat_lost',
+      configuration_revision: configurationRevision,
+      authorized_binding_json: JSON.stringify(authorizedBinding),
+      binding_fingerprint: bindingFingerprint,
+    });
+    expect(setupResult.workflow.findEvent(
+      'event_attempt_heartbeat_lost_execution_outcome',
+    )).toMatchObject({
+      configurationRevision,
+      authorizedBinding,
+      bindingFingerprint,
       terminalKind: 'failed',
     });
   });
@@ -468,7 +616,7 @@ describe('SubtaskAttemptRunner', () => {
       executionId: 'exec_terminal_blocked',
       taskId: 'task_phase2',
       subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli',
+      ...attemptIdentity(),
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     })).rejects.toThrow('injected runner terminal seal failure');
@@ -498,7 +646,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
       recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'completed', attemptId: 'attempt_fallback' });
@@ -515,7 +663,7 @@ describe('SubtaskAttemptRunner', () => {
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_stale_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
       recoveryMode: 'recovery_packet', executionId: 'exec_2', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'follow-up', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
     expect(outcome).toMatchObject({ outcome: 'cancelled_or_stale' });
@@ -527,7 +675,7 @@ describe('SubtaskAttemptRunner', () => {
     const setupResult = setup('first malformed response');
     const first = await setupResult.runner.run({
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
-      agentClassName: 'codex-cli', executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(first.outcome).toBe('contract_failed');
     if (first.outcome !== 'contract_failed') return;
@@ -538,7 +686,7 @@ describe('SubtaskAttemptRunner', () => {
 
     const corrected = await setupResult.runner.runCorrection({
       attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, executionId: 'exec_1',
-      taskId: 'task_phase2', subtaskId: setupResult.a.id, agentClassName: 'codex-cli',
+      taskId: 'task_phase2', subtaskId: setupResult.a.id, ...attemptIdentity(),
       completionContract: first.completionContract, violations: first.violations,
     });
 
@@ -563,6 +711,82 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare(`
       SELECT source_attempt_id, status FROM workspace_publications
     `).get()).toEqual({ source_attempt_id: 'attempt_correction', status: 'pending' });
+    expect(setupResult.workflow.findEvent(
+      'event_attempt_correction_execution_outcome',
+    )).toMatchObject({
+      configurationRevision,
+      authorizedBinding,
+      bindingFingerprint,
+    });
+  });
+
+  it('rejects a correction that changes model identity within the same AgentClass', async () => {
+    const setupResult = setup('first malformed response');
+    const first = await setupResult.runner.run({
+      attemptId: 'attempt_primary',
+      executionId: 'exec_1',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    expect(first.outcome).toBe('contract_failed');
+    if (first.outcome !== 'contract_failed') return;
+    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+
+    const corrected = await setupResult.runner.runCorrection({
+      attemptId: 'attempt_correction_other_model',
+      sourceAttemptId: first.attemptId,
+      executionId: 'exec_2',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(alternateModelBinding),
+      completionContract: first.completionContract,
+      violations: first.violations,
+    });
+
+    expect(corrected).toMatchObject({
+      outcome: 'cancelled_or_stale',
+      reason: 'response-only correction binding does not match its source attempt',
+    });
+    expect(setupResult.executionRuntime.runResponseOnly).not.toHaveBeenCalled();
+    expect(setupResult.claimAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects native continuation with a different model in the same AgentClass', async () => {
+    const setupResult = setup('first malformed response');
+    const first = await setupResult.runner.run({
+      attemptId: 'attempt_primary',
+      executionId: 'exec_1',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    expect(first.outcome).toBe('contract_failed');
+    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+
+    const continued = await setupResult.runner.run({
+      attemptId: 'attempt_continuation_other_model',
+      sourceAttemptId: 'attempt_primary',
+      attemptKind: 'continuation',
+      recoveryMode: 'native_session',
+      executionId: 'exec_2',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(alternateModelBinding),
+      executionMode: 'follow-up',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(continued).toMatchObject({
+      outcome: 'cancelled_or_stale',
+      reason: 'continuation binding does not match its source attempt',
+    });
+    expect(setupResult.executionRuntime.run).toHaveBeenCalledTimes(1);
+    expect(setupResult.claimAttempt).toHaveBeenCalledTimes(1);
   });
 
   it('wires exact Task resource rules into the production permission workflow', async () => {
@@ -594,7 +818,7 @@ describe('SubtaskAttemptRunner', () => {
     process.env.METACLAW_CONTROL_HOST = '127.0.0.1';
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_registered_read', executionId: 'exec_1', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'codex-cli', executionMode: 'fresh',
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     }).finally(() => {
       if (previousControlHost === undefined) delete process.env.METACLAW_CONTROL_HOST;
@@ -642,7 +866,7 @@ describe('SubtaskAttemptRunner', () => {
     process.env.METACLAW_CONTROL_HOST = '127.0.0.1';
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_public_network', executionId: 'exec_1', taskId: 'task_phase2',
-      subtaskId: setupResult.a.id, agentClassName: 'pi-agent', executionMode: 'fresh',
+      subtaskId: setupResult.a.id, ...attemptIdentity(piAuthorizedBinding), executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     }).finally(() => {
       if (previousControlHost === undefined) delete process.env.METACLAW_CONTROL_HOST;
