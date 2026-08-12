@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 30;
+const CURRENT_SCHEMA_VERSION = 31;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -216,6 +216,13 @@ CREATE TABLE agent_classes (
           updated_at TEXT NOT NULL
         , execution_image_ref TEXT, resolved_image_id TEXT, permission_profile_id TEXT);
 
+CREATE TABLE configuration_revisions (
+          revision_id TEXT PRIMARY KEY,
+          content_hash TEXT NOT NULL,
+          source_kind TEXT NOT NULL CHECK(source_kind IN ('native', 'rollback', 'schema-30-import')),
+          imported_at TEXT NOT NULL
+        );
+
 CREATE TABLE task_events (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
@@ -237,8 +244,7 @@ CREATE TABLE work_units (
           heartbeat_at TEXT,
           lease_expires_at TEXT,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL, claimed_attempt_id TEXT,
-          FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+          updated_at TEXT NOT NULL, claimed_attempt_id TEXT
         );
 
 CREATE TABLE work_unit_events (
@@ -262,8 +268,12 @@ CREATE TABLE planner_runs (
         attempt_count INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER NOT NULL DEFAULT 0,
         error_summary TEXT,
+        configuration_revision TEXT NOT NULL,
+        planner_binding_json TEXT NOT NULL,
+        planner_binding_fingerprint TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT,
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
       );
 
 CREATE TABLE planner_proposal_turns (
@@ -308,12 +318,53 @@ CREATE TABLE planner_tool_calls (
       );
 
 CREATE TABLE kernel_executor_status (
-        agent_class_name TEXT PRIMARY KEY,
+        agent_class_name TEXT NOT NULL,
+        configuration_revision TEXT NOT NULL,
         class_health TEXT NOT NULL DEFAULT 'unverified',
         recent_attempts_json TEXT NOT NULL DEFAULT '[]',
         recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL,
-        FOREIGN KEY (agent_class_name) REFERENCES agent_classes(name)
+        PRIMARY KEY (agent_class_name, configuration_revision),
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
+      );
+
+CREATE TABLE kernel_provider_status (
+        provider_ref TEXT NOT NULL,
+        configuration_revision TEXT NOT NULL,
+        provider_health TEXT NOT NULL DEFAULT 'unverified'
+          CHECK(provider_health IN ('unverified', 'healthy', 'error', 'disabled')),
+        recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (provider_ref, configuration_revision),
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
+      );
+
+CREATE TABLE kernel_model_status (
+        provider_ref TEXT NOT NULL,
+        model_ref TEXT NOT NULL,
+        configuration_revision TEXT NOT NULL,
+        model_health TEXT NOT NULL DEFAULT 'unverified'
+          CHECK(model_health IN ('unverified', 'healthy', 'error', 'disabled')),
+        recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (provider_ref, model_ref, configuration_revision),
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
+      );
+
+CREATE TABLE kernel_binding_status (
+        binding_fingerprint TEXT PRIMARY KEY,
+        configuration_revision TEXT NOT NULL,
+        agent_class_ref TEXT NOT NULL,
+        harness_ref TEXT NOT NULL,
+        provider_ref TEXT NOT NULL,
+        model_ref TEXT NOT NULL,
+        permission_profile_ref TEXT NOT NULL,
+        binding_health TEXT NOT NULL DEFAULT 'unverified'
+          CHECK(binding_health IN ('unverified', 'healthy', 'error', 'disabled')),
+        recent_attempts_json TEXT NOT NULL DEFAULT '[]',
+        recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
       );
 
 CREATE TABLE subtasks (
@@ -325,7 +376,7 @@ CREATE TABLE subtasks (
           dependencies_json TEXT NOT NULL DEFAULT '[]',
           context_refs_json TEXT NOT NULL DEFAULT '[]',
           required_capabilities_json TEXT NOT NULL,
-          preferred_agent_class_list_json TEXT NOT NULL,
+          executor_bindings_json TEXT NOT NULL,
           delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
           acceptance_json TEXT NOT NULL DEFAULT '[]',
           risk_level TEXT NOT NULL DEFAULT 'medium',
@@ -368,9 +419,13 @@ CREATE TABLE executor_attempt_receipts (
           verification_json TEXT NOT NULL DEFAULT '{}',
           error_code TEXT,
           error_detail TEXT, graph_revision INTEGER, generation_id TEXT, attempt_kind TEXT NOT NULL DEFAULT 'primary', source_attempt_id TEXT, failure_json TEXT, recovery_mode TEXT NOT NULL DEFAULT 'fresh',
+          configuration_revision TEXT NOT NULL,
+          authorized_binding_json TEXT NOT NULL,
+          binding_fingerprint TEXT NOT NULL,
           FOREIGN KEY (task_id) REFERENCES tasks(id),
           FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
-          FOREIGN KEY (work_unit_id) REFERENCES work_units(id)
+          FOREIGN KEY (work_unit_id) REFERENCES work_units(id),
+          FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
         );
 
 CREATE TABLE task_execution_evidence (
@@ -401,7 +456,11 @@ CREATE TABLE kernel_decisions (
           decision_json TEXT NOT NULL,
           action TEXT NOT NULL,
           reason TEXT NOT NULL,
-          created_at TEXT NOT NULL
+          configuration_revision TEXT NOT NULL,
+          authorized_bindings_json TEXT NOT NULL DEFAULT '[]',
+          binding_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
         );
 
 CREATE TABLE kernel_events (
@@ -420,8 +479,10 @@ CREATE TABLE kernel_events (
             processing_started_at TEXT,
             processed_at TEXT,
             last_error TEXT,
+            configuration_revision TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
           );
 
 CREATE TABLE kernel_decision_applications (
@@ -482,11 +543,13 @@ CREATE TABLE work_graph_revisions (
             proposal_source TEXT NOT NULL DEFAULT 'initial',
             automatic_replan INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL,
+            configuration_revision TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL, completion_kind TEXT CHECK(completion_kind IN ('full', 'partial_accepted')),
             UNIQUE(task_id, revision),
             FOREIGN KEY (task_id) REFERENCES tasks(id),
-            FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id)
+            FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id),
+            FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
           );
 
 CREATE TABLE resource_leases (
@@ -708,10 +771,14 @@ CREATE TABLE "kernel_dispatch_items" (
             cancel_requested_at TEXT,
             cancelled_at TEXT,
             error_summary TEXT,
+            configuration_revision TEXT NOT NULL,
+            authorized_binding_json TEXT NOT NULL,
+            binding_fingerprint TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (task_id) REFERENCES tasks(id),
-            FOREIGN KEY (subtask_id) REFERENCES subtasks(id)
+            FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
+            FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
           );
 
 CREATE TABLE "workspace_publications" (
@@ -761,6 +828,8 @@ CREATE TABLE generation_replan_requests (
             error_summary TEXT,
             deferred_plan_json TEXT,
             availability_explanation TEXT,
+            configuration_revision TEXT NOT NULL,
+            deferred_bindings_json TEXT NOT NULL DEFAULT '[]',
             planning_started_at TEXT,
             submitted_at TEXT,
             resolved_at TEXT,
@@ -768,7 +837,8 @@ CREATE TABLE generation_replan_requests (
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(task_id, generation_id, source_revision),
-            FOREIGN KEY (task_id) REFERENCES tasks(id)
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
           );
 
 CREATE INDEX idx_tasks_status ON tasks(status);
@@ -830,6 +900,9 @@ CREATE INDEX idx_executor_route_events_task
 
 CREATE INDEX idx_task_events_task ON task_events(task_id, created_at);
 
+CREATE INDEX idx_configuration_revisions_content_hash
+        ON configuration_revisions(content_hash, imported_at);
+
 CREATE INDEX idx_work_units_state ON work_units(agent_class_kind, state, updated_at);
 
 CREATE INDEX idx_work_unit_events_unit ON work_unit_events(work_unit_id, created_at);
@@ -837,8 +910,23 @@ CREATE INDEX idx_work_unit_events_unit ON work_unit_events(work_unit_id, created
 CREATE INDEX idx_planner_runs_session
         ON planner_runs(session_id, created_at);
 
+CREATE INDEX idx_planner_runs_revision
+        ON planner_runs(configuration_revision, created_at);
+
 CREATE INDEX idx_planner_tool_calls_run
         ON planner_tool_calls(planner_run_id, sequence);
+
+CREATE INDEX idx_kernel_executor_status_revision
+        ON kernel_executor_status(configuration_revision, agent_class_name);
+
+CREATE INDEX idx_kernel_provider_status_revision
+        ON kernel_provider_status(configuration_revision, provider_health, provider_ref);
+
+CREATE INDEX idx_kernel_model_status_revision
+        ON kernel_model_status(configuration_revision, model_health, provider_ref, model_ref);
+
+CREATE INDEX idx_kernel_binding_status_revision
+        ON kernel_binding_status(configuration_revision, binding_health, agent_class_ref);
 
 CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
 
@@ -846,6 +934,9 @@ CREATE INDEX idx_subtask_handoffs_to ON subtask_handoffs(task_id, to_subtask_id)
 
 CREATE INDEX idx_executor_attempt_receipts_subtask
           ON executor_attempt_receipts(task_id, subtask_id, completed_at);
+
+CREATE INDEX idx_executor_attempt_receipts_binding
+          ON executor_attempt_receipts(configuration_revision, binding_fingerprint, completed_at);
 
 CREATE INDEX idx_task_execution_evidence_task
           ON task_execution_evidence(task_id, created_at, id);
@@ -863,11 +954,17 @@ CREATE INDEX idx_kernel_decisions_task
 CREATE INDEX idx_kernel_decisions_correlation
           ON kernel_decisions(correlation_id, created_at, id);
 
+CREATE INDEX idx_kernel_decisions_revision
+          ON kernel_decisions(configuration_revision, created_at, id);
+
 CREATE INDEX idx_kernel_events_drain
             ON kernel_events(status, available_at, created_at, id);
 
 CREATE INDEX idx_kernel_events_task
             ON kernel_events(task_id, created_at, id);
+
+CREATE INDEX idx_kernel_events_revision
+            ON kernel_events(configuration_revision, status, available_at, id);
 
 CREATE INDEX idx_kernel_decision_applications_status
             ON kernel_decision_applications(status, created_at, id);
@@ -880,6 +977,9 @@ CREATE UNIQUE INDEX idx_work_graph_one_active_revision
 
 CREATE INDEX idx_work_graph_revisions_generation
             ON work_graph_revisions(task_id, generation_id, revision);
+
+CREATE INDEX idx_work_graph_revisions_revision
+            ON work_graph_revisions(configuration_revision, generation_id, revision);
 
 CREATE INDEX idx_resource_leases_active
             ON resource_leases(released_at, expires_at, partition_key);
@@ -920,6 +1020,9 @@ CREATE INDEX idx_kernel_dispatch_items_supervisor
 CREATE INDEX idx_kernel_dispatch_items_task
             ON kernel_dispatch_items(task_id, status, batch_order);
 
+CREATE INDEX idx_kernel_dispatch_items_binding
+            ON kernel_dispatch_items(configuration_revision, binding_fingerprint, status);
+
 CREATE UNIQUE INDEX idx_kernel_dispatch_one_active_subtask
             ON kernel_dispatch_items(task_id, generation_id, subtask_id)
             WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling');
@@ -935,6 +1038,9 @@ CREATE INDEX idx_generation_replan_requests_status
 
 CREATE INDEX idx_generation_replan_requests_task
             ON generation_replan_requests(task_id, generation_id, status);
+
+CREATE INDEX idx_generation_replan_requests_revision
+            ON generation_replan_requests(configuration_revision, status, created_at);
 
 CREATE TRIGGER trg_task_search_index_interactions_insert
       AFTER INSERT ON interactions
@@ -972,6 +1078,16 @@ CREATE TRIGGER subtask_handoffs_immutable_update
 CREATE TRIGGER subtask_handoffs_immutable_delete
         BEFORE DELETE ON subtask_handoffs BEGIN
           SELECT RAISE(ABORT, 'subtask_handoffs are immutable');
+      END;
+
+CREATE TRIGGER configuration_revisions_immutable_update
+        BEFORE UPDATE ON configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'configuration_revisions are immutable');
+        END;
+
+CREATE TRIGGER configuration_revisions_immutable_delete
+        BEFORE DELETE ON configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'configuration_revisions are immutable');
         END;
 
 CREATE TRIGGER executor_attempt_receipts_immutable_update
@@ -1007,14 +1123,74 @@ function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(row);
 }
 
+export interface Schema30MigrationBinding {
+  agentClassRef: string;
+  harnessRef: string;
+  modelRef: string;
+  providerRef: string;
+  permissionProfileRef: string | null;
+  bindingFingerprint: string;
+}
+
+export interface Schema30MigrationContextInput {
+  revisionId: string;
+  contentHash: string;
+  importedAt: string;
+  plannerBinding: Schema30MigrationBinding;
+  legacyAgentClassBindings: Readonly<Record<string, Schema30MigrationBinding>>;
+}
+
+export type Schema30MigrationContext = Readonly<Schema30MigrationContextInput>;
+
+const sealedSchema30MigrationContexts = new WeakSet<object>();
+
+function assertNonEmpty(value: string, label: string): void {
+  if (value.trim().length === 0) throw new Error(`${label} must not be empty`);
+}
+
+function freezeBinding(
+  binding: Schema30MigrationBinding,
+  label: string,
+): Readonly<Schema30MigrationBinding> {
+  for (const [field, value] of Object.entries(binding)) {
+    if (field === 'permissionProfileRef' && value === null) continue;
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(`${label} binding ${field} must be a non-empty string`);
+    }
+  }
+  return Object.freeze({ ...binding });
+}
+
+export function createSchema30MigrationContext(
+  input: Schema30MigrationContextInput,
+): Schema30MigrationContext {
+  assertNonEmpty(input.revisionId, 'migration revision ID');
+  assertNonEmpty(input.contentHash, 'migration content hash');
+  assertNonEmpty(input.importedAt, 'migration import time');
+  const context = {
+    revisionId: input.revisionId,
+    contentHash: input.contentHash,
+    importedAt: input.importedAt,
+    plannerBinding: freezeBinding(input.plannerBinding, 'Planner'),
+    legacyAgentClassBindings: Object.freeze(Object.fromEntries(
+      Object.entries(input.legacyAgentClassBindings).map(([legacyName, binding]) => {
+        assertNonEmpty(legacyName, 'legacy AgentClass name');
+        return [legacyName, freezeBinding(binding, `legacy AgentClass ${legacyName}`)];
+      }),
+    )),
+  };
+  Object.freeze(context);
+  sealedSchema30MigrationContexts.add(context);
+  return context;
+}
+
 /**
- * Creates the only supported pre-release schema.
- *
- * MetaClaw has not shipped a compatible database format yet. Existing
- * pre-release databases fail closed instead of running upgrade or dual-read
- * paths; callers must create a fresh database.
+ * Creates schema 31 or applies the sole supported pre-release upgrade.
  */
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(
+  db: Database.Database,
+  migrationContext?: Schema30MigrationContext,
+): void {
   if (tableExists(db, 'schema_version')) {
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
@@ -1022,8 +1198,14 @@ export function runMigrations(db: Database.Database): void {
     if (versions.length === 1 && versions[0]?.version === CURRENT_SCHEMA_VERSION) {
       return;
     }
-    if (versions.length === 1 && versions[0]?.version === 29) {
-      migrateSchema29To30(db);
+    if (versions.length === 1 && versions[0]?.version === 30) {
+      if (
+        !migrationContext
+        || !sealedSchema30MigrationContexts.has(migrationContext as object)
+      ) {
+        throw new Error('schema 30 to 31 migration requires sealed context');
+      }
+      migrateSchema30To31(db, migrationContext);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1052,73 +1234,106 @@ export function runMigrations(db: Database.Database): void {
   })();
 }
 
-function migrateSchema29To30(db: Database.Database): void {
+function migrateSchema30To31(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
+  const existingViolations = db.pragma('foreign_key_check') as unknown[];
+  if (existingViolations.length > 0) {
+    throw new Error('schema 30 to 31 migration cannot start with foreign key violations');
+  }
   const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
   const migrate = db.transaction(() => {
-    const invalidKinds = db.prepare(`
-      SELECT id, expected_output AS expectedOutput
-      FROM subtasks
-      WHERE expected_output NOT IN ('patch', 'artifact', 'analysis', 'review', 'summary')
-      ORDER BY id
-    `).all() as Array<{ id: string; expectedOutput: string }>;
-    if (invalidKinds.length > 0) {
-      throw new Error(
-        `schema 29 subtask output cannot be migrated: ${invalidKinds.map(item => `${item.id}=${item.expectedOutput}`).join(', ')}`,
-      );
-    }
-
-    migrateRecoverableJson(db);
+    validateLegacyBindings(db, context);
+    migrateRecoverableJson30To31(db, context);
     db.exec(`
       PRAGMA defer_foreign_keys = ON;
-      CREATE TABLE subtasks_v30 (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        goal TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'created',
-        dependencies_json TEXT NOT NULL DEFAULT '[]',
-        context_refs_json TEXT NOT NULL DEFAULT '[]',
-        required_capabilities_json TEXT NOT NULL,
-        preferred_agent_class_list_json TEXT NOT NULL,
-        delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
-        acceptance_json TEXT NOT NULL DEFAULT '[]',
-        risk_level TEXT NOT NULL DEFAULT 'medium',
-        result TEXT NOT NULL DEFAULT '',
-        artifacts_json TEXT NOT NULL DEFAULT '[]',
-        verification_json TEXT NOT NULL DEFAULT '{}',
-        error TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        graph_revision INTEGER,
-        generation_id TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      CREATE TABLE configuration_revisions (
+        revision_id TEXT PRIMARY KEY,
+        content_hash TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('native', 'rollback', 'schema-30-import')),
+        imported_at TEXT NOT NULL
       );
-      INSERT INTO subtasks_v30 (
-        id, task_id, title, goal, status, dependencies_json, context_refs_json,
-        required_capabilities_json, preferred_agent_class_list_json, delivery_kind,
-        acceptance_json, risk_level, result, artifacts_json, verification_json,
-        error, created_at, updated_at, graph_revision, generation_id
-      )
-      SELECT
-        id, task_id, title, goal, status, dependencies_json, context_refs_json,
-        required_capabilities_json, preferred_agent_class_list_json,
-        CASE
-          WHEN expected_output IN ('patch', 'artifact') THEN 'edit'
-          WHEN expected_output IN ('analysis', 'review', 'summary') THEN 'report'
-        END,
-        acceptance_json, risk_level, result, artifacts_json, verification_json,
-        error, created_at, updated_at, graph_revision, generation_id
-      FROM subtasks;
-      DROP TABLE subtasks;
-      ALTER TABLE subtasks_v30 RENAME TO subtasks;
-      CREATE INDEX idx_subtasks_task ON subtasks(task_id, status, created_at);
+    `);
+    db.prepare(`
+      INSERT INTO configuration_revisions (
+        revision_id, content_hash, source_kind, imported_at
+      ) VALUES (?, ?, 'schema-30-import', ?)
+    `).run(context.revisionId, context.contentHash, context.importedAt);
+    db.exec(`
+      ALTER TABLE subtasks
+        RENAME COLUMN preferred_agent_class_list_json TO executor_bindings_json;
+      ALTER TABLE planner_runs
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE planner_runs
+        ADD COLUMN planner_binding_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE planner_runs
+        ADD COLUMN planner_binding_fingerprint TEXT NOT NULL DEFAULT '';
+      ALTER TABLE executor_attempt_receipts
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE executor_attempt_receipts
+        ADD COLUMN authorized_binding_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE executor_attempt_receipts
+        ADD COLUMN binding_fingerprint TEXT NOT NULL DEFAULT '';
+      ALTER TABLE kernel_decisions
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE kernel_decisions
+        ADD COLUMN authorized_bindings_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE kernel_decisions
+        ADD COLUMN binding_fingerprints_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE kernel_events
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE work_graph_revisions
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE kernel_dispatch_items
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE kernel_dispatch_items
+        ADD COLUMN authorized_binding_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE kernel_dispatch_items
+        ADD COLUMN binding_fingerprint TEXT NOT NULL DEFAULT '';
+      ALTER TABLE generation_replan_requests
+        ADD COLUMN configuration_revision TEXT NOT NULL DEFAULT ''
+          REFERENCES configuration_revisions(revision_id);
+      ALTER TABLE generation_replan_requests
+        ADD COLUMN deferred_bindings_json TEXT NOT NULL DEFAULT '[]';
+    `);
+    backfillSchema31Columns(db, context);
+    rebuildSchema31AuditTables(db);
+    rebuildWorkUnits(db, context);
+    rebuildKernelExecutorStatus(db, context);
+    createSchema31HealthTables(db);
+    db.exec(`
+      CREATE INDEX idx_configuration_revisions_content_hash
+        ON configuration_revisions(content_hash, imported_at);
+      CREATE INDEX idx_kernel_executor_status_revision
+        ON kernel_executor_status(configuration_revision, agent_class_name);
+      CREATE INDEX idx_kernel_provider_status_revision
+        ON kernel_provider_status(configuration_revision, provider_health, provider_ref);
+      CREATE INDEX idx_kernel_model_status_revision
+        ON kernel_model_status(configuration_revision, model_health, provider_ref, model_ref);
+      CREATE INDEX idx_kernel_binding_status_revision
+        ON kernel_binding_status(configuration_revision, binding_health, agent_class_ref);
+      CREATE TRIGGER configuration_revisions_immutable_update
+        BEFORE UPDATE ON configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'configuration_revisions are immutable');
+        END;
+      CREATE TRIGGER configuration_revisions_immutable_delete
+        BEFORE DELETE ON configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'configuration_revisions are immutable');
+        END;
     `);
     const foreignKeyViolations = db.pragma('foreign_key_check') as unknown[];
     if (foreignKeyViolations.length > 0) {
-      throw new Error('schema 29 to 30 migration produced foreign key violations');
+      throw new Error('schema 30 to 31 migration produced foreign key violations');
     }
-    const updated = db.prepare('UPDATE schema_version SET version = 30 WHERE version = 29').run();
-    if (updated.changes !== 1) throw new Error('schema version changed during 29 to 30 migration');
+    const updated = db.prepare('UPDATE schema_version SET version = 31 WHERE version = 30').run();
+    if (updated.changes !== 1) throw new Error('schema version changed during 30 to 31 migration');
   });
   if (foreignKeysEnabled) db.pragma('foreign_keys = OFF');
   try {
@@ -1134,7 +1349,10 @@ interface RecoverableJsonColumn {
   label: string;
 }
 
-function migrateRecoverableJson(db: Database.Database): void {
+function migrateRecoverableJson30To31(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
   const columns: RecoverableJsonColumn[] = [
     {
       label: 'kernel_events.event_json',
@@ -1186,10 +1404,14 @@ function migrateRecoverableJson(db: Database.Database): void {
       updateSql: 'UPDATE generation_replan_requests SET deferred_plan_json = ? WHERE rowid = ?',
     },
   ];
-  for (const column of columns) migrateJsonColumn(db, column);
+  for (const column of columns) migrateJsonColumn(db, column, context);
 }
 
-function migrateJsonColumn(db: Database.Database, column: RecoverableJsonColumn): void {
+function migrateJsonColumn(
+  db: Database.Database,
+  column: RecoverableJsonColumn,
+  context: Schema30MigrationContext,
+): void {
   const rows = db.prepare(column.selectSql).all() as Array<{ rowId: number; value: string }>;
   const update = db.prepare(column.updateSql);
   for (const row of rows) {
@@ -1199,16 +1421,729 @@ function migrateJsonColumn(db: Database.Database, column: RecoverableJsonColumn)
     } catch (error) {
       throw new Error(`${column.label} row ${row.rowId} contains invalid recoverable JSON`, { cause: error });
     }
-    const migrated = migrateRecoverableValue(parsed, `${column.label}[${row.rowId}]`);
+    const migrated = migrateRecoverableValue(
+      parsed,
+      `${column.label}[${row.rowId}]`,
+      context,
+    );
     if (migrated.changed) update.run(JSON.stringify(migrated.value), row.rowId);
   }
 }
 
-function migrateRecoverableValue(value: unknown, path: string): { value: unknown; changed: boolean } {
+function validateLegacyBindings(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
+  const referenced = new Set<string>();
+  const subtaskRows = db.prepare(`
+    SELECT id, preferred_agent_class_list_json AS value FROM subtasks ORDER BY id
+  `).all() as Array<{ id: string; value: string }>;
+  for (const row of subtaskRows) {
+    for (const name of parseLegacyJsonAgentClassList(
+      row.value,
+      `subtasks.${row.id}.preferred_agent_class_list_json`,
+    )) {
+      referenced.add(name);
+    }
+  }
+  for (const table of [
+    'work_units',
+    'kernel_executor_status',
+    'kernel_dispatch_items',
+    'executor_attempt_receipts',
+  ]) {
+    const rows = db.prepare(`
+      SELECT DISTINCT agent_class_name AS name FROM ${table}
+      WHERE agent_class_name IS NOT NULL
+    `).all() as Array<{ name: string }>;
+    for (const row of rows) referenced.add(row.name);
+  }
+  for (const legacyName of [...referenced].sort()) {
+    exactLegacyBinding(legacyName, context);
+  }
+}
+
+function backfillSchema31Columns(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
+  const plannerBindingJson = JSON.stringify(
+    authorizedBindingFor(context.plannerBinding, context.revisionId),
+  );
+  db.prepare(`
+    UPDATE planner_runs
+    SET configuration_revision = ?,
+        planner_binding_json = ?,
+        planner_binding_fingerprint = ?
+  `).run(
+    context.revisionId,
+    plannerBindingJson,
+    context.plannerBinding.bindingFingerprint,
+  );
+  db.prepare('UPDATE kernel_events SET configuration_revision = ?')
+    .run(context.revisionId);
+  db.prepare('UPDATE work_graph_revisions SET configuration_revision = ?')
+    .run(context.revisionId);
+  db.prepare(`
+    UPDATE generation_replan_requests
+    SET configuration_revision = ?,
+        deferred_bindings_json = ?
+  `).run(
+    context.revisionId,
+    JSON.stringify(Object.values(context.legacyAgentClassBindings)
+      .map(binding => authorizedBindingFor(binding, context.revisionId))),
+  );
+
+  const updateSubtask = db.prepare(
+    'UPDATE subtasks SET executor_bindings_json = ? WHERE rowid = ?',
+  );
+  const subtaskRows = db.prepare(`
+    SELECT rowid AS rowId, executor_bindings_json AS value FROM subtasks
+  `).all() as Array<{ rowId: number; value: string }>;
+  for (const row of subtaskRows) {
+    const legacy = parseLegacyJsonAgentClassList(
+      row.value,
+      `subtasks.executor_bindings_json[${row.rowId}]`,
+    );
+    updateSubtask.run(
+      JSON.stringify(legacy.map(name => authorizedBindingFor(
+        exactLegacyBinding(name, context),
+        context.revisionId,
+      ))),
+      row.rowId,
+    );
+  }
+
+  const updateDispatch = db.prepare(`
+    UPDATE kernel_dispatch_items
+    SET configuration_revision = ?,
+        agent_class_name = ?,
+        authorized_binding_json = ?,
+        binding_fingerprint = ?
+    WHERE rowid = ?
+  `);
+  const dispatchRows = db.prepare(`
+    SELECT rowid AS rowId, agent_class_name AS agentClassName
+    FROM kernel_dispatch_items
+  `).all() as Array<{ rowId: number; agentClassName: string }>;
+  for (const row of dispatchRows) {
+    const binding = exactLegacyBinding(row.agentClassName, context);
+    updateDispatch.run(
+      context.revisionId,
+      binding.agentClassRef,
+      JSON.stringify(authorizedBindingFor(binding, context.revisionId)),
+      binding.bindingFingerprint,
+      row.rowId,
+    );
+  }
+
+  const updateReceipt = db.prepare(`
+    UPDATE executor_attempt_receipts
+    SET configuration_revision = ?,
+        agent_class_name = ?,
+        authorized_binding_json = ?,
+        binding_fingerprint = ?
+    WHERE rowid = ?
+  `);
+  const receiptRows = db.prepare(`
+    SELECT rowid AS rowId, agent_class_name AS agentClassName
+    FROM executor_attempt_receipts
+  `).all() as Array<{ rowId: number; agentClassName: string }>;
+  for (const row of receiptRows) {
+    const binding = exactLegacyBinding(row.agentClassName, context);
+    updateReceipt.run(
+      context.revisionId,
+      binding.agentClassRef,
+      JSON.stringify(authorizedBindingFor(binding, context.revisionId)),
+      binding.bindingFingerprint,
+      row.rowId,
+    );
+  }
+
+  const bindings = Object.values(context.legacyAgentClassBindings);
+  db.prepare(`
+    UPDATE kernel_decisions
+    SET configuration_revision = ?,
+        authorized_bindings_json = ?,
+        binding_fingerprints_json = ?
+  `).run(
+    context.revisionId,
+    JSON.stringify(bindings.map(binding =>
+      authorizedBindingFor(binding, context.revisionId))),
+    JSON.stringify(bindings.map(binding => binding.bindingFingerprint)),
+  );
+}
+
+function rebuildSchema31AuditTables(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE planner_runs_v31 (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      request_source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      error_summary TEXT,
+      configuration_revision TEXT NOT NULL,
+      planner_binding_json TEXT NOT NULL,
+      planner_binding_fingerprint TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO planner_runs_v31 (
+      id, session_id, request_source, status, attempt_count, duration_ms,
+      error_summary, configuration_revision, planner_binding_json,
+      planner_binding_fingerprint, created_at, completed_at
+    )
+    SELECT
+      id, session_id, request_source, status, attempt_count, duration_ms,
+      error_summary, configuration_revision, planner_binding_json,
+      planner_binding_fingerprint, created_at, completed_at
+    FROM planner_runs;
+    DROP TABLE planner_runs;
+    ALTER TABLE planner_runs_v31 RENAME TO planner_runs;
+    CREATE INDEX idx_planner_runs_session
+      ON planner_runs(session_id, created_at);
+    CREATE INDEX idx_planner_runs_revision
+      ON planner_runs(configuration_revision, created_at);
+
+    CREATE TABLE executor_attempt_receipts_v31 (
+      attempt_id TEXT PRIMARY KEY,
+      execution_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      subtask_id TEXT NOT NULL,
+      work_unit_id TEXT NOT NULL,
+      agent_class_name TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      terminal_state TEXT NOT NULL,
+      raw_response TEXT NOT NULL,
+      completion_schema_version INTEGER,
+      parsing_json TEXT NOT NULL DEFAULT '{}',
+      verification_json TEXT NOT NULL DEFAULT '{}',
+      error_code TEXT,
+      error_detail TEXT,
+      graph_revision INTEGER,
+      generation_id TEXT,
+      attempt_kind TEXT NOT NULL DEFAULT 'primary',
+      source_attempt_id TEXT,
+      failure_json TEXT,
+      recovery_mode TEXT NOT NULL DEFAULT 'fresh',
+      configuration_revision TEXT NOT NULL,
+      authorized_binding_json TEXT NOT NULL,
+      binding_fingerprint TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks(id),
+      FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
+      FOREIGN KEY (work_unit_id) REFERENCES work_units(id),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO executor_attempt_receipts_v31 (
+      attempt_id, execution_id, task_id, subtask_id, work_unit_id,
+      agent_class_name, started_at, completed_at, terminal_state, raw_response,
+      completion_schema_version, parsing_json, verification_json, error_code,
+      error_detail, graph_revision, generation_id, attempt_kind,
+      source_attempt_id, failure_json, recovery_mode, configuration_revision,
+      authorized_binding_json, binding_fingerprint
+    )
+    SELECT
+      attempt_id, execution_id, task_id, subtask_id, work_unit_id,
+      agent_class_name, started_at, completed_at, terminal_state, raw_response,
+      completion_schema_version, parsing_json, verification_json, error_code,
+      error_detail, graph_revision, generation_id, attempt_kind,
+      source_attempt_id, failure_json, recovery_mode, configuration_revision,
+      authorized_binding_json, binding_fingerprint
+    FROM executor_attempt_receipts;
+    DROP TABLE executor_attempt_receipts;
+    ALTER TABLE executor_attempt_receipts_v31 RENAME TO executor_attempt_receipts;
+    CREATE INDEX idx_executor_attempt_receipts_subtask
+      ON executor_attempt_receipts(task_id, subtask_id, completed_at);
+    CREATE INDEX idx_executor_attempt_receipts_binding
+      ON executor_attempt_receipts(
+        configuration_revision, binding_fingerprint, completed_at
+      );
+    CREATE TRIGGER executor_attempt_receipts_immutable_update
+      BEFORE UPDATE ON executor_attempt_receipts BEGIN
+        SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+      END;
+    CREATE TRIGGER executor_attempt_receipts_immutable_delete
+      BEFORE DELETE ON executor_attempt_receipts BEGIN
+        SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+      END;
+
+    CREATE TABLE kernel_decisions_v31 (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      event_id TEXT NOT NULL UNIQUE,
+      event_type TEXT NOT NULL,
+      correlation_id TEXT NOT NULL,
+      causation_id TEXT,
+      session_id TEXT NOT NULL,
+      task_id TEXT,
+      subtask_id TEXT,
+      attempt_id TEXT,
+      event_json TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL,
+      action TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      configuration_revision TEXT NOT NULL,
+      authorized_bindings_json TEXT NOT NULL DEFAULT '[]',
+      binding_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO kernel_decisions_v31 (
+      id, schema_version, event_id, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+      decision_json, action, reason, configuration_revision,
+      authorized_bindings_json, binding_fingerprints_json, created_at
+    )
+    SELECT
+      id, schema_version, event_id, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+      decision_json, action, reason, configuration_revision,
+      authorized_bindings_json, binding_fingerprints_json, created_at
+    FROM kernel_decisions;
+    DROP TABLE kernel_decisions;
+    ALTER TABLE kernel_decisions_v31 RENAME TO kernel_decisions;
+    CREATE INDEX idx_kernel_decisions_session
+      ON kernel_decisions(session_id, created_at, id);
+    CREATE INDEX idx_kernel_decisions_task
+      ON kernel_decisions(task_id, created_at, id);
+    CREATE INDEX idx_kernel_decisions_correlation
+      ON kernel_decisions(correlation_id, created_at, id);
+    CREATE INDEX idx_kernel_decisions_revision
+      ON kernel_decisions(configuration_revision, created_at, id);
+
+    CREATE TABLE kernel_events_v31 (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      correlation_id TEXT NOT NULL,
+      causation_id TEXT,
+      session_id TEXT NOT NULL,
+      task_id TEXT,
+      subtask_id TEXT,
+      attempt_id TEXT,
+      event_json TEXT NOT NULL,
+      available_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      processing_started_at TEXT,
+      processed_at TEXT,
+      last_error TEXT,
+      configuration_revision TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO kernel_events_v31 (
+      id, schema_version, event_type, correlation_id, causation_id, session_id,
+      task_id, subtask_id, attempt_id, event_json, available_at, status,
+      processing_started_at, processed_at, last_error, configuration_revision,
+      created_at, updated_at
+    )
+    SELECT
+      id, schema_version, event_type, correlation_id, causation_id, session_id,
+      task_id, subtask_id, attempt_id, event_json, available_at, status,
+      processing_started_at, processed_at, last_error, configuration_revision,
+      created_at, updated_at
+    FROM kernel_events;
+    DROP TABLE kernel_events;
+    ALTER TABLE kernel_events_v31 RENAME TO kernel_events;
+    CREATE INDEX idx_kernel_events_drain
+      ON kernel_events(status, available_at, created_at, id);
+    CREATE INDEX idx_kernel_events_task
+      ON kernel_events(task_id, created_at, id);
+    CREATE INDEX idx_kernel_events_revision
+      ON kernel_events(configuration_revision, status, available_at, id);
+
+    CREATE TABLE work_graph_revisions_v31 (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      generation_id TEXT NOT NULL,
+      authorized_decision_id TEXT,
+      proposal_source TEXT NOT NULL DEFAULT 'initial',
+      automatic_replan INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completion_kind TEXT CHECK(completion_kind IN ('full', 'partial_accepted')),
+      configuration_revision TEXT NOT NULL,
+      UNIQUE(task_id, revision),
+      FOREIGN KEY (task_id) REFERENCES tasks(id),
+      FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO work_graph_revisions_v31 (
+      id, task_id, revision, generation_id, authorized_decision_id,
+      proposal_source, automatic_replan, status, created_at, updated_at,
+      completion_kind, configuration_revision
+    )
+    SELECT
+      id, task_id, revision, generation_id, authorized_decision_id,
+      proposal_source, automatic_replan, status, created_at, updated_at,
+      completion_kind, configuration_revision
+    FROM work_graph_revisions;
+    DROP TABLE work_graph_revisions;
+    ALTER TABLE work_graph_revisions_v31 RENAME TO work_graph_revisions;
+    CREATE UNIQUE INDEX idx_work_graph_one_active_revision
+      ON work_graph_revisions(task_id) WHERE status = 'active';
+    CREATE INDEX idx_work_graph_revisions_generation
+      ON work_graph_revisions(task_id, generation_id, revision);
+    CREATE INDEX idx_work_graph_revisions_revision
+      ON work_graph_revisions(configuration_revision, generation_id, revision);
+
+    CREATE TABLE kernel_dispatch_items_v31 (
+      attempt_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      batch_order INTEGER NOT NULL,
+      task_id TEXT NOT NULL,
+      generation_id TEXT NOT NULL,
+      subtask_id TEXT NOT NULL,
+      agent_class_name TEXT NOT NULL,
+      attempt_kind TEXT NOT NULL CHECK(attempt_kind IN (
+        'primary', 'continuation', 'fallback', 'contract_correction', 'merge_repair'
+      )),
+      source_attempt_id TEXT,
+      recovery_mode TEXT NOT NULL CHECK(recovery_mode IN (
+        'native_session', 'recovery_packet', 'fresh'
+      )),
+      attempt_payload_json TEXT NOT NULL DEFAULT 'null',
+      resource_grant_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL CHECK(status IN (
+        'pending_launch', 'launching', 'running', 'cancelling',
+        'terminal', 'cancelled', 'uncertain'
+      )),
+      work_unit_id TEXT,
+      sandbox_container_id TEXT,
+      launch_started_at TEXT,
+      terminal_at TEXT,
+      cancellation_decision_id TEXT,
+      cancel_requested_at TEXT,
+      cancelled_at TEXT,
+      error_summary TEXT,
+      configuration_revision TEXT NOT NULL,
+      authorized_binding_json TEXT NOT NULL,
+      binding_fingerprint TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks(id),
+      FOREIGN KEY (subtask_id) REFERENCES subtasks(id),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO kernel_dispatch_items_v31 (
+      attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+      agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+      attempt_payload_json, resource_grant_json, status, work_unit_id,
+      sandbox_container_id, launch_started_at, terminal_at,
+      cancellation_decision_id, cancel_requested_at, cancelled_at,
+      error_summary, configuration_revision, authorized_binding_json,
+      binding_fingerprint, created_at, updated_at
+    )
+    SELECT
+      attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+      agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+      attempt_payload_json, resource_grant_json, status, work_unit_id,
+      sandbox_container_id, launch_started_at, terminal_at,
+      cancellation_decision_id, cancel_requested_at, cancelled_at,
+      error_summary, configuration_revision, authorized_binding_json,
+      binding_fingerprint, created_at, updated_at
+    FROM kernel_dispatch_items;
+    DROP TABLE kernel_dispatch_items;
+    ALTER TABLE kernel_dispatch_items_v31 RENAME TO kernel_dispatch_items;
+    CREATE INDEX idx_kernel_dispatch_items_supervisor
+      ON kernel_dispatch_items(status, batch_order, created_at, attempt_id);
+    CREATE INDEX idx_kernel_dispatch_items_task
+      ON kernel_dispatch_items(task_id, status, batch_order);
+    CREATE INDEX idx_kernel_dispatch_items_binding
+      ON kernel_dispatch_items(
+        configuration_revision, binding_fingerprint, status
+      );
+    CREATE UNIQUE INDEX idx_kernel_dispatch_one_active_subtask
+      ON kernel_dispatch_items(task_id, generation_id, subtask_id)
+      WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling');
+
+    CREATE TABLE generation_replan_requests_v31 (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      generation_id TEXT NOT NULL,
+      source_revision INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN (
+        'pending_quiescence', 'planning', 'submitted', 'waiting_for_availability',
+        'resolved', 'cancelled', 'failed'
+      )),
+      trigger_decision_id TEXT NOT NULL,
+      quiescence_token TEXT,
+      error_summary TEXT,
+      deferred_plan_json TEXT,
+      availability_explanation TEXT,
+      planning_started_at TEXT,
+      submitted_at TEXT,
+      resolved_at TEXT,
+      cancelled_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      configuration_revision TEXT NOT NULL,
+      deferred_bindings_json TEXT NOT NULL DEFAULT '[]',
+      UNIQUE(task_id, generation_id, source_revision),
+      FOREIGN KEY (task_id) REFERENCES tasks(id),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    INSERT INTO generation_replan_requests_v31 (
+      id, task_id, generation_id, source_revision, status, trigger_decision_id,
+      quiescence_token, error_summary, deferred_plan_json,
+      availability_explanation, planning_started_at, submitted_at, resolved_at,
+      cancelled_at, created_at, updated_at, configuration_revision,
+      deferred_bindings_json
+    )
+    SELECT
+      id, task_id, generation_id, source_revision, status, trigger_decision_id,
+      quiescence_token, error_summary, deferred_plan_json,
+      availability_explanation, planning_started_at, submitted_at, resolved_at,
+      cancelled_at, created_at, updated_at, configuration_revision,
+      deferred_bindings_json
+    FROM generation_replan_requests;
+    DROP TABLE generation_replan_requests;
+    ALTER TABLE generation_replan_requests_v31
+      RENAME TO generation_replan_requests;
+    CREATE INDEX idx_generation_replan_requests_status
+      ON generation_replan_requests(status, created_at, id);
+    CREATE INDEX idx_generation_replan_requests_task
+      ON generation_replan_requests(task_id, generation_id, status);
+    CREATE INDEX idx_generation_replan_requests_revision
+      ON generation_replan_requests(configuration_revision, status, created_at);
+  `);
+}
+
+function rebuildWorkUnits(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
+  const rows = db.prepare(`
+    SELECT rowid AS rowId, agent_class_name AS agentClassName FROM work_units
+  `).all() as Array<{ rowId: number; agentClassName: string }>;
+  const update = db.prepare(
+    'UPDATE work_units SET agent_class_name = ? WHERE rowid = ?',
+  );
+  for (const row of rows) {
+    update.run(exactLegacyBinding(row.agentClassName, context).agentClassRef, row.rowId);
+  }
+  db.exec(`
+    CREATE TABLE work_units_v31 (
+      id TEXT PRIMARY KEY,
+      agent_class_name TEXT NOT NULL,
+      agent_class_kind TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'starting',
+      claimed_task_id TEXT,
+      claimed_subtask_id TEXT,
+      heartbeat_at TEXT,
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      claimed_attempt_id TEXT
+    );
+    INSERT INTO work_units_v31 (
+      id, agent_class_name, agent_class_kind, state, claimed_task_id,
+      claimed_subtask_id, heartbeat_at, lease_expires_at, created_at,
+      updated_at, claimed_attempt_id
+    )
+    SELECT
+      id, agent_class_name, agent_class_kind, state, claimed_task_id,
+      claimed_subtask_id, heartbeat_at, lease_expires_at, created_at,
+      updated_at, claimed_attempt_id
+    FROM work_units;
+    DROP TABLE work_units;
+    ALTER TABLE work_units_v31 RENAME TO work_units;
+    CREATE INDEX idx_work_units_state
+      ON work_units(agent_class_kind, state, updated_at);
+    CREATE UNIQUE INDEX idx_work_units_one_active_attempt_per_subtask
+      ON work_units(claimed_subtask_id)
+      WHERE claimed_subtask_id IS NOT NULL
+        AND state IN ('claimed', 'running', 'waiting');
+  `);
+}
+
+function rebuildKernelExecutorStatus(
+  db: Database.Database,
+  context: Schema30MigrationContext,
+): void {
+  db.exec(`
+    CREATE TABLE kernel_executor_status_v31 (
+      agent_class_name TEXT NOT NULL,
+      configuration_revision TEXT NOT NULL,
+      class_health TEXT NOT NULL DEFAULT 'unverified',
+      recent_attempts_json TEXT NOT NULL DEFAULT '[]',
+      recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (agent_class_name, configuration_revision),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+  `);
+  const insert = db.prepare(`
+    INSERT INTO kernel_executor_status_v31 (
+      agent_class_name, configuration_revision, class_health,
+      recent_attempts_json, recent_recovery_checks_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const rows = db.prepare(`
+    SELECT agent_class_name AS agentClassName, class_health AS classHealth,
+           recent_attempts_json AS recentAttemptsJson,
+           recent_recovery_checks_json AS recentRecoveryChecksJson,
+           updated_at AS updatedAt
+    FROM kernel_executor_status
+  `).all() as Array<{
+    agentClassName: string;
+    classHealth: string;
+    recentAttemptsJson: string;
+    recentRecoveryChecksJson: string;
+    updatedAt: string;
+  }>;
+  for (const row of rows) {
+    const binding = exactLegacyBinding(row.agentClassName, context);
+    insert.run(
+      binding.agentClassRef,
+      context.revisionId,
+      row.classHealth,
+      row.recentAttemptsJson,
+      row.recentRecoveryChecksJson,
+      row.updatedAt,
+    );
+  }
+  db.exec(`
+    DROP TABLE kernel_executor_status;
+    ALTER TABLE kernel_executor_status_v31 RENAME TO kernel_executor_status;
+  `);
+}
+
+function createSchema31HealthTables(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE kernel_provider_status (
+      provider_ref TEXT NOT NULL,
+      configuration_revision TEXT NOT NULL,
+      provider_health TEXT NOT NULL DEFAULT 'unverified'
+        CHECK(provider_health IN ('unverified', 'healthy', 'error', 'disabled')),
+      recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_ref, configuration_revision),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    CREATE TABLE kernel_model_status (
+      provider_ref TEXT NOT NULL,
+      model_ref TEXT NOT NULL,
+      configuration_revision TEXT NOT NULL,
+      model_health TEXT NOT NULL DEFAULT 'unverified'
+        CHECK(model_health IN ('unverified', 'healthy', 'error', 'disabled')),
+      recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_ref, model_ref, configuration_revision),
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+    CREATE TABLE kernel_binding_status (
+      binding_fingerprint TEXT PRIMARY KEY,
+      configuration_revision TEXT NOT NULL,
+      agent_class_ref TEXT NOT NULL,
+      harness_ref TEXT NOT NULL,
+      provider_ref TEXT NOT NULL,
+      model_ref TEXT NOT NULL,
+      permission_profile_ref TEXT NOT NULL,
+      binding_health TEXT NOT NULL DEFAULT 'unverified'
+        CHECK(binding_health IN ('unverified', 'healthy', 'error', 'disabled')),
+      recent_attempts_json TEXT NOT NULL DEFAULT '[]',
+      recent_recovery_checks_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (configuration_revision)
+        REFERENCES configuration_revisions(revision_id)
+    );
+  `);
+}
+
+function parseLegacyJsonAgentClassList(value: string, path: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error(`${path} contains invalid recoverable JSON`, { cause: error });
+  }
+  return parseLegacyAgentClassList(parsed, path);
+}
+
+function parseLegacyAgentClassList(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${path} must be a non-empty legacy AgentClass list`);
+  }
+  const names = value.map((item, index) => {
+    if (typeof item !== 'string' || item.trim().length === 0) {
+      throw new Error(`${path}[${index}] must be a non-empty AgentClass name`);
+    }
+    return item;
+  });
+  if (new Set(names).size !== names.length) {
+    throw new Error(`${path} contains duplicate legacy AgentClass names`);
+  }
+  return names;
+}
+
+function exactLegacyBinding(
+  legacyName: string,
+  context: Schema30MigrationContext,
+): Readonly<Schema30MigrationBinding> {
+  const binding = context.legacyAgentClassBindings[legacyName];
+  if (!binding) {
+    throw new Error(`legacy AgentClass ${legacyName} has no exact schema 31 binding`);
+  }
+  return binding;
+}
+
+function proposedBindingFor(
+  legacyName: string,
+  context: Schema30MigrationContext,
+): Record<string, unknown> {
+  const binding = exactLegacyBinding(legacyName, context);
+  return {
+    agentClassRef: binding.agentClassRef,
+    modelSelection: { mode: 'fixed-by-agent-class' },
+  };
+}
+
+function authorizedBindingFor(
+  binding: Readonly<Schema30MigrationBinding>,
+  configurationRevision: string,
+): Record<string, unknown> {
+  return {
+    agentClassRef: binding.agentClassRef,
+    harnessRef: binding.harnessRef,
+    modelRef: binding.modelRef,
+    providerRef: binding.providerRef,
+    permissionProfileRef: binding.permissionProfileRef,
+    configurationRevision,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function migrateRecoverableValue(
+  value: unknown,
+  path: string,
+  context: Schema30MigrationContext,
+): { value: unknown; changed: boolean } {
   if (Array.isArray(value)) {
     let changed = false;
     const migrated = value.map((item, index) => {
-      const result = migrateRecoverableValue(item, `${path}[${index}]`);
+      const result = migrateRecoverableValue(item, `${path}[${index}]`, context);
       changed ||= result.changed;
       return result.value;
     });
@@ -1217,38 +2152,86 @@ function migrateRecoverableValue(value: unknown, path: string): { value: unknown
   if (!value || typeof value !== 'object') return { value, changed: false };
 
   const source = value as Record<string, unknown>;
+  if (isPlanningAgentPlanV7(source)) {
+    return { value: migratePlanningAgentPlanV7(source, path, context), changed: true };
+  }
+  if (isWorkGraphV6(source)) {
+    return { value: migrateWorkGraphV6(source, path, context), changed: true };
+  }
   const target: Record<string, unknown> = {};
   let changed = false;
   for (const [key, item] of Object.entries(source)) {
-    if (key === 'expectedOutput') continue;
-    const result = migrateRecoverableValue(item, `${path}.${key}`);
+    const result = migrateRecoverableValue(item, `${path}.${key}`, context);
     target[key] = result.value;
     changed ||= result.changed;
-  }
-  if (Object.hasOwn(source, 'expectedOutput')) {
-    const deliveryKind = migrateDeliveryKind(source.expectedOutput, `${path}.expectedOutput`);
-    if (Object.hasOwn(source, 'deliveryKind') && source.deliveryKind !== deliveryKind) {
-      throw new Error(`${path} contains conflicting expectedOutput and deliveryKind values`);
-    }
-    target.deliveryKind = deliveryKind;
-    changed = true;
-  }
-  if (target.schemaVersion === 6 && isPlanningAgentPlan(target)) {
-    target.schemaVersion = 7;
-    changed = true;
   }
   return { value: changed ? target : value, changed };
 }
 
-function migrateDeliveryKind(value: unknown, path: string): 'edit' | 'report' {
-  if (value === 'patch' || value === 'artifact') return 'edit';
-  if (value === 'analysis' || value === 'review' || value === 'summary') return 'report';
-  throw new Error(`${path} has unsupported value ${JSON.stringify(value)}`);
+function migratePlanningAgentPlanV7(
+  source: Record<string, unknown>,
+  path: string,
+  context: Schema30MigrationContext,
+): Record<string, unknown> {
+  const target: Record<string, unknown> = { ...source, schemaVersion: 8 };
+  if (source.workGraph !== null) {
+    if (!isRecord(source.workGraph)) throw new Error(`${path}.workGraph is not an object`);
+    target.workGraph = migrateWorkGraphV6(source.workGraph, `${path}.workGraph`, context);
+  }
+  return target;
 }
 
-function isPlanningAgentPlan(value: Record<string, unknown>): boolean {
+function migrateWorkGraphV6(
+  source: Record<string, unknown>,
+  path: string,
+  context: Schema30MigrationContext,
+): Record<string, unknown> {
+  if (!Array.isArray(source.subtasks)) throw new Error(`${path}.subtasks is not an array`);
+  if (Object.hasOwn(source, 'schemaVersion')) {
+    throw new Error(`${path} has ambiguous pre-existing schemaVersion`);
+  }
+  if (Object.hasOwn(source, 'configurationRevision')) {
+    throw new Error(`${path} has ambiguous pre-existing configurationRevision`);
+  }
+  const subtasks = source.subtasks.map((value, index) => {
+    if (!isRecord(value)) throw new Error(`${path}.subtasks[${index}] is not an object`);
+    if (Object.hasOwn(value, 'executorBindings')) {
+      throw new Error(`${path}.subtasks[${index}] has ambiguous executorBindings`);
+    }
+    const legacy = parseLegacyAgentClassList(
+      value.preferredAgentClassList,
+      `${path}.subtasks[${index}].preferredAgentClassList`,
+    );
+    const target = { ...value };
+    delete target.preferredAgentClassList;
+    target.executorBindings = legacy.map(name => proposedBindingFor(name, context));
+    return target;
+  });
+  return {
+    ...source,
+    schemaVersion: 7,
+    configurationRevision: context.revisionId,
+    subtasks,
+  };
+}
+
+function isPlanningAgentPlanV7(value: Record<string, unknown>): boolean {
   return typeof value.id === 'string'
+    && value.schemaVersion === 7
     && typeof value.action === 'string'
     && Object.hasOwn(value, 'task')
     && Object.hasOwn(value, 'workGraph');
+}
+
+function isWorkGraphV6(value: Record<string, unknown>): boolean {
+  if (
+    typeof value.reason !== 'string'
+    || !Array.isArray(value.subtasks)
+    || value.subtasks.length === 0
+  ) {
+    return false;
+  }
+  return value.subtasks.every(subtask =>
+    isRecord(subtask)
+    && Object.hasOwn(subtask, 'preferredAgentClassList'));
 }
