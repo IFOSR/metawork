@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot } from './control-kernel.js';
 
 export interface KernelDecisionLedgerRecord {
@@ -16,6 +18,9 @@ export interface KernelDecisionLedgerRecord {
   decision: KernelDecision;
   action: KernelDecision['action']['type'];
   reason: string;
+  configurationRevision: string;
+  authorizedBindings: AuthorizedExecutorBinding[];
+  bindingFingerprints: string[];
   createdAt: string;
 }
 
@@ -185,6 +190,12 @@ function ledgerRecord(
   snapshot: KernelSnapshot,
   nextDecision: KernelDecision,
 ): KernelDecisionLedgerRecord {
+  if (event.configurationRevision !== nextDecision.configurationRevision) {
+    throw new Error(
+      `Kernel event/decision configuration revision mismatch: ${event.id}`,
+    );
+  }
+  const bindingIdentity = collectBindingIdentity(event, nextDecision.action);
   return {
     id: nextDecision.id,
     schemaVersion: 5,
@@ -201,8 +212,124 @@ function ledgerRecord(
     decision: nextDecision,
     action: nextDecision.action.type,
     reason: nextDecision.reason,
+    configurationRevision: event.configurationRevision,
+    authorizedBindings: bindingIdentity.bindings,
+    bindingFingerprints: bindingIdentity.fingerprints,
     createdAt: event.occurredAt,
   };
+}
+
+function collectBindingIdentity(
+  event: KernelEvent,
+  action: KernelDecisionAction,
+): {
+  bindings: AuthorizedExecutorBinding[];
+  fingerprints: string[];
+} {
+  const entries: Array<{
+    binding: AuthorizedExecutorBinding;
+    fingerprint?: string;
+  }> = [];
+  appendEventBindings(entries, event);
+  appendActionBindings(entries, action);
+
+  const bindings: AuthorizedExecutorBinding[] = [];
+  const fingerprints: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (entry.binding.configurationRevision !== event.configurationRevision) {
+      throw new Error(
+        `Kernel binding configuration revision mismatch: ${entry.binding.agentClassRef}`,
+      );
+    }
+    const fingerprint = bindingFingerprint(entry.binding);
+    if (entry.fingerprint !== undefined && entry.fingerprint !== fingerprint) {
+      throw new Error(
+        `Kernel binding fingerprint mismatch: ${entry.binding.agentClassRef}`,
+      );
+    }
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    bindings.push(entry.binding);
+    fingerprints.push(fingerprint);
+  }
+  return { bindings, fingerprints };
+}
+
+function appendEventBindings(
+  entries: Array<{ binding: AuthorizedExecutorBinding; fingerprint?: string }>,
+  event: KernelEvent,
+): void {
+  switch (event.type) {
+    case 'capacity_signal':
+    case 'execution_outcome':
+    case 'handoff_contract_failed':
+    case 'merge_conflict_observed':
+      entries.push({
+        binding: event.authorizedBinding,
+        fingerprint: event.bindingFingerprint,
+      });
+      return;
+    case 'timer_tick':
+      if (event.retry) {
+        entries.push({
+          binding: event.retry.authorizedBinding,
+          fingerprint: event.retry.bindingFingerprint,
+        });
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+function appendActionBindings(
+  entries: Array<{ binding: AuthorizedExecutorBinding; fingerprint?: string }>,
+  action: KernelDecisionAction,
+): void {
+  switch (action.type) {
+    case 'authorize_task_plan':
+    case 'defer_task_plan_for_availability':
+    case 'activate_deferred_task_plan':
+      for (const subtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
+        for (const binding of action.authorizedBindingsBySubtask[subtaskId] ?? []) {
+          entries.push({ binding });
+        }
+      }
+      return;
+    case 'dispatch_batch':
+      for (const item of [...action.items].sort(
+        (left, right) => left.order - right.order || left.attemptId.localeCompare(right.attemptId),
+      )) {
+        entries.push({
+          binding: item.authorizedBinding,
+          fingerprint: item.bindingFingerprint,
+        });
+      }
+      return;
+    case 'probe_capacity':
+    case 'wait_for_retry':
+      entries.push({
+        binding: action.authorizedBinding,
+        fingerprint: action.bindingFingerprint,
+      });
+      return;
+    default:
+      return;
+  }
+}
+
+function bindingFingerprint(binding: AuthorizedExecutorBinding): string {
+  return createHash('sha256')
+    .update(JSON.stringify([
+      binding.agentClassRef,
+      binding.harnessRef,
+      binding.providerRef,
+      binding.modelRef,
+      binding.permissionProfileRef,
+      binding.configurationRevision,
+    ]))
+    .digest('hex');
 }
 
 function decisionTaskId(decision: KernelDecision): string | null {

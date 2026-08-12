@@ -16,7 +16,6 @@ export interface KernelDispatchItemRecord {
   taskId: string;
   generationId: string;
   subtaskId: string;
-  agentClassName: string;
   configurationRevision: string;
   authorizedBinding: AuthorizedExecutorBinding;
   bindingFingerprint: string;
@@ -88,7 +87,9 @@ export class KernelDispatchItemRepo {
       const existing = decision.action.items.map(item => this.find(item.attemptId));
       if (existing.every((item): item is KernelDispatchItemRecord => item !== null)) {
         for (const item of existing) {
-          const expected = bindingContext.attempts[item.attemptId];
+          const expected = decision.action.items.find(
+            candidate => candidate.attemptId === item.attemptId,
+          );
           if (
             !expected
             || item.generationId !== bindingContext.generationId
@@ -110,19 +111,23 @@ export class KernelDispatchItemRepo {
         WHERE task_id = ? AND generation_id = ?
       `).get(decision.action.taskId, bindingContext.generationId) as { value: number };
       const firstOrder = maximum.value + 1;
+      if (decision.configurationRevision !== bindingContext.configurationRevision) {
+        throw new Error(`dispatch decision revision mismatch: ${decision.id}`);
+      }
       for (const item of decision.action.items) {
-        const attemptBinding = bindingContext.attempts[item.attemptId];
-        if (!attemptBinding) {
-          throw new Error(`authorized binding is missing for attempt ${item.attemptId}`);
+        const expected = bindingContext.attempts[item.attemptId];
+        if (
+          !expected
+          || expected.bindingFingerprint !== item.bindingFingerprint
+          || !sameBinding(expected.authorizedBinding, item.authorizedBinding)
+        ) {
+          throw new Error(`dispatch binding context mismatch: ${item.attemptId}`);
         }
         if (
-          attemptBinding.authorizedBinding.configurationRevision
-          !== bindingContext.configurationRevision
+          item.authorizedBinding.configurationRevision
+          !== decision.configurationRevision
         ) {
           throw new Error(`authorized binding revision mismatch for attempt ${item.attemptId}`);
-        }
-        if (attemptBinding.authorizedBinding.agentClassRef !== item.agentClassName) {
-          throw new Error(`authorized binding AgentClass mismatch for attempt ${item.attemptId}`);
         }
         this.db.prepare(`
           INSERT INTO kernel_dispatch_items (
@@ -138,15 +143,15 @@ export class KernelDispatchItemRepo {
           decision.action.taskId,
           bindingContext.generationId,
           item.subtaskId,
-          item.agentClassName,
+          item.authorizedBinding.agentClassRef,
           item.attemptKind,
           item.sourceAttemptId,
           item.recoveryMode,
           JSON.stringify(item.attemptPayload),
           JSON.stringify(item.defaultResourceGrant),
-          bindingContext.configurationRevision,
-          JSON.stringify(attemptBinding.authorizedBinding),
-          attemptBinding.bindingFingerprint,
+          decision.configurationRevision,
+          JSON.stringify(item.authorizedBinding),
+          item.bindingFingerprint,
           now,
           now,
         );
@@ -349,6 +354,12 @@ export class KernelDispatchItemRepo {
 }
 
 function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
+  const authorizedBinding = JSON.parse(
+    row.authorized_binding_json,
+  ) as AuthorizedExecutorBinding;
+  if (row.agent_class_name !== authorizedBinding.agentClassRef) {
+    throw new Error(`persisted dispatch AgentClass projection mismatch: ${row.attempt_id}`);
+  }
   return {
     attemptId: row.attempt_id,
     decisionId: row.decision_id,
@@ -356,9 +367,8 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     taskId: row.task_id,
     generationId: row.generation_id,
     subtaskId: row.subtask_id,
-    agentClassName: row.agent_class_name,
     configurationRevision: row.configuration_revision,
-    authorizedBinding: JSON.parse(row.authorized_binding_json) as AuthorizedExecutorBinding,
+    authorizedBinding,
     bindingFingerprint: row.binding_fingerprint,
     attemptKind: row.attempt_kind,
     sourceAttemptId: row.source_attempt_id,

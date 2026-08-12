@@ -1,27 +1,36 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+
+const CONFIGURATION_REVISION = 'revision_test';
 
 describe('KernelWorkflowRepo', () => {
   it('atomically advances an event to an immutable Decision and pending application', () => {
     const db = new Database(':memory:');
     runMigrations(db);
+    seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
     const snapshot = planSnapshot();
-    const decision = new ControlKernel().decide(event, snapshot);
+    const decision = directReplyDecision(event);
 
     expect(repo.enqueue(event)).toBe(true);
     expect(repo.findEvent(event.id)).toEqual(event);
+    expect(db.prepare(`
+      SELECT configuration_revision FROM kernel_events WHERE id = ?
+    `).get(event.id)).toEqual({ configuration_revision: CONFIGURATION_REVISION });
     expect(repo.claimNext(event.occurredAt)).toEqual(event);
     const application = repo.issue(event.id, {
       id: decision.id, schemaVersion: 5, eventId: event.id, eventType: event.type,
       correlationId: event.correlationId, causationId: null, sessionId: event.sessionId,
       taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
-      action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,
+      action: decision.action.type, reason: decision.reason,
+      configurationRevision: CONFIGURATION_REVISION,
+      authorizedBindings: [],
+      bindingFingerprints: [],
+      createdAt: event.occurredAt,
     });
 
     expect(application).toMatchObject({
@@ -47,17 +56,22 @@ describe('KernelWorkflowRepo', () => {
   it('stores the stable observation while completing apply and makes it drainable once', () => {
     const db = new Database(':memory:');
     runMigrations(db);
+    seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
     const snapshot = planSnapshot();
-    const decision = new ControlKernel().decide(event, snapshot);
+    const decision = directReplyDecision(event);
     repo.enqueue(event);
     repo.claimNext(event.occurredAt);
     repo.issue(event.id, {
       id: decision.id, schemaVersion: 5, eventId: event.id, eventType: event.type,
       correlationId: event.correlationId, causationId: null, sessionId: event.sessionId,
       taskId: null, subtaskId: null, attemptId: null, event, snapshot, decision,
-      action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,
+      action: decision.action.type, reason: decision.reason,
+      configurationRevision: CONFIGURATION_REVISION,
+      authorizedBindings: [],
+      bindingFingerprints: [],
+      createdAt: event.occurredAt,
     });
     repo.markApplying(decision.id, event.occurredAt);
     const observation: KernelEvent = {
@@ -79,6 +93,7 @@ describe('KernelWorkflowRepo', () => {
   it('fails closed without claiming an event outside the unique v4 contract', () => {
     const db = new Database(':memory:');
     runMigrations(db);
+    seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
     repo.enqueue(event);
@@ -98,12 +113,13 @@ describe('KernelWorkflowRepo', () => {
 
 function directReplyEvent(): KernelEvent {
   return {
-    schemaVersion: 5, type: 'plan_proposed', id: 'event_1', correlationId: 'correlation_1', causationId: null,
+    schemaVersion: 5, configurationRevision: CONFIGURATION_REVISION,
+    type: 'plan_proposed', id: 'event_1', correlationId: 'correlation_1', causationId: null,
     occurredAt: '2026-07-21T00:00:00.000Z', sessionId: 'session_1',
     requestText: 'done',
     generationId: 'generation_event_1', proposalSource: 'initial', targetGraphRevision: 1,
     proposal: {
-      id: 'plan_1', schemaVersion: 7, action: 'direct_reply', confidence: 1, reason: 'answer',
+      id: 'plan_1', schemaVersion: 8, action: 'direct_reply', confidence: 1, reason: 'answer',
       clarificationQuestion: null, response: { directReply: 'done' },
       task: { binding: 'none', taskId: null, control: 'none', scope: null, title: null, goal: null, includeRecentConversationContext: false, priority: null },
       risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null, workGraph: null, source: 'anyfusion-planner',
@@ -113,7 +129,27 @@ function directReplyEvent(): KernelEvent {
 
 function planSnapshot(): KernelSnapshot {
   return {
-    schemaVersion: 5, type: 'plan_admission', tasks: [], runningTaskId: null,
-    executorCatalog: getPlannerExecutorCatalog(), executorStatuses: [], v5WorkGraphTaskIds: [], eligibleContextRefKeys: [], pendingAuthorizationRequest: null,
+    schemaVersion: 5,
+    type: 'invalid',
+    reason: 'storage fixture',
   };
+}
+
+function directReplyDecision(event: KernelEvent): KernelDecision {
+  return {
+    schemaVersion: 5,
+    configurationRevision: event.configurationRevision,
+    id: `decision_${event.id}`,
+    eventId: event.id,
+    action: { type: 'deliver_direct_reply', response: 'done' },
+    reason: 'answer',
+  };
+}
+
+function seedConfigurationRevision(db: Database.Database): void {
+  db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (?, 'test-content', 'native', '2026-07-21T00:00:00.000Z')
+  `).run(CONFIGURATION_REVISION);
 }

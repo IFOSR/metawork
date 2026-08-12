@@ -27,7 +27,7 @@ const binding = {
   permissionProfileRef: 'workspace-default',
   configurationRevision: REVISION,
 };
-const bindingFingerprint = 'sha256:binding';
+const bindingFingerprint = '39d74eaa5be91b7cf5abd4632360f660b3ca5480bcc817f6c7242d2046f8b5dd';
 
 describe('schema v31 revisioned repositories', () => {
   it('persists executorBindings without a legacy preference field', () => {
@@ -187,7 +187,21 @@ describe('schema v31 revisioned repositories', () => {
       bindingFingerprint,
     });
     expect(() => dispatch.insertBatch(
-      dispatchDecision(),
+      {
+        ...dispatchDecision(),
+        configurationRevision: 'different_revision',
+        action: {
+          ...dispatchDecision().action,
+          items: dispatchDecision().action.items.map(item => ({
+            ...item,
+            authorizedBinding: {
+              ...binding,
+              configurationRevision: 'different_revision',
+            },
+            bindingFingerprint: 'sha256:different',
+          })),
+        },
+      },
       {
         generationId: 'generation_1',
         configurationRevision: 'different_revision',
@@ -347,6 +361,7 @@ function seedGraphRevision(db: ReturnType<typeof createV31RepositoryDb>): void {
 function kernelDecisionRecord() {
   const event: KernelEvent = {
     schemaVersion: 5,
+    configurationRevision: REVISION,
     type: 'timer_tick',
     id: 'event_1',
     correlationId: 'correlation_1',
@@ -374,6 +389,7 @@ function kernelDecisionRecord() {
   };
   const decision: KernelDecision = {
     schemaVersion: 5,
+    configurationRevision: REVISION,
     id: 'decision_1',
     eventId: event.id,
     action: { type: 'no_op' },
@@ -404,6 +420,7 @@ function dispatchDecision(): KernelDecision & {
 } {
   return {
     schemaVersion: 5,
+    configurationRevision: REVISION,
     id: 'decision_1',
     eventId: 'event_1',
     reason: 'dispatch',
@@ -414,7 +431,8 @@ function dispatchDecision(): KernelDecision & {
         order: 0,
         attemptId: 'attempt_1',
         subtaskId: 'subtask_1',
-        agentClassName: binding.agentClassRef,
+        authorizedBinding: binding,
+        bindingFingerprint,
         attemptKind: 'primary',
         sourceAttemptId: null,
         recoveryMode: 'fresh',

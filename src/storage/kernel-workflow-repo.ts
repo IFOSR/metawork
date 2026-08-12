@@ -290,8 +290,8 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
         id, schema_version, event_type, correlation_id, causation_id,
         session_id, task_id, subtask_id, attempt_id, event_json,
         available_at, status, processing_started_at, processed_at,
-        last_error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+        last_error, configuration_revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?, ?)
     `).run(
       event.id,
       event.schemaVersion,
@@ -304,6 +304,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       event.attemptId ?? null,
       JSON.stringify(event),
       availableAt,
+      event.configurationRevision,
       event.occurredAt,
       event.occurredAt,
     );
