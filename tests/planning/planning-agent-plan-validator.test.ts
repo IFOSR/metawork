@@ -263,7 +263,7 @@ describe('validatePlanningAgentPlan', () => {
     ]));
   });
 
-  it('allows agent-class-default to use the declared auto-policy order', () => {
+  it('rejects agent-class-default when the auto policy has no explicit default', () => {
     const noDefaultConfiguration: PlannerConfigurationView = {
       ...configuration,
       routingCatalog: {
@@ -286,10 +286,9 @@ describe('validatePlanningAgentPlan', () => {
       }),
     ]);
 
-    expect(validatePlanningAgentPlan(candidate, noDefaultConfiguration)).toEqual({
-      valid: true,
-      errors: [],
-    });
+    expect(validatePlanningAgentPlan(candidate, noDefaultConfiguration).errors).toContain(
+      'subtask impl AgentClass auto-engineering has no default Model',
+    );
   });
 
   it('rejects fixed or default Models unavailable in the pinned revision', () => {

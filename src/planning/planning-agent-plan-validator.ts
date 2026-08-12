@@ -239,16 +239,19 @@ function validateModelSelection(
     return;
   }
 
-  const defaultModelRef = policy.defaultModelRef ?? policy.allowedModelRefs[0];
-  if (defaultModelRef) {
-    validateModelAvailability(
-      subtaskId,
-      defaultModelRef,
-      modelRefs,
-      configurationRevision,
-      errors,
+  if (!policy.defaultModelRef) {
+    errors.push(
+      `subtask ${subtaskId} AgentClass ${binding.agentClassRef} has no default Model`,
     );
+    return;
   }
+  validateModelAvailability(
+    subtaskId,
+    policy.defaultModelRef,
+    modelRefs,
+    configurationRevision,
+    errors,
+  );
 }
 
 function validateModelAvailability(
