@@ -184,6 +184,20 @@ export class WorkspacePublicationWorker {
       );
       return null;
     }
+    if (
+      sourceReceipt.taskId !== publication.taskId
+      || sourceReceipt.subtaskId !== publication.subtaskId
+      || sourceReceipt.generationId !== publication.generationId
+      || sourceReceipt.authorizedBinding.configurationRevision
+        !== sourceReceipt.configurationRevision
+    ) {
+      this.publications.markPending(
+        publication.id,
+        `source receipt binding identity mismatch ${publication.sourceAttemptId}`,
+        new Date().toISOString(),
+      );
+      return null;
+    }
     const leaseToken = `publication_${randomUUID()}`;
     const publicationAttemptId = `publication:${publication.id}`;
     const lease = this.deps.resourceLeaseService.claim({
@@ -290,6 +304,7 @@ export class WorkspacePublicationWorker {
           type: 'conflicted',
           event: {
             schemaVersion: 5,
+            configurationRevision: sourceReceipt.configurationRevision,
             type: 'merge_conflict_observed',
             id: `event_${conflictChainId}_${ordinal}`,
             correlationId: publication.id,
@@ -300,7 +315,8 @@ export class WorkspacePublicationWorker {
             subtaskId: publication.subtaskId,
             publicationId: publication.id,
             conflictChainId,
-            agentClassName: publication.agentClassName,
+            authorizedBinding: sourceReceipt.authorizedBinding,
+            bindingFingerprint: sourceReceipt.bindingFingerprint,
             sourceAttemptId: publication.sourceAttemptId,
             repairAttemptsUsed: publication.repairAttemptsUsed,
             conflictReplansUsed: publication.conflictReplansUsed,

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { SubtaskStatus } from '../core/types.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import {
   ExecutorAttemptReceiptRepo,
@@ -9,12 +10,32 @@ import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js'
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 
+type AttemptTerminalEvent =
+  | (Omit<
+      Extract<KernelEvent, { type: 'execution_outcome' }>,
+      'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
+    > & {
+      configurationRevision?: string;
+      authorizedBinding?: AuthorizedExecutorBinding;
+      bindingFingerprint?: string;
+      agentClassName?: string;
+    })
+  | (Omit<
+      Extract<KernelEvent, { type: 'handoff_contract_failed' }>,
+      'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
+    > & {
+      configurationRevision?: string;
+      authorizedBinding?: AuthorizedExecutorBinding;
+      bindingFingerprint?: string;
+      agentClassName?: string;
+    });
+
 export interface AttemptTerminalLanding {
   receipt: ExecutorAttemptReceiptInsert;
   expectedSubtaskStatus: SubtaskStatus;
   nextSubtaskStatus: SubtaskStatus;
   subtaskError: string | null;
-  event: KernelEvent;
+  event: AttemptTerminalEvent;
   publication?: Parameters<WorkspacePublicationRepo['insertCandidate']>[0];
   repairPublication?: {
     publicationId: string;
@@ -138,9 +159,10 @@ export class AttemptTerminalService {
       if (!terminalDispatch || !['terminal', 'cancelled'].includes(terminalDispatch.status)) {
         throw new Error(`dispatch item did not become terminal: ${input.receipt.attemptId}`);
       }
-      const event = cancellationWon
-        ? cancellationOutcome(input.event, dispatch, input.now)
-        : input.event;
+      const terminalEvent = materializeTerminalEvent(input.event, dispatch);
+      const event = cancellationWon && terminalEvent.type === 'execution_outcome'
+        ? cancellationOutcome(terminalEvent, dispatch, input.now)
+        : terminalEvent;
       this.workflow.enqueue(event, event.occurredAt);
       if (!this.workflow.findEvent(event.id)) {
         throw new Error(`attempt outcome inbox was not persisted: ${event.id}`);
@@ -151,12 +173,13 @@ export class AttemptTerminalService {
 }
 
 function cancellationOutcome(
-  event: KernelEvent,
+  event: Extract<KernelEvent, { type: 'execution_outcome' }>,
   dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
   now: string,
 ): KernelEvent {
   return {
     schemaVersion: 5,
+    configurationRevision: dispatch.configurationRevision,
     type: 'execution_outcome',
     id: event.id,
     correlationId: dispatch.decisionId,
@@ -167,7 +190,8 @@ function cancellationOutcome(
     subtaskId: dispatch.subtaskId,
     attemptId: dispatch.attemptId,
     terminalKind: 'failed',
-    agentClassName: dispatch.agentClassName,
+    authorizedBinding: dispatch.authorizedBinding,
+    bindingFingerprint: dispatch.bindingFingerprint,
     attemptKind: dispatch.attemptKind,
     sourceAttemptId: dispatch.sourceAttemptId,
     failure: {
@@ -176,5 +200,26 @@ function cancellationOutcome(
       code: 'cancelled_or_stale',
       summary: 'Cancellation fence won before attempt terminal landing',
     },
+  };
+}
+
+function materializeTerminalEvent(
+  event: AttemptTerminalEvent,
+  dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
+): Extract<KernelEvent, {
+  type: 'execution_outcome' | 'handoff_contract_failed';
+}> {
+  const {
+    agentClassName: _agentClassName,
+    configurationRevision: _configurationRevision,
+    authorizedBinding: _authorizedBinding,
+    bindingFingerprint: _bindingFingerprint,
+    ...eventFacts
+  } = event;
+  return {
+    ...eventFacts,
+    configurationRevision: dispatch.configurationRevision,
+    authorizedBinding: dispatch.authorizedBinding,
+    bindingFingerprint: dispatch.bindingFingerprint,
   };
 }

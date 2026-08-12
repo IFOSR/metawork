@@ -21,6 +21,15 @@ describe('PermissionWorkflowService', () => {
       listDeniedFingerprints: vi.fn().mockReturnValue([]),
       deny: vi.fn().mockImplementation(() => { status = 'denied'; order.push('deny'); }),
     };
+    const decide = vi.fn().mockImplementation((event: KernelEvent) => ({
+      schemaVersion: 5,
+      configurationRevision: event.configurationRevision,
+      id: 'decision_deny',
+      eventId: event.id,
+      reason: 'test denial',
+      createdAt: event.occurredAt,
+      action: { type: 'deny_capability', requestId: normalized!.id, ruleId: null, authorization: null },
+    }));
     const service = new PermissionWorkflowService({
       context: context(),
       repository,
@@ -32,14 +41,7 @@ describe('PermissionWorkflowService', () => {
       },
       workflowStore: inMemoryWorkflowStore(),
       kernel: {
-        decide: vi.fn().mockImplementation((event: KernelEvent) => ({
-          schemaVersion: 1,
-          id: 'decision_deny',
-          eventId: event.id,
-          reason: 'test denial',
-          createdAt: event.occurredAt,
-          action: { type: 'deny_capability', requestId: normalized!.id, ruleId: null, authorization: null },
-        })),
+        decide,
       },
       rules: [],
       hooks: {
@@ -59,6 +61,76 @@ describe('PermissionWorkflowService', () => {
     });
 
     expect(order).toEqual(['pause', 'checkpoint', 'deny', 'resume']);
+    expect(decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'permission_requested',
+        configurationRevision: 'configuration-revision-1',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('uses the persisted attempt revision for permission resolution events', async () => {
+    const request = normalizedRequest();
+    const decide = vi.fn().mockImplementation((event: KernelEvent) => ({
+      schemaVersion: 5,
+      configurationRevision: event.configurationRevision,
+      id: 'decision_permission_resolution',
+      eventId: event.id,
+      reason: 'test approval',
+      createdAt: event.occurredAt,
+      action: {
+        type: 'grant_capability',
+        requestId: request.id,
+        limits: {
+          expiresAt: '2026-07-23T00:05:00.000Z',
+          maxCalls: 1,
+          maxBytes: 1024,
+        },
+        ruleId: 'test',
+        authorization: null,
+      },
+    }));
+    const service = new PermissionWorkflowService({
+      context: context(),
+      repository: {
+        findRequest: vi.fn().mockReturnValue(record(
+          request,
+          'pending',
+          '2026-07-23T00:00:00.000Z',
+        )),
+        listGrants: vi.fn().mockReturnValue([]),
+        listApprovedFingerprints: vi.fn().mockReturnValue([]),
+        listDeniedFingerprints: vi.fn().mockReturnValue([]),
+        grant: vi.fn(),
+      },
+      executionBackend: {
+        inspect: vi.fn().mockResolvedValue(null),
+      },
+      workflowStore: inMemoryWorkflowStore(),
+      kernel: { decide },
+      rules: [],
+      hooks: {
+        checkpoint: vi.fn(),
+        onEscalation: vi.fn(),
+        onRecoveryAuthorized: vi.fn(),
+      },
+      clock: { now: () => '2026-07-23T00:00:00.000Z' },
+    } as never);
+
+    await service.resolve({
+      requestId: request.id,
+      resolution: 'approve',
+      source: 'command',
+    });
+
+    expect(decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'permission_resolution_received',
+        configurationRevision: 'configuration-revision-1',
+      }),
+      expect.anything(),
+    );
   });
 
   it('returns the persisted grant ID for an already authorized request', async () => {
@@ -164,7 +236,28 @@ function context() {
   return {
     sessionId: 'session_1', taskId: 'task_1', generationId: 'generation_1', subtaskId: 'subtask_1',
     attemptId: 'attempt_1', agentClassName: 'codex-cli', permissionProfileId: 'workspace-engineering' as const,
+    configurationRevision: 'configuration-revision-1',
     containerId: 'container_1', workspaceId: 'workspace_1', checkpointId: null,
+  };
+}
+
+function normalizedRequest(): NormalizedCapabilityRequest {
+  return {
+    id: 'permission-request-1',
+    fingerprint: 'permission-fingerprint-1',
+    taskId: 'task_1',
+    generationId: 'generation_1',
+    subtaskId: 'subtask_1',
+    attemptId: 'attempt_1',
+    agentClassName: 'codex-cli',
+    permissionProfileId: 'workspace-engineering',
+    capability: 'logical_resource_operation',
+    resource: 'resource',
+    operation: 'inspect',
+    reason: 'test permission resolution',
+    suggestedScope: 'once',
+    partition: { kind: 'logical', namespace: 'test', key: 'resource' },
+    distinctRequestOrdinal: 1,
   };
 }
 

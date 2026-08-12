@@ -26,6 +26,7 @@ export interface PermissionAttemptContext {
   subtaskId: string;
   attemptId: string;
   agentClassName: string;
+  configurationRevision: string;
   permissionProfileId: NormalizedCapabilityRequest['permissionProfileId'];
   containerId: string;
   workspaceId: string;
@@ -101,6 +102,7 @@ export class PermissionWorkflowService {
     }
     const event: Extract<KernelEvent, { type: 'permission_requested' }> = {
       schemaVersion: 5,
+      configurationRevision: this.deps.context.configurationRevision,
       type: 'permission_requested',
       id: `permission_event_${record.request.id}`,
       correlationId: record.request.id,
@@ -164,6 +166,7 @@ export class PermissionWorkflowService {
     }
     await this.workflow().submit({
       schemaVersion: 5,
+      configurationRevision: this.deps.context.configurationRevision,
       type: 'permission_resolution_received',
       id: `permission_resolution_${input.requestId}_${input.resolution}`,
       correlationId: input.requestId,

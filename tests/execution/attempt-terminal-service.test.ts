@@ -13,8 +13,20 @@ import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import type { Subtask } from '../../src/core/types.js';
 import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 
-function setup() {
+const authorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-cli',
+  providerRef: 'openai',
+  modelRef: 'gpt-5-codex',
+  permissionProfileRef: 'workspace-engineering',
+  configurationRevision: 'legacy-import-v31',
+};
+const bindingFingerprint = 'binding-fingerprint-terminal';
+
+function setup(workflowMode: 'capturing' | 'real' = 'capturing') {
   const db = new Database(':memory:');
   runMigrations(db);
   const now = '2026-07-28T00:00:00.000Z';
@@ -28,6 +40,23 @@ function setup() {
       '[]', '{}', '[]', '', '', 0, ?, ?
     )
   `).run(now, now);
+  db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (?, 'sha256:terminal-test', 'native', ?)
+  `).run(authorizedBinding.configurationRevision, now);
+  new WorkGraphRevisionRepo(db).activate({
+    id: 'graph-terminal-1',
+    taskId: 'task-terminal',
+    revision: 1,
+    generationId: 'generation-terminal',
+    configurationRevision: authorizedBinding.configurationRevision,
+    authorizedDecisionId: null,
+    proposalSource: 'initial',
+    automaticReplan: false,
+    createdAt: now,
+    updatedAt: now,
+  });
   const subtask: Subtask = {
     id: 'subtask-terminal',
     taskId: 'task-terminal',
@@ -39,7 +68,7 @@ function setup() {
     dependencies: [],
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'],
+    executorBindings: [authorizedBinding],
     deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
     riskLevel: 'low',
@@ -73,17 +102,41 @@ function setup() {
       attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
       agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
       attempt_payload_json, resource_grant_json, status, launch_started_at,
+      configuration_revision, authorized_binding_json, binding_fingerprint,
       created_at, updated_at
     ) VALUES (
       'attempt-terminal', 'decision-terminal', 0, 'task-terminal', 'generation-terminal',
       'subtask-terminal', 'codex-cli', 'primary', NULL, 'fresh', 'null', '[]',
-      'running', ?, ?, ?
+      'running', ?, ?, ?, ?, ?, ?
     )
-  `).run(now, now, now);
+  `).run(
+    now,
+    authorizedBinding.configurationRevision,
+    JSON.stringify(authorizedBinding),
+    bindingFingerprint,
+    now,
+    now,
+  );
+  const service = new AttemptTerminalService(db);
+  let capturedEvent: KernelEvent | null = null;
+  if (workflowMode === 'capturing') {
+    Object.defineProperty(service, 'workflow', {
+      value: {
+        enqueue(event: KernelEvent) {
+          capturedEvent = event;
+          return true;
+        },
+        findEvent(id: string) {
+          return capturedEvent?.id === id ? capturedEvent : null;
+        },
+      },
+    });
+  }
   return {
     db,
     now,
-    service: new AttemptTerminalService(db),
+    service,
+    capturedEvent: () => capturedEvent,
     tasks: new TaskRepo(db),
     subtasks,
     dispatch: new KernelDispatchItemRepo(db),
@@ -96,6 +149,7 @@ function setup() {
 function outcomeEvent(now: string): KernelEvent {
   return {
     schemaVersion: 5,
+    configurationRevision: 'stale-caller-revision',
     type: 'execution_outcome',
     id: 'event_attempt-terminal_execution_outcome',
     correlationId: 'decision-terminal',
@@ -106,7 +160,12 @@ function outcomeEvent(now: string): KernelEvent {
     subtaskId: 'subtask-terminal',
     attemptId: 'attempt-terminal',
     terminalKind: 'failed',
-    agentClassName: 'codex-cli',
+    authorizedBinding: {
+      ...authorizedBinding,
+      modelRef: 'stale-caller-model',
+      configurationRevision: 'stale-caller-revision',
+    },
+    bindingFingerprint: 'stale-caller-fingerprint',
     attemptKind: 'primary',
     sourceAttemptId: null,
     failure: {
@@ -120,7 +179,7 @@ function outcomeEvent(now: string): KernelEvent {
 
 describe('AttemptTerminalService', () => {
   it('rolls back receipt, Subtask, dispatch and outcome inbox together when landing fails', () => {
-    const setupResult = setup();
+    const setupResult = setup('real');
     setupResult.db.exec(`
       CREATE TRIGGER reject_terminal_outcome
       BEFORE INSERT ON kernel_events
@@ -203,7 +262,99 @@ describe('AttemptTerminalService', () => {
 
     expect(setupResult.dispatch.find('attempt-terminal')?.status).toBe('terminal');
     expect(setupResult.receipts.findByAttemptId('attempt-terminal')).not.toBeNull();
-    expect(setupResult.workflow.findEvent('event_attempt-terminal_execution_outcome')).not.toBeNull();
+    expect(setupResult.capturedEvent()).not.toBeNull();
+  });
+
+  it('materializes the terminal event binding from the persisted dispatch item', () => {
+    const setupResult = setup();
+
+    setupResult.service.land({
+      receipt: {
+        attemptId: 'attempt-terminal',
+        executionId: 'execution-terminal',
+        taskId: 'task-terminal',
+        subtaskId: 'subtask-terminal',
+        workUnitId: 'work-unit-terminal',
+        agentClassName: 'codex-cli',
+        startedAt: setupResult.now,
+        completedAt: setupResult.now,
+        terminalState: 'executor_failed',
+        rawResponse: '',
+        completionSchemaVersion: null,
+        parsing: {},
+        verification: { warnings: [], violations: [] },
+        errorCode: 'executor_failed',
+        errorDetail: 'executor failed',
+        failure: outcomeEvent(setupResult.now).type === 'execution_outcome'
+          ? outcomeEvent(setupResult.now).failure
+          : null,
+      },
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_decision',
+      subtaskError: 'executor failed',
+      event: outcomeEvent(setupResult.now),
+      now: setupResult.now,
+    });
+
+    expect(setupResult.capturedEvent()).toMatchObject({
+      configurationRevision: authorizedBinding.configurationRevision,
+      authorizedBinding,
+      bindingFingerprint,
+    });
+  });
+
+  it('materializes handoff contract failures from the persisted dispatch binding', () => {
+    const setupResult = setup();
+
+    setupResult.service.land({
+      receipt: {
+        attemptId: 'attempt-terminal',
+        executionId: 'execution-terminal',
+        taskId: 'task-terminal',
+        subtaskId: 'subtask-terminal',
+        workUnitId: 'work-unit-terminal',
+        agentClassName: 'codex-cli',
+        startedAt: setupResult.now,
+        completedAt: setupResult.now,
+        terminalState: 'contract_blocked',
+        rawResponse: '{}',
+        completionSchemaVersion: null,
+        parsing: {},
+        verification: { warnings: [], violations: [] },
+        errorCode: 'completion_contract_failed',
+        errorDetail: 'completion contract failed',
+        failure: null,
+      },
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_decision',
+      subtaskError: 'completion contract failed',
+      event: {
+        schemaVersion: 5,
+        type: 'handoff_contract_failed',
+        id: 'event_attempt-terminal_handoff_contract_failed',
+        correlationId: 'decision-terminal',
+        causationId: 'decision-terminal',
+        occurredAt: setupResult.now,
+        sessionId: 'session-terminal',
+        taskId: 'task-terminal',
+        subtaskId: 'subtask-terminal',
+        attemptId: 'attempt-terminal',
+        workUnitId: 'work-unit-terminal',
+        agentClassName: 'stale-caller-agent-class',
+        contract: {},
+        violations: [],
+        receiptCount: 1,
+        responseBytes: 2,
+      },
+      now: setupResult.now,
+    });
+
+    expect(setupResult.capturedEvent()).toMatchObject({
+      type: 'handoff_contract_failed',
+      configurationRevision: authorizedBinding.configurationRevision,
+      authorizedBinding,
+      bindingFingerprint,
+    });
   });
 
   it('lands a repaired candidate with the merge-repair terminal facts', () => {
@@ -273,7 +424,7 @@ describe('AttemptTerminalService', () => {
   });
 
   it('rolls back a merge-repair publication update with the rest of terminal landing', () => {
-    const setupResult = setup();
+    const setupResult = setup('real');
     setupResult.publications.insertCandidate({
       id: 'publication-terminal',
       taskId: 'task-terminal',
