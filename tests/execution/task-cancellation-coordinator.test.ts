@@ -20,12 +20,23 @@ import { TaskCancellationCoordinator } from '../../src/execution/task-cancellati
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AttemptExecutionBackend, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+
+const authorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-cli',
+  providerRef: 'openai',
+  modelRef: 'gpt-5-codex',
+  permissionProfileRef: 'workspace-engineering',
+  configurationRevision: 'configuration_revision_1',
+};
 
 describe('TaskCancellationCoordinator', () => {
   it('commits the Task fence first, then drains every attempt, publication, WorkUnit, lease, and execution backend', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
+    seedConfigurationRevision(db);
     new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-task-cancel');
@@ -33,6 +44,19 @@ describe('TaskCancellationCoordinator', () => {
     const task = taskEngine.create({ id: 'task-cancel', title: 'Cancel', goal: 'Cancel safely' });
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
+    const revisions = new WorkGraphRevisionRepo(db);
+    revisions.activate({
+      id: 'revision-cancel-1',
+      taskId: task.id,
+      revision: 1,
+      generationId: 'generation-cancel-1',
+      configurationRevision: authorizedBinding.configurationRevision,
+      authorizedDecisionId: null,
+      proposalSource: 'initial',
+      automaticReplan: false,
+      createdAt: now,
+      updatedAt: now,
+    });
     const subtasks = new SubtaskRepo(db);
     for (const [id, status] of [
       ['done', 'done'],
@@ -43,21 +67,13 @@ describe('TaskCancellationCoordinator', () => {
     ] as const) {
       subtasks.upsert(subtask(task.id, id, status));
     }
-    const revisions = new WorkGraphRevisionRepo(db);
-    revisions.activate({
-      id: 'revision-cancel-1',
-      taskId: task.id,
-      revision: 1,
-      generationId: 'generation-cancel-1',
-      authorizedDecisionId: null,
-      proposalSource: 'initial',
-      automaticReplan: false,
-      createdAt: now,
-      updatedAt: now,
-    });
 
     const dispatch = new KernelDispatchItemRepo(db);
-    dispatch.insertBatch(dispatchDecision(task.id), 'generation-cancel-1', now);
+    dispatch.insertBatch(
+      dispatchDecision(task.id),
+      dispatchBindingContext(['left', 'right', 'pending']),
+      now,
+    );
     const workUnits = new WorkUnitRepo(db);
     for (const suffix of ['left', 'right']) {
       workUnits.upsert({
@@ -242,6 +258,7 @@ describe('TaskCancellationCoordinator', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
+    seedConfigurationRevision(db);
     new AgentClassService({ db }).seedDefaults();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-subtask-cancel');
@@ -253,6 +270,19 @@ describe('TaskCancellationCoordinator', () => {
     });
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
+    const revisions = new WorkGraphRevisionRepo(db);
+    revisions.activate({
+      id: 'revision-subtask-cancel',
+      taskId: task.id,
+      revision: 1,
+      generationId: 'generation-cancel-1',
+      configurationRevision: authorizedBinding.configurationRevision,
+      authorizedDecisionId: null,
+      proposalSource: 'initial',
+      automaticReplan: false,
+      createdAt: now,
+      updatedAt: now,
+    });
     const subtasks = new SubtaskRepo(db);
     subtasks.upsert(subtask(task.id, 'root', 'running'));
     subtasks.upsert({
@@ -263,18 +293,6 @@ describe('TaskCancellationCoordinator', () => {
       }],
     });
     subtasks.upsert(subtask(task.id, 'sibling', 'running'));
-    const revisions = new WorkGraphRevisionRepo(db);
-    revisions.activate({
-      id: 'revision-subtask-cancel',
-      taskId: task.id,
-      revision: 1,
-      generationId: 'generation-cancel-1',
-      authorizedDecisionId: null,
-      proposalSource: 'initial',
-      automaticReplan: false,
-      createdAt: now,
-      updatedAt: now,
-    });
     const dispatch = new KernelDispatchItemRepo(db);
     dispatch.insertBatch({
       schemaVersion: 5,
@@ -287,6 +305,8 @@ describe('TaskCancellationCoordinator', () => {
         items: ['root', 'sibling'].map((id, order) => ({
           subtaskId: id,
           agentClassName: 'codex-cli',
+          authorizedBinding,
+          bindingFingerprint: `sha256:${id}`,
           attemptId: `attempt-${id}`,
           attemptKind: 'primary' as const,
           sourceAttemptId: null,
@@ -296,7 +316,7 @@ describe('TaskCancellationCoordinator', () => {
           attemptPayload: null,
         })),
       },
-    }, 'generation-cancel-1', now);
+    }, dispatchBindingContext(['root', 'sibling']), now);
     const abortAttempt = vi.fn();
     const coordinator = new TaskCancellationCoordinator({
       db,
@@ -313,6 +333,21 @@ describe('TaskCancellationCoordinator', () => {
       attemptExecutionBackend: {} as AttemptExecutionBackend,
       attemptExecutionRepository: new SqliteAttemptExecutionRepository(db),
     });
+
+    expect(coordinator.buildSnapshot(task.id).subtasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'root',
+        executorBindings: [authorizedBinding],
+      }),
+      expect.objectContaining({
+        id: 'downstream',
+        executorBindings: [authorizedBinding],
+      }),
+      expect.objectContaining({
+        id: 'sibling',
+        executorBindings: [authorizedBinding],
+      }),
+    ]));
 
     coordinator.apply({
       schemaVersion: 5,
@@ -344,6 +379,32 @@ describe('TaskCancellationCoordinator', () => {
 
 const now = '2026-07-28T00:00:00.000Z';
 
+function seedConfigurationRevision(db: Database.Database): void {
+  db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (?, ?, 'native', ?)
+  `).run(
+    authorizedBinding.configurationRevision,
+    'sha256:test-configuration',
+    now,
+  );
+}
+
+function dispatchBindingContext(ids: string[]) {
+  return {
+    generationId: 'generation-cancel-1',
+    configurationRevision: authorizedBinding.configurationRevision,
+    attempts: Object.fromEntries(ids.map(id => [
+      `attempt-${id}`,
+      {
+        authorizedBinding,
+        bindingFingerprint: `sha256:${id}`,
+      },
+    ])),
+  };
+}
+
 function subtask(
   taskId: string,
   id: string,
@@ -360,7 +421,7 @@ function subtask(
     dependencies: [],
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'] as const,
-    preferredAgentClassList: ['codex-cli'] as const,
+    executorBindings: [authorizedBinding],
     deliveryKind: 'report' as const,
     acceptance: [],
     riskLevel: 'low' as const,
@@ -387,6 +448,8 @@ function dispatchDecision(taskId: string): KernelDecision & {
       items: ['left', 'right', 'pending'].map((id, order) => ({
         subtaskId: id,
         agentClassName: 'codex-cli',
+        authorizedBinding,
+        bindingFingerprint: `sha256:${id}`,
         attemptId: `attempt-${id}`,
         attemptKind: 'primary' as const,
         sourceAttemptId: null,

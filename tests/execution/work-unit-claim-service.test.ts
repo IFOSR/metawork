@@ -4,7 +4,17 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import type { AgentClass, WorkUnit } from '../../src/core/types.js';
+
+const authorizedBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-cli',
+  providerRef: 'openai',
+  modelRef: 'gpt-5-codex',
+  permissionProfileRef: 'workspace-engineering',
+  configurationRevision: 'configuration_revision_1',
+};
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -66,8 +76,8 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['codex-cli'],
       },
+      authorizedBinding,
     });
 
     expect(claim?.workUnit.id).toBe('executor-1');
@@ -138,8 +148,8 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['codex-cli'],
       },
+      authorizedBinding,
     });
     repo.updateState('executor-1', 'running', {
       claimedTaskId: 'task_2',
@@ -193,8 +203,8 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['codex-cli'],
       },
+      authorizedBinding,
     });
 
     expect(probe).toHaveBeenCalledWith('codex-cli', 'claim');
@@ -206,7 +216,7 @@ describe('WorkUnitClaimService', () => {
     ]);
   });
 
-  it('falls back through planner candidates and preserves failed probes', async () => {
+  it('probes only the single Kernel-authorized AgentClass and never falls back', async () => {
     const db = createDb();
     const classes = new AgentClassRepo(db);
     classes.upsert(agentClass('first-executor'));
@@ -219,23 +229,24 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['first-executor', 'second-executor'],
+      },
+      authorizedBinding: {
+        ...authorizedBinding,
+        agentClassRef: 'first-executor',
       },
     });
 
-    expect(probe.mock.calls.map(call => call[0])).toEqual(['first-executor', 'second-executor']);
-    expect(claim?.workUnit.agentClassName).toBe('second-executor');
-    expect(repo.findAll()).toEqual(expect.arrayContaining([
+    expect(probe.mock.calls.map(call => call[0])).toEqual(['first-executor']);
+    expect(claim).toBeNull();
+    expect(repo.findAll()).toEqual([
       expect.objectContaining({ agentClassName: 'first-executor', state: 'failed' }),
-      expect.objectContaining({ agentClassName: 'second-executor', state: 'claimed' }),
-    ]));
+    ]);
   });
 
-  it('returns no claim when every planned executor probe fails', async () => {
+  it('returns no claim when the authorized executor probe fails', async () => {
     const db = createDb();
     const classes = new AgentClassRepo(db);
     classes.upsert(agentClass('first-executor'));
-    classes.upsert(agentClass('second-executor'));
     const repo = new WorkUnitRepo(db);
 
     const claim = await new WorkUnitClaimService(repo, 60_000, async () => false).claim({
@@ -243,13 +254,16 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['first-executor', 'second-executor'],
+      },
+      authorizedBinding: {
+        ...authorizedBinding,
+        agentClassRef: 'first-executor',
       },
     });
 
     expect(claim).toBeNull();
     expect(repo.findAll().filter(unit => unit.agentClassKind === 'executor').map(unit => unit.state))
-      .toEqual(['failed', 'failed']);
+      .toEqual(['failed']);
   });
 
   it('persists the concrete executor probe error for later diagnostics', async () => {
@@ -267,8 +281,8 @@ describe('WorkUnitClaimService', () => {
       attemptId: 'attempt_1',
       subtask: {
         id: 'subtask_1',
-        preferredAgentClassList: ['codex-cli'],
       },
+      authorizedBinding,
     });
 
     expect(claim).toBeNull();

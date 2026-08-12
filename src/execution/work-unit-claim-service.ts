@@ -1,3 +1,4 @@
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -27,18 +28,17 @@ export class WorkUnitClaimService {
 
   async claim(input: {
     taskId: string;
-    subtask: Pick<Subtask, 'id' | 'preferredAgentClassList'>;
+    subtask: Pick<Subtask, 'id'>;
+    authorizedBinding: AuthorizedExecutorBinding;
     attemptId: string;
   }): Promise<WorkUnitClaim | null> {
+    const agentClassName = input.authorizedBinding.agentClassRef;
     let workUnit = this.workUnitRepo.findIdleByKind(
       'executor',
-      input.subtask.preferredAgentClassList,
+      [agentClassName],
     );
     if (!workUnit) {
-      for (const agentClassName of input.subtask.preferredAgentClassList) {
-        workUnit = await this.provisionExecutor(agentClassName, 'claim');
-        if (workUnit) break;
-      }
+      workUnit = await this.provisionExecutor(agentClassName, 'claim');
     }
     if (!workUnit) return null;
 

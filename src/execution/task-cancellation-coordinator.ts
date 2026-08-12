@@ -68,7 +68,7 @@ export class TaskCancellationCoordinator {
         id: subtask.id,
         taskId: subtask.taskId,
         status: subtask.status,
-        preferredAgentClassList: subtask.preferredAgentClassList,
+        executorBindings: subtask.executorBindings,
         dependencySubtaskIds: subtask.dependencies.map(dependency => dependency.fromSubtaskId),
       })),
       completionBlockedReasons: this.completionBlockedReasons(

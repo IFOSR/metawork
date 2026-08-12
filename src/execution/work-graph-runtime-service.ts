@@ -1,4 +1,5 @@
-// Applies a Kernel-approved v5 work graph revision or recovers its active revision.
+// Applies a Kernel-approved v7 work graph revision or recovers its active revision.
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { Subtask, Task } from '../core/types.js';
 import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -18,7 +19,16 @@ export interface WorkGraphAuthorization {
 export type WorkGraphRuntimeResult =
   | { outcome: 'applied'; workGraph: WorkGraphProposal; subtasks: Subtask[] }
   | { outcome: 'recovered'; workGraph: WorkGraphProposal; subtasks: Subtask[] }
-  | { outcome: 'not_executable'; reason: 'missing_graph' | 'missing_authorization' | 'revision_conflict' | 'generation_conflict' };
+  | {
+      outcome: 'not_executable';
+      reason:
+        | 'missing_graph'
+        | 'missing_authorization'
+        | 'missing_authorized_bindings'
+        | 'configuration_conflict'
+        | 'revision_conflict'
+        | 'generation_conflict';
+    };
 
 /** Runtime materialization deliberately has no planning or routing fallback. */
 export class WorkGraphRuntimeService {
@@ -38,6 +48,7 @@ export class WorkGraphRuntimeService {
     userPrompt: string;
     sessionId?: string;
     authorizedWorkGraph?: WorkGraphProposal | null;
+    authorizedBindingsBySubtask?: Readonly<Record<string, AuthorizedExecutorBinding[]>> | null;
     authorization?: WorkGraphAuthorization | null;
   }): WorkGraphRuntimeResult {
     const proposedGraph = input.authorizedWorkGraph ?? null;
@@ -49,9 +60,22 @@ export class WorkGraphRuntimeService {
     if (proposedGraph) {
       const authorization = input.authorization ?? null;
       if (!authorization) return { outcome: 'not_executable', reason: 'missing_authorization' };
+      const authorizedBindings = validateAuthorizedBindings(
+        proposedGraph,
+        input.authorizedBindingsBySubtask ?? null,
+      );
+      if (!authorizedBindings) {
+        return { outcome: 'not_executable', reason: 'missing_authorized_bindings' };
+      }
+      if (authorizedBindings === 'configuration_conflict') {
+        return { outcome: 'not_executable', reason: 'configuration_conflict' };
+      }
       if (activeRevision) {
         if (authorization.generationId !== activeRevision.generationId) {
           return { outcome: 'not_executable', reason: 'generation_conflict' };
+        }
+        if (proposedGraph.configurationRevision !== activeRevision.configurationRevision) {
+          return { outcome: 'not_executable', reason: 'configuration_conflict' };
         }
         if (authorization.revision === activeRevision.revision) {
           return { outcome: 'recovered', workGraph: proposedGraph, subtasks: existing };
@@ -73,6 +97,7 @@ export class WorkGraphRuntimeService {
           taskId: input.task.id,
           revision: authorization.revision,
           generationId: authorization.generationId,
+          configurationRevision: proposedGraph.configurationRevision,
           authorizedDecisionId: authorization.decisionId,
           proposalSource: authorization.source,
           automaticReplan: authorization.automaticReplan,
@@ -84,16 +109,19 @@ export class WorkGraphRuntimeService {
           input.userPrompt,
           input.sessionId,
           proposedGraph,
+          authorizedBindings,
           authorization,
         );
         return { outcome: 'applied', workGraph: proposedGraph, subtasks } as const;
       });
     }
-    if (existing.length > 0) {
+    if (activeRevision && existing.length > 0) {
       return {
         outcome: 'recovered',
         workGraph: {
-          reason: 'reusing existing persisted v5 work graph revision',
+          schemaVersion: 7,
+          configurationRevision: activeRevision.configurationRevision,
+          reason: 'reusing existing persisted v7 work graph revision',
           subtasks: existing.map(subtaskToProposal),
         },
         subtasks: existing,
@@ -145,22 +173,30 @@ export class WorkGraphRuntimeService {
     userPrompt: string,
     sessionId: string | undefined,
     workGraph: WorkGraphProposal,
+    authorizedBindingsBySubtask: Readonly<Record<string, AuthorizedExecutorBinding[]>>,
     authorization: WorkGraphAuthorization,
   ): Subtask[] {
     const now = new Date().toISOString();
     const idMap = buildSubtaskIdMap(taskId, authorization.revision, workGraph.subtasks);
     const subtasks: Subtask[] = workGraph.subtasks.map(proposal => ({
-      ...proposal,
       id: idMap.get(proposal.id) ?? stableSubtaskId(taskId, authorization.revision, proposal.id, new Set()),
       taskId,
       graphRevision: authorization.revision,
       generationId: authorization.generationId,
+      title: proposal.title,
+      goal: proposal.goal,
       status: 'ready',
       dependencies: proposal.dependencies.map(dependency => ({
         ...dependency,
         fromSubtaskId: idMap.get(dependency.fromSubtaskId)
           ?? normalizeSubtaskId(taskId, authorization.revision, dependency.fromSubtaskId),
       })),
+      contextRefs: proposal.contextRefs,
+      requiredCapabilities: proposal.requiredCapabilities,
+      executorBindings: authorizedBindingsBySubtask[proposal.id]!,
+      deliveryKind: proposal.deliveryKind,
+      acceptance: proposal.acceptance,
+      riskLevel: proposal.riskLevel,
       result: '',
       artifacts: [],
       verification: { warnings: [], completionSchemaVersion: null },
@@ -174,7 +210,7 @@ export class WorkGraphRuntimeService {
       this.taskEvents.record(taskId, subtask.id, 'subtask_planned', subtask.title, {
         dependencies: subtask.dependencies,
         requiredCapabilities: subtask.requiredCapabilities,
-        preferredAgentClassList: subtask.preferredAgentClassList,
+        executorBindings: subtask.executorBindings,
       });
     }
     if (subtasks.some(subtask => subtask.contextRefs.some(ref => ref.kind === 'current_user_input'))) {
@@ -200,6 +236,7 @@ export class WorkGraphRuntimeService {
       subtaskIds: subtasks.map(subtask => subtask.id),
       graphRevision: authorization.revision,
       generationId: authorization.generationId,
+      configurationRevision: workGraph.configurationRevision,
       authorizedDecisionId: authorization.decisionId,
     });
     return subtasks;
@@ -214,11 +251,43 @@ function subtaskToProposal(subtask: Subtask): SubtaskProposal {
     dependencies: subtask.dependencies,
     contextRefs: subtask.contextRefs,
     requiredCapabilities: subtask.requiredCapabilities as SubtaskProposal['requiredCapabilities'],
-    preferredAgentClassList: subtask.preferredAgentClassList as SubtaskProposal['preferredAgentClassList'],
+    executorBindings: subtask.executorBindings.map(binding => ({
+      agentClassRef: binding.agentClassRef,
+      modelSelection: {
+        mode: 'proposed',
+        modelRef: binding.modelRef,
+        reason: 'recovered from Kernel-authorized binding',
+      },
+    })),
     deliveryKind: subtask.deliveryKind,
     acceptance: subtask.acceptance,
     riskLevel: subtask.riskLevel,
   };
+}
+
+function validateAuthorizedBindings(
+  workGraph: WorkGraphProposal,
+  authorizedBindingsBySubtask: Readonly<Record<string, AuthorizedExecutorBinding[]>> | null,
+): Readonly<Record<string, AuthorizedExecutorBinding[]>> | 'configuration_conflict' | null {
+  if (!authorizedBindingsBySubtask) return null;
+  const proposalIds = new Set(workGraph.subtasks.map(subtask => subtask.id));
+  const bindingIds = Object.keys(authorizedBindingsBySubtask);
+  if (
+    bindingIds.length !== proposalIds.size
+    || bindingIds.some(id => !proposalIds.has(id))
+  ) {
+    return null;
+  }
+  for (const subtask of workGraph.subtasks) {
+    const bindings = authorizedBindingsBySubtask[subtask.id];
+    if (!bindings || bindings.length === 0) return null;
+    if (bindings.some(
+      binding => binding.configurationRevision !== workGraph.configurationRevision,
+    )) {
+      return 'configuration_conflict';
+    }
+  }
+  return authorizedBindingsBySubtask;
 }
 
 function buildSubtaskIdMap(taskId: string, revision: number, proposals: SubtaskProposal[]): Map<string, string> {
