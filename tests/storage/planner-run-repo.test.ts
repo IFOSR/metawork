@@ -1,14 +1,26 @@
-import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { PlannerRunRepo } from '../../src/storage/planner-run-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { REVISION, createV31RepositoryDb } from './v31-repository-fixture.js';
 
 describe('PlannerRunRepo', () => {
   it('records bounded planner status and redacted tool summaries', () => {
-    const db = new Database(':memory:');
-    runMigrations(db);
+    const db = createV31RepositoryDb();
     const repo = new PlannerRunRepo(db);
-    const run = repo.start('sess_audit', 'interactive');
+    const plannerBinding = {
+      agentClassRef: 'planner',
+      harnessRef: 'anyfusion-planner',
+      providerRef: 'openai',
+      modelRef: 'planner-model',
+      permissionProfileRef: null,
+      configurationRevision: REVISION,
+    };
+    const run = repo.start({
+      sessionId: 'sess_audit',
+      requestSource: 'interactive',
+      configurationRevision: REVISION,
+      plannerBinding,
+      plannerBindingFingerprint: 'sha256:planner',
+    });
 
     repo.finish({
       id: run.id,
@@ -34,7 +46,8 @@ describe('PlannerRunRepo', () => {
     });
 
     expect(db.prepare(`
-      SELECT session_id, request_source, status, attempt_count, duration_ms, error_summary
+      SELECT session_id, request_source, status, attempt_count, duration_ms,
+             error_summary, configuration_revision, planner_binding_fingerprint
       FROM planner_runs WHERE id = ?
     `).get(run.id)).toEqual({
       session_id: 'sess_audit',
@@ -43,7 +56,13 @@ describe('PlannerRunRepo', () => {
       attempt_count: 2,
       duration_ms: 321,
       error_summary: expect.stringContaining('[REDACTED]'),
+      configuration_revision: REVISION,
+      planner_binding_fingerprint: 'sha256:planner',
     });
+    expect(JSON.parse((db.prepare(`
+      SELECT planner_binding_json FROM planner_runs WHERE id = ?
+    `).get(run.id) as { planner_binding_json: string }).planner_binding_json))
+      .toEqual(plannerBinding);
     const storedRun = db.prepare('SELECT error_summary FROM planner_runs WHERE id = ?')
       .get(run.id) as { error_summary: string };
     expect(storedRun.error_summary).not.toContain('planner-secret');

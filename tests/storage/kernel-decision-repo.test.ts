@@ -1,8 +1,7 @@
-import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
 import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
+import { REVISION, createV31RepositoryDb } from './v31-repository-fixture.js';
 
 function createRecord() {
   const event: KernelEvent = {
@@ -20,18 +19,29 @@ function createRecord() {
   const decision: KernelDecision = {
     schemaVersion: 5, id: 'decision_event_1', eventId: event.id, action: { type: 'no_op' }, reason: 'nothing due',
   };
+  const authorizedBinding = {
+    agentClassRef: 'codex-engineering',
+    harnessRef: 'codex-cli',
+    providerRef: 'openai',
+    modelRef: 'engineering-model',
+    permissionProfileRef: 'workspace-default',
+    configurationRevision: REVISION,
+  };
   return {
     id: decision.id, schemaVersion: 5 as const, eventId: event.id, eventType: event.type,
     correlationId: event.correlationId, causationId: event.causationId, sessionId: event.sessionId,
     taskId: event.taskId ?? null, subtaskId: event.subtaskId ?? null, attemptId: event.attemptId ?? null,
-    event, snapshot, decision, action: decision.action.type, reason: decision.reason, createdAt: event.occurredAt,
+    event, snapshot, decision, action: decision.action.type, reason: decision.reason,
+    configurationRevision: REVISION,
+    authorizedBindings: [authorizedBinding],
+    bindingFingerprints: ['sha256:binding'],
+    createdAt: event.occurredAt,
   };
 }
 
 describe('KernelDecisionRepo', () => {
   it('issues at most one decision for an event', () => {
-    const db = new Database(':memory:');
-    runMigrations(db);
+    const db = createV31RepositoryDb();
     const repo = new KernelDecisionRepo(db);
     const record = createRecord();
 
@@ -41,8 +51,7 @@ describe('KernelDecisionRepo', () => {
   });
 
   it('fails closed when a persisted Decision is not the unique v4 contract', () => {
-    const db = new Database(':memory:');
-    runMigrations(db);
+    const db = createV31RepositoryDb();
     const repo = new KernelDecisionRepo(db);
     const record = createRecord();
     repo.insertIfAbsent(record);

@@ -1,7 +1,14 @@
 import type Database from 'better-sqlite3';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 import type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
 export type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
+
+export type RevisionedKernelDecisionLedgerRecord = KernelDecisionLedgerRecord & {
+  configurationRevision: string;
+  authorizedBindings: AuthorizedExecutorBinding[];
+  bindingFingerprints: string[];
+};
 
 interface KernelDecisionRow {
   id: string;
@@ -19,6 +26,9 @@ interface KernelDecisionRow {
   decision_json: string;
   action: KernelDecision['action']['type'];
   reason: string;
+  configuration_revision: string;
+  authorized_bindings_json: string;
+  binding_fingerprints_json: string;
   created_at: string;
 }
 
@@ -26,51 +36,64 @@ interface KernelDecisionRow {
 export class KernelDecisionRepo {
   constructor(private readonly db: Database.Database) {}
 
-  insertIfAbsent(record: KernelDecisionLedgerRecord): boolean {
+  insertIfAbsent(record: RevisionedKernelDecisionLedgerRecord): boolean {
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO kernel_decisions (
         id, schema_version, event_id, event_type, correlation_id, causation_id,
         session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
-        decision_json, action, reason, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        decision_json, action, reason, configuration_revision,
+        authorized_bindings_json, binding_fingerprints_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id, record.schemaVersion, record.eventId, record.eventType,
       record.correlationId, record.causationId, record.sessionId, record.taskId,
       record.subtaskId, record.attemptId, JSON.stringify(record.event),
       JSON.stringify(record.snapshot), JSON.stringify(record.decision), record.action,
-      record.reason, record.createdAt,
+      record.reason, record.configurationRevision, JSON.stringify(record.authorizedBindings),
+      JSON.stringify(record.bindingFingerprints), record.createdAt,
     );
+    if (result.changes === 0) {
+      const existing = this.findByEventId(record.eventId);
+      if (
+        !existing
+        || existing.configurationRevision !== record.configurationRevision
+        || !sameBindings(existing.authorizedBindings, record.authorizedBindings)
+        || !sameStrings(existing.bindingFingerprints, record.bindingFingerprints)
+      ) {
+        throw new Error(`persisted Kernel decision binding mismatch: ${record.eventId}`);
+      }
+    }
     return result.changes === 1;
   }
 
-  issue(record: KernelDecisionLedgerRecord): boolean {
+  issue(record: RevisionedKernelDecisionLedgerRecord): boolean {
     return this.insertIfAbsent(record);
   }
 
-  findByEventId(eventId: string): KernelDecisionLedgerRecord | null {
+  findByEventId(eventId: string): RevisionedKernelDecisionLedgerRecord | null {
     const row = this.db.prepare('SELECT * FROM kernel_decisions WHERE event_id = ?').get(eventId) as KernelDecisionRow | undefined;
     return row ? rowToRecord(row) : null;
   }
 
-  listBySession(sessionId: string): KernelDecisionLedgerRecord[] {
+  listBySession(sessionId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE session_id = ? ORDER BY created_at ASC, id ASC
     `).all(sessionId) as KernelDecisionRow[]).map(rowToRecord);
   }
 
-  listByCorrelation(correlationId: string): KernelDecisionLedgerRecord[] {
+  listByCorrelation(correlationId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE correlation_id = ? ORDER BY created_at ASC, id ASC
     `).all(correlationId) as KernelDecisionRow[]).map(rowToRecord);
   }
 
-  listByTask(taskId: string): KernelDecisionLedgerRecord[] {
+  listByTask(taskId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE task_id = ? ORDER BY created_at ASC, id ASC
     `).all(taskId) as KernelDecisionRow[]).map(rowToRecord);
   }
 
-  listCurrentByAction(action: KernelDecision['action']['type']): KernelDecisionLedgerRecord[] {
+  listCurrentByAction(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT decision.*
       FROM kernel_decisions decision
@@ -89,7 +112,7 @@ export class KernelDecisionRepo {
   }
 }
 
-function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
+function rowToRecord(row: KernelDecisionRow): RevisionedKernelDecisionLedgerRecord {
   assertCurrentSchema(row.schema_version, 'decision');
   const event = parseCurrentKernelValue<KernelEvent>(row.event_json, 'event');
   const snapshot = parseCurrentKernelValue<KernelSnapshot>(row.snapshot_json, 'snapshot');
@@ -110,6 +133,9 @@ function rowToRecord(row: KernelDecisionRow): KernelDecisionLedgerRecord {
     decision,
     action: row.action,
     reason: row.reason,
+    configurationRevision: row.configuration_revision,
+    authorizedBindings: JSON.parse(row.authorized_bindings_json) as AuthorizedExecutorBinding[],
+    bindingFingerprints: JSON.parse(row.binding_fingerprints_json) as string[],
     createdAt: row.created_at,
   };
 }
@@ -137,4 +163,25 @@ function parseCurrentKernelValue<T extends { schemaVersion: 5 }>(
     throw new Error(`unsupported Kernel ${kind} schema version ${version}`);
   }
   return value as T;
+}
+
+function sameBindings(
+  left: AuthorizedExecutorBinding[],
+  right: AuthorizedExecutorBinding[],
+): boolean {
+  return left.length === right.length && left.every((binding, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && binding.agentClassRef === candidate.agentClassRef
+      && binding.harnessRef === candidate.harnessRef
+      && binding.providerRef === candidate.providerRef
+      && binding.modelRef === candidate.modelRef
+      && binding.permissionProfileRef === candidate.permissionProfileRef
+      && binding.configurationRevision === candidate.configurationRevision;
+  });
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }

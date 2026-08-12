@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 
 export type GenerationReplanRequestStatus =
@@ -15,11 +16,13 @@ export interface GenerationReplanRequestRecord {
   taskId: string;
   generationId: string;
   sourceRevision: number;
+  configurationRevision: string;
   status: GenerationReplanRequestStatus;
   triggerDecisionId: string;
   quiescenceToken: string | null;
   errorSummary: string | null;
   deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
+  deferredBindings: AuthorizedExecutorBinding[];
   availabilityExplanation: string | null;
   createdAt: string;
   updatedAt: string;
@@ -30,11 +33,13 @@ interface ReplanRow {
   task_id: string;
   generation_id: string;
   source_revision: number;
+  configuration_revision: string;
   status: GenerationReplanRequestStatus;
   trigger_decision_id: string;
   quiescence_token: string | null;
   error_summary: string | null;
   deferred_plan_json: string | null;
+  deferred_bindings_json: string;
   availability_explanation: string | null;
   created_at: string;
   updated_at: string;
@@ -48,20 +53,23 @@ export class GenerationReplanRequestRepo {
     taskId: string;
     generationId: string;
     sourceRevision: number;
+    configurationRevision: string;
     triggerDecisionId: string;
     now: string;
   }): GenerationReplanRequestRecord {
     this.db.prepare(`
       INSERT OR IGNORE INTO generation_replan_requests (
         id, task_id, generation_id, source_revision, status,
-        trigger_decision_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'pending_quiescence', ?, ?, ?)
+        trigger_decision_id, configuration_revision, deferred_bindings_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'pending_quiescence', ?, ?, '[]', ?, ?)
     `).run(
       input.id,
       input.taskId,
       input.generationId,
       input.sourceRevision,
       input.triggerDecisionId,
+      input.configurationRevision,
       input.now,
       input.now,
     );
@@ -71,6 +79,9 @@ export class GenerationReplanRequestRepo {
       input.sourceRevision,
     );
     if (!record) throw new Error(`generation replan request was not persisted: ${input.id}`);
+    if (record.configurationRevision !== input.configurationRevision) {
+      throw new Error(`persisted replan revision mismatch: ${record.id}`);
+    }
     return record;
   }
 
@@ -129,16 +140,33 @@ export class GenerationReplanRequestRepo {
     id: string,
     event: Extract<KernelEvent, { type: 'plan_proposed' }>,
     explanation: string,
+    deferredBindings: AuthorizedExecutorBinding[],
     now: string,
   ): boolean {
+    const request = this.find(id);
+    if (!request) {
+      throw new Error(`generation replan request does not exist: ${id}`);
+    }
+    if (deferredBindings.some(
+      binding => binding.configurationRevision !== request.configurationRevision,
+    )) {
+      throw new Error(`deferred binding revision mismatch for replan ${id}`);
+    }
     return this.db.prepare(`
       UPDATE generation_replan_requests
       SET status = 'waiting_for_availability',
           deferred_plan_json = ?,
+          deferred_bindings_json = ?,
           availability_explanation = ?,
           updated_at = ?
       WHERE id = ? AND status IN ('planning', 'submitted')
-    `).run(JSON.stringify(event), explanation, now, id).changes === 1;
+    `).run(
+      JSON.stringify(event),
+      JSON.stringify(deferredBindings),
+      explanation,
+      now,
+      id,
+    ).changes === 1;
   }
 
   listWaitingForAvailability(): GenerationReplanRequestRecord[] {
@@ -176,8 +204,8 @@ export class GenerationReplanRequestRepo {
           id, schema_version, event_type, correlation_id, causation_id,
           session_id, task_id, subtask_id, attempt_id, event_json,
           available_at, status, processing_started_at, processed_at,
-          last_error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+          last_error, configuration_revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?, ?)
       `).run(
         event.id,
         event.schemaVersion,
@@ -190,6 +218,7 @@ export class GenerationReplanRequestRepo {
         event.attemptId ?? null,
         JSON.stringify(event),
         event.occurredAt,
+        current.configurationRevision,
         event.occurredAt,
         event.occurredAt,
       );
@@ -234,6 +263,7 @@ function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {
     taskId: row.task_id,
     generationId: row.generation_id,
     sourceRevision: row.source_revision,
+    configurationRevision: row.configuration_revision,
     status: row.status,
     triggerDecisionId: row.trigger_decision_id,
     quiescenceToken: row.quiescence_token,
@@ -241,6 +271,7 @@ function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {
     deferredPlan: row.deferred_plan_json
       ? JSON.parse(row.deferred_plan_json) as Extract<KernelEvent, { type: 'plan_proposed' }>
       : null,
+    deferredBindings: JSON.parse(row.deferred_bindings_json) as AuthorizedExecutorBinding[],
     availabilityExplanation: row.availability_explanation,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

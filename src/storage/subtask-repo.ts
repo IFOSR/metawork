@@ -13,7 +13,7 @@ interface SubtaskRow {
   dependencies_json: string;
   context_refs_json: string;
   required_capabilities_json: string;
-  preferred_agent_class_list_json: string;
+  executor_bindings_json: string;
   delivery_kind: Subtask['deliveryKind'];
   acceptance_json: string;
   artifacts_json: string;
@@ -45,7 +45,7 @@ function rowToSubtask(row: SubtaskRow): Subtask {
     dependencies: parseJson<WorkGraphDependency[]>(row.dependencies_json, []),
     contextRefs: parseJson<ContextRef[]>(row.context_refs_json, []),
     requiredCapabilities: parseList(row.required_capabilities_json),
-    preferredAgentClassList: parseList(row.preferred_agent_class_list_json),
+    executorBindings: parseJson(row.executor_bindings_json, []),
     deliveryKind: row.delivery_kind,
     acceptance: parseJson<WorkGraphAcceptanceCriterion[]>(row.acceptance_json, []),
     riskLevel: row.risk_level,
@@ -62,11 +62,32 @@ export class SubtaskRepo {
   constructor(private readonly db: Database.Database) {}
 
   upsert(subtask: Subtask): void {
+    const graphRevision = this.db.prepare(`
+      SELECT generation_id, configuration_revision
+      FROM work_graph_revisions
+      WHERE task_id = ? AND revision = ?
+    `).get(subtask.taskId, subtask.graphRevision) as {
+      generation_id: string;
+      configuration_revision: string;
+    } | undefined;
+    if (!graphRevision) {
+      throw new Error(
+        `Subtask Work Graph revision does not exist: ${subtask.taskId}/${subtask.graphRevision}`,
+      );
+    }
+    if (graphRevision.generation_id !== subtask.generationId) {
+      throw new Error(`Subtask generation mismatch: ${subtask.id}`);
+    }
+    if (subtask.executorBindings.some(
+      binding => binding.configurationRevision !== graphRevision.configuration_revision,
+    )) {
+      throw new Error(`Subtask binding revision mismatch: ${subtask.id}`);
+    }
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO subtasks (
         id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
-        preferred_agent_class_list_json, delivery_kind, acceptance_json,
+        executor_bindings_json, delivery_kind, acceptance_json,
         risk_level, result, artifacts_json, verification_json, error, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
@@ -76,7 +97,7 @@ export class SubtaskRepo {
         dependencies_json = excluded.dependencies_json,
         context_refs_json = excluded.context_refs_json,
         required_capabilities_json = excluded.required_capabilities_json,
-        preferred_agent_class_list_json = excluded.preferred_agent_class_list_json,
+        executor_bindings_json = excluded.executor_bindings_json,
         delivery_kind = excluded.delivery_kind,
         acceptance_json = excluded.acceptance_json,
         risk_level = excluded.risk_level,
@@ -96,7 +117,7 @@ export class SubtaskRepo {
       JSON.stringify(subtask.dependencies),
       JSON.stringify(subtask.contextRefs),
       JSON.stringify(subtask.requiredCapabilities),
-      JSON.stringify(subtask.preferredAgentClassList),
+      JSON.stringify(subtask.executorBindings),
       subtask.deliveryKind,
       JSON.stringify(subtask.acceptance),
       subtask.riskLevel,

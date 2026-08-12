@@ -4,6 +4,7 @@ import type {
   WorkGraphAcceptanceCriterion,
   WorkGraphDependency,
 } from '../work-graph/types.js';
+import type { AuthorizedExecutorBinding } from './authorized-executor-binding.js';
 
 export const TaskStatus = {
   CREATED: 'created',
@@ -113,7 +114,7 @@ export interface Subtask {
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
-  preferredAgentClassList: string[];
+  executorBindings: AuthorizedExecutorBinding[];
   deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: AgentClassRiskLevel;

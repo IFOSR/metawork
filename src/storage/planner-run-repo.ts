@@ -2,29 +2,51 @@ import type Database from 'better-sqlite3';
 import type { PlannerToolCallTrace } from '../planning/planner-audit-contract.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 
 export interface PlannerRunAuditStart {
   id: string;
   sessionId: string;
   requestSource: string;
+  configurationRevision: string;
+  plannerBinding: RevisionedAgentBinding;
+  plannerBindingFingerprint: string;
   createdAt: string;
 }
 
 export class PlannerRunRepo {
   constructor(private readonly db: Database.Database) {}
 
-  start(sessionId: string, requestSource: string): PlannerRunAuditStart {
+  start(input: {
+    sessionId: string;
+    requestSource: string;
+    configurationRevision: string;
+    plannerBinding: RevisionedAgentBinding;
+    plannerBindingFingerprint: string;
+  }): PlannerRunAuditStart {
+    if (input.plannerBinding.configurationRevision !== input.configurationRevision) {
+      throw new Error('Planner binding revision does not match Planner run revision');
+    }
     const record = {
       id: `planner_run_${generateInteractionId()}`,
-      sessionId,
-      requestSource,
+      ...input,
       createdAt: new Date().toISOString(),
     };
     this.db.prepare(`
       INSERT INTO planner_runs (
-        id, session_id, request_source, status, attempt_count, duration_ms, created_at
-      ) VALUES (?, ?, ?, 'running', 0, 0, ?)
-    `).run(record.id, record.sessionId, record.requestSource, record.createdAt);
+        id, session_id, request_source, status, attempt_count, duration_ms,
+        configuration_revision, planner_binding_json, planner_binding_fingerprint,
+        created_at
+      ) VALUES (?, ?, ?, 'running', 0, 0, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.sessionId,
+      record.requestSource,
+      record.configurationRevision,
+      JSON.stringify(record.plannerBinding),
+      record.plannerBindingFingerprint,
+      record.createdAt,
+    );
     return record;
   }
 

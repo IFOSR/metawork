@@ -7,6 +7,7 @@ export interface WorkGraphRevisionRecord {
   taskId: string;
   revision: number;
   generationId: string;
+  configurationRevision: string;
   authorizedDecisionId: string | null;
   proposalSource: 'initial' | 'replan' | 'conflict_replan';
   automaticReplan: boolean;
@@ -21,6 +22,7 @@ interface RevisionRow {
   task_id: string;
   revision: number;
   generation_id: string;
+  configuration_revision: string;
   authorized_decision_id: string | null;
   proposal_source: 'initial' | 'replan' | 'conflict_replan';
   automatic_replan: number;
@@ -52,24 +54,37 @@ export class WorkGraphRevisionRepo {
   }
 
   activate(input: Omit<WorkGraphRevisionRecord, 'status' | 'completionKind'>): WorkGraphRevisionRecord {
+    const existing = this.find(input.taskId, input.revision);
+    if (
+      existing
+      && (
+        existing.generationId !== input.generationId
+        || existing.configurationRevision !== input.configurationRevision
+      )
+    ) {
+      throw new Error(
+        `persisted Work Graph revision identity mismatch: ${input.taskId}/${input.revision}`,
+      );
+    }
     this.db.prepare(`
       UPDATE work_graph_revisions SET status = 'superseded', updated_at = ?
       WHERE task_id = ? AND status = 'active' AND revision <> ?
     `).run(input.updatedAt, input.taskId, input.revision);
     this.db.prepare(`
       INSERT INTO work_graph_revisions (
-        id, task_id, revision, generation_id, authorized_decision_id,
+        id, task_id, revision, generation_id, configuration_revision, authorized_decision_id,
         proposal_source, automatic_replan, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
       ON CONFLICT(task_id, revision) DO UPDATE SET
         generation_id = excluded.generation_id,
+        configuration_revision = excluded.configuration_revision,
         authorized_decision_id = excluded.authorized_decision_id,
         proposal_source = excluded.proposal_source,
         automatic_replan = excluded.automatic_replan,
         status = 'active',
         updated_at = excluded.updated_at
     `).run(
-      input.id, input.taskId, input.revision, input.generationId,
+      input.id, input.taskId, input.revision, input.generationId, input.configurationRevision,
       input.authorizedDecisionId, input.proposalSource, input.automaticReplan ? 1 : 0,
       input.createdAt, input.updatedAt,
     );
@@ -104,6 +119,7 @@ function rowToRecord(row: RevisionRow): WorkGraphRevisionRecord {
     taskId: row.task_id,
     revision: row.revision,
     generationId: row.generation_id,
+    configurationRevision: row.configuration_revision,
     authorizedDecisionId: row.authorized_decision_id,
     proposalSource: row.proposal_source,
     automaticReplan: row.automatic_replan === 1,

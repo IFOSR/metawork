@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { CompletionContractViolation } from '../execution/completion-protocol.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
@@ -23,6 +24,9 @@ export interface ExecutorAttemptReceipt {
   recoveryMode: KernelRecoveryMode;
   workUnitId: string;
   agentClassName: string;
+  configurationRevision: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
   startedAt: string;
   completedAt: string;
   terminalState: ExecutorAttemptTerminalState;
@@ -36,7 +40,14 @@ export interface ExecutorAttemptReceipt {
 
 export type ExecutorAttemptReceiptInsert = Omit<
   ExecutorAttemptReceipt,
-  'graphRevision' | 'generationId' | 'attemptKind' | 'sourceAttemptId' | 'recoveryMode'
+  | 'graphRevision'
+  | 'generationId'
+  | 'attemptKind'
+  | 'sourceAttemptId'
+  | 'recoveryMode'
+  | 'configurationRevision'
+  | 'authorizedBinding'
+  | 'bindingFingerprint'
 >;
 
 export class ExecutorAttemptReceiptRepo {
@@ -46,23 +57,51 @@ export class ExecutorAttemptReceiptRepo {
     const subtask = this.db.prepare(`
       SELECT graph_revision, generation_id FROM subtasks WHERE id = ?
     `).get(receipt.subtaskId) as { graph_revision: number | null; generation_id: string | null } | undefined;
+    if (!subtask) {
+      throw new Error(`receipt Subtask does not exist: ${receipt.subtaskId}`);
+    }
     const dispatchItem = this.db.prepare(`
-      SELECT attempt_kind, source_attempt_id, recovery_mode
+      SELECT task_id, subtask_id, generation_id, attempt_kind, source_attempt_id,
+             recovery_mode, configuration_revision, authorized_binding_json,
+             binding_fingerprint
       FROM kernel_dispatch_items
       WHERE attempt_id = ?
     `).get(receipt.attemptId) as {
+      task_id: string;
+      subtask_id: string;
+      generation_id: string;
       attempt_kind: KernelAttemptKind;
       source_attempt_id: string | null;
       recovery_mode: KernelRecoveryMode;
+      configuration_revision: string;
+      authorized_binding_json: string;
+      binding_fingerprint: string;
     } | undefined;
+    if (!dispatchItem) {
+      throw new Error(`receipt dispatch item does not exist: ${receipt.attemptId}`);
+    }
+    const authorizedBinding = JSON.parse(
+      dispatchItem.authorized_binding_json,
+    ) as AuthorizedExecutorBinding;
+    if (
+      dispatchItem.task_id !== receipt.taskId
+      || dispatchItem.subtask_id !== receipt.subtaskId
+      || dispatchItem.generation_id !== subtask.generation_id
+      ||
+      authorizedBinding.configurationRevision !== dispatchItem.configuration_revision
+      || authorizedBinding.agentClassRef !== receipt.agentClassName
+    ) {
+      throw new Error(`receipt binding identity mismatch for attempt ${receipt.attemptId}`);
+    }
     this.db.prepare(`
       INSERT INTO executor_attempt_receipts (
         attempt_id, execution_id, task_id, subtask_id, work_unit_id,
         agent_class_name, started_at, completed_at, terminal_state,
         raw_response, completion_schema_version, parsing_json,
         verification_json, error_code, error_detail, graph_revision,
-        generation_id, attempt_kind, source_attempt_id, failure_json, recovery_mode
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        generation_id, attempt_kind, source_attempt_id, failure_json, recovery_mode,
+        configuration_revision, authorized_binding_json, binding_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       receipt.attemptId,
       receipt.executionId,
@@ -79,12 +118,15 @@ export class ExecutorAttemptReceiptRepo {
       JSON.stringify(receipt.verification),
       receipt.errorCode,
       receipt.errorDetail,
-      subtask?.graph_revision ?? 1,
-      subtask?.generation_id ?? `generation_${receipt.taskId}_1`,
-      dispatchItem?.attempt_kind ?? 'primary',
-      dispatchItem?.source_attempt_id ?? null,
+      subtask.graph_revision,
+      subtask.generation_id,
+      dispatchItem.attempt_kind,
+      dispatchItem.source_attempt_id,
       receipt.failure ? JSON.stringify(receipt.failure) : null,
-      dispatchItem?.recovery_mode ?? 'fresh',
+      dispatchItem.recovery_mode,
+      dispatchItem.configuration_revision,
+      dispatchItem.authorized_binding_json,
+      dispatchItem.binding_fingerprint,
     );
   }
 
@@ -117,14 +159,17 @@ function rowToReceipt(row: Record<string, unknown>): ExecutorAttemptReceipt {
       executionId: String(row.execution_id),
       taskId: String(row.task_id),
       subtaskId: String(row.subtask_id),
-      graphRevision: Number(row.graph_revision ?? 1),
-      generationId: String(row.generation_id ?? `generation_${String(row.task_id)}_1`),
-      attemptKind: String(row.attempt_kind ?? 'primary') as KernelAttemptKind,
+      graphRevision: Number(row.graph_revision),
+      generationId: String(row.generation_id),
+      attemptKind: String(row.attempt_kind) as KernelAttemptKind,
       sourceAttemptId: row.source_attempt_id == null ? null : String(row.source_attempt_id),
       failure: row.failure_json == null ? null : JSON.parse(String(row.failure_json)) as KernelFailure,
-      recoveryMode: String(row.recovery_mode ?? 'fresh') as KernelRecoveryMode,
+      recoveryMode: String(row.recovery_mode) as KernelRecoveryMode,
       workUnitId: String(row.work_unit_id),
       agentClassName: String(row.agent_class_name),
+      configurationRevision: String(row.configuration_revision),
+      authorizedBinding: JSON.parse(String(row.authorized_binding_json)) as AuthorizedExecutorBinding,
+      bindingFingerprint: String(row.binding_fingerprint),
       startedAt: String(row.started_at),
       completedAt: String(row.completed_at),
       terminalState: row.terminal_state as ExecutorAttemptTerminalState,

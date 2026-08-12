@@ -1,50 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
-import { TaskRepo } from '../../src/storage/task-repo.js';
-import type { Task } from '../../src/core/types.js';
-
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
-  runMigrations(db);
-  return db;
-}
+import { createV31RepositoryDb } from './v31-repository-fixture.js';
 
 describe('SubtaskRepo', () => {
   it('preserves existing error when updateStatus is called without an error change', () => {
-    const db = createDb();
+    const db = createV31RepositoryDb();
     const now = '2026-07-02T00:00:00.000Z';
-    const task: Task = {
-      id: 'task_1',
-      title: 'Task',
-      goal: 'Do work',
-      status: 'running',
-      summary: '',
-      snapshots: [],
-      resources: [],
-      artifacts: [],
-      dependencies: [],
-      prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-      injectedPreferences: [],
-      lastSchedulingReason: '',
-      lastInterruptionReason: '',
-      interruptionCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-    new TaskRepo(db).insert(task);
+    db.prepare(`
+      INSERT INTO work_graph_revisions (
+        id, task_id, revision, generation_id, proposal_source,
+        automatic_replan, status, configuration_revision, created_at, updated_at
+      ) VALUES (
+        'graph_1', 'task_1', 1, 'generation_1', 'initial',
+        0, 'active', 'revision_31', ?, ?
+      )
+    `).run(now, now);
     const repo = new SubtaskRepo(db);
     repo.upsert({
       id: 'subtask_1',
       taskId: 'task_1',
+      graphRevision: 1,
+      generationId: 'generation_1',
       title: 'Subtask',
       goal: 'Do work',
       status: 'blocked',
       dependencies: [],
       contextRefs: [],
       requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'],
+      executorBindings: [{
+        agentClassRef: 'codex-engineering',
+        harnessRef: 'codex-cli',
+        providerRef: 'openai',
+        modelRef: 'engineering-model',
+        permissionProfileRef: 'workspace-default',
+        configurationRevision: 'revision_31',
+      }],
       deliveryKind: 'report',
       acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
       riskLevel: 'medium',

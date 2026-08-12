@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type {
   KernelDecision,
   KernelDispatchItemStatus,
@@ -16,6 +17,9 @@ export interface KernelDispatchItemRecord {
   generationId: string;
   subtaskId: string;
   agentClassName: string;
+  configurationRevision: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
   attemptKind: KernelAttemptKind;
   sourceAttemptId: string | null;
   recoveryMode: KernelRecoveryMode;
@@ -42,6 +46,9 @@ interface DispatchItemRow {
   generation_id: string;
   subtask_id: string;
   agent_class_name: string;
+  configuration_revision: string;
+  authorized_binding_json: string;
+  binding_fingerprint: string;
   attempt_kind: KernelAttemptKind;
   source_attempt_id: string | null;
   recovery_mode: KernelRecoveryMode;
@@ -67,12 +74,31 @@ export class KernelDispatchItemRepo {
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
     },
-    generationId: string,
+    bindingContext: {
+      generationId: string;
+      configurationRevision: string;
+      attempts: Readonly<Record<string, {
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+      }>>;
+    },
     now: string,
   ): KernelDispatchItemRecord[] {
     const insert = this.db.transaction(() => {
       const existing = decision.action.items.map(item => this.find(item.attemptId));
       if (existing.every((item): item is KernelDispatchItemRecord => item !== null)) {
+        for (const item of existing) {
+          const expected = bindingContext.attempts[item.attemptId];
+          if (
+            !expected
+            || item.generationId !== bindingContext.generationId
+            || item.configurationRevision !== bindingContext.configurationRevision
+            || item.bindingFingerprint !== expected.bindingFingerprint
+            || !sameBinding(item.authorizedBinding, expected.authorizedBinding)
+          ) {
+            throw new Error(`persisted dispatch binding mismatch: ${item.attemptId}`);
+          }
+        }
         return existing;
       }
       if (existing.some(item => item !== null)) {
@@ -82,21 +108,35 @@ export class KernelDispatchItemRepo {
         SELECT COALESCE(MAX(batch_order), -1) AS value
         FROM kernel_dispatch_items
         WHERE task_id = ? AND generation_id = ?
-      `).get(decision.action.taskId, generationId) as { value: number };
+      `).get(decision.action.taskId, bindingContext.generationId) as { value: number };
       const firstOrder = maximum.value + 1;
       for (const item of decision.action.items) {
+        const attemptBinding = bindingContext.attempts[item.attemptId];
+        if (!attemptBinding) {
+          throw new Error(`authorized binding is missing for attempt ${item.attemptId}`);
+        }
+        if (
+          attemptBinding.authorizedBinding.configurationRevision
+          !== bindingContext.configurationRevision
+        ) {
+          throw new Error(`authorized binding revision mismatch for attempt ${item.attemptId}`);
+        }
+        if (attemptBinding.authorizedBinding.agentClassRef !== item.agentClassName) {
+          throw new Error(`authorized binding AgentClass mismatch for attempt ${item.attemptId}`);
+        }
         this.db.prepare(`
           INSERT INTO kernel_dispatch_items (
             attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
             agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
-            attempt_payload_json, resource_grant_json, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_launch', ?, ?)
+            attempt_payload_json, resource_grant_json, status, configuration_revision,
+            authorized_binding_json, binding_fingerprint, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_launch', ?, ?, ?, ?, ?)
         `).run(
           item.attemptId,
           decision.id,
           firstOrder + item.order,
           decision.action.taskId,
-          generationId,
+          bindingContext.generationId,
           item.subtaskId,
           item.agentClassName,
           item.attemptKind,
@@ -104,6 +144,9 @@ export class KernelDispatchItemRepo {
           item.recoveryMode,
           JSON.stringify(item.attemptPayload),
           JSON.stringify(item.defaultResourceGrant),
+          bindingContext.configurationRevision,
+          JSON.stringify(attemptBinding.authorizedBinding),
+          attemptBinding.bindingFingerprint,
           now,
           now,
         );
@@ -314,6 +357,9 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     generationId: row.generation_id,
     subtaskId: row.subtask_id,
     agentClassName: row.agent_class_name,
+    configurationRevision: row.configuration_revision,
+    authorizedBinding: JSON.parse(row.authorized_binding_json) as AuthorizedExecutorBinding,
+    bindingFingerprint: row.binding_fingerprint,
     attemptKind: row.attempt_kind,
     sourceAttemptId: row.source_attempt_id,
     recoveryMode: row.recovery_mode,
@@ -331,4 +377,16 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function sameBinding(
+  left: AuthorizedExecutorBinding,
+  right: AuthorizedExecutorBinding,
+): boolean {
+  return left.agentClassRef === right.agentClassRef
+    && left.harnessRef === right.harnessRef
+    && left.providerRef === right.providerRef
+    && left.modelRef === right.modelRef
+    && left.permissionProfileRef === right.permissionProfileRef
+    && left.configurationRevision === right.configurationRevision;
 }
