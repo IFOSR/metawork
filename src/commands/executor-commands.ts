@@ -88,11 +88,21 @@ export async function listExecutors(
   }
   const workUnits = new WorkUnitRepo(context.db).findAll();
   const statuses = new KernelExecutorStatusRepo(context.db);
+  const configurationRevision = await context.readServices?.currentConfigurationRevision() ?? null;
+  const revisionStatuses = configurationRevision
+    ? new Map(statuses.list(configurationRevision).map(status => [status.agentClassName, status]))
+    : new Map();
   return {
     type: 'text',
     content: [
       'Registered AgentClasses:',
-      ...agentClasses.map(agentClass => formatAgentClass(agentClass, statuses.findByAgentClassName(agentClass.name)?.classHealth ?? 'unverified')),
+      ...agentClasses.map(agentClass => formatAgentClass(
+        agentClass,
+        configurationRevision
+          ? revisionStatuses.get(agentClass.name)?.classHealth ?? 'unverified'
+          : 'unavailable (configuration revision not provided)',
+      )),
+      `Health configuration revision: ${configurationRevision ?? 'unavailable'}`,
       '',
       `WorkUnits: ${workUnits.map(unit => `${unit.id}:${unit.agentClassName}:${unit.state}`).join(', ') || '-'}`,
     ].join('\n'),
@@ -177,11 +187,27 @@ export async function refreshExecutors(
   if (!context.refreshExecutors) {
     return { type: 'text', content: 'Executor recovery refresh is not available in this host.' };
   }
+  const configurationRevision = await context.readServices?.currentConfigurationRevision() ?? null;
+  if (!configurationRevision) {
+    return {
+      type: 'text',
+      content: 'Executor recovery refresh requires an explicit configuration revision from the host.',
+    };
+  }
   const target = stringArg(args, 'executorName');
   const report = await context.refreshExecutors(target && target !== 'all' ? [target] : undefined);
+  if (
+    'configurationRevision' in report
+    && report.configurationRevision !== configurationRevision
+  ) {
+    throw new Error(
+      `Executor recovery refresh revision changed from ${configurationRevision} to ${String(report.configurationRevision)}`,
+    );
+  }
   return {
     type: 'text',
     content: [
+      `Configuration revision: ${configurationRevision}`,
       `Recovery refresh checked: ${report.checked.join(', ') || '-'}`,
       `Recovered: ${report.recovered.join(', ') || '-'}`,
       `Still error: ${report.stillError.join(', ') || '-'}`,

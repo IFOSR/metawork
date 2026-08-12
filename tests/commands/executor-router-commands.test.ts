@@ -1,12 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { CommandReadServices } from '../../src/commands/command-read-services.js';
+import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
+
+const REVISION = 'revision-command-health';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
+  const insertRevision = db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (?, ?, 'native', '2026-08-12T00:00:00.000Z')
+  `);
+  insertRevision.run(REVISION, 'sha256:current-command-health');
+  insertRevision.run('revision-old', 'sha256:old-command-health');
   new AgentClassService({ db }).seedDefaults();
   return db;
 }
@@ -15,6 +26,17 @@ function createContext(db: Database.Database) {
   return {
     db,
     executor: { name: 'codex-cli' },
+    readServices: new CommandReadServices(
+      db,
+      {
+        inspectExecutorRegistration: () => ({
+          configured: true,
+          bindingSource: 'container',
+          adapterName: 'codex-cli',
+        }),
+      },
+      { getConfigurationRevision: () => REVISION },
+    ),
   } as any;
 }
 
@@ -31,12 +53,66 @@ describe('agent class and planner route commands', () => {
     expect(initial.content).toContain('WorkUnits:');
 
     expect(initial.content).toContain('health=unverified');
+    expect(initial.content).toContain(`Health configuration revision: ${REVISION}`);
     expect(initial.content).toContain('domains:');
     expect(initial.content).toContain('capabilities:');
     expect(initial.content).toContain('strengths:');
     expect(initial.content).toContain('primary use cases:');
     expect(initial.content).not.toContain('/executor register');
     expect(initial.content).not.toContain('/executor unregister');
+  });
+
+  it('lists only health from the host-provided configuration revision', async () => {
+    const db = createDb();
+    const repo = new KernelExecutorStatusRepo(db);
+    repo.upsert({
+      agentClassName: 'codex-cli',
+      configurationRevision: REVISION,
+      classHealth: 'healthy',
+      recentAttempts: [],
+      recentRecoveryChecks: [],
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    });
+    repo.upsert({
+      agentClassName: 'codex-cli',
+      configurationRevision: 'revision-old',
+      classHealth: 'error',
+      recentAttempts: [],
+      recentRecoveryChecks: [],
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    const result = await createDefaultCommandCatalog().execute(
+      '/executor list',
+      createContext(db),
+    );
+
+    expect(result.content).toContain('codex-cli kind=executor health=healthy');
+    expect(result.content).not.toContain('codex-cli kind=executor health=error');
+  });
+
+  it('refuses refresh when the host does not provide a configuration revision', async () => {
+    const db = createDb();
+    const refreshExecutors = vi.fn();
+    const context = {
+      ...createContext(db),
+      readServices: new CommandReadServices(db, {
+        inspectExecutorRegistration: () => ({
+          configured: true,
+          bindingSource: 'container',
+          adapterName: 'codex-cli',
+        }),
+      }),
+      refreshExecutors,
+    };
+
+    const result = await createDefaultCommandCatalog().execute(
+      '/executor refresh codex-cli',
+      context,
+    );
+
+    expect(result.content).toContain('requires an explicit configuration revision');
+    expect(refreshExecutors).not.toHaveBeenCalled();
   });
 
   it('does not expose the removed registration commands', async () => {

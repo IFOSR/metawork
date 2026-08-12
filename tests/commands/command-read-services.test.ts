@@ -16,6 +16,14 @@ function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
+  db.prepare(`
+    INSERT INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES (
+      'revision-command-read', 'sha256:command-read', 'native',
+      '2026-08-12T00:00:00.000Z'
+    )
+  `).run();
   new AgentClassService({ db }).seedDefaults();
   const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/metaclaw-command-read-tests');
   const runtimeInspector = {
@@ -31,7 +39,11 @@ function createHarness() {
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
     activeExecutions: { abortTask: vi.fn() },
-    readServices: new CommandReadServices(db, runtimeInspector),
+    readServices: new CommandReadServices(
+      db,
+      runtimeInspector,
+      { getConfigurationRevision: () => 'revision-command-read' },
+    ),
     currentTaskId: null,
     config: {
       version: 1,
@@ -160,8 +172,12 @@ describe('command fact queries', () => {
       INSERT INTO kernel_decisions (
         id, schema_version, event_id, event_type, correlation_id, causation_id,
         session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
-        decision_json, action, reason, created_at
-      ) VALUES (?, 5, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+        decision_json, action, reason, configuration_revision,
+        authorized_bindings_json, binding_fingerprints_json, created_at
+      ) VALUES (
+        ?, 5, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?,
+        'revision-command-read', '[]', '[]', ?
+      )
     `).run(
       'decision-1', 'event-1', 'request-1', 'session-feedback', task.id,
       JSON.stringify({ schemaVersion: 5, type: 'plan_proposed', id: 'event-1', correlationId: 'request-1', causationId: null, occurredAt: '2026-07-14T10:00:00.000Z', sessionId: 'session-feedback', taskId: task.id, proposal: proposedPlan }),
@@ -196,5 +212,91 @@ describe('command fact queries', () => {
     expect(result.content).toContain('claimed');
     expect(result.content).toContain('4. Executor 结果');
     expect(result.content).toContain('executor completed');
+  });
+
+  it('displays v8 bindings while retaining legacy terminal routing as audit-only history', async () => {
+    const { db, taskEngine, context } = createHarness();
+    const task = taskEngine.create({ title: 'Binding audit', goal: 'Display routing history' });
+    const insertDecision = db.prepare(`
+      INSERT INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, configuration_revision,
+        authorized_bindings_json, binding_fingerprints_json, created_at
+      ) VALUES (?, 5, ?, 'plan_proposed', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?,
+        'authorize_task_plan', 'audit', ?, '[]', '[]', ?)
+    `);
+    insertDecision.run(
+      'decision-v8',
+      'event-v8',
+      'request-v8',
+      'session-v8',
+      task.id,
+      JSON.stringify({
+        schemaVersion: 5,
+        type: 'plan_proposed',
+        proposal: {
+          schemaVersion: 8,
+          action: 'plan_work_graph',
+          reason: 'v8',
+          workGraph: {
+            subtasks: [{
+              id: 'subtask-v8',
+              requiredCapabilities: ['workspace-engineering'],
+              executorBindings: [{
+                agentClassRef: 'codex-cli',
+                modelSelection: {
+                  mode: 'proposed',
+                  modelRef: 'gpt-5-codex',
+                  reason: 'best fit',
+                },
+              }],
+            }],
+          },
+        },
+      }),
+      JSON.stringify({ schemaVersion: 5, type: 'plan_admission' }),
+      JSON.stringify({ schemaVersion: 5, runtimeAction: 'authorize_task_plan' }),
+      'revision-command-read',
+      '2026-08-12T01:00:00.000Z',
+    );
+    insertDecision.run(
+      'decision-legacy',
+      'event-legacy',
+      'request-legacy',
+      'session-legacy',
+      task.id,
+      JSON.stringify({
+        schemaVersion: 5,
+        type: 'plan_proposed',
+        proposal: {
+          action: 'plan_work_graph',
+          reason: 'legacy terminal history',
+          workGraph: {
+            subtasks: [{
+              id: 'subtask-legacy',
+              agentClassHint: 'pi-agent',
+              candidateAgentClasses: ['pi-agent'],
+            }],
+          },
+        },
+      }),
+      JSON.stringify({ schemaVersion: 5, type: 'plan_admission' }),
+      JSON.stringify({ schemaVersion: 5, runtimeAction: 'authorize_task_plan' }),
+      'revision-command-read',
+      '2026-08-12T00:00:00.000Z',
+    );
+
+    const result = await createDefaultCommandCatalog().execute(
+      `/executor feedback ${task.id}`,
+      context,
+    );
+
+    expect(result.content).toContain(
+      'bindings=codex-cli[proposed:gpt-5-codex]',
+    );
+    expect(result.content).toContain(
+      'legacyHint=pi-agent legacyCandidates=pi-agent',
+    );
   });
 });

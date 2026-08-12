@@ -1,15 +1,18 @@
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type {
   ExecutorRecoveryRefreshTrigger,
-  KernelExecutorStatusProjection,
 } from '../kernel/executor-status-projection.js';
-import type { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import type {
+  KernelExecutorStatusRepo,
+  RevisionedKernelExecutorStatusProjection,
+} from '../storage/kernel-executor-status-repo.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type { ExecutorProbeResult } from '../executor/adapter.js';
 import type { KernelExecutorStatusProjector } from './kernel-executor-status-projector.js';
 
 export interface ExecutorRecoveryRefreshReport {
+  configurationRevision: string;
   trigger: ExecutorRecoveryRefreshTrigger;
   checked: string[];
   recovered: string[];
@@ -20,8 +23,17 @@ export interface ExecutorRecoveryRefreshReport {
 export interface ExecutorRecoveryRefreshServiceDeps {
   statusRepo: KernelExecutorStatusRepo;
   statusProjector: KernelExecutorStatusProjector;
-  probe(agentClassName: string, previousFailure: KernelFailure | null): Promise<ExecutorProbeResult>;
-  onRecovered?(agentClassName: string, checkId: string): Promise<void> | void;
+  getConfigurationRevision(): Promise<string> | string;
+  probe(
+    agentClassName: string,
+    configurationRevision: string,
+    previousFailure: KernelFailure | null,
+  ): Promise<ExecutorProbeResult>;
+  onRecovered?(
+    agentClassName: string,
+    configurationRevision: string,
+    checkId: string,
+  ): Promise<void> | void;
   timeoutMs?: number;
   now?(): Date;
 }
@@ -40,8 +52,9 @@ export class ExecutorRecoveryRefreshService {
     trigger: ExecutorRecoveryRefreshTrigger;
     agentClassNames?: string[];
   }): Promise<ExecutorRecoveryRefreshReport> {
+    const configurationRevision = await this.deps.getConfigurationRevision();
     const requested = input.agentClassNames ? new Set(input.agentClassNames) : null;
-    const projections = this.deps.statusRepo.list();
+    const projections = this.deps.statusRepo.list(configurationRevision);
     const targets = projections.filter(projection =>
       projection.classHealth === 'error'
       && (!requested || requested.has(projection.agentClassName))
@@ -62,6 +75,7 @@ export class ExecutorRecoveryRefreshService {
       this.refreshOne(projection, input.trigger)
     ));
     return {
+      configurationRevision,
       trigger: input.trigger,
       checked: targets.map(target => target.agentClassName),
       recovered: results.filter(result => result.outcome === 'recovered').map(result => result.agentClassName),
@@ -71,19 +85,20 @@ export class ExecutorRecoveryRefreshService {
   }
 
   private refreshOne(
-    projection: KernelExecutorStatusProjection,
+    projection: RevisionedKernelExecutorStatusProjection,
     trigger: ExecutorRecoveryRefreshTrigger,
   ): Promise<CheckResult> {
-    const existing = this.inFlight.get(projection.agentClassName);
+    const inFlightKey = `${projection.configurationRevision}\0${projection.agentClassName}`;
+    const existing = this.inFlight.get(inFlightKey);
     if (existing) return existing;
     const promise = this.performCheck(projection, trigger)
-      .finally(() => this.inFlight.delete(projection.agentClassName));
-    this.inFlight.set(projection.agentClassName, promise);
+      .finally(() => this.inFlight.delete(inFlightKey));
+    this.inFlight.set(inFlightKey, promise);
     return promise;
   }
 
   private async performCheck(
-    projection: KernelExecutorStatusProjection,
+    projection: RevisionedKernelExecutorStatusProjection,
     trigger: ExecutorRecoveryRefreshTrigger,
   ): Promise<CheckResult> {
     const startedAt = (this.deps.now?.() ?? new Date()).toISOString();
@@ -96,6 +111,7 @@ export class ExecutorRecoveryRefreshService {
       const probe = await Promise.race([
         this.deps.probe(
           projection.agentClassName,
+          projection.configurationRevision,
           projection.recentRecoveryChecks[0]?.failure
             ?? projection.recentAttempts[0]?.failure
             ?? null,
@@ -122,6 +138,7 @@ export class ExecutorRecoveryRefreshService {
     const completedAt = (this.deps.now?.() ?? new Date()).toISOString();
     const updated = this.deps.statusProjector.recordRecoveryCheck({
       agentClassName: projection.agentClassName,
+      configurationRevision: projection.configurationRevision,
       checkId,
       trigger,
       startedAt,
@@ -130,7 +147,11 @@ export class ExecutorRecoveryRefreshService {
       failure,
     });
     if (outcome === 'recovered' && updated?.classHealth === 'healthy') {
-      await this.deps.onRecovered?.(projection.agentClassName, checkId);
+      await this.deps.onRecovered?.(
+        projection.agentClassName,
+        projection.configurationRevision,
+        checkId,
+      );
     }
     return { agentClassName: projection.agentClassName, outcome };
   }

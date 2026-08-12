@@ -31,6 +31,10 @@ export interface ExecutorRuntimeInspector {
   inspectExecutorRegistration(name: string): ExecutorRegistrationInspection;
 }
 
+export interface CommandReadServicesDependencies {
+  getConfigurationRevision?(): Promise<string | null> | string | null;
+}
+
 interface InteractionHistoryRow {
   id: string;
   user_input: string | null;
@@ -58,11 +62,16 @@ export class CommandReadServices {
   constructor(
     private readonly db: Database.Database,
     private readonly executorRuntime: ExecutorRuntimeInspector,
+    private readonly dependencies: CommandReadServicesDependencies = {},
   ) {
     this.agentClasses = new AgentClassRepo(db);
     this.kernelDecisions = new KernelDecisionRepo(db);
     this.taskEvents = new TaskEventRepo(db);
     this.workUnits = new WorkUnitRepo(db);
+  }
+
+  async currentConfigurationRevision(): Promise<string | null> {
+    return await this.dependencies.getConfigurationRevision?.() ?? null;
   }
 
   taskHistory(taskId: string): string {
@@ -251,16 +260,34 @@ function readAuditPlan(value: unknown): { action: string; reason: string; subtas
     reason: String(value.reason ?? '-'),
     subtasks: rawSubtasks.filter(isRecord).map(subtask => {
       const capabilities = stringArray(subtask.requiredCapabilities);
+      const bindings = executorBindingSummaries(subtask.executorBindings);
       const preferences = stringArray(subtask.preferredAgentClassList);
       const legacyCandidates = stringArray(subtask.candidateAgentClasses);
       return {
         id: String(subtask.id ?? '-'),
-        routing: preferences.length > 0 || capabilities.length > 0
+        routing: bindings.length > 0
+          ? `capabilities=${formatList(capabilities)} bindings=${formatList(bindings)}`
+          : preferences.length > 0 || capabilities.length > 0
           ? `capabilities=${formatList(capabilities)} preferences=${formatList(preferences)}`
           : `legacyHint=${String(subtask.agentClassHint ?? '-')} legacyCandidates=${formatList(legacyCandidates)}`,
       };
     }),
   };
+}
+
+function executorBindingSummaries(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map(binding => {
+    const agentClassRef = String(binding.agentClassRef ?? '-');
+    const selection = isRecord(binding.modelSelection) ? binding.modelSelection : null;
+    if (!selection) {
+      const modelRef = typeof binding.modelRef === 'string' ? binding.modelRef : '-';
+      return `${agentClassRef}@${modelRef}`;
+    }
+    const mode = String(selection.mode ?? '-');
+    const modelRef = typeof selection.modelRef === 'string' ? `:${selection.modelRef}` : '';
+    return `${agentClassRef}[${mode}${modelRef}]`;
+  });
 }
 
 function stringArray(value: unknown): string[] {
