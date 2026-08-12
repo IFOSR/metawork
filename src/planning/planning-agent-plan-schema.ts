@@ -22,9 +22,9 @@ const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
 const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
 const DELIVERY_KIND_VALUES = ['edit', 'report'] as const;
 const ROUTING_CAPABILITY_VALUES = ['current-web-research', 'workspace-engineering'] as const;
-const BUILTIN_EXECUTOR_VALUES = ['codex-cli', 'pi-agent'] as const;
 const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
 const WORK_GRAPH_KEY = /^[a-z][a-z0-9_-]{0,63}$/;
+const CONFIGURATION_REFERENCE = /^[a-z][a-z0-9-]{0,63}$/;
 
 const ResponseSchema = z.object({
   directReply: z.string().nullable(),
@@ -82,6 +82,27 @@ const AcceptanceSchema = z.object({
   requiredEvidence: z.array(z.string().trim().min(1).max(500)).max(4),
 }).strict();
 
+const ConfigurationReferenceSchema = z.string().regex(CONFIGURATION_REFERENCE);
+
+const ModelSelectionSchema = z.union([
+  z.object({
+    mode: z.literal('fixed-by-agent-class'),
+  }).strict(),
+  z.object({
+    mode: z.literal('proposed'),
+    modelRef: ConfigurationReferenceSchema,
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+  z.object({
+    mode: z.literal('agent-class-default'),
+  }).strict(),
+]);
+
+const ExecutorBindingSchema = z.object({
+  agentClassRef: ConfigurationReferenceSchema,
+  modelSelection: ModelSelectionSchema,
+}).strict();
+
 const SubtaskSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -89,13 +110,15 @@ const SubtaskSchema = z.object({
   dependencies: z.array(DependencySchema),
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_VALUES)).min(1),
-  preferredAgentClassList: z.array(z.enum(BUILTIN_EXECUTOR_VALUES)).min(1),
+  executorBindings: z.array(ExecutorBindingSchema).min(1).max(32),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
 }).strict();
 
 const WorkGraphSchema = z.object({
+  schemaVersion: z.literal(7),
+  configurationRevision: ConfigurationReferenceSchema,
   reason: z.string(),
   subtasks: z.array(SubtaskSchema).min(1),
 }).strict();
@@ -107,7 +130,7 @@ const AuthorizationResolutionSchema = z.object({
 
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(7),
+  schemaVersion: z.literal(8),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),

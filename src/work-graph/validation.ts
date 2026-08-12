@@ -29,7 +29,7 @@ export interface WorkGraphViolation {
   message: string;
 }
 
-/** Pure v5 structural and contract validation shared by Planner, Kernel and Runtime. */
+/** Pure v7 structural and contract validation shared by Planner, Kernel and Runtime. */
 export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): WorkGraphViolation[] {
   const violations: WorkGraphViolation[] = [];
   if (graph.subtasks.length === 0) {
@@ -91,8 +91,8 @@ export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): W
     const upstreamId = downstream.dependencies[0]!.fromSubtaskId;
     if (children.get(upstreamId)?.length !== 1) continue;
     const upstream = subtasksById.get(upstreamId);
-    const preferred = upstream?.preferredAgentClassList[0];
-    if (!preferred || downstream.preferredAgentClassList[0] !== preferred) continue;
+    const preferred = upstream?.executorBindings[0]?.agentClassRef;
+    if (!preferred || downstream.executorBindings[0]?.agentClassRef !== preferred) continue;
     violations.push(violation(
       'mergeable_same_agent_chain',
       [upstreamId, downstream.id],

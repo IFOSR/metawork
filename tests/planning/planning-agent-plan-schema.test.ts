@@ -8,7 +8,7 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 7,
+    schemaVersion: 8,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
@@ -27,6 +27,8 @@ function outputPlan() {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: {
+      schemaVersion: 7,
+      configurationRevision: 'revision-2026-08-12',
       reason: 'single implementation delivery',
       subtasks: [{
         id: 'impl',
@@ -35,7 +37,10 @@ function outputPlan() {
         dependencies: [],
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
-        preferredAgentClassList: ['codex-cli'],
+        executorBindings: [{
+          agentClassRef: 'custom-engineering',
+          modelSelection: { mode: 'fixed-by-agent-class' },
+        }],
         deliveryKind: 'edit',
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
@@ -53,6 +58,44 @@ describe('PlanningAgent plan schemas', () => {
     });
 
     expect(JSON.stringify(schema)).not.toContain('"oneOf"');
+  });
+
+  it('uses constrained string references without hard-coded AgentClass or Model enums', () => {
+    const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
+      target: 'draft-7',
+      unrepresentable: 'any',
+    });
+    const serialized = JSON.stringify(schema);
+
+    expect(serialized).toContain('"executorBindings"');
+    expect(serialized).toContain('"agentClassRef"');
+    expect(serialized).toContain('"modelRef"');
+    expect(serialized).not.toContain('"codex-cli"');
+    expect(serialized).not.toContain('"pi-agent"');
+    expect(serialized).toContain('[a-z][a-z0-9-]');
+  });
+
+  it.each([
+    { mode: 'fixed-by-agent-class' },
+    { mode: 'agent-class-default' },
+    { mode: 'proposed', modelRef: 'review-model', reason: 'best fit for review' },
+  ])('accepts model selection mode $mode', modelSelection => {
+    const valid = outputPlan();
+    const subtask = valid.workGraph.subtasks[0];
+
+    expect(PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{
+          ...subtask,
+          executorBindings: [{
+            agentClassRef: 'custom-engineering',
+            modelSelection,
+          }],
+        }],
+      },
+    }).success).toBe(true);
   });
 
   it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
@@ -75,14 +118,14 @@ describe('PlanningAgent plan schemas', () => {
     expect(PlanningAgentPlanSchema.safeParse({ ...valid, id: '   ' }).success).toBe(false);
   });
 
-  it('rejects v2/v3 and removed execution-routing fields', () => {
+  it('rejects old schema versions and removed execution-routing fields', () => {
     const valid = outputPlan();
     expect(PlanningAgentPlanSchema.safeParse({
       ...valid,
       schemaVersion: 2,
       execution: { mode: 'single_executor', selectedExecutor: 'codex-cli' },
     }).success).toBe(false);
-    expect(PlanningAgentPlanSchema.safeParse({ ...valid, schemaVersion: 3 }).success).toBe(false);
+    expect(PlanningAgentPlanSchema.safeParse({ ...valid, schemaVersion: 7 }).success).toBe(false);
 
     expect(PlanningAgentPlanSchema.safeParse({
       ...valid,
@@ -101,9 +144,34 @@ describe('PlanningAgent plan schemas', () => {
           ...subtask,
           requiredAgentClassKind: 'executor',
           candidateAgentClasses: ['codex-cli'],
+          preferredAgentClassList: ['codex-cli'],
         }],
       },
     }).success).toBe(false);
+  });
+
+  it('rejects malformed executor and model references', () => {
+    const valid = outputPlan();
+    const subtask = valid.workGraph.subtasks[0];
+
+    for (const binding of [
+      {
+        agentClassRef: '../codex',
+        modelSelection: { mode: 'fixed-by-agent-class' },
+      },
+      {
+        agentClassRef: 'custom-engineering',
+        modelSelection: { mode: 'proposed', modelRef: 'Bad Model', reason: 'invalid ref' },
+      },
+    ]) {
+      expect(PlanningAgentPlanSchema.safeParse({
+        ...valid,
+        workGraph: {
+          ...valid.workGraph,
+          subtasks: [{ ...subtask, executorBindings: [binding] }],
+        },
+      }).success).toBe(false);
+    }
   });
 
   it('rejects an empty work graph at the structured-output boundary', () => {

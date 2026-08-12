@@ -16,7 +16,7 @@ import type { ContextRef } from '../../src/work-graph/index.js';
 function basePlan(): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 7,
+    schemaVersion: 8,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'test plan',
@@ -55,6 +55,8 @@ export function singleSubtaskWorkGraph(input: {
   const executor = input.executor === 'pi-agent' ? 'pi-agent' : 'codex-cli';
   const deliveryKind = input.deliveryKind ?? 'edit';
   return {
+    schemaVersion: 7,
+    configurationRevision: 'revision-test',
     reason: 'single executor work graph',
     subtasks: [{
       id: 'subtask_execute',
@@ -63,7 +65,10 @@ export function singleSubtaskWorkGraph(input: {
       dependencies: [],
       contextRefs: input.contextRefs ?? [{ kind: 'current_user_input' }],
       requiredCapabilities: [executor === 'pi-agent' ? 'current-web-research' : 'workspace-engineering'],
-      preferredAgentClassList: [executor],
+      executorBindings: [{
+        agentClassRef: executor,
+        modelSelection: { mode: 'fixed-by-agent-class' },
+      }],
       deliveryKind,
       acceptance: (input.acceptance ?? ['Satisfy the user request and report verification or remaining risk.'])
         .map((description, index) => ({

@@ -18,7 +18,7 @@ persist_ssh_environment() {
     "METACLAW_EXECUTOR_CODEX_HOME=${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/executor}" \
     "METACLAW_EXECUTOR_PI_HOME=${METACLAW_EXECUTOR_PI_HOME:-/root}" \
     "METACLAW_PLANNER_SESSION_DIR=${METACLAW_PLANNER_SESSION_DIR:-/var/lib/metaclaw/anyfusion-planner/sessions}" \
-    "METACLAW_PLANNER_SCHEMA_PATH=${METACLAW_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v7.schema.json}" \
+    "METACLAW_PLANNER_SCHEMA_PATH=${METACLAW_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v8.schema.json}" \
     "METACLAW_PLANNER_WORKDIR=${METACLAW_PLANNER_WORKDIR:-/workspace}" \
     "METACLAW_PLANNER_ENV_FILE=${METACLAW_PLANNER_ENV_FILE:-/run/metaclaw/env/planner-pi.env}" \
     "METACLAW_PLANNER_COMMAND=${METACLAW_PLANNER_COMMAND:-/opt/anyfusion-planner/bin/anyfusion-planner}" \
@@ -26,7 +26,7 @@ persist_ssh_environment() {
     "METACLAW_PLANNER_TUI_SOCKET=${METACLAW_PLANNER_TUI_SOCKET:-/data/metaclaw/anyfusion-planner.sock}" \
     "ANYFUSION_BRIDGE_SOCKET=${ANYFUSION_BRIDGE_SOCKET:-/data/metaclaw/anyfusion-planner.sock}" \
     "ANYFUSION_PLANNER_MODE=${ANYFUSION_PLANNER_MODE:-1}" \
-    "ANYFUSION_PLANNER_SCHEMA_PATH=${ANYFUSION_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v7.schema.json}" \
+    "ANYFUSION_PLANNER_SCHEMA_PATH=${ANYFUSION_PLANNER_SCHEMA_PATH:-/opt/metaclaw/schema/planning-agent-plan-v8.schema.json}" \
     "METACLAW_CODEX_EXECUTOR_ENV_FILE=${METACLAW_CODEX_EXECUTOR_ENV_FILE:-/run/metaclaw/env/executor-codex.env}" \
     "METACLAW_PI_EXECUTOR_ENV_FILE=${METACLAW_PI_EXECUTOR_ENV_FILE:-/run/metaclaw/env/executor-pi.env}"
   do

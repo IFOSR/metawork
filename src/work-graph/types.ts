@@ -1,7 +1,6 @@
 import type {
-  BuiltinExecutorName,
   RoutingCapabilityId,
-} from '../executor/builtin-executor-catalog.js';
+} from '../routing/types.js';
 
 export type WorkGraphItemType = 'text' | 'artifact';
 
@@ -29,6 +28,16 @@ export interface WorkGraphAcceptanceCriterion {
   requiredEvidence: string[];
 }
 
+export type ProposedModelSelection =
+  | { mode: 'fixed-by-agent-class' }
+  | { mode: 'proposed'; modelRef: string; reason: string }
+  | { mode: 'agent-class-default' };
+
+export interface ProposedExecutorBinding {
+  agentClassRef: string;
+  modelSelection: ProposedModelSelection;
+}
+
 export interface WorkGraphSubtask {
   id: string;
   title: string;
@@ -36,13 +45,15 @@ export interface WorkGraphSubtask {
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
   requiredCapabilities: RoutingCapabilityId[];
-  preferredAgentClassList: BuiltinExecutorName[];
+  executorBindings: ProposedExecutorBinding[];
   deliveryKind: 'edit' | 'report';
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: 'low' | 'medium' | 'high';
 }
 
 export interface WorkGraphProposal {
+  schemaVersion: 7;
+  configurationRevision: string;
   reason: string;
   subtasks: WorkGraphSubtask[];
 }

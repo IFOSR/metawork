@@ -10,7 +10,7 @@ import {
 function subtask(
   id: string,
   dependencies: WorkGraphSubtask['dependencies'] = [],
-  preferredAgentClassList: WorkGraphSubtask['preferredAgentClassList'] = ['codex-cli'],
+  agentClassRef = 'codex-cli',
 ): WorkGraphSubtask {
   return {
     id,
@@ -19,7 +19,10 @@ function subtask(
     dependencies,
     contextRefs: [{ kind: 'current_user_input' }],
     requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList,
+    executorBindings: [{
+      agentClassRef,
+      modelSelection: { mode: 'fixed-by-agent-class' },
+    }],
     deliveryKind: 'report',
     acceptance: [{ key: 'complete', description: `complete ${id}`, requiredEvidence: [] }],
     riskLevel: 'low',
@@ -33,10 +36,10 @@ function edge(fromSubtaskId: string): WorkGraphSubtask['dependencies'][number] {
   };
 }
 
-describe('Work Graph v4 structural rules', () => {
+describe('Work Graph v7 structural rules', () => {
   it('accepts a valid direct handoff graph', () => {
     expect(validateWorkGraph({
-      subtasks: [subtask('a'), subtask('b', [edge('a')], ['pi-agent'])],
+      subtasks: [subtask('a'), subtask('b', [edge('a')], 'pi-agent')],
     })).toEqual([]);
   });
 
@@ -65,7 +68,7 @@ describe('Work Graph v4 structural rules', () => {
     {
       name: 'upstream accepts a join',
       subtasks: [
-        subtask('left', [], ['pi-agent']),
+        subtask('left', [], 'pi-agent'),
         subtask('right'),
         subtask('a', [edge('left'), edge('right')]),
         subtask('b', [edge('a')]),
@@ -77,8 +80,8 @@ describe('Work Graph v4 structural rules', () => {
       subtasks: [
         subtask('a'),
         subtask('b', [edge('a')]),
-        subtask('left', [edge('b')], ['pi-agent']),
-        subtask('right', [edge('b')], ['pi-agent']),
+        subtask('left', [edge('b')], 'pi-agent'),
+        subtask('right', [edge('b')], 'pi-agent'),
       ],
       expected: true,
     },
@@ -87,7 +90,7 @@ describe('Work Graph v4 structural rules', () => {
       subtasks: [
         subtask('a'),
         subtask('b', [edge('a')]),
-        subtask('other', [edge('a')], ['pi-agent']),
+        subtask('other', [edge('a')], 'pi-agent'),
       ],
       expected: false,
     },
@@ -95,14 +98,14 @@ describe('Work Graph v4 structural rules', () => {
       name: 'downstream has another dependency',
       subtasks: [
         subtask('a'),
-        subtask('other', [], ['pi-agent']),
+        subtask('other', [], 'pi-agent'),
         subtask('b', [edge('a'), edge('other')]),
       ],
       expected: false,
     },
     {
       name: 'preferred AgentClasses differ',
-      subtasks: [subtask('a'), subtask('b', [edge('a')], ['pi-agent'])],
+      subtasks: [subtask('a'), subtask('b', [edge('a')], 'pi-agent')],
       expected: false,
     },
   ])('applies the exact mergeable-chain rule: $name', ({ subtasks, expected }) => {
@@ -140,9 +143,9 @@ describe('Work Graph v4 structural rules', () => {
 describe('Work Graph v5 runnable frontier', () => {
   it('returns every dependency-satisfied node in stable topology, authorization, and id order', () => {
     const subtasks = [
-      subtask('root-a', [], ['pi-agent']),
+      subtask('root-a', [], 'pi-agent'),
       subtask('root-b'),
-      subtask('later-z', [edge('root-a')], ['pi-agent']),
+      subtask('later-z', [edge('root-a')], 'pi-agent'),
       subtask('later-a', [edge('root-b')]),
     ];
     const facts: WorkGraphRuntimeFact[] = [
@@ -158,9 +161,9 @@ describe('Work Graph v5 runnable frontier', () => {
   it('does not expose awaiting-integration dependencies or a Subtask with pending dispatch', () => {
     const subtasks = [
       subtask('published'),
-      subtask('candidate', [], ['pi-agent']),
+      subtask('candidate', [], 'pi-agent'),
       subtask('downstream', [edge('candidate')]),
-      subtask('independent', [edge('published')], ['pi-agent']),
+      subtask('independent', [edge('published')], 'pi-agent'),
     ];
     const facts: WorkGraphRuntimeFact[] = [
       runtimeFact('published', 'done'),

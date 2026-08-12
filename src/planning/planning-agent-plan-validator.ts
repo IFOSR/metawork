@@ -1,4 +1,5 @@
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type { PlannerConfigurationView } from '../configuration/index.js';
+import type { ConfigurationCatalogAgentClass } from '../routing/types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
@@ -12,7 +13,7 @@ const TASK_PRIORITIES = new Set(['normal', 'high', 'urgent']);
 
 export function validatePlanningAgentPlan(
   value: unknown,
-  executorCatalog: PlannerExecutorCatalog,
+  configuration: PlannerConfigurationView,
   pendingAuthorizationRequest: { requestId: string; taskId: string } | null = null,
 ): PlanningAgentPlanValidationResult {
   const parsed = PlanningAgentPlanSchema.safeParse(value);
@@ -36,10 +37,28 @@ export function validatePlanningAgentPlan(
     errors.push(...validateWorkGraph(plan.workGraph).map(
       violation => `${violation.code}: ${violation.path}: ${violation.message}`,
     ));
-    validateRouting(plan.workGraph.subtasks, executorCatalog, errors);
+    validateConfigurationRevision(plan.workGraph.configurationRevision, configuration, errors);
+    validateRouting(plan.workGraph.subtasks, configuration, errors);
   }
 
   return { valid: errors.length === 0, errors: errors.sort() };
+}
+
+function validateConfigurationRevision(
+  graphRevision: string,
+  configuration: PlannerConfigurationView,
+  errors: string[],
+): void {
+  if (configuration.routingCatalog.configurationRevision !== configuration.revisionId) {
+    errors.push(
+      `Planner configuration view revision ${configuration.revisionId} does not match routing catalog revision ${configuration.routingCatalog.configurationRevision}`,
+    );
+  }
+  if (graphRevision !== configuration.revisionId) {
+    errors.push(
+      `work graph configurationRevision ${graphRevision} does not match Planner configuration revision ${configuration.revisionId}`,
+    );
+  }
 }
 
 function validateAuthorizationResolution(
@@ -104,11 +123,13 @@ function validateTaskPriority(plan: PlanningAgentPlan, errors: string[]): void {
 
 function validateRouting(
   subtasks: SubtaskProposal[],
-  catalog: PlannerExecutorCatalog,
+  configuration: PlannerConfigurationView,
   errors: string[],
 ): void {
+  const catalog = configuration.routingCatalog;
   const capabilityIds = new Set(catalog.capabilities.map(capability => capability.id));
-  const executorsByName = new Map(catalog.executors.map(executor => [executor.name, executor]));
+  const agentClassesByRef = new Map(catalog.agentClasses.map(agentClass => [agentClass.id, agentClass]));
+  const modelRefs = new Set(configuration.models.map(model => model.id));
 
   for (const subtask of subtasks) {
     collectDuplicateErrors(
@@ -119,16 +140,16 @@ function validateRouting(
     );
     collectDuplicateErrors(
       subtask.id,
-      'preferred AgentClass',
-      subtask.preferredAgentClassList,
+      'executor binding',
+      subtask.executorBindings.map(executorBindingKey),
       errors,
     );
 
     if (subtask.requiredCapabilities.length === 0) {
       errors.push(`subtask ${subtask.id} requires at least one Routing Capability`);
     }
-    if (subtask.preferredAgentClassList.length === 0) {
-      errors.push(`subtask ${subtask.id} requires at least one preferred AgentClass`);
+    if (subtask.executorBindings.length === 0) {
+      errors.push(`subtask ${subtask.id} requires at least one executor binding`);
     }
 
     const unknownCapabilities = subtask.requiredCapabilities.filter(capability => !capabilityIds.has(capability));
@@ -137,34 +158,120 @@ function validateRouting(
     }
 
     const required = new Set(subtask.requiredCapabilities);
-    const eligible = catalog.executors
-      .filter(executor => [...required].every(capability => executor.routingCapabilities.includes(capability)))
-      .map(executor => executor.name)
-      .sort();
+    const eligible = catalog.agentClasses.filter(
+      agentClass => [...required].every(capability =>
+        agentClass.routingCapabilities.includes(capability)),
+    );
 
     if (required.size > 0 && unknownCapabilities.length === 0 && eligible.length === 0) {
       errors.push(`no_capable_agent_class: subtask ${subtask.id} must be split at a Routing Capability handoff`);
     }
 
-    for (const name of subtask.preferredAgentClassList) {
-      const executor = executorsByName.get(name);
-      if (!executor) {
-        errors.push(`subtask ${subtask.id} references non-canonical AgentClass: ${name}`);
+    for (const binding of subtask.executorBindings) {
+      const agentClass = agentClassesByRef.get(binding.agentClassRef);
+      if (!agentClass) {
+        errors.push(
+          `subtask ${subtask.id} references unavailable AgentClass in revision ${configuration.revisionId}: ${binding.agentClassRef}`,
+        );
         continue;
       }
       const uncovered = [...required]
-        .filter(capability => !executor.routingCapabilities.includes(capability))
+        .filter(capability => !agentClass.routingCapabilities.includes(capability))
         .sort();
       if (uncovered.length > 0) {
-        errors.push(`subtask ${subtask.id} AgentClass ${name} does not cover required capabilities: ${uncovered.join(', ')}`);
+        errors.push(
+          `subtask ${subtask.id} AgentClass ${binding.agentClassRef} does not cover required capabilities: ${uncovered.join(', ')}`,
+        );
       }
-    }
-
-    const actualSet = [...new Set(subtask.preferredAgentClassList)].sort();
-    if (!sameValues(actualSet, eligible)) {
-      errors.push(`subtask ${subtask.id} preferred AgentClass set must equal eligible canonical set: ${eligible.join(', ') || '(none)'}`);
+      validateModelSelection(subtask.id, binding, agentClass, modelRefs, configuration.revisionId, errors);
     }
   }
+}
+
+function validateModelSelection(
+  subtaskId: string,
+  binding: SubtaskProposal['executorBindings'][number],
+  agentClass: ConfigurationCatalogAgentClass,
+  modelRefs: ReadonlySet<string>,
+  configurationRevision: string,
+  errors: string[],
+): void {
+  const selection = binding.modelSelection;
+  const policy = agentClass.modelPolicy;
+
+  if (policy.mode === 'fixed') {
+    if (selection.mode !== 'fixed-by-agent-class') {
+      errors.push(
+        `subtask ${subtaskId} AgentClass ${binding.agentClassRef} uses fixed ModelPolicy and requires fixed-by-agent-class selection`,
+      );
+    } else {
+      validateModelAvailability(
+        subtaskId,
+        policy.modelRef,
+        modelRefs,
+        configurationRevision,
+        errors,
+      );
+    }
+    return;
+  }
+
+  if (selection.mode === 'fixed-by-agent-class') {
+    errors.push(
+      `subtask ${subtaskId} AgentClass ${binding.agentClassRef} uses auto ModelPolicy and cannot use fixed-by-agent-class selection`,
+    );
+    return;
+  }
+
+  if (selection.mode === 'proposed') {
+    validateModelAvailability(
+      subtaskId,
+      selection.modelRef,
+      modelRefs,
+      configurationRevision,
+      errors,
+    );
+    if (!policy.allowedModelRefs.includes(selection.modelRef)) {
+      errors.push(
+        `subtask ${subtaskId} Model ${selection.modelRef} is not allowed by AgentClass ${binding.agentClassRef}`,
+      );
+    }
+    return;
+  }
+
+  const defaultModelRef = policy.defaultModelRef ?? policy.allowedModelRefs[0];
+  if (defaultModelRef) {
+    validateModelAvailability(
+      subtaskId,
+      defaultModelRef,
+      modelRefs,
+      configurationRevision,
+      errors,
+    );
+  }
+}
+
+function validateModelAvailability(
+  subtaskId: string,
+  modelRef: string,
+  modelRefs: ReadonlySet<string>,
+  configurationRevision: string,
+  errors: string[],
+): void {
+  if (!modelRefs.has(modelRef)) {
+    errors.push(
+      `subtask ${subtaskId} references unavailable Model in revision ${configurationRevision}: ${modelRef}`,
+    );
+  }
+}
+
+function executorBindingKey(
+  binding: SubtaskProposal['executorBindings'][number],
+): string {
+  if (binding.modelSelection.mode === 'proposed') {
+    return `${binding.agentClassRef}:${binding.modelSelection.mode}:${binding.modelSelection.modelRef}`;
+  }
+  return `${binding.agentClassRef}:${binding.modelSelection.mode}`;
 }
 
 function collectDuplicateErrors(
@@ -178,8 +285,4 @@ function collectDuplicateErrors(
     if (seen.has(value)) errors.push(`subtask ${subtaskId} contains duplicate ${label}: ${value}`);
     seen.add(value);
   }
-}
-
-function sameValues(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

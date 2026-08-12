@@ -1,6 +1,4 @@
-import type {
-  PlannerExecutorCatalog,
-} from '../executor/builtin-executor-catalog.js';
+import type { PlannerConfigurationView } from '../configuration/index.js';
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/index.js';
 
 export type PlanningAction =
@@ -29,7 +27,7 @@ export type { WorkGraphProposal };
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 7;
+  schemaVersion: 8;
   action: PlanningAction;
   confidence: number;
   reason: string;
@@ -77,6 +75,6 @@ export interface PlanningContext {
     operation: string;
     reason: string;
   } | null;
-  executorCatalog: PlannerExecutorCatalog;
+  configuration: PlannerConfigurationView;
   timeoutMs: number;
 }

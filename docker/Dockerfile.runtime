@@ -38,8 +38,8 @@ ENV NODE_ENV=production \
     ANYFUSION_PLANNER_HOME=/var/lib/metaclaw/anyfusion-planner/agent \
     METACLAW_PLANNER_HOME=/var/lib/metaclaw/anyfusion-planner/agent \
     METACLAW_PLANNER_SESSION_DIR=/var/lib/metaclaw/anyfusion-planner/sessions \
-    METACLAW_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v7.schema.json \
-    ANYFUSION_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v7.schema.json \
+    METACLAW_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v8.schema.json \
+    ANYFUSION_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v8.schema.json \
     METACLAW_PLANNER_WORKDIR=/workspace \
     METACLAW_PLANNER_ENV_FILE=/run/metaclaw/env/planner-pi.env \
     METACLAW_PLANNER_COMMAND=/opt/anyfusion-planner/bin/anyfusion-planner \
@@ -77,7 +77,7 @@ COPY docker/planner-pi-config /opt/metaclaw/planner-pi-config
 COPY docker/tui-config.yaml /opt/metaclaw/default-config.yaml
 COPY scripts/smoke-planner-mcp.mjs /app/scripts/smoke-planner-mcp.mjs
 COPY scripts/smoke-metaclaw-real-task.mjs /app/scripts/smoke-metaclaw-real-task.mjs
-COPY --from=builder /app/dist/planning-agent-plan-v7.schema.json /opt/metaclaw/schema/planning-agent-plan-v7.schema.json
+COPY --from=builder /app/dist/planning-agent-plan-v8.schema.json /opt/metaclaw/schema/planning-agent-plan-v8.schema.json
 
 RUN test "$(node --version)" = 'v22.19.0' \
   && test ! -e /opt/anyfusion-planner/node \

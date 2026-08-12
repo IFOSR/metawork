@@ -50,7 +50,7 @@ function completeRpcTurn(child: FakeProcess): void {
         type: 'tool_execution_start',
         toolCallId: 'tool-1',
         toolName: 'submit_planning_proposal',
-        args: { plan: { id: 'plan-1', schemaVersion: 7 } },
+        args: { plan: { id: 'plan-1', schemaVersion: 8 } },
       },
       {
         type: 'tool_execution_end',
@@ -99,7 +99,7 @@ describe('PlannerProcessSupervisor', () => {
       sessionDir: join(root, 'planner-sessions'),
       envFile: '',
       socketPath: join(root, 'planner.sock'),
-      schemaPath: '/release/planning-agent-plan-v7.schema.json',
+      schemaPath: '/release/planning-agent-plan-v8.schema.json',
       spawn: spawn as never,
     });
 
@@ -135,7 +135,7 @@ describe('PlannerProcessSupervisor', () => {
           METACLAW_PLANNER_SESSION_ID: 'session-1',
           ANYFUSION_BRIDGE_SOCKET: join(root, 'planner.sock'),
           METACLAW_PLANNER_TUI_SOCKET: join(root, 'planner.sock'),
-          ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v7.schema.json',
+          ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v8.schema.json',
         });
       }
       expect(launches[1]?.args).toContain(join(root, 'planner-sessions', 'session-1.interactive.jsonl'));
@@ -147,7 +147,7 @@ describe('PlannerProcessSupervisor', () => {
             ANYFUSION_PLANNER_HOME: join(root, 'planner-home'),
             ANYFUSION_PLANNER_SESSION_DIR: join(root, 'planner-sessions'),
             ANYFUSION_BRIDGE_SOCKET: join(root, 'planner.sock'),
-            ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v7.schema.json',
+            ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v8.schema.json',
           }),
         },
       });

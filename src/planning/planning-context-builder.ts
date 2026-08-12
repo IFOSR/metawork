@@ -1,17 +1,17 @@
 import type { PlanningContext } from './planning-types.js';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
 
 export interface PlanningContextBuilderDeps {
   sessionId: string;
   requestSource: string;
   getTimeoutMs(): number;
+  getPlannerConfiguration(): PlanningContext['configuration'];
 }
 
 export class PlanningContextBuilder {
   constructor(private readonly deps: PlanningContextBuilderDeps) {}
 
-  getExecutorCatalog(): PlanningContext['executorCatalog'] {
-    return getPlannerExecutorCatalog();
+  getPlannerConfiguration(): PlanningContext['configuration'] {
+    return this.deps.getPlannerConfiguration();
   }
 
   build(input: {
@@ -25,7 +25,7 @@ export class PlanningContextBuilder {
         source: this.deps.requestSource,
       },
       pendingAuthorizationRequest: input.pendingAuthorizationRequest ?? null,
-      executorCatalog: this.getExecutorCatalog(),
+      configuration: this.getPlannerConfiguration(),
       timeoutMs: this.deps.getTimeoutMs(),
     };
   }

@@ -490,7 +490,7 @@ export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
     const childEnv = {
       METACLAW_HOME: metaclawHome,
       METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v7.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
     };
     if (executorCommand === 'pi') {
       childEnv.HOME = executorHome;

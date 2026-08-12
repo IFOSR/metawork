@@ -1,15 +1,42 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import type { PlannerConfigurationView } from '../../src/configuration/index.js';
 import { AnyFusionPlanningAgent } from '../../src/planning/anyfusion-planning-agent.js';
 import type { PlannerProposalResult } from '../../src/planning/planner-proposal.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
+
+const configuration: PlannerConfigurationView = {
+  revisionId: 'revision-test',
+  contentHash: 'sha256:planner-view',
+  models: [{
+    id: 'engineering-model',
+    capabilities: ['coding', 'tools'],
+    reasoning: 'high',
+    region: 'international',
+  }],
+  routingCatalog: {
+    version: 2,
+    configurationRevision: 'revision-test',
+    capabilities: [{
+      id: 'workspace-engineering',
+      deliveryContract: 'Modify and verify workspace files.',
+    }],
+    agentClasses: [{
+      id: 'custom-engineering',
+      routingCapabilities: ['workspace-engineering'],
+      primaryUseCases: ['implementation'],
+      avoidUseCases: [],
+      affordances: ['workspace-command-validation', 'workspace-read-write'],
+      modelPolicy: { mode: 'fixed', modelRef: 'engineering-model' },
+    }],
+  },
+};
 
 function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
   return {
     userInput: '实现一个功能',
     request: { sessionId: 'session_test', source: 'test' },
     pendingAuthorizationRequest: null,
-    executorCatalog: getPlannerExecutorCatalog(),
+    configuration,
     timeoutMs: 5_000,
     ...overrides,
   };
@@ -17,7 +44,7 @@ function context(overrides: Partial<PlanningContext> = {}): PlanningContext {
 
 const VALID_PLAN = {
   id: 'plan_1',
-  schemaVersion: 7,
+  schemaVersion: 8,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: '需要执行',
@@ -31,12 +58,18 @@ const VALID_PLAN = {
   risk: { level: 'medium', requiresConfirmation: false, reasons: [] },
   authorizationResolution: null,
   workGraph: {
+    schemaVersion: 7,
+    configurationRevision: 'revision-test',
     reason: '单步执行',
     subtasks: [{
       id: 'impl', title: '实现', goal: '实现并测试', dependencies: [],
       contextRefs: [{ kind: 'current_user_input' }],
       requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'], deliveryKind: 'edit',
+      executorBindings: [{
+        agentClassRef: 'custom-engineering',
+        modelSelection: { mode: 'fixed-by-agent-class' },
+      }],
+      deliveryKind: 'edit',
       acceptance: [{ key: 'tests_pass', description: '测试通过', requiredEvidence: ['test result'] }],
       riskLevel: 'medium',
     }],
@@ -73,7 +106,7 @@ describe('AnyFusionPlanningAgent native proposal tool adapter', () => {
 
     const result = await agent.plan(context());
 
-    expect(result).toMatchObject({ id: 'plan_1', schemaVersion: 7, action: 'plan_work_graph' });
+    expect(result).toMatchObject({ id: 'plan_1', schemaVersion: 8, action: 'plan_work_graph' });
     expect(plannerRunner.run).toHaveBeenCalledWith('实现一个功能', expect.any(Object), 'validation');
     expect(plannerRunner.run).toHaveBeenCalledTimes(1);
   });
