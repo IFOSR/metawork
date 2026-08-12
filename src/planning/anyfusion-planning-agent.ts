@@ -1,4 +1,8 @@
-import { PlannerProcessRunner, type PlannerRunner, type PlannerToolCallTrace } from './planner-process-runner.js';
+import type { PlannerToolCallTrace } from './planner-audit-contract.js';
+import {
+  getDefaultPlannerProcessSupervisor,
+  type PlannerRunner,
+} from './planner-process-supervisor.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
 import type { PlanningAgent } from './planning-agent.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
@@ -101,7 +105,7 @@ export function createDefaultPlanningAgent(
   deps: Partial<AnyFusionPlanningAgentDeps> = {},
 ): AnyFusionPlanningAgent {
   return new AnyFusionPlanningAgent({
-    runner: deps.runner ?? new PlannerProcessRunner(),
+    runner: deps.runner ?? getDefaultPlannerProcessSupervisor(),
     audit: deps.audit,
   });
 }

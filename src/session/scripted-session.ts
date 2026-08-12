@@ -69,7 +69,7 @@ export async function runScriptedSession(
     output: session.getSnapshot().output,
     exitRequested,
   };
-  session.dispose();
+  await session.dispose();
   return result;
 }
 

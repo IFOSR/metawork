@@ -9,6 +9,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
 import { MetaclawSession, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
+import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
@@ -23,11 +24,14 @@ interface GatewayServerDeps {
   notifier: NotificationService;
   workspaceRoot: string;
   plannerHost?: PlannerHostRegistrar;
+  plannerSupervisor?: PlannerProcessController;
 }
 
 export class MetaclawGatewayServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
+  private readonly sessions = new Set<MetaclawSession>();
+  private stopping = false;
 
   constructor(private readonly deps: GatewayServerDeps) {}
 
@@ -35,11 +39,16 @@ export class MetaclawGatewayServer {
     if (this.server) {
       return;
     }
+    this.stopping = false;
     if (existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
     }
 
     this.server = createServer(socket => {
+      if (this.stopping) {
+        socket.destroy();
+        return;
+      }
       this.sockets.add(socket);
       socket.once('close', () => {
         this.sockets.delete(socket);
@@ -62,13 +71,17 @@ export class MetaclawGatewayServer {
     }
     const server = this.server;
     this.server = null;
+    this.stopping = true;
+    const closePromise = new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
     for (const socket of this.sockets) {
       socket.destroy();
     }
     this.sockets.clear();
-    await new Promise<void>((resolve, reject) => {
-      server.close(error => error ? reject(error) : resolve());
-    });
+    await Promise.all([...this.sessions].map(session => session.dispose()));
+    this.sessions.clear();
+    await closePromise;
     if (existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
     }
@@ -86,7 +99,9 @@ export class MetaclawGatewayServer {
       contextRecaller: this.deps.contextRecaller,
       notifier: this.deps.notifier,
       plannerHost: this.deps.plannerHost,
+      plannerSupervisor: this.deps.plannerSupervisor,
     });
+    this.sessions.add(session);
 
     let observedOutputLength = 0;
     const send = (message: GatewayServerMessage) => {
@@ -103,14 +118,15 @@ export class MetaclawGatewayServer {
       }
     });
 
-    socket.on('close', () => {
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       unsubscribe();
-      session.dispose();
-    });
-    socket.on('error', () => {
-      unsubscribe();
-      session.dispose();
-    });
+      void session.dispose().finally(() => this.sessions.delete(session));
+    };
+    socket.on('close', cleanup);
+    socket.on('error', cleanup);
 
     send({ type: 'hello', sessionId });
     session.initialize({ showDashboard: false });

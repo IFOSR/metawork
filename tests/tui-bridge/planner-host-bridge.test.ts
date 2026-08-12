@@ -10,9 +10,9 @@ import type {
   PlannerTuiSnapshot,
   SessionSnapshot,
 } from '../../src/session/metaclaw-session.js';
-import { PlannerTuiBridge, type PlannerTuiBridgeSession } from '../../src/tui-bridge/planner-tui-bridge.js';
+import { PlannerHostBridge, type PlannerHostBridgeSession } from '../../src/tui-bridge/planner-host-bridge.js';
 
-class FakeSession implements PlannerTuiBridgeSession {
+class FakeSession implements PlannerHostBridgeSession {
   readonly executorResults: PlannerTuiExecutorResult[] = [];
   readonly permissionRequests: PlannerTuiPermissionRequest[] = [];
   private readonly listeners = new Set<(snapshot: SessionSnapshot) => void>();
@@ -94,17 +94,17 @@ class FakeSession implements PlannerTuiBridgeSession {
   }
 }
 
-const bridges: PlannerTuiBridge[] = [];
+const bridges: PlannerHostBridge[] = [];
 
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map(bridge => bridge.stop()));
 });
 
-describe('PlannerTuiBridge shared Proposal Host', () => {
+describe('PlannerHostBridge shared Proposal Host', () => {
   it('binds hello to a registered session and returns the structured authoritative result', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
     const session = new FakeSession();
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();
@@ -130,7 +130,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
 
   it('requires hello and rejects proposal session drift', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-drift.sock`);
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', new FakeSession());
     await bridge.start();
@@ -151,7 +151,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
   it('fails closed when hello names an unregistered session', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-unknown.sock`);
     const registered = new FakeSession();
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', registered);
     await bridge.start();
@@ -173,7 +173,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-uncertain.sock`);
     const session = new FakeSession();
     session.submitPlannerProposal.mockRejectedValueOnce(new Error('kernel connection lost'));
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();
@@ -201,7 +201,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-results.sock`);
     const session = new FakeSession();
     session.executorResults.push(executorResult('publication-1'));
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();
@@ -233,7 +233,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-large-result.sock`);
     const session = new FakeSession();
     session.executorResults.push({ ...executorResult('publication-large'), report: 'x'.repeat(1_100_000) });
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();
@@ -260,7 +260,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-permissions.sock`);
     const session = new FakeSession();
     session.permissionRequests.push(permissionRequest('permission-1'));
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();
@@ -284,7 +284,7 @@ describe('PlannerTuiBridge shared Proposal Host', () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-rpc-permissions.sock`);
     const session = new FakeSession();
     session.permissionRequests.push(permissionRequest('permission-1'));
-    const bridge = new PlannerTuiBridge({ socketPath });
+    const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', session);
     await bridge.start();

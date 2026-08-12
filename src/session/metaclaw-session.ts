@@ -66,6 +66,10 @@ import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import { createDefaultPlanningAgent } from '../planning/anyfusion-planning-agent.js';
+import {
+  getDefaultPlannerProcessSupervisor,
+  type PlannerProcessController,
+} from '../planning/planner-process-supervisor.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
@@ -113,6 +117,7 @@ export interface MetaclawSessionDeps {
   sourceRoot?: string;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
+  plannerSupervisor?: PlannerProcessController;
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -300,6 +305,7 @@ export class MetaclawSession {
   private readonly executionProgressService: ExecutionProgressService;
   private readonly planningContextBuilder: PlanningContextBuilder;
   private readonly planningAgent: PlanningAgent;
+  private readonly plannerSupervisor: PlannerProcessController | null;
   private readonly controlKernel: ControlKernel;
   private readonly kernelDecisionRepo: KernelDecisionRepo;
   private readonly kernelWorkflowRepo: KernelWorkflowRepo;
@@ -327,6 +333,7 @@ export class MetaclawSession {
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private unregisterPlannerHost: (() => void) | null = null;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.notifier = deps.notifier ?? new NoopNotificationService();
@@ -407,7 +414,10 @@ export class MetaclawSession {
       requestSource: 'session',
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
     });
+    this.plannerSupervisor = deps.plannerSupervisor
+      ?? (deps.planningAgent ? null : getDefaultPlannerProcessSupervisor());
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
+      runner: this.plannerSupervisor!,
       audit: new PlannerRunRepo(deps.db),
     });
     this.controlKernel = new ControlKernel();
@@ -562,9 +572,13 @@ export class MetaclawSession {
     this.unregisterPlannerHost = deps.plannerHost?.registerSession(deps.sessionId, this) ?? null;
   }
 
-  dispose(): void {
-    this.unregisterPlannerHost?.();
-    this.unregisterPlannerHost = null;
+  async dispose(): Promise<void> {
+    this.disposePromise ??= (async () => {
+      this.unregisterPlannerHost?.();
+      this.unregisterPlannerHost = null;
+      await this.plannerSupervisor?.stopSession(this.deps.sessionId);
+    })();
+    await this.disposePromise;
   }
 
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {

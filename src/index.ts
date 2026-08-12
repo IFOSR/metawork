@@ -25,8 +25,8 @@ import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
 import { MetaclawSession } from './session/metaclaw-session.js';
-import { PlannerTuiBridge } from './tui-bridge/planner-tui-bridge.js';
-import { runPlannerTuiProcess } from './tui-bridge/planner-tui-process.js';
+import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
+import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
@@ -121,7 +121,8 @@ async function main() {
     ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
   process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
-  const plannerHost = new PlannerTuiBridge({ socketPath: plannerHostSocketPath, logger: console });
+  const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
+  const plannerSupervisor = new PlannerProcessSupervisor({ socketPath: plannerHostSocketPath });
   await plannerHost.start();
 
   if (cliArgs.scriptPath) {
@@ -136,17 +137,20 @@ async function main() {
         contextRecaller,
         notifier,
         plannerHost,
+        plannerSupervisor,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
       }
     } finally {
-      await plannerHost.stop();
+      await Promise.all([
+        plannerHost.stop(),
+        plannerSupervisor.stop(),
+      ]);
     }
     return;
   }
 
-  const plannerTuiSocketPath = plannerHostSocketPath;
   const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
   if (process.env.METACLAW_STANDBY_TUI !== '1') {
@@ -160,6 +164,7 @@ async function main() {
       contextRecaller,
       notifier,
       plannerHost,
+      plannerSupervisor,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
@@ -173,6 +178,7 @@ async function main() {
       notifier,
       workspaceRoot: process.cwd(),
       plannerHost,
+      plannerSupervisor,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -181,16 +187,16 @@ async function main() {
       });
     }, plannerTuiSession.getBlockedRecheckIntervalMs());
     try {
-      await runPlannerTuiProcess({
-        socketPath: plannerTuiSocketPath,
+      await plannerSupervisor.startInteractive({
         sessionId,
         cwd: process.cwd(),
       });
     } finally {
       clearInterval(blockedRecheckTimer);
-      plannerTuiSession.dispose();
+      await plannerTuiSession.dispose();
       await Promise.all([
         plannerHost.stop(),
+        plannerSupervisor.stop(),
         nativeGatewayServer.stop(),
         markdownPreviewServer?.stop() ?? Promise.resolve(),
       ]);
@@ -209,6 +215,7 @@ async function main() {
     notifier,
     workspaceRoot: process.cwd(),
     plannerHost,
+    plannerSupervisor,
   });
 
   await gatewayServer.start();
@@ -226,6 +233,7 @@ async function main() {
       contextRecaller,
       notifier,
       plannerHost,
+      plannerSupervisor,
     });
     gatewaySession = session;
     session.initialize({ showDashboard: false });
@@ -249,10 +257,11 @@ async function main() {
           gatewayFeishuBridge?.stop() ?? Promise.resolve(),
           gatewayServer.stop(),
           plannerHost.stop(),
+          plannerSupervisor.stop(),
           markdownPreviewServer?.stop() ?? Promise.resolve(),
         ]);
       } finally {
-        gatewaySession?.dispose();
+        await gatewaySession?.dispose();
         gatewaySession = null;
       }
     })();
@@ -260,11 +269,12 @@ async function main() {
   };
   process.once('exit', () => {
     if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    gatewaySession?.dispose();
+    void gatewaySession?.dispose();
     void gatewayFeishuBridge?.stop();
     void markdownPreviewServer?.stop();
     void gatewayServer.stop();
     void plannerHost.stop();
+    void plannerSupervisor.stop();
   });
   process.once('SIGINT', () => {
     void shutdown().finally(() => process.exit(0));
@@ -280,7 +290,18 @@ async function main() {
   }
 
   // 9. 启动 TUI
-  renderApp({ taskEngine, memoryEngine, orchestration, db, config, sessionId, contextRecaller, notifier, plannerHost });
+  renderApp({
+    taskEngine,
+    memoryEngine,
+    orchestration,
+    db,
+    config,
+    sessionId,
+    contextRecaller,
+    notifier,
+    plannerHost,
+    plannerSupervisor,
+  });
 }
 
 main().catch((error) => {

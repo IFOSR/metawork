@@ -38,7 +38,7 @@ function baseManifest(overrides: Partial<ReleaseManifestInput> = {}): ReleaseMan
     },
     planner: {
       source: 'https://github.com/IFOSR/AnyFusion-Pi.git',
-      revision: 'planner-revision-pin',
+      revision: 'd62eed393f77fadf771d881b56176f680eb4da57',
       url: 'https://releases.example.test/planner.tgz',
       byteSize: plannerBytes.byteLength,
       sha256: sha256(plannerBytes),

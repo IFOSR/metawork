@@ -19,7 +19,7 @@ import {
   type PlannerHostRequest,
 } from './planner-host-protocol.js';
 
-export interface PlannerTuiBridgeSession {
+export interface PlannerHostBridgeSession {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
   getPlannerTuiSnapshot(): PlannerTuiSnapshot;
   getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[];
@@ -33,7 +33,7 @@ export interface PlannerTuiBridgeSession {
   ): Promise<PlannerProposalResult>;
 }
 
-export interface PlannerTuiBridgeDeps {
+export interface PlannerHostBridgeDeps {
   socketPath: string;
   logger?: Pick<Console, 'warn'>;
 }
@@ -50,20 +50,20 @@ const TRUNCATED_REPORT_SUFFIX = '\n\n> Executor report truncated to fit the 1 Mi
  * authority. Snapshot and command capabilities are presentation adapters over
  * the same registered session.
  */
-export class PlannerTuiBridge {
+export class PlannerHostBridge {
   private server: Server | null = null;
   private readonly clients = new Set<Socket>();
   private readonly bindings = new Map<Socket, BoundClient>();
-  private readonly sessions = new Map<string, PlannerTuiBridgeSession>();
+  private readonly sessions = new Map<string, PlannerHostBridgeSession>();
   private readonly subscriberCleanup = new Map<Socket, () => void>();
   private readonly sentExecutorResultIds = new Map<Socket, Set<string>>();
   private readonly sentPermissionRequests = new Map<Socket, Map<string, PlannerTuiPermissionRequest>>();
   private readonly permissionClosureHints = new Map<string, 'resolved'>();
   private readonly submissionQueues = new Map<string, Promise<void>>();
 
-  constructor(private readonly deps: PlannerTuiBridgeDeps) {}
+  constructor(private readonly deps: PlannerHostBridgeDeps) {}
 
-  registerSession(sessionId: string, session: PlannerTuiBridgeSession): () => void {
+  registerSession(sessionId: string, session: PlannerHostBridgeSession): () => void {
     if (!sessionId.trim()) throw new Error('Planner host sessionId must not be empty');
     if (this.sessions.has(sessionId)) throw new Error(`Planner host session already registered: ${sessionId}`);
     this.sessions.set(sessionId, session);
@@ -235,7 +235,7 @@ export class PlannerTuiBridge {
 
   private async submitCommand(
     socket: Socket,
-    session: PlannerTuiBridgeSession,
+    session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'command_submit' }>,
   ): Promise<void> {
     try {
@@ -254,7 +254,7 @@ export class PlannerTuiBridge {
 
   private async submitProposal(
     socket: Socket,
-    session: PlannerTuiBridgeSession,
+    session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'proposal_submit' }>,
     runtimeMode: 'interactive' | 'rpc',
   ): Promise<void> {
@@ -284,7 +284,7 @@ export class PlannerTuiBridge {
 
   private async resolvePermission(
     socket: Socket,
-    session: PlannerTuiBridgeSession,
+    session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'permission_resolve' }>,
   ): Promise<void> {
     this.permissionClosureHints.set(request.permissionRequestId, 'resolved');
@@ -296,7 +296,7 @@ export class PlannerTuiBridge {
     }
   }
 
-  private subscribeSocket(socket: Socket, session: PlannerTuiBridgeSession): void {
+  private subscribeSocket(socket: Socket, session: PlannerHostBridgeSession): void {
     this.subscriberCleanup.get(socket)?.();
     const publish = () => {
       this.write(socket, this.snapshotMessage(null, session));
@@ -311,7 +311,7 @@ export class PlannerTuiBridge {
     this.writePermissionRequests(socket, session);
   }
 
-  private snapshotMessage(requestId: string | null, session: PlannerTuiBridgeSession): BridgeMessage {
+  private snapshotMessage(requestId: string | null, session: PlannerHostBridgeSession): BridgeMessage {
     return {
       protocolVersion: 2, type: 'snapshot', requestId, snapshot: session.getPlannerTuiSnapshot(),
     };
@@ -326,7 +326,7 @@ export class PlannerTuiBridge {
     this.sentPermissionRequests.delete(socket);
   }
 
-  private writeExecutorResults(socket: Socket, session: PlannerTuiBridgeSession): void {
+  private writeExecutorResults(socket: Socket, session: PlannerHostBridgeSession): void {
     const sent = this.sentExecutorResultIds.get(socket) ?? new Set<string>();
     this.sentExecutorResultIds.set(socket, sent);
     for (const result of session.getPlannerTuiExecutorResults()) {
@@ -336,7 +336,7 @@ export class PlannerTuiBridge {
     }
   }
 
-  private writePermissionRequests(socket: Socket, session: PlannerTuiBridgeSession): void {
+  private writePermissionRequests(socket: Socket, session: PlannerHostBridgeSession): void {
     if (this.bindings.get(socket)?.mode !== 'interactive') return;
     const sent = this.sentPermissionRequests.get(socket) ?? new Map<string, PlannerTuiPermissionRequest>();
     this.sentPermissionRequests.set(socket, sent);

@@ -22,7 +22,13 @@ function createRpcProcess(
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
-  child.kill = vi.fn();
+  child.kill = vi.fn((signal: NodeJS.Signals = 'SIGTERM') => {
+    queueMicrotask(() => {
+      child.emit('exit', null, signal);
+      child.emit('close', null, signal);
+    });
+    return true;
+  });
   let input = '';
   child.stdin.on('data', chunk => {
     input += chunk.toString();
