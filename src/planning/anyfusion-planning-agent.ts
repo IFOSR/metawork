@@ -1,3 +1,4 @@
+import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import type { PlannerToolCallTrace } from './planner-audit-contract.js';
 import {
   getDefaultPlannerProcessSupervisor,
@@ -8,19 +9,35 @@ import type { PlanningAgent } from './planning-agent.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 
+export interface PlannerAuditBindingContext {
+  plannerBinding: RevisionedAgentBinding;
+  plannerBindingFingerprint: string;
+}
+
+export interface PlannerAuditStartInput extends PlannerAuditBindingContext {
+  sessionId: string;
+  requestSource: string;
+  configurationRevision: string;
+}
+
+export interface PlannerAuditPort {
+  start(input: PlannerAuditStartInput): { id: string };
+  finish(input: {
+    id: string;
+    status: 'completed' | 'failed';
+    attemptCount: number;
+    durationMs: number;
+    errorSummary?: string | null;
+    toolCalls: PlannerToolCallTrace[];
+  }): void;
+}
+
 export interface AnyFusionPlanningAgentDeps {
   runner: PlannerRunner;
-  audit?: {
-    start(sessionId: string, requestSource: string): { id: string };
-    finish(input: {
-      id: string;
-      status: 'completed' | 'failed';
-      attemptCount: number;
-      durationMs: number;
-      errorSummary?: string | null;
-      toolCalls: PlannerToolCallTrace[];
-    }): void;
-  };
+  audit?: PlannerAuditPort;
+  resolvePlannerAuditBinding?: (
+    configurationRevision: string,
+  ) => Promise<PlannerAuditBindingContext>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -65,7 +82,7 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
       ...context,
       timeoutMs: context.timeoutMs > 0 ? context.timeoutMs : DEFAULT_TIMEOUT_MS,
     };
-    const auditRun = this.deps.audit?.start(context.request.sessionId, context.request.source);
+    const auditRun = await this.startAudit(context);
     const startedAt = Date.now();
     try {
       const result = await this.deps.runner.run(context.userInput, effectiveContext, purpose);
@@ -91,12 +108,35 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
   }
 
   private finishAudit(
-    input: Parameters<NonNullable<AnyFusionPlanningAgentDeps['audit']>['finish']>[0],
+    input: Parameters<PlannerAuditPort['finish']>[0],
   ): void {
     try {
       this.deps.audit?.finish(input);
     } catch {
       // Audit persistence is best effort and must not replace the planning result.
+    }
+  }
+
+  private async startAudit(context: PlanningContext): Promise<{ id: string } | undefined> {
+    if (!this.deps.audit || !this.deps.resolvePlannerAuditBinding) return undefined;
+    const configurationRevision = context.configuration.revisionId;
+    try {
+      const bindingContext = await this.deps.resolvePlannerAuditBinding(configurationRevision);
+      if (
+        bindingContext.plannerBinding.configurationRevision !== configurationRevision
+        || bindingContext.plannerBindingFingerprint.length === 0
+      ) {
+        return undefined;
+      }
+      return this.deps.audit.start({
+        sessionId: context.request.sessionId,
+        requestSource: context.request.source,
+        configurationRevision,
+        ...bindingContext,
+      });
+    } catch {
+      // Audit resolution and persistence must not block Planner execution.
+      return undefined;
     }
   }
 }
@@ -107,5 +147,6 @@ export function createDefaultPlanningAgent(
   return new AnyFusionPlanningAgent({
     runner: deps.runner ?? getDefaultPlannerProcessSupervisor(),
     audit: deps.audit,
+    resolvePlannerAuditBinding: deps.resolvePlannerAuditBinding,
   });
 }
