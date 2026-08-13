@@ -1,4 +1,7 @@
 // Defines the shared executor adapter contract, inputs, and progress events.
+// The contract is transport-neutral: it carries the full authorization identity a
+// future remote (A2A) transport needs without selecting models, AgentClasses, retry,
+// fallback, or scheduling. A2A delivery is deferred to its separate roadmap.
 import type { ExecutorResult } from '../core/types.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { SubtaskExecutionContext } from '../execution/subtask-execution-context.js';
@@ -20,6 +23,15 @@ export interface ExecutorInput {
     workUnitId: string;
     leaseToken: string;
     idempotencyKey: string;
+    authorization?: {
+      agentClassRef: string;
+      harnessRef: string;
+      providerRef: string;
+      modelRef: string;
+      permissionProfileRef: string | null;
+      configurationRevision: string;
+      bindingFingerprint: string;
+    };
     workspacePath: string;
     workspaceId: string;
     sourcePath: string;

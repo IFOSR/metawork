@@ -11,7 +11,7 @@ import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
 import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
-import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type {
   RuntimeConfigurationView,
   RuntimePrivateConfigurationBinding,
@@ -301,7 +301,23 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     try {
       const result = await this.executeOnce(
         executor,
-        input.executorInput,
+        {
+          ...input.executorInput,
+          executionBinding: input.executorInput.executionBinding
+            ? {
+                ...input.executorInput.executionBinding,
+                authorization: {
+                  agentClassRef: input.authorizedBinding.agentClassRef,
+                  harnessRef: input.authorizedBinding.harnessRef,
+                  providerRef: input.authorizedBinding.providerRef,
+                  modelRef: input.authorizedBinding.modelRef,
+                  permissionProfileRef: input.authorizedBinding.permissionProfileRef,
+                  configurationRevision: input.authorizedBinding.configurationRevision,
+                  bindingFingerprint: authorizedExecutorBindingFingerprint(input.authorizedBinding),
+                },
+              }
+            : input.executorInput.executionBinding,
+        },
         input.onProgress,
       );
       return this.toExecutionResult({

@@ -223,6 +223,8 @@ Before A2A can ship, a separate future roadmap must cover version negotiation,
 trust rotation, endpoint registration, request idempotency, disconnect handling,
 poll/stream/cancel semantics, uncertain outcomes, artifact integrity, remote
 permission/resource boundaries, failure normalization and acceptance tests.
+That roadmap is now recorded in
+`docs/plans/future-a2a-executor-transport-roadmap.md`.
 
 ## Consequences
 

@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
@@ -17,5 +17,30 @@ describe('executor module architecture boundaries', () => {
       expect(existsSync(resolve(projectRoot, `src/executor/${file}.ts`))).toBe(true);
       expect(existsSync(resolve(projectRoot, `src/core/${file}.ts`))).toBe(false);
     }
+  });
+
+  it('carries the authorization identity a future A2A envelope requires', () => {
+    const adapterSource = readFileSync(resolve(projectRoot, 'src/executor/adapter.ts'), 'utf8');
+    for (const field of [
+      'authorization',
+      'configurationRevision',
+      'bindingFingerprint',
+      'agentClassRef',
+      'harnessRef',
+      'providerRef',
+      'modelRef',
+      'permissionProfileRef',
+      'idempotencyKey',
+    ]) {
+      expect(adapterSource).toContain(field);
+    }
+  });
+
+  it('keeps the adapter contract transport-neutral without an A2A variant', () => {
+    const adapterSource = readFileSync(resolve(projectRoot, 'src/executor/adapter.ts'), 'utf8');
+    expect(adapterSource).toContain('transport-neutral');
+    expect(adapterSource).not.toContain('A2A_TRANSPORT');
+    expect(adapterSource).not.toContain('a2aTransport');
+    expect(adapterSource).not.toContain('remoteEndpoint');
   });
 });
