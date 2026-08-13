@@ -1562,8 +1562,8 @@ function boundedRecoveryPacket(
     sourceAttemptId: receipt?.attemptId ?? runtime?.attemptId ?? null,
     failure: receipt ? {
       terminalState: receipt.terminalState,
-      code: receipt.errorCode,
-      summary: receipt.errorDetail?.slice(0, 1_000) ?? null,
+      code: receipt.failure?.code ?? receipt.errorCode,
+      summary: receipt.failure?.summary ?? receipt.errorDetail?.slice(0, 1_000) ?? null,
     } : null,
     knownProgress: runtime?.progress ?? {},
     workspaceDelta: runtime?.workspaceDelta ?? {},

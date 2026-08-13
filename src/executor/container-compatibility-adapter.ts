@@ -7,6 +7,7 @@ import {
 import type { AttemptExecutionRepositoryPort } from '../execution/repositories.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure } from './error-utils.js';
+import { kernelFailure } from '../core/kernel-failure.js';
 import type { HarnessDriver } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 
@@ -219,7 +220,20 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
           ),
         };
       }
-      await this.backend.resolveImage(this.imageRef);
+      try {
+        await this.backend.resolveImage(this.imageRef);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          available: false,
+          failure: kernelFailure({
+            kind: 'configuration',
+            scope: 'agent_class',
+            code: 'executor_image_probe_failed',
+            summary: message,
+          }),
+        };
+      }
       return { available: true, failure: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

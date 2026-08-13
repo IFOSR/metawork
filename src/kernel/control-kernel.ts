@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -1539,9 +1540,19 @@ function deterministicAttemptId(
   bindingFingerprint: string,
   kind: string,
 ): string {
-  return `attempt_${[eventId, subtaskId, bindingFingerprint, kind]
-    .map(value => value.replace(/[^a-zA-Z0-9_-]/g, '_'))
-    .join('_')}`;
+  return `attempt_${[
+    boundedIdSegment(eventId, 'event'),
+    boundedIdSegment(subtaskId, 'subtask'),
+    bindingFingerprint,
+    kind,
+  ].join('_')}`;
+}
+
+function boundedIdSegment(value: string, label: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (sanitized.length <= 72) return sanitized;
+  const digest = createHash('sha256').update(`${label}:${value}`).digest('hex').slice(0, 16);
+  return `${sanitized.slice(0, 55)}_${digest}`;
 }
 
 function deterministicTaskId(eventId: string): string {

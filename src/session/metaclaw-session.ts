@@ -498,11 +498,11 @@ export class MetaclawSession {
       60_000,
       async (binding, mode) => {
         const result = await this.executionRuntime.probeExecutor(binding);
-        if (mode === 'claim' && !result.available && result.failure) {
+        if (!result.available && result.failure) {
           kernelExecutorStatusProjector.recordExecutionOutcome({
             agentClassName: binding.agentClassRef,
             configurationRevision: binding.configurationRevision,
-            attemptId: `claim_probe_${generateInteractionId()}`,
+            attemptId: `${mode}_probe_${binding.agentClassRef}_${binding.configurationRevision}`,
             outcome: 'failed',
             failure: result.failure,
           });
@@ -2134,6 +2134,7 @@ export class MetaclawSession {
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db,
       config: this.deps.config,
+      executorAgentClassNames: this.agentClassService.listExecutorAgentClassNames(),
     };
   }
 

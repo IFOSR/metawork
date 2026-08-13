@@ -23,6 +23,7 @@ export interface CommandContext {
   currentTaskId: string | null;
   db: Database.Database;
   config: Config;
+  executorAgentClassNames?: string[];
 }
 
 export type CommandDirective =

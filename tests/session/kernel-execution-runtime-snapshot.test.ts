@@ -59,6 +59,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       },
       maxConcurrentAttempts: 4,
       taskEventRepo: {},
+      getConfigurationRevision: vi.fn().mockReturnValue('revision-test'),
     } as never);
     const snapshot = (runtime as unknown as {
       buildDispatchSnapshot(

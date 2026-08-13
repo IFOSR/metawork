@@ -286,9 +286,11 @@ function taskNodes(): CommandNode[] {
 }
 
 function executorNodes(): CommandNode[] {
-  const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({
-    id: item.name, label: item.name, description: `${item.kind} · ${item.domains.join(',') || 'no domains'}`,
-  }));
+  const executorValues = (context: CommandContext) => {
+    const names = context.executorAgentClassNames
+      ?? new AgentClassRepo(context.db).findAll().map(item => item.name);
+    return names.map(name => ({ id: name, label: name, description: 'executor' }));
+  };
   const executorRef = (optional = false) => dynamicReference('executorName', 'Executor', executorValues, optional);
   return [
     action({ name: 'list', summary: '列出 Executor', effect: '读取 AgentClass 与 WorkUnit 注册信息。', usage: '/executor list', run: listExecutors }),
