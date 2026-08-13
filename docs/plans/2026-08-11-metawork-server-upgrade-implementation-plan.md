@@ -2,10 +2,18 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-Status: Revised after parallel architecture review
+Status: Implemented (core code tasks complete; release-infrastructure smoke and AnyFusion-Pi cutover deferred)
 Plan date: 2026-08-11
-Last revised: 2026-08-11
+Last revised: 2026-08-13
 Execution gate: Tasks that remove legacy authority or mutate SQLite may not start until Task 1 ADRs and the complete schema 30-to-31 migration/rollback contract are accepted.
+
+**Completion (2026-08-13):** Delivered the Configuration Control Plane, Harness
+Driver dispatch, admin/management surfaces, Guidance ownership, Delivery
+unification, ServerApplication/ServerUpdateCoordinator, installer transaction
+core, and the frozen A2A boundary. Validated with `tsc --noEmit`, `npm run build`,
+`npm run lint`, and the focused Vitest suites; the native installer e2e smoke,
+release-gate workflow, and AnyFusion-Pi companion cutover remain deferred to a
+macOS release environment. See the task-by-task commit history on `main`.
 
 **Goal:** Deliver the native MetaWork Server upgrade with one installation root, one revisioned configuration authority, generation-scoped Planner/Kernel/Runtime bindings, isolated AgentClass runtimes, controlled AnyFusion-Pi lifecycle, and a signed transactional update/rollback path.
 

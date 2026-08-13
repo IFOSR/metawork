@@ -8,6 +8,17 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Added
 
+- Configuration Control Plane with a revisioned `ConfigurationService`,
+  immutable `ConfigurationSnapshot`, and one-configuration-revision-per-generation
+  binding for Planner, Kernel, and Runtime.
+- Local management API over a mode-0600 Unix socket (`/api/v1/server/health`)
+  plus `anyfusion config|provider|model|planner|executor|doctor|status` admin
+  surface and structured view events.
+- Transactional native install/update/rollback core with durable upgrade
+  journal, signed release verification, database backup, and preflight doctor.
+- `ServerApplication` unified lifecycle and `ServerUpdateCoordinator` update
+  lease/quiesce/awaitIdle transaction.
+- Frozen future A2A Executor transport boundary (ADR-0029 + roadmap).
 - Native Codex Planner thread binding with same-thread resume and a two-turn
   memory smoke gate.
 - Event-driven recovery probes for enabled AgentClasses already in `error`,
@@ -16,6 +27,13 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Changed
 
+- Dispatched Executors through Harness Drivers and removed the legacy
+  backend-executor-adapter, builtin-executor-catalog, executor-admin-service,
+  agent-class-seeder, planner-process-runner, and planner-tui-process modules.
+- Removed Guidance next-task selection and implicit preemption scoring; Guidance
+  now renders recovery hints from existing facts only.
+- Formatted task completion once in the Delivery service before transport
+  selection instead of per-notifier.
 - Added native macOS setup for the isolated nested AnyFusion-Pi Planner,
   current-directory read-only inspection, and AnyFusion-only Executor homes
   without installing or modifying existing Codex/Pi CLIs.
