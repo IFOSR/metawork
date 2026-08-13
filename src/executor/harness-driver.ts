@@ -48,6 +48,8 @@ export type ProbeCommandRunner = (
 
 export interface HarnessDriver {
   readonly id: string;
+  readonly supportsContinuation?: boolean;
+  readonly supportsResponseOnly?: boolean;
   probe(): Promise<HarnessProbeResult>;
   materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome>;
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec;

@@ -1,50 +1,29 @@
-// Provides AgentClass persistence helpers. Runtime WorkUnits are provisioned after authorization.
-import type Database from 'better-sqlite3';
-import type { AgentClass, AgentClassKind } from '../core/types.js';
-import { seedDefaultAgentClasses, seedDefaultWorkUnits } from './agent-class-seeder.js';
-import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { WorkUnitRepo } from '../storage/work-unit-repo.js';
-import { isBuiltinExecutorName } from './builtin-executor-catalog.js';
+// Provides the configuration-derived Executor AgentClass projection used by
+// Runtime and Kernel dispatch facts. Legacy SQLite seeding and the built-in
+// catalog are removed; the active configuration revision is the single
+// authority for AgentClasses.
+import type { AgentClassDefinition } from '../configuration/types.js';
 
 export interface AgentClassServiceDeps {
-  db: Database.Database;
+  agentClasses: Readonly<Record<string, AgentClassDefinition>>;
 }
 
-/** Owns the static AgentClass catalog; executor WorkUnits are provisioned by Runtime. */
 export class AgentClassService {
-  private readonly agentClassRepo: AgentClassRepo;
-  private readonly workUnitRepo: WorkUnitRepo;
+  private readonly agentClasses: Readonly<Record<string, AgentClassDefinition>>;
 
   constructor(deps: AgentClassServiceDeps) {
-    this.agentClassRepo = new AgentClassRepo(deps.db);
-    this.workUnitRepo = new WorkUnitRepo(deps.db);
+    this.agentClasses = deps.agentClasses;
   }
 
-  seedDefaults(): void {
-    seedDefaultAgentClasses(this.agentClassRepo);
-    seedDefaultWorkUnits(this.workUnitRepo);
+  listExecutorAgentClassNames(): string[] {
+    return Object.entries(this.agentClasses)
+      .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
+      .map(([name]) => name)
+      .sort((left, right) => left.localeCompare(right));
   }
 
-  listAgentClasses(): AgentClass[] {
-    return this.agentClassRepo.findAll();
-  }
-
-  listByKind(kind: AgentClassKind): AgentClass[] {
-    return this.agentClassRepo.findByKind(kind);
-  }
-
-  findByName(name: string): AgentClass | null {
-    return this.agentClassRepo.findByName(name);
-  }
-
-  setResolvedImageId(name: string, imageId: string): void {
-    this.agentClassRepo.setResolvedImageId(name, imageId);
-  }
-
-  upsert(agentClass: AgentClass): void {
-    if (isBuiltinExecutorName(agentClass.name)) {
-      throw new Error(`Cannot overwrite canonical Executor AgentClass: ${agentClass.name}`);
-    }
-    this.agentClassRepo.upsert(agentClass);
+  hasExecutorAgentClass(name: string): boolean {
+    const agentClass = this.agentClasses[name];
+    return Boolean(agentClass && agentClass.kind === 'executor' && agentClass.enabled);
   }
 }

@@ -21,7 +21,10 @@ describe('RuntimeHomeMaterializer', () => {
       revisionId: 'revision-1',
       agentClassId: 'codex-engineering',
       bindingFingerprint: 'fingerprint',
-      environment: { CODEX_HOME: join(root, 'attempt-123', 'home') },
+      environment: {
+        CODEX_HOME: join(root, 'attempt-123', 'home'),
+        OPENAI_API_KEY: 'sk-attempt-scoped-secret',
+      },
     });
 
     expect(result.homePath).toBe(join(root, 'attempt-123', 'home'));
@@ -33,8 +36,10 @@ describe('RuntimeHomeMaterializer', () => {
         revisionId: 'revision-1',
         agentClassId: 'codex-engineering',
         bindingFingerprint: 'fingerprint',
-        environment: { CODEX_HOME: join(root, 'attempt-123', 'home') },
+        environmentKeys: ['CODEX_HOME', 'OPENAI_API_KEY'],
       });
+    expect(await readFile(join(root, 'attempt-123', 'environment.json'), 'utf8'))
+      .not.toContain('sk-attempt-scoped-secret');
     expect(await readFile(join(root, 'attempt-123', 'receipt.json'), 'utf8')).toContain('"status": "pending"');
   });
 });

@@ -28,7 +28,7 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
-import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
+import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { buildDefaultResourceClaims } from '../resource/index.js';
@@ -202,8 +202,13 @@ export class KernelExecutionRuntime {
     await this.deps.cancellationCoordinator.recover(taskId);
   }
 
-  async executorRecovered(agentClassName: string, recoveryCheckId: string): Promise<void> {
+  async executorRecovered(
+    agentClassName: string,
+    configurationRevision: string,
+    recoveryCheckId: string,
+  ): Promise<void> {
     for (const request of this.deps.generationReplanRepo.listWaitingForAvailability()) {
+      if (request.configurationRevision !== configurationRevision) continue;
       const task = this.deps.taskRuntimeService.findTask(request.taskId);
       const activeRevision = this.deps.workGraphRevisionRepo.findActive(request.taskId);
       const event: Extract<KernelEvent, { type: 'executor_recovered' }> = {
@@ -605,14 +610,19 @@ export class KernelExecutionRuntime {
   }
 
   private buildDispatchStableFacts(configurationRevision: string): DispatchStableFacts {
-    const agentClassNames = this.deps.agentClassService.listAgentClasses()
-      .map(agentClass => agentClass.name);
+    const agentClassNames = this.deps.agentClassService.listExecutorAgentClassNames();
     return {
       executorStatuses: this.deps.kernelExecutorStatusProjector.list(configurationRevision),
       correctionSupportedAgentClasses: agentClassNames
-        .filter(name => this.deps.attemptRunner.supportsResponseOnly(name)),
+        .filter(name => this.deps.attemptRunner.supportsResponseOnly(
+          name,
+          configurationRevision,
+        )),
       nativeContinuationAgentClasses: agentClassNames
-        .filter(name => this.deps.attemptRunner.supportsContinuation(name)),
+        .filter(name => this.deps.attemptRunner.supportsContinuation(
+          name,
+          configurationRevision,
+        )),
     };
   }
 

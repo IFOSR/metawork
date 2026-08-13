@@ -10,8 +10,6 @@ export interface InputControllerSubmitResult {
 
 export interface InputControllerPort {
   appendUserInput(input: string): void;
-  hasPendingExecutorRegisterWizard(): boolean;
-  handlePendingExecutorRegisterWizard(input: string): Promise<boolean>;
   handleCommand(input: string): Promise<boolean>;
   handleNaturalLanguageInput(input: string): Promise<void>;
   waitForAsyncWork(): Promise<void>;
@@ -34,11 +32,6 @@ export class InputController {
     this.port.appendUserInput(userInput);
 
     try {
-      if (this.port.hasPendingExecutorRegisterWizard() && !userInput.startsWith('/')) {
-        await this.port.handlePendingExecutorRegisterWizard(userInput);
-        return { exitRequested: false };
-      }
-
       if (userInput.startsWith('/')) {
         const exitRequested = await this.port.handleCommand(userInput);
         if (options.awaitAsyncWork) {

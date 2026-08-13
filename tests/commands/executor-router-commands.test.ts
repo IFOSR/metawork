@@ -5,6 +5,7 @@ import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js'
 import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
+import * as executorCommands from '../../src/commands/executor-commands.js';
 
 const REVISION = 'revision-command-health';
 
@@ -134,5 +135,11 @@ describe('agent class and planner route commands', () => {
       .toContain('未知命令');
     expect((await catalog.execute('/executor unregister codex-cli', context)).content)
       .toContain('未知命令');
+  });
+
+  it('does not export legacy AgentClass mutation entrypoints', () => {
+    expect(executorCommands).not.toHaveProperty('startExecutorRegisterWizard');
+    expect(executorCommands).not.toHaveProperty('registerExecutor');
+    expect(executorCommands).not.toHaveProperty('unregisterExecutor');
   });
 });

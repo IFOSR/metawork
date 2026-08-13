@@ -5,16 +5,18 @@ import type {
   ExecutorProbeResult,
   ExecutorProgressEvent,
 } from '../executor/adapter.js';
-import type { AgentClass, ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
+import type { ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
 import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
-import type { AgentClassLookupPort } from '../executor/agent-class-lookup-port.js';
-import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
-import { BackendExecutorAdapter } from '../executor/backend-executor-adapter.js';
-import type { AttemptExecutionRepositoryPort } from './repositories.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type {
+  RuntimeConfigurationView,
+  RuntimePrivateConfigurationBinding,
+} from '../configuration/types.js';
+import type { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -37,10 +39,12 @@ export interface ExecutionResult {
 }
 
 export interface ExecutorRegistryDeps {
-  agentClassLookup: AgentClassLookupPort;
-  attemptExecutionBackend: AttemptExecutionBackend;
-  attemptExecutionRepository?: AttemptExecutionRepositoryPort;
-  controlNetwork?: string;
+  driverRegistry: HarnessDriverRegistry;
+  getRuntimeConfiguration(revisionId: string): RuntimeConfigurationView | null;
+  getRuntimeBinding(
+    binding: AuthorizedExecutorBinding,
+  ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
+  getActiveRuntimeConfiguration(): RuntimeConfigurationView;
 }
 
 export interface ExecutorRegistrationInspection {
@@ -53,117 +57,130 @@ export interface ExecutorRegistrationInspection {
 export class ExecutorRegistry {
   constructor(private readonly deps: ExecutorRegistryDeps) {}
 
-  resolve(name: string): ExecutorAdapter | null {
-    const agentClass = this.deps.agentClassLookup.findByName(name);
-    return agentClass
-      ? new BackendExecutorAdapter(agentClass, this.deps.attemptExecutionBackend, this.deps.attemptExecutionRepository)
-      : null;
+  async resolve(binding: AuthorizedExecutorBinding): Promise<ExecutorAdapter | null> {
+    const configuration = this.deps.getRuntimeConfiguration(
+      binding.configurationRevision,
+    );
+    if (!configuration) return null;
+    return this.deps.driverRegistry.createAdapter({
+      configuration,
+      authorizedBinding: binding,
+      runtimeBinding: await this.deps.getRuntimeBinding(binding),
+    });
   }
 
   inspect(name: string): ExecutorRegistrationInspection {
-    const agentClass = this.deps.agentClassLookup.findByName(name);
-    const worktree = (this.deps.attemptExecutionBackend.kind ?? 'container') === 'worktree';
+    const configuration = this.deps.getActiveRuntimeConfiguration();
+    const agentClass = configuration.agentClasses[name];
+    const harness = agentClass
+      ? configuration.harnesses[agentClass.harnessRef]
+      : null;
     const configured = Boolean(
-      agentClass?.permissionProfileId
-      && (worktree
-        ? ['codex-cli', 'pi-agent'].includes(name)
-        : agentClass.executionImageRef && agentClass.resolvedImageId),
+      agentClass?.enabled
+      && agentClass.kind === 'executor'
+      && agentClass.permissionProfileRef
+      && harness?.enabled,
     );
+    const bindingSource = harness?.transport === 'container'
+      ? 'container'
+      : harness?.transport === 'local-cli'
+        ? 'worktree'
+        : 'unbound';
     return {
       configured,
-      bindingSource: configured ? worktree ? 'worktree' : 'container' : 'unbound',
+      bindingSource: configured ? bindingSource : 'unbound',
       adapterName: configured ? name : null,
     };
   }
 
-  async probe(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
-    const agentClass = this.deps.agentClassLookup.findByName(name);
-    if (!agentClass) {
+  async probe(
+    binding: AuthorizedExecutorBinding,
+    previousFailure?: KernelFailure | null,
+  ): Promise<ExecutorProbeResult> {
+    let adapter: ExecutorAdapter | null;
+    try {
+      adapter = await this.resolve(binding);
+    } catch (error) {
       return {
         available: false,
-        failure: {
+        failure: kernelFailure({
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'agent_class_not_found',
-          summary: `AgentClass ${name} is not registered`,
-        },
+          code: 'executor_binding_resolution_failed',
+          summary: error instanceof Error ? error.message : String(error),
+        }),
       };
     }
-    const worktree = (this.deps.attemptExecutionBackend.kind ?? 'container') === 'worktree';
-    if (worktree && !['codex-cli', 'pi-agent'].includes(name)) {
-      return {
-        available: false,
-        failure: {
-          kind: 'configuration',
-          scope: 'agent_class',
-          code: 'worktree_executor_not_canonical',
-          summary: `Worktree execution supports only canonical Codex and Pi AgentClasses: ${name}`,
-        },
-      };
-    }
-    if (!worktree && agentClass.executionImageRef && !agentClass.resolvedImageId) {
-      try {
-        const imageId = await this.deps.attemptExecutionBackend.resolveImage(agentClass.executionImageRef);
-        if (!imageId.startsWith('sha256:')) {
-          return {
-            available: false,
-            failure: {
-              kind: 'configuration',
-              scope: 'agent_class',
-              code: 'executor_image_not_immutable',
-              summary: `Executor image for ${name} did not resolve to an immutable image ID`,
-            },
-          };
-        }
-        this.deps.agentClassLookup.setResolvedImageId?.(name, imageId);
-      } catch (error) {
-        return {
-          available: false,
-          failure: {
-            kind: 'adapter',
-            scope: 'agent_class',
-            code: 'executor_image_probe_failed',
-            summary: error instanceof Error ? error.message : String(error),
-          },
-        };
-      }
-    }
-    const adapter = this.resolve(name);
     if (!adapter) {
       return {
         available: false,
         failure: {
           kind: 'configuration',
           scope: 'agent_class',
-          code: 'executor_adapter_unbound',
-          summary: `No Executor Adapter is configured for AgentClass ${name}`,
+          code: 'executor_configuration_revision_not_found',
+          summary:
+            `Runtime configuration revision is not available: ${binding.configurationRevision}`,
         },
       };
     }
-    if (!worktree) {
-      try {
-        await this.deps.attemptExecutionBackend.probeControlNetwork?.(
-          this.deps.controlNetwork ?? process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
-        );
-      } catch (error) {
-        return {
-          available: false,
-          failure: {
-            kind: 'adapter',
-            scope: 'agent_class',
-            code: 'executor_control_network_unavailable',
-            summary: error instanceof Error ? error.message : String(error),
-          },
-        };
-      }
-    }
     return adapter.probe(previousFailure);
+  }
+
+  bindingForAgentClass(
+    name: string,
+    configurationRevision: string,
+  ): AuthorizedExecutorBinding | null {
+    const configuration = this.deps.getRuntimeConfiguration(configurationRevision);
+    const agentClass = configuration?.agentClasses[name];
+    if (
+      !configuration
+      || !agentClass
+      || !agentClass.enabled
+      || agentClass.kind !== 'executor'
+      || !agentClass.permissionProfileRef
+    ) return null;
+    const modelRef = agentClass.modelPolicy.mode === 'fixed'
+      ? agentClass.modelPolicy.modelRef
+      : agentClass.modelPolicy.defaultModelRef
+        ?? agentClass.modelPolicy.allowedModelRefs[0];
+    if (!modelRef) return null;
+    const model = configuration.models[modelRef];
+    if (!model?.enabled) return null;
+    return {
+      agentClassRef: name,
+      harnessRef: agentClass.harnessRef,
+      providerRef: model.providerRef,
+      modelRef,
+      permissionProfileRef: agentClass.permissionProfileRef,
+      configurationRevision,
+    };
+  }
+
+  supportsContinuation(name: string, configurationRevision: string): boolean {
+    const configuration = this.deps.getRuntimeConfiguration(configurationRevision);
+    return configuration
+      ? this.deps.driverRegistry.supportsContinuation({
+          configuration,
+          agentClassRef: name,
+        })
+      : false;
+  }
+
+  supportsResponseOnly(name: string, configurationRevision: string): boolean {
+    const configuration = this.deps.getRuntimeConfiguration(configurationRevision);
+    return configuration
+      ? this.deps.driverRegistry.supportsResponseOnly({
+          configuration,
+          agentClassRef: name,
+        })
+      : false;
   }
 }
 
 export interface ExecutionRuntimeRunInput {
   taskId: string;
   executionId: string;
+  authorizedBinding: AuthorizedExecutorBinding;
   spec: SubtaskExecutionSpec;
   executorInput: Omit<ExecutorInput, 'onProgress'>;
   onProgress: (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
@@ -172,7 +189,6 @@ export interface ExecutionRuntimeRunInput {
 export interface SubtaskExecutionSpec {
   subtask: Subtask;
   workUnit: WorkUnit;
-  agentClass: AgentClass;
   acceptance: WorkGraphAcceptanceCriterion[];
   deliveryKind: Subtask['deliveryKind'];
 }
@@ -188,24 +204,34 @@ export class ExecutionRuntime implements ActiveExecutionControl {
 
   constructor(private readonly registry: ExecutorRegistry) {}
 
-  async isExecutorAvailable(name: string): Promise<boolean> {
-    return (await this.registry.probe(name)).available;
+  async isExecutorAvailable(binding: AuthorizedExecutorBinding): Promise<boolean> {
+    return (await this.registry.probe(binding)).available;
   }
 
-  probeExecutor(name: string, previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult> {
-    return this.registry.probe(name, previousFailure);
+  probeExecutor(
+    binding: AuthorizedExecutorBinding,
+    previousFailure?: KernelFailure | null,
+  ): Promise<ExecutorProbeResult> {
+    return this.registry.probe(binding, previousFailure);
   }
 
-  supportsResponseOnly(name: string): boolean {
-    return typeof this.registry.resolve(name)?.executeResponseOnly === 'function';
+  supportsResponseOnly(
+    name: string,
+    configurationRevision: string,
+  ): boolean {
+    return this.registry.supportsResponseOnly(name, configurationRevision);
   }
 
-  supportsContinuation(name: string): boolean {
-    return this.registry.resolve(name)?.supportsContinuation === true;
+  supportsContinuation(name: string, configurationRevision: string): boolean {
+    return this.registry.supportsContinuation(name, configurationRevision);
   }
 
-  async runResponseOnly(agentClassName: string, prompt: string, maxBytes: number) {
-    const executor = this.registry.resolve(agentClassName);
+  async runResponseOnly(
+    binding: AuthorizedExecutorBinding,
+    prompt: string,
+    maxBytes: number,
+  ) {
+    const executor = await this.registry.resolve(binding);
     if (!executor?.executeResponseOnly) return null;
     return executor.executeResponseOnly({ prompt, maxBytes });
   }
@@ -215,14 +241,39 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
-    const executor = this.registry.resolve(input.spec.agentClass.name);
-    if (!executor) {
-      const summary = `No Executor Adapter is configured for AgentClass ${input.spec.agentClass.name}`;
+    let executor: ExecutorAdapter | null;
+    try {
+      executor = await this.registry.resolve(input.authorizedBinding);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
       return {
         taskId: input.taskId,
         executionId: input.executionId,
         status: 'failed',
-        executorName: input.spec.agentClass.name,
+        executorName: input.authorizedBinding.agentClassRef,
+        output: '',
+        error: summary,
+        failure: kernelFailure({
+          kind: 'configuration',
+          scope: 'agent_class',
+          code: 'executor_binding_resolution_failed',
+          summary,
+        }),
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 0,
+        userPrompt: input.executorInput.context.currentSubtask.goal,
+        preferences: [],
+        context: input.executorInput.context,
+      };
+    }
+    if (!executor) {
+      const summary = `No Executor Adapter is configured for AgentClass ${input.authorizedBinding.agentClassRef}`;
+      return {
+        taskId: input.taskId,
+        executionId: input.executionId,
+        status: 'failed',
+        executorName: input.authorizedBinding.agentClassRef,
         output: '',
         error: summary,
         failure: kernelFailure({

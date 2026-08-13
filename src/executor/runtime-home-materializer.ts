@@ -30,7 +30,7 @@ export class RuntimeHomeMaterializer {
         revisionId: input.revisionId,
         agentClassId: input.agentClassId,
         bindingFingerprint: input.bindingFingerprint,
-        environment: input.environment,
+        environmentKeys: Object.keys(input.environment).sort(),
       }, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );

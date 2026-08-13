@@ -2,8 +2,11 @@ import Database from 'better-sqlite3';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { join } from 'path';
-import { getPlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import { dirname, join } from 'path';
+import { buildPlannerRoutingCatalog } from '../routing/configuration-catalog.js';
+import type { ConfigurationRoutingCatalog } from '../routing/types.js';
+import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
@@ -14,6 +17,7 @@ export class PlannerDataReader {
   constructor(
     private readonly db: Database.Database,
     private readonly sessionId: string,
+    private readonly getRoutingCatalog: () => ConfigurationRoutingCatalog,
   ) {}
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -233,7 +237,7 @@ export class PlannerDataReader {
         reason: truncateText(String(pending.reason ?? ''), 1_000),
         createdAt: pending.created_at,
       } : null,
-      routingCatalog: getPlannerExecutorCatalog(),
+      routingCatalog: this.getRoutingCatalog(),
     };
   }
 
@@ -325,7 +329,14 @@ export async function runPlannerMcpServer(): Promise<void> {
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
   const dbPath = process.env.METACLAW_DB_PATH ?? join(home, 'metaclaw.db');
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  const server = createPlannerMcpServer(new PlannerDataReader(db, sessionId));
+  const configurationRepository = new FileConfigurationRepository(
+    dirname(resolveAnyFusionPaths().configurationRevisions),
+  );
+  const snapshot = await configurationRepository.getActiveSnapshot();
+  const routingCatalog = buildPlannerRoutingCatalog(snapshot);
+  const server = createPlannerMcpServer(
+    new PlannerDataReader(db, sessionId, () => routingCatalog),
+  );
   await server.connect(new StdioServerTransport());
 }
 

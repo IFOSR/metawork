@@ -25,7 +25,6 @@ import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runti
 import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
-import { ExecutorAdminService } from '../executor/executor-admin-service.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
@@ -77,7 +76,9 @@ import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-ty
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
+  RuntimePrivateConfigurationBinding,
 } from '../configuration/index.js';
+import { buildRuntimeConfigurationView } from '../configuration/index.js';
 import {
   buildStagedLegacyConfiguration,
   type StagedLegacyConfiguration,
@@ -118,6 +119,13 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
+import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
+import { CodexCliDriver } from '../executor/codex-cli-driver.js';
+import { PiCliDriver } from '../executor/pi-cli-driver.js';
+import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
+import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
+import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -138,10 +146,26 @@ export interface MetaclawSessionDeps {
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
+  getRuntimeBinding?(
+    binding: AuthorizedExecutorBinding,
+  ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
 }
 
 function boundedKernelRequestText(value: string): string {
   return redactSensitiveText(value).slice(0, 24_000);
+}
+
+/** Maps a legacy local-CLI harness driver to its retained Docker image for container compatibility. */
+function containerCompatibilityImage(driverId: string): string {
+  const legacyContainerImages: Record<string, string> = {
+    'codex-cli': 'metaclaw-executor-codex:phase5',
+    'pi-cli': 'metaclaw-executor-pi:phase5',
+  };
+  const image = legacyContainerImages[driverId];
+  if (!image) {
+    throw new Error(`No container compatibility image for harness driver: ${driverId}`);
+  }
+  return image;
 }
 
 function startupOrphanEvent(input: {
@@ -326,7 +350,6 @@ export class MetaclawSession {
   private readonly persistenceService: SessionPersistenceService;
   private readonly presentation: SessionPresentationService;
   private readonly agentClassService: AgentClassService;
-  private readonly executorAdminService: ExecutorAdminService;
   private readonly executionProgressService: ExecutionProgressService;
   private readonly planningContextBuilder: PlanningContextBuilder;
   private readonly planningAgent: PlanningAgent;
@@ -384,7 +407,9 @@ export class MetaclawSession {
       taskEngine: deps.taskEngine,
       taskRepo: deps.taskEngine.getTaskRepo(),
     });
-    this.agentClassService = new AgentClassService({ db: deps.db });
+    this.agentClassService = new AgentClassService({
+      agentClasses: stagedConfiguration.snapshot.config.agentClasses,
+    });
     this.attemptExecutionBackend = deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend();
     this.permissionRepository = new SqlitePermissionRepository(deps.db);
     this.attemptExecutionRepository = new SqliteAttemptExecutionRepository(deps.db);
@@ -394,11 +419,52 @@ export class MetaclawSession {
       this.workspaceRepository,
       this.workspaceStore,
     );
+    const runtimeConfiguration = buildRuntimeConfigurationView(
+      stagedConfiguration.snapshot,
+    );
+    const attemptsRoot = resolveAnyFusionPaths().attempts;
+    const driverRegistry = new HarnessDriverRegistry();
+    const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
+      driverRegistry.register(driver, input => {
+        if ((this.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
+          return new LocalCliExecutorAdapter({
+            agentClassId: input.authorizedBinding.agentClassRef,
+            driver: input.driver,
+            runtimeBinding: input.runtimeBinding,
+            attemptsRoot,
+          });
+        }
+        return new ContainerCompatibilityAdapter({
+          agentClassId: input.authorizedBinding.agentClassRef,
+          driver: input.driver,
+          runtimeBinding: input.runtimeBinding,
+          attemptsRoot,
+          imageRef: containerCompatibilityImage(input.driver.id),
+          backend: this.attemptExecutionBackend,
+          repository: this.attemptExecutionRepository,
+          egressMode: input.authorizedBinding.permissionProfileRef === 'public-web-research'
+            ? 'proxy'
+            : 'disabled',
+          nestedSandbox: input.driver.id === 'codex-cli'
+            ? 'codex-workspace-write'
+            : undefined,
+        });
+      });
+    };
+    registerLocalDriver(new CodexCliDriver());
+    registerLocalDriver(new PiCliDriver());
     const executorRegistry = new ExecutorRegistry({
-      agentClassLookup: this.agentClassService,
-      attemptExecutionBackend: this.attemptExecutionBackend,
-      attemptExecutionRepository: this.attemptExecutionRepository,
-      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+      driverRegistry,
+      getRuntimeConfiguration: revisionId => (
+        revisionId === runtimeConfiguration.revisionId
+          ? runtimeConfiguration
+          : null
+      ),
+      getActiveRuntimeConfiguration: () => runtimeConfiguration,
+      getRuntimeBinding: binding => deps.getRuntimeBinding?.(binding) ?? {
+        revisionId: binding.configurationRevision,
+        bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+      },
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime, {
@@ -407,10 +473,6 @@ export class MetaclawSession {
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
-    this.executorAdminService = new ExecutorAdminService({
-      agentClassService: this.agentClassService,
-      presentation: this.presentation,
-    });
     this.executionProgressService = new ExecutionProgressService(deps.db);
     this.subtaskRepo = new SubtaskRepo(deps.db);
     this.taskEventRepo = new TaskEventRepo(deps.db);
@@ -430,9 +492,7 @@ export class MetaclawSession {
       new WorkUnitRepo(deps.db),
       60_000,
       async (binding, mode) => {
-        const result = await this.executionRuntime.probeExecutor(
-          binding.agentClassRef,
-        );
+        const result = await this.executionRuntime.probeExecutor(binding);
         if (mode === 'claim' && !result.available && result.failure) {
           kernelExecutorStatusProjector.recordExecutionOutcome({
             agentClassName: binding.agentClassRef,
@@ -449,11 +509,27 @@ export class MetaclawSession {
       statusRepo: this.kernelExecutorStatusRepo,
       statusProjector: kernelExecutorStatusProjector,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
-      probe: (name, _configurationRevision, previousFailure) => (
-        this.executionRuntime.probeExecutor(name, previousFailure)
-      ),
-      onRecovered: (name, _configurationRevision, checkId) => (
-        this.kernelExecutionRuntime.executorRecovered(name, checkId)
+      probe: (name, configurationRevision, previousFailure) => {
+        const binding = executorRegistry.bindingForAgentClass(
+          name,
+          configurationRevision,
+        );
+        return binding
+          ? this.executionRuntime.probeExecutor(binding, previousFailure)
+          : Promise.resolve({
+              available: false,
+              failure: {
+                kind: 'configuration',
+                scope: 'agent_class',
+                code: 'executor_binding_not_found',
+                summary:
+                  `No Runtime binding is configured for AgentClass ${name} `
+                  + `at revision ${configurationRevision}`,
+              },
+            });
+      },
+      onRecovered: (name, configurationRevision, checkId) => (
+        this.kernelExecutionRuntime.executorRecovered(name, configurationRevision, checkId)
       ),
     });
     this.memoryContextService = new MemoryContextService({
@@ -487,8 +563,6 @@ export class MetaclawSession {
     this.commandCatalog = createDefaultCommandCatalog();
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
-      hasPendingExecutorRegisterWizard: () => this.executorAdminService.hasPendingWizard(),
-      handlePendingExecutorRegisterWizard: (input: string) => this.handlePendingExecutorRegisterWizardInput(input),
       handleCommand: (input: string) => this.handleCommand(input),
       handleNaturalLanguageInput: (input: string) => this.handleNaturalLanguageInput(input),
       waitForAsyncWork: () => this.waitForAsyncWork(),
@@ -627,10 +701,6 @@ export class MetaclawSession {
       },
     });
 
-    // AgentClass records are startup catalog data. Constructing a session must
-    // make the catalog readable even for non-UI hosts that do not call the
-    // optional dashboard-oriented initialize() lifecycle hook.
-    this.seedAgentRuntime();
     this.unregisterPlannerHost = deps.plannerHost?.registerSession(deps.sessionId, this) ?? null;
   }
 
@@ -1093,8 +1163,6 @@ export class MetaclawSession {
   initialize(options: { resumeStartupTasks?: boolean; showDashboard?: boolean } = {}): void {
     if (this.initialized) return;
 
-    this.seedAgentRuntime();
-
     const resumeStartupTasks = options.resumeStartupTasks ?? true;
     const showDashboard = options.showDashboard ?? true;
     const recoveredRunningTasks: Task[] = [];
@@ -1384,10 +1452,6 @@ export class MetaclawSession {
       proposal.taskId ? this.taskRuntimeService.findTask(proposal.taskId)?.title ?? '' : '',
     ));
     this.appendOutput('→ 操作提案已记录，不等待用户确认；满足执行条件的任务由调度器自动处理');
-  }
-
-  private seedAgentRuntime(): void {
-    this.agentClassService.seedDefaults();
   }
 
   private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
@@ -1828,10 +1892,6 @@ export class MetaclawSession {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
     }
 
-    if (result.type === 'directive' && result.directive.kind === 'start-executor-register-wizard') {
-      this.appendOutput(...this.executorAdminService.startWizard());
-    }
-
     if (result.type === 'exit') {
       this.persistSessionState({ lastSessionId: this.deps.sessionId });
       return true;
@@ -2070,15 +2130,6 @@ export class MetaclawSession {
       db: this.deps.db,
       config: this.deps.config,
     };
-  }
-
-  private async handlePendingExecutorRegisterWizardInput(userInput: string): Promise<boolean> {
-    const result = await this.executorAdminService.handlePendingWizardInput(userInput);
-    this.appendOutput(...result.lines);
-    if (result.handled) {
-      await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
-    }
-    return result.handled;
   }
 
   private async handleNaturalLanguageInput(userInput: string): Promise<void> {

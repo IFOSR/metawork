@@ -29,7 +29,7 @@ import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { Subtask } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
-import { deriveRecoverySafety } from '../executor/builtin-executor-catalog.js';
+import { deriveRecoverySafety } from '../routing/types.js';
 import type {
   KernelAttemptKind,
   KernelAttemptPayload,
@@ -123,12 +123,24 @@ export class SubtaskAttemptRunner {
     this.terminalService = new AttemptTerminalService(deps.db);
   }
 
-  supportsResponseOnly(agentClassName: string): boolean {
-    return this.deps.executionRuntime.supportsResponseOnly(agentClassName);
+  supportsResponseOnly(
+    agentClassName: string,
+    configurationRevision: string,
+  ): boolean {
+    return this.deps.executionRuntime.supportsResponseOnly(
+      agentClassName,
+      configurationRevision,
+    );
   }
 
-  supportsContinuation(agentClassName: string): boolean {
-    return this.deps.executionRuntime.supportsContinuation(agentClassName);
+  supportsContinuation(
+    agentClassName: string,
+    configurationRevision: string,
+  ): boolean {
+    return this.deps.executionRuntime.supportsContinuation(
+      agentClassName,
+      configurationRevision,
+    );
   }
 
   landHeartbeatLost(input: {
@@ -300,8 +312,10 @@ export class SubtaskAttemptRunner {
       }
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
-      const agentClass = this.deps.agentClassService.listAgentClasses().find(item => item.name === agentClassName);
-      if (!agentClass || claim.workUnit.agentClassName !== agentClassName) {
+      if (
+        !this.deps.agentClassService.hasExecutorAgentClass(agentClassName)
+        || claim.workUnit.agentClassName !== agentClassName
+      ) {
         throw new Error(`attempt AgentClass mismatch: ${agentClassName}`);
       }
       const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(input.taskId);
@@ -467,7 +481,7 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
         attemptId,
-        agentClassName: agentClass.name,
+        agentClassName,
         configurationRevision: dispatch.configurationRevision,
         permissionProfileId: requirePermissionProfile(
           dispatch.authorizedBinding.permissionProfileRef,
@@ -521,7 +535,8 @@ export class SubtaskAttemptRunner {
       const execution = await this.deps.executionRuntime.run({
         taskId: input.taskId,
         executionId: input.executionId,
-        spec: { subtask, workUnit: claim.workUnit, agentClass, acceptance: subtask.acceptance, deliveryKind: subtask.deliveryKind },
+        authorizedBinding: dispatch.authorizedBinding,
+        spec: { subtask, workUnit: claim.workUnit, acceptance: subtask.acceptance, deliveryKind: subtask.deliveryKind },
         executorInput: {
           context: built.context,
           executionBinding: {
@@ -575,7 +590,7 @@ export class SubtaskAttemptRunner {
           : execution.failure;
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
           errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
           failure: executionFailure,
@@ -626,7 +641,7 @@ export class SubtaskAttemptRunner {
             taskId: task.id,
             subtaskId: subtask.id,
             workUnitId: claim.workUnit.id,
-            agentClassName: agentClass.name,
+            agentClassName,
             startedAt,
             terminalState: 'completed',
             rawResponse,
@@ -715,7 +730,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           subtaskId: subtask.id,
           workUnitId: claim.workUnit.id,
-          agentClassName: agentClass.name,
+          agentClassName,
           startedAt,
           rawResponse,
           completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
@@ -731,7 +746,7 @@ export class SubtaskAttemptRunner {
         const failure = completion.envelope.failure;
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
-          workUnitId: claim.workUnit.id, agentClassName: agentClass.name, startedAt,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 3,
           errorCode: failure.code, errorDetail: failure.summary,
           failure: { ...failure, scope: 'task' },
@@ -752,7 +767,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           subtaskId: subtask.id,
           workUnitId: claim.workUnit.id,
-          agentClassName: agentClass.name,
+          agentClassName,
           startedAt,
           terminalState: 'cancelled_or_stale',
           rawResponse,
@@ -788,7 +803,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           subtaskId: subtask.id,
           workUnitId: claim.workUnit.id,
-          agentClassName: agentClass.name,
+          agentClassName,
           startedAt,
           terminalState: 'completed',
           rawResponse,
@@ -804,7 +819,7 @@ export class SubtaskAttemptRunner {
           generationId: subtask.generationId,
           subtaskId: subtask.id,
           sourceAttemptId: attemptId,
-          agentClassName: agentClass.name,
+          agentClassName,
           candidateCommit: managedCommit.commit,
           completion: publicationCompletion,
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
@@ -986,7 +1001,11 @@ export class SubtaskAttemptRunner {
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
       const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
-      const result = await this.deps.executionRuntime.runResponseOnly(agentClassName, prompt, 128 * 1024);
+      const result = await this.deps.executionRuntime.runResponseOnly(
+        dispatch.authorizedBinding,
+        prompt,
+        128 * 1024,
+      );
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
         this.persistNonSuccess({

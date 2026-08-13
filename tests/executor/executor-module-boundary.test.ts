@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 const projectRoot = resolve(__dirname, '../..');
 
 const executorServiceFiles = [
-  'executor-admin-service',
+  'agent-class-service',
+  'harness-driver-registry',
+  'local-cli-executor-adapter',
+  'container-compatibility-adapter',
 ];
 
 describe('executor module architecture boundaries', () => {

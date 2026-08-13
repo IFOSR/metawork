@@ -9,7 +9,7 @@ import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import { builtinCodexAgentClass, builtinPiAgentClass } from '../support/builtin-agent-classes.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -113,7 +113,7 @@ function setup(rawResponse: string) {
     updatedAt: '2026-07-17T00:00:00.000Z',
   });
   new AgentClassRepo(db).upsert(
-    getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+    builtinCodexAgentClass(),
   );
   const a = node('task_phase2_a');
   const b = node('task_phase2_b', [{
@@ -157,7 +157,7 @@ function setup(rawResponse: string) {
     subtaskRepo,
     workUnitClaimService,
     executionRuntime: executionRuntime as never,
-    agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
+    agentClassService: { listExecutorAgentClassNames: () => ['codex-cli', 'pi-agent'], hasExecutorAgentClass: () => true } as never,
     workspaceStore,
     attemptExecutionBackend,
     resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
@@ -563,7 +563,7 @@ describe('SubtaskAttemptRunner', () => {
         isClaimCurrent: vi.fn(),
       },
       executionRuntime: setupResult.executionRuntime as never,
-      agentClassService: { listAgentClasses: () => getBuiltinExecutorAgentClasses() } as never,
+      agentClassService: { listExecutorAgentClassNames: () => ['codex-cli', 'pi-agent'], hasExecutorAgentClass: () => true } as never,
       workspaceStore: new WorkspaceStore(`/tmp/metaclaw-heartbeat-${randomUUID()}`),
       attemptExecutionBackend: {
         kind: 'worktree',
@@ -850,7 +850,7 @@ describe('SubtaskAttemptRunner', () => {
   it('wires public network rules only for the public-web-research AgentClass profile', async () => {
     const setupResult = setup(validResponse());
     new AgentClassRepo(setupResult.db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'pi-agent')!,
+      builtinPiAgentClass(),
     );
     setupResult.workUnitRepo.upsert({
       id: 'executor-pi', agentClassName: 'pi-agent', agentClassKind: 'executor', state: 'idle',

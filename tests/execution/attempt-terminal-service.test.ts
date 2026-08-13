@@ -11,7 +11,7 @@ import { TaskRepo } from '../../src/storage/task-repo.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import type { Subtask } from '../../src/core/types.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
@@ -82,7 +82,7 @@ function setup(workflowMode: 'capturing' | 'real' = 'capturing') {
   const subtasks = new SubtaskRepo(db);
   subtasks.upsert(subtask);
   new AgentClassRepo(db).upsert(
-    getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+    builtinCodexAgentClass(),
   );
   new WorkUnitRepo(db).upsert({
     id: 'work-unit-terminal',

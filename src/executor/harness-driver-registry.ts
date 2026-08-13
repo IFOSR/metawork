@@ -95,6 +95,40 @@ export class HarnessDriverRegistry {
       runtimeBinding,
     });
   }
+
+  supportsContinuation(input: {
+    configuration: RuntimeConfigurationView;
+    agentClassRef: string;
+  }): boolean {
+    const resolved = this.resolveRegistration(input);
+    return Boolean(
+      resolved?.harness.supportsContinuation
+      && resolved.registration.driver.supportsContinuation,
+    );
+  }
+
+  supportsResponseOnly(input: {
+    configuration: RuntimeConfigurationView;
+    agentClassRef: string;
+  }): boolean {
+    const resolved = this.resolveRegistration(input);
+    return Boolean(resolved?.registration.driver.supportsResponseOnly);
+  }
+
+  private resolveRegistration(input: {
+    configuration: RuntimeConfigurationView;
+    agentClassRef: string;
+  }): {
+    harness: HarnessDefinition;
+    registration: RegisteredHarnessDriver;
+  } | null {
+    const agentClass = input.configuration.agentClasses[input.agentClassRef];
+    if (!agentClass?.enabled || agentClass.kind !== 'executor') return null;
+    const harness = input.configuration.harnesses[agentClass.harnessRef];
+    if (!harness?.enabled || harness.kind !== 'executor') return null;
+    const registration = this.registrations.get(harness.driverId);
+    return registration ? { harness, registration } : null;
+  }
 }
 
 function requireRevision(

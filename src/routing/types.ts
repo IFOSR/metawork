@@ -66,3 +66,16 @@ export interface ConfigurationRoutingCatalog {
   capabilities: PlannerRoutingCapabilityDefinition[];
   agentClasses: ConfigurationCatalogAgentClass[];
 }
+
+export function deriveRecoverySafety(
+  requiredCapabilities: readonly string[],
+): RoutingCapabilityDefinition['recoverySafety'] {
+  let result: RoutingCapabilityDefinition['recoverySafety'] = 'read_only';
+  for (const capability of requiredCapabilities) {
+    const definition: RoutingCapabilityDefinition | undefined = ROUTING_CAPABILITY_REGISTRY[capability as RoutingCapabilityId];
+    if (!definition) return 'external_non_idempotent';
+    if (definition.recoverySafety === 'external_non_idempotent') return 'external_non_idempotent';
+    if (definition.recoverySafety === 'workspace_reconcilable') result = 'workspace_reconcilable';
+  }
+  return result;
+}

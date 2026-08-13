@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import {
   AnyFusionConfigurationV2Schema,
   buildKernelConfigurationView,
@@ -22,31 +19,65 @@ export interface StagedLegacyConfiguration {
 }
 
 export function buildStagedLegacyConfiguration(input: {
-  env?: NodeJS.ProcessEnv;
-  userHome?: string;
+  migratedSnapshot?: ConfigurationSnapshot;
   testMode?: boolean;
 } = {}): StagedLegacyConfiguration {
-  const env = input.env ?? process.env;
-  const testMode = input.testMode ?? env.NODE_ENV === 'test';
-  const legacy = testMode
-    ? {
-        providerRef: 'test-provider',
-        baseUrl: env.OPENAI_BASE_URL ?? 'http://127.0.0.1:1/v1',
-        modelRef: 'test-model',
-      }
-    : readLegacyProviderAndModel(input.userHome ?? homedir(), env);
-  const providerRef = testMode
-    ? legacy.providerRef
-    : normalizedLegacyReference('provider', legacy.providerRef);
-  const modelRef = testMode
-    ? legacy.modelRef
-    : normalizedLegacyReference('model', legacy.modelRef);
+  const testMode = input.testMode ?? process.env.NODE_ENV === 'test';
+  const snapshot = input.migratedSnapshot
+    ? validateMigratedSnapshot(input.migratedSnapshot)
+    : testMode
+      ? buildTestSnapshot()
+      : failMissingMigratedSnapshot();
+  const planner = snapshot.config.agentClasses.planner;
+  if (!planner || planner.kind !== 'planner') {
+    throw new Error('staged configuration requires the Planner AgentClass');
+  }
+  if (planner.modelPolicy.mode !== 'fixed') {
+    throw new Error('staged configuration requires a fixed model for the Planner AgentClass');
+  }
+  const modelRef = planner.modelPolicy.modelRef;
+  const model = snapshot.config.models[modelRef];
+  if (!model) {
+    throw new Error(`staged Planner references missing Model: ${modelRef}`);
+  }
+  if (!snapshot.config.providers[model.providerRef]) {
+    throw new Error(`staged Planner Model references missing Provider: ${model.providerRef}`);
+  }
+  if (!snapshot.config.harnesses[planner.harnessRef]) {
+    throw new Error(`staged Planner references missing Harness: ${planner.harnessRef}`);
+  }
+  const plannerBinding: RevisionedAgentBinding = {
+    agentClassRef: 'planner',
+    harnessRef: planner.harnessRef,
+    providerRef: model.providerRef,
+    modelRef,
+    permissionProfileRef: planner.permissionProfileRef ?? null,
+    configurationRevision: snapshot.revisionId,
+  };
+  const plannerFingerprintBinding = {
+    ...plannerBinding,
+    permissionProfileRef: plannerBinding.permissionProfileRef ?? 'planner-none',
+  };
+  return {
+    snapshot,
+    planner: buildPlannerConfigurationView(snapshot),
+    kernel: buildKernelConfigurationView(snapshot),
+    plannerBinding,
+    plannerBindingFingerprint: authorizedExecutorBindingFingerprint(
+      plannerFingerprintBinding,
+    ),
+  };
+}
+
+function buildTestSnapshot(): ConfigurationSnapshot {
+  const providerRef = 'test-provider';
+  const modelRef = 'test-model';
   const config = AnyFusionConfigurationV2Schema.parse({
     schemaVersion: 2,
     providers: {
       [providerRef]: {
         protocol: 'openai-compatible',
-        baseUrl: legacy.baseUrl,
+        baseUrl: 'http://127.0.0.1:1/v1',
         apiKeyRef: `keychain:anyfusion/imported/${providerRef}`,
         region: 'international',
         enabled: true,
@@ -55,7 +86,7 @@ export function buildStagedLegacyConfiguration(input: {
     models: {
       [modelRef]: {
         providerRef,
-        modelId: legacy.modelRef,
+        modelId: modelRef,
         capabilities: ['coding', 'planning', 'structured-output', 'tools'],
         reasoning: 'high',
         enabled: true,
@@ -157,97 +188,29 @@ export function buildStagedLegacyConfiguration(input: {
     runtimePolicy: {},
     gateway: {},
   });
-  const compiled = compileConfigurationRevision('staged-legacy', config);
-  const revisionId = testMode
-    ? 'revision-test'
-    : `import-${compiled.contentHash.slice(0, 24)}`;
-  const snapshot = {
-    revisionId,
+  const compiled = compileConfigurationRevision('revision-test', config);
+  return {
+    revisionId: 'revision-test',
     contentHash: compiled.contentHash,
     config,
-  } satisfies ConfigurationSnapshot;
-  const plannerBinding: RevisionedAgentBinding = {
-    agentClassRef: 'planner',
-    harnessRef: 'anyfusion-planner',
-    providerRef,
-    modelRef,
-    permissionProfileRef: null,
-    configurationRevision: revisionId,
-  };
-  const plannerFingerprintBinding = {
-    ...plannerBinding,
-    permissionProfileRef: 'planner-none',
-  };
-  return {
-    snapshot,
-    planner: buildPlannerConfigurationView(snapshot),
-    kernel: buildKernelConfigurationView(snapshot),
-    plannerBinding,
-    plannerBindingFingerprint: authorizedExecutorBindingFingerprint(
-      plannerFingerprintBinding,
-    ),
   };
 }
 
-function readLegacyProviderAndModel(
-  userHome: string,
-  env: NodeJS.ProcessEnv,
-): {
-  providerRef: string;
-  baseUrl: string;
-  modelRef: string;
-} {
-  const root = env.ANYFUSION_CONFIG_HOME?.trim()
-    || join(userHome, '.config', 'anyfusion');
-  const providerEnvironment = parseEnvironmentFile(
-    readFileSync(join(root, 'provider.env'), 'utf8'),
-  );
-  const settings = JSON.parse(
-    readFileSync(join(root, 'planner', 'settings.json'), 'utf8'),
-  ) as Record<string, unknown>;
-  const providerRef = nonEmpty(settings.defaultProvider, 'legacy Planner defaultProvider');
-  const modelRef = nonEmpty(settings.defaultModel, 'legacy Planner defaultModel');
-  const baseUrl = nonEmpty(
-    env.OPENAI_BASE_URL ?? providerEnvironment.OPENAI_BASE_URL,
-    'legacy Provider base URL',
-  );
-  return { providerRef, baseUrl, modelRef };
-}
-
-function parseEnvironmentFile(source: string): Record<string, string> {
-  return Object.fromEntries(source
-    .split(/\r?\n/u)
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.startsWith('#'))
-    .map(line => {
-      const separator = line.indexOf('=');
-      if (separator <= 0) throw new Error('legacy provider.env contains a malformed assignment');
-      return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
-    }));
-}
-
-function nonEmpty(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`${label} is missing`);
+function validateMigratedSnapshot(
+  snapshot: ConfigurationSnapshot,
+): ConfigurationSnapshot {
+  const config = AnyFusionConfigurationV2Schema.parse(snapshot.config);
+  const compiled = compileConfigurationRevision(snapshot.revisionId, config);
+  if (compiled.contentHash !== snapshot.contentHash) {
+    throw new Error(
+      `migrated configuration snapshot content hash mismatch: ${snapshot.revisionId}`,
+    );
   }
-  return value.trim();
+  return snapshot;
 }
 
-function normalizedLegacyReference(kind: string, value: string): string {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, '-')
-    .replace(/^-+|-+$/gu, '');
-  const base = /^[a-z]/u.test(normalized)
-    ? normalized
-    : `${kind}-${normalized || 'legacy'}`;
-  const digest = authorizedExecutorBindingFingerprint({
-    agentClassRef: kind,
-    harnessRef: kind,
-    providerRef: kind,
-    modelRef: value,
-    permissionProfileRef: kind,
-    configurationRevision: kind,
-  }).slice(0, 8);
-  return `${base.slice(0, 54).replace(/-+$/u, '')}-${digest}`;
+function failMissingMigratedSnapshot(): never {
+  throw new Error(
+    'production startup requires an explicit migrated configuration snapshot',
+  );
 }

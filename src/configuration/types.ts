@@ -213,6 +213,7 @@ export type RuntimeConfigurationView = Readonly<{
 export type RuntimePrivateConfigurationBinding = Readonly<{
   revisionId: ConfigurationRevisionId;
   bindingFingerprint: string;
+  environment?: Readonly<Record<string, string>>;
 }>;
 
 export type ConfigurationServicePort = Readonly<{

@@ -13,7 +13,7 @@ import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
@@ -104,7 +104,7 @@ describe('session startup running-task reconciliation', () => {
     taskEngine.transition(runningTask.id, 'ready');
     taskEngine.transition(runningTask.id, 'running');
     new AgentClassRepo(db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+      builtinCodexAgentClass(),
     );
     const workUnits = new WorkUnitRepo(db);
     workUnits.upsert({
@@ -162,7 +162,7 @@ describe('session startup running-task reconciliation', () => {
     const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
     subtaskRepo.updateStatus(subtask.id, 'running');
     new AgentClassRepo(db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+      builtinCodexAgentClass(),
     );
     const attemptId = 'attempt-terminal-seal-blocked';
     const workUnitId = 'executor-terminal-seal-blocked';
@@ -286,7 +286,7 @@ describe('session startup running-task reconciliation', () => {
     const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
     subtaskRepo.updateStatus(subtask.id, 'running');
     new AgentClassRepo(db).upsert(
-      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+      builtinCodexAgentClass(),
     );
     const attemptId = 'attempt-startup-fallback';
     const sourceAttemptId = 'attempt-startup-primary';

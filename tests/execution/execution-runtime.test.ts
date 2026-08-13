@@ -1,38 +1,196 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ExecutorInput } from '../../src/executor/adapter.js';
-import type { AgentClass, Subtask, WorkUnit } from '../../src/core/types.js';
+import type {
+  RuntimeConfigurationView,
+  RuntimePrivateConfigurationBinding,
+} from '../../src/configuration/types.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import { kernelFailure } from '../../src/core/kernel-failure.js';
+import type { AgentClass, ExecutorResult, Subtask, WorkUnit } from '../../src/core/types.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
-import type { AgentClassLookupPort } from '../../src/executor/agent-class-lookup-port.js';
-import type { AttemptExecutionBackend, CreateAttemptExecutionInput, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
-import { getBuiltinExecutorAgentClasses } from '../../src/executor/builtin-executor-catalog.js';
+import type {
+  ExecutorAdapter,
+  ExecutorInput,
+  ExecutorProbeResult,
+} from '../../src/executor/adapter.js';
+import type { HarnessDriverAdapterFactoryInput } from '../../src/executor/harness-driver-registry.js';
 
-function createExecutionBackend(overrides: Partial<AttemptExecutionBackend> = {}): AttemptExecutionBackend {
-  const record: AttemptExecutionRecord = {
-    containerId: 'container_test',
-    imageId: 'sha256:test',
-    status: 'created',
-    exitCode: null,
-    labels: {},
-  };
+const revisionId = 'revision-10';
+
+type FakeHarnessDriverRegistry = {
+  createAdapter: ReturnType<typeof vi.fn<(input: {
+    configuration: RuntimeConfigurationView;
+    authorizedBinding: AuthorizedExecutorBinding;
+    runtimeBinding: RuntimePrivateConfigurationBinding;
+  }) => ExecutorAdapter>>;
+};
+
+function createAuthorizedBinding(
+  overrides: Partial<AuthorizedExecutorBinding> = {},
+): AuthorizedExecutorBinding {
   return {
-    resolveImage: vi.fn().mockResolvedValue('sha256:test'),
-    create: vi.fn().mockImplementation(async (_input: CreateAttemptExecutionInput) => record),
-    start: vi.fn().mockResolvedValue(undefined),
-    wait: vi.fn().mockResolvedValue(0),
-    logs: vi.fn().mockResolvedValue('execution output'),
-    pause: vi.fn().mockResolvedValue(undefined),
-    resume: vi.fn().mockResolvedValue(undefined),
-    inspect: vi.fn().mockResolvedValue(record),
-    stop: vi.fn().mockResolvedValue(undefined),
-    remove: vi.fn().mockResolvedValue(undefined),
-    listManaged: vi.fn().mockResolvedValue([]),
+    agentClassRef: 'implementation-alpha',
+    harnessRef: 'shared-harness',
+    providerRef: 'provider-main',
+    modelRef: 'model-engineering',
+    permissionProfileRef: 'workspace-default',
+    configurationRevision: revisionId,
     ...overrides,
   };
 }
 
-function createAgentClass(name = 'codex-cli'): AgentClass {
-  const canonical = getBuiltinExecutorAgentClasses().find(agentClass => agentClass.name === name);
-  if (canonical) return canonical;
+function createRuntimeBinding(
+  binding: AuthorizedExecutorBinding,
+  overrides: Partial<RuntimePrivateConfigurationBinding> = {},
+): RuntimePrivateConfigurationBinding {
+  return {
+    revisionId: binding.configurationRevision,
+    bindingFingerprint: `private:${binding.agentClassRef}:${binding.modelRef}`,
+    ...overrides,
+  };
+}
+
+function createRuntimeConfiguration(
+  overrides: Partial<RuntimeConfigurationView> = {},
+): RuntimeConfigurationView {
+  return {
+    revisionId,
+    contentHash: 'sha256:revision-10',
+    schemaVersion: 2,
+    providers: {
+      'provider-main': {
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyRef: 'keychain:anyfusion/provider-main',
+        region: 'international',
+        enabled: true,
+      },
+    },
+    models: {
+      'model-engineering': {
+        providerRef: 'provider-main',
+        modelId: 'engineering-v1',
+        capabilities: ['coding', 'tools'],
+        reasoning: 'medium',
+        enabled: true,
+      },
+      'model-review': {
+        providerRef: 'provider-main',
+        modelId: 'review-v1',
+        capabilities: ['coding', 'structured-output'],
+        reasoning: 'high',
+        enabled: true,
+      },
+    },
+    harnesses: {
+      'shared-harness': {
+        kind: 'executor',
+        transport: 'local-cli',
+        command: 'codex',
+        args: [],
+        driverId: 'codex-cli',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+    },
+    agentClasses: {
+      'implementation-alpha': runtimeAgentClass('model-engineering'),
+      'quality-beta': runtimeAgentClass('model-review'),
+    },
+    permissionProfiles: {
+      'workspace-default': {
+        profileId: 'workspace-engineering',
+        version: 1,
+        parameters: {},
+      },
+    },
+    runtimePolicy: {},
+    gateway: {},
+    ...overrides,
+  };
+}
+
+function runtimeAgentClass(modelRef: string) {
+  return {
+    kind: 'executor' as const,
+    harnessRef: 'shared-harness',
+    modelPolicy: { mode: 'fixed' as const, modelRef },
+    permissionProfileRef: 'workspace-default',
+    routingCapabilities: ['workspace-engineering' as const],
+    primaryUseCases: [],
+    avoidUseCases: [],
+    plannerAffordances: ['workspace-read-write' as const],
+    skills: [],
+    mcpServers: [],
+    plugins: [],
+    generatedRuntimeRef: 'generated-runtime',
+    enabled: true,
+  };
+}
+
+function createAdapter(
+  name: string,
+  overrides: Partial<ExecutorAdapter> = {},
+): ExecutorAdapter {
+  return {
+    name,
+    execute: vi.fn(async (): Promise<ExecutorResult> => ({
+      success: true,
+      output: `completed:${name}`,
+      exitCode: 0,
+      durationMs: 5,
+    })),
+    probe: vi.fn(async (): Promise<ExecutorProbeResult> => ({
+      available: true,
+      failure: null,
+    })),
+    abort: vi.fn(),
+    ...overrides,
+  };
+}
+
+function createHarnessDriverRegistry(
+  create: (input: HarnessDriverAdapterFactoryInput) => ExecutorAdapter = input => (
+    createAdapter(`${input.authorizedBinding.agentClassRef}:${input.runtimeBinding.bindingFingerprint}`)
+  ),
+): FakeHarnessDriverRegistry {
+  return {
+    createAdapter: vi.fn(input => create(input as HarnessDriverAdapterFactoryInput)),
+  };
+}
+
+function createRegistry(input: {
+  configuration?: RuntimeConfigurationView;
+  harnessDriverRegistry?: FakeHarnessDriverRegistry;
+  getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
+  getRuntimeBinding?: (
+    binding: AuthorizedExecutorBinding,
+  ) => Promise<RuntimePrivateConfigurationBinding>;
+} = {}) {
+  const configuration = input.configuration ?? createRuntimeConfiguration();
+  const harnessDriverRegistry = input.harnessDriverRegistry ?? createHarnessDriverRegistry();
+  const getRuntimeConfiguration = vi.fn(
+    input.getRuntimeConfiguration ?? (() => configuration),
+  );
+  const getRuntimeBinding = vi.fn(
+    input.getRuntimeBinding ?? (async binding => createRuntimeBinding(binding)),
+  );
+  const registry = new ExecutorRegistry({
+    driverRegistry: harnessDriverRegistry,
+    getRuntimeConfiguration,
+    getRuntimeBinding,
+    getActiveRuntimeConfiguration: () => configuration,
+  });
+  return {
+    registry,
+    harnessDriverRegistry,
+    getRuntimeConfiguration,
+    getRuntimeBinding,
+  };
+}
+
+function createAgentClass(name = 'implementation-alpha'): AgentClass {
   return {
     name,
     kind: 'executor',
@@ -61,15 +219,6 @@ function createAgentClass(name = 'codex-cli'): AgentClass {
   };
 }
 
-function createConfiguredAgentClass(name = 'codex-cli'): AgentClass {
-  return {
-    ...createAgentClass(name),
-    executionImageRef: 'metaclaw/test:latest',
-    resolvedImageId: 'sha256:test',
-    permissionProfileId: 'workspace-engineering',
-  };
-}
-
 function createSubtask(): Subtask {
   return {
     id: 'subtask_runtime',
@@ -82,7 +231,7 @@ function createSubtask(): Subtask {
     dependencies: [],
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'],
+    preferredAgentClassList: ['implementation-alpha'],
     deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }],
     riskLevel: 'medium',
@@ -90,12 +239,12 @@ function createSubtask(): Subtask {
     artifacts: [],
     verification: { warnings: [], completionSchemaVersion: null },
     error: null,
-    createdAt: '2026-06-22T00:00:00Z',
-    updatedAt: '2026-06-22T00:00:00Z',
+    createdAt: '2026-08-13T00:00:00Z',
+    updatedAt: '2026-08-13T00:00:00Z',
   };
 }
 
-function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
+function createWorkUnit(agentClassName = 'implementation-alpha'): WorkUnit {
   return {
     id: 'executor-1',
     agentClassName,
@@ -104,10 +253,10 @@ function createWorkUnit(agentClassName = 'codex-cli'): WorkUnit {
     claimedTaskId: 'task_runtime',
     claimedSubtaskId: 'subtask_runtime',
     claimedAttemptId: 'attempt_runtime',
-    heartbeatAt: '2026-06-22T00:00:00Z',
+    heartbeatAt: '2026-08-13T00:00:00Z',
     leaseExpiresAt: null,
-    createdAt: '2026-06-22T00:00:00Z',
-    updatedAt: '2026-06-22T00:00:00Z',
+    createdAt: '2026-08-13T00:00:00Z',
+    updatedAt: '2026-08-13T00:00:00Z',
   };
 }
 
@@ -132,211 +281,289 @@ function createExecutionBinding(): NonNullable<ExecutorInput['executionBinding']
   };
 }
 
-function createExecutorInput(withExecutionBinding = true): Omit<ExecutorInput, 'onProgress'> {
+function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
   const subtask = createSubtask();
   return {
     context: {
-      taskBackground: { id: 'task_runtime', title: 'runtime task', goal: 'execute runtime task', instruction: 'background_only' },
+      taskBackground: {
+        id: 'task_runtime',
+        title: 'runtime task',
+        goal: 'execute runtime task',
+        instruction: 'background_only',
+      },
       currentSubtask: {
-        id: subtask.id, title: subtask.title, goal: subtask.goal,
-        deliveryKind: subtask.deliveryKind, acceptance: subtask.acceptance,
+        id: subtask.id,
+        title: subtask.title,
+        goal: subtask.goal,
+        deliveryKind: subtask.deliveryKind,
+        acceptance: subtask.acceptance,
       },
-      incomingHandoffs: [], outgoingHandoffRequirements: [], selectedEvidence: [], outOfScopeSiblings: [],
-      workspaceContext: { allowFilesystem: true, workingDirectory: process.cwd(), targetPaths: [] },
+      incomingHandoffs: [],
+      outgoingHandoffRequirements: [],
+      selectedEvidence: [],
+      outOfScopeSiblings: [],
+      workspaceContext: {
+        allowFilesystem: true,
+        workingDirectory: process.cwd(),
+        targetPaths: [],
+      },
       identity: {
-        executionId: 'exec_runtime', taskId: 'task_runtime', subtaskId: subtask.id,
-        attemptId: 'attempt_runtime', workUnitId: 'executor-1',
+        executionId: 'exec_runtime',
+        taskId: 'task_runtime',
+        subtaskId: subtask.id,
+        attemptId: 'attempt_runtime',
+        workUnitId: 'executor-1',
       },
-      completionContract: { marker: '<!-- metaclaw:completion:v2 -->', schemaVersion: 2 },
+      completionContract: {
+        marker: '<!-- metaclaw:completion:v2 -->',
+        schemaVersion: 2,
+      },
       evidenceTools: { availability: 'unavailable', reason: 'unit test' },
     },
-    ...(withExecutionBinding ? { executionBinding: createExecutionBinding() } : {}),
+    executionBinding: createExecutionBinding(),
   };
 }
 
-function createLookup(agentClasses: AgentClass[]): AgentClassLookupPort {
-  const byName = new Map(agentClasses.map(agentClass => [agentClass.name, agentClass]));
+function createRunInput(
+  authorizedBinding: AuthorizedExecutorBinding = createAuthorizedBinding(),
+  overrides: { taskId?: string; executionId?: string } = {},
+) {
+  const taskId = overrides.taskId ?? 'task_runtime';
+  const executionId = overrides.executionId ?? 'exec_runtime';
   return {
-    findByName: name => byName.get(name) ?? null,
-    listAgentClasses: () => [...byName.values()],
-    setResolvedImageId: (name, imageId) => {
-      const existing = byName.get(name);
-      if (existing) byName.set(name, { ...existing, resolvedImageId: imageId });
+    taskId,
+    executionId,
+    authorizedBinding,
+    spec: {
+      subtask: createSubtask(),
+      workUnit: createWorkUnit(authorizedBinding.agentClassRef),
+      agentClass: createAgentClass(authorizedBinding.agentClassRef),
+      acceptance: [],
+      deliveryKind: 'report' as const,
     },
+    executorInput: createExecutorInput(),
+    onProgress: vi.fn(),
   };
 }
 
-function createRegistry(agentClasses: AgentClass[], backend: AttemptExecutionBackend): ExecutorRegistry {
-  return new ExecutorRegistry({ agentClassLookup: createLookup(agentClasses), attemptExecutionBackend: backend });
-}
-
-describe('ExecutionRuntime', () => {
-  it('returns a class-level configuration failure when no AgentClass is bound', async () => {
-    const registry = createRegistry([], createExecutionBackend());
-    const runtime = new ExecutionRuntime(registry);
-    const result = await runtime.run({
-      taskId: 'task_runtime',
-      executionId: 'exec_unbound',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('unbound-agent'),
-        agentClass: createAgentClass('unbound-agent'),
-        acceptance: [],
-        deliveryKind: 'report',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
+describe('ExecutorRegistry', () => {
+  it('creates distinct adapters and private bindings for two AgentClasses using the same driver', async () => {
+    const harnessDriverRegistry = createHarnessDriverRegistry();
+    const { registry, getRuntimeConfiguration, getRuntimeBinding } = createRegistry({
+      harnessDriverRegistry,
+    });
+    const implementation = createAuthorizedBinding();
+    const review = createAuthorizedBinding({
+      agentClassRef: 'quality-beta',
+      modelRef: 'model-review',
     });
 
-    expect(result).toMatchObject({
-      status: 'failed',
-      executorName: 'unbound-agent',
-      failure: { kind: 'configuration', scope: 'agent_class', code: 'executor_adapter_unbound' },
-    });
-  });
+    const implementationAdapter = await registry.resolve(implementation);
+    const reviewAdapter = await registry.resolve(review);
 
-  it('resolves a configured AgentClass to the backend adapter and reports container binding source', () => {
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createExecutionBackend());
-    expect(registry.resolve('codex-cli')?.name).toBe('codex-cli');
-    expect(registry.inspect('codex-cli')).toEqual({
-      configured: true,
-      bindingSource: 'container',
-      adapterName: 'codex-cli',
+    expect(implementationAdapter).not.toBe(reviewAdapter);
+    expect(implementationAdapter?.name).toContain('implementation-alpha');
+    expect(reviewAdapter?.name).toContain('quality-beta');
+    expect(getRuntimeConfiguration).toHaveBeenNthCalledWith(1, revisionId);
+    expect(getRuntimeConfiguration).toHaveBeenNthCalledWith(2, revisionId);
+    expect(getRuntimeBinding).toHaveBeenNthCalledWith(1, implementation);
+    expect(getRuntimeBinding).toHaveBeenNthCalledWith(2, review);
+    expect(harnessDriverRegistry.createAdapter).toHaveBeenNthCalledWith(1, {
+      configuration: expect.objectContaining({ revisionId }),
+      authorizedBinding: implementation,
+      runtimeBinding: createRuntimeBinding(implementation),
+    });
+    expect(harnessDriverRegistry.createAdapter).toHaveBeenNthCalledWith(2, {
+      configuration: expect.objectContaining({ revisionId }),
+      authorizedBinding: review,
+      runtimeBinding: createRuntimeBinding(review),
     });
   });
 
-  it('reports unbound when the AgentClass has no verified image or permission profile', () => {
-    const registry = createRegistry([createAgentClass('codex-cli')], createExecutionBackend());
-    expect(registry.inspect('codex-cli')).toEqual({
-      configured: false,
-      bindingSource: 'unbound',
-      adapterName: null,
+  it('fails closed before adapter creation when the configuration revision mismatches', async () => {
+    const harnessDriverRegistry = createHarnessDriverRegistry(input => {
+      if (input.configuration.revisionId !== input.authorizedBinding.configurationRevision) {
+        throw new Error('configuration revision mismatch');
+      }
+      return createAdapter('unexpected');
     });
+    const { registry } = createRegistry({
+      harnessDriverRegistry,
+      getRuntimeConfiguration: () => createRuntimeConfiguration({
+        revisionId: 'revision-11',
+        contentHash: 'sha256:revision-11',
+      }),
+    });
+
+    await expect(registry.resolve(createAuthorizedBinding()))
+      .rejects.toThrow('configuration revision mismatch');
+    expect(harnessDriverRegistry.createAdapter).toHaveBeenCalledTimes(1);
   });
 
-  it('resolves and caches the image id for an AgentClass with an unresolved image ref', async () => {
-    const unresolved: AgentClass = {
-      ...createAgentClass('codex-cli'),
-      executionImageRef: 'metaclaw/test:latest',
-      resolvedImageId: null,
-      permissionProfileId: 'workspace-engineering',
-    };
-    const lookup = createLookup([unresolved]);
-    const backend = createExecutionBackend();
-    const registry = new ExecutorRegistry({ agentClassLookup: lookup, attemptExecutionBackend: backend });
+  it('fails closed when the selected binding does not match the revision projection', async () => {
+    const harnessDriverRegistry = createHarnessDriverRegistry(input => {
+      const configured = input.configuration.agentClasses[input.authorizedBinding.agentClassRef];
+      if (!configured || configured.harnessRef !== input.authorizedBinding.harnessRef) {
+        throw new Error('authorized binding mismatch');
+      }
+      return createAdapter('unexpected');
+    });
+    const { registry } = createRegistry({ harnessDriverRegistry });
 
-    await expect(registry.probe('codex-cli')).resolves.toEqual({
+    await expect(registry.resolve(createAuthorizedBinding({
+      harnessRef: 'invented-harness',
+    }))).rejects.toThrow('authorized binding mismatch');
+    expect(harnessDriverRegistry.createAdapter).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes the adapter selected by the complete authorized binding', async () => {
+    const previousFailure = kernelFailure({
+      kind: 'network',
+      scope: 'agent_class',
+      code: 'provider_unreachable',
+      summary: 'provider was unreachable',
+    });
+    const adapter = createAdapter('quality-beta');
+    const harnessDriverRegistry = createHarnessDriverRegistry(() => adapter);
+    const { registry, getRuntimeBinding } = createRegistry({ harnessDriverRegistry });
+    const binding = createAuthorizedBinding({
+      agentClassRef: 'quality-beta',
+      modelRef: 'model-review',
+    });
+
+    await expect(registry.probe(binding, previousFailure)).resolves.toEqual({
       available: true,
       failure: null,
     });
-    expect(backend.resolveImage).toHaveBeenCalledWith('metaclaw/test:latest');
-    expect(lookup.findByName('codex-cli')?.resolvedImageId).toBe('sha256:test');
-  });
-
-  it('preserves image resolution failures for the WorkUnit probe audit', async () => {
-    const unresolved: AgentClass = {
-      ...createAgentClass('codex-cli'),
-      executionImageRef: 'metaclaw/test:latest',
-      resolvedImageId: null,
-      permissionProfileId: 'workspace-engineering',
-    };
-    const backend = createExecutionBackend({
-      resolveImage: vi.fn().mockRejectedValue(
-        new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock'),
-      ),
+    expect(getRuntimeBinding).toHaveBeenCalledWith(binding);
+    expect(harnessDriverRegistry.createAdapter).toHaveBeenCalledWith({
+      configuration: expect.objectContaining({ revisionId }),
+      authorizedBinding: binding,
+      runtimeBinding: createRuntimeBinding(binding),
     });
-    const registry = createRegistry([unresolved], backend);
-
-    await expect(registry.probe('codex-cli')).resolves.toMatchObject({
-      available: false,
-      failure: {
-        code: 'executor_image_probe_failed',
-        summary: expect.stringContaining('Cannot connect to the Docker daemon'),
-      },
-    });
+    expect(adapter.probe).toHaveBeenCalledWith(previousFailure);
   });
+});
 
-  it('is unavailable when the AgentClass does not exist', async () => {
-    const registry = createRegistry([], createExecutionBackend());
-    await expect(registry.probe('missing')).resolves.toMatchObject({
-      available: false,
-      failure: { code: 'agent_class_not_found' },
+describe('ExecutionRuntime', () => {
+  it('runs through the adapter selected by the explicit authorized binding', async () => {
+    const adapter = createAdapter('implementation-alpha');
+    const { registry } = createRegistry({
+      harnessDriverRegistry: createHarnessDriverRegistry(() => adapter),
     });
-  });
-
-  it('runs a claimed subtask through the sandboxed adapter for the claimed AgentClass', async () => {
-    const backend = createExecutionBackend();
-    const registry = createRegistry([createConfiguredAgentClass('pi-agent')], backend);
     const runtime = new ExecutionRuntime(registry);
-    const result = await runtime.run({
-      taskId: 'task_runtime',
-      executionId: 'exec_runtime',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('pi-agent'),
-        agentClass: createConfiguredAgentClass('pi-agent'),
-        acceptance: [],
-        deliveryKind: 'report',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
+    const binding = createAuthorizedBinding();
+
+    const result = await runtime.run(createRunInput(binding));
+
+    expect(result).toMatchObject({
+      status: 'success',
+      executorName: 'implementation-alpha',
+      output: 'completed:implementation-alpha',
+      error: null,
+    });
+    expect(adapter.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves structured adapter failure normalization', async () => {
+    const failure = kernelFailure({
+      kind: 'authentication',
+      scope: 'attempt',
+      code: 'provider_authentication_failed',
+      summary: 'provider rejected the selected private binding',
+    });
+    const adapter = createAdapter('implementation-alpha', {
+      execute: vi.fn(async () => ({
+        success: false,
+        output: '',
+        error: failure.summary,
+        failure,
+        exitCode: 1,
+        durationMs: 7,
+      })),
+    });
+    const { registry } = createRegistry({
+      harnessDriverRegistry: createHarnessDriverRegistry(() => adapter),
     });
 
-    expect(result.executorName).toBe('pi-agent');
-    expect(result).toMatchObject({ status: 'success', error: null });
-    expect(backend.create).toHaveBeenCalledWith(expect.objectContaining({
-      attemptId: 'attempt_runtime',
-      imageRef: 'metaclaw/test:latest',
-      resolvedImageId: 'sha256:test',
+    const result = await new ExecutionRuntime(registry).run(createRunInput());
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      executorName: 'implementation-alpha',
+      output: '',
+      error: failure.summary,
+      failure,
+      durationMs: 7,
+    });
+  });
+
+  it('normalizes an adapter exception into a failed execution result', async () => {
+    const adapter = createAdapter('implementation-alpha', {
+      execute: vi.fn(async () => {
+        throw new Error('driver process failed');
+      }),
+    });
+    const { registry } = createRegistry({
+      harnessDriverRegistry: createHarnessDriverRegistry(() => adapter),
+    });
+
+    const result = await new ExecutionRuntime(registry).run(createRunInput());
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      executorName: 'implementation-alpha',
+      output: '',
+      error: 'driver process failed',
+      durationMs: 0,
+    });
+  });
+
+  it('tracks aborts per active task and clears them after each run', async () => {
+    const releases = new Map<string, () => void>();
+    const adapters: ExecutorAdapter[] = [];
+    const harnessDriverRegistry = createHarnessDriverRegistry(input => {
+      const adapter = createAdapter(input.authorizedBinding.agentClassRef, {
+        execute: vi.fn(() => new Promise<ExecutorResult>(resolve => {
+          releases.set(input.authorizedBinding.agentClassRef, () => resolve({
+            success: false,
+            output: '',
+            error: 'cancelled',
+            exitCode: 130,
+            durationMs: 1,
+            interrupted: true,
+          }));
+        })),
+      });
+      adapters.push(adapter);
+      return adapter;
+    });
+    const { registry } = createRegistry({ harnessDriverRegistry });
+    const runtime = new ExecutionRuntime(registry);
+    const firstBinding = createAuthorizedBinding();
+    const secondBinding = createAuthorizedBinding({
+      agentClassRef: 'quality-beta',
+      modelRef: 'model-review',
+    });
+
+    const firstRun = runtime.run(createRunInput(firstBinding, {
+      taskId: 'task_first',
+      executionId: 'exec_first',
     }));
-  });
+    const secondRun = runtime.run(createRunInput(secondBinding, {
+      taskId: 'task_second',
+      executionId: 'exec_second',
+    }));
+    await vi.waitFor(() => expect(adapters).toHaveLength(2));
 
-  it('fails closed when the execution backend reports a failure', async () => {
-    const backend = createExecutionBackend({ wait: vi.fn().mockResolvedValue(1), logs: vi.fn().mockResolvedValue('boom') });
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], backend);
-    const runtime = new ExecutionRuntime(registry);
-    const result = await runtime.run({
-      taskId: 'task_runtime',
-      executionId: 'exec_runtime',
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('codex-cli'),
-        agentClass: createConfiguredAgentClass('codex-cli'),
-        acceptance: [],
-        deliveryKind: 'report',
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
-    });
+    expect(runtime.abortTask('task_first')).toBe(1);
+    expect(adapters[0]!.abort).toHaveBeenCalledWith('attempt_runtime');
+    expect(adapters[1]!.abort).not.toHaveBeenCalled();
 
-    expect(result.status).toBe('failed');
-  });
+    releases.get('implementation-alpha')!();
+    releases.get('quality-beta')!();
+    await Promise.all([firstRun, secondRun]);
 
-  it('resolves a fresh adapter per run and tracks aborts per task token', async () => {
-    const registry = createRegistry([createConfiguredAgentClass('codex-cli')], createExecutionBackend());
-    const runtime = new ExecutionRuntime(registry);
-    const input = (executionId: string, taskId: string) => ({
-      taskId,
-      executionId,
-      spec: {
-        subtask: createSubtask(),
-        workUnit: createWorkUnit('codex-cli'),
-        agentClass: createConfiguredAgentClass('codex-cli'),
-        acceptance: [],
-        deliveryKind: 'report' as const,
-      },
-      executorInput: createExecutorInput(),
-      onProgress: vi.fn(),
-    });
-
-    // Each run resolves its own adapter, then registers and clears its own abort token.
-    const [first, second] = await Promise.all([
-      runtime.run(input('exec_first', 'task_first')),
-      runtime.run(input('exec_second', 'task_second')),
-    ]);
-    expect(first.status).toBe('success');
-    expect(second.status).toBe('success');
-    // Tokens were cleared after completion, so nothing remains to abort.
     expect(runtime.abortTask('task_first')).toBe(0);
     expect(runtime.abortTask('task_second')).toBe(0);
   });

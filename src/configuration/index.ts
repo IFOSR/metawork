@@ -69,3 +69,9 @@ export {
 export {
   LegacyConfigurationReader,
 } from './legacy-configuration-reader.js';
+export {
+  resolveRuntimePrivateConfigurationBinding,
+} from './runtime-private-binding-resolver.js';
+export type {
+  RuntimePrivateBindingResolverInput,
+} from './runtime-private-binding-resolver.js';
