@@ -258,6 +258,11 @@ function setup(rawResponse: string) {
 function authorizeRunningAttempt(
   setupResult: ReturnType<typeof setup>,
   attemptId: string,
+  attempt: {
+    attemptKind?: 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
+    sourceAttemptId?: string | null;
+    recoveryMode?: 'fresh' | 'native_session' | 'recovery_packet';
+  } = {},
 ): void {
   const now = '2026-07-28T00:00:00.000Z';
   setupResult.dispatchItems.insertBatch({
@@ -275,9 +280,9 @@ function authorizeRunningAttempt(
         attemptId,
         authorizedBinding,
         bindingFingerprint,
-        attemptKind: 'primary',
-        sourceAttemptId: null,
-        recoveryMode: 'fresh',
+        attemptKind: attempt.attemptKind ?? 'primary',
+        sourceAttemptId: attempt.sourceAttemptId ?? null,
+        recoveryMode: attempt.recoveryMode ?? 'fresh',
         attemptPayload: null,
         defaultResourceGrant: setupResult.defaultResourceGrant,
       }],
@@ -541,7 +546,11 @@ describe('SubtaskAttemptRunner', () => {
 
   it('lands heartbeat loss with the exact authorized binding identity', () => {
     const setupResult = setup(validResponse());
-    authorizeRunningAttempt(setupResult, 'attempt_heartbeat_lost');
+    authorizeRunningAttempt(setupResult, 'attempt_heartbeat_lost', {
+      attemptKind: 'fallback',
+      sourceAttemptId: 'attempt_primary_failed',
+      recoveryMode: 'recovery_packet',
+    });
     setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'running');
 
     const runner = new SubtaskAttemptRunner({
@@ -597,7 +606,15 @@ describe('SubtaskAttemptRunner', () => {
       authorizedBinding,
       bindingFingerprint,
       terminalKind: 'failed',
+      attemptKind: 'fallback',
+      sourceAttemptId: 'attempt_primary_failed',
     });
+    expect(setupResult.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM kernel_events
+      WHERE attempt_id = 'attempt_heartbeat_lost'
+        AND event_type = 'execution_outcome'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('keeps attempt ownership for reconciliation when terminal sealing fails', async () => {

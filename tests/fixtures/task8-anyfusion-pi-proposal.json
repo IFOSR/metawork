@@ -1,0 +1,71 @@
+{
+  "id": "plan_task8_cross_repository_contract",
+  "schemaVersion": 8,
+  "action": "plan_work_graph",
+  "confidence": 0.98,
+  "reason": "Exercise the pinned Planner-to-Kernel execution contract.",
+  "clarificationQuestion": null,
+  "response": {
+    "directReply": null
+  },
+  "task": {
+    "binding": "new",
+    "taskId": null,
+    "control": "none",
+    "scope": null,
+    "title": "Verify the cross-repository planning contract",
+    "goal": "Admit a Planner v8 proposal with a revision-scoped Work Graph v7 binding.",
+    "includeRecentConversationContext": false,
+    "priority": {
+      "level": "normal",
+      "reason": "Contract acceptance work uses normal scheduling."
+    }
+  },
+  "risk": {
+    "level": "low",
+    "requiresConfirmation": false,
+    "reasons": []
+  },
+  "authorizationResolution": null,
+  "workGraph": {
+    "schemaVersion": 7,
+    "configurationRevision": "revision-test",
+    "reason": "One workspace engineering subtask is sufficient for contract admission.",
+    "subtasks": [
+      {
+        "id": "verify_contract",
+        "title": "Verify contract admission",
+        "goal": "Pass the proposal through MetaWork validation and Kernel authorization.",
+        "dependencies": [],
+        "contextRefs": [
+          {
+            "kind": "current_user_input"
+          }
+        ],
+        "requiredCapabilities": [
+          "workspace-engineering"
+        ],
+        "executorBindings": [
+          {
+            "agentClassRef": "codex-cli",
+            "modelSelection": {
+              "mode": "fixed-by-agent-class"
+            }
+          }
+        ],
+        "deliveryKind": "report",
+        "acceptance": [
+          {
+            "key": "kernel_admission",
+            "description": "The real MetaWork ControlKernel authorizes the proposal.",
+            "requiredEvidence": [
+              "authorize_task_plan decision"
+            ]
+          }
+        ],
+        "riskLevel": "low"
+      }
+    ]
+  },
+  "source": "anyfusion-planner"
+}

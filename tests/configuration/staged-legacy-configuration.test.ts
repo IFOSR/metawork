@@ -36,15 +36,46 @@ describe('buildStagedLegacyConfiguration', () => {
     expect(staged.snapshot.revisionId).toMatch(/^import-[a-f0-9]{24}$/u);
     expect(staged.planner.revisionId).toBe(staged.kernel.revisionId);
     expect(staged.plannerBinding).toMatchObject({
-      providerRef: 'legacy-openai',
-      modelRef: 'legacy-model',
+      providerRef: expect.stringMatching(/^legacy-openai-[a-f0-9]{8}$/u),
+      modelRef: expect.stringMatching(/^legacy-model-[a-f0-9]{8}$/u),
       configurationRevision: staged.snapshot.revisionId,
     });
-    expect(staged.snapshot.config.providers['legacy-openai']).toMatchObject({
+    const provider = staged.snapshot.config.providers[
+      staged.plannerBinding.providerRef
+    ];
+    const model = staged.snapshot.config.models[staged.plannerBinding.modelRef];
+    expect(provider).toMatchObject({
       baseUrl: 'https://api.example.com/v1',
-      apiKeyRef: 'keychain:anyfusion/imported/legacy-openai',
+      apiKeyRef: `keychain:anyfusion/imported/${staged.plannerBinding.providerRef}`,
+    });
+    expect(model).toMatchObject({
+      providerRef: staged.plannerBinding.providerRef,
+      modelId: 'legacy-model',
     });
     expect(JSON.stringify(staged)).not.toContain('sk-production-secret');
+  });
+
+  it('maps upstream model names with punctuation to stable internal references', async () => {
+    const root = await legacyFixture({
+      defaultProvider: 'OpenAI.Main',
+      defaultModel: 'gpt-5.6/terra',
+    });
+    const first = buildStagedLegacyConfiguration({
+      env: { ANYFUSION_CONFIG_HOME: root },
+      testMode: false,
+    });
+    const second = buildStagedLegacyConfiguration({
+      env: { ANYFUSION_CONFIG_HOME: root },
+      testMode: false,
+    });
+
+    expect(first.plannerBinding).toMatchObject({
+      providerRef: expect.stringMatching(/^openai-main-[a-f0-9]{8}$/u),
+      modelRef: expect.stringMatching(/^gpt-5-6-terra-[a-f0-9]{8}$/u),
+    });
+    expect(second.plannerBinding).toEqual(first.plannerBinding);
+    expect(first.snapshot.config.models[first.plannerBinding.modelRef]?.modelId)
+      .toBe('gpt-5.6/terra');
   });
 
   it.each([

@@ -7,6 +7,7 @@ import type { GuidanceProposal, Subtask, Suggestion } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import { generateInteractionId } from '../utils/id.js';
 import type { QueuedExecutionRequest } from '../session/session-helpers.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { SessionPresentationService, GuidanceState } from '../session/session-presentation-service.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -78,6 +79,7 @@ export interface PreparedKernelExecutionInput extends KernelExecutionRuntimeInpu
 
 export interface KernelExecutionRuntimeDeps {
   sessionId: string;
+  getConfigurationRevision(): string;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
   taskRuntimeService: TaskRuntimeService;
@@ -150,6 +152,7 @@ export class KernelExecutionRuntime {
   async cancelTask(taskId: string, reason = 'explicit Task cancellation command'): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
       schemaVersion: 5,
+      configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'task_cancel_requested',
       id: `task_cancel_${generateInteractionId()}`,
       correlationId: taskId,
@@ -168,6 +171,7 @@ export class KernelExecutionRuntime {
   ): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
       schemaVersion: 5,
+      configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'subtasks_cancel_requested',
       id: `subtasks_cancel_${generateInteractionId()}`,
       correlationId: taskId,
@@ -183,6 +187,7 @@ export class KernelExecutionRuntime {
   async acceptPartialResult(taskId: string): Promise<CancellationReceipt> {
     return this.submitTaskControlEvent({
       schemaVersion: 5,
+      configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'partial_result_acceptance_requested',
       id: `partial_accept_${generateInteractionId()}`,
       correlationId: taskId,
@@ -203,6 +208,7 @@ export class KernelExecutionRuntime {
       const activeRevision = this.deps.workGraphRevisionRepo.findActive(request.taskId);
       const event: Extract<KernelEvent, { type: 'executor_recovered' }> = {
         schemaVersion: 5,
+        configurationRevision: request.configurationRevision,
         type: 'executor_recovered',
         id: `executor_recovered_${recoveryCheckId}_${request.id}`,
         correlationId: request.id,
@@ -222,7 +228,10 @@ export class KernelExecutionRuntime {
           activeGenerationId: activeRevision?.generationId ?? null,
           activeGraphRevision: activeRevision?.revision ?? null,
           deferredPlan: request.deferredPlan,
-          executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
+          deferredBindings: request.deferredBindings,
+          executorStatuses: this.deps.kernelExecutorStatusProjector.list(
+            request.configurationRevision,
+          ),
         }),
         store: this.deps.kernelWorkflowStore,
         clock: { now: () => new Date().toISOString() },
@@ -242,6 +251,7 @@ export class KernelExecutionRuntime {
               userPrompt: currentRequest.deferredPlan?.requestText ?? currentTask.goal,
               sessionId: this.deps.sessionId,
               authorizedWorkGraph: decision.action.workGraph,
+              authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
               authorization: {
                 decisionId: decision.id,
                 generationId: decision.action.generationId,
@@ -438,16 +448,20 @@ export class KernelExecutionRuntime {
   private buildDispatchSnapshot(
     taskId: string,
     graphState: 'ready' | 'missing' | 'conflict' = 'ready',
-    stableFacts: DispatchStableFacts = this.buildDispatchStableFacts(),
+    stableFacts?: DispatchStableFacts,
     attempts: KernelAttemptFact[] = [],
     recoverySubtaskId: string | null = null,
-    capacityProbeAgentClasses: Record<string, string[]> = {},
+    capacityProbeBindingFingerprints: Record<string, string[]> = {},
   ): KernelSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const activeRevision = this.deps.workGraphRevisionRepo.findActive(taskId);
     const subtasks = activeRevision
       ? this.deps.subtaskRepo.listActiveByTask(taskId)
       : this.deps.subtaskRepo.listByTask(taskId);
+    const configurationRevision = activeRevision?.configurationRevision
+      ?? this.configurationRevisionForTask(taskId);
+    const revisionStableFacts = stableFacts
+      ?? this.buildDispatchStableFacts(configurationRevision);
     const done = new Set(subtasks.filter(subtask => subtask.status === 'done').map(subtask => subtask.id));
     const handoffs = new Set(this.deps.subtaskHandoffRepo.listByTask(taskId)
       .map(handoff => `${handoff.fromSubtaskId}\u0000${handoff.toSubtaskId}`));
@@ -460,7 +474,8 @@ export class KernelExecutionRuntime {
       .map(receipt => ({
         attemptId: receipt.attemptId,
         subtaskId: receipt.subtaskId,
-        agentClassName: receipt.agentClassName,
+        authorizedBinding: receipt.authorizedBinding,
+        bindingFingerprint: receipt.bindingFingerprint,
         attemptKind: receipt.attemptKind,
         sourceAttemptId: receipt.sourceAttemptId,
         terminalKind: receipt.terminalState === 'completed' ? 'completed' : 'failed',
@@ -511,12 +526,13 @@ export class KernelExecutionRuntime {
         id: subtask.id,
         taskId: subtask.taskId,
         status: subtask.status,
-        preferredAgentClassList: subtask.preferredAgentClassList,
+        executorBindings: subtask.executorBindings,
       })),
       frontier,
       dispatchItems: dispatchItems.map(item => ({
         attemptId: item.attemptId,
         subtaskId: item.subtaskId,
+        bindingFingerprint: item.bindingFingerprint,
         status: item.status,
         order: item.batchOrder,
       })),
@@ -528,10 +544,10 @@ export class KernelExecutionRuntime {
         ).length,
       ),
       resourceConflictSubtaskIds: [],
-      capacityProbeAgentClasses,
-      executorStatuses: stableFacts.executorStatuses,
-      correctionSupportedAgentClasses: stableFacts.correctionSupportedAgentClasses,
-      nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
+      capacityProbeBindingFingerprints,
+      executorStatuses: revisionStableFacts.executorStatuses,
+      correctionSupportedAgentClasses: revisionStableFacts.correctionSupportedAgentClasses,
+      nativeContinuationAgentClasses: revisionStableFacts.nativeContinuationAgentClasses,
       attempts: attemptFacts,
       generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
       graphRevision: activeRevision?.revision ?? 1,
@@ -588,11 +604,11 @@ export class KernelExecutionRuntime {
     };
   }
 
-  private buildDispatchStableFacts(): DispatchStableFacts {
+  private buildDispatchStableFacts(configurationRevision: string): DispatchStableFacts {
     const agentClassNames = this.deps.agentClassService.listAgentClasses()
       .map(agentClass => agentClass.name);
     return {
-      executorStatuses: this.deps.kernelExecutorStatusProjector.list(),
+      executorStatuses: this.deps.kernelExecutorStatusProjector.list(configurationRevision),
       correctionSupportedAgentClasses: agentClassNames
         .filter(name => this.deps.attemptRunner.supportsResponseOnly(name)),
       nativeContinuationAgentClasses: agentClassNames
@@ -614,8 +630,8 @@ export class KernelExecutionRuntime {
     for (const signal of signals) {
       if (!signal.subtaskId) continue;
       const classes = unavailable.get(signal.subtaskId) ?? new Set<string>();
-      if (signal.available) classes.delete(signal.agentClassName);
-      else classes.add(signal.agentClassName);
+      if (signal.available) classes.delete(signal.bindingFingerprint);
+      else classes.add(signal.bindingFingerprint);
       unavailable.set(signal.subtaskId, classes);
     }
     return Object.fromEntries(
@@ -637,21 +653,37 @@ export class KernelExecutionRuntime {
     if (action.type === 'dispatch_batch') {
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
+      const attempts = Object.fromEntries(action.items.map(item => [
+        item.attemptId,
+        {
+          authorizedBinding: item.authorizedBinding,
+          bindingFingerprint: item.bindingFingerprint,
+        },
+      ]));
       this.attemptSupervisor.enqueue(
         decision as KernelDecision & {
           action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
         },
-        generationId,
+        {
+          generationId,
+          configurationRevision: decision.configurationRevision,
+          attempts,
+        },
         input.supervisorContext,
         new Date().toISOString(),
       );
       return null;
     }
     if (action.type === 'probe_capacity') {
-      const available = await this.deps.workUnitClaimService.probe(action.agentClassName);
+      const available = await this.deps.workUnitClaimService.probe(
+        action.authorizedBinding,
+      );
       return this.eventFromDecision(decision, {
         type: 'capacity_signal', taskId: action.taskId, subtaskId: action.subtaskId,
-        agentClassName: action.agentClassName, available, cycleId: input.executionId,
+        authorizedBinding: action.authorizedBinding,
+        bindingFingerprint: action.bindingFingerprint,
+        available,
+        cycleId: input.executionId,
         attemptKind: 'primary',
         attemptPayload: null,
       });
@@ -676,7 +708,11 @@ export class KernelExecutionRuntime {
         wakeKind: 'retry',
         sourceDecisionId: decision.id,
         scheduledFor: action.resumeAt,
-        retry: { agentClassName: action.agentClassName, sourceAttemptId: action.sourceAttemptId },
+        retry: {
+          authorizedBinding: action.authorizedBinding,
+          bindingFingerprint: action.bindingFingerprint,
+          sourceAttemptId: action.sourceAttemptId,
+        },
       });
     }
     if (action.type === 'wait_for_partition') {
@@ -692,6 +728,58 @@ export class KernelExecutionRuntime {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
       const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
       if (!task || !subtask) throw new Error('execution-backend recovery target no longer exists');
+      if (
+        action.lostAttemptId
+        && action.authorizedBinding
+        && action.bindingFingerprint
+        && action.attemptKind
+        && action.recoveryMode
+        && action.defaultResourceGrant
+      ) {
+        const lostDispatch = this.deps.dispatchItemRepo.find(action.lostAttemptId);
+        if (
+          !lostDispatch
+          || lostDispatch.taskId !== action.taskId
+          || lostDispatch.subtaskId !== action.subtaskId
+          || lostDispatch.configurationRevision !== decision.configurationRevision
+          || lostDispatch.bindingFingerprint !== action.bindingFingerprint
+          || lostDispatch.attemptKind !== action.attemptKind
+          || lostDispatch.sourceAttemptId !== (action.sourceAttemptId ?? null)
+          || lostDispatch.recoveryMode !== action.recoveryMode
+          || JSON.stringify(lostDispatch.authorizedBinding)
+            !== JSON.stringify(action.authorizedBinding)
+        ) {
+          throw new Error(`workspace recovery dispatch identity mismatch: ${action.lostAttemptId}`);
+        }
+        this.deps.dispatchItemRepo.markTerminal(
+          action.lostAttemptId,
+          `sandbox lost; replacement authorized by ${decision.id}`,
+          new Date().toISOString(),
+        );
+        const recoveryStatus = action.attemptKind === 'primary'
+          ? 'ready'
+          : 'awaiting_decision';
+        if (subtask.status !== 'done' && subtask.status !== 'cancelled') {
+          this.deps.subtaskRepo.updateStatus(subtask.id, recoveryStatus, {
+            error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+          });
+        }
+        if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+        return this.eventFromDecision(decision, {
+          type: 'dispatch_requested',
+          taskId: action.taskId,
+          subtaskId: action.subtaskId,
+          reason: `recover exact attempt binding for workspace ${action.workspaceId}`,
+          recovery: {
+            authorizedBinding: action.authorizedBinding,
+            bindingFingerprint: action.bindingFingerprint,
+            attemptKind: action.attemptKind,
+            sourceAttemptId: action.sourceAttemptId ?? null,
+            recoveryMode: action.recoveryMode,
+            defaultResourceGrant: action.defaultResourceGrant,
+          },
+        });
+      }
       if (subtask.status !== 'done' && subtask.status !== 'cancelled') {
         this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', {
           error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
@@ -760,6 +848,7 @@ export class KernelExecutionRuntime {
         taskId: action.taskId,
         generationId: action.generationId,
         sourceRevision: action.sourceRevision,
+        configurationRevision: decision.configurationRevision,
         triggerDecisionId: decision.id,
         now: new Date().toISOString(),
       });
@@ -829,6 +918,7 @@ export class KernelExecutionRuntime {
         request.id,
         action.proposalEvent,
         action.explanation,
+        Object.values(action.authorizedBindingsBySubtask).flat(),
         new Date().toISOString(),
       )) {
         return null;
@@ -849,6 +939,7 @@ export class KernelExecutionRuntime {
         userPrompt: input.request.userPrompt,
         sessionId: this.deps.sessionId,
         authorizedWorkGraph: action.workGraph,
+        authorizedBindingsBySubtask: action.authorizedBindingsBySubtask,
         authorization: {
           decisionId: decision.id,
           generationId: action.generationId,
@@ -882,6 +973,7 @@ export class KernelExecutionRuntime {
   ): KernelEvent {
     return {
       schemaVersion: 5,
+      configurationRevision: decision.configurationRevision,
       id: `event_${decision.id}_${String(event.type)}`,
       correlationId: decision.eventId,
       causationId: decision.id,
@@ -904,7 +996,8 @@ export class KernelExecutionRuntime {
       return this.eventFromDispatchItem(item, {
         type: 'execution_outcome',
         terminalKind: existingReceipt.terminalState === 'completed' ? 'completed' : 'failed',
-        agentClassName: existingReceipt.agentClassName,
+        authorizedBinding: existingReceipt.authorizedBinding,
+        bindingFingerprint: existingReceipt.bindingFingerprint,
         attemptKind: existingReceipt.attemptKind,
         sourceAttemptId: existingReceipt.sourceAttemptId,
         failure: existingReceipt.terminalState === 'completed'
@@ -935,9 +1028,13 @@ export class KernelExecutionRuntime {
       item.taskId,
       item.subtaskId,
       item.attemptId,
-      item.agentClassName,
+      item.authorizedBinding.agentClassRef,
     );
-    this.deps.callbacks.appendOutput(...this.deps.presentation.formatExecutorDispatch(item.agentClassName));
+    this.deps.callbacks.appendOutput(
+      ...this.deps.presentation.formatExecutorDispatch(
+        item.authorizedBinding.agentClassRef,
+      ),
+    );
 
     const outcome = item.attemptKind === 'contract_correction'
       && item.attemptPayload?.protocol === 'completion-correction-v2'
@@ -948,7 +1045,8 @@ export class KernelExecutionRuntime {
           executionId: input.executionId,
           taskId: item.taskId,
           subtaskId: item.subtaskId,
-          agentClassName: item.agentClassName,
+          authorizedBinding: item.authorizedBinding,
+          bindingFingerprint: item.bindingFingerprint,
           completionContract: item.attemptPayload.completionContract,
           violations: item.attemptPayload.violations as Parameters<
             SubtaskAttemptRunner['runCorrection']
@@ -959,7 +1057,8 @@ export class KernelExecutionRuntime {
           executionId: input.executionId,
           taskId: item.taskId,
           subtaskId: item.subtaskId,
-          agentClassName: item.agentClassName,
+          authorizedBinding: item.authorizedBinding,
+          bindingFingerprint: item.bindingFingerprint,
           executionMode: input.request.executionMode,
           attemptKind: item.attemptKind,
           attemptPayload: item.attemptPayload,
@@ -973,7 +1072,8 @@ export class KernelExecutionRuntime {
     if (outcome.outcome === 'capacity_unavailable') {
       return this.eventFromDispatchItem(item, {
         type: 'capacity_signal',
-        agentClassName: item.agentClassName,
+        authorizedBinding: item.authorizedBinding,
+        bindingFingerprint: item.bindingFingerprint,
         available: false,
         cycleId: input.executionId,
         attemptKind: item.attemptKind,
@@ -1000,19 +1100,21 @@ export class KernelExecutionRuntime {
         type: 'merge_conflict_observed',
         publicationId: publication.id,
         conflictChainId: publication.conflictChainId,
-        agentClassName: publication.agentClassName,
+        authorizedBinding: item.authorizedBinding,
+        bindingFingerprint: item.bindingFingerprint,
         sourceAttemptId: publication.sourceAttemptId,
         repairAttemptsUsed: publication.repairAttemptsUsed,
         conflictReplansUsed: publication.conflictReplansUsed,
         conflictingPaths: payload.conflictingPaths,
       });
     }
-    this.projectExecutorOutcome(item.agentClassName, outcome);
+    this.projectExecutorOutcome(item.authorizedBinding, outcome);
     if (outcome.outcome === 'contract_failed') {
       return this.eventFromDispatchItem(item, {
         type: 'handoff_contract_failed',
         workUnitId: outcome.workUnitId,
-        agentClassName: outcome.agentClassName,
+        authorizedBinding: item.authorizedBinding,
+        bindingFingerprint: item.bindingFingerprint,
         contract: outcome.completionContract,
         violations: outcome.violations,
         receiptCount: outcome.receiptCount,
@@ -1022,7 +1124,8 @@ export class KernelExecutionRuntime {
     return this.eventFromDispatchItem(item, {
       type: 'execution_outcome',
       terminalKind: outcome.outcome === 'completed' ? 'completed' : 'failed',
-      agentClassName: item.agentClassName,
+      authorizedBinding: item.authorizedBinding,
+      bindingFingerprint: item.bindingFingerprint,
       attemptKind: item.attemptKind,
       sourceAttemptId: item.sourceAttemptId,
       failure: outcome.outcome === 'completed'
@@ -1041,6 +1144,7 @@ export class KernelExecutionRuntime {
   ): KernelEvent {
     return {
       schemaVersion: 5,
+      configurationRevision: item.configurationRevision,
       id: `event_${item.attemptId}_${String(event.type)}`,
       correlationId: item.decisionId,
       causationId: item.decisionId,
@@ -1058,7 +1162,8 @@ export class KernelExecutionRuntime {
     return this.eventFromDispatchItem(item, {
       type: 'execution_outcome',
       terminalKind: 'failed',
-      agentClassName: item.agentClassName,
+      authorizedBinding: item.authorizedBinding,
+      bindingFingerprint: item.bindingFingerprint,
       attemptKind: item.attemptKind,
       sourceAttemptId: item.sourceAttemptId,
       failure: {
@@ -1079,6 +1184,7 @@ export class KernelExecutionRuntime {
       userPrompt: input.request.userPrompt,
       sessionId: this.deps.sessionId,
       authorizedWorkGraph: input.request.authorizedWorkGraph ?? null,
+      authorizedBindingsBySubtask: input.request.authorizedBindingsBySubtask ?? null,
       authorization: input.request.workGraphAuthorization ?? null,
     });
     if (graph.outcome === 'not_executable' && input.request.authorizedWorkGraph) {
@@ -1112,9 +1218,11 @@ export class KernelExecutionRuntime {
     const executionId = `exec_${generateInteractionId()}`;
     const progressTracker = this.deps.executionProgressService.createTracker({ taskId, executionId });
     const attemptFacts: KernelAttemptFact[] = [];
-    const stableFacts = this.buildDispatchStableFacts();
+    const configurationRevision = this.configurationRevisionForTask(taskId);
+    const stableFacts = this.buildDispatchStableFacts(configurationRevision);
     const initialEvent: KernelEvent = {
       schemaVersion: 5,
+      configurationRevision,
       type: 'dispatch_requested',
       id: `dispatch_event_${executionId}`,
       correlationId: request.kernelDecisionId ?? executionId,
@@ -1140,6 +1248,12 @@ export class KernelExecutionRuntime {
           workspaceId: event.workspaceId,
           checkpointId: event.checkpointId,
           activeLeaseIds: [],
+          defaultResourceGrant: defaultResourceGrant(
+            task.id,
+            this.deps.workGraphRevisionRepo.findActive(task.id)?.generationId
+              ?? `generation_${task.id}_1`,
+            event.subtaskId ?? 'pending',
+          ),
         }
       : event.type === 'timer_tick' ? {
           schemaVersion: 5,
@@ -1148,7 +1262,7 @@ export class KernelExecutionRuntime {
           wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
           capacityBlockedAt: null,
           recheckAfterMs: 0,
-            capacityAgentClasses: [],
+          capacityBindings: [],
             nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
           executorStatuses: stableFacts.executorStatuses,
           defaultResourceGrant: defaultResourceGrant(task.id, `generation_${task.id}_1`, event.subtaskId ?? 'pending'),
@@ -1249,6 +1363,7 @@ export class KernelExecutionRuntime {
         );
         await input.workflow.submit({
           schemaVersion: 5,
+          configurationRevision: activeRevision.configurationRevision,
           type: 'dispatch_requested',
           id: `publication_dispatch_${input.executionId}_${lastIntegrated?.publicationId
             ?? activeRevision.revision}`,
@@ -1287,10 +1402,12 @@ export class KernelExecutionRuntime {
       if (!workUnit.claimedTaskId || !workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
       const task = this.deps.taskRuntimeService.findTask(workUnit.claimedTaskId);
       const subtask = this.deps.subtaskRepo.findById(workUnit.claimedSubtaskId);
+      const dispatchItem = this.deps.dispatchItemRepo.find(workUnit.claimedAttemptId);
       if (
         !task
         || task.status === 'cancelled'
         || !subtask
+        || !dispatchItem
         || subtask.status === 'done'
         || subtask.status === 'cancelled'
       ) continue;
@@ -1300,37 +1417,10 @@ export class KernelExecutionRuntime {
         taskId: task.id,
         subtaskId: subtask.id,
         workUnitId: workUnit.id,
-        agentClassName: workUnit.agentClassName,
+        authorizedBinding: dispatchItem.authorizedBinding,
+        bindingFingerprint: dispatchItem.bindingFingerprint,
       });
-      const occurredAt = new Date().toISOString();
-      const event: Extract<KernelEvent, { type: 'execution_outcome' }> = {
-        schemaVersion: 5,
-        type: 'execution_outcome',
-        id: `heartbeat_event_${workUnit.claimedAttemptId}`,
-        correlationId: task.id,
-        causationId: workUnit.claimedAttemptId,
-        occurredAt,
-        sessionId: this.deps.sessionId,
-        taskId: task.id,
-        subtaskId: subtask.id,
-        attemptId: workUnit.claimedAttemptId,
-        terminalKind: 'failed',
-        agentClassName: workUnit.agentClassName,
-        attemptKind: 'primary',
-        sourceAttemptId: null,
-        failure: { kind: 'heartbeat_lost', scope: 'agent_class', code: 'heartbeat_lost', summary: 'WorkUnit heartbeat lost' },
-      };
-      attemptFacts.unshift({
-        attemptId: workUnit.claimedAttemptId,
-        subtaskId: subtask.id,
-        agentClassName: workUnit.agentClassName,
-        attemptKind: 'primary',
-        sourceAttemptId: null,
-        terminalKind: 'failed',
-        failure: event.failure,
-        completedAt: occurredAt,
-      });
-      await workflow.submit(event);
+      await workflow.recover();
       this.recordTaskEvent(task.id, subtask.id, 'work_unit_heartbeat_lost', workUnit.id, {
         workUnitId: workUnit.id,
         attemptId: workUnit.claimedAttemptId,
@@ -1360,7 +1450,8 @@ export class KernelExecutionRuntime {
       schedulingReason: 'Kernel capacity timer recheck',
     };
     const progressTracker = this.deps.executionProgressService.createTracker({ taskId: task.id, executionId });
-    const stableFacts = this.buildDispatchStableFacts();
+    const configurationRevision = this.configurationRevisionForTask(task.id);
+    const stableFacts = this.buildDispatchStableFacts(configurationRevision);
     let applied = false;
     const finishExecution = async (lines: string[]) => {
       this.deps.callbacks.clearRunningExecutorName(task.id);
@@ -1369,6 +1460,7 @@ export class KernelExecutionRuntime {
     };
     const initialEvent: KernelEvent = {
       schemaVersion: 5,
+      configurationRevision,
       type: 'timer_tick',
       id: `timer_event_${input.blockedDecisionId}_${input.occurredAt}`,
       correlationId: input.blockedDecisionId,
@@ -1406,6 +1498,12 @@ export class KernelExecutionRuntime {
             workspaceId: event.workspaceId,
             checkpointId: event.checkpointId,
             activeLeaseIds: [],
+            defaultResourceGrant: defaultResourceGrant(
+              task.id,
+              this.deps.workGraphRevisionRepo.findActive(task.id)?.generationId
+                ?? `generation_${task.id}_1`,
+              event.subtaskId ?? 'pending',
+            ),
           }
         : event.type === 'timer_tick' ? {
             schemaVersion: 5,
@@ -1414,7 +1512,7 @@ export class KernelExecutionRuntime {
             wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,
-            capacityAgentClasses: subtask.preferredAgentClassList,
+            capacityBindings: subtask.executorBindings,
             nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
             executorStatuses: stableFacts.executorStatuses,
             defaultResourceGrant: defaultResourceGrant(task.id, subtask.generationId, subtask.id),
@@ -1559,7 +1657,9 @@ export class KernelExecutionRuntime {
         sessionId: this.deps.sessionId,
         userInput: input.request.userPrompt,
         systemOutput: cleanAggregate,
-        executorUsed: input.subtasks.length === 1 ? input.subtasks[0]!.preferredAgentClassList[0] ?? 'executor' : 'work-graph',
+        executorUsed: input.subtasks.length === 1
+          ? input.subtasks[0]!.executorBindings[0]?.agentClassRef ?? 'executor'
+          : 'work-graph',
       });
       if (['running', 'blocked'].includes(
         this.deps.taskRuntimeService.findTask(input.taskId)?.status ?? '',
@@ -1603,11 +1703,16 @@ export class KernelExecutionRuntime {
     if (nextProposal) this.deps.callbacks.queueProposal('completion suggestion', nextProposal);
   }
 
-  private projectExecutorOutcome(agentClassName: string, outcome: SubtaskAttemptOutcome): void {
+  private projectExecutorOutcome(
+    authorizedBinding: AuthorizedExecutorBinding,
+    outcome: SubtaskAttemptOutcome,
+  ): void {
     if (outcome.outcome !== 'completed' && outcome.outcome !== 'executor_failed') return;
     const succeeded = outcome.outcome === 'completed';
     this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
-      agentClassName, attemptId: outcome.attemptId,
+      agentClassName: authorizedBinding.agentClassRef,
+      configurationRevision: authorizedBinding.configurationRevision,
+      attemptId: outcome.attemptId,
       outcome: succeeded ? 'succeeded' : 'failed',
       failure: succeeded ? null : outcome.outcome === 'executor_failed' ? outcome.failure : null,
     });
@@ -1616,6 +1721,7 @@ export class KernelExecutionRuntime {
   private projectPersistedReceipt(receipt: import('../storage/executor-attempt-receipt-repo.js').ExecutorAttemptReceipt): void {
     this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
       agentClassName: receipt.agentClassName,
+      configurationRevision: receipt.configurationRevision,
       attemptId: receipt.attemptId,
       outcome: receipt.terminalState === 'completed' ? 'succeeded' : 'failed',
       failure: receipt.terminalState === 'completed' ? null : receipt.failure,
@@ -1631,5 +1737,10 @@ export class KernelExecutionRuntime {
     payload: Record<string, unknown>,
   ): void {
     this.taskEvents.record(taskId, subtaskId, eventType, message, payload);
+  }
+
+  private configurationRevisionForTask(taskId: string): string {
+    return this.deps.workGraphRevisionRepo.findActive(taskId)?.configurationRevision
+      ?? this.deps.getConfigurationRevision();
   }
 }

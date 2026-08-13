@@ -74,8 +74,26 @@ import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-valid
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
 import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
+import type {
+  KernelConfigurationView,
+  PlannerConfigurationView,
+} from '../configuration/index.js';
+import {
+  buildStagedLegacyConfiguration,
+  type StagedLegacyConfiguration,
+} from '../configuration/staged-legacy-configuration.js';
+import type {
+  AuthorizedExecutorBinding,
+  RevisionedAgentBinding,
+} from '../core/authorized-executor-binding.js';
 import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
-import { ControlKernel, type KernelDecision, type KernelEvent, type KernelSnapshot } from '../kernel/control-kernel.js';
+import {
+  ControlKernel,
+  type KernelAttemptKind,
+  type KernelDecision,
+  type KernelEvent,
+  type KernelSnapshot,
+} from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -99,6 +117,7 @@ import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -118,6 +137,7 @@ export interface MetaclawSessionDeps {
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
+  stagedConfiguration?: StagedLegacyConfiguration;
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -129,11 +149,15 @@ function startupOrphanEvent(input: {
   task: Task;
   subtaskId: string;
   attemptId: string;
-  agentClassName: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
+  attemptKind: KernelAttemptKind;
+  sourceAttemptId: string | null;
   occurredAt: string;
 }): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return {
     schemaVersion: 5,
+    configurationRevision: input.authorizedBinding.configurationRevision,
     type: 'execution_outcome',
     id: `startup_orphan_${input.attemptId}`,
     correlationId: input.task.id,
@@ -144,9 +168,10 @@ function startupOrphanEvent(input: {
     subtaskId: input.subtaskId,
     attemptId: input.attemptId,
     terminalKind: 'failed',
-    agentClassName: input.agentClassName,
-    attemptKind: 'primary',
-    sourceAttemptId: null,
+    authorizedBinding: input.authorizedBinding,
+    bindingFingerprint: input.bindingFingerprint,
+    attemptKind: input.attemptKind,
+    sourceAttemptId: input.sourceAttemptId,
     failure: {
       kind: 'heartbeat_lost',
       scope: 'agent_class',
@@ -332,10 +357,26 @@ export class MetaclawSession {
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
+  private readonly plannerConfiguration: PlannerConfigurationView;
+  private readonly kernelConfiguration: KernelConfigurationView;
+  private readonly plannerBinding: RevisionedAgentBinding;
+  private readonly plannerBindingFingerprint: string;
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
+    const stagedConfiguration = deps.stagedConfiguration
+      ?? buildStagedLegacyConfiguration();
+    new ConfigurationRevisionRepo(deps.db).ensure({
+      revisionId: stagedConfiguration.snapshot.revisionId,
+      contentHash: stagedConfiguration.snapshot.contentHash,
+      sourceKind: 'schema-30-import',
+      importedAt: new Date().toISOString(),
+    });
+    this.plannerConfiguration = stagedConfiguration.planner;
+    this.kernelConfiguration = stagedConfiguration.kernel;
+    this.plannerBinding = stagedConfiguration.plannerBinding;
+    this.plannerBindingFingerprint = stagedConfiguration.plannerBindingFingerprint;
     this.notifier = deps.notifier ?? new NoopNotificationService();
     this.sessionStateRepo = new SessionStateRepo(deps.db);
     this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
@@ -360,7 +401,9 @@ export class MetaclawSession {
       controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
-    this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime);
+    this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime, {
+      getConfigurationRevision: () => this.kernelConfiguration.revisionId,
+    });
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
@@ -386,11 +429,14 @@ export class MetaclawSession {
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
       60_000,
-      async (name, mode) => {
-        const result = await this.executionRuntime.probeExecutor(name);
+      async (binding, mode) => {
+        const result = await this.executionRuntime.probeExecutor(
+          binding.agentClassRef,
+        );
         if (mode === 'claim' && !result.available && result.failure) {
           kernelExecutorStatusProjector.recordExecutionOutcome({
-            agentClassName: name,
+            agentClassName: binding.agentClassRef,
+            configurationRevision: binding.configurationRevision,
             attemptId: `claim_probe_${generateInteractionId()}`,
             outcome: 'failed',
             failure: result.failure,
@@ -402,8 +448,13 @@ export class MetaclawSession {
     this.executorRecoveryRefreshService = new ExecutorRecoveryRefreshService({
       statusRepo: this.kernelExecutorStatusRepo,
       statusProjector: kernelExecutorStatusProjector,
-      probe: (name, previousFailure) => this.executionRuntime.probeExecutor(name, previousFailure),
-      onRecovered: (name, checkId) => this.kernelExecutionRuntime.executorRecovered(name, checkId),
+      getConfigurationRevision: () => this.kernelConfiguration.revisionId,
+      probe: (name, _configurationRevision, previousFailure) => (
+        this.executionRuntime.probeExecutor(name, previousFailure)
+      ),
+      onRecovered: (name, _configurationRevision, checkId) => (
+        this.kernelExecutionRuntime.executorRecovered(name, checkId)
+      ),
     });
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
@@ -413,12 +464,22 @@ export class MetaclawSession {
       sessionId: deps.sessionId,
       requestSource: 'session',
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
+      getPlannerConfiguration: () => this.plannerConfiguration,
     });
     this.plannerSupervisor = deps.plannerSupervisor
       ?? (deps.planningAgent ? null : getDefaultPlannerProcessSupervisor());
     this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
       runner: this.plannerSupervisor!,
       audit: new PlannerRunRepo(deps.db),
+      resolvePlannerAuditBinding: async configurationRevision => {
+        if (configurationRevision !== this.plannerBinding.configurationRevision) {
+          throw new Error(`Planner audit binding revision is unavailable: ${configurationRevision}`);
+        }
+        return {
+          plannerBinding: this.plannerBinding,
+          plannerBindingFingerprint: this.plannerBindingFingerprint,
+        };
+      },
     });
     this.controlKernel = new ControlKernel();
     this.kernelDecisionRepo = new KernelDecisionRepo(deps.db);
@@ -475,6 +536,7 @@ export class MetaclawSession {
     });
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
+      getConfigurationRevision: () => this.kernelConfiguration.revisionId,
       orchestration: deps.orchestration,
       notifier: this.notifier,
       taskRuntimeService: this.taskRuntimeService,
@@ -653,10 +715,14 @@ export class MetaclawSession {
           id: subtask.id,
           title: subtask.title,
           status: subtask.status,
-          preferredAgentClassList: [...subtask.preferredAgentClassList],
+          preferredAgentClassList: subtask.executorBindings.map(
+            binding => binding.agentClassRef,
+          ),
         })),
       })),
-      executorStatuses: this.kernelExecutorStatusRepo.list(),
+      executorStatuses: this.kernelExecutorStatusRepo.list(
+        this.kernelConfiguration.revisionId,
+      ),
     };
   }
 
@@ -860,7 +926,7 @@ export class MetaclawSession {
     const context = this.buildPlanningContext(normalizedInput);
     const validation = validatePlanningAgentPlan(
       normalizedPlan,
-      context.executorCatalog,
+      context.configuration,
       context.pendingAuthorizationRequest
         ? {
             requestId: context.pendingAuthorizationRequest.requestId,
@@ -910,7 +976,7 @@ export class MetaclawSession {
         ? validation.errors
         : !parsedPlan.success
           ? parsedPlan.error.issues.map(issue => issue.message)
-          : ['PlanningAgentPlan v7 validation failed'];
+        : ['PlanningAgentPlan v8 validation failed'];
       const rejected: PlannerProposalResult & { status: 'rejected' } = {
         status: 'rejected',
         turnId: normalizedTurnId,
@@ -934,7 +1000,7 @@ export class MetaclawSession {
         submissionId: submission.submissionId,
         planId: plan.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v7 proposal validated by MetaClaw.',
+        displayText: 'PlanningAgentPlan v8 proposal validated by MetaClaw.',
         taskId: plan.task.taskId,
         kernel: null,
       };
@@ -1358,6 +1424,7 @@ export class MetaclawSession {
   ): Promise<{ decision: KernelDecision | null }> {
     const event: KernelEvent = {
       schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
       type: 'plan_proposed',
       id: eventId,
       correlationId: plan.id,
@@ -1371,7 +1438,11 @@ export class MetaclawSession {
       proposalSource: 'initial',
       targetGraphRevision: 1,
     };
-    const snapshot = this.buildPlanAdmissionSnapshot(event, context.executorCatalog, userInput);
+    const snapshot = this.buildPlanAdmissionSnapshot(
+      event,
+      context.configuration,
+      userInput,
+    );
     const workflow = new DurableKernelWorkflow({
       kernel: this.controlKernel,
       buildSnapshot: () => snapshot,
@@ -1524,6 +1595,7 @@ export class MetaclawSession {
     const plan = await this.runPlanningAgent(context);
     return {
       schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
       type: 'plan_proposed',
       id: `replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -1565,6 +1637,7 @@ export class MetaclawSession {
     const plan = await this.runPlanningAgent(context);
     return {
       schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
       type: 'plan_proposed',
       id: `merge_replan_event_${decision.id}`,
       correlationId: decision.eventId,
@@ -1583,16 +1656,27 @@ export class MetaclawSession {
 
   private buildPlanAdmissionSnapshot(
     event: Extract<KernelEvent, { type: 'plan_proposed' }>,
-    executorCatalog = this.planningContextBuilder.getExecutorCatalog(),
+    plannerConfiguration = this.planningContextBuilder.getPlannerConfiguration(),
     userInput = event.proposal.task.goal ?? '',
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
+    if (
+      event.configurationRevision !== plannerConfiguration.revisionId
+      || event.configurationRevision !== this.kernelConfiguration.revisionId
+    ) {
+      throw new Error(
+        `plan admission configuration revision mismatch: ${event.configurationRevision}`,
+      );
+    }
     return {
       schemaVersion: 5,
       type: 'plan_admission',
       tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
-      executorCatalog,
-      executorStatuses: this.kernelExecutorStatusRepo.list(),
+      plannerConfiguration,
+      kernelConfiguration: this.kernelConfiguration,
+      executorStatuses: this.kernelExecutorStatusRepo.list(
+        event.configurationRevision,
+      ),
       v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
       pendingAuthorizationRequest: (() => {
@@ -1811,6 +1895,13 @@ export class MetaclawSession {
     const record = this.permissionRepository.findRequest(input.requestId);
     if (!record) throw new Error(`permission request not found: ${input.requestId}`);
     const attemptExecution = this.attemptExecutionRepository.find(record.request.attemptId);
+    const dispatchItem = new KernelDispatchItemRepo(this.deps.db)
+      .find(record.request.attemptId);
+    if (!dispatchItem) {
+      throw new Error(
+        `permission request has no authorized dispatch identity: ${record.request.attemptId}`,
+      );
+    }
     const workspaceId = attemptExecution?.workspaceId
       ?? `workspace:${record.request.taskId}:${record.request.generationId}:${record.request.subtaskId}`;
     const task = this.taskRuntimeService.findTask(record.request.taskId);
@@ -1826,6 +1917,7 @@ export class MetaclawSession {
         subtaskId: record.request.subtaskId,
         attemptId: record.request.attemptId,
         agentClassName: record.request.agentClassName,
+        configurationRevision: dispatchItem.configurationRevision,
         permissionProfileId: record.request.permissionProfileId,
         containerId: attemptExecution?.containerId ?? '',
         workspaceId,
@@ -1880,8 +1972,24 @@ export class MetaclawSession {
     recoveryItemId: string;
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
+    const application = this.kernelWorkflowRepo.findRecoveryItem(
+      input.recoveryItemId,
+    );
+    const effect = this.effectOutboxRepo.find(input.recoveryItemId);
+    const configurationRevision = application?.decision.configurationRevision
+      ?? (effect
+        ? this.kernelDecisionRepo.listByTask(input.taskId)
+            .find(record => record.id === effect.decisionId)
+            ?.configurationRevision
+        : null);
+    if (!configurationRevision) {
+      throw new Error(
+        `recovery item has no persisted configuration revision: ${input.recoveryItemId}`,
+      );
+    }
     const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
       schemaVersion: 5,
+      configurationRevision,
       type: 'recovery_resolution_requested',
       id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
       correlationId: input.taskId,
@@ -2103,6 +2211,11 @@ export class MetaclawSession {
           if (backendLossAttemptIds.has(record.attemptId)) continue;
           backendLossAttemptIds.add(record.attemptId);
           const dispatchItem = dispatchItems.find(record.attemptId);
+          if (!dispatchItem) {
+            throw new Error(
+              `startup recovery found attempt without authorized dispatch: ${record.attemptId}`,
+            );
+          }
           if (dispatchItem && ['cancelling', 'cancelled'].includes(dispatchItem.status)) {
             continue;
           }
@@ -2113,6 +2226,7 @@ export class MetaclawSession {
           );
           this.kernelWorkflowRepo.enqueue({
             schemaVersion: 5,
+            configurationRevision: dispatchItem.configurationRevision,
             type: 'sandbox_lost',
             id: `sandbox_lost_${record.attemptId}`,
             correlationId: record.taskId,
@@ -2125,6 +2239,11 @@ export class MetaclawSession {
             containerId: record.containerId,
             workspaceId: record.workspaceId,
             checkpointId: checkpointIds.get(record.attemptId) ?? null,
+            authorizedBinding: dispatchItem.authorizedBinding,
+            bindingFingerprint: dispatchItem.bindingFingerprint,
+            attemptKind: dispatchItem.attemptKind,
+            sourceAttemptId: dispatchItem.sourceAttemptId,
+            recoveryMode: dispatchItem.recoveryMode,
           });
         }
       }
@@ -2194,14 +2313,23 @@ export class MetaclawSession {
       const taskClaims = claimedOrphans.filter(workUnit => workUnit.claimedTaskId === task.id);
       for (const workUnit of taskClaims) {
         if (!workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
-        this.attemptRunner.landHeartbeatLost({
-          attemptId: workUnit.claimedAttemptId,
-          executionId: `startup_${workUnit.claimedAttemptId}`,
-          taskId: task.id,
-          subtaskId: workUnit.claimedSubtaskId,
-          workUnitId: workUnit.id,
-          agentClassName: workUnit.agentClassName,
-        });
+        const dispatchItem = dispatchItems.find(workUnit.claimedAttemptId);
+        if (!dispatchItem) {
+          throw new Error(
+            `startup orphan has no authorized dispatch identity: ${workUnit.claimedAttemptId}`,
+          );
+        }
+        if (!backendLossAttemptIds.has(workUnit.claimedAttemptId)) {
+          this.attemptRunner.landHeartbeatLost({
+            attemptId: workUnit.claimedAttemptId,
+            executionId: `startup_${workUnit.claimedAttemptId}`,
+            taskId: task.id,
+            subtaskId: workUnit.claimedSubtaskId,
+            workUnitId: workUnit.id,
+            authorizedBinding: dispatchItem.authorizedBinding,
+            bindingFingerprint: dispatchItem.bindingFingerprint,
+          });
+        }
         reconciledLeases.releaseReconciledAttempt(workUnit.claimedAttemptId, now);
         this.workUnitClaimService.releaseReconciledClaim({
           workUnitId: workUnit.id,
@@ -2209,26 +2337,29 @@ export class MetaclawSession {
           subtaskId: workUnit.claimedSubtaskId,
           attemptId: workUnit.claimedAttemptId,
         });
-        if (!backendLossAttemptIds.has(workUnit.claimedAttemptId)) {
-          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
-            sessionId: this.deps.sessionId,
-            task,
-            subtaskId: workUnit.claimedSubtaskId,
-            attemptId: workUnit.claimedAttemptId,
-            agentClassName: workUnit.agentClassName,
-            occurredAt: now,
-          }));
-        }
       }
       if (taskClaims.length === 0 && !this.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
         const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
         if (orphan) {
+          const dispatchItem = dispatchItems.listByTask(task.id)
+            .find(item => (
+              item.subtaskId === orphan.id
+              && ['launching', 'running', 'uncertain'].includes(item.status)
+            ));
+          if (!dispatchItem) {
+            throw new Error(
+              `startup task has active Subtask without authorized dispatch: ${orphan.id}`,
+            );
+          }
           this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
             sessionId: this.deps.sessionId,
             task,
             subtaskId: orphan.id,
-            attemptId: `startup_missing_${task.id}_${orphan.id}`,
-            agentClassName: orphan.preferredAgentClassList[0] ?? 'unknown',
+            attemptId: dispatchItem.attemptId,
+            authorizedBinding: dispatchItem.authorizedBinding,
+            bindingFingerprint: dispatchItem.bindingFingerprint,
+            attemptKind: dispatchItem.attemptKind,
+            sourceAttemptId: dispatchItem.sourceAttemptId,
             occurredAt: now,
           }));
         }

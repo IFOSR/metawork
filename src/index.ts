@@ -27,6 +27,12 @@ import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js
 import { MetaclawSession } from './session/metaclaw-session.js';
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
+import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from './core/authorized-executor-binding.js';
+import { createSchema30MigrationContext } from './storage/migrations.js';
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
@@ -95,8 +101,59 @@ async function main() {
     }
   }
 
-  // 3. 初始化数据库
-  const db = createDatabase(resolve(metaclawDir, 'metaclaw.db'));
+  // 3. Seal the one staged configuration before storage migration and Session composition.
+  const stagedConfiguration = buildStagedLegacyConfiguration();
+  const importedAt = new Date().toISOString();
+  const plannerMigrationBinding = {
+    ...stagedConfiguration.plannerBinding,
+    bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+  };
+  const legacyAgentClassBindings = Object.fromEntries(
+    Object.entries(stagedConfiguration.snapshot.config.agentClasses)
+      .filter(([, agentClass]) => agentClass.kind === 'executor')
+      .map(([agentClassRef, agentClass]) => {
+        if (agentClass.modelPolicy.mode !== 'fixed' || !agentClass.permissionProfileRef) {
+          throw new Error(
+            `staged legacy AgentClass requires fixed model and permission profile: ${agentClassRef}`,
+          );
+        }
+        const model = stagedConfiguration.snapshot.config.models[
+          agentClass.modelPolicy.modelRef
+        ];
+        if (!model) {
+          throw new Error(
+            `staged legacy AgentClass references missing Model: ${agentClassRef}`,
+          );
+        }
+        const binding: AuthorizedExecutorBinding = {
+          agentClassRef,
+          harnessRef: agentClass.harnessRef,
+          providerRef: model.providerRef,
+          modelRef: agentClass.modelPolicy.modelRef,
+          permissionProfileRef: agentClass.permissionProfileRef,
+          configurationRevision: stagedConfiguration.snapshot.revisionId,
+        };
+        return [agentClassRef, {
+          agentClassRef: binding.agentClassRef,
+          harnessRef: binding.harnessRef,
+          providerRef: binding.providerRef,
+          modelRef: binding.modelRef,
+          permissionProfileRef: binding.permissionProfileRef,
+          bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+        }];
+      }),
+  );
+  const migrationContext = createSchema30MigrationContext({
+    revisionId: stagedConfiguration.snapshot.revisionId,
+    contentHash: stagedConfiguration.snapshot.contentHash,
+    importedAt,
+    plannerBinding: plannerMigrationBinding,
+    legacyAgentClassBindings,
+  });
+  const db = createDatabase(
+    resolve(metaclawDir, 'metaclaw.db'),
+    migrationContext,
+  );
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
@@ -138,6 +195,7 @@ async function main() {
         notifier,
         plannerHost,
         plannerSupervisor,
+        stagedConfiguration,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
@@ -165,6 +223,7 @@ async function main() {
       notifier,
       plannerHost,
       plannerSupervisor,
+      stagedConfiguration,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
@@ -179,6 +238,7 @@ async function main() {
       workspaceRoot: process.cwd(),
       plannerHost,
       plannerSupervisor,
+      stagedConfiguration,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -216,6 +276,7 @@ async function main() {
     workspaceRoot: process.cwd(),
     plannerHost,
     plannerSupervisor,
+    stagedConfiguration,
   });
 
   await gatewayServer.start();
@@ -234,6 +295,7 @@ async function main() {
       notifier,
       plannerHost,
       plannerSupervisor,
+      stagedConfiguration,
     });
     gatewaySession = session;
     session.initialize({ showDashboard: false });
@@ -301,6 +363,7 @@ async function main() {
     notifier,
     plannerHost,
     plannerSupervisor,
+    stagedConfiguration,
   });
 }
 

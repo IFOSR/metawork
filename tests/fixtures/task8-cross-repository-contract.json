@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "metawork": {
+    "contractCommit": "6c329b854fcd201faffe73c6c762a119f85dd392"
+  },
+  "anyFusionPi": {
+    "commit": "6fe415ce51669b27cb007798f2e1bc208b4024dd"
+  },
+  "hostProtocolVersion": 2,
+  "planningAgentPlanVersion": 8,
+  "workGraphVersion": 7,
+  "planningAgentPlanSchemaSha256": "d157e5aa5f6847f0a583a36a63b468eb63f81e6a9698f9fd53d3f9ad9b09226f"
+}

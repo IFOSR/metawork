@@ -19,6 +19,7 @@ import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-r
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
+import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -88,7 +89,7 @@ describe('session startup running-task reconciliation', () => {
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
     expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
-      .toEqual({ action: 'block_work' });
+      .toBeUndefined();
   });
 
   it('enters recovery-blocked mode without releasing claims when Docker reconciliation fails', async () => {
@@ -197,8 +198,13 @@ describe('session startup running-task reconciliation', () => {
       leaseToken: 'lease-terminal-seal-blocked',
       now: '2099-01-01T00:00:00.000Z',
     });
+    const authorizedBinding = subtask.executorBindings[0]!;
+    const bindingFingerprint = authorizedExecutorBindingFingerprint(
+      authorizedBinding,
+    );
     new KernelDispatchItemRepo(db).insertBatch({
       schemaVersion: 5,
+      configurationRevision: authorizedBinding.configurationRevision,
       id: 'decision-terminal-seal-blocked',
       eventId: 'event-dispatch-terminal-seal-blocked',
       reason: 'persisted authorized attempt',
@@ -209,7 +215,8 @@ describe('session startup running-task reconciliation', () => {
           order: 0,
           subtaskId: subtask.id,
           attemptId,
-          agentClassName: 'codex-cli',
+          authorizedBinding,
+          bindingFingerprint,
           attemptKind: 'primary',
           sourceAttemptId: null,
           recoveryMode: 'fresh',
@@ -217,7 +224,13 @@ describe('session startup running-task reconciliation', () => {
           defaultResourceGrant: resourceGrant,
         }],
       },
-    }, subtask.generationId, '2026-07-28T00:00:00.000Z');
+    }, {
+      generationId: subtask.generationId,
+      configurationRevision: authorizedBinding.configurationRevision,
+      attempts: {
+        [attemptId]: { authorizedBinding, bindingFingerprint },
+      },
+    }, '2026-07-28T00:00:00.000Z');
     const dispatch = new KernelDispatchItemRepo(db);
     dispatch.claimPending(attemptId, '2026-07-28T00:00:00.000Z');
     dispatch.markRunning(attemptId, null, '2026-07-28T00:00:00.000Z');
@@ -256,5 +269,110 @@ describe('session startup running-task reconciliation', () => {
     expect(dispatch.find(attemptId)?.status).toBe('running');
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
     expect(session.getSnapshot().output.join('\n')).toContain('恢复阻塞');
+  });
+
+  it('lands one startup heartbeat outcome with the persisted fallback provenance', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-startup-fallback');
+    const runningTask = taskEngine.create({
+      title: 'Startup fallback recovery',
+      goal: 'Preserve the exact fallback attempt identity',
+    });
+    seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
+    taskEngine.transition(runningTask.id, 'ready');
+    taskEngine.transition(runningTask.id, 'running');
+    const subtaskRepo = new SubtaskRepo(db);
+    const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
+    subtaskRepo.updateStatus(subtask.id, 'running');
+    new AgentClassRepo(db).upsert(
+      getBuiltinExecutorAgentClasses().find(item => item.name === 'codex-cli')!,
+    );
+    const attemptId = 'attempt-startup-fallback';
+    const sourceAttemptId = 'attempt-startup-primary';
+    const workUnitId = 'executor-startup-fallback';
+    const workUnits = new WorkUnitRepo(db);
+    workUnits.upsert({
+      id: workUnitId,
+      agentClassName: 'codex-cli',
+      agentClassKind: 'executor',
+      state: 'running',
+      claimedTaskId: runningTask.id,
+      claimedSubtaskId: subtask.id,
+      claimedAttemptId: attemptId,
+      heartbeatAt: '2026-07-28T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-28T00:10:00.000Z',
+      createdAt: '2026-07-28T00:00:00.000Z',
+      updatedAt: '2026-07-28T00:00:00.000Z',
+    });
+    const authorizedBinding = subtask.executorBindings[0]!;
+    const bindingFingerprint = authorizedExecutorBindingFingerprint(authorizedBinding);
+    const resourceGrant = buildDefaultResourceClaims({
+      workspaceId: `workspace-${runningTask.id}-${subtask.generationId}-${subtask.id}`,
+      sourceMountId: `source-${runningTask.id}`,
+      inputsMountId: `inputs-${runningTask.id}`,
+      handoffsMountId: `handoffs-${runningTask.id}`,
+      gitMetadataMountId: `git-${runningTask.id}`,
+    });
+    const dispatch = new KernelDispatchItemRepo(db);
+    dispatch.insertBatch({
+      schemaVersion: 5,
+      configurationRevision: authorizedBinding.configurationRevision,
+      id: 'decision-startup-fallback',
+      eventId: 'event-startup-fallback',
+      reason: 'persisted fallback attempt',
+      action: {
+        type: 'dispatch_batch',
+        taskId: runningTask.id,
+        items: [{
+          order: 0,
+          subtaskId: subtask.id,
+          attemptId,
+          authorizedBinding,
+          bindingFingerprint,
+          attemptKind: 'fallback',
+          sourceAttemptId,
+          recoveryMode: 'recovery_packet',
+          attemptPayload: null,
+          defaultResourceGrant: resourceGrant,
+        }],
+      },
+    }, {
+      generationId: subtask.generationId,
+      configurationRevision: authorizedBinding.configurationRevision,
+      attempts: {
+        [attemptId]: { authorizedBinding, bindingFingerprint },
+      },
+    }, '2026-07-28T00:00:00.000Z');
+    expect(dispatch.claimPending(attemptId, '2026-07-28T00:00:00.000Z')).not.toBeNull();
+    expect(dispatch.markRunning(attemptId, workUnitId, '2026-07-28T00:00:00.000Z')).toBe(true);
+    const session = new MetaclawSession({
+      taskEngine,
+      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+      orchestration: new OrchestrationEngine(taskEngine),
+      attemptExecutionBackend: new FakeAttemptExecutionBackend(),
+      db,
+      config: createConfig(),
+      sessionId: 'sess_startup_fallback',
+      contextRecaller: new ContextRecaller(db),
+    });
+
+    session.initialize();
+    await session.waitForAsyncWork();
+
+    const events = db.prepare(`
+      SELECT event_json
+      FROM kernel_events
+      WHERE attempt_id = ? AND event_type = 'execution_outcome'
+      ORDER BY id
+    `).all(attemptId) as Array<{ event_json: string }>;
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.event_json)).toMatchObject({
+      attemptId,
+      authorizedBinding,
+      bindingFingerprint,
+      attemptKind: 'fallback',
+      sourceAttemptId,
+    });
   });
 });

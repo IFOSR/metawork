@@ -1,4 +1,11 @@
-import type { PlannerExecutorCatalog } from '../executor/builtin-executor-catalog.js';
+import type {
+  KernelConfigurationView,
+  PlannerConfigurationView,
+} from '../configuration/index.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../core/authorized-executor-binding.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
@@ -47,6 +54,7 @@ export type KernelAttemptPayload =
 
 export interface KernelEventEnvelope {
   schemaVersion: 5;
+  configurationRevision: string;
   id: string;
   correlationId: string;
   causationId: string | null;
@@ -57,29 +65,7 @@ export interface KernelEventEnvelope {
   attemptId?: string;
 }
 
-export interface KernelPlanProposal {
-  id: string;
-  schemaVersion: 7;
-  action: 'direct_reply' | 'clarification' | 'task_control' | 'plan_work_graph' | 'authorization_resolution' | 'no_action';
-  confidence: number;
-  reason: string;
-  clarificationQuestion: string | null;
-  response: { directReply: string | null };
-  task: {
-    binding: 'new' | 'reference' | 'none';
-    taskId: string | null;
-    control: 'clear_tasks' | 'status_query' | 'resume_task' | 'recover_blocked' | 'none';
-    scope: string | null;
-    title: string | null;
-    goal: string | null;
-    includeRecentConversationContext: boolean;
-    priority: { level: 'normal' | 'high' | 'urgent'; reason: string } | null;
-  };
-  risk: { level: 'low' | 'medium' | 'high'; requiresConfirmation: boolean; reasons: string[] };
-  authorizationResolution: { requestId: string; resolution: 'approve' | 'deny' } | null;
-  workGraph: WorkGraphProposal | null;
-  source: string;
-}
+export type KernelPlanProposal = PlanningAgentPlan;
 
 export type KernelEvent =
   | (KernelEventEnvelope & {
@@ -96,10 +82,22 @@ export type KernelEvent =
       agentClassName: string;
       recoveryCheckId: string;
     })
-  | (KernelEventEnvelope & { type: 'dispatch_requested'; reason: string })
+  | (KernelEventEnvelope & {
+      type: 'dispatch_requested';
+      reason: string;
+      recovery?: {
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+        attemptKind: KernelAttemptKind;
+        sourceAttemptId: string | null;
+        recoveryMode: KernelRecoveryMode;
+        defaultResourceGrant: ResourceClaim[];
+      } | null;
+    })
   | (KernelEventEnvelope & {
       type: 'capacity_signal';
-      agentClassName: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
       available: boolean;
       cycleId: string;
       attemptKind: KernelAttemptKind;
@@ -108,7 +106,8 @@ export type KernelEvent =
   | (KernelEventEnvelope & {
       type: 'execution_outcome';
       terminalKind: 'completed' | 'failed';
-      agentClassName: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
       attemptKind: KernelAttemptKind;
       sourceAttemptId: string | null;
       failure: KernelFailure | null;
@@ -116,7 +115,8 @@ export type KernelEvent =
   | (KernelEventEnvelope & {
       type: 'handoff_contract_failed';
       workUnitId: string;
-      agentClassName: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
       contract: unknown;
       violations: Array<{ code: string; path: string; message: string }>;
       receiptCount: number;
@@ -127,7 +127,11 @@ export type KernelEvent =
       wakeKind: 'capacity' | 'retry' | 'availability';
       sourceDecisionId: string;
       scheduledFor: string;
-      retry: { agentClassName: string; sourceAttemptId: string } | null;
+      retry: {
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+        sourceAttemptId: string;
+      } | null;
     })
   | (KernelEventEnvelope & {
       type: 'recovery_resolution_requested';
@@ -155,12 +159,18 @@ export type KernelEvent =
       containerId: string | null;
       workspaceId: string;
       checkpointId: string | null;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
+      attemptKind: KernelAttemptKind;
+      sourceAttemptId: string | null;
+      recoveryMode: KernelRecoveryMode;
     })
   | (KernelEventEnvelope & {
       type: 'merge_conflict_observed';
       publicationId: string;
       conflictChainId: string;
-      agentClassName: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
       sourceAttemptId: string;
       repairAttemptsUsed: number;
       conflictReplansUsed: number;
@@ -194,13 +204,14 @@ export interface KernelSubtaskFact {
   id: string;
   taskId: string;
   status: KernelSubtaskStatus;
-  preferredAgentClassList: string[];
+  executorBindings: AuthorizedExecutorBinding[];
 }
 
 export interface KernelAttemptFact {
   attemptId: string;
   subtaskId: string;
-  agentClassName: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
   attemptKind: KernelAttemptKind;
   sourceAttemptId: string | null;
   terminalKind: 'completed' | 'failed';
@@ -215,6 +226,7 @@ export interface KernelCancellationSubtaskFact extends KernelSubtaskFact {
 export interface KernelDispatchItemFact {
   attemptId: string;
   subtaskId: string;
+  bindingFingerprint: string;
   status: KernelDispatchItemStatus;
   order: number;
 }
@@ -225,7 +237,8 @@ export type KernelSnapshot =
       type: 'plan_admission';
       tasks: KernelTaskFact[];
       runningTaskId: string | null;
-      executorCatalog: PlannerExecutorCatalog;
+      plannerConfiguration: PlannerConfigurationView;
+      kernelConfiguration: KernelConfigurationView;
       executorStatuses: KernelExecutorStatusProjection[];
       v5WorkGraphTaskIds: string[];
       eligibleContextRefKeys: string[];
@@ -243,7 +256,7 @@ export type KernelSnapshot =
       maxConcurrentAttempts: number;
       availableSlots: number;
       resourceConflictSubtaskIds: string[];
-      capacityProbeAgentClasses: Record<string, string[]>;
+      capacityProbeBindingFingerprints: Record<string, string[]>;
       executorStatuses: KernelExecutorStatusProjection[];
       correctionSupportedAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
@@ -278,7 +291,7 @@ export type KernelSnapshot =
       wakeAuthorized: boolean;
       capacityBlockedAt: string | null;
       recheckAfterMs: number;
-      capacityAgentClasses: string[];
+      capacityBindings: AuthorizedExecutorBinding[];
       nativeContinuationAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
       defaultResourceGrant: ResourceClaim[];
@@ -326,6 +339,7 @@ export type KernelSnapshot =
       workspaceId: string | null;
       checkpointId: string | null;
       activeLeaseIds: string[];
+      defaultResourceGrant: ResourceClaim[];
     }
   | {
       schemaVersion: 5;
@@ -334,6 +348,7 @@ export type KernelSnapshot =
       activeGenerationId: string | null;
       activeGraphRevision: number | null;
       deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
+      deferredBindings: AuthorizedExecutorBinding[];
       executorStatuses: KernelExecutorStatusProjection[];
     };
 
@@ -347,6 +362,7 @@ export type KernelDecisionAction =
       taskId: string;
       task: KernelPlanProposal['task'];
       workGraph: WorkGraphProposal;
+      authorizedBindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
       generationId: string;
       graphRevision: number;
       proposalSource: 'initial' | 'replan' | 'conflict_replan';
@@ -357,7 +373,8 @@ export type KernelDecisionAction =
       taskId: string;
       items: Array<{
         subtaskId: string;
-        agentClassName: string;
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
         attemptId: string;
         attemptKind: KernelAttemptKind;
         sourceAttemptId: string | null;
@@ -367,14 +384,21 @@ export type KernelDecisionAction =
         attemptPayload: KernelAttemptPayload;
       }>;
     }
-  | { type: 'probe_capacity'; taskId: string; subtaskId: string; agentClassName: string }
+  | {
+      type: 'probe_capacity';
+      taskId: string;
+      subtaskId: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
+    }
   | { type: 'wait_for_capacity'; taskId: string; subtaskId: string }
   | {
       type: 'wait_for_retry';
       taskId: string;
       subtaskId: string;
       resumeAt: string;
-      agentClassName: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
       sourceAttemptId: string;
     }
   | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
@@ -389,6 +413,7 @@ export type KernelDecisionAction =
       type: 'defer_task_plan_for_availability';
       taskId: string;
       proposalEvent: Extract<KernelEvent, { type: 'plan_proposed' }>;
+      authorizedBindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
       unavailableAgentClassNames: string[];
       explanation: string;
     }
@@ -398,6 +423,7 @@ export type KernelDecisionAction =
       replanRequestId: string;
       task: KernelPlanProposal['task'];
       workGraph: WorkGraphProposal;
+      authorizedBindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
       generationId: string;
       graphRevision: number;
       proposalSource: 'replan';
@@ -464,10 +490,18 @@ export type KernelDecisionAction =
       checkpointId: string | null;
       requestId: string | null;
       authorization: { receivedEventId: string; resolution: 'approve'; source: 'command' | 'button' | 'planner'; plannerPlanId: string | null } | null;
+      lostAttemptId?: string;
+      authorizedBinding?: AuthorizedExecutorBinding;
+      bindingFingerprint?: string;
+      attemptKind?: KernelAttemptKind;
+      sourceAttemptId?: string | null;
+      recoveryMode?: KernelRecoveryMode;
+      defaultResourceGrant?: ResourceClaim[];
     };
 
 export interface KernelDecision {
   schemaVersion: 5;
+  configurationRevision: string;
   id: string;
   eventId: string;
   action: KernelDecisionAction;
@@ -533,8 +567,8 @@ export class ControlKernel {
   ): KernelDecision {
     const proposal = event.proposal;
     const validation = validatePlanningAgentPlan(
-      proposal as PlanningAgentPlan,
-      snapshot.executorCatalog,
+      proposal,
+      snapshot.plannerConfiguration,
       snapshot.pendingAuthorizationRequest,
     );
     if (!validation.valid) return decision(event, { type: 'reject_request' }, `invalid PlanningAgentPlan: ${validation.errors.join('; ')}`);
@@ -599,25 +633,30 @@ export class ControlKernel {
     if (invalidRefs.length > 0) {
       return decision(event, { type: 'request_clarification', question: 'The proposed context references are not available for this task.' }, `unqualified context refs: ${invalidRefs.join(', ')}`);
     }
+    const resolved = resolveAuthorizedBindings(proposal.workGraph, snapshot.kernelConfiguration);
+    if (!resolved.ok) {
+      return decision(event, { type: 'reject_request' }, resolved.errors.join('; '));
+    }
     const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
-    const workGraph = {
-      ...proposal.workGraph,
-      subtasks: proposal.workGraph.subtasks.map(subtask => ({
-        ...subtask,
-        preferredAgentClassList: subtask.preferredAgentClassList.filter(name => !unavailable.has(name)),
-      })),
-    } satisfies WorkGraphProposal;
-    if (workGraph.subtasks.some(subtask => subtask.preferredAgentClassList.length === 0)) {
+    const availableBindings = Object.fromEntries(
+      Object.entries(resolved.bindingsBySubtask).map(([subtaskId, bindings]) => [
+        subtaskId,
+        bindings.filter(binding => !unavailable.has(binding.agentClassRef)),
+      ]),
+    );
+    if (Object.values(availableBindings).some(bindings => bindings.length === 0)) {
       if (event.proposalSource === 'replan' && proposal.task.taskId) {
         const unavailableAgentClassNames = [...new Set(
-          proposal.workGraph.subtasks.flatMap(subtask =>
-            subtask.preferredAgentClassList.filter(name => unavailable.has(name))
-          ),
+          Object.values(resolved.bindingsBySubtask)
+            .flat()
+            .filter(binding => unavailable.has(binding.agentClassRef))
+            .map(binding => binding.agentClassRef),
         )];
         return decision(event, {
           type: 'defer_task_plan_for_availability',
           taskId: proposal.task.taskId,
           proposalEvent: event,
+          authorizedBindingsBySubtask: resolved.bindingsBySubtask,
           unavailableAgentClassNames,
           explanation: event.availabilityExplanation
             ?? 'The revised plan is waiting because every eligible Executor for at least one Subtask is unavailable.',
@@ -625,7 +664,7 @@ export class ControlKernel {
       }
       return decision(event, { type: 'reject_request' }, 'no healthy canonical AgentClass remains');
     }
-    const violations = validateWorkGraphStructure(workGraph);
+    const violations = validateWorkGraphStructure(proposal.workGraph);
     if (violations.length > 0) {
       return decision(event, { type: 'reject_request' }, violations.map(item => `${item.code}: ${item.message}`).join('; '));
     }
@@ -633,7 +672,8 @@ export class ControlKernel {
       type: 'authorize_task_plan',
       taskId: proposal.task.taskId ?? deterministicTaskId(event.id),
       task: proposal.task,
-      workGraph,
+      workGraph: proposal.workGraph,
+      authorizedBindingsBySubtask: availableBindings,
       generationId: event.generationId,
       graphRevision: event.targetGraphRevision,
       proposalSource: event.proposalSource,
@@ -647,6 +687,36 @@ export class ControlKernel {
     }
     if (snapshot.runningTaskId && snapshot.runningTaskId !== event.taskId) {
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null }, `single-active Task constraint: ${snapshot.runningTaskId}`);
+    }
+    if (event.type === 'dispatch_requested' && event.recovery) {
+      const subtask = event.subtaskId
+        ? snapshot.subtasks.find(item => item.id === event.subtaskId)
+        : null;
+      if (
+        !subtask
+        || subtask.status !== (event.recovery.attemptKind === 'primary' ? 'ready' : 'awaiting_decision')
+        || event.recovery.bindingFingerprint !== authorizedExecutorBindingFingerprint(
+          event.recovery.authorizedBinding,
+        )
+        || event.recovery.authorizedBinding.configurationRevision !== event.configurationRevision
+      ) {
+        return decision(event, {
+          type: 'block_work',
+          taskId: event.taskId,
+          subtaskId: event.subtaskId ?? null,
+        }, 'workspace recovery dispatch identity is incomplete or stale');
+      }
+      return decision(event, singleDispatchBatch(
+        event,
+        event.taskId,
+        subtask.id,
+        event.recovery.authorizedBinding,
+        event.recovery.attemptKind,
+        event.recovery.sourceAttemptId,
+        event.recovery.recoveryMode,
+        event.recovery.defaultResourceGrant,
+        null,
+      ), 'exact workspace recovery attempt authorized');
     }
     const subtasks = selectDispatchableSubtasks(snapshot);
     if (subtasks.length === 0) {
@@ -700,17 +770,17 @@ export class ControlKernel {
       return decision(event, { type: 'no_op' }, 'deferred availability proposal is missing, stale, or cancelled');
     }
     const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
-    const workGraph = {
-      ...deferred.proposal.workGraph,
-      subtasks: deferred.proposal.workGraph.subtasks.map(subtask => ({
-        ...subtask,
-        preferredAgentClassList: subtask.preferredAgentClassList.filter(name => !unavailable.has(name)),
-      })),
-    } satisfies WorkGraphProposal;
-    if (workGraph.subtasks.some(subtask => subtask.preferredAgentClassList.length === 0)) {
+    const bindingsBySubtask = Object.fromEntries(
+      deferred.proposal.workGraph.subtasks.map(subtask => [
+        subtask.id,
+        bindingsForProposalSubtask(subtask, snapshot.deferredBindings)
+          .filter(binding => !unavailable.has(binding.agentClassRef)),
+      ]),
+    );
+    if (Object.values(bindingsBySubtask).some(bindings => bindings.length === 0)) {
       return decision(event, { type: 'no_op' }, 'recovered Executor does not make the deferred frontier executable');
     }
-    const violations = validateWorkGraphStructure(workGraph);
+    const violations = validateWorkGraphStructure(deferred.proposal.workGraph);
     if (violations.length > 0) {
       return decision(event, { type: 'no_op' }, 'deferred availability proposal no longer validates');
     }
@@ -719,7 +789,8 @@ export class ControlKernel {
       taskId: event.taskId,
       replanRequestId: event.correlationId,
       task: deferred.proposal.task,
-      workGraph,
+      workGraph: deferred.proposal.workGraph,
+      authorizedBindingsBySubtask: bindingsBySubtask,
       generationId: deferred.generationId,
       graphRevision: deferred.targetGraphRevision,
       proposalSource: deferred.proposalSource,
@@ -732,7 +803,7 @@ export class ControlKernel {
     if (event.attemptKind === 'contract_correction') {
       return event.available
         ? decision(event, singleDispatchBatch(
-            event, event.taskId, subtask.id, event.agentClassName, 'contract_correction',
+            event, event.taskId, subtask.id, event.authorizedBinding, 'contract_correction',
             event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, subtask.id),
             event.attemptPayload,
           ), 'response-only correction capacity confirmed')
@@ -740,18 +811,24 @@ export class ControlKernel {
     }
     if (event.available) {
       return decision(event, singleDispatchBatch(
-        event, event.taskId, subtask.id, event.agentClassName, 'primary',
+        event, event.taskId, subtask.id, event.authorizedBinding, 'primary',
         null, 'fresh', resourceGrantForSubtask(snapshot, subtask.id),
         null,
       ), 'capacity confirmed');
     }
     const attempted = new Set([
-      ...(snapshot.capacityProbeAgentClasses[subtask.id] ?? []),
-      event.agentClassName,
+      ...(snapshot.capacityProbeBindingFingerprints[subtask.id] ?? []),
+      event.bindingFingerprint,
     ]);
-    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt, attempted);
-    return agentClassName
-      ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: subtask.id, agentClassName }, 'try next authorized AgentClass')
+    const binding = nextUsableBinding(subtask, snapshot, event.occurredAt, attempted);
+    return binding
+      ? decision(event, {
+          type: 'probe_capacity',
+          taskId: event.taskId,
+          subtaskId: subtask.id,
+          authorizedBinding: binding,
+          bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+        }, 'try next authorized binding')
       : decision(event, { type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtask.id }, 'authorized AgentClass capacity exhausted');
   }
 
@@ -789,20 +866,22 @@ export class ControlKernel {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, `${failure.kind} requires explicit recovery`);
     }
     const retryable = ['network', 'timeout', 'infrastructure', 'heartbeat_lost'].includes(failure.kind);
-    const isPreferred = subtask.preferredAgentClassList[0] === event.agentClassName;
-    const classAttempts = snapshot.attempts.filter(attempt =>
+    const isPreferred = authorizedExecutorBindingFingerprint(subtask.executorBindings[0]!)
+      === event.bindingFingerprint;
+    const bindingAttempts = snapshot.attempts.filter(attempt =>
       attempt.subtaskId === subtask.id
-      &&
-      attempt.agentClassName === event.agentClassName && attempt.attemptKind !== 'contract_correction'
+      && attempt.bindingFingerprint === event.bindingFingerprint
+      && attempt.attemptKind !== 'contract_correction'
     ).length;
-    if (retryable && isPreferred && classAttempts <= 1) {
+    if (retryable && isPreferred && bindingAttempts <= 1) {
       const delayMs = failure.kind === 'network' ? 5_000 : 30_000;
       return decision(event, {
         type: 'wait_for_retry',
         taskId,
         subtaskId: subtask.id,
         resumeAt: addMilliseconds(event.occurredAt, delayMs),
-        agentClassName: event.agentClassName,
+        authorizedBinding: event.authorizedBinding,
+        bindingFingerprint: event.bindingFingerprint,
         sourceAttemptId: event.attemptId,
       }, `preferred AgentClass continuation delayed after ${failure.kind}`);
     }
@@ -821,11 +900,11 @@ export class ControlKernel {
   ): KernelDecision {
     const attempted = new Set(snapshot.attempts
       .filter(attempt => attempt.subtaskId === subtask.id && attempt.attemptKind !== 'contract_correction')
-      .map(attempt => attempt.agentClassName));
-    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt, attempted);
-    if (agentClassName) {
+      .map(attempt => attempt.bindingFingerprint));
+    const binding = nextUsableBinding(subtask, snapshot, event.occurredAt, attempted);
+    if (binding) {
       return decision(event, singleDispatchBatch(
-        event, event.taskId!, subtask.id, agentClassName, 'fallback',
+        event, event.taskId!, subtask.id, binding, 'fallback',
         event.attemptId!, 'recovery_packet', resourceGrantForSubtask(snapshot, subtask.id),
         null,
       ), 'next authorized fallback AgentClass selected');
@@ -956,11 +1035,15 @@ export class ControlKernel {
 
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
     if (!event.taskId || !event.subtaskId) return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'contract failure identity is incomplete');
-    if (event.receiptCount !== 1 || event.responseBytes > MAX_CORRECTION_INPUT_BYTES || !snapshot.correctionSupportedAgentClasses.includes(event.agentClassName)) {
+    if (
+      event.receiptCount !== 1
+      || event.responseBytes > MAX_CORRECTION_INPUT_BYTES
+      || !snapshot.correctionSupportedAgentClasses.includes(event.authorizedBinding.agentClassRef)
+    ) {
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId }, 'response-only correction is unavailable or already exhausted');
     }
     return decision(event, singleDispatchBatch(
-      event, event.taskId, event.subtaskId, event.agentClassName, 'contract_correction',
+      event, event.taskId, event.subtaskId, event.authorizedBinding, 'contract_correction',
       event.attemptId ?? null, 'fresh', resourceGrantForSubtask(snapshot, event.subtaskId),
       {
         protocol: 'completion-correction-v2',
@@ -988,10 +1071,10 @@ export class ControlKernel {
         event,
         event.taskId,
         event.subtaskId,
-        event.retry.agentClassName,
+        event.retry.authorizedBinding,
         'continuation',
         event.retry.sourceAttemptId,
-        snapshot.nativeContinuationAgentClasses.includes(event.retry.agentClassName)
+        snapshot.nativeContinuationAgentClasses.includes(event.retry.authorizedBinding.agentClassRef)
           ? 'native_session'
           : 'recovery_packet',
         snapshot.defaultResourceGrant,
@@ -1003,9 +1086,17 @@ export class ControlKernel {
     const elapsed = Date.parse(event.occurredAt) - Date.parse(snapshot.capacityBlockedAt);
     if (!Number.isFinite(elapsed) || elapsed < snapshot.recheckAfterMs) return decision(event, { type: 'no_op' }, 'capacity recheck interval has not elapsed');
     const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
-    const candidate = snapshot.capacityAgentClasses.find(name => !unavailable.has(name));
+    const candidate = snapshot.capacityBindings.find(binding =>
+      !unavailable.has(binding.agentClassRef)
+    );
     return candidate
-      ? decision(event, { type: 'probe_capacity', taskId: event.taskId, subtaskId: event.subtaskId, agentClassName: candidate }, 'capacity timer recheck authorized')
+      ? decision(event, {
+          type: 'probe_capacity',
+          taskId: event.taskId,
+          subtaskId: event.subtaskId,
+          authorizedBinding: candidate,
+          bindingFingerprint: authorizedExecutorBindingFingerprint(candidate),
+        }, 'capacity timer recheck authorized')
       : decision(event, { type: 'no_op' }, 'no healthy AgentClass is eligible for capacity probe');
   }
 
@@ -1146,6 +1237,13 @@ export class ControlKernel {
       checkpointId: snapshot.checkpointId,
       requestId: null,
       authorization: null,
+      lostAttemptId: event.attemptId,
+      authorizedBinding: event.authorizedBinding,
+      bindingFingerprint: event.bindingFingerprint,
+      attemptKind: event.attemptKind,
+      sourceAttemptId: event.sourceAttemptId,
+      recoveryMode: event.recoveryMode,
+      defaultResourceGrant: snapshot.defaultResourceGrant,
     }, 'lost sandbox will be replaced by a fresh attempt using the persistent workspace');
   }
 
@@ -1168,10 +1266,10 @@ export class ControlKernel {
         event,
         event.taskId,
         event.subtaskId,
-        event.agentClassName,
+        event.authorizedBinding,
         'merge_repair',
         event.sourceAttemptId,
-        snapshot.nativeContinuationAgentClasses.includes(event.agentClassName)
+        snapshot.nativeContinuationAgentClasses.includes(event.authorizedBinding.agentClassRef)
           ? 'native_session'
           : 'recovery_packet',
         resourceGrantForSubtask(snapshot, event.subtaskId),
@@ -1199,7 +1297,14 @@ export class ControlKernel {
 }
 
 function decision(event: KernelEvent, action: KernelDecisionAction, reason: string): KernelDecision {
-  return { schemaVersion: 5, id: `decision_${event.id}`, eventId: event.id, action, reason };
+  return {
+    schemaVersion: 5,
+    configurationRevision: event.configurationRevision,
+    id: `decision_${event.id}`,
+    eventId: event.id,
+    action,
+    reason,
+  };
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
@@ -1230,6 +1335,104 @@ function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[], occ
     .map(status => status.agentClassName));
 }
 
+function resolveAuthorizedBindings(
+  workGraph: WorkGraphProposal,
+  configuration: KernelConfigurationView,
+): {
+  ok: true;
+  bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
+} | {
+  ok: false;
+  errors: string[];
+} {
+  if (workGraph.configurationRevision !== configuration.revisionId) {
+    return {
+      ok: false,
+      errors: [
+        `work graph configurationRevision ${workGraph.configurationRevision} does not match Kernel configuration revision ${configuration.revisionId}`,
+      ],
+    };
+  }
+  const errors: string[] = [];
+  const bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]> = {};
+  for (const subtask of workGraph.subtasks) {
+    const bindings: AuthorizedExecutorBinding[] = [];
+    for (const proposed of subtask.executorBindings) {
+      const agentClass = configuration.agentClasses[proposed.agentClassRef];
+      if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
+        errors.push(`subtask ${subtask.id} AgentClass is unavailable: ${proposed.agentClassRef}`);
+        continue;
+      }
+      if (
+        !agentClass.permissionProfileRef
+        || !configuration.permissionProfiles[agentClass.permissionProfileRef]
+      ) {
+        errors.push(`subtask ${subtask.id} AgentClass has no valid permission profile: ${proposed.agentClassRef}`);
+        continue;
+      }
+      const modelRef = resolveModelRef(proposed, agentClass.modelPolicy);
+      if (!modelRef) {
+        errors.push(`subtask ${subtask.id} model selection is not authorized for AgentClass ${proposed.agentClassRef}`);
+        continue;
+      }
+      const model = configuration.models[modelRef];
+      if (!model || !model.enabled) {
+        errors.push(`subtask ${subtask.id} Model is unavailable: ${modelRef}`);
+        continue;
+      }
+      bindings.push({
+        agentClassRef: proposed.agentClassRef,
+        harnessRef: agentClass.harnessRef,
+        providerRef: model.providerRef,
+        modelRef,
+        permissionProfileRef: agentClass.permissionProfileRef,
+        configurationRevision: configuration.revisionId,
+      });
+    }
+    if (bindings.length === 0) {
+      errors.push(`subtask ${subtask.id} has no authorized executor binding`);
+    }
+    bindingsBySubtask[subtask.id] = bindings;
+  }
+  return errors.length > 0
+    ? { ok: false, errors: errors.sort() }
+    : { ok: true, bindingsBySubtask };
+}
+
+function resolveModelRef(
+  proposed: WorkGraphProposal['subtasks'][number]['executorBindings'][number],
+  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
+): string | null {
+  if (policy.mode === 'fixed') {
+    return proposed.modelSelection.mode === 'fixed-by-agent-class'
+      ? policy.modelRef
+      : null;
+  }
+  if (proposed.modelSelection.mode === 'proposed') {
+    return policy.allowedModelRefs.includes(proposed.modelSelection.modelRef)
+      ? proposed.modelSelection.modelRef
+      : null;
+  }
+  if (proposed.modelSelection.mode === 'agent-class-default') {
+    return policy.defaultModelRef ?? null;
+  }
+  return null;
+}
+
+function bindingsForProposalSubtask(
+  subtask: WorkGraphProposal['subtasks'][number],
+  bindings: readonly AuthorizedExecutorBinding[],
+): AuthorizedExecutorBinding[] {
+  const ordered = new Map(
+    subtask.executorBindings.map((binding, index) => [binding.agentClassRef, index]),
+  );
+  return bindings
+    .filter(binding => ordered.has(binding.agentClassRef))
+    .sort((left, right) =>
+      ordered.get(left.agentClassRef)! - ordered.get(right.agentClassRef)!
+    );
+}
+
 function selectDispatchableSubtasks(
   snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
 ): KernelSubtaskFact[] {
@@ -1248,15 +1451,16 @@ function selectDispatchableSubtasks(
     .slice(0, slotCount);
 }
 
-function nextUsableAgentClass(
+function nextUsableBinding(
   subtask: KernelSubtaskFact,
   snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
   occurredAt: string,
-  attemptedAgentClasses: ReadonlySet<string> = new Set(),
-): string | null {
+  attemptedBindingFingerprints: ReadonlySet<string> = new Set(),
+): AuthorizedExecutorBinding | null {
   const unavailable = unavailableAgentClasses(snapshot.executorStatuses, occurredAt);
-  return subtask.preferredAgentClassList.find(name =>
-    !attemptedAgentClasses.has(name) && !unavailable.has(name)
+  return subtask.executorBindings.find(binding =>
+    !attemptedBindingFingerprints.has(authorizedExecutorBindingFingerprint(binding))
+    && !unavailable.has(binding.agentClassRef)
   ) ?? null;
 }
 
@@ -1274,12 +1478,14 @@ function dispatchBatchItems(
 ): Extract<KernelDecisionAction, { type: 'dispatch_batch' }>['items'] {
   const firstOrder = snapshot.dispatchItems.reduce((maximum, item) => Math.max(maximum, item.order), -1) + 1;
   return subtasks.flatMap((subtask, index) => {
-    const agentClassName = nextUsableAgentClass(subtask, snapshot, event.occurredAt);
-    if (!agentClassName) return [];
+    const binding = nextUsableBinding(subtask, snapshot, event.occurredAt);
+    if (!binding) return [];
+    const bindingFingerprint = authorizedExecutorBindingFingerprint(binding);
     return [{
       subtaskId: subtask.id,
-      agentClassName,
-      attemptId: deterministicAttemptId(event.id, subtask.id, agentClassName, 'primary'),
+      authorizedBinding: binding,
+      bindingFingerprint,
+      attemptId: deterministicAttemptId(event.id, subtask.id, bindingFingerprint, 'primary'),
       attemptKind: 'primary' as const,
       sourceAttemptId: null,
       recoveryMode: 'fresh' as const,
@@ -1294,20 +1500,22 @@ function singleDispatchBatch(
   event: KernelEvent,
   taskId: string,
   subtaskId: string,
-  agentClassName: string,
+  authorizedBinding: AuthorizedExecutorBinding,
   attemptKind: KernelAttemptKind,
   sourceAttemptId: string | null,
   recoveryMode: KernelRecoveryMode,
   defaultResourceGrant: ResourceClaim[],
   attemptPayload: KernelAttemptPayload,
 ): Extract<KernelDecisionAction, { type: 'dispatch_batch' }> {
+  const bindingFingerprint = authorizedExecutorBindingFingerprint(authorizedBinding);
   return {
     type: 'dispatch_batch',
     taskId,
     items: [{
       subtaskId,
-      agentClassName,
-      attemptId: deterministicAttemptId(event.id, subtaskId, agentClassName, attemptKind),
+      authorizedBinding,
+      bindingFingerprint,
+      attemptId: deterministicAttemptId(event.id, subtaskId, bindingFingerprint, attemptKind),
       attemptKind,
       sourceAttemptId,
       recoveryMode,
@@ -1325,8 +1533,15 @@ function isPendingOrActiveDispatch(status: KernelDispatchItemStatus): boolean {
     || status === 'cancelling';
 }
 
-function deterministicAttemptId(eventId: string, subtaskId: string, agentClassName: string, kind: string): string {
-  return `attempt_${[eventId, subtaskId, agentClassName, kind].map(value => value.replace(/[^a-zA-Z0-9_-]/g, '_')).join('_')}`;
+function deterministicAttemptId(
+  eventId: string,
+  subtaskId: string,
+  bindingFingerprint: string,
+  kind: string,
+): string {
+  return `attempt_${[eventId, subtaskId, bindingFingerprint, kind]
+    .map(value => value.replace(/[^a-zA-Z0-9_-]/g, '_'))
+    .join('_')}`;
 }
 
 function deterministicTaskId(eventId: string): string {

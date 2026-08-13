@@ -21,7 +21,7 @@ export class WorkUnitClaimService {
     private readonly workUnitRepo: WorkUnitRepo,
     private readonly leaseMs = 60_000,
     private readonly probeExecutor: (
-      agentClassName: string,
+      authorizedBinding: AuthorizedExecutorBinding,
       mode: 'claim' | 'capacity',
     ) => Promise<boolean> = async () => false,
   ) {}
@@ -38,7 +38,7 @@ export class WorkUnitClaimService {
       [agentClassName],
     );
     if (!workUnit) {
-      workUnit = await this.provisionExecutor(agentClassName, 'claim');
+      workUnit = await this.provisionExecutor(input.authorizedBinding, 'claim');
     }
     if (!workUnit) return null;
 
@@ -78,9 +78,10 @@ export class WorkUnitClaimService {
     };
   }
 
-  async probe(agentClassName: string): Promise<boolean> {
+  async probe(authorizedBinding: AuthorizedExecutorBinding): Promise<boolean> {
+    const agentClassName = authorizedBinding.agentClassRef;
     if (this.workUnitRepo.findIdleByKind('executor', [agentClassName])) return true;
-    return Boolean(await this.provisionExecutor(agentClassName, 'capacity'));
+    return Boolean(await this.provisionExecutor(authorizedBinding, 'capacity'));
   }
 
   isClaimCurrent(workUnitId: string, attemptId: string, requiredState?: WorkUnit['state']): boolean {
@@ -165,9 +166,10 @@ export class WorkUnitClaimService {
   }
 
   private async provisionExecutor(
-    agentClassName: string,
+    authorizedBinding: AuthorizedExecutorBinding,
     mode: 'claim' | 'capacity',
   ): Promise<WorkUnit | null> {
+    const agentClassName = authorizedBinding.agentClassRef;
     const now = new Date().toISOString();
     const id = `executor-${sanitizeId(agentClassName)}-${generateInteractionId()}`;
     this.workUnitRepo.upsert({
@@ -187,7 +189,7 @@ export class WorkUnitClaimService {
     let available = false;
     let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
-      available = await this.probeExecutor(agentClassName, mode);
+      available = await this.probeExecutor(authorizedBinding, mode);
     } catch (error) {
       available = false;
       const detail = error instanceof Error ? error.message : String(error);

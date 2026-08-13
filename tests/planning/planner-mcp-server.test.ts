@@ -11,6 +11,11 @@ function createHarness(sessionId = 'sess_current') {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
+  db.prepare(`
+    INSERT OR IGNORE INTO configuration_revisions (
+      revision_id, content_hash, source_kind, imported_at
+    ) VALUES ('revision-test', 'sha256:test-configuration', 'native', ?)
+  `).run('2026-08-12T00:00:00.000Z');
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planner-mcp');
   return { db, taskRepo, taskEngine, reader: new PlannerDataReader(db, sessionId) };
@@ -162,9 +167,10 @@ describe('PlannerDataReader', () => {
     const now = '2026-07-10T00:00:00.000Z';
     db.prepare(`
       INSERT INTO kernel_executor_status (
-        agent_class_name, class_health, recent_attempts_json, recent_recovery_checks_json, updated_at
+        agent_class_name, configuration_revision, class_health,
+        recent_attempts_json, recent_recovery_checks_json, updated_at
       )
-      VALUES ('codex-cli', 'healthy', ?, ?, ?)
+      VALUES ('codex-cli', 'revision-test', 'healthy', ?, ?, ?)
     `).run(
       JSON.stringify([{ completedAt: now, outcome: 'failed', failureKind: 'network', reason: 'connection timeout' }]),
       JSON.stringify([{ checkId: 'check_1', trigger: 'planning_cycle', outcome: 'recovered', failure: null }]),

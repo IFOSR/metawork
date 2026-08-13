@@ -192,6 +192,7 @@ export class SessionKernelRuntime {
     this.deps.callbacks.prepareTaskExecution(task.id, {
       ...buildExecutionRequest({ userInput, taskId: task.id, executionMode: 'fresh', decision }),
       authorizedWorkGraph: decision.action.workGraph,
+      authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
       workGraphAuthorization: {
         decisionId: decision.id,
         generationId: decision.action.generationId,

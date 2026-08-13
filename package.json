@@ -18,6 +18,7 @@
     "dev": "tsup --watch",
     "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
     "test": "vitest run",
+    "test:task8-contract": "vitest run tests/acceptance/task8-cross-repository-contract.test.ts",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "setup:native": "node scripts/install-native-macos.mjs",

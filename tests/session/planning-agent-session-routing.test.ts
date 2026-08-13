@@ -9,12 +9,15 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
-import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import {
   completionResponseFromExecutionInput,
   FakeAttemptExecutionBackend,
 } from '../support/fake-attempt-execution-backend.js';
-import { planningAgentFromPlanMock } from '../support/planning-agent-plans.js';
+import {
+  clarificationPlan,
+  planningAgentFromPlanMock,
+  workGraphPlan,
+} from '../support/planning-agent-plans.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -40,50 +43,6 @@ function createConfig(): Config {
   };
 }
 
-// A valid plan_work_graph plan routed at a single available executor. Overrides
-// let each test reshape the action/execution/work graph while keeping the seam
-// (an injected PlanningAgent returning a PlanningAgentPlan directly) identical.
-function workGraphPlan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
-  return {
-    id: 'plan_test',
-    schemaVersion: 7,
-    action: 'plan_work_graph',
-    confidence: 0.9,
-    reason: 'planner 直接产出工作图',
-    clarificationQuestion: null,
-    response: { directReply: null },
-    task: {
-      binding: 'new',
-      taskId: null,
-      control: 'none',
-      scope: null,
-      title: '普通功能',
-      goal: '实现一个普通功能',
-      includeRecentConversationContext: false,
-      priority: { level: 'normal', reason: 'test work graph priority' },
-    },
-    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-    authorizationResolution: null,
-    workGraph: {
-      reason: 'single executor work graph',
-      subtasks: [{
-        id: 'subtask_execute',
-        title: '实现一个普通功能',
-        goal: '实现一个普通功能',
-        dependencies: [],
-        contextRefs: [{ kind: 'current_user_input' }],
-        requiredCapabilities: ['workspace-engineering'],
-        preferredAgentClassList: ['codex-cli'],
-        deliveryKind: 'edit',
-        acceptance: [{ key: 'tests', description: 'List changed files and provide test evidence.', requiredEvidence: ['test result'] }],
-        riskLevel: 'low',
-      }],
-    },
-    source: 'anyfusion-planner',
-    ...overrides,
-  };
-}
-
 describe('MetaclawSession planning-agent routing', () => {
   it('routes natural language through the injected PlanningAgent without touching legacy intent methods', async () => {
     const db = createTestDb();
@@ -93,7 +52,11 @@ describe('MetaclawSession planning-agent routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
-    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan()));
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
+      goal: '实现一个普通功能',
+      title: '普通功能',
+      capabilityClass: 'code_edit',
+    })));
 
     const session = new MetaclawSession({
       taskEngine,
@@ -123,23 +86,9 @@ describe('MetaclawSession planning-agent routing', () => {
     const orchestration = new OrchestrationEngine(taskEngine);
     const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
-    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
-        action: 'clarification',
-        confidence: 0.2,
-        reason: '低置信度',
-        clarificationQuestion: '请明确是聊天还是创建任务。',
-        task: {
-          binding: 'none',
-          taskId: null,
-          control: 'none',
-          scope: null,
-          title: null,
-          goal: null,
-          includeRecentConversationContext: false,
-          priority: null,
-        },
-        workGraph: null,
-      })));
+    const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(
+      clarificationPlan('请明确是聊天还是创建任务。'),
+    ));
 
     const session = new MetaclawSession({
       taskEngine,
@@ -171,21 +120,17 @@ describe('MetaclawSession planning-agent routing', () => {
     const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => ({
       rawOutput: completionResponseFromExecutionInput(input, '已修改代码并完成实现。')
-        .replace('tests were not run: deterministic fake sandbox', 'implementation completed'),
+        .replace(
+          'tests were not run: deterministic fake execution backend',
+          'implementation completed',
+        ),
     }));
     const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
-        reason: '修改仓库代码',
-        task: {
-          binding: 'new',
-          taskId: null,
-          control: 'none',
-          scope: null,
-          title: '修改仓库代码',
-          goal: '修改仓库代码实现一个功能',
-          includeRecentConversationContext: false,
-          priority: { level: 'normal', reason: 'test work graph priority' },
-        },
-      })));
+      goal: '修改仓库代码实现一个功能',
+      title: '修改仓库代码',
+      capabilityClass: 'code_edit',
+      overrides: { reason: '修改仓库代码' },
+    })));
 
     const session = new MetaclawSession({
       taskEngine,

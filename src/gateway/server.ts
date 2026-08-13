@@ -10,6 +10,7 @@ import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
 import { MetaclawSession, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
+import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
@@ -25,6 +26,7 @@ interface GatewayServerDeps {
   workspaceRoot: string;
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
+  stagedConfiguration?: StagedLegacyConfiguration;
 }
 
 export class MetaclawGatewayServer {
@@ -100,6 +102,7 @@ export class MetaclawGatewayServer {
       notifier: this.deps.notifier,
       plannerHost: this.deps.plannerHost,
       plannerSupervisor: this.deps.plannerSupervisor,
+      stagedConfiguration: this.deps.stagedConfiguration,
     });
     this.sessions.add(session);
 

@@ -1,6 +1,7 @@
 // Shared structural session helpers for execution requests, inline resources,
 // and editor submission.
 import type { TaskRecoveryTrigger } from '../core/types.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import type { WorkGraphAuthorization } from '../execution/work-graph-runtime-service.js';
 export { planTaskExecution, type TaskExecutionPlan as ExecutionPlan } from '../task/task-execution-planner.js';
@@ -15,6 +16,7 @@ export type QueuedExecutionRequest = {
   contextTaskId: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   authorizedWorkGraph?: WorkGraphProposal | null;
+  authorizedBindingsBySubtask?: Readonly<Record<string, AuthorizedExecutorBinding[]>> | null;
   workGraphAuthorization?: WorkGraphAuthorization | null;
   kernelDecisionId?: string | null;
   origin?: 'user' | 'system';
@@ -33,4 +35,3 @@ export function prepareEditorSubmission(editor: { text: string; cursor: number }
     nextEditor: { text: '', cursor: 0 },
   };
 }
-

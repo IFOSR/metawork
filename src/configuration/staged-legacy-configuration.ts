@@ -35,20 +35,26 @@ export function buildStagedLegacyConfiguration(input: {
         modelRef: 'test-model',
       }
     : readLegacyProviderAndModel(input.userHome ?? homedir(), env);
+  const providerRef = testMode
+    ? legacy.providerRef
+    : normalizedLegacyReference('provider', legacy.providerRef);
+  const modelRef = testMode
+    ? legacy.modelRef
+    : normalizedLegacyReference('model', legacy.modelRef);
   const config = AnyFusionConfigurationV2Schema.parse({
     schemaVersion: 2,
     providers: {
-      [legacy.providerRef]: {
+      [providerRef]: {
         protocol: 'openai-compatible',
         baseUrl: legacy.baseUrl,
-        apiKeyRef: `keychain:anyfusion/imported/${legacy.providerRef}`,
+        apiKeyRef: `keychain:anyfusion/imported/${providerRef}`,
         region: 'international',
         enabled: true,
       },
     },
     models: {
-      [legacy.modelRef]: {
-        providerRef: legacy.providerRef,
+      [modelRef]: {
+        providerRef,
         modelId: legacy.modelRef,
         capabilities: ['coding', 'planning', 'structured-output', 'tools'],
         reasoning: 'high',
@@ -94,7 +100,7 @@ export function buildStagedLegacyConfiguration(input: {
       planner: {
         kind: 'planner',
         harnessRef: 'anyfusion-planner',
-        modelPolicy: { mode: 'fixed', modelRef: legacy.modelRef },
+        modelPolicy: { mode: 'fixed', modelRef },
         routingCapabilities: [],
         primaryUseCases: [],
         avoidUseCases: [],
@@ -108,7 +114,7 @@ export function buildStagedLegacyConfiguration(input: {
       'codex-cli': {
         kind: 'executor',
         harnessRef: 'codex-cli',
-        modelPolicy: { mode: 'fixed', modelRef: legacy.modelRef },
+        modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
         routingCapabilities: ['workspace-engineering'],
         primaryUseCases: ['repository implementation', 'tests', 'engineering documentation'],
@@ -123,7 +129,7 @@ export function buildStagedLegacyConfiguration(input: {
       'pi-agent': {
         kind: 'executor',
         harnessRef: 'pi-cli',
-        modelPolicy: { mode: 'fixed', modelRef: legacy.modelRef },
+        modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'public-web-research',
         routingCapabilities: ['current-web-research'],
         primaryUseCases: ['current public-web research', 'source verification'],
@@ -163,8 +169,8 @@ export function buildStagedLegacyConfiguration(input: {
   const plannerBinding: RevisionedAgentBinding = {
     agentClassRef: 'planner',
     harnessRef: 'anyfusion-planner',
-    providerRef: legacy.providerRef,
-    modelRef: legacy.modelRef,
+    providerRef,
+    modelRef,
     permissionProfileRef: null,
     configurationRevision: revisionId,
   };
@@ -225,4 +231,23 @@ function nonEmpty(value: unknown, label: string): string {
     throw new Error(`${label} is missing`);
   }
   return value.trim();
+}
+
+function normalizedLegacyReference(kind: string, value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  const base = /^[a-z]/u.test(normalized)
+    ? normalized
+    : `${kind}-${normalized || 'legacy'}`;
+  const digest = authorizedExecutorBindingFingerprint({
+    agentClassRef: kind,
+    harnessRef: kind,
+    providerRef: kind,
+    modelRef: value,
+    permissionProfileRef: kind,
+    configurationRevision: kind,
+  }).slice(0, 8);
+  return `${base.slice(0, 54).replace(/-+$/u, '')}-${digest}`;
 }

@@ -207,7 +207,7 @@ describe('WorkUnitClaimService', () => {
       authorizedBinding,
     });
 
-    expect(probe).toHaveBeenCalledWith('codex-cli', 'claim');
+    expect(probe).toHaveBeenCalledWith(authorizedBinding, 'claim');
     expect(claim?.workUnit).toMatchObject({ agentClassName: 'codex-cli', state: 'claimed' });
     expect(repo.listEvents(claim!.workUnit.id).map(event => event.eventType)).toEqual([
       'probe_started',
@@ -222,7 +222,9 @@ describe('WorkUnitClaimService', () => {
     classes.upsert(agentClass('first-executor'));
     classes.upsert(agentClass('second-executor'));
     const repo = new WorkUnitRepo(db);
-    const probe = vi.fn(async (name: string) => name === 'second-executor');
+    const probe = vi.fn(async (binding: AuthorizedExecutorBinding) =>
+      binding.agentClassRef === 'second-executor'
+    );
 
     const claim = await new WorkUnitClaimService(repo, 60_000, probe).claim({
       taskId: 'task_1',
@@ -236,10 +238,36 @@ describe('WorkUnitClaimService', () => {
       },
     });
 
-    expect(probe.mock.calls.map(call => call[0])).toEqual(['first-executor']);
+    expect(probe.mock.calls.map(call => call[0].agentClassRef)).toEqual(['first-executor']);
     expect(claim).toBeNull();
     expect(repo.findAll()).toEqual([
       expect.objectContaining({ agentClassName: 'first-executor', state: 'failed' }),
+    ]);
+  });
+
+  it('passes the complete authorized binding to capacity probes', async () => {
+    const db = createDb();
+    new AgentClassRepo(db).upsert(agentClass());
+    const repo = new WorkUnitRepo(db);
+    const probe = vi.fn().mockResolvedValue(true);
+    const service = new WorkUnitClaimService(repo, 60_000, probe);
+
+    const available = await service.probe(authorizedBinding);
+
+    expect(available).toBe(true);
+    expect(probe).toHaveBeenCalledWith({
+      agentClassRef: 'codex-cli',
+      harnessRef: 'codex-cli',
+      providerRef: 'openai',
+      modelRef: 'gpt-5-codex',
+      permissionProfileRef: 'workspace-engineering',
+      configurationRevision: 'configuration_revision_1',
+    }, 'capacity');
+    expect(repo.findAll()).toEqual([
+      expect.objectContaining({
+        agentClassName: 'codex-cli',
+        state: 'idle',
+      }),
     ]);
   });
 

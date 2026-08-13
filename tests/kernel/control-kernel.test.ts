@@ -1,11 +1,152 @@
 import { describe, expect, it } from 'vitest';
 import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
-import { getPlannerExecutorCatalog } from '../../src/executor/builtin-executor-catalog.js';
+import type {
+  KernelConfigurationView,
+  PlannerConfigurationView,
+} from '../../src/configuration/index.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../../src/core/authorized-executor-binding.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
+const configurationRevision = 'revision-test';
+
+const plannerConfiguration: PlannerConfigurationView = {
+  revisionId: configurationRevision,
+  contentHash: 'sha256:planner-test',
+  models: [
+    {
+      id: 'codex-model',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'high',
+      region: 'international',
+    },
+    {
+      id: 'pi-model',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'medium',
+      region: 'international',
+    },
+  ],
+  routingCatalog: {
+    version: 2,
+    configurationRevision,
+    capabilities: [
+      {
+        id: 'current-web-research',
+        deliveryContract: 'Research public web sources.',
+      },
+      {
+        id: 'workspace-engineering',
+        deliveryContract: 'Modify and verify workspace files.',
+      },
+    ],
+    agentClasses: [
+      {
+        id: 'codex-cli',
+        routingCapabilities: ['workspace-engineering'],
+        primaryUseCases: ['workspace implementation'],
+        avoidUseCases: [],
+        affordances: ['workspace-command-validation', 'workspace-read-write'],
+        modelPolicy: { mode: 'fixed', modelRef: 'codex-model' },
+      },
+      {
+        id: 'pi-agent',
+        routingCapabilities: ['current-web-research', 'workspace-engineering'],
+        primaryUseCases: ['research and implementation'],
+        avoidUseCases: [],
+        affordances: [
+          'public-web-fetch',
+          'public-web-search',
+          'source-citation',
+          'workspace-command-validation',
+          'workspace-read-write',
+        ],
+        modelPolicy: { mode: 'fixed', modelRef: 'pi-model' },
+      },
+    ],
+  },
+};
+
+const kernelConfiguration: KernelConfigurationView = {
+  revisionId: configurationRevision,
+  contentHash: 'sha256:kernel-test',
+  agentClasses: {
+    'codex-cli': {
+      kind: 'executor',
+      harnessRef: 'codex-harness',
+      modelPolicy: { mode: 'fixed', modelRef: 'codex-model' },
+      permissionProfileRef: 'workspace-default',
+      routingCapabilities: ['workspace-engineering'],
+      enabled: true,
+      transport: 'local-cli',
+      supportsProbe: true,
+      supportsAbort: true,
+      supportsContinuation: true,
+    },
+    'pi-agent': {
+      kind: 'executor',
+      harnessRef: 'pi-harness',
+      modelPolicy: { mode: 'fixed', modelRef: 'pi-model' },
+      permissionProfileRef: 'workspace-default',
+      routingCapabilities: ['current-web-research', 'workspace-engineering'],
+      enabled: true,
+      transport: 'local-cli',
+      supportsProbe: true,
+      supportsAbort: true,
+      supportsContinuation: false,
+    },
+  },
+  models: {
+    'codex-model': {
+      providerRef: 'openai',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'high',
+      enabled: true,
+    },
+    'pi-model': {
+      providerRef: 'anthropic',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'medium',
+      enabled: true,
+    },
+  },
+  permissionProfiles: {
+    'workspace-default': {
+      profileId: 'workspace-engineering',
+      version: 1,
+      parameters: {},
+    },
+  },
+  runtimePolicy: {
+    maxConcurrentAttempts: 4,
+  },
+};
+
+const codexBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'codex-cli',
+  harnessRef: 'codex-harness',
+  providerRef: 'openai',
+  modelRef: 'codex-model',
+  permissionProfileRef: 'workspace-default',
+  configurationRevision,
+};
+const piBinding: AuthorizedExecutorBinding = {
+  agentClassRef: 'pi-agent',
+  harnessRef: 'pi-harness',
+  providerRef: 'anthropic',
+  modelRef: 'pi-model',
+  permissionProfileRef: 'workspace-default',
+  configurationRevision,
+};
+const codexFingerprint = authorizedExecutorBindingFingerprint(codexBinding);
+const piFingerprint = authorizedExecutorBindingFingerprint(piBinding);
+
 const event: KernelEvent = {
   schemaVersion: 5,
+  configurationRevision,
   type: 'plan_proposed',
   id: 'event_plan_1',
   correlationId: 'request_1',
@@ -18,7 +159,7 @@ const event: KernelEvent = {
   targetGraphRevision: 1,
   proposal: {
     id: 'plan_1',
-    schemaVersion: 7,
+    schemaVersion: 8,
     action: 'direct_reply',
     confidence: 0.9,
     reason: 'answer directly',
@@ -40,7 +181,8 @@ const snapshot: KernelSnapshot = {
   type: 'plan_admission',
   tasks: [],
   runningTaskId: null,
-  executorCatalog: getPlannerExecutorCatalog(),
+  plannerConfiguration,
+  kernelConfiguration,
   executorStatuses: [],
   v5WorkGraphTaskIds: [],
   eligibleContextRefKeys: [],
@@ -57,6 +199,7 @@ describe('ControlKernel', () => {
     expect(first).toEqual(second);
     expect(first).toEqual({
       schemaVersion: 5,
+      configurationRevision,
       id: 'decision_event_plan_1',
       eventId: 'event_plan_1',
       action: { type: 'deliver_direct_reply', response: 'Hello' },
@@ -134,8 +277,8 @@ describe('ControlKernel', () => {
       targetGraphRevision: 2,
       availabilityExplanation: 'The configured Executors are currently unavailable.',
     };
-    const errorStatuses = proposal.workGraph!.subtasks[0]!.preferredAgentClassList.map(agentClassName => ({
-      agentClassName,
+    const errorStatuses = proposal.workGraph!.subtasks[0]!.executorBindings.map(binding => ({
+      agentClassName: binding.agentClassRef,
       classHealth: 'error' as const,
       recentAttempts: [],
       recentRecoveryChecks: [],
@@ -154,9 +297,10 @@ describe('ControlKernel', () => {
       explanation: 'The configured Executors are currently unavailable.',
     });
 
-    const recoveredName = proposal.workGraph!.subtasks[0]!.preferredAgentClassList[0]!;
+    const recoveredName = proposal.workGraph!.subtasks[0]!.executorBindings[0]!.agentClassRef;
     const recoveryEvent: Extract<KernelEvent, { type: 'executor_recovered' }> = {
       schemaVersion: 5,
+      configurationRevision,
       type: 'executor_recovered',
       id: 'executor_recovered_1',
       correlationId: 'replan_request_1',
@@ -174,6 +318,7 @@ describe('ControlKernel', () => {
       activeGenerationId: 'generation_1',
       activeGraphRevision: 1,
       deferredPlan: replanEvent,
+      deferredBindings: [codexBinding],
       executorStatuses: errorStatuses.map(status => status.agentClassName === recoveredName
         ? { ...status, classHealth: 'healthy' as const }
         : status),
@@ -193,7 +338,10 @@ describe('ControlKernel', () => {
       type: 'dispatch_batch',
       taskId: 'task_1',
       items: [expect.objectContaining({
-        subtaskId: 'subtask_1', agentClassName: 'codex-cli', attemptKind: 'primary',
+        subtaskId: 'subtask_1',
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
+        attemptKind: 'primary',
       })],
     });
   });
@@ -202,11 +350,15 @@ describe('ControlKernel', () => {
     const batch = dispatchSnapshot();
     batch.subtasks = ['e', 'c', 'a', 'd', 'b', 'f'].map(id => ({
       id, taskId: 'task_1', status: 'ready' as const,
-      preferredAgentClassList: ['codex-cli'],
+      executorBindings: [codexBinding],
     }));
     batch.frontier = ['a', 'b', 'c', 'd', 'e', 'f'];
     batch.dispatchItems = [{
-      attemptId: 'attempt_b', subtaskId: 'b', status: 'running', order: 0,
+      attemptId: 'attempt_b',
+      subtaskId: 'b',
+      bindingFingerprint: codexFingerprint,
+      status: 'running',
+      order: 0,
     }];
     batch.resourceConflictSubtaskIds = ['c'];
     batch.availableSlots = 4;
@@ -279,7 +431,7 @@ describe('ControlKernel', () => {
   });
 
   it('treats every outcome after a Task or Subtask cancellation fence as a no-op', () => {
-    const failed = executionFailure('attempt_cancelled', 'codex-cli', 'primary', 'network');
+    const failed = executionFailure('attempt_cancelled', codexBinding, 'primary', 'network');
     const cancelledTask = dispatchSnapshot();
     cancelledTask.task = { id: 'task_1', status: 'cancelled' };
     expect(new ControlKernel().decide(failed, cancelledTask).action).toEqual({ type: 'no_op' });
@@ -320,13 +472,21 @@ describe('ControlKernel', () => {
   it('tries remaining AgentClasses in order, then waits for capacity', () => {
     const kernel = new ControlKernel();
     const failed = runtimeEvent({
-      type: 'capacity_signal', agentClassName: 'codex-cli', available: false, cycleId: 'cycle_1',
+      type: 'capacity_signal',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      available: false,
+      cycleId: 'cycle_1',
       attemptKind: 'primary', attemptPayload: null,
     });
     expect(kernel.decide(failed, dispatchSnapshot()).action).toEqual({
-      type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'pi-agent',
+      type: 'probe_capacity',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      authorizedBinding: piBinding,
+      bindingFingerprint: piFingerprint,
     });
-    expect(kernel.decide(failed, dispatchSnapshot(['pi-agent'])).action).toEqual({
+    expect(kernel.decide(failed, dispatchSnapshot([piFingerprint])).action).toEqual({
       type: 'wait_for_capacity', taskId: 'task_1', subtaskId: 'subtask_1',
     });
   });
@@ -334,7 +494,7 @@ describe('ControlKernel', () => {
   it('authorizes explicit recovery resolution but refuses unsafe effect retry', () => {
     const kernel = new ControlKernel();
     const recoveryEvent: KernelEvent = {
-      schemaVersion: 5, type: 'recovery_resolution_requested', id: 'recovery_event_1',
+      schemaVersion: 5, configurationRevision, type: 'recovery_resolution_requested', id: 'recovery_event_1',
       correlationId: 'task_1', causationId: null, occurredAt: '2026-07-21T00:00:00.000Z',
       sessionId: 'session_1', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
     };
@@ -371,33 +531,49 @@ describe('ControlKernel', () => {
     expect(new ControlKernel().decide(runtimeEvent({
       type: 'dispatch_requested', reason: 'cooldown dispatch', occurredAt: '2026-07-20T00:03:00.000Z',
     }), cooling).action).toMatchObject({
-      type: 'dispatch_batch', items: [expect.objectContaining({ agentClassName: 'pi-agent' })],
+      type: 'dispatch_batch',
+      items: [expect.objectContaining({
+        authorizedBinding: piBinding,
+        bindingFingerprint: piFingerprint,
+      })],
     });
     expect(new ControlKernel().decide(runtimeEvent({
       type: 'dispatch_requested', reason: 'probe dispatch', occurredAt: '2026-07-20T00:07:00.000Z',
     }), cooling).action).toMatchObject({
-      type: 'dispatch_batch', items: [expect.objectContaining({ agentClassName: 'codex-cli' })],
+      type: 'dispatch_batch',
+      items: [expect.objectContaining({
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
+      })],
     });
   });
 
   it('blocks failures, continues successes, and completes an exhausted graph', () => {
     const kernel = new ControlKernel();
     expect(kernel.decide(runtimeEvent({
-      type: 'execution_outcome', terminalKind: 'failed', attemptId: 'attempt_1', agentClassName: 'codex-cli',
+      type: 'execution_outcome',
+      terminalKind: 'failed',
+      attemptId: 'attempt_1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
       attemptKind: 'primary', sourceAttemptId: null,
       failure: { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: 'executor failed' },
     }), dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
       type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1',
     });
     expect(kernel.decide(runtimeEvent({
-      type: 'execution_outcome', terminalKind: 'completed', attemptId: 'attempt_1', agentClassName: 'codex-cli',
+      type: 'execution_outcome',
+      terminalKind: 'completed',
+      attemptId: 'attempt_1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
       attemptKind: 'primary', sourceAttemptId: null, failure: null,
     }), dispatchSnapshot([], 'done')).action).toEqual({ type: 'complete_task', taskId: 'task_1' });
   });
 
   it('waits once for preferred infrastructure recovery, then falls back exactly once per remaining class', () => {
     const kernel = new ControlKernel();
-    const firstFailure = executionFailure('attempt_1', 'codex-cli', 'primary', 'network');
+    const firstFailure = executionFailure('attempt_1', codexBinding, 'primary', 'network');
     const firstSnapshot = dispatchSnapshot([], 'awaiting_decision');
     firstSnapshot.attempts = [attemptFact(firstFailure)];
 
@@ -406,17 +582,25 @@ describe('ControlKernel', () => {
       taskId: 'task_1',
       subtaskId: 'subtask_1',
       resumeAt: '2026-07-20T00:00:05.000Z',
-      agentClassName: 'codex-cli',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
       sourceAttemptId: 'attempt_1',
     });
 
-    const continuedFailure = executionFailure('attempt_2', 'codex-cli', 'continuation', 'network', 'attempt_1');
+    const continuedFailure = executionFailure(
+      'attempt_2',
+      codexBinding,
+      'continuation',
+      'network',
+      'attempt_1',
+    );
     const continuedSnapshot = dispatchSnapshot([], 'awaiting_decision');
     continuedSnapshot.attempts = [attemptFact(continuedFailure), attemptFact(firstFailure)];
     expect(kernel.decide(continuedFailure, continuedSnapshot).action).toMatchObject({
       type: 'dispatch_batch',
       items: [expect.objectContaining({
-        agentClassName: 'pi-agent',
+        authorizedBinding: piBinding,
+        bindingFingerprint: piFingerprint,
         attemptKind: 'fallback',
         sourceAttemptId: 'attempt_2',
         recoveryMode: 'recovery_packet',
@@ -426,15 +610,25 @@ describe('ControlKernel', () => {
 
   it('falls back immediately for task failure and requests only one automatic replan per generation', () => {
     const kernel = new ControlKernel();
-    const taskFailure = executionFailure('attempt_1', 'codex-cli', 'primary', 'task_failed');
+    const taskFailure = executionFailure('attempt_1', codexBinding, 'primary', 'task_failed');
     const fallbackSnapshot = dispatchSnapshot([], 'awaiting_decision');
     fallbackSnapshot.attempts = [attemptFact(taskFailure)];
     expect(kernel.decide(taskFailure, fallbackSnapshot).action).toMatchObject({
       type: 'dispatch_batch',
-      items: [expect.objectContaining({ agentClassName: 'pi-agent', attemptKind: 'fallback' })],
+      items: [expect.objectContaining({
+        authorizedBinding: piBinding,
+        bindingFingerprint: piFingerprint,
+        attemptKind: 'fallback',
+      })],
     });
 
-    const fallbackFailure = executionFailure('attempt_2', 'pi-agent', 'fallback', 'task_failed', 'attempt_1');
+    const fallbackFailure = executionFailure(
+      'attempt_2',
+      piBinding,
+      'fallback',
+      'task_failed',
+      'attempt_1',
+    );
     const exhausted = dispatchSnapshot([], 'awaiting_decision');
     exhausted.attempts = [attemptFact(fallbackFailure), attemptFact(taskFailure)];
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({
@@ -451,13 +645,21 @@ describe('ControlKernel', () => {
   it('authorizes exactly one response-only correction and then fails closed', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
-      type: 'handoff_contract_failed', attemptId: 'attempt_1', workUnitId: 'wu_1', agentClassName: 'codex-cli',
+      type: 'handoff_contract_failed',
+      attemptId: 'attempt_1',
+      workUnitId: 'wu_1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
       contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
       receiptCount: 1, responseBytes: 100,
     });
     expect(kernel.decide(first, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
       type: 'dispatch_batch',
-      items: [expect.objectContaining({ agentClassName: 'codex-cli', attemptKind: 'contract_correction' })],
+      items: [expect.objectContaining({
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
+        attemptKind: 'contract_correction',
+      })],
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
       type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1',
@@ -470,7 +672,8 @@ describe('ControlKernel', () => {
       type: 'merge_conflict_observed',
       publicationId: 'publication_1',
       conflictChainId: 'conflict_chain_1',
-      agentClassName: 'codex-cli',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
       sourceAttemptId: 'attempt_primary',
       repairAttemptsUsed: 0,
       conflictReplansUsed: 0,
@@ -481,7 +684,8 @@ describe('ControlKernel', () => {
       type: 'dispatch_batch',
       items: [expect.objectContaining({
         subtaskId: 'subtask_1',
-        agentClassName: 'codex-cli',
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
         attemptKind: 'merge_repair',
         sourceAttemptId: 'attempt_primary',
       })],
@@ -515,12 +719,16 @@ describe('ControlKernel', () => {
     const timerSnapshot: KernelSnapshot = {
       schemaVersion: 5, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
       task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
-      capacityAgentClasses: ['codex-cli'], executorStatuses: [],
+      capacityBindings: [codexBinding], executorStatuses: [],
       nativeContinuationAgentClasses: ['codex-cli'],
       defaultResourceGrant: [],
     };
     expect(kernel.decide(timer, timerSnapshot).action).toEqual({
-      type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1', agentClassName: 'codex-cli',
+      type: 'probe_capacity',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
     });
     expect(kernel.decide({ ...timer, id: 'timer_early', occurredAt: '2026-07-20T00:00:59.999Z' }, timerSnapshot).action).toEqual({ type: 'no_op' });
     expect(kernel.decide({ ...timer, id: 'timer_cancelled' }, {
@@ -594,10 +802,24 @@ describe('ControlKernel', () => {
     expect(kernel.decide(runtimeEvent({
       type: 'sandbox_lost', attemptId: 'attempt-1', containerId: null,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'fallback',
+      sourceAttemptId: 'attempt-primary',
+      recoveryMode: 'recovery_packet',
     }), {
       schemaVersion: 5, type: 'sandbox_recovery', workspaceExists: true,
       workspaceId: 'workspace-1', checkpointId: 'checkpoint-1', activeLeaseIds: [],
-    }).action).toMatchObject({ type: 'recover_workspace_attempt', workspaceId: 'workspace-1' });
+    }).action).toMatchObject({
+      type: 'recover_workspace_attempt',
+      workspaceId: 'workspace-1',
+      lostAttemptId: 'attempt-1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'fallback',
+      sourceAttemptId: 'attempt-primary',
+      recoveryMode: 'recovery_packet',
+    });
   });
 });
 
@@ -619,6 +841,7 @@ function runtimeEvent<T extends Omit<KernelEvent, keyof import('../../src/kernel
 ): KernelEvent {
   return {
     schemaVersion: 5,
+    configurationRevision,
     id: `event_${value.type}`,
     correlationId: 'correlation_1',
     causationId: null,
@@ -631,7 +854,7 @@ function runtimeEvent<T extends Omit<KernelEvent, keyof import('../../src/kernel
 }
 
 function dispatchSnapshot(
-  attemptedAgentClasses: string[] = [],
+  attemptedBindingFingerprints: string[] = [],
   status: 'ready' | 'awaiting_integration' | 'awaiting_decision' | 'done' = 'ready',
 ): Extract<KernelSnapshot, { type: 'dispatch' }> {
   return {
@@ -642,14 +865,14 @@ function dispatchSnapshot(
     graphState: 'ready',
     subtasks: [{
       id: 'subtask_1', taskId: 'task_1', status,
-      preferredAgentClassList: ['codex-cli', 'pi-agent'],
+      executorBindings: [codexBinding, piBinding],
     }],
     frontier: status === 'ready' ? ['subtask_1'] : [],
     dispatchItems: [],
     maxConcurrentAttempts: 4,
     availableSlots: 4,
     resourceConflictSubtaskIds: [],
-    capacityProbeAgentClasses: { subtask_1: attemptedAgentClasses },
+    capacityProbeBindingFingerprints: { subtask_1: attemptedBindingFingerprints },
     executorStatuses: [],
     correctionSupportedAgentClasses: ['codex-cli'],
     nativeContinuationAgentClasses: ['codex-cli'],
@@ -675,20 +898,26 @@ function cancellationSubtask(
     id,
     taskId: 'task_1',
     status,
-    preferredAgentClassList: ['codex-cli'],
+    executorBindings: [codexBinding],
     dependencySubtaskIds,
   };
 }
 
 function executionFailure(
   attemptId: string,
-  agentClassName: string,
+  authorizedBinding: AuthorizedExecutorBinding,
   attemptKind: 'primary' | 'continuation' | 'fallback',
   kind: 'network' | 'task_failed',
   sourceAttemptId: string | null = null,
 ): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return runtimeEvent({
-    type: 'execution_outcome', terminalKind: 'failed', attemptId, agentClassName, attemptKind, sourceAttemptId,
+    type: 'execution_outcome',
+    terminalKind: 'failed',
+    attemptId,
+    authorizedBinding,
+    bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
+    attemptKind,
+    sourceAttemptId,
     failure: {
       kind,
       scope: kind === 'task_failed' ? 'task' : 'agent_class',
@@ -702,7 +931,8 @@ function attemptFact(event: Extract<KernelEvent, { type: 'execution_outcome' }>)
   return {
     attemptId: event.attemptId!,
     subtaskId: event.subtaskId!,
-    agentClassName: event.agentClassName,
+    authorizedBinding: event.authorizedBinding,
+    bindingFingerprint: event.bindingFingerprint,
     attemptKind: event.attemptKind,
     sourceAttemptId: event.sourceAttemptId,
     terminalKind: event.terminalKind,

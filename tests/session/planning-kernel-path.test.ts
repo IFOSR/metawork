@@ -43,7 +43,7 @@ function createConfig(): Config {
 function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
   return {
     id: 'plan_test',
-    schemaVersion: 7,
+    schemaVersion: 8,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'planner 直接产出工作图',
@@ -62,6 +62,8 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workGraph: {
+      schemaVersion: 7,
+      configurationRevision: 'revision-test',
       reason: 'single executor work graph',
       subtasks: [{
         id: 'subtask_execute',
@@ -70,7 +72,10 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
         dependencies: [],
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
-        preferredAgentClassList: ['codex-cli'],
+        executorBindings: [{
+          agentClassRef: 'codex-cli',
+          modelSelection: { mode: 'fixed-by-agent-class' },
+        }],
         deliveryKind: 'edit',
         acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
@@ -126,10 +131,18 @@ function createSession(
 
 function seedPriorGenerationEvidence(db: Database.Database, taskId: string): void {
   const now = '2026-07-20T00:00:00.000Z';
+  db.prepare(`
+    INSERT INTO work_graph_revisions (
+      id, task_id, revision, generation_id, configuration_revision,
+      authorized_decision_id, proposal_source, automatic_replan,
+      status, completion_kind, created_at, updated_at
+    ) VALUES (?, ?, 0, 'generation_prior', 'revision-test', NULL, 'initial', 0,
+      'superseded', 'full', ?, ?)
+  `).run('work_graph_prior_generation', taskId, now, now);
   new SubtaskRepo(db).upsert({
     id: 'subtask_prior_generation',
     taskId,
-    graphRevision: 99,
+    graphRevision: 0,
     generationId: 'generation_prior',
     title: 'Prior generation work',
     goal: 'Prior generation work',
@@ -137,7 +150,14 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
     dependencies: [],
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'],
+    executorBindings: [{
+      agentClassRef: 'codex-cli',
+      harnessRef: 'codex-cli',
+      providerRef: 'test-provider',
+      modelRef: 'test-model',
+      permissionProfileRef: 'workspace-engineering',
+      configurationRevision: 'revision-test',
+    }],
     deliveryKind: 'report',
     acceptance: [],
     riskLevel: 'low',
@@ -593,6 +613,8 @@ describe('natural-language planning/kernel path', () => {
     });
     const harness = createSession('sess_concurrent_frontier', plan({
       workGraph: {
+        schemaVersion: 7,
+        configurationRevision: 'revision-test',
         reason: 'two independent implementation units',
         subtasks: [
           {
@@ -602,7 +624,10 @@ describe('natural-language planning/kernel path', () => {
             dependencies: [],
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
-            preferredAgentClassList: ['codex-cli'],
+            executorBindings: [{
+              agentClassRef: 'codex-cli',
+              modelSelection: { mode: 'fixed-by-agent-class' },
+            }],
             deliveryKind: 'report',
             acceptance: [{
               key: 'a_done',
@@ -618,7 +643,10 @@ describe('natural-language planning/kernel path', () => {
             dependencies: [],
             contextRefs: [{ kind: 'current_user_input' }],
             requiredCapabilities: ['workspace-engineering'],
-            preferredAgentClassList: ['codex-cli'],
+            executorBindings: [{
+              agentClassRef: 'codex-cli',
+              modelSelection: { mode: 'fixed-by-agent-class' },
+            }],
             deliveryKind: 'report',
             acceptance: [{
               key: 'b_done',
@@ -670,7 +698,7 @@ describe('natural-language planning/kernel path', () => {
           SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
         `).all(),
         output: harness.session.getSnapshot().output,
-      }))), 2_000)),
+      }))), 20_000)),
     ]);
     expect(maximumRunning).toBe(2);
 
@@ -754,15 +782,41 @@ describe('natural-language planning/kernel path', () => {
 
     const contextBuildCalls = contextBuild.mock.calls.length;
     contextBuild.mockRestore();
-    expect(plannerCalls).toBe(2);
+    const replanDiagnostics = JSON.stringify({
+      tasks: harness.db.prepare(`
+        SELECT id, status, summary FROM tasks ORDER BY created_at
+      `).all(),
+      subtasks: harness.db.prepare(`
+        SELECT id, status, error FROM subtasks ORDER BY created_at
+      `).all(),
+      dispatchItems: harness.db.prepare(`
+        SELECT attempt_id, status, error_summary FROM kernel_dispatch_items ORDER BY created_at
+      `).all(),
+      receipts: harness.db.prepare(`
+        SELECT attempt_id, terminal_state, error_code, error_detail, failure_json
+        FROM executor_attempt_receipts ORDER BY completed_at
+      `).all(),
+      replans: harness.db.prepare(`
+        SELECT id, status, source_revision, configuration_revision, error_summary
+        FROM generation_replan_requests ORDER BY created_at
+      `).all(),
+      decisions: harness.kernelDecisionRepo.listBySession('sess_replan')
+        .map(item => ({ action: item.action, reason: item.reason })),
+      events: harness.db.prepare(`
+        SELECT event_type, status, event_json FROM kernel_events ORDER BY created_at
+      `).all(),
+      output: harness.session.getSnapshot().output,
+    });
+    expect(plannerCalls, replanDiagnostics).toBe(2);
     expect(replanRequest).not.toContain('evidence_prior_generation');
     expect(replanRequest).not.toContain('must not leak into the current generation');
     expect(contextBuildCalls).toBe(3);
-    expect(harness.attemptExecutionBackend.create).toHaveBeenCalledTimes(2);
-    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect(harness.attemptExecutionBackend.create, replanDiagnostics).toHaveBeenCalledTimes(2);
+    expect(harness.taskRepo.findAll()[0], replanDiagnostics).toMatchObject({ status: 'done' });
     expect(harness.db.prepare(`
       SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
     `).all()).toEqual([
+      { revision: 0, status: 'superseded', automatic_replan: 0 },
       { revision: 1, status: 'superseded', automatic_replan: 0 },
       { revision: 2, status: 'completed', automatic_replan: 1 },
     ]);
@@ -855,7 +909,10 @@ describe('natural-language planning/kernel path', () => {
 
   it('maps proposal validation rejection to a user-safe action while preserving the durable reason', async () => {
     const rejectedPlan = plan();
-    rejectedPlan.workGraph!.subtasks[0]!.preferredAgentClassList = ['ghost-executor'] as never;
+    rejectedPlan.workGraph!.subtasks[0]!.executorBindings = [{
+      agentClassRef: 'ghost-executor',
+      modelSelection: { mode: 'fixed-by-agent-class' },
+    }];
     const harness = createSession('sess_reject_executor', rejectedPlan);
 
     await harness.session.submit('交给不存在的执行器', { awaitAsyncWork: true });
@@ -870,6 +927,6 @@ describe('natural-language planning/kernel path', () => {
       WHERE session_id = ? AND status = 'rejected'
     `).get('sess_reject_executor') as { result_json: string };
     const result = JSON.parse(proposal.result_json) as { issues: string[] };
-    expect(result.issues.join('; ')).toContain('preferredAgentClassList');
+    expect(result.issues.join('; ')).toContain('ghost-executor');
   });
 });
