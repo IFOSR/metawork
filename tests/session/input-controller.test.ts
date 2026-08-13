@@ -4,8 +4,6 @@ import { InputController, type InputControllerPort } from '../../src/session/inp
 function createPort(overrides: Partial<InputControllerPort> = {}): InputControllerPort {
   return {
     appendUserInput: vi.fn(),
-    hasPendingExecutorRegisterWizard: vi.fn().mockReturnValue(false),
-    handlePendingExecutorRegisterWizard: vi.fn().mockResolvedValue(false),
     handleCommand: vi.fn().mockResolvedValue(false),
     handleNaturalLanguageInput: vi.fn().mockResolvedValue(undefined),
     waitForAsyncWork: vi.fn().mockResolvedValue(undefined),
@@ -51,19 +49,6 @@ describe('InputController', () => {
     expect(port.appendUserInput).toHaveBeenCalledWith('继续刚才的任务');
     expect(port.handleNaturalLanguageInput).toHaveBeenCalledWith('继续刚才的任务');
     expect(port.handleCommand).not.toHaveBeenCalled();
-  });
-
-  it('lets a pending executor register wizard consume non-command input first', async () => {
-    const port = createPort({
-      hasPendingExecutorRegisterWizard: vi.fn().mockReturnValue(true),
-    });
-    const controller = new InputController(port);
-
-    await controller.submit('research-bot');
-
-    expect(port.handlePendingExecutorRegisterWizard).toHaveBeenCalledWith('research-bot');
-    expect(port.handleCommand).not.toHaveBeenCalled();
-    expect(port.handleNaturalLanguageInput).not.toHaveBeenCalled();
   });
 
   it('reports routing errors and still waits for async work when requested', async () => {
