@@ -262,6 +262,27 @@ export class VerificationAndDeliveryService {
     return this.buildCompletionLines(input);
   }
 
+  /** Formats the task-completion notification once, before transport selection. */
+  formatTaskCompletionText(input: TaskCompletionDeliveryInput): string {
+    if (input.executionMode === 'resume-blocked') {
+      return formatBlockedRecoveryCompletedText(input);
+    }
+    const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
+    const lines = [
+      'MetaClaw 后台任务已完成',
+      '',
+      `任务：#${input.taskId} ${input.title}`,
+      `恢复方式：${formatExecutionModeText(input.executionMode)}`,
+      `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
+      '',
+      `摘要：${summary}`,
+    ];
+    if (input.artifactPaths.length > 0) {
+      lines.push('', '产物：', ...input.artifactPaths.map(path => `- ${path}`));
+    }
+    return lines.join('\n');
+  }
+
   async deliverTaskCompletion(
     notifier: NotificationService,
     input: TaskCompletionDeliveryInput,
@@ -271,7 +292,7 @@ export class VerificationAndDeliveryService {
     }
 
     try {
-      await notifier.notifyTaskCompleted(input);
+      await notifier.notifyTaskCompleted(this.formatTaskCompletionText(input), input);
       return null;
     } catch (error) {
       return `⚠️ 任务完成通知失败: ${(error as Error).message}`;
@@ -413,6 +434,56 @@ function firstNonEmptyLine(value: string): string | null {
     .split(/\r?\n/)
     .map(line => line.trim())
     .find(Boolean) ?? null;
+}
+
+function formatBlockedRecoveryCompletedText(input: TaskCompletionDeliveryInput): string {
+  const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
+  const recoveryTrigger = input.recoveryTrigger;
+  const lines = [
+    'MetaClaw 旧阻塞任务已完成',
+    '',
+    `任务：#${input.taskId} ${input.title}`,
+    `触发方式：${formatRecoveryTriggerText(recoveryTrigger, input.origin)}`,
+    `原阻塞原因：${recoveryTrigger?.blockedReason || '未知原因'}`,
+  ];
+  if (recoveryTrigger?.triggerReason) {
+    lines.push(`恢复原因：${recoveryTrigger.triggerReason}`);
+  }
+  if (recoveryTrigger?.sourceInputExcerpt) {
+    lines.push(`触发输入：${recoveryTrigger.sourceInputExcerpt}`);
+  }
+  lines.push(
+    `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
+    '',
+    '答案：',
+    summary,
+  );
+  if (input.artifactPaths.length > 0) {
+    lines.push('', '产物：', ...input.artifactPaths.map(path => `- ${path}`));
+  }
+  return lines.join('\n');
+}
+
+function formatRecoveryTriggerText(
+  trigger: TaskRecoveryTrigger | undefined,
+  origin: 'user' | 'system',
+): string {
+  if (!trigger) {
+    return origin === 'system' ? '后台恢复' : '用户触发恢复';
+  }
+  if (trigger.kind === 'timer-recheck') return '后台恢复';
+  if (trigger.kind === 'user-query-unblocked') return '用户新 query 解除阻塞';
+  if (trigger.kind === 'natural-language-resume') return '用户自然语言恢复旧阻塞任务';
+  if (trigger.kind === 'explicit-task-command') return '用户显式命令恢复旧阻塞任务';
+  if (trigger.kind === 'proposal') return '用户接受恢复建议';
+  return origin === 'system' ? '后台恢复' : '用户触发恢复';
+}
+
+function formatExecutionModeText(mode: TaskCompletionDeliveryInput['executionMode']): string {
+  if (mode === 'resume-blocked') return '阻塞解除后后台恢复';
+  if (mode === 'resume-parked') return '挂起任务恢复';
+  if (mode === 'follow-up') return '后续任务';
+  return '新任务';
 }
 
 export function isUndeliverableExecutorOutput(output: string): boolean {

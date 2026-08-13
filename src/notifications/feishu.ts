@@ -40,14 +40,14 @@ export class FeishuNotifier implements NotificationService {
     this.nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   }
 
-  async notifyTaskCompleted(input: TaskCompletedNotification): Promise<void> {
+  async notifyTaskCompleted(text: string, _input: TaskCompletedNotification): Promise<void> {
     if (!this.config.enabled || !this.config.webhook_url) {
       return;
     }
 
     const body: Record<string, unknown> = {
       msg_type: 'interactive',
-      ...createFeishuWebhookMarkdownCard(formatTaskCompletedText(input)),
+      ...createFeishuWebhookMarkdownCard(text),
     };
 
     if (this.config.secret) {
@@ -73,9 +73,9 @@ export class FeishuGatewayHomeNotifier implements NotificationService {
     },
   ) {}
 
-  async notifyTaskCompleted(input: TaskCompletedNotification): Promise<void> {
+  async notifyTaskCompleted(text: string, _input: TaskCompletedNotification): Promise<void> {
     const client = this.input.client ?? this.createClient();
-    await client.sendMarkdownCardToChat(this.input.homeChannel, formatTaskCompletedText(input));
+    await client.sendMarkdownCardToChat(this.input.homeChannel, text);
   }
 
   private createClient(): FeishuAppClient {
@@ -88,89 +88,6 @@ export class FeishuGatewayHomeNotifier implements NotificationService {
       app_secret: appSecret,
     });
   }
-}
-
-function formatTaskCompletedText(input: TaskCompletedNotification): string {
-  if (input.executionMode === 'resume-blocked') {
-    return formatBlockedRecoveryCompletedText(input);
-  }
-
-  const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
-  const lines = [
-    'MetaClaw 后台任务已完成',
-    '',
-    `任务：#${input.taskId} ${input.title}`,
-    `恢复方式：${formatExecutionMode(input.executionMode)}`,
-    `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
-    '',
-    `摘要：${summary}`,
-  ];
-
-  if (input.artifactPaths.length > 0) {
-    lines.push('', '产物：', ...input.artifactPaths.map(path => `- ${path}`));
-  }
-
-  return lines.join('\n');
-}
-
-function formatBlockedRecoveryCompletedText(input: TaskCompletedNotification): string {
-  const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
-  const recoveryTrigger = input.recoveryTrigger;
-  const lines = [
-    'MetaClaw 旧阻塞任务已完成',
-    '',
-    `任务：#${input.taskId} ${input.title}`,
-    `触发方式：${formatRecoveryTrigger(recoveryTrigger, input.origin)}`,
-    `原阻塞原因：${recoveryTrigger?.blockedReason || '未知原因'}`,
-  ];
-
-  if (recoveryTrigger?.triggerReason) {
-    lines.push(`恢复原因：${recoveryTrigger.triggerReason}`);
-  }
-
-  if (recoveryTrigger?.sourceInputExcerpt) {
-    lines.push(`触发输入：${recoveryTrigger.sourceInputExcerpt}`);
-  }
-
-  lines.push(
-    `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
-    '',
-    '答案：',
-    summary,
-  );
-
-  if (input.artifactPaths.length > 0) {
-    lines.push('', '产物：', ...input.artifactPaths.map(path => `- ${path}`));
-  }
-
-  return lines.join('\n');
-}
-
-function formatRecoveryTrigger(
-  trigger: TaskCompletedNotification['recoveryTrigger'],
-  origin: TaskCompletedNotification['origin'],
-): string {
-  if (!trigger) {
-    return origin === 'system' ? '后台恢复' : '用户触发恢复';
-  }
-
-  if (trigger.kind === 'timer-recheck') return '后台恢复';
-  if (trigger.kind === 'user-query-unblocked') return '用户新 query 解除阻塞';
-  if (trigger.kind === 'natural-language-resume') return '用户自然语言恢复旧阻塞任务';
-  if (trigger.kind === 'explicit-task-command') return '用户显式命令恢复旧阻塞任务';
-  if (trigger.kind === 'proposal') return '用户接受恢复建议';
-  return origin === 'system' ? '后台恢复' : '用户触发恢复';
-}
-
-function formatExecutionMode(mode: TaskCompletedNotification['executionMode']): string {
-  if (mode === 'resume-blocked') return '阻塞解除后后台恢复';
-  if (mode === 'resume-parked') return '挂起任务恢复';
-  if (mode === 'follow-up') return '后续任务';
-  return '新任务';
-}
-
-function firstNonEmptyLine(text: string): string {
-  return text.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? '';
 }
 
 async function defaultPostJson(url: string, body: Record<string, unknown>): Promise<JsonResponse> {

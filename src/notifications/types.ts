@@ -13,7 +13,7 @@ export interface TaskCompletedNotification {
 }
 
 export interface NotificationService {
-  notifyTaskCompleted(input: TaskCompletedNotification): Promise<void>;
+  notifyTaskCompleted(text: string, input: TaskCompletedNotification): Promise<void>;
 }
 
 export class NoopNotificationService implements NotificationService {
