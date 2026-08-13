@@ -1,5 +1,5 @@
 // CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { createDatabase } from './storage/database.js';
 import { TaskRepo } from './storage/task-repo.js';
@@ -13,6 +13,10 @@ import { loadConfig } from './utils/config.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
 import { parseCliArgs } from './cli/args.js';
+import { parseAdminArgs } from './cli/admin-args.js';
+import { runConfigurationAdmin } from './commands/configuration-admin.js';
+import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
+import { resolveAnyFusionPaths } from './installation/paths.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
 import { nanoid } from 'nanoid';
@@ -78,6 +82,19 @@ async function main() {
     || cliArgs.gatewayCommand === 'status'
   ) {
     console.log(`请使用 ./metaclaw.sh ${cliArgs.gatewayCommand} 管理后台进程。`);
+    return;
+  }
+
+  const adminCommand = parseAdminArgs(process.argv.slice(2));
+  if (adminCommand) {
+    const configurationRepository = new FileConfigurationRepository(
+      dirname(resolveAnyFusionPaths().configurationRevisions),
+    );
+    const snapshot = await configurationRepository.getActiveSnapshot();
+    const lines = await runConfigurationAdmin(adminCommand, {
+      getActiveSnapshot: async () => snapshot,
+    });
+    process.stdout.write(`${lines.join('\n')}\n`);
     return;
   }
 
