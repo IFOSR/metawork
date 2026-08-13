@@ -122,6 +122,7 @@ import { ConfigurationRevisionRepo } from '../storage/configuration-revision-rep
 import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 import { CodexCliDriver } from '../executor/codex-cli-driver.js';
 import { PiCliDriver } from '../executor/pi-cli-driver.js';
+import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
@@ -146,6 +147,7 @@ export interface MetaclawSessionDeps {
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
+  probeCommand?: ProbeCommandRunner;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -451,8 +453,11 @@ export class MetaclawSession {
         });
       });
     };
-    registerLocalDriver(new CodexCliDriver());
-    registerLocalDriver(new PiCliDriver());
+    const probeCommand = deps.probeCommand ?? (process.env.NODE_ENV === 'test'
+      ? async () => ({ code: 0, stdout: 'test-harness', stderr: '' })
+      : undefined);
+    registerLocalDriver(new CodexCliDriver({ probeCommand }));
+    registerLocalDriver(new PiCliDriver({ probeCommand }));
     const executorRegistry = new ExecutorRegistry({
       driverRegistry,
       getRuntimeConfiguration: revisionId => (

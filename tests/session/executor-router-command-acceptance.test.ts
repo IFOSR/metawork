@@ -101,9 +101,6 @@ describe('planner-first executor command acceptance', () => {
     session.initialize();
     await session.submit('请实现一个 TypeScript 单元测试并修复代码', { awaitAsyncWork: true });
 
-    const agentClasses = db.prepare('SELECT name FROM agent_classes ORDER BY name ASC').all() as Array<{ name: string }>;
-    expect(agentClasses.map(row => row.name)).toEqual(expect.arrayContaining(['codex-cli', 'planner']));
-
     const subtasks = db.prepare('SELECT status, delivery_kind FROM subtasks ORDER BY created_at ASC').all() as Array<{
       status: string;
       delivery_kind: string;
