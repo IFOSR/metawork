@@ -14,8 +14,10 @@ import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
 import { parseCliArgs } from './cli/args.js';
 import { parseAdminArgs } from './cli/admin-args.js';
-import { runConfigurationAdmin } from './commands/configuration-admin.js';
+import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
+import { ConfigurationService, type ActivateDraftResult } from './configuration/configuration-service.js';
+import type { AnyFusionConfigurationV2 } from './configuration/types.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
@@ -37,6 +39,34 @@ import {
   type AuthorizedExecutorBinding,
 } from './core/authorized-executor-binding.js';
 import { createSchema30MigrationContext } from './storage/migrations.js';
+
+function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
+  if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
+  return { ok: false, code: result.code, activeRevisionId: result.activeRevisionId };
+}
+
+async function activateConfiguration(
+  service: ConfigurationService,
+  config: AnyFusionConfigurationV2,
+  baseRevisionId: string,
+): Promise<ConfigurationMutationResult> {
+  const draft = service.createDraft(config, baseRevisionId);
+  const validation = service.validateDraft(draft.revisionId);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      code: 'validation_failed',
+      activeRevisionId: baseRevisionId,
+      issues: validation.issues.map(issue => `${issue.path || '(root)'}: ${issue.message}`),
+    };
+  }
+  service.compileDraft(draft.revisionId);
+  const probe = await service.probeDraft(draft.revisionId);
+  if (!probe.ok) {
+    return { ok: false, code: 'probe_failed', activeRevisionId: baseRevisionId };
+  }
+  return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
+}
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
@@ -90,9 +120,18 @@ async function main() {
     const configurationRepository = new FileConfigurationRepository(
       dirname(resolveAnyFusionPaths().configurationRevisions),
     );
-    const snapshot = await configurationRepository.getActiveSnapshot();
+    await configurationRepository.initialize();
+    await configurationRepository.recover();
+    const configurationService = new ConfigurationService({ repository: configurationRepository });
+    const activeSnapshot = await configurationService.getActiveSnapshot();
     const lines = await runConfigurationAdmin(adminCommand, {
-      getActiveSnapshot: async () => snapshot,
+      getActiveSnapshot: () => configurationService.getActiveSnapshot(),
+      rollback: async targetRevisionId => toMutationResult(
+        await configurationService.rollback(targetRevisionId, activeSnapshot.revisionId),
+      ),
+      listRevisions: () => configurationRepository.listRevisions(),
+      getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
+      activate: async config => activateConfiguration(configurationService, config, activeSnapshot.revisionId),
     });
     process.stdout.write(`${lines.join('\n')}\n`);
     return;

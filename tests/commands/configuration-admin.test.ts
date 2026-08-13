@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runConfigurationAdmin } from '../../src/commands/configuration-admin.js';
+import { runConfigurationAdmin, type ConfigurationMutationResult } from '../../src/commands/configuration-admin.js';
 import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
 
 function snapshot(): ConfigurationSnapshot {
@@ -81,6 +81,16 @@ function deps() {
   return { getActiveSnapshot: async () => snapshot() };
 }
 
+function writeDeps() {
+  return {
+    getActiveSnapshot: async () => snapshot(),
+    rollback: async (): Promise<ConfigurationMutationResult> => ({ ok: true, revisionId: 'revision-11' }),
+    listRevisions: async () => ['revision-09', 'revision-10'],
+    getSnapshot: async () => ({ ...snapshot(), revisionId: 'revision-09', contentHash: 'sha256:old' }),
+    activate: async (): Promise<ConfigurationMutationResult> => ({ ok: true, revisionId: 'revision-11' }),
+  };
+}
+
 describe('runConfigurationAdmin', () => {
   it('formats status from the active snapshot', async () => {
     const lines = await runConfigurationAdmin({ kind: 'status' }, deps());
@@ -116,5 +126,42 @@ describe('runConfigurationAdmin', () => {
     const lines = await runConfigurationAdmin({ kind: 'config', subcommand: 'validate' }, deps());
     expect(lines[0]).toBe('configuration is invalid:');
     expect(lines.some(line => line.includes('unknown Harness reference'))).toBe(true);
+  });
+
+  it('lists configuration history with the active revision marked', async () => {
+    const lines = await runConfigurationAdmin({ kind: 'config', subcommand: 'history' }, writeDeps());
+    expect(lines).toEqual(['revision-09', 'revision-10 (active)']);
+  });
+
+  it('rolls back to a target revision', async () => {
+    const lines = await runConfigurationAdmin(
+      { kind: 'config', subcommand: 'rollback', targetRevisionId: 'revision-09' },
+      writeDeps(),
+    );
+    expect(lines).toEqual(['activated: revision-11']);
+  });
+
+  it('reports config diff against a target revision', async () => {
+    const lines = await runConfigurationAdmin(
+      { kind: 'config', subcommand: 'diff', targetRevisionId: 'revision-09' },
+      writeDeps(),
+    );
+    expect(lines[0]).toBe('different: revision-09 (sha256:old) vs revision-10 (sha256:abc123)');
+  });
+
+  it('disables an executor through the write surface', async () => {
+    let activatedConfig: unknown;
+    const d = writeDeps();
+    d.activate = async config => {
+      activatedConfig = config;
+      return { ok: true, revisionId: 'revision-11' };
+    };
+    const lines = await runConfigurationAdmin(
+      { kind: 'executor', subcommand: 'disable', id: 'codex-cli' },
+      d,
+    );
+    expect(lines).toEqual(['activated: revision-11']);
+    expect((activatedConfig as { agentClasses: Record<string, { enabled: boolean }> })
+      .agentClasses['codex-cli']!.enabled).toBe(false);
   });
 });

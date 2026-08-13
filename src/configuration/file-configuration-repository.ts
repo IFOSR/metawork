@@ -123,6 +123,14 @@ export class FileConfigurationRepository {
     };
   }
 
+  async listRevisions(): Promise<string[]> {
+    const entries = await readdir(this.revisionsPath, { withFileTypes: true });
+    return entries
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.stage-'))
+      .map(entry => entry.name)
+      .sort();
+  }
+
   async getActiveSnapshot(): Promise<ConfigurationSnapshot> {
     const activeRevisionId = await this.readActiveRevisionId();
     if (!activeRevisionId) {

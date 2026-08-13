@@ -1,7 +1,8 @@
 // Parses the Admin CLI surface (`anyfusion configure|config|provider|model|planner|executor|doctor|status`).
 export type AdminCommand =
   | { kind: 'configure' }
-  | { kind: 'config'; subcommand: ConfigSubcommand }
+  | { kind: 'config'; subcommand: 'show' | 'validate' | 'history' }
+  | { kind: 'config'; subcommand: 'diff' | 'rollback'; targetRevisionId?: string }
   | { kind: 'provider'; subcommand: ProviderSubcommand; id?: string }
   | { kind: 'model'; subcommand: ModelSubcommand; id?: string }
   | { kind: 'planner'; subcommand: PlannerSubcommand }
@@ -31,7 +32,13 @@ export function parseAdminArgs(argv: readonly string[]): AdminCommand | null {
     case 'status':
       return { kind: 'status' };
     case 'config':
-      return { kind: 'config', subcommand: requireSubcommand(subcommand, CONFIG_SUBCOMMANDS, 'config') };
+      {
+        const sub = requireSubcommand(subcommand, CONFIG_SUBCOMMANDS, 'config');
+        if (sub === 'diff' || sub === 'rollback') {
+          return { kind: 'config', subcommand: sub, targetRevisionId: id };
+        }
+        return { kind: 'config', subcommand: sub };
+      }
     case 'provider':
       return {
         kind: 'provider',
