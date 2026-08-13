@@ -1701,16 +1701,7 @@ export class KernelExecutionRuntime {
     }, () => new Date().toISOString());
     if (deliveryMessage) this.deps.callbacks.appendOutput(deliveryMessage);
 
-    const suggestion = this.deps.orchestration.suggestNext(input.taskId);
-    const nextProposal = this.deps.orchestration.suggestNextProposal(input.taskId);
-    if (suggestion) {
-      const guidance = this.deps.callbacks.setLatestGuidance('completion suggestion', suggestion);
-      completionLines.push(...this.deps.presentation.formatGuidanceBlock(
-        'completion suggestion', suggestion, guidance.taskTitle, { emptyReason: 'follow-up task is available' },
-      ));
-    }
     await input.finishExecution(completionLines);
-    if (nextProposal) this.deps.callbacks.queueProposal('completion suggestion', nextProposal);
   }
 
   private projectExecutorOutcome(

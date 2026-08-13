@@ -10,8 +10,6 @@ import dayjs from 'dayjs';
 import { GuidancePolicyEngine } from './guidance-policy-engine.js';
 import { TaskSignalService } from './task-signal-service.js';
 
-const AUTO_RESUME_READY_REASON = '挂起任务满足执行条件，恢复进入待调度队列';
-
 const WEIGHTS = {
   urgency: 3,
   readiness: 2,
@@ -46,8 +44,7 @@ export class OrchestrationEngine {
     const readyTasks = tasks.filter(t => t.status === 'ready');
     const blockedTasks = tasks.filter(t => t.status === 'blocked');
 
-    const prioritized = this.getPrioritizedTasks();
-    const priorityTask = prioritized.length > 0 ? prioritized[0] : null;
+    const priorityTask = readyTasks.length > 0 ? readyTasks[0] : null;
 
     const blockedWithReasons = blockedTasks.map(t => ({
       ...t,
@@ -56,32 +53,10 @@ export class OrchestrationEngine {
 
     return {
       summary,
-      priorityTask: priorityTask ? {
-        ...priorityTask.task,
-        reasons: priorityTask.reasons,
-      } : null,
+      priorityTask: priorityTask ? { ...priorityTask, reasons: [] } : null,
       blockedTasks: blockedWithReasons,
       readyTasks,
     };
-  }
-
-  /**
-   * 获取优先级排序后的 READY / CREATED 待调度任务
-   */
-  getPrioritizedTasks(): Array<{ task: Task; score: PriorityScore; reasons: string[] }> {
-    const repo = this.taskEngine['taskRepo'];
-    const tasks = [
-      ...repo.findByStatus('ready'),
-      ...repo.findByStatus('created'),
-    ];
-
-    const scored = tasks.map(task => {
-      const { score, reasons } = this.evaluateTask(task);
-      return { task, score, reasons };
-    });
-
-    scored.sort((a, b) => b.score.total - a.score.total);
-    return scored;
   }
 
   evaluateTask(task: Task): { score: PriorityScore; reasons: string[] } {
@@ -99,14 +74,6 @@ export class OrchestrationEngine {
       ...t,
       blockReason: t.dependencies.find(d => d.status === 'waiting')?.description || '未知原因',
     }));
-  }
-
-  /**
-   * 任务完成后推荐下一个
-   */
-  suggestNext(completedTaskId: string): Suggestion | null {
-    const proposal = this.suggestNextProposal(completedTaskId);
-    return proposal ? this.mapProposalToSuggestion(proposal) : null;
   }
 
   /**
@@ -136,38 +103,14 @@ export class OrchestrationEngine {
   generateProposals(trigger = 'system'): GuidanceProposal[] {
     const tasks = this.taskEngine['taskRepo'].findActive();
     const taskLookup = new Map(tasks.map(task => [task.id, task] as const));
-    const readyTaskIds = this.getPrioritizedTasks().map(({ task }) => task.id);
 
     return this.guidancePolicyEngine.build(
       tasks.map(task => this.taskSignalService.build(task)),
       {
         trigger,
         taskLookup,
-        readyTaskIds,
       },
     );
-  }
-
-  suggestNextProposal(completedTaskId: string): GuidanceProposal | null {
-    const readyTasks = this.getPrioritizedTasks()
-      .map(({ task }) => task)
-      .filter(task => task.id !== completedTaskId);
-
-    if (readyTasks.length === 0) {
-      return null;
-    }
-
-    const taskLookup = new Map(readyTasks.map(task => [task.id, task] as const));
-    const proposals = this.guidancePolicyEngine.build(
-      readyTasks.map(task => this.taskSignalService.build(task)),
-      {
-        trigger: 'task_completed',
-        taskLookup,
-        readyTaskIds: readyTasks.map(task => task.id),
-      },
-    );
-
-    return proposals.find(proposal => proposal.actionType === 'prioritize_task') ?? null;
   }
 
   /**
@@ -212,10 +155,6 @@ export class OrchestrationEngine {
   }
 
   private scoreContinuityBenefit(task: Task): number {
-    if (this.isRecoveredPreemptedTask(task)) {
-      return 10;
-    }
-
     return Math.round(task.prioritySignals.progressRatio * 10);
   }
 
@@ -236,9 +175,6 @@ export class OrchestrationEngine {
    */
   private generateReasons(task: Task, score: PriorityScore): string[] {
     const reasons: string[] = [];
-    if (this.isRecoveredPreemptedTask(task)) {
-      reasons.push('挂起任务已满足执行条件，恢复连续性收益最高');
-    }
     if (score.continuityBenefit >= 7)
       reasons.push(`已完成 ${Math.round(task.prioritySignals.progressRatio * 100)}%，继续成本最低`);
     if (score.readiness >= 8)
@@ -254,11 +190,6 @@ export class OrchestrationEngine {
       reasons.push(`已搁置 ${hours} 小时`);
     }
     return reasons;
-  }
-
-  private isRecoveredPreemptedTask(task: Task): boolean {
-    return task.status === 'ready'
-      && task.lastSchedulingReason === AUTO_RESUME_READY_REASON;
   }
 
   private mapProposalToSuggestion(proposal: GuidanceProposal): Suggestion {

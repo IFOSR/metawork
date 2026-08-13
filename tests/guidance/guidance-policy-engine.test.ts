@@ -66,7 +66,7 @@ describe('OrchestrationEngine proposals', () => {
     orchestration = new OrchestrationEngine(taskEngine);
   });
 
-  it('surfaces a prioritize_task proposal and maps it back to the legacy suggestion shape', () => {
+  it('renders no prioritize_task proposal for ready tasks', () => {
     const task = taskEngine.create({ title: '任务A', goal: '目标A' });
     taskEngine['taskRepo'].update(task.id, {
       prioritySignals: {
@@ -80,11 +80,7 @@ describe('OrchestrationEngine proposals', () => {
     taskEngine.transition(task.id, 'ready');
 
     const proposals = orchestration.generateProposals('idle');
-    const suggestions = orchestration.generateSuggestions();
 
-    expect(proposals[0]?.actionType).toBe('prioritize_task');
-    expect(proposals[0]?.taskId).toBe(task.id);
-    expect(suggestions[0]?.taskId).toBe(task.id);
-    expect(suggestions[0]?.type).toBe('priority_suggestion');
+    expect(proposals.some(proposal => proposal.actionType === 'prioritize_task')).toBe(false);
   });
 });
