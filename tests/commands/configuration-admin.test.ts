@@ -111,4 +111,10 @@ describe('runConfigurationAdmin', () => {
     const lines = await runConfigurationAdmin({ kind: 'planner', subcommand: 'show' }, deps());
     expect(lines).toEqual(['planner: anyfusion-planner (enabled)']);
   });
+
+  it('reports invalid configuration issues', async () => {
+    const lines = await runConfigurationAdmin({ kind: 'config', subcommand: 'validate' }, deps());
+    expect(lines[0]).toBe('configuration is invalid:');
+    expect(lines.some(line => line.includes('unknown Harness reference'))).toBe(true);
+  });
 });

@@ -3,6 +3,7 @@
 // through the full ConfigurationService surface rather than YAML/env/SQLite.
 import type { AdminCommand } from '../cli/admin-args.js';
 import type { ConfigurationSnapshot } from '../configuration/types.js';
+import { validateConfigurationCandidate } from '../configuration/configuration-validator.js';
 
 export interface ConfigurationAdminDeps {
   getActiveSnapshot(): Promise<ConfigurationSnapshot>;
@@ -50,7 +51,14 @@ function runConfig(
   switch (subcommand) {
     case 'show':
       return [JSON.stringify(snapshot.config, null, 2)];
-    case 'validate':
+    case 'validate': {
+      const result = validateConfigurationCandidate(snapshot.config);
+      if (result.ok) return ['configuration is valid'];
+      return [
+        'configuration is invalid:',
+        ...result.issues.map(issue => `- ${issue.path || '(root)'}: ${issue.message}`),
+      ];
+    }
     case 'diff':
     case 'history':
     case 'rollback':
