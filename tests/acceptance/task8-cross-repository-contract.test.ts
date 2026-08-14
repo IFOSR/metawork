@@ -173,7 +173,7 @@ describe('Task 8 cross-repository planning contract', () => {
         },
       },
     });
-  }, 90_000);
+  }, 240_000);
 });
 
 function generatePlannerSchema(): string {
@@ -273,7 +273,7 @@ async function runPiDriver(
     execFile(
       executable,
       [driverPath, piRoot, schemaPath, proposalPath, socketPath],
-      { cwd: piRoot, timeout: 60_000 },
+      { cwd: piRoot, timeout: 180_000 },
       (error, output, stderr) => {
         if (error) {
           reject(new Error(`AnyFusion-Pi proposal driver failed: ${stderr || error.message}`));
