@@ -27,7 +27,7 @@ describe('WorkspaceRetentionService', () => {
       const store = new WorkspaceStore(join(root, 'store'));
       const now = new Date('2026-07-22T00:00:00.000Z');
       const create = async (taskId: string) => {
-        const workspace = await store.ensureWorkspace({ taskId, generationId: 'generation', subtaskId: 'subtask' }, 'directory');
+        const workspace = await store.ensureWorkspace({ taskId, generationId: 'generation', subtaskId: 'subtask' }, 'git');
         writeFileSync(join(workspace.filesPath, 'shared.txt'), 'same content');
         const checkpoint = await store.createCheckpoint(workspace, { reason: 'success', now: now.toISOString() });
         repository.upsert({
@@ -35,7 +35,7 @@ describe('WorkspaceRetentionService', () => {
           taskId,
           generationId: 'generation',
           subtaskId: 'subtask',
-          kind: 'directory',
+          kind: 'git',
           rootUri: pathToFileURL(workspace.rootPath).href,
           baseline: {},
           managedRepositoryUri: null,

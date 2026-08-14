@@ -1,21 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
 import type { GuidanceProposal } from '../../src/core/types.js';
-
-describe('V2 schema', () => {
-  it('creates guidance tables', () => {
-    const db = new Database(':memory:');
-    runMigrations(db);
-
-    const tableNames = (db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all() as { name: string }[])
-      .map(row => row.name);
-
-    expect(tableNames).toContain('guidance_events');
-  });
-});
 
 describe('V2 core types', () => {
   it('supports proposal shapes', () => {

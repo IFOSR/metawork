@@ -53,21 +53,6 @@ CREATE TABLE interactions (
           created_at TEXT NOT NULL
         , session_id TEXT);
 
-CREATE TABLE guidance_events (
-        id TEXT PRIMARY KEY,
-        trigger TEXT NOT NULL,
-        task_id TEXT,
-        action_type TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        reasons_json TEXT NOT NULL DEFAULT '[]',
-        confidence REAL DEFAULT 0,
-        requires_confirmation INTEGER DEFAULT 1,
-        accepted_at TEXT,
-        dismissed_at TEXT,
-        executed_at TEXT,
-        created_at TEXT NOT NULL
-      );
-
 CREATE TABLE session_state (
         id TEXT PRIMARY KEY,
         last_focused_task_id TEXT,
@@ -593,7 +578,7 @@ CREATE TABLE workspace_records (
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
             subtask_id TEXT NOT NULL,
-            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'directory')),
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git')),
             root_uri TEXT NOT NULL,
             baseline_json TEXT NOT NULL DEFAULT '{}',
             managed_repository_uri TEXT,
@@ -850,8 +835,6 @@ CREATE INDEX idx_preferences_status ON preferences(status);
 CREATE INDEX idx_interactions_session ON interactions(session_id, created_at);
 
 CREATE INDEX idx_interactions_task ON interactions(task_id, created_at);
-
-CREATE INDEX idx_guidance_events_task ON guidance_events(task_id, created_at);
 
 CREATE INDEX idx_reflection_events_task
         ON reflection_events(task_id, created_at);
@@ -1248,6 +1231,7 @@ function migrateSchema30To31(
     migrateRecoverableJson30To31(db, context);
     db.exec(`
       PRAGMA defer_foreign_keys = ON;
+      DROP TABLE IF EXISTS guidance_events;
       CREATE TABLE configuration_revisions (
         revision_id TEXT PRIMARY KEY,
         content_hash TEXT NOT NULL,

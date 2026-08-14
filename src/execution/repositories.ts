@@ -35,7 +35,7 @@ export interface WorkspacePersistenceRecord {
   taskId: string;
   generationId: string;
   subtaskId: string;
-  kind: 'git' | 'directory';
+  kind: 'git';
   rootUri: string;
   baseline: Record<string, unknown>;
   managedRepositoryUri: string | null;

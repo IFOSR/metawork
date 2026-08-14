@@ -17,7 +17,7 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export type WorkspaceKind = 'git' | 'directory';
+export type WorkspaceKind = 'git';
 export type CheckpointReason = 'attempt_start' | 'explicit' | 'permission_suspended' | 'success' | 'failure' | 'cancelled';
 
 export interface WorkspaceIdentity {

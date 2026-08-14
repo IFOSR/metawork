@@ -7,7 +7,7 @@ import type {
 
 interface Row {
   id: string; task_id: string; generation_id: string; subtask_id: string;
-  workspace_kind: 'git' | 'directory'; root_uri: string; baseline_json: string;
+  workspace_kind: 'git'; root_uri: string; baseline_json: string;
   managed_repository_uri: string | null; managed_branch: string | null; head_commit: string | null;
   current_checkpoint_id: string | null; status: WorkspacePersistenceRecord['status']; cleanup_after: string | null;
   created_at: string; updated_at: string;
