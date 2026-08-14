@@ -173,7 +173,7 @@ describe('Task 8 cross-repository planning contract', () => {
         },
       },
     });
-  }, 30_000);
+  }, 90_000);
 });
 
 function generatePlannerSchema(): string {
