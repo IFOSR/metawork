@@ -5,12 +5,14 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
 import type { Subtask, Task } from '../../src/core/types.js';
+import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
 
 function node(id: string, title: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
     id, taskId: 'task_context', title, goal: `private goal for ${title}`, status: 'ready',
+    graphRevision: 1, generationId: 'generation_context',
     dependencies, contextRefs: [], requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'], deliveryKind: 'report',
+    executorBindings: [testExecutorBinding({ configurationRevision: 'revision_context' })], deliveryKind: 'report',
     acceptance: [{ key: 'done', description: 'done', requiredEvidence: [] }], riskLevel: 'low',
     result: '', artifacts: [], verification: { warnings: [], completionSchemaVersion: null }, error: null,
     createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
@@ -28,6 +30,7 @@ describe('SubtaskExecutionContextBuilder', () => {
         last_interruption_reason, interruption_count, created_at, updated_at
       ) VALUES ('task_context', 'Task background', 'top-level background only', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
+    seedWorkGraphRevision(db, { taskId: 'task_context', generationId: 'generation_context', configurationRevision: 'revision_context' });
     const a = node('a', 'A');
     a.status = 'done';
     const b = node('b', 'B', [{ fromSubtaskId: 'a', requiredItems: [{ key: 'summary', type: 'text', description: 'A summary' }] }]);

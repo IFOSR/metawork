@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 import * as executorCommands from '../../src/commands/executor-commands.js';
@@ -19,7 +19,7 @@ function createDb(): Database.Database {
   `);
   insertRevision.run(REVISION, 'sha256:current-command-health');
   insertRevision.run('revision-old', 'sha256:old-command-health');
-  new AgentClassService({ db }).seedDefaults();
+  seedAgentClasses(db);
   return db;
 }
 

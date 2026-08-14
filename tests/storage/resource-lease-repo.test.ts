@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { seedAgentClasses } from '../support/seed-agent-classes.js';
 
 function seedForeignKeys(db: Database.Database): void {
   const now = '2026-07-22T00:00:00.000Z';
@@ -14,13 +14,13 @@ function seedForeignKeys(db: Database.Database): void {
     .run(now, now);
   const insertSubtask = db.prepare(`INSERT INTO subtasks (
     id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json,
-    context_refs_json, required_capabilities_json, preferred_agent_class_list_json,
+    context_refs_json, required_capabilities_json, executor_bindings_json,
     delivery_kind, acceptance_json, risk_level, result, artifacts_json,
     verification_json, error, created_at, updated_at
   ) VALUES (?, 'task', 1, 'gen', ?, ?, 'ready', '[]', '[]', '[]', '[]', 'report', '[]', 'low', '', '[]', '{}', NULL, ?, ?)`);
   insertSubtask.run('subtask-a', 'a', 'a', now, now);
   insertSubtask.run('subtask-b', 'b', 'b', now, now);
-  new AgentClassService({ db }).seedDefaults();
+  seedAgentClasses(db);
   for (const id of ['worker-a', 'worker-b']) {
     db.prepare(`INSERT INTO work_units (
       id, agent_class_name, agent_class_kind, state, claimed_task_id, claimed_subtask_id,

@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 
@@ -18,7 +19,24 @@ function createHarness(sessionId = 'sess_current') {
   `).run('2026-08-12T00:00:00.000Z');
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planner-mcp');
-  return { db, taskRepo, taskEngine, reader: new PlannerDataReader(db, sessionId) };
+  return {
+    db,
+    taskRepo,
+    taskEngine,
+    reader: new PlannerDataReader(db, sessionId, () => ({
+      version: 2,
+      configurationRevision: 'revision-test',
+      capabilities: [],
+      agentClasses: [{
+        id: 'codex-cli',
+        routingCapabilities: ['workspace-engineering'],
+        primaryUseCases: [],
+        avoidUseCases: [],
+        affordances: [],
+        modelPolicy: { mode: 'fixed', modelRef: 'test-model' },
+      }],
+    })),
+  };
 }
 
 describe('PlannerDataReader', () => {
@@ -141,8 +159,8 @@ describe('PlannerDataReader', () => {
     expect(result.confirmedPreferences).toEqual([
       expect.objectContaining({ id: 'pref_planner', content: 'Prefer concise answers.' }),
     ]);
-    expect(result.routingCatalog.executors).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
+    expect(result.routingCatalog.agentClasses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
     ]));
     expect(result.pendingAuthorizationRequest).toBeNull();
   });
@@ -156,10 +174,10 @@ describe('PlannerDataReader', () => {
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
       ) VALUES ('global', ?, NULL, 'sess_current', ?)
     `).run(task.id, '2026-07-10T00:00:00.000Z');
-    const agentClassService = new AgentClassService({ db });
-    agentClassService.seedDefaults();
-    agentClassService.upsert({
-      ...agentClassService.findByName('codex-cli')!,
+    seedAgentClasses(db);
+    const agentClassRepo = new AgentClassRepo(db);
+    agentClassRepo.upsert({
+      ...agentClassRepo.findByName('codex-cli')!,
       name: 'research-bot',
       runtimeCommand: 'C:\\private\\codex.exe',
       runtimeArgs: ['--token', 'sensitive-runtime-token'],
@@ -203,7 +221,7 @@ describe('PlannerDataReader', () => {
   it('returns bounded executor probe failures only when explicitly queried', () => {
     const { db, reader } = createHarness();
     const now = '2026-07-29T00:00:00.000Z';
-    new AgentClassService({ db }).seedDefaults();
+    seedAgentClasses(db);
     db.prepare(`
       INSERT INTO work_units (
         id, agent_class_name, agent_class_kind, state, heartbeat_at,

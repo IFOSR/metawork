@@ -11,6 +11,7 @@ import { KernelEffectOutboxRepo } from '../../src/storage/kernel-effect-outbox-r
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { Subtask } from '../../src/core/types.js';
+import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
 
 describe('Task completion atomicity', () => {
   it('rolls back revision completion with Task and outbox when the completion effect cannot persist', async () => {
@@ -26,6 +27,7 @@ describe('Task completion atomicity', () => {
     });
     taskEngine.transition(task.id, 'ready');
     taskEngine.transition(task.id, 'running');
+    seedWorkGraphRevision(db, { taskId: task.id, generationId: 'generation-completion-atomicity', configurationRevision: 'revision-completion-atomicity' });
     const subtaskRepo = new SubtaskRepo(db);
     const subtask: Subtask = {
       id: 'subtask-completion-atomicity',
@@ -38,7 +40,7 @@ describe('Task completion atomicity', () => {
       dependencies: [],
       contextRefs: [],
       requiredCapabilities: ['workspace-engineering'],
-      preferredAgentClassList: ['codex-cli'],
+      executorBindings: [testExecutorBinding({ configurationRevision: 'revision-completion-atomicity' })],
       deliveryKind: 'report',
       acceptance: [],
       riskLevel: 'low',
@@ -51,17 +53,6 @@ describe('Task completion atomicity', () => {
     };
     subtaskRepo.upsert(subtask);
     const revisions = new WorkGraphRevisionRepo(db);
-    revisions.activate({
-      id: 'revision-completion-atomicity',
-      taskId: task.id,
-      revision: 1,
-      generationId: subtask.generationId,
-      authorizedDecisionId: null,
-      proposalSource: 'initial',
-      automaticReplan: false,
-      createdAt: '2026-07-28T00:00:00.000Z',
-      updatedAt: '2026-07-28T00:00:00.000Z',
-    });
     const effects = new KernelEffectOutboxRepo(db);
     db.exec(`
       CREATE TRIGGER reject_task_completion_effect

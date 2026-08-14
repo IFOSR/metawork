@@ -17,7 +17,7 @@ import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-servic
 import { SqliteAttemptExecutionRepository } from '../../src/storage/attempt-execution-backend-repo.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 import { TaskCancellationCoordinator } from '../../src/execution/task-cancellation-coordinator.js';
-import { AgentClassService } from '../../src/executor/agent-class-service.js';
+import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AttemptExecutionBackend, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
@@ -37,7 +37,7 @@ describe('TaskCancellationCoordinator', () => {
     db.pragma('foreign_keys = ON');
     runMigrations(db);
     seedConfigurationRevision(db);
-    new AgentClassService({ db }).seedDefaults();
+    seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-task-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
@@ -226,6 +226,7 @@ describe('TaskCancellationCoordinator', () => {
       id: 'decision-task-cancel',
       eventId: 'event-task-cancel',
       reason: 'user requested cancellation',
+      configurationRevision: authorizedBinding.configurationRevision,
       action: {
         type: 'cancel_task',
         taskId: task.id,
@@ -259,7 +260,7 @@ describe('TaskCancellationCoordinator', () => {
     db.pragma('foreign_keys = ON');
     runMigrations(db);
     seedConfigurationRevision(db);
-    new AgentClassService({ db }).seedDefaults();
+    seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-subtask-cancel');
     const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
@@ -299,6 +300,7 @@ describe('TaskCancellationCoordinator', () => {
       id: 'decision-subtask-dispatch',
       eventId: 'event-subtask-dispatch',
       reason: 'test',
+      configurationRevision: authorizedBinding.configurationRevision,
       action: {
         type: 'dispatch_batch',
         taskId: task.id,
@@ -442,6 +444,7 @@ function dispatchDecision(taskId: string): KernelDecision & {
     id: 'decision-dispatch-cancel',
     eventId: 'event-dispatch-cancel',
     reason: 'test',
+    configurationRevision: authorizedBinding.configurationRevision,
     action: {
       type: 'dispatch_batch',
       taskId,

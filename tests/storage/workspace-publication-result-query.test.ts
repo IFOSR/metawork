@@ -5,6 +5,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
+import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
 
 describe('WorkspacePublicationRepo integrated result query', () => {
   it('returns only integrated publications for selected Tasks in stable completion order', () => {
@@ -15,10 +16,10 @@ describe('WorkspacePublicationRepo integrated result query', () => {
     const subtasks = new SubtaskRepo(db);
     const publications = new WorkspacePublicationRepo(db);
     tasks.create({ id: 'task-a', title: 'task-a', goal: 'Complete task-a' });
-    createSubtask(subtasks, 'task-a', 'subtask-a-earlier');
-    createSubtask(subtasks, 'task-a', 'subtask-a-later');
-    createSubtask(subtasks, 'task-a', 'subtask-a-pending');
-    createTaskAndSubtask(tasks, subtasks, 'task-b', 'subtask-b');
+    createSubtask(db, subtasks, 'task-a', 'subtask-a-earlier');
+    createSubtask(db, subtasks, 'task-a', 'subtask-a-later');
+    createSubtask(db, subtasks, 'task-a', 'subtask-a-pending');
+    createTaskAndSubtask(db, tasks, subtasks, 'task-b', 'subtask-b');
 
     insertPublication(publications, 'publication-later', 'task-a', 'subtask-a-later', 'later.md');
     insertPublication(publications, 'publication-earlier', 'task-a', 'subtask-a-earlier', 'earlier.md');
@@ -40,16 +41,18 @@ describe('WorkspacePublicationRepo integrated result query', () => {
 });
 
 function createTaskAndSubtask(
+  db: Database.Database,
   tasks: TaskEngine,
   subtasks: SubtaskRepo,
   taskId: string,
   subtaskId: string,
 ): void {
   tasks.create({ id: taskId, title: taskId, goal: `Complete ${taskId}` });
-  createSubtask(subtasks, taskId, subtaskId);
+  createSubtask(db, subtasks, taskId, subtaskId);
 }
 
-function createSubtask(subtasks: SubtaskRepo, taskId: string, subtaskId: string): void {
+function createSubtask(db: Database.Database, subtasks: SubtaskRepo, taskId: string, subtaskId: string): void {
+  seedWorkGraphRevision(db, { taskId, generationId: `generation-${taskId}` });
   subtasks.upsert({
     id: subtaskId,
     taskId,
@@ -61,7 +64,7 @@ function createSubtask(subtasks: SubtaskRepo, taskId: string, subtaskId: string)
     dependencies: [],
     contextRefs: [],
     requiredCapabilities: ['workspace-engineering'],
-    preferredAgentClassList: ['codex-cli'],
+    executorBindings: [testExecutorBinding()],
     deliveryKind: 'edit',
     acceptance: [],
     riskLevel: 'low',

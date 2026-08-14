@@ -37,21 +37,25 @@ describe('KernelEffectOutboxRepo', () => {
 
 function seedDecision(db: Database.Database): void {
   db.prepare(`
+    INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+    VALUES ('revision_effect', 'sha256:test', 'native', '2026-07-21T00:00:00.000Z')
+  `).run();
+  db.prepare(`
     INSERT INTO kernel_events (
       id, schema_version, event_type, correlation_id, causation_id, session_id,
       task_id, subtask_id, attempt_id, event_json, available_at, status,
-      created_at, updated_at
+      configuration_revision, created_at, updated_at
     ) VALUES ('event_1', 2, 'timer_tick', 'correlation_1', NULL, 'session_1',
       NULL, NULL, NULL, '{}', '2026-07-21T00:00:00.000Z', 'processed',
-      '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')
+      'revision_effect', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z')
   `).run();
   db.prepare(`
     INSERT INTO kernel_decisions (
       id, schema_version, event_id, event_type, correlation_id, causation_id,
       session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
-      decision_json, action, reason, created_at
+      decision_json, action, reason, configuration_revision, created_at
     ) VALUES ('decision_1', 2, 'event_1', 'timer_tick', 'correlation_1', NULL,
       'session_1', NULL, NULL, NULL, '{}', '{}', '{}', 'no_op', 'test',
-      '2026-07-21T00:00:00.000Z')
+      'revision_effect', '2026-07-21T00:00:00.000Z')
   `).run();
 }
