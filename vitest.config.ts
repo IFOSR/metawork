@@ -6,6 +6,9 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
+    // Bound worker parallelism so the cross-repository Pi tsx driver and other
+    // real process/workspace tests do not starve each other for CPU.
+    maxWorkers: 6,
     testTimeout: 120_000,
     coverage: {
       provider: 'v8',
