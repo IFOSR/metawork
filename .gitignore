@@ -17,3 +17,6 @@ docs/sales/
 
 # test fixture nested repo
 tests/fixtures/workspace-source/.git/
+
+# nested AnyFusion-Pi planner (installed at runtime, separate repository)
+planner/

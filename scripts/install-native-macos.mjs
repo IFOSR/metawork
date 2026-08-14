@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import {
   access,
   chmod,
@@ -14,7 +15,6 @@ import { fileURLToPath } from 'node:url';
 import {
   renderLauncher,
   renderProviderEnv,
-  resolveProviderConfig,
 } from './native-install-lib.mjs';
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -66,9 +66,27 @@ async function exists(path) {
   return access(path, constants.F_OK).then(() => true, () => false);
 }
 
-async function installPlanner() {
-  if (!(await exists(join(plannerRoot, '.git')))) {
-    await mkdir(dirname(plannerRoot), { recursive: true });
+async function resolveProviderOrPrompt() {
+  const apiKey = process.env.ANYFUSION_PROVIDER_KEY?.trim();
+  const baseUrl = process.env.ANYFUSION_PROVIDER_URL?.trim();
+  if (apiKey && baseUrl) {
+    return { apiKey, baseUrl: baseUrl.replace(/\/+$/u, '') };
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const resolvedKey = apiKey || (await rl.question('OpenAI-compatible provider API key: '));
+    const resolvedUrl = baseUrl || (await rl.question('OpenAI-compatible provider base URL (e.g. https://api.openai.com/v1): '));
+    return {
+      apiKey: resolvedKey.trim(),
+      baseUrl: resolvedUrl.trim().replace(/\/+$/u, ''),
+    };
+  } finally {
+    rl.close();
+  }
+}
+
+async function clonePlannerWithFallback() {
+  try {
     run('git', [
       '-c', 'http.version=HTTP/1.1',
       'clone',
@@ -78,6 +96,27 @@ async function installPlanner() {
       plannerRemote,
       plannerRoot,
     ]);
+    return;
+  } catch (error) {
+    process.stdout.write(`git clone failed (${error instanceof Error ? error.message : String(error)}); falling back to codeload tarball...\n`);
+  }
+
+  run('rm', ['-rf', plannerRoot]);
+  await mkdir(plannerRoot, { recursive: true });
+  const tarballUrl = `https://codeload.github.com/MetaAny/AnyFusion-Pi/tar.gz/refs/heads/${plannerBranch}`;
+  const tarballPath = join(plannerRoot, '.anyfusion-pi.tar.gz');
+  run('curl', ['-fsSL', '--connect-timeout', '15', '-o', tarballPath, tarballUrl]);
+  run('tar', ['-xzf', tarballPath, '--strip-components=1', '-C', plannerRoot]);
+  run('rm', ['-f', tarballPath]);
+  run('git', ['init', '-q'], { cwd: plannerRoot });
+  run('git', ['add', '-A'], { cwd: plannerRoot });
+  run('git', ['-c', 'user.email=install@metawork.local', '-c', 'user.name=metawork', 'commit', '-q', '-m', 'snapshot anyfusion-pi'], { cwd: plannerRoot });
+}
+
+async function installPlanner() {
+  if (!(await exists(join(plannerRoot, '.git')))) {
+    await mkdir(dirname(plannerRoot), { recursive: true });
+    await clonePlannerWithFallback();
   } else {
     const changes = run('git', ['status', '--porcelain'], { cwd: plannerRoot, capture: true });
     if (changes) {
@@ -147,9 +186,13 @@ async function installConfiguration(provider) {
     chmod(join(plannerHome, 'settings.json'), 0o600),
     chmod(join(piHome, 'settings.json'), 0o600),
   ]);
-  const launcherPath = join(binHome, 'anyfusion');
-  await writeFile(launcherPath, renderLauncher({ runtimeRoot, plannerRoot, configHome }), { mode: 0o700 });
+  const launcherScript = renderLauncher({ runtimeRoot, plannerRoot, configHome });
+  const launcherPath = join(binHome, 'metawork');
+  await writeFile(launcherPath, launcherScript, { mode: 0o700 });
   await chmod(launcherPath, 0o700);
+  const anyfusionAlias = join(binHome, 'anyfusion');
+  await writeFile(anyfusionAlias, launcherScript, { mode: 0o700 });
+  await chmod(anyfusionAlias, 0o700);
   return launcherPath;
 }
 
@@ -172,14 +215,15 @@ async function main() {
     requireExecutableOnPath('codex'),
     requireExecutableOnPath('pi'),
   ]);
-  const provider = resolveProviderConfig(process.env);
+  const provider = await resolveProviderOrPrompt();
   await installPlanner();
   await buildRuntime();
   const launcherPath = await installConfiguration(provider);
   await ensureShellPath();
   process.stdout.write(`AnyFusion native installation complete.\nLauncher: ${launcherPath}\n`);
+  process.stdout.write('Alias: ~/.local/bin/anyfusion\n');
   process.stdout.write('Existing Codex and Pi installations were detected and left unchanged.\n');
-  process.stdout.write('Open a new shell, then run AnyFusion from the project directory it should inspect.\n');
+  process.stdout.write('Open a new shell, then run `metawork` from the project directory it should inspect.\n');
 }
 
 main().catch(error => {
