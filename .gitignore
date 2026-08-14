@@ -14,3 +14,6 @@ docker/*.env
 docs/competitive-analysis/
 .agents/skills/research-metaclaw-competitors/
 docs/sales/
+
+# test fixture nested repo
+tests/fixtures/workspace-source/.git/

@@ -6,10 +6,6 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
-    // Session acceptance tests perform real workspace/git operations. Running
-    // them in parallel across workers starves those operations and produces
-    // intermittent timeouts, so test files run serially with a generous timeout.
-    fileParallelism: false,
     testTimeout: 120_000,
     coverage: {
       provider: 'v8',
