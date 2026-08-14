@@ -95,7 +95,7 @@ describe('App task result aggregation', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

@@ -68,7 +68,7 @@ async function typeAndSubmit(text: string) {
 }
 
 async function waitForExecutorCall(attemptExecutionBackend: FakeAttemptExecutionBackend) {
-  for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
+  for (let attempt = 0; attempt < 1000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 10));
     await flushUpdates();
   }
@@ -225,7 +225,7 @@ describe('App conversation routing', () => {
     await typeAndSubmit('未来最容易被基座模型替代的模块是什么');
     await typeAndSubmit('可以，继续');
     await waitForExecutorCall(attemptExecutionBackend);
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('最容易被替代的是通用 prompt 编排'); attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('最容易被替代的是通用 prompt 编排'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

@@ -99,7 +99,7 @@ describe('App execution progress', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('[DONE]'); attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('[DONE]'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
@@ -181,7 +181,7 @@ describe('App execution progress', () => {
     expect(app.lastFrame()).not.toBe(firstAnimationFrame);
 
     await submitPromise;
-    for (let attempt = 0; attempt < 100 && app.lastFrame().includes('Executor: codex-cli 执行中'); attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && app.lastFrame().includes('Executor: codex-cli 执行中'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

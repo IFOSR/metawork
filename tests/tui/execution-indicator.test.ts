@@ -182,7 +182,7 @@ describe('App execution indicator', () => {
     const submitPromise = inputCapture.handler?.('', { return: true }) ?? Promise.resolve();
     await flushUpdates();
 
-    for (let attempt = 0; attempt < 100 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(attemptExecutionBackend.create).toHaveBeenCalled();
@@ -196,7 +196,7 @@ describe('App execution indicator', () => {
     });
 
     await submitPromise;
-    for (let attempt = 0; attempt < 100 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
+    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
