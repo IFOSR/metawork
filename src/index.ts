@@ -17,7 +17,7 @@ import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
 import { ConfigurationService, type ActivateDraftResult } from './configuration/configuration-service.js';
-import type { AnyFusionConfigurationV2 } from './configuration/types.js';
+import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './configuration/types.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
@@ -34,6 +34,8 @@ import { MetaclawSession } from './session/metaclaw-session.js';
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
+import { LegacyConfigurationReader } from './configuration/legacy-configuration-reader.js';
+import { ConfigurationMigrationService } from './configuration/configuration-migration-service.js';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -66,6 +68,25 @@ async function activateConfiguration(
     return { ok: false, code: 'probe_failed', activeRevisionId: baseRevisionId };
   }
   return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
+}
+
+async function importAndActivateLegacyConfiguration(
+  repository: FileConfigurationRepository,
+): Promise<ConfigurationSnapshot> {
+  const reader = new LegacyConfigurationReader({
+    roots: [resolve(process.env.HOME ?? '.', '.config', 'anyfusion')],
+  });
+  const migrationService = new ConfigurationMigrationService(reader, repository);
+  const report = await migrationService.dryRun();
+  const blocking = report.conflicts.filter(conflict => conflict.severity === 'error');
+  if (blocking.length > 0) {
+    throw new Error(
+      `legacy configuration import blocked: ${blocking.map(conflict => conflict.message).join('; ')}`,
+    );
+  }
+  const staged = await migrationService.stageCandidate(report);
+  await repository.activateRevision(staged.revisionId, null);
+  return repository.getActiveSnapshot();
 }
 
 async function main() {
@@ -158,47 +179,65 @@ async function main() {
   }
 
   // 3. Seal the one staged configuration before storage migration and Session composition.
-  const stagedConfiguration = buildStagedLegacyConfiguration();
+  const configurationRepository = new FileConfigurationRepository(
+    dirname(resolveAnyFusionPaths().configurationRevisions),
+  );
+  await configurationRepository.initialize();
+  const recovery = await configurationRepository.recover();
+  const migratedSnapshot = recovery.status === 'empty'
+    ? await importAndActivateLegacyConfiguration(configurationRepository)
+    : await configurationRepository.getActiveSnapshot();
+  const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const importedAt = new Date().toISOString();
   const plannerMigrationBinding = {
     ...stagedConfiguration.plannerBinding,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
   };
-  const legacyAgentClassBindings = Object.fromEntries(
-    Object.entries(stagedConfiguration.snapshot.config.agentClasses)
-      .filter(([, agentClass]) => agentClass.kind === 'executor')
-      .map(([agentClassRef, agentClass]) => {
-        if (agentClass.modelPolicy.mode !== 'fixed' || !agentClass.permissionProfileRef) {
-          throw new Error(
-            `staged legacy AgentClass requires fixed model and permission profile: ${agentClassRef}`,
-          );
-        }
-        const model = stagedConfiguration.snapshot.config.models[
-          agentClass.modelPolicy.modelRef
-        ];
-        if (!model) {
-          throw new Error(
-            `staged legacy AgentClass references missing Model: ${agentClassRef}`,
-          );
-        }
-        const binding: AuthorizedExecutorBinding = {
-          agentClassRef,
-          harnessRef: agentClass.harnessRef,
-          providerRef: model.providerRef,
-          modelRef: agentClass.modelPolicy.modelRef,
-          permissionProfileRef: agentClass.permissionProfileRef,
-          configurationRevision: stagedConfiguration.snapshot.revisionId,
-        };
-        return [agentClassRef, {
-          agentClassRef: binding.agentClassRef,
-          harnessRef: binding.harnessRef,
-          providerRef: binding.providerRef,
-          modelRef: binding.modelRef,
-          permissionProfileRef: binding.permissionProfileRef,
-          bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
-        }];
-      }),
-  );
+  const legacyAgentClassBindings = {
+    planner: {
+      agentClassRef: plannerMigrationBinding.agentClassRef,
+      harnessRef: plannerMigrationBinding.harnessRef,
+      providerRef: plannerMigrationBinding.providerRef,
+      modelRef: plannerMigrationBinding.modelRef,
+      permissionProfileRef: plannerMigrationBinding.permissionProfileRef,
+      bindingFingerprint: plannerMigrationBinding.bindingFingerprint,
+    },
+    ...Object.fromEntries(
+      Object.entries(stagedConfiguration.snapshot.config.agentClasses)
+        .filter(([, agentClass]) => agentClass.kind === 'executor')
+        .map(([agentClassRef, agentClass]) => {
+          if (agentClass.modelPolicy.mode !== 'fixed' || !agentClass.permissionProfileRef) {
+            throw new Error(
+              `staged legacy AgentClass requires fixed model and permission profile: ${agentClassRef}`,
+            );
+          }
+          const model = stagedConfiguration.snapshot.config.models[
+            agentClass.modelPolicy.modelRef
+          ];
+          if (!model) {
+            throw new Error(
+              `staged legacy AgentClass references missing Model: ${agentClassRef}`,
+            );
+          }
+          const binding: AuthorizedExecutorBinding = {
+            agentClassRef,
+            harnessRef: agentClass.harnessRef,
+            providerRef: model.providerRef,
+            modelRef: agentClass.modelPolicy.modelRef,
+            permissionProfileRef: agentClass.permissionProfileRef,
+            configurationRevision: stagedConfiguration.snapshot.revisionId,
+          };
+          return [agentClassRef, {
+            agentClassRef: binding.agentClassRef,
+            harnessRef: binding.harnessRef,
+            providerRef: binding.providerRef,
+            modelRef: binding.modelRef,
+            permissionProfileRef: binding.permissionProfileRef,
+            bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+          }];
+        }),
+    ),
+  };
   const migrationContext = createSchema30MigrationContext({
     revisionId: stagedConfiguration.snapshot.revisionId,
     contentHash: stagedConfiguration.snapshot.contentHash,

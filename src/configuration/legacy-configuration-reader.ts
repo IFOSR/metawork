@@ -315,14 +315,23 @@ export class LegacyConfigurationReader {
         enabled: true,
       },
     } : {};
-    const models = providerUrl
-      ? Object.fromEntries([...modelIds].sort().map(modelId => [modelId, {
-        providerRef: 'openai',
-        modelId,
-        capabilities: ['coding' as const],
-        reasoning: 'medium' as const,
-        enabled: true,
-      }]))
+    const sortedModelIds = [...modelIds].sort();
+    const usedModelRefs = new Set<string>();
+    const models: AnyFusionConfigurationV2['models'] = providerUrl
+      ? Object.fromEntries(sortedModelIds.map((modelId) => {
+        let modelRef = slugifyModelRef(modelId);
+        if (usedModelRefs.has(modelRef)) {
+          modelRef = `${modelRef}-${createHash('sha256').update(modelId).digest('hex').slice(0, 6)}`;
+        }
+        usedModelRefs.add(modelRef);
+        return [modelRef, {
+          providerRef: 'openai',
+          modelId,
+          capabilities: ['coding' as const],
+          reasoning: 'medium' as const,
+          enabled: true,
+        }];
+      }))
       : {};
     if (!providerUrl && modelIds.size > 0) {
       conflicts.push({
@@ -333,13 +342,107 @@ export class LegacyConfigurationReader {
         suggestedFix: 'Configure one Provider URL before importing models.',
       });
     }
+    const defaultModelRef = Object.keys(models).sort()[0] ?? null;
+    const harnesses: AnyFusionConfigurationV2['harnesses'] = {
+      'anyfusion-planner': {
+        kind: 'planner',
+        transport: 'local-process',
+        commandRef: 'release:planner',
+        args: [],
+        driverId: 'anyfusion-planner-host-v2',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+      'codex-cli': {
+        kind: 'executor',
+        transport: 'local-cli',
+        command: 'codex',
+        args: [],
+        driverId: 'codex-cli',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+      'pi-cli': {
+        kind: 'executor',
+        transport: 'local-cli',
+        command: 'pi',
+        args: [],
+        driverId: 'pi-cli',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+    };
+    const agentClasses: AnyFusionConfigurationV2['agentClasses'] = defaultModelRef ? {
+      planner: {
+        kind: 'planner',
+        harnessRef: 'anyfusion-planner',
+        modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
+        routingCapabilities: [],
+        primaryUseCases: [],
+        avoidUseCases: [],
+        plannerAffordances: [],
+        skills: ['metaclaw-planner'],
+        mcpServers: ['metaclaw-planner'],
+        plugins: [],
+        generatedRuntimeRef: 'planner',
+        enabled: true,
+      },
+      'codex-cli': {
+        kind: 'executor',
+        harnessRef: 'codex-cli',
+        modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
+        permissionProfileRef: 'workspace-engineering',
+        routingCapabilities: ['workspace-engineering'],
+        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation'],
+        avoidUseCases: ['current public-web research requiring source-backed delivery'],
+        plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+        skills: [],
+        mcpServers: [],
+        plugins: [],
+        generatedRuntimeRef: 'codex-cli',
+        enabled: true,
+      },
+      'pi-agent': {
+        kind: 'executor',
+        harnessRef: 'pi-cli',
+        modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
+        permissionProfileRef: 'public-web-research',
+        routingCapabilities: ['current-web-research'],
+        primaryUseCases: ['current public-web research', 'source verification'],
+        avoidUseCases: ['repository modification and engineering verification'],
+        plannerAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
+        skills: [],
+        mcpServers: [],
+        plugins: [],
+        generatedRuntimeRef: 'pi-agent',
+        enabled: true,
+      },
+    } : {};
+    const permissionProfiles: AnyFusionConfigurationV2['permissionProfiles'] = {
+      'workspace-engineering': {
+        profileId: 'workspace-engineering',
+        version: 1,
+        parameters: { maxAdditionalReadPartitions: 8 },
+      },
+      'public-web-research': {
+        profileId: 'public-web-research',
+        version: 1,
+        parameters: {},
+      },
+    };
     return {
       schemaVersion: 2,
       providers,
       models,
-      harnesses: {},
-      agentClasses: {},
-      permissionProfiles: {},
+      harnesses,
+      agentClasses,
+      permissionProfiles,
       runtimePolicy: {},
       gateway: {},
     };
@@ -536,6 +639,15 @@ function collectModelIds(value: Record<string, unknown>, modelIds: Set<string>):
 
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/u, '');
+}
+
+function slugifyModelRef(modelId: string): string {
+  const slug = modelId
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const base = /^[a-z]/.test(slug) ? slug : (slug ? `model-${slug}` : 'model');
+  return base || 'model';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
