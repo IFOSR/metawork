@@ -1,6 +1,6 @@
 # Phase 6 后首次发布冗余与兼容层清理
 
-> 状态：进行中（第 2 批已完成 / 共 5 批）
+> 状态：进行中（第 1-3 批已完成；第 6 节 Orchestration 主动调度语义待产品审查后独立提交）
 > 创建日期：2026-07-28  
 > 代码基线：`474f6d4`（`feat: close single-task phase 6 reliability`）  
 > 关联 ADR：ADR-0011、ADR-0015、ADR-0018、ADR-0020  
@@ -76,6 +76,26 @@
 - Docker smoke：`npm run smoke:metaclaw` → `MetaClaw real task smoke passed.`（executor codex，scenario artifact），产出并验证 `smoke-result.md`。
 
 实施提交：本次提交（`refactor: remove production compatibility architecture`）。
+
+### 第 3 批：第 5、7 节无争议死代码与类型残留（已完成）
+
+- 完成日期：2026-08-14
+- 覆盖范围：本文档第 5 节 `guidance-repo.ts` 测试保活模块、第 7 节 Git workspace 类型残留
+
+实际交付的行为变化：
+
+- 删除 `src/storage/guidance-repo.ts`（`GuidanceRepo`/`GuidanceEventRecord`）。生产代码通过内存 `GuidanceProposal` 类型流转提议，从不持久化到 `guidance_events` 表，`GuidanceRepo` 仅有测试引用，属测试保活死代码。
+- 从首次发布 schema v31 基线移除 `guidance_events` 表和 `idx_guidance_events_task` 索引；`migrateSchema30To31` 事务内新增 `DROP TABLE IF EXISTS guidance_events`，保证 v30 升级路径与全新 v31 基线 schema 一致。
+- 删除仅保活 `GuidanceRepo` 的 `tests/storage/v2-repos.test.ts`；`tests/core/v2-schema-types.test.ts` 移除 `guidance_events` 表断言，保留 `GuidanceProposal` 类型形状测试。
+- `WorkspaceKind` 收紧为 `'git'`：`workspace-store.ts`、`repositories.ts`、`workspace-repo.ts`、`migrations.ts`（`CHECK(workspace_kind IN ('git'))`）四处同步收紧；`workspace-retention-service.test.ts` 两处 `'directory'` fixture 改为 `'git'`。checkpoint manifest 的 `entry.type === 'directory'` 保持不动（它表示 Git workspace 内的文件夹，不是非 Git fallback）。
+
+验证：
+
+- `npm run lint`（`tsc --noEmit`）通过。
+- 聚焦测试通过：`tests/storage/migrations.test.ts`、`tests/core/v2-schema-types.test.ts`、`tests/execution/workspace-retention-service.test.ts` 共 11 tests。
+- 完整测试通过：`npm test`（vitest run）全绿。
+
+实施提交：`refactor: remove dead guidance persistence and tighten workspace kind`。
 
 ## 1. 目标与边界
 
