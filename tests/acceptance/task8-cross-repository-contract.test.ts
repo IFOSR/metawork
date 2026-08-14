@@ -273,7 +273,7 @@ async function runPiDriver(
     execFile(
       executable,
       [driverPath, piRoot, schemaPath, proposalPath, socketPath],
-      { cwd: piRoot, timeout: 20_000 },
+      { cwd: piRoot, timeout: 60_000 },
       (error, output, stderr) => {
         if (error) {
           reject(new Error(`AnyFusion-Pi proposal driver failed: ${stderr || error.message}`));
