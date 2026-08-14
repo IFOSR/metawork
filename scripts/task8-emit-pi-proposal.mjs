@@ -13,7 +13,7 @@ const valueModulePath = requireFromPi.resolve('typebox/value');
 const [{ createPlanningProposalTool }, { Value }] = await Promise.all([
   import(pathToFileURL(join(
     piRoot,
-    'packages/coding-agent/src/anyfusion/planner-proposal-tool.ts',
+    'packages/coding-agent/dist/anyfusion/planner-proposal-tool.js',
   )).href),
   import(pathToFileURL(valueModulePath).href),
 ]);

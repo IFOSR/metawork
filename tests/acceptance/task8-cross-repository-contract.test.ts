@@ -268,12 +268,12 @@ async function runPiDriver(
   schemaPath: string,
   socketPath: string,
 ): Promise<Record<string, unknown>> {
-  const executable = join(piRoot, 'node_modules/.bin/tsx');
+  const executable = process.execPath;
   const stdout = await new Promise<string>((resolvePromise, reject) => {
     execFile(
       executable,
       [driverPath, piRoot, schemaPath, proposalPath, socketPath],
-      { cwd: piRoot, timeout: 180_000 },
+      { cwd: piRoot, timeout: 60_000 },
       (error, output, stderr) => {
         if (error) {
           reject(new Error(`AnyFusion-Pi proposal driver failed: ${stderr || error.message}`));
