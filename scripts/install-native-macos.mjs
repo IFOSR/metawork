@@ -122,8 +122,12 @@ async function installPlanner() {
     if (changes) {
       process.stdout.write('AnyFusion-Pi has local changes; preserving them and skipping remote update.\n');
     } else {
-      run('git', ['-c', 'http.version=HTTP/1.1', 'fetch', 'origin', plannerBranch], { cwd: plannerRoot });
-      run('git', ['merge', '--ff-only', `origin/${plannerBranch}`], { cwd: plannerRoot });
+      try {
+        run('git', ['-c', 'http.version=HTTP/1.1', 'fetch', 'origin', plannerBranch], { cwd: plannerRoot });
+        run('git', ['merge', '--ff-only', `origin/${plannerBranch}`], { cwd: plannerRoot });
+      } catch (error) {
+        process.stdout.write(`AnyFusion-Pi remote update skipped (${error instanceof Error ? error.message : String(error)}); using existing checkout.\n`);
+      }
     }
   }
   run('npm', ['ci', '--ignore-scripts'], { cwd: plannerRoot });
