@@ -1,7 +1,8 @@
 # AnyFusion Web 交互界面设计
 
-> 状态：设计中（待实现）
+> 状态：已实现
 > 设计日期：2026-08-15
+> 完成日期：2026-08-16
 > 修订：2026-08-15（v4：锁覆盖矩阵、gateway socket 归属、投影触发跨模块预授权）
 > 关联：Server 升级实现计划（2026-08-11）、ADR-0027（Configuration Control Plane）、ADR-0015（Planner-owned semantics）、ADR-0020（模块归属与依赖方向）
 > 用途：为 AnyFusion 设计一个基于浏览器的用户交互主界面，作为命令行 TUI 的并存替代，让用户输入问题、观察 Agent 执行全过程、配置 agents 和基础模型。
@@ -375,3 +376,33 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 **已决**：进程模型（复用主进程 composition）、实例锁（composition 层 runtime.lock，模式×锁覆盖矩阵：TUI/web/gateway 取锁、`--script`/admin 不取，PID 探测回收 stale）、gateway socket 归属（交互面，web 模式不启动）、会话基数（单例 session，鉴权通过前不创建）、设置页 scope（非密字段收缩）、apiKey 落点（本期无表单，挂起 secret store 前置任务）、token 传递（终端打印 + TokenGate + 首条消息鉴权）、模块归属（Application Shell 侧）、verification 推导规则、投影触发源保真度验证（第 4 步堵死缺口；例外授权 execution 落库点纯通知 hook）、权限升级呈现（对话内自然语言授权，无审批按钮）。
 
 **挂起（独立前置任务，不在本期）**：secret store + runtime binding 生产接线（完成后再扩展设置页与 `POST /api/config/secrets`）。
+
+## 13. 实现记录
+
+完成日期：2026-08-16。按 §9 五步实现，closing commits：
+
+- 第 1 步（前端骨架）：`dcb54f6`（已预置于工作树）
+- 第 2 步（管理服务 + 实例锁 + web 命令）：`e22ccd8`
+- 第 3 步（对话桥接 + 单例 session）：`3b16c9d`
+- 第 4 步（执行投影 + REST + WS）：`993af99`
+- 第 5 步（配置端点 + 设置页）：`3fc4e14`
+- CI（web build 门禁）：`380e903`
+
+交付行为：
+
+- `src/management/`：`server.ts`（HTTP + WS + 静态托管 + token + REST）、`lock.ts`（runtime.lock + PID 探测）、`token.ts`、`websocket.ts`（RFC 6455 最小实现）、`execution-projector.ts`（执行时间线投影）。
+- `src/session/session-transport-adapter.ts`：抽取 gateway 的 per-connection 输出流，gateway 与 web 复用；gateway 行为不变。
+- `src/cli/args.ts` + `src/index.ts`：`web` 子命令、composition 实例锁、web 分支（单例 session + HTTP/WS，不启动 gateway socket）。
+- `web/`：Vite + React 子项目，三栏界面（对话 + 执行时间线 + 设置抽屉）+ TokenGate。
+- `.github/workflows/ci.yml`：web 依赖安装 + build 门禁。
+
+验证：
+
+- `npm run lint` / `npm run build` 通过；`web/` 内 `tsc --noEmit` + `vite build` 通过。
+- `tests/management/` + `tests/gateway/` 共 44 测试通过。
+- 端点实测：静态托管、token 401、实例锁互斥（第二实例被拒 + PID 探测回收 stale）、WS 单例 session（多连接同一 sessionId）、`/api/config` active snapshot、`/api/execution/tasks` 空数据与 404。
+
+未验证（挂起，需真实 planner + executor + 有效 provider 环境）：
+
+- **§7.3 触发源保真度**：投影逻辑已单元测试覆盖，但「真实任务端到端每个阶段切换都有快照触发」未验证。当前触发源是 `session.subscribe`（不跨模块）；若实测出现缺口，按 §7.3 预授权在 execution 落库点新增纯通知 hook。
+- 设置页 activate 的 probe → activate 闭环（需 `codex --version` / `pi --version` 可用）。
