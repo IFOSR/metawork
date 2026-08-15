@@ -2,7 +2,7 @@
 
 > 状态：设计中（待实现）
 > 设计日期：2026-08-15
-> 修订：2026-08-15（v3：实例锁上移 composition 层、单例 session、投影触发源保真度）
+> 修订：2026-08-15（v4：锁覆盖矩阵、gateway socket 归属、投影触发跨模块预授权）
 > 关联：Server 升级实现计划（2026-08-11）、ADR-0027（Configuration Control Plane）、ADR-0015（Planner-owned semantics）、ADR-0020（模块归属与依赖方向）
 > 用途：为 AnyFusion 设计一个基于浏览器的用户交互主界面，作为命令行 TUI 的并存替代，让用户输入问题、观察 Agent 执行全过程、配置 agents 和基础模型。
 
@@ -52,22 +52,36 @@
 - `src/gateway/server.ts` 和 `PlannerHostBridge` 启动时都会 `unlinkSync` stale socket——独立 Web 进程会抢走 TUI 进程的 planner socket，全程无报错。
 - 复用 composition 使 web 模式自动获得与 TUI 完全一致的恢复、调度、执行语义，零分叉。
 
-### 4.2 实例锁（composition 层，所有交互面共用）
+### 4.2 实例锁（composition 层，覆盖矩阵见下）
 
-实例锁属于 **composition 而不是某个子命令**——只给 `metawork web` 一把私有锁，防不住「先开 TUI 再开 web」的双进程抢 socket 场景（TUI 侧无锁可取、socket 被 unlink 后 bridge 静默失效）。因此**任何交互模式（TUI / web / gateway）启动主 composition 之前，先取同一把实例锁** `<ANYFUSION_INSTALL_ROOT>/data/runtime.lock`。
+实例锁属于 **composition 而不是某个子命令**——只给 `metawork web` 一把私有锁，防不住「先开 TUI 再开 web」的双进程抢 socket 场景（TUI 侧无锁可取、socket 被 unlink 后 bridge 静默失效）。
+
+**模式 × 锁覆盖矩阵**：
+
+| 模式 | 取锁 | 理由 |
+| --- | --- | --- |
+| `metawork`（TUI） | 取 | 主交互面 |
+| `metawork web` | 取 | 主交互面 |
+| `metawork --gateway`（gateway 守护） | 取 | **持锁期间 TUI/web 被拒——这是显式的产品行为变更**：今天 gateway daemon 与 TUI 可以（带病）并存，上锁后互斥，方向正确但需知晓 |
+| `metawork --script` | **不取** | 调试/脚本用途；文档注明「不得与运行中实例并用」；smoke 等自动验证在独立 install root 下运行，天然隔离 |
+| admin 命令（`metawork config ...` 等） | 不取 | 纯配置操作，不经 composition，不碰 planner socket |
+
+**gateway socket 属于交互面**：`MetaclawGatewayServer` 的 Unix socket 与 Pi TUI、HTTP/WS 并列——TUI 模式起 TUI + gateway socket（现状），web 模式**不启动** gateway socket（否则 gateway 的 per-connection session 与 web 的单例 session 同进程并存，与 §4.4 撞车）。web 模式只起 HTTP/WS。
 
 ```
-任何模式的启动序列：
+任何取锁模式的启动序列：
 1. 解析 CLI
-2. 实例锁：O_EXCL 创建 <ANYFUSION_INSTALL_ROOT>/data/runtime.lock，写入 PID
+2. 实例锁：O_EXCL 创建 <ANYFUSION_INSTALL_ROOT>/data/runtime.lock，写入 PID + 进程启动时间戳
    失败 → kill(pid, 0) 探测锁内 PID：
      · 存活（探测成功）→ 输出「AnyFusion 已在运行（PID ...）」，退出码非零
      · 已死（ESRCH）    → 回收 stale lock（unlink 后重试一次，仍失败才报错）
+   （PID 复用竞态：锁内 PID 被无关进程占用会误判存活——本地单用户场景接受该风险，
+     锁文件写入启动时间戳供人工排查）
 3. web 模式额外：HTTP server bind 127.0.0.1:8788
    （EADDRINUSE → 报错退出，双保险；TUI/gateway 模式无此步）
 4. 完整 composition（各模式相同）：配置快照 → DB → recovery
    → planner host bridge + supervisor + executor runtime
-5. TUI 模式启动 Pi TUI；web 模式改为 HTTP/WS 监听 + 静态托管 web/dist
+5. TUI 模式启动 Pi TUI + gateway socket；web 模式改为 HTTP/WS 监听 + 静态托管 web/dist
 6. web 模式打印启动 URL + token（见第 6.4 节）
 ```
 
@@ -173,7 +187,7 @@ metawork/
 | --- | --- | --- |
 | 前端 → Server | `{ type:'auth', token }` | **首条消息鉴权**（未鉴权前其他消息一律拒绝） |
 | 前端 → Server | `{ type:'input', text }` | 用户问题，进 `session.submit` |
-| 前端 → Server | `{ type:'close' }` | 关闭连接（不影响 session，见第 4.4 节） |
+| 前端 → Server | `{ type:'close' }` | 关闭连接（不影响 session，见第 4.4 节；有意为之——web 端无 `/exit` 语义，会话随进程退出结束） |
 | Server → 前端 | `{ type:'hello', sessionId }` | 鉴权通过，附着单例 session 成功 |
 | Server → 前端 | `{ type:'output', lines[] }` | 文本输出（Planner 回复 / 交付摘要 / 错误） |
 | Server → 前端 | `{ type:'execution', taskId, timeline }` | 执行时间线增量（核心新增） |
@@ -270,6 +284,8 @@ metawork/
 1. 第 4 步实现后，必须跑一遍真实任务，验证 planning → authorization → execution → verification → delivery 的**每个阶段切换都有快照触发**；
 2. 存在缺口时，投影触发点要挂到 execution progress / dispatch 的底层事件（而不是只挂 session 快照）——触发源的设计选择以这条验证的结果为准。
 
+**预授权（跨模块例外，先上膛）**：execution 层当前没有 durable 变更的 change-feed。若第 4 步验证出缺口，**允许**为投影触发在 execution 落库点（dispatch / receipt / publication 提交处）新增**纯通知型 hook**（只发事件、不带任何语义决策）。这是对 §7「零侵入」承诺的唯一例外授权；按 ADR-0020 属跨模块改动，方向仍是 execution → 通知，不是 management → execution 写路径。未触发该例外时，不改 execution 模块。
+
 ## 8. 前端页面设计
 
 ### 8.1 布局（对话为主轴，时间线伴生）
@@ -315,6 +331,7 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 - **对话**：发送后消息进流；Planner 规划说明、交付摘要、错误都落在对话区。
 - **时间线**：与对话同步推进——用户一提交，右侧立刻出现 `planning` 阶段，随授权/执行实时点亮。subtask 卡片状态色点（ready / running / done / blocked / failed），点开看 Kernel 决策原因和 attempt 回执（含失败错误码和详细原因）。
 - **设置**：编辑本地副本 → 整体激活。apiKey 无编辑入口。
+- **权限升级**：execution 中的权限请求沿用 RPC 自然语言授权（CONTEXT.md 已支持）——Planner 在对话区提出升级请求，用户直接在对话里回复同意/拒绝，**不做独立审批按钮**。
 
 ### 8.4 状态管理
 
@@ -355,6 +372,6 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 ## 12. 已决与挂起
 
-**已决**：进程模型（复用主进程 composition）、实例锁（composition 层 runtime.lock，所有交互面共用，PID 探测回收 stale）、会话基数（单例 session，鉴权通过前不创建）、设置页 scope（非密字段收缩）、apiKey 落点（本期无表单，挂起 secret store 前置任务）、token 传递（终端打印 + TokenGate + 首条消息鉴权）、模块归属（Application Shell 侧）、verification 推导规则、投影触发源保真度验证（第 4 步堵死缺口）。
+**已决**：进程模型（复用主进程 composition）、实例锁（composition 层 runtime.lock，模式×锁覆盖矩阵：TUI/web/gateway 取锁、`--script`/admin 不取，PID 探测回收 stale）、gateway socket 归属（交互面，web 模式不启动）、会话基数（单例 session，鉴权通过前不创建）、设置页 scope（非密字段收缩）、apiKey 落点（本期无表单，挂起 secret store 前置任务）、token 传递（终端打印 + TokenGate + 首条消息鉴权）、模块归属（Application Shell 侧）、verification 推导规则、投影触发源保真度验证（第 4 步堵死缺口；例外授权 execution 落库点纯通知 hook）、权限升级呈现（对话内自然语言授权，无审批按钮）。
 
 **挂起（独立前置任务，不在本期）**：secret store + runtime binding 生产接线（完成后再扩展设置页与 `POST /api/config/secrets`）。
