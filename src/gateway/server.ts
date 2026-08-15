@@ -12,6 +12,7 @@ import { MetaclawSession, type PlannerHostRegistrar } from '../session/metaclaw-
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
+import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
 interface GatewayServerDeps {
@@ -106,26 +107,23 @@ export class MetaclawGatewayServer {
     });
     this.sessions.add(session);
 
-    let observedOutputLength = 0;
     const send = (message: GatewayServerMessage) => {
       if (!socket.destroyed) {
         socket.write(encodeJsonLine(message));
       }
     };
 
-    const unsubscribe = session.subscribe(snapshot => {
-      const newLines = snapshot.output.slice(observedOutputLength);
-      observedOutputLength = snapshot.output.length;
-      if (newLines.length > 0) {
-        send({ type: 'output', lines: newLines });
-      }
+    const adapter = new SessionStreamAdapter(session, {
+      onOutput: lines => send({ type: 'output', lines }),
+      onExitRequested: () => socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage)),
     });
+    adapter.attach();
 
     let cleanedUp = false;
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
-      unsubscribe();
+      adapter.detach();
       void session.dispose().finally(() => this.sessions.delete(session));
     };
     socket.on('close', cleanup);
@@ -143,11 +141,7 @@ export class MetaclawGatewayServer {
       if (message.type !== 'input') {
         return;
       }
-      void session.submit(message.text).then(result => {
-        if (result.exitRequested) {
-          socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage));
-        }
-      }).catch(error => {
+      void adapter.submit(message.text).catch(error => {
         send({ type: 'error', message: (error as Error).message });
       });
     });

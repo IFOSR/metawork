@@ -99,7 +99,11 @@ async function importAndActivateLegacyConfiguration(
   return repository.getActiveSnapshot();
 }
 
-async function runWebMode(options: { port: number; noOpen: boolean }): Promise<void> {
+async function runWebMode(options: {
+  port: number;
+  noOpen: boolean;
+  sessionFactory: (sessionId: string) => MetaclawSession;
+}): Promise<void> {
   const webToken = generateToken();
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
@@ -108,6 +112,7 @@ async function runWebMode(options: { port: number; noOpen: boolean }): Promise<v
     port: options.port,
     webDistDir,
     token: webToken,
+    sessionFactory: options.sessionFactory,
   });
   await managementServer.start();
   process.stdout.write(`AnyFusion Web: ${managementServer.address}\n`);
@@ -348,7 +353,23 @@ async function main() {
   }
 
   if (cliArgs.web) {
-    await runWebMode({ port: cliArgs.webPort ?? 8788, noOpen: cliArgs.webNoOpen === true });
+    await runWebMode({
+      port: cliArgs.webPort ?? 8788,
+      noOpen: cliArgs.webNoOpen === true,
+      sessionFactory: webSessionId => new MetaclawSession({
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        db,
+        config,
+        sessionId: webSessionId,
+        contextRecaller,
+        notifier,
+        plannerHost,
+        plannerSupervisor,
+        stagedConfiguration,
+      }),
+    });
     return;
   }
 
