@@ -7,12 +7,26 @@ import type { MetaclawSession } from '../session/metaclaw-session.js';
 import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
+import type { ExecutionTimeline } from './execution-projector';
+
+export interface TaskSummary {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+}
+
+export interface ExecutionQuery {
+  listTasks(): TaskSummary[];
+  projectTimeline(taskId: string): ExecutionTimeline | null;
+}
 
 export interface ManagementServerDeps {
   port: number;
   webDistDir: string;
   token: string;
   sessionFactory: (sessionId: string) => MetaclawSession;
+  executionQuery: ExecutionQuery;
 }
 
 const MIME: Record<string, string> = {
@@ -31,6 +45,7 @@ export class ManagementServer {
   private readonly wsConnections = new Set<WebSocketConnection>();
   private singletonSession: MetaclawSession | null = null;
   private singletonSessionId: string | null = null;
+  private lastTimelineJson: string | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
@@ -146,8 +161,28 @@ export class ManagementServer {
       this.singletonSessionId = `sess_web_${nanoid(10)}`;
       this.singletonSession = this.deps.sessionFactory(this.singletonSessionId);
       this.singletonSession.initialize({ showDashboard: false });
+
+      // 执行时间线增量推送：session 快照变化时投影当前 task 并 diff。
+      this.singletonSession.subscribe(snapshot => {
+        const taskId = snapshot.currentTaskId;
+        if (!taskId) return;
+        const timeline = this.deps.executionQuery.projectTimeline(taskId);
+        if (!timeline) return;
+        const json = JSON.stringify(timeline);
+        if (json !== this.lastTimelineJson) {
+          this.lastTimelineJson = json;
+          this.broadcast({ type: 'execution', taskId, timeline });
+        }
+      });
     }
     return this.singletonSession;
+  }
+
+  private broadcast(message: unknown): void {
+    const text = JSON.stringify(message);
+    for (const ws of this.wsConnections) {
+      ws.send(text);
+    }
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -172,7 +207,23 @@ export class ManagementServer {
       return;
     }
 
-    // REST 路由在第 4/5 步实现；第 3 步先返回未实现。
+    if (request.method === 'GET' && url.pathname === '/api/execution/tasks') {
+      this.sendJson(response, 200, this.deps.executionQuery.listTasks());
+      return;
+    }
+
+    const taskMatch = /^\/api\/execution\/tasks\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && taskMatch) {
+      const timeline = this.deps.executionQuery.projectTimeline(decodeURIComponent(taskMatch[1]));
+      if (!timeline) {
+        this.sendJson(response, 404, { error: 'task not found' });
+        return;
+      }
+      this.sendJson(response, 200, timeline);
+      return;
+    }
+
+    // /api/config/* 在第 5 步实现。
     this.sendJson(response, 501, { error: 'not implemented', path: url.pathname });
   }
 

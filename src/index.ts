@@ -43,9 +43,14 @@ import {
   type AuthorizedExecutorBinding,
 } from './core/authorized-executor-binding.js';
 import { createSchema30MigrationContext } from './storage/migrations.js';
+import { SubtaskRepo } from './storage/subtask-repo.js';
+import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-repo.js';
+import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
+import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
 import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
 import { generateToken } from './management/token.js';
-import { ManagementServer } from './management/server.js';
+import { ManagementServer, type ExecutionQuery } from './management/server.js';
+import { ExecutionProjector } from './management/execution-projector.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -103,6 +108,7 @@ async function runWebMode(options: {
   port: number;
   noOpen: boolean;
   sessionFactory: (sessionId: string) => MetaclawSession;
+  executionQuery: ExecutionQuery;
 }): Promise<void> {
   const webToken = generateToken();
   const webDistDir = process.env.ANYFUSION_WEB_DIST
@@ -113,6 +119,7 @@ async function runWebMode(options: {
     webDistDir,
     token: webToken,
     sessionFactory: options.sessionFactory,
+    executionQuery: options.executionQuery,
   });
   await managementServer.start();
   process.stdout.write(`AnyFusion Web: ${managementServer.address}\n`);
@@ -353,6 +360,12 @@ async function main() {
   }
 
   if (cliArgs.web) {
+    const executionProjector = new ExecutionProjector({
+      subtaskRepo: new SubtaskRepo(db),
+      receiptRepo: new ExecutorAttemptReceiptRepo(db),
+      decisionRepo: new KernelDecisionRepo(db),
+      publicationRepo: new WorkspacePublicationRepo(db),
+    });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
@@ -369,6 +382,18 @@ async function main() {
         plannerSupervisor,
         stagedConfiguration,
       }),
+      executionQuery: {
+        listTasks: () => taskEngine.list().map(task => ({
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          updatedAt: task.updatedAt,
+        })),
+        projectTimeline: taskId => {
+          const task = taskRepo.findById(taskId);
+          return task ? executionProjector.project(task) : null;
+        },
+      },
     });
     return;
   }
