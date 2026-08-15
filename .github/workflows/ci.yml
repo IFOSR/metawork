@@ -40,3 +40,11 @@ jobs:
 
       - name: Build distribution
         run: npm run build
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build web frontend
+        run: npm run build
+        working-directory: web
