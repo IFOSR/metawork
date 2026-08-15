@@ -1,6 +1,8 @@
 // CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
 import { dirname, resolve } from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, unlinkSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import { createDatabase } from './storage/database.js';
 import { TaskRepo } from './storage/task-repo.js';
 import { PreferenceRepo } from './storage/preference-repo.js';
@@ -41,10 +43,18 @@ import {
   type AuthorizedExecutorBinding,
 } from './core/authorized-executor-binding.js';
 import { createSchema30MigrationContext } from './storage/migrations.js';
+import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
+import { generateToken } from './management/token.js';
+import { ManagementServer } from './management/server.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
   return { ok: false, code: result.code, activeRevisionId: result.activeRevisionId };
+}
+
+function openBrowser(url: string): void {
+  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawn(command, [url], { stdio: 'ignore', detached: true }).unref();
 }
 
 async function activateConfiguration(
@@ -87,6 +97,26 @@ async function importAndActivateLegacyConfiguration(
   const staged = await migrationService.stageCandidate(report);
   await repository.activateRevision(staged.revisionId, null);
   return repository.getActiveSnapshot();
+}
+
+async function runWebMode(options: { port: number; noOpen: boolean }): Promise<void> {
+  const webToken = generateToken();
+  const webDistDir = process.env.ANYFUSION_WEB_DIST
+    ? resolve(process.env.ANYFUSION_WEB_DIST)
+    : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
+  const managementServer = new ManagementServer({
+    port: options.port,
+    webDistDir,
+    token: webToken,
+  });
+  await managementServer.start();
+  process.stdout.write(`AnyFusion Web: ${managementServer.address}\n`);
+  process.stdout.write(`Token: ${webToken}\n`);
+  if (!options.noOpen) {
+    openBrowser(managementServer.address);
+  }
+  // 永久等待；进程由 SIGINT/SIGTERM 或外部终止。
+  await new Promise<never>(() => {});
 }
 
 async function main() {
@@ -156,6 +186,19 @@ async function main() {
     });
     process.stdout.write(`${lines.join('\n')}\n`);
     return;
+  }
+
+  // 实例锁（composition 层，TUI/web/gateway 取锁；--script 不取）
+  let instanceLock: InstanceLock | null = null;
+  let instanceLockPath: string | null = null;
+  if (!cliArgs.scriptPath) {
+    const dataDir = resolveAnyFusionPaths().data;
+    mkdirSync(dataDir, { recursive: true });
+    instanceLockPath = resolve(dataDir, 'runtime.lock');
+    instanceLock = await acquireInstanceLock(instanceLockPath);
+    process.once('exit', () => {
+      if (instanceLockPath) unlinkSync(instanceLockPath);
+    });
   }
 
   // 2. 加载配置
@@ -301,6 +344,11 @@ async function main() {
         plannerSupervisor.stop(),
       ]);
     }
+    return;
+  }
+
+  if (cliArgs.web) {
+    await runWebMode({ port: cliArgs.webPort ?? 8788, noOpen: cliArgs.webNoOpen === true });
     return;
   }
 

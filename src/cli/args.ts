@@ -2,12 +2,19 @@ export interface CliArgs {
   scriptPath?: string;
   gateway?: boolean;
   connect?: boolean;
+  web?: boolean;
+  webPort?: number;
+  webNoOpen?: boolean;
   gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
   gatewayPairingCommand?: 'list' | 'approve' | 'revoke';
   gatewayPairingUserId?: string;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs {
+  if (argv[0] === 'web') {
+    return parseWebArgs(argv.slice(1));
+  }
+
   const gatewaySubcommand = parseGatewaySubcommand(argv);
   const gateway = argv.includes('--gateway') || gatewaySubcommand?.command === 'run';
   const connect = argv.includes('--connect');
@@ -33,6 +40,29 @@ export function parseCliArgs(argv: string[]): CliArgs {
     ...(gatewaySubcommand ? { gatewayCommand: gatewaySubcommand.command } : {}),
     ...gatewaySubcommand?.pairing,
   };
+}
+
+function parseWebArgs(argv: string[]): CliArgs {
+  const result: CliArgs = { web: true };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--port') {
+      const raw = argv[index + 1];
+      const port = Number(raw);
+      if (!raw || !Number.isInteger(port) || port <= 0 || port > 65535) {
+        throw new Error(`无效端口: ${raw ?? '(missing)'}`);
+      }
+      result.webPort = port;
+      index += 1;
+      continue;
+    }
+    if (arg === '--no-open') {
+      result.webNoOpen = true;
+      continue;
+    }
+    throw new Error(`未知 web 参数: ${arg}`);
+  }
+  return result;
 }
 
 function parseGatewaySubcommand(argv: string[]): {
