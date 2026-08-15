@@ -21,12 +21,40 @@ export interface ExecutionQuery {
   projectTimeline(taskId: string): ExecutionTimeline | null;
 }
 
+export interface ConfigSnapshotResponse {
+  revisionId: string;
+  contentHash: string;
+  config: unknown;
+}
+
+export interface RevisionSummary {
+  revisionId: string;
+  active: boolean;
+}
+
+export interface ActivateResult {
+  ok: boolean;
+  revisionId?: string;
+  code?: string;
+  activeRevisionId?: string | null;
+  issues?: string[];
+}
+
+export interface ConfigQuery {
+  getActive(): Promise<ConfigSnapshotResponse>;
+  listRevisions(): Promise<RevisionSummary[]>;
+  getSnapshot(revisionId: string): Promise<ConfigSnapshotResponse | null>;
+  activate(baseRevisionId: string, config: unknown): Promise<ActivateResult>;
+  rollback(targetRevisionId: string): Promise<ActivateResult>;
+}
+
 export interface ManagementServerDeps {
   port: number;
   webDistDir: string;
   token: string;
   sessionFactory: (sessionId: string) => MetaclawSession;
   executionQuery: ExecutionQuery;
+  configQuery: ConfigQuery;
 }
 
 const MIME: Record<string, string> = {
@@ -223,8 +251,48 @@ export class ManagementServer {
       return;
     }
 
-    // /api/config/* 在第 5 步实现。
-    this.sendJson(response, 501, { error: 'not implemented', path: url.pathname });
+    if (request.method === 'GET' && url.pathname === '/api/config') {
+      this.sendJson(response, 200, await this.deps.configQuery.getActive());
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/revisions') {
+      this.sendJson(response, 200, await this.deps.configQuery.listRevisions());
+      return;
+    }
+
+    const revisionMatch = /^\/api\/config\/revisions\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && revisionMatch) {
+      const snapshot = await this.deps.configQuery.getSnapshot(decodeURIComponent(revisionMatch[1]));
+      if (!snapshot) {
+        this.sendJson(response, 404, { error: 'revision not found' });
+        return;
+      }
+      this.sendJson(response, 200, snapshot);
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/activate') {
+      const body = await readRequestBody(request);
+      if (!body.baseRevisionId || typeof body.config !== 'object') {
+        this.sendJson(response, 400, { error: 'baseRevisionId and config are required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.activate(body.baseRevisionId, body.config));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/rollback') {
+      const body = await readRequestBody(request);
+      if (!body.targetRevisionId) {
+        this.sendJson(response, 400, { error: 'targetRevisionId is required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.rollback(body.targetRevisionId));
+      return;
+    }
+
+    this.sendJson(response, 404, { error: 'not found', path: url.pathname });
   }
 
   private async handleStatic(response: ServerResponse, pathname: string): Promise<void> {
@@ -265,4 +333,26 @@ export class ManagementServer {
     response.writeHead(status, { 'Content-Type': contentType });
     response.end(body);
   }
+}
+
+interface RequestBody {
+  baseRevisionId?: string;
+  config?: unknown;
+  targetRevisionId?: string;
+}
+
+function readRequestBody(request: IncomingMessage): Promise<RequestBody> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on('data', chunk => chunks.push(chunk as Buffer));
+    request.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve(raw ? (JSON.parse(raw) as RequestBody) : {});
+      } catch (error) {
+        reject(error as Error);
+      }
+    });
+    request.on('error', reject);
+  });
 }

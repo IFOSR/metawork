@@ -49,7 +49,7 @@ import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
 import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
 import { generateToken } from './management/token.js';
-import { ManagementServer, type ExecutionQuery } from './management/server.js';
+import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
@@ -109,6 +109,7 @@ async function runWebMode(options: {
   noOpen: boolean;
   sessionFactory: (sessionId: string) => MetaclawSession;
   executionQuery: ExecutionQuery;
+  configQuery: ConfigQuery;
 }): Promise<void> {
   const webToken = generateToken();
   const webDistDir = process.env.ANYFUSION_WEB_DIST
@@ -120,6 +121,7 @@ async function runWebMode(options: {
     token: webToken,
     sessionFactory: options.sessionFactory,
     executionQuery: options.executionQuery,
+    configQuery: options.configQuery,
   });
   await managementServer.start();
   process.stdout.write(`AnyFusion Web: ${managementServer.address}\n`);
@@ -366,6 +368,7 @@ async function main() {
       decisionRepo: new KernelDecisionRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
     });
+    const configurationService = new ConfigurationService({ repository: configurationRepository });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
@@ -392,6 +395,46 @@ async function main() {
         projectTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;
+        },
+      },
+      configQuery: {
+        getActive: async () => {
+          const snapshot = await configurationService.getActiveSnapshot();
+          return {
+            revisionId: snapshot.revisionId,
+            contentHash: snapshot.contentHash,
+            config: snapshot.config,
+          };
+        },
+        listRevisions: async () => {
+          const revisionIds = await configurationRepository.listRevisions();
+          const active = await configurationService.getActiveSnapshot();
+          return revisionIds.map(revisionId => ({
+            revisionId,
+            active: revisionId === active.revisionId,
+          }));
+        },
+        getSnapshot: async revisionId => {
+          try {
+            const snapshot = await configurationService.getSnapshot(revisionId);
+            return {
+              revisionId: snapshot.revisionId,
+              contentHash: snapshot.contentHash,
+              config: snapshot.config,
+            };
+          } catch {
+            return null;
+          }
+        },
+        activate: async (baseRevisionId, nextConfig) =>
+          activateConfiguration(
+            configurationService,
+            nextConfig as AnyFusionConfigurationV2,
+            baseRevisionId,
+          ),
+        rollback: async targetRevisionId => {
+          const active = await configurationService.getActiveSnapshot();
+          return toMutationResult(await configurationService.rollback(targetRevisionId, active.revisionId));
         },
       },
     });
