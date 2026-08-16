@@ -1,19 +1,48 @@
 import { useEffect, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { ActivateResult } from '../api/types';
-import { ProviderForm } from './ProviderForm';
-import { ModelForm } from './ModelForm';
-import { AgentClassForm } from './AgentClassForm';
+import { AgentClassConfig, type AgentClassConfigDraft } from './AgentClassConfig';
+import {
+  OTHER_PROVIDER_KEY,
+  presetProvider,
+  presetProviderByBaseUrl,
+} from '../preset-providers';
 
 interface SettingsPanelProps {
   http: HttpClient | null;
   onClose: () => void;
 }
 
-interface DraftState {
-  providers: Record<string, Record<string, unknown>>;
-  models: Record<string, Record<string, unknown>>;
-  agentClasses: Record<string, Record<string, unknown>>;
+type DraftState = Record<string, AgentClassConfigDraft>;
+
+function sanitizeRef(value: string): string {
+  return value.replace(/[^a-zA-Z0-9-]/g, '-');
+}
+
+function loadDraft(config: Record<string, unknown>): DraftState {
+  const agentClasses = (config.agentClasses ?? {}) as Record<string, Record<string, unknown>>;
+  const models = (config.models ?? {}) as Record<string, Record<string, unknown>>;
+  const providers = (config.providers ?? {}) as Record<string, Record<string, unknown>>;
+
+  const draft: DraftState = {};
+  for (const [ref, agentClass] of Object.entries(agentClasses)) {
+    const policy = agentClass.modelPolicy as { mode?: string; modelRef?: string; defaultModelRef?: string; allowedModelRefs?: string[] };
+    const modelRef = policy?.mode === 'fixed'
+      ? (policy.modelRef ?? '')
+      : (policy?.defaultModelRef ?? policy?.allowedModelRefs?.[0] ?? '');
+    const model = models[modelRef];
+    const provider = model ? providers[String(model.providerRef)] : undefined;
+    const preset = provider ? presetProviderByBaseUrl(String(provider.baseUrl ?? '')) : undefined;
+
+    draft[ref] = {
+      providerKey: preset ? preset.key : OTHER_PROVIDER_KEY,
+      providerName: preset ? '' : String(model?.providerRef ?? ''),
+      baseUrl: preset ? preset.baseUrl : String(provider?.baseUrl ?? ''),
+      apiKey: '',
+      modelId: String(model?.modelId ?? ''),
+    };
+  }
+  return draft;
 }
 
 export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
@@ -30,11 +59,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
       const config = snapshot.config as Record<string, unknown>;
       setRevisionId(snapshot.revisionId);
       setRunningRevisionId(snapshot.runningRevisionId);
-      setDraft({
-        providers: (config.providers ?? {}) as DraftState['providers'],
-        models: (config.models ?? {}) as DraftState['models'],
-        agentClasses: (config.agentClasses ?? {}) as DraftState['agentClasses'],
-      });
+      setDraft(loadDraft(config));
     }).catch(error => setLoadError((error as Error).message));
   }, [http]);
 
@@ -43,30 +68,59 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     setLoading(true);
     setResult(null);
     try {
-      // 先写新增/更新的凭证到 SecretStore，得到 apiKeyRef。
-      const providersForRevision: Record<string, Record<string, unknown>> = {};
-      for (const [ref, provider] of Object.entries(draft.providers)) {
-        const { _apiKeyDraft, ...rest } = provider;
-        if (_apiKeyDraft) {
-          const { apiKeyRef } = await http.writeSecret(ref, String(_apiKeyDraft));
-          providersForRevision[ref] = { ...rest, apiKeyRef };
-        } else {
-          providersForRevision[ref] = rest;
-        }
-      }
-      // 组装完整 config：draft 覆盖在原始 config 上。
       const original = await http.getConfig();
+      const originalConfig = original.config as Record<string, unknown>;
+      const originalAgentClasses = (originalConfig.agentClasses ?? {}) as Record<string, Record<string, unknown>>;
+
+      const providers: Record<string, Record<string, unknown>> = {};
+      const models: Record<string, Record<string, unknown>> = {};
+      const agentClasses: Record<string, Record<string, unknown>> = {};
+
+      for (const [ref, entry] of Object.entries(draft)) {
+        const preset = presetProvider(entry.providerKey);
+        const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
+        const baseUrl = preset ? preset.baseUrl : entry.baseUrl;
+
+        // 写凭证（Other 且用户输入了 key；预设 provider 的 key 已在安装期/SecretStore 就位）。
+        if (entry.providerKey === OTHER_PROVIDER_KEY && entry.apiKey) {
+          await http.writeSecret(providerRef, entry.apiKey);
+        }
+
+        providers[providerRef] = {
+          protocol: 'openai-compatible',
+          baseUrl,
+          apiKeyRef: `file-secret:anyfusion/providers/${providerRef}`,
+          region: 'international',
+          enabled: true,
+        };
+
+        const modelRef = sanitizeRef(`${providerRef}-${entry.modelId}`);
+        models[modelRef] = {
+          modelId: entry.modelId,
+          providerRef,
+          capabilities: ref === 'planner' ? ['planning', 'structured-output'] : ['coding', 'tools'],
+          reasoning: 'high',
+          costTier: null,
+          latencyTier: null,
+          enabled: true,
+        };
+
+        agentClasses[ref] = {
+          ...(originalAgentClasses[ref] ?? {}),
+          modelPolicy: { mode: 'fixed', modelRef },
+        };
+      }
+
       const next = {
-        ...(original.config as Record<string, unknown>),
-        providers: providersForRevision,
-        models: draft.models,
-        agentClasses: draft.agentClasses,
+        ...originalConfig,
+        providers,
+        models,
+        agentClasses,
       };
       const response = await http.activate(revisionId, next);
       setResult(response);
       if (response.ok && response.revisionId) {
         setRevisionId(response.revisionId);
-        setDraft(prev => prev ? { ...prev, providers: providersForRevision } : prev);
       }
     } catch (error) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
@@ -86,43 +140,30 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
         </div>
         <div className="drawer-body">
           <p className="settings-note">
-            凭证由 SecretStore 托管，revision 只含引用（apiKeyRef），任何 API 响应都不会回显明文。
-            此处可新增/编辑 Provider、Model 并绑定到 AgentClass；
-            激活的 revision 会在下次启动时生效，当前运行会话继续固定使用启动时 revision。
-            激活会真实探测 executor CLI（codex / pi），缺失会导致激活失败。
+            直接为 Planner 和每个 Executor 选择 Provider 与 Model（级联）。
+            预设 Code CLI / Kimi / DeepSeek，也可选 Other 自定义 baseUrl 与模型。
+            凭证由 SecretStore 托管，revision 只含引用；激活在下次启动时生效。
           </p>
           {revisionId && runningRevisionId && revisionId !== runningRevisionId && (
             <div className="result-banner result-ok">
-              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}。
-              请重启 AnyFusion 后生效。
+              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}，请重启 AnyFusion 后生效。
             </div>
           )}
 
           {loadError && <div className="result-banner result-error">加载失败：{loadError}</div>}
-
           {!draft && !loadError && <div className="empty-hint">加载配置中…</div>}
 
           {draft && (
-            <>
-              <h3 className="section-title">Provider</h3>
-              <ProviderForm
-                providers={draft.providers}
-                onChange={providers => setDraft(prev => prev ? { ...prev, providers } : prev)}
-              />
-
-              <h3 className="section-title">Model</h3>
-              <ModelForm
-                models={draft.models}
-                providers={draft.providers}
-                onChange={models => setDraft(prev => prev ? { ...prev, models } : prev)}
-              />
-
-              <h3 className="section-title">AgentClass</h3>
-              <AgentClassForm
-                agentClasses={draft.agentClasses}
-                models={draft.models}
-                onChange={agentClasses => setDraft(prev => prev ? { ...prev, agentClasses } : prev)}
-              />
+            <div className="form-section">
+              {Object.entries(draft).map(([ref, entry]) => (
+                <AgentClassConfig
+                  key={ref}
+                  agentClassRef={ref}
+                  kind={ref === 'planner' ? 'planner' : 'executor'}
+                  draft={entry}
+                  onChange={next => setDraft(prev => prev ? { ...prev, [ref]: next } : prev)}
+                />
+              ))}
 
               {result && (
                 <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>
@@ -140,11 +181,11 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
                     <div className="dim">配置已被其他操作更新，请关闭设置后重新打开再试。</div>
                   )}
                   {!result.ok && (
-                    <div className="dim">提示：若涉及新建 Provider，请确认已在 Provider 表单填写 API Key。</div>
+                    <div className="dim">提示：若选择了 Other，请确认已填写 Provider 名、baseUrl 与 API Key。</div>
                   )}
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
         {draft && (
