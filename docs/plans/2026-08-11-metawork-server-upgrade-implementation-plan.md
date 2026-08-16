@@ -4,8 +4,21 @@
 
 Status: Implemented (core code tasks complete; release-infrastructure smoke and AnyFusion-Pi cutover deferred)
 Plan date: 2026-08-11
-Last revised: 2026-08-13
+Last revised: 2026-08-16
 Execution gate: Tasks that remove legacy authority or mutate SQLite may not start until Task 1 ADRs and the complete schema 30-to-31 migration/rollback contract are accepted.
+
+**Amendment (2026-08-16, commit `dc41bd9`):** AnyFusion-Pi is no longer a
+companion repository. The planner fork is vendored at `planner/AnyFusion-Pi`
+inside `IFOSR/metawork`; installation and image builds consume only this
+repository. Consequences for the deferred release-infrastructure tasks:
+the "AnyFusion-Pi companion cutover" work items (separate clean worktree,
+independent commit pin) are obsolete — the release manifest's planner artifact
+is built from the vendored sources and pinned to the metawork revision
+(`tests/installation/release-manifest.test.ts` fixture updated accordingly);
+Task 8's cross-repository contract test drives the vendored planner and no
+longer requires a sibling checkout at a pinned commit. The two-artifact
+manifest schema itself is unchanged: a release may still ship a separate
+planner tarball, but its source and revision are this repository.
 
 **Completion (2026-08-13):** Delivered the Configuration Control Plane, Harness
 Driver dispatch, admin/management surfaces, Guidance ownership, Delivery
