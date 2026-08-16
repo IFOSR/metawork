@@ -329,7 +329,7 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 **激活的真实成本（交互设计必须接受）**：`probeDraft` 会真实执行 `codex --version` / `pi --version`，executor CLI 缺失会导致**任何**配置变更激活失败（哪怕只改 runtimePolicy）。因此：激活是秒级操作但非零成本；`probe_failed` 时整页展示失败原因，并提示安装对应 CLI，不能静默。
 
-**前置任务声明**：secret store + runtime binding 生产接线是独立的前置任务（可能触及 ADR-0027 范围）。完成之后，设置页才扩展凭证与模型 ID 管理，届时新增 `POST /api/config/secrets`（先写 secret store，再激活引用它的配置），并重新评估 scope。
+**前置任务声明**：secret store + runtime binding 生产接线是独立的前置任务（可能触及 ADR-0027 范围）。完成之后，设置页才扩展凭证与模型 ID 管理，届时新增 `POST /api/config/secrets`（先写 secret store，再激活引用它的配置），并重新评估 scope。**该前置任务已立项为 [多 Provider 与模型配置实施方案](2026-08-16-multi-provider-model-configuration.md)（2026-08-16），本节 scope 收缩在其 Task 4 完成前保持有效。**
 
 ### 8.3 交互细节
 
