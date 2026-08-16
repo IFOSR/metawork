@@ -111,7 +111,9 @@ const SubtaskSchema = z.object({
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_VALUES)).min(1),
   executorBindings: z.array(ExecutorBindingSchema).min(1).max(32),
-  deliveryKind: z.enum(DELIVERY_KIND_VALUES),
+  deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
+    'edit: the subtask creates or modifies files in the workspace; report: read-only analysis or answer that must not change the workspace',
+  ),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
 }).strict();

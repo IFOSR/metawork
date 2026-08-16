@@ -301,7 +301,10 @@ interface FocusContext {
   taskId: string | null;
 }
 
-const DEFAULT_PLANNER_TIMEOUT_MS = 60_000;
+// Reasoning models (e.g. gpt-5.6-terra) can take ~24s per response; a planning
+// turn may issue several model calls, so 60s was too tight. 180s leaves headroom
+// while still surfacing a genuinely stuck Planner within a bounded window.
+const DEFAULT_PLANNER_TIMEOUT_MS = 180_000;
 
 function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
