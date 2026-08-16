@@ -100,8 +100,6 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
           providerRef,
           capabilities: ref === 'planner' ? ['planning', 'structured-output'] : ['coding', 'tools'],
           reasoning: 'high',
-          costTier: null,
-          latencyTier: null,
           enabled: true,
         };
 
