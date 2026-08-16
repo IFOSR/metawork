@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -32,12 +32,23 @@ const cleanupPaths: string[] = [];
 interface ContractManifest {
   schemaVersion: 1;
   metawork: { contractCommit: string };
-  anyFusionPi: { commit: string };
+  anyFusionPi: { vendored: string };
   hostProtocolVersion: number;
   planningAgentPlanVersion: number;
   workGraphVersion: number;
   planningAgentPlanSchemaSha256: string;
 }
+
+// The AnyFusion-Pi planner is vendored under planner/AnyFusion-Pi, so the
+// metawork commit pins both sides of the contract. The driver needs the
+// planner's built dist; CI builds it before the suite (see ci.yml).
+const vendoredPiRoot = process.env.ANYFUSION_PI_WORKTREE
+  ? resolve(process.env.ANYFUSION_PI_WORKTREE)
+  : join(repositoryRoot, 'planner', 'AnyFusion-Pi');
+const plannerDriverModule = join(
+  vendoredPiRoot,
+  'packages/coding-agent/dist/anyfusion/planner-proposal-tool.js',
+);
 
 afterEach(() => {
   for (const path of cleanupPaths.splice(0)) {
@@ -50,18 +61,23 @@ afterEach(() => {
 });
 
 describe('Task 8 cross-repository planning contract', () => {
-  it('pins Pi emission through the MetaWork validator and ControlKernel admission', async () => {
+  it('pins Pi emission through the MetaWork validator and ControlKernel admission', async (context) => {
     const manifest = readJson<ContractManifest>(manifestPath);
     const proposal = readJson<Record<string, unknown>>(proposalPath);
-    const piRoot = findPinnedPiCheckout(manifest.anyFusionPi.commit);
+    const piRoot = vendoredPiRoot;
 
     expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.anyFusionPi.vendored).toBe('planner/AnyFusion-Pi');
     expect(ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION).toBe(manifest.hostProtocolVersion);
     expect(proposal.schemaVersion).toBe(manifest.planningAgentPlanVersion);
     expect((proposal.workGraph as { schemaVersion?: unknown }).schemaVersion)
       .toBe(manifest.workGraphVersion);
     expect(isAncestor(repositoryRoot, manifest.metawork.contractCommit)).toBe(true);
-    expect(git(piRoot, ['rev-parse', 'HEAD'])).toBe(manifest.anyFusionPi.commit);
+    if (!existsSync(plannerDriverModule)) {
+      context.skip(
+        'vendored AnyFusion-Pi planner is not built; run `npm ci --ignore-scripts && npm run build:offline` in planner/AnyFusion-Pi',
+      );
+    }
 
     const schemaText = generatePlannerSchema();
     expect(sha256(schemaText)).toBe(manifest.planningAgentPlanSchemaSha256);
@@ -286,28 +302,6 @@ async function runPiDriver(
   return JSON.parse(stdout) as Record<string, unknown>;
 }
 
-function findPinnedPiCheckout(expectedCommit: string): string {
-  const candidates = [
-    process.env.ANYFUSION_PI_WORKTREE,
-    resolve(repositoryRoot, '../anyfusion-pi-server-upgrade'),
-    resolve(repositoryRoot, '../AnyFusion-Pi'),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  const inspected = candidates.map(candidate => {
-    try {
-      return { candidate, head: git(candidate, ['rev-parse', 'HEAD']) };
-    } catch {
-      return { candidate, head: 'unavailable' };
-    }
-  });
-  const match = inspected.find(candidate => candidate.head === expectedCommit);
-  if (match) return match.candidate;
-  throw new Error(
-    `AnyFusion-Pi checkout at ${expectedCommit} is required; inspected ${inspected
-      .map(candidate => `${candidate.candidate} (${candidate.head})`)
-      .join(', ')}`,
-  );
-}
-
 function isAncestor(repository: string, commit: string): boolean {
   try {
     execFileSync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], {
@@ -318,13 +312,6 @@ function isAncestor(repository: string, commit: string): boolean {
   } catch {
     return false;
   }
-}
-
-function git(repository: string, args: string[]): string {
-  return execFileSync('git', args, {
-    cwd: repository,
-    encoding: 'utf8',
-  }).trim();
 }
 
 function sha256(value: string): string {

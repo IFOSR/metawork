@@ -1,4 +1,7 @@
 node_modules
+planner/AnyFusion-Pi/node_modules
+planner/AnyFusion-Pi/packages/*/dist
+planner/AnyFusion-Pi/.git
 dist/*
 !dist/capability-request-cli.js
 !dist/capability-use-cli.js

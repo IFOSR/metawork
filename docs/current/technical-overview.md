@@ -265,8 +265,8 @@ anyfusion --help
 ```
 
 On macOS, `setup.sh` requires Node.js 22.19+, Git, npm, and existing `codex`
-and `pi` commands. It clones or updates the nested `planner/AnyFusion-Pi` checkout,
-builds the two repositories with separate dependency trees, writes mode-`0600`
+and `pi` commands. It builds MetaClaw and the vendored `planner/AnyFusion-Pi` planner
+sources (checked into this repository) with separate dependency trees, writes mode-`0600`
 AnyFusion-only provider and model configuration under
 `~/.config/anyfusion`, installs only `~/.local/bin/anyfusion`, and stores
 runtime state under `~/.local/share/anyfusion`. It does not run either
@@ -571,12 +571,12 @@ anyfusion --connect
 Docker is not required for native macOS installation or normal local use. The
 `docker/` workflow remains available for optional Linux compatibility and CI
 validation. In that mode the container working directory remains `/workspace`,
-one BuildKit build consumes MetaClaw and the sibling AnyFusion-Pi repository,
+one BuildKit build consumes MetaClaw and the vendored AnyFusion-Pi planner sources,
 and the final image keeps the MetaClaw control process and Planner process
 isolated with separate dependency trees. The Docker attempt path is
 compatibility-only and is not started by the native launcher.
 
-The Runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds both repository contexts and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes in either repository require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+The Runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 

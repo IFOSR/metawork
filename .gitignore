@@ -18,5 +18,5 @@ docs/sales/
 # test fixture nested repo
 tests/fixtures/workspace-source/.git/
 
-# nested AnyFusion-Pi planner (installed at runtime, separate repository)
-planner/
+# vendored AnyFusion-Pi planner keeps its own nested .gitignore
+# (planner/AnyFusion-Pi/node_modules and dist stay untracked)

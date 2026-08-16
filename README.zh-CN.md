@@ -78,12 +78,11 @@ export ANYFUSION_PROVIDER_URL='https://你的-openai-compatible服务地址.exam
 
 安装器会：
 
-- 分别构建 MetaWork 和 AnyFusion-Pi，保持两套独立依赖树。
-- 将 AnyFusion-Pi 安装到 `metawork/planner/AnyFusion-Pi`。
+- 分别构建 MetaWork 和仓库内置的 AnyFusion-Pi planner，保持两套独立依赖树。
+- 直接构建仓库内检入的 `metawork/planner/AnyFusion-Pi` 源码，不克隆任何外部仓库。
 - 将启动器安装到 `~/.local/bin/anyfusion`。
 - 将 AnyFusion 专用配置写入 `~/.config/anyfusion`。
 - 将运行状态保存到 `~/.local/share/anyfusion`。
-- 检测到 nested AnyFusion-Pi 有本地修改时保留修改，不进行覆盖。
 - 不安装、升级、降级、链接或重新配置 Codex/Pi。
 - 不读取或写入用户个人的 `~/.codex` 和 `~/.pi`。
 

@@ -23,8 +23,6 @@ const plannerRoot = resolve(
 );
 const configHome = resolve(process.env.ANYFUSION_CONFIG_HOME ?? join(homedir(), '.config', 'anyfusion'));
 const binHome = resolve(process.env.ANYFUSION_BIN_HOME ?? join(homedir(), '.local', 'bin'));
-const plannerBranch = 'codex/anyfusion-planner';
-const plannerRemote = 'https://github.com/MetaAny/AnyFusion-Pi.git';
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -85,50 +83,14 @@ async function resolveProviderOrPrompt() {
   }
 }
 
-async function clonePlannerWithFallback() {
-  try {
-    run('git', [
-      '-c', 'http.version=HTTP/1.1',
-      'clone',
-      '--depth', '1',
-      '--branch', plannerBranch,
-      '--single-branch',
-      plannerRemote,
-      plannerRoot,
-    ]);
-    return;
-  } catch (error) {
-    process.stdout.write(`git clone failed (${error instanceof Error ? error.message : String(error)}); falling back to codeload tarball...\n`);
-  }
-
-  run('rm', ['-rf', plannerRoot]);
-  await mkdir(plannerRoot, { recursive: true });
-  const tarballUrl = `https://codeload.github.com/MetaAny/AnyFusion-Pi/tar.gz/refs/heads/${plannerBranch}`;
-  const tarballPath = join(plannerRoot, '.anyfusion-pi.tar.gz');
-  run('curl', ['-fsSL', '--connect-timeout', '15', '-o', tarballPath, tarballUrl]);
-  run('tar', ['-xzf', tarballPath, '--strip-components=1', '-C', plannerRoot]);
-  run('rm', ['-f', tarballPath]);
-  run('git', ['init', '-q'], { cwd: plannerRoot });
-  run('git', ['add', '-A'], { cwd: plannerRoot });
-  run('git', ['-c', 'user.email=install@metawork.local', '-c', 'user.name=metawork', 'commit', '-q', '-m', 'snapshot anyfusion-pi'], { cwd: plannerRoot });
-}
-
 async function installPlanner() {
-  if (!(await exists(join(plannerRoot, '.git')))) {
-    await mkdir(dirname(plannerRoot), { recursive: true });
-    await clonePlannerWithFallback();
-  } else {
-    const changes = run('git', ['status', '--porcelain'], { cwd: plannerRoot, capture: true });
-    if (changes) {
-      process.stdout.write('AnyFusion-Pi has local changes; preserving them and skipping remote update.\n');
-    } else {
-      try {
-        run('git', ['-c', 'http.version=HTTP/1.1', 'fetch', 'origin', plannerBranch], { cwd: plannerRoot });
-        run('git', ['merge', '--ff-only', `origin/${plannerBranch}`], { cwd: plannerRoot });
-      } catch (error) {
-        process.stdout.write(`AnyFusion-Pi remote update skipped (${error instanceof Error ? error.message : String(error)}); using existing checkout.\n`);
-      }
-    }
+  // The AnyFusion-Pi planner is vendored under planner/AnyFusion-Pi in this
+  // repository; installation only hydrates dependencies and builds it.
+  if (!(await exists(join(plannerRoot, 'package.json')))) {
+    throw new Error(
+      `AnyFusion-Pi planner sources are missing at ${plannerRoot}; `
+      + 'reinstall or clone the complete AnyFusion repository.',
+    );
   }
   run('npm', ['ci', '--ignore-scripts'], { cwd: plannerRoot });
   run('npm', ['run', 'build:offline'], { cwd: plannerRoot });

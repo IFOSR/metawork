@@ -256,8 +256,8 @@ anyfusion --help
 ```
 
 macOS 上，`setup.sh` 要求 Node.js 22.19+、Git、npm，以及已经存在的
-`codex` 和 `pi` 命令。它会克隆或更新 `planner/AnyFusion-Pi`，让两个
-仓库使用独立依赖树，构建后把 mode-`0600` 的 AnyFusion 专用 provider
+`codex` 和 `pi` 命令。它会直接构建仓库内检入的 `planner/AnyFusion-Pi` planner
+源码（不克隆外部仓库），两者使用独立依赖树，构建后把 mode-`0600` 的 AnyFusion 专用 provider
 和模型配置写入 `~/.config/anyfusion`，只安装
 `~/.local/bin/anyfusion`，并将运行状态保存在
 `~/.local/share/anyfusion`。安装期间不会运行两个 Executor，也不会
@@ -593,11 +593,11 @@ anyfusion --connect
 
 macOS 原生安装和日常本机使用不需要 Docker。`docker/` 工作流仅保留给
 可选 Linux 兼容与 CI 验证；该模式中的容器工作目录仍为 `/workspace`，
-BuildKit 同时读取 MetaClaw 与相邻 AnyFusion-Pi 仓库，并在最终镜像中
+BuildKit 同时读取 MetaClaw 与仓库内置的 AnyFusion-Pi planner 源码，并在最终镜像中
 保持 MetaClaw control process、Planner process 和依赖树相互隔离。
 Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
 
-完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建两个仓库 context，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。任一仓库源码变化后都使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建仓库内检入的 MetaClaw 与 vendored planner 源码，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。源码变化后使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 

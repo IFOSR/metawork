@@ -49,7 +49,7 @@ $ErrorActionPreference = 'Continue'
 $repoRoot    = Split-Path -Parent $PSScriptRoot
 # One runtime image contains MetaClaw, Planner, Node, and the optional SSH entry.
 $runtimeImage = 'metaclaw-runtime'
-$anyFusionPiRoot = Join-Path (Split-Path -Parent $repoRoot) 'AnyFusion-Pi'
+$vendoredPlannerRoot = Join-Path $repoRoot 'planner\AnyFusion-Pi'
 $container   = 'metaclaw-shell'
 $sshHost     = 'localhost'
 $sshBindHost = '127.0.0.1'
@@ -201,9 +201,9 @@ function Invoke-SetupSsh {
 }
 
 function Test-Prereqs {
-    $plannerPackage = Join-Path $anyFusionPiRoot 'package.json'
+    $plannerPackage = Join-Path $vendoredPlannerRoot 'package.json'
     if (-not (Test-Path $plannerPackage)) {
-        Write-Error "Missing sibling AnyFusion-Pi repository at $anyFusionPiRoot."
+        Write-Error "Missing vendored AnyFusion-Pi planner at $vendoredPlannerRoot."
         exit 1
     }
     $requiredEnvFiles = @($plannerEnvFile, $codexExecutorEnvFile, $piExecutorEnvFile)
@@ -220,7 +220,7 @@ function Build-RuntimeImage {
     param([switch]$Force)
     if (-not $Force -and (Test-ImageExists $runtimeImage)) { return }
     Write-Host ("Building unified runtime image " + $runtimeImage + " ...") -ForegroundColor Yellow
-    docker build --build-context "anyfusion-pi=$anyFusionPiRoot" -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $runtimeImage $repoRoot
+    docker build -f (Join-Path $repoRoot 'docker\Dockerfile.runtime') -t $runtimeImage $repoRoot
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

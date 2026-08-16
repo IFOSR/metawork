@@ -4,7 +4,7 @@
     "contractCommit": "6c329b854fcd201faffe73c6c762a119f85dd392"
   },
   "anyFusionPi": {
-    "commit": "6fe415ce51669b27cb007798f2e1bc208b4024dd"
+    "vendored": "planner/AnyFusion-Pi"
   },
   "hostProtocolVersion": 2,
   "planningAgentPlanVersion": 8,

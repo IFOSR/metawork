@@ -74,7 +74,8 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - Preserve ADR-0020's ownership and dependency direction. Detailed runtime rules
   belong in `CONTEXT.md`, not this file.
-- The nested `planner/AnyFusion-Pi` fork is the default local Planner surface. Its Task panel and
+- The vendored `planner/AnyFusion-Pi` fork is the default local Planner surface; it is checked
+  into this repository, not a separate checkout. Its Task panel and
   bridge are presentation/Application-Shell adapters only: they may project state and hand a
   Planner proposal to the existing validation path, but may not mutate storage, schedule work,
   authorize execution, or control an Executor.
@@ -112,10 +113,11 @@ Do not repeatedly retry the full suite on Windows; `npm run lint` is the reliabl
 host check. Core policy, execution, or storage changes require focused tests at
 the owning seam.
 
-For the AnyFusion-Pi integration, native macOS installation keeps the nested
-Planner repository, dependency tree, process, home, and sessions isolated while
+For the AnyFusion-Pi integration, native macOS installation builds the vendored
+Planner sources (`planner/AnyFusion-Pi`, checked into this repository) with an isolated
+dependency tree, process, home, and sessions while
 using the directory where the user starts AnyFusion as the read-only workspace.
-Docker validation still covers both repositories in one Node 22.19+ runtime
+Docker validation still covers both source trees in one Node 22.19+ runtime
 image, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel
 handoff, and unchanged core regressions. The Pi fork uses
 `npm run build:offline`; do not use a host-global Pi package as Planner or run

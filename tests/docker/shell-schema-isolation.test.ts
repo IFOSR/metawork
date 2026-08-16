@@ -3,13 +3,13 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Docker shell SQLite schema isolation', () => {
-  it('builds one Node 22 runtime from both repository contexts', () => {
+  it('builds one Node 22 runtime from the vendored planner sources', () => {
     const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const smoke = readFileSync(resolve('scripts/smoke-metaclaw-real-task.mjs'), 'utf-8');
 
     expect(runtimeDockerfile).toContain('FROM node:22.19.0-bookworm-slim AS runtime');
-    expect(runtimeDockerfile).toContain('COPY --from=anyfusion-pi . .');
+    expect(runtimeDockerfile).toContain('COPY planner/AnyFusion-Pi/. .');
     expect(runtimeDockerfile).toContain('exec /usr/local/bin/node /opt/anyfusion-planner/app/');
     expect(runtimeDockerfile).toContain('test ! -e /opt/anyfusion-planner/node');
     expect(runtimeDockerfile).toContain('@openai/codex@0.144.1');
@@ -19,15 +19,17 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(runtimeDockerfile).toContain('/app/dist/capability-use-cli.js');
     expect(runtimeDockerfile).not.toContain('ANYFUSION_PI_IMAGE');
     expect(runtimeDockerfile).not.toContain('FROM ${ANYFUSION_PI_IMAGE}');
-    expect(shell).toContain('docker build --build-context "anyfusion-pi=$anyFusionPiRoot"');
+    expect(runtimeDockerfile).not.toContain('--from=anyfusion-pi');
+    expect(shell).toContain("planner\\AnyFusion-Pi");
     expect(shell).not.toContain('Build-AnyFusionPiImage');
     expect(shell).not.toContain('Build-Image');
     expect(shell).not.toContain('Build-BaseImage');
     expect(shell).not.toContain('Dockerfile.ssh');
     expect(shell).not.toContain('metaclaw-tui-ssh');
     expect(shell).not.toContain('anyfusion-pi-planner:local');
-    expect(smoke).toContain("'--build-context', `anyfusion-pi=${anyFusionPiRoot}`");
+    expect(shell).not.toContain('build-context');
     expect(smoke).not.toContain('ANYFUSION_PI_IMAGE');
+    expect(smoke).not.toContain('build-context');
   });
 
   it('keeps the package, setup, CI, and image Node baselines aligned', () => {

@@ -5,14 +5,16 @@ FROM node:22.19.0-bookworm-slim AS planner-builder
 WORKDIR /planner
 ENV CI=true
 
-COPY --from=anyfusion-pi package.json package-lock.json ./
-COPY --from=anyfusion-pi packages/tui/package.json packages/tui/package.json
-COPY --from=anyfusion-pi packages/ai/package.json packages/ai/package.json
-COPY --from=anyfusion-pi packages/agent/package.json packages/agent/package.json
-COPY --from=anyfusion-pi packages/coding-agent/package.json packages/coding-agent/package.json
+# The AnyFusion-Pi planner is vendored under planner/AnyFusion-Pi in this
+# repository; the image builds it from the same sources as native installs.
+COPY planner/AnyFusion-Pi/package.json planner/AnyFusion-Pi/package-lock.json ./
+COPY planner/AnyFusion-Pi/packages/tui/package.json packages/tui/package.json
+COPY planner/AnyFusion-Pi/packages/ai/package.json packages/ai/package.json
+COPY planner/AnyFusion-Pi/packages/agent/package.json packages/agent/package.json
+COPY planner/AnyFusion-Pi/packages/coding-agent/package.json packages/coding-agent/package.json
 RUN npm ci --ignore-scripts
 
-COPY --from=anyfusion-pi . .
+COPY planner/AnyFusion-Pi/. .
 RUN npm run build:offline \
   && mkdir -p /opt/anyfusion-planner/app /opt/anyfusion-planner/bin \
   && cp -a package.json package-lock.json node_modules packages /opt/anyfusion-planner/app/ \

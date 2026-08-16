@@ -32,6 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build vendored AnyFusion-Pi planner
+        run: |
+          npm ci --ignore-scripts
+          npm run build:offline
+        working-directory: planner/AnyFusion-Pi
+
       - name: Type-check
         run: npm run lint
 

@@ -81,12 +81,11 @@ export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v
 
 The installer:
 
-- Builds MetaWork and AnyFusion-Pi in separate dependency trees.
-- Installs AnyFusion-Pi under `metawork/planner/AnyFusion-Pi`.
+- Builds MetaWork and the vendored AnyFusion-Pi planner in separate dependency trees.
+- Builds the AnyFusion-Pi planner directly from the checked-in `metawork/planner/AnyFusion-Pi` sources; no external repository is cloned.
 - Installs the launcher at `~/.local/bin/anyfusion`.
 - Writes AnyFusion-only configuration under `~/.config/anyfusion`.
 - Stores runtime state under `~/.local/share/anyfusion`.
-- Preserves a dirty nested AnyFusion-Pi checkout instead of overwriting it.
 - Does not install, upgrade, downgrade, link, or reconfigure Codex or Pi.
 - Does not read or write the user's `~/.codex` or `~/.pi` homes.
 
