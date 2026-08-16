@@ -190,9 +190,13 @@ metawork/
 | 前端 → Server | `{ type:'input', text }` | 用户问题，进 `session.submit` |
 | 前端 → Server | `{ type:'close' }` | 关闭连接（不影响 session，见第 4.4 节；有意为之——web 端无 `/exit` 语义，会话随进程退出结束） |
 | Server → 前端 | `{ type:'hello', sessionId }` | 鉴权通过，附着单例 session 成功 |
-| Server → 前端 | `{ type:'output', lines[] }` | 文本输出（Planner 回复 / 交付摘要 / 错误） |
+| Server → 前端 | `{ type:'output', from, lines[] }` | 文本输出增量；`from` 是 `lines[0]` 的绝对行号（稳定游标） |
 | Server → 前端 | `{ type:'execution', taskId, timeline }` | 执行时间线增量（核心新增） |
 | Server → 前端 | `{ type:'error', message }` | 错误 |
+
+**输出游标（防重连重复）**：新连接收到 `from=0` 的全量回放；前端不 append，而是按绝对行号幂等合并（同一行号覆盖同一内容）。重连回放因此天然去重，不需要事件 ID 协商。
+
+**时间线补发**：增量广播只覆盖当时已连接的客户端；新连接在 `hello` 后立即收到一份当前时间线（若存在进行中的 task），不等到下一次状态变化。
 
 ### 6.4 鉴权与 token 传递
 
@@ -329,7 +333,8 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 ### 8.3 交互细节
 
-- **对话**：发送后消息进流；Planner 规划说明、交付摘要、错误都落在对话区。
+- **对话**：发送后消息进流；Planner 规划说明、交付摘要、错误都落在对话区。对话内容按 Markdown 渲染（标题/表格/列表/代码块），模型输出经消毒后插入，链接强制 `target="_blank" rel="noreferrer"`。
+- **对话内嵌执行轨迹（已决）**：时间线投影同时以「执行轨迹」卡片嵌入对话主视图——只展示可验证的 durable 执行事实（理解请求 → Planner 生成 N 个子任务 → Kernel 授权 → 分配给各 Executor → 验证 → 汇总交付），不展示模型 chain-of-thought。**默认紧凑一行摘要；任务进行中自动展开，完成后自动折叠；用户点击可随时覆盖，新任务出现时回到自动模式。** 右侧 Execution Timeline 面板保留，两者共用同一份投影数据。
 - **时间线**：与对话同步推进——用户一提交，右侧立刻出现 `planning` 阶段，随授权/执行实时点亮。subtask 卡片状态色点（ready / running / done / blocked / failed），点开看 Kernel 决策原因和 attempt 回执（含失败错误码和详细原因）。
 - **设置**：编辑本地副本 → 整体激活。apiKey 无编辑入口。
 - **权限升级**：execution 中的权限请求沿用 RPC 自然语言授权（CONTEXT.md 已支持）——Planner 在对话区提出升级请求，用户直接在对话里回复同意/拒绝，**不做独立审批按钮**。
@@ -418,3 +423,14 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
   2. completion contract 误判：`deliveryKind` 在 schema 里无语义说明，Planner 把「创建文件」误标为 `report` → 给 `deliveryKind` 加 `.describe()`（edit=改 workspace，report=只读不改 workspace）。修复后 `python-hello` 场景完整通过（任务 done，hello.py 正确创建并发布）。
 
 **§7.3 触发源保真度仍未闭环**：上面验证的是投影逻辑（查询侧）在真实数据下正确，但「WS 增量在每次阶段切换时都有推送」仍需一次 web 模式下的真实任务观察；当前触发源是 `session.subscribe`，若出现停滞按 §7.3 预授权加 execution 落库点通知 hook。
+
+### 对话体验加固（2026-08-16，`94f128b`）
+
+针对已确认的三个对话层缺陷的修复与验证：
+
+1. **Markdown 渲染**：`web/` 引入 `marked` + `dompurify`，整段输出作为单一 Markdown 文档渲染（标题/表格/列表/代码块），输出经消毒、链接强制新窗口。
+2. **对话内嵌执行轨迹**：新增 `ExecutionTrace` 组件，从同一份 ExecutionTimeline 投影派生可验证执行步骤（理解请求 → Planner 生成 N 个子任务 → Kernel 授权 → 分配给各 Executor → 验证 → 汇总交付），不含模型 chain-of-thought。交互按确认方案：默认紧凑一行、运行中自动展开、完成后自动折叠、点击覆盖、新任务重置自动模式。
+3. **重连重复回放**：`SessionStreamAdapter.onOutput` 携带绝对行号游标 `from`，WS 消息变为 `{ type:'output', from, lines }`，前端按下标幂等合并（`mergeOutputLines`），重连的 from=0 全量回放天然去重。
+4. **顺带修复**：新连接补发当前执行时间线（此前增量广播只覆盖已连接客户端，重连后时间线空到下一次状态变化）；`AgentClassForm` 联合类型误取 `modelRef` 的预存在类型错误（`vite build` 不做类型检查所以长期未发现）。
+
+验证：`tests/management/` 新增游标去重与时间线补发两个契约测试；协议级 E2E（真实 `ManagementServer` + 构建产物，REST/鉴权/双连接回放一致性/时间线补发）通过；`npm run lint`、`npm run build`、`web/` 内 `tsc --noEmit` + `vite build`、全量 `npm test`（233 文件 / 966 测试）通过。
