@@ -85,6 +85,7 @@ export class ManagementServer {
   private lastTimelineJson: string | null = null;
   private lastTimeline: ExecutionTimeline | null = null;
   private lastTimelineTaskId: string | null = null;
+  private timelinePollTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
@@ -108,6 +109,10 @@ export class ManagementServer {
   }
 
   async stop(): Promise<void> {
+    if (this.timelinePollTimer) {
+      clearInterval(this.timelinePollTimer);
+      this.timelinePollTimer = null;
+    }
     for (const ws of this.wsConnections) {
       ws.close();
     }
@@ -209,26 +214,39 @@ export class ManagementServer {
       this.singletonSession = this.deps.sessionFactory(this.singletonSessionId);
       this.singletonSession.initialize({ showDashboard: false });
 
-      // 执行时间线增量推送：session 快照变化时投影当前 task 并 diff。
+      // 执行时间线推送：session 快照变化时投影当前 task 并 diff。
       this.singletonSession.subscribe(snapshot => {
-        const taskId = snapshot.currentTaskId;
-        if (!taskId) {
-          this.lastTimeline = null;
-          this.lastTimelineTaskId = null;
-          return;
-        }
-        const timeline = this.deps.executionQuery.projectTimeline(taskId);
-        if (!timeline) return;
-        const json = JSON.stringify(timeline);
-        if (json !== this.lastTimelineJson) {
-          this.lastTimelineJson = json;
-          this.lastTimeline = timeline;
-          this.lastTimelineTaskId = taskId;
-          this.broadcast({ type: 'execution', taskId, timeline });
-        }
+        this.pushTimelineForTask(snapshot.currentTaskId);
       });
+      // execution 层 durable 翻转（subtask 创建/attempt receipt/publication）不触发
+      // session notify，加轻量轮询兜底，保证时间线在任务执行过程中持续推进。
+      this.timelinePollTimer = setInterval(() => {
+        if (this.singletonSession) {
+          this.pushTimelineForTask(this.singletonSession.getSnapshot().currentTaskId);
+        }
+      }, 500);
     }
     return this.singletonSession;
+  }
+
+  private pushTimelineForTask(taskId: string | null): void {
+    if (!taskId) {
+      if (this.lastTimelineTaskId !== null) {
+        this.lastTimeline = null;
+        this.lastTimelineTaskId = null;
+        this.lastTimelineJson = null;
+      }
+      return;
+    }
+    const timeline = this.deps.executionQuery.projectTimeline(taskId);
+    if (!timeline) return;
+    const json = JSON.stringify(timeline);
+    if (json !== this.lastTimelineJson) {
+      this.lastTimelineJson = json;
+      this.lastTimeline = timeline;
+      this.lastTimelineTaskId = taskId;
+      this.broadcast({ type: 'execution', taskId, timeline });
+    }
   }
 
   private broadcast(message: unknown): void {
