@@ -175,4 +175,81 @@ describe('configuration projections', () => {
     expect(Object.isFrozen(view)).toBe(true);
     expect(Object.isFrozen(view.harnesses)).toBe(true);
   });
+
+  it('projects auto modelPolicy candidates in order and excludes disabled agent classes', () => {
+    const config = AnyFusionConfigurationV2Schema.parse({
+      schemaVersion: 2,
+      providers: {
+        openai: {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          apiKeyRef: 'keychain:anyfusion/openai',
+          region: 'international',
+          enabled: true,
+        },
+      },
+      models: {
+        'model-a': { providerRef: 'openai', modelId: 'a', capabilities: ['coding'], reasoning: 'high', enabled: true },
+        'model-b': { providerRef: 'openai', modelId: 'b', capabilities: ['coding'], reasoning: 'high', enabled: true },
+      },
+      harnesses: {
+        'codex-cli': {
+          kind: 'executor',
+          transport: 'local-cli',
+          command: 'codex',
+          args: ['exec'],
+          driverId: 'codex-cli',
+          supportsProbe: true,
+          supportsAbort: true,
+          supportsContinuation: true,
+          enabled: true,
+        },
+      },
+      agentClasses: {
+        'auto-executor': {
+          kind: 'executor',
+          harnessRef: 'codex-cli',
+          modelPolicy: { mode: 'auto', allowedModelRefs: ['model-a', 'model-b'], defaultModelRef: 'model-a' },
+          permissionProfileRef: 'workspace-default',
+          routingCapabilities: ['workspace-engineering'],
+          primaryUseCases: [],
+          avoidUseCases: [],
+          plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+          generatedRuntimeRef: 'auto-executor',
+          enabled: true,
+        },
+        'disabled-executor': {
+          kind: 'executor',
+          harnessRef: 'codex-cli',
+          modelPolicy: { mode: 'fixed', modelRef: 'model-a' },
+          permissionProfileRef: 'workspace-default',
+          routingCapabilities: ['workspace-engineering'],
+          primaryUseCases: [],
+          avoidUseCases: [],
+          plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+          generatedRuntimeRef: 'disabled-executor',
+          enabled: false,
+        },
+      },
+      permissionProfiles: {
+        'workspace-default': {
+          profileId: 'workspace-engineering',
+          version: 1,
+          parameters: { maxAdditionalReadPartitions: 8 },
+        },
+      },
+      runtimePolicy: { maxConcurrentAttempts: 4, attemptTimeoutMs: 600000, probeTimeoutMs: 30000 },
+      gateway: { enabled: true, bindHost: '127.0.0.1', port: 8787 },
+    });
+
+    const view = buildPlannerConfigurationView({ revisionId: 'r1', contentHash: 'h', config });
+    const catalogAgentClasses = view.routingCatalog.agentClasses;
+
+    expect(catalogAgentClasses.map(agentClass => agentClass.id)).toEqual(['auto-executor']);
+    expect(catalogAgentClasses[0].modelPolicy).toEqual({
+      mode: 'auto',
+      allowedModelRefs: ['model-a', 'model-b'],
+      defaultModelRef: 'model-a',
+    });
+  });
 });
