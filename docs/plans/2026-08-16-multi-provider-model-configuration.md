@@ -166,8 +166,9 @@
 
 - `npm run lint` / `npm run build` 通过；`web/` 内 `tsc --noEmit` + `vite build` 通过。
 - `tests/configuration/`（含 renderer、secret store、migration、projections）+ `tests/management/`（含 secrets 端点）+ `tests/executor/` 全部通过。
+- **live smoke（Kimi，2026-08-16 补做）**：把本机 Kimi（`https://api.kimi.com/coding/v1`，模型 `k3`）作为 provider 配置，`python-hello` 场景 `--executor codex` **通过**——Planner 规划、Kernel 授权、codex 创建并运行 `hello.py` 全链路成功。这验证了 import → SecretStore 落库（key 0o600）→ generated 渲染（k3 + Kimi baseUrl）→ runtime binding 注入凭证的完整闭环。
 
-未验证（挂起，需有效 provider + executor CLI 的 live 环境）：
+未验证（挂起）：
 
-- §6 验收 2/3/5 的 live smoke：artifact 用非默认模型执行、Planner 新 session 用新默认模型、回滚后 generated 目录切回——需 `codex`/`pi` CLI 与有效 provider key，当前环境未跑。
+- §6 验收 2 的「非默认模型绑定」与验收 5 的「回滚切回 generated」未单独跑 live 验证（多 provider 场景 + 回滚操作，需 Web 设置页或 admin CLI 构造第二个 provider）。
 - Task 6 剩余的 README/CONTEXT.md 文档段落更新未做（记录本处，后续补）。
