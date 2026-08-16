@@ -50,6 +50,7 @@ export interface ConfigQuery {
   getSnapshot(revisionId: string): Promise<ConfigSnapshotResponse | null>;
   activate(baseRevisionId: string, config: unknown): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
+  writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
 }
 
 export interface ManagementServerDeps {
@@ -380,6 +381,16 @@ export class ManagementServer {
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/config/secrets') {
+      const body = await readRequestBody(request);
+      if (!body.providerRef || !body.apiKey) {
+        this.sendJson(response, 400, { error: 'providerRef and apiKey are required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey));
+      return;
+    }
+
     this.sendJson(response, 404, { error: 'not found', path: url.pathname });
   }
 
@@ -449,6 +460,8 @@ interface RequestBody {
   baseRevisionId?: string;
   config?: unknown;
   targetRevisionId?: string;
+  providerRef?: string;
+  apiKey?: string;
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

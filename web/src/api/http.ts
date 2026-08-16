@@ -48,4 +48,11 @@ export class HttpClient {
       body: JSON.stringify({ baseRevisionId, config }),
     });
   }
+
+  writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }> {
+    return this.request<{ apiKeyRef: string }>('/api/config/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ providerRef, apiKey }),
+    });
+  }
 }

@@ -17,7 +17,10 @@ export function AgentClassForm({ agentClasses, models, onChange }: AgentClassFor
   const modelPolicy = (agentClass: Record<string, unknown>) =>
     (agentClass.modelPolicy ?? { mode: 'fixed', modelRef: '' }) as EditableModelPolicy;
 
-  const modelOptions = ['auto', ...Object.keys(models)];
+  const enabledModelRefs = Object.entries(models)
+    .filter(([, model]) => model.enabled !== false)
+    .map(([ref]) => ref);
+  const modelOptions = ['auto', ...enabledModelRefs];
 
   return (
     <div className="form-section">
@@ -48,7 +51,7 @@ export function AgentClassForm({ agentClasses, models, onChange }: AgentClassFor
                 onChange={event => update(id, {
                   modelPolicy: selectModelPolicy(
                     event.target.value,
-                    Object.keys(models),
+                    enabledModelRefs,
                     policy,
                   ),
                 })}

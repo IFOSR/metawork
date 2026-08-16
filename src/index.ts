@@ -481,6 +481,11 @@ async function main() {
           const active = await configurationService.getActiveSnapshot();
           return toMutationResult(await configurationService.rollback(targetRevisionId, active.revisionId));
         },
+        writeSecret: async (providerRef, apiKey) => {
+          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
+          await secretStore.put(reference, apiKey);
+          return { apiKeyRef: reference };
+        },
       },
     });
     return;

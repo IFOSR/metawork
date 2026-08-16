@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { ManagementServer } from '../../src/management/server.js';
+import { ManagementServer, type ConfigQuery } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
 
 interface TestSession {
@@ -224,6 +224,43 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('writes a provider secret and never echoes the plaintext back', async () => {
+    const port = await reservePort();
+    let storedApiKey = '';
+    const server = createManagementServer(port, undefined, undefined, undefined, {
+      writeSecret: async (_ref, apiKey) => {
+        storedApiKey = apiKey;
+        return { apiKeyRef: 'file-secret:anyfusion/providers/provider-test' };
+      },
+    });
+    await server.start();
+
+    try {
+      const unauthorized = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerRef: 'provider-test', apiKey: 'sk-secret' }),
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ providerRef: 'provider-test', apiKey: 'sk-secret' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' });
+      expect(storedApiKey).toBe('sk-secret');
+      expect(JSON.stringify(body)).not.toContain('sk-secret');
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('tags output increments with stable absolute cursors so reconnects dedupe by index', async () => {
     const port = await reservePort();
     const state = { output: ['第一行', '第二行'], currentTaskId: null as string | null };
@@ -331,6 +368,7 @@ function createManagementServer(
   webSocketAuthTimeoutMs?: number,
   sessionOverride?: TestSession,
   executionQueryOverride?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown },
+  configQueryOverride?: Partial<ConfigQuery>,
 ): ManagementServer {
   const session = sessionOverride ?? {
     initialize() {},
@@ -366,6 +404,8 @@ function createManagementServer(
       getSnapshot: async () => null,
       activate: async () => ({ ok: true, revisionId: 'revision-next' }),
       rollback: async () => ({ ok: true, revisionId: 'revision-test' }),
+      writeSecret: async () => ({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' }),
+      ...configQueryOverride,
     },
   });
 }

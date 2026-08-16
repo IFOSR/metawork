@@ -43,11 +43,22 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     setLoading(true);
     setResult(null);
     try {
+      // 先写新增/更新的凭证到 SecretStore，得到 apiKeyRef。
+      const providersForRevision: Record<string, Record<string, unknown>> = {};
+      for (const [ref, provider] of Object.entries(draft.providers)) {
+        const { _apiKeyDraft, ...rest } = provider;
+        if (_apiKeyDraft) {
+          const { apiKeyRef } = await http.writeSecret(ref, String(_apiKeyDraft));
+          providersForRevision[ref] = { ...rest, apiKeyRef };
+        } else {
+          providersForRevision[ref] = rest;
+        }
+      }
       // 组装完整 config：draft 覆盖在原始 config 上。
       const original = await http.getConfig();
       const next = {
         ...(original.config as Record<string, unknown>),
-        providers: draft.providers,
+        providers: providersForRevision,
         models: draft.models,
         agentClasses: draft.agentClasses,
       };
@@ -55,6 +66,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
       setResult(response);
       if (response.ok && response.revisionId) {
         setRevisionId(response.revisionId);
+        setDraft(prev => prev ? { ...prev, providers: providersForRevision } : prev);
       }
     } catch (error) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
@@ -74,10 +86,10 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
         </div>
         <div className="drawer-body">
           <p className="settings-note">
-            模型 ID 与凭证的权威是安装期配置（provider.env + 模板）；
-            此处激活的 revision 会在下次启动时影响 Kernel/Planner 的绑定、路由与开关行为。
-            当前运行会话继续固定使用启动时 revision；激活会真实探测 executor CLI
-            （codex / pi），缺失会导致激活失败。
+            凭证由 SecretStore 托管，revision 只含引用（apiKeyRef），任何 API 响应都不会回显明文。
+            此处可新增/编辑 Provider、Model 并绑定到 AgentClass；
+            激活的 revision 会在下次启动时生效，当前运行会话继续固定使用启动时 revision。
+            激活会真实探测 executor CLI（codex / pi），缺失会导致激活失败。
           </p>
           {revisionId && runningRevisionId && revisionId !== runningRevisionId && (
             <div className="result-banner result-ok">
@@ -101,6 +113,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
               <h3 className="section-title">Model</h3>
               <ModelForm
                 models={draft.models}
+                providers={draft.providers}
                 onChange={models => setDraft(prev => prev ? { ...prev, models } : prev)}
               />
 
@@ -125,6 +138,9 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
                   )}
                   {result.code === 'revision_conflict' && (
                     <div className="dim">配置已被其他操作更新，请关闭设置后重新打开再试。</div>
+                  )}
+                  {!result.ok && (
+                    <div className="dim">提示：若涉及新建 Provider，请确认已在 Provider 表单填写 API Key。</div>
                   )}
                 </div>
               )}

@@ -466,6 +466,32 @@ body {
   color: var(--text);
 }
 
+.text-input {
+  flex: 1;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.text-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.add-button {
+  align-self: flex-start;
+}
+
 .result-banner {
   margin-top: 16px;
   padding: 12px;
