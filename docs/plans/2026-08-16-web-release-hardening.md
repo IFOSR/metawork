@@ -224,5 +224,4 @@ Expected: all non-skipped checks pass.
 - `npm run build --prefix web`
 - `git diff --check`
 
-Closing commit: Pending; Git author identity is not configured in this
-repository, so the completed work remains uncommitted.
+Closing implementation commit: `e565b99`.

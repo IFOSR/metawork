@@ -201,5 +201,4 @@ Expected: all checks pass.
 - `npm run build --prefix web`
 - `git diff --check`
 
-Closing commit: Pending; Git author identity remains unconfigured, so the
-completed work is intentionally left uncommitted.
+Closing implementation commit: `e565b99`.
