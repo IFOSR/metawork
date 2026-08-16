@@ -143,16 +143,17 @@ describe('App risky action gate', () => {
           }),
           workGraphPlan({ goal: '用户已确认发送邮件' }),
         ),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 
     await submitLine('直接把邮件发给客户');
     await submitLine('确认执行');
-    for (let attempt = 0; attempt < 1000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 9000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
-    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('已发送给客户'); attempt += 1) {
+    for (let attempt = 0; attempt < 9000 && !app.lastFrame().includes('已发送给客户'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

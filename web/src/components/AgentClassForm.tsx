@@ -1,3 +1,8 @@
+import {
+  selectModelPolicy,
+  type EditableModelPolicy,
+} from '../config-edit';
+
 interface AgentClassFormProps {
   agentClasses: Record<string, Record<string, unknown>>;
   models: Record<string, Record<string, unknown>>;
@@ -10,7 +15,7 @@ export function AgentClassForm({ agentClasses, models, onChange }: AgentClassFor
   };
 
   const modelPolicy = (agentClass: Record<string, unknown>) =>
-    (agentClass.modelPolicy ?? {}) as { mode?: string; modelRef?: string };
+    (agentClass.modelPolicy ?? { mode: 'fixed', modelRef: '' }) as EditableModelPolicy;
 
   const modelOptions = ['auto', ...Object.keys(models)];
 
@@ -40,7 +45,13 @@ export function AgentClassForm({ agentClasses, models, onChange }: AgentClassFor
               <span className="field-label">modelPolicy</span>
               <select
                 value={policy.modelRef ?? 'auto'}
-                onChange={event => update(id, { modelPolicy: { ...policy, modelRef: event.target.value } })}
+                onChange={event => update(id, {
+                  modelPolicy: selectModelPolicy(
+                    event.target.value,
+                    Object.keys(models),
+                    policy,
+                  ),
+                })}
               >
                 {modelOptions.map(option => (
                   <option value={option} key={option}>{option}</option>

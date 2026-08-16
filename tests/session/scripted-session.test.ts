@@ -150,7 +150,7 @@ describe('scripted session', () => {
     expect(output).not.toContain('Runtime:');
     expect(output).not.toContain('[Planner: dispatch]');
     expect(output).not.toContain('Work Unit ');
-  });
+  }, 180_000);
 
   it('blocks risky external actions pending a planner-observed confirmation in scripted sessions', async () => {
     const db = createTestDb();

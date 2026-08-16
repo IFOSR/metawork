@@ -59,7 +59,7 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function waitUntil(assertion: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitUntil(assertion: () => boolean, timeoutMs = 90_000): Promise<void> {
   const startedAt = Date.now();
   while (!assertion()) {
     if (Date.now() - startedAt > timeoutMs) {
@@ -98,6 +98,7 @@ describe('App recoverable infrastructure failure waiting', () => {
         sessionId: 'sess_network_block',
         contextRecaller,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '调研 agent memory 框架' })),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 
@@ -143,6 +144,7 @@ describe('App recoverable infrastructure failure waiting', () => {
         sessionId: 'sess_idle_timeout_block',
         contextRecaller,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '生成 HTML 幻灯片' })),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 

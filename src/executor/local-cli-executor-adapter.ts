@@ -4,6 +4,7 @@ import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure } from './error-utils.js';
 import type { HarnessDriver, HarnessLaunchSpec } from './harness-driver.js';
+import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
@@ -223,24 +224,6 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       }
     }
   }
-}
-
-function safeHostEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const allowed = [
-    'COMSPEC',
-    'LANG',
-    'LC_ALL',
-    'PATH',
-    'PATHEXT',
-    'SystemRoot',
-    'TEMP',
-    'TMP',
-    'TMPDIR',
-  ] as const;
-  return Object.fromEntries(allowed.flatMap(key => {
-    const value = environment[key];
-    return value ? [[key, value]] : [];
-  }));
 }
 
 function appendBounded(current: string, chunk: Buffer | string): string {

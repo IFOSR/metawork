@@ -48,9 +48,11 @@ import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-r
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
 import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
-import { generateToken } from './management/token.js';
+import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
+import { createLocalExecutorConfigurationProbe } from './executor/configuration-probe.js';
+import { WebAuthService } from './management/web-auth.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -80,7 +82,12 @@ async function activateConfiguration(
   service.compileDraft(draft.revisionId);
   const probe = await service.probeDraft(draft.revisionId);
   if (!probe.ok) {
-    return { ok: false, code: 'probe_failed', activeRevisionId: baseRevisionId };
+    return {
+      ok: false,
+      code: 'probe_failed',
+      activeRevisionId: baseRevisionId,
+      issues: probe.issues,
+    };
   }
   return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
 }
@@ -107,27 +114,35 @@ async function importAndActivateLegacyConfiguration(
 async function runWebMode(options: {
   port: number;
   noOpen: boolean;
+  runningRevisionId: string;
   sessionFactory: (sessionId: string) => MetaclawSession;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
 }): Promise<void> {
-  const webToken = generateToken();
+  const webAuth = new WebAuthService();
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
   const managementServer = new ManagementServer({
     port: options.port,
     webDistDir,
-    token: webToken,
+    token: webAuth.manualAccessToken,
+    webAuth,
+    runningRevisionId: options.runningRevisionId,
     sessionFactory: options.sessionFactory,
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
   });
   await managementServer.start();
-  process.stdout.write(`AnyFusion Web: ${managementServer.address}\n`);
-  process.stdout.write(`Token: ${webToken}\n`);
+  const presentation = buildWebStartupPresentation(
+    managementServer.address,
+    webAuth.bootstrapToken,
+    webAuth.manualAccessToken,
+    options.noOpen,
+  );
+  process.stdout.write(`${presentation.terminalLines.join('\n')}\n`);
   if (!options.noOpen) {
-    openBrowser(managementServer.address);
+    openBrowser(presentation.browserUrl);
   }
   // 永久等待；进程由 SIGINT/SIGTERM 或外部终止。
   await new Promise<never>(() => {});
@@ -187,7 +202,10 @@ async function main() {
     );
     await configurationRepository.initialize();
     await configurationRepository.recover();
-    const configurationService = new ConfigurationService({ repository: configurationRepository });
+    const configurationService = new ConfigurationService({
+      repository: configurationRepository,
+      probe: createLocalExecutorConfigurationProbe(),
+    });
     const activeSnapshot = await configurationService.getActiveSnapshot();
     const lines = await runConfigurationAdmin(adminCommand, {
       getActiveSnapshot: () => configurationService.getActiveSnapshot(),
@@ -331,7 +349,10 @@ async function main() {
   process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
   const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
-  const plannerSupervisor = new PlannerProcessSupervisor({ socketPath: plannerHostSocketPath });
+  const plannerSupervisor = new PlannerProcessSupervisor({
+    socketPath: plannerHostSocketPath,
+    configurationRevision: stagedConfiguration.snapshot.revisionId,
+  });
   await plannerHost.start();
 
   if (cliArgs.scriptPath) {
@@ -368,10 +389,14 @@ async function main() {
       decisionRepo: new KernelDecisionRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
     });
-    const configurationService = new ConfigurationService({ repository: configurationRepository });
+    const configurationService = new ConfigurationService({
+      repository: configurationRepository,
+      probe: createLocalExecutorConfigurationProbe(),
+    });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
+      runningRevisionId: stagedConfiguration.snapshot.revisionId,
       sessionFactory: webSessionId => new MetaclawSession({
         taskEngine,
         memoryEngine,

@@ -1,9 +1,9 @@
+import { MODEL_CAPABILITIES } from '../config-edit';
+
 interface ModelFormProps {
   models: Record<string, Record<string, unknown>>;
   onChange: (models: Record<string, Record<string, unknown>>) => void;
 }
-
-const CAPABILITIES = ['coding', 'planning', 'research', 'writing'];
 
 export function ModelForm({ models, onChange }: ModelFormProps) {
   const update = (id: string, patch: Record<string, unknown>) => {
@@ -47,6 +47,7 @@ export function ModelForm({ models, onChange }: ModelFormProps) {
               value={String(model.reasoning ?? 'medium')}
               onChange={event => update(id, { reasoning: event.target.value })}
             >
+              <option value="disabled">disabled</option>
               <option value="low">low</option>
               <option value="medium">medium</option>
               <option value="high">high</option>
@@ -55,7 +56,7 @@ export function ModelForm({ models, onChange }: ModelFormProps) {
           <div className="form-field">
             <span className="field-label">capabilities</span>
             <span className="chips">
-              {CAPABILITIES.map(capability => (
+              {MODEL_CAPABILITIES.map(capability => (
                 <button
                   type="button"
                   key={capability}

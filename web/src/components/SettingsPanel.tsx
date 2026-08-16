@@ -18,6 +18,7 @@ interface DraftState {
 
 export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
   const [revisionId, setRevisionId] = useState<string | null>(null);
+  const [runningRevisionId, setRunningRevisionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [result, setResult] = useState<ActivateResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -28,6 +29,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     void http.getConfig().then(snapshot => {
       const config = snapshot.config as Record<string, unknown>;
       setRevisionId(snapshot.revisionId);
+      setRunningRevisionId(snapshot.runningRevisionId);
       setDraft({
         providers: (config.providers ?? {}) as DraftState['providers'],
         models: (config.models ?? {}) as DraftState['models'],
@@ -65,15 +67,24 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     <div className="drawer-backdrop" onClick={onClose}>
       <div className="drawer" onClick={event => event.stopPropagation()}>
         <div className="drawer-header">
-          <span className="drawer-title">设置 · rev {revisionId ?? '…'}</span>
+          <span className="drawer-title">
+            设置 · 运行 {runningRevisionId ?? '…'} · 配置 {revisionId ?? '…'}
+          </span>
           <button className="ghost-button" onClick={onClose}>关闭</button>
         </div>
         <div className="drawer-body">
           <p className="settings-note">
             模型 ID 与凭证的权威是安装期配置（provider.env + 模板）；
-            此处激活的 revision 影响 Kernel/Planner 的绑定、路由与开关行为。
-            激活会真实探测 executor CLI（codex / pi），缺失会导致激活失败。
+            此处激活的 revision 会在下次启动时影响 Kernel/Planner 的绑定、路由与开关行为。
+            当前运行会话继续固定使用启动时 revision；激活会真实探测 executor CLI
+            （codex / pi），缺失会导致激活失败。
           </p>
+          {revisionId && runningRevisionId && revisionId !== runningRevisionId && (
+            <div className="result-banner result-ok">
+              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}。
+              请重启 AnyFusion 后生效。
+            </div>
+          )}
 
           {loadError && <div className="result-banner result-error">加载失败：{loadError}</div>}
 
@@ -103,7 +114,9 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
               {result && (
                 <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>
                   {result.ok
-                    ? `激活成功，新 revision ${result.revisionId}`
+                    ? result.restartRequired
+                      ? `配置已激活为 ${result.activeRevisionId}；当前仍运行 ${result.runningRevisionId}，请重启 AnyFusion 后生效。`
+                      : `配置已激活并生效：${result.activeRevisionId}`
                     : `激活失败（${result.code ?? 'unknown'}）`}
                   {result.issues && result.issues.length > 0 && (
                     <ul className="issues">
@@ -122,7 +135,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
           <div className="drawer-footer">
             <button className="ghost-button" onClick={onClose}>取消</button>
             <button className="primary-button" onClick={activate} disabled={loading}>
-              {loading ? '激活中…' : '激活'}
+              {loading ? '激活中…' : '激活（重启生效）'}
             </button>
           </div>
         )}

@@ -100,6 +100,7 @@ describe('PlannerProcessSupervisor', () => {
       envFile: '',
       socketPath: join(root, 'planner.sock'),
       schemaPath: '/release/planning-agent-plan-v8.schema.json',
+      configurationRevision: 'revision-runtime',
       spawn: spawn as never,
     });
 
@@ -111,6 +112,7 @@ describe('PlannerProcessSupervisor', () => {
         context: {
           timeoutMs: 1_000,
           request: { sessionId: 'session-1', source: 'gateway' },
+          configuration: { revisionId: 'revision-runtime' },
         } as never,
         purpose: 'validation',
       });
@@ -136,6 +138,7 @@ describe('PlannerProcessSupervisor', () => {
           ANYFUSION_BRIDGE_SOCKET: join(root, 'planner.sock'),
           METACLAW_PLANNER_TUI_SOCKET: join(root, 'planner.sock'),
           ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v8.schema.json',
+          METACLAW_CONFIGURATION_REVISION: 'revision-runtime',
         });
       }
       expect(launches[1]?.args).toContain(join(root, 'planner-sessions', 'session-1.interactive.jsonl'));

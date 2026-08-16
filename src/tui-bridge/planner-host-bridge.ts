@@ -91,7 +91,18 @@ export class PlannerHostBridge {
       server.listen(this.deps.socketPath);
     });
     this.server = server;
-    await chmod(this.deps.socketPath, 0o600);
+    try {
+      await chmod(this.deps.socketPath, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        await this.stop().catch(() => undefined);
+        throw new Error(
+          'Planner host socket file was not created; the path likely exceeds the '
+          + `104-byte Unix socket limit: ${this.deps.socketPath}`,
+        );
+      }
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {

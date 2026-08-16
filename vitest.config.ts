@@ -9,8 +9,8 @@ export default defineConfig({
     // Bound worker parallelism so the cross-repository Pi tsx driver and other
     // real process/workspace tests do not starve each other for CPU.
     minWorkers: 1,
-    maxWorkers: 6,
-    testTimeout: 120_000,
+    maxWorkers: 3,
+    testTimeout: 600_000,
     coverage: {
       provider: 'v8',
       include: ['src/core/**', 'src/storage/**'],

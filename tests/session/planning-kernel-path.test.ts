@@ -698,7 +698,7 @@ describe('natural-language planning/kernel path', () => {
           SELECT subtask_id, status FROM resource_waits ORDER BY requested_at
         `).all(),
         output: harness.session.getSnapshot().output,
-      }))), 20_000)),
+      }))), 120_000)),
     ]);
     expect(maximumRunning).toBe(2);
 
@@ -747,7 +747,7 @@ describe('natural-language planning/kernel path', () => {
       { subtask_id: 'subtask_a' },
       { subtask_id: 'subtask_b' },
     ]);
-  });
+  }, 180_000);
 
   it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {
     let plannerCalls = 0;

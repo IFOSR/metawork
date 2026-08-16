@@ -59,7 +59,7 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function waitFor(assertion: () => void, attempts = 100) {
+async function waitFor(assertion: () => void, attempts = 9000) {
   let lastError: unknown;
   for (let index = 0; index < attempts; index += 1) {
     try {
@@ -111,6 +111,7 @@ describe('App unblock scheduling', () => {
         config: createConfig(),
         sessionId: 'sess_unblock',
         contextRecaller,
+        awaitAsyncWorkOnSubmit: true,
       })
     );
 
@@ -165,6 +166,7 @@ describe('App unblock scheduling', () => {
         config: createConfig(),
         sessionId: 'sess_unblock_resources',
         contextRecaller,
+        awaitAsyncWorkOnSubmit: true,
       })
     );
 

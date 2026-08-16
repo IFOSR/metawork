@@ -1,8 +1,11 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
-import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
+import {
+  loadPlannerConfigurationSnapshot,
+  PlannerDataReader,
+} from '../../src/planning/planner-mcp-server.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -40,6 +43,29 @@ function createHarness(sessionId = 'sess_current') {
 }
 
 describe('PlannerDataReader', () => {
+  it('loads the immutable revision explicitly bound by the running session', async () => {
+    const readSnapshot = vi.fn(async (revisionId: string) => ({
+      revisionId,
+      contentHash: `sha256:${revisionId}`,
+      config: {},
+    }));
+
+    const snapshot = await loadPlannerConfigurationSnapshot(
+      { readSnapshot } as never,
+      'revision-runtime',
+    );
+
+    expect(snapshot.revisionId).toBe('revision-runtime');
+    expect(readSnapshot).toHaveBeenCalledWith('revision-runtime');
+  });
+
+  it('fails closed when the running configuration revision is missing', async () => {
+    await expect(loadPlannerConfigurationSnapshot(
+      { readSnapshot: async () => ({}) } as never,
+      undefined,
+    )).rejects.toThrow('METACLAW_CONFIGURATION_REVISION is required');
+  });
+
   it('bounds task search results and truncates summaries', () => {
     const { taskEngine, taskRepo, reader } = createHarness();
     for (let index = 0; index < 25; index += 1) {

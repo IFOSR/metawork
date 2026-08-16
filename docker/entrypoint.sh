@@ -96,7 +96,24 @@ CODEX_TEMPLATE_DIR="/opt/metaclaw/codex-config"
 mkdir -p "$EXECUTOR_CODEX_HOME"
 render "$CODEX_TEMPLATE_DIR/executor/config.toml" "$CODEX_EXECUTOR_OPENAI_BASE_URL" > "$EXECUTOR_CODEX_HOME/config.toml"
 
-METACLAW_HOME_DIR="${METACLAW_HOME:-/data/metaclaw}"
+# Seed the legacy configuration home consumed by the startup configuration
+# import (src/index.ts resolves it under $HOME/.config/anyfusion).
+LEGACY_CONFIG_HOME="${HOME}/.config/anyfusion"
+mkdir -p "$LEGACY_CONFIG_HOME/planner" "$LEGACY_CONFIG_HOME/codex" "$LEGACY_CONFIG_HOME/pi-home/.pi/agent"
+if [ -n "$PLANNER_ENV_FILE" ] && [ -f "$PLANNER_ENV_FILE" ]; then
+  cp "$PLANNER_ENV_FILE" "$LEGACY_CONFIG_HOME/provider.env"
+  chmod 600 "$LEGACY_CONFIG_HOME/provider.env"
+fi
+render "$PLANNER_TEMPLATE_DIR/models.json" "$PLANNER_OPENAI_BASE_URL" > "$LEGACY_CONFIG_HOME/planner/models.json"
+render "$PLANNER_TEMPLATE_DIR/settings.json" "$PLANNER_OPENAI_BASE_URL" > "$LEGACY_CONFIG_HOME/planner/settings.json"
+render "$CODEX_TEMPLATE_DIR/executor/config.toml" "$CODEX_EXECUTOR_OPENAI_BASE_URL" > "$LEGACY_CONFIG_HOME/codex/config.toml"
+render "$PI_TEMPLATE_DIR/models.json" "$PI_EXECUTOR_OPENAI_BASE_URL" > "$LEGACY_CONFIG_HOME/pi-home/.pi/agent/models.json"
+render "$PI_TEMPLATE_DIR/settings.json" "$PI_EXECUTOR_OPENAI_BASE_URL" > "$LEGACY_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+chmod 600 "$LEGACY_CONFIG_HOME/planner/models.json" "$LEGACY_CONFIG_HOME/planner/settings.json" \
+  "$LEGACY_CONFIG_HOME/codex/config.toml" \
+  "$LEGACY_CONFIG_HOME/pi-home/.pi/agent/models.json" "$LEGACY_CONFIG_HOME/pi-home/.pi/agent/settings.json"
+
+METACLAW_HOME_DIR="${METACLAW_HOME:-/data/anyfusion/data}"
 mkdir -p "$METACLAW_HOME_DIR"
 if [ ! -f "$METACLAW_HOME_DIR/config.yaml" ]; then
   cp /opt/metaclaw/default-config.yaml "$METACLAW_HOME_DIR/config.yaml"

@@ -5,6 +5,7 @@ export interface WsHandlers {
   onOutput?: (lines: string[]) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onError?: (message: string) => void;
+  onUnauthorized?: () => void;
   onStatusChange?: (connected: boolean) => void;
 }
 
@@ -13,10 +14,7 @@ export class WsClient {
   private reconnectTimer: number | null = null;
   private closedByUser = false;
 
-  constructor(
-    private readonly token: string,
-    private readonly handlers: WsHandlers,
-  ) {}
+  constructor(private readonly handlers: WsHandlers) {}
 
   connect(): void {
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
@@ -26,10 +24,7 @@ export class WsClient {
     const socket = new WebSocket(url);
     this.socket = socket;
 
-    socket.onopen = () => {
-      // 首条消息鉴权；未鉴权前 Server 拒绝其他一切消息。
-      socket.send(JSON.stringify({ type: 'auth', token: this.token } satisfies ClientMessage));
-    };
+    socket.onopen = () => {};
 
     socket.onmessage = (event) => {
       let message: ServerMessage;
@@ -50,15 +45,20 @@ export class WsClient {
           this.handlers.onExecution?.(message.taskId, message.timeline);
           break;
         case 'error':
+          if (message.message === 'unauthorized') {
+            this.rejectAuthentication();
+            break;
+          }
           this.handlers.onError?.(message.message);
           break;
       }
     };
 
     socket.onclose = () => {
+      if (this.socket === socket) this.socket = null;
       this.handlers.onStatusChange?.(false);
       if (!this.closedByUser) {
-        this.scheduleReconnect();
+        void this.reconnectIfAuthorized();
       }
     };
 
@@ -79,7 +79,9 @@ export class WsClient {
       this.reconnectTimer = null;
     }
     if (this.socket) {
-      this.socket.send(JSON.stringify({ type: 'close' } satisfies ClientMessage));
+      if (this.socket.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify({ type: 'close' } satisfies ClientMessage));
+      }
       this.socket.close();
       this.socket = null;
     }
@@ -91,5 +93,31 @@ export class WsClient {
       this.reconnectTimer = null;
       this.connect();
     }, 1500);
+  }
+
+  private async reconnectIfAuthorized(): Promise<void> {
+    try {
+      const response = await fetch('/api/auth/session', {
+        credentials: 'same-origin',
+      });
+      if (response.status === 401) {
+        this.closedByUser = true;
+        this.handlers.onUnauthorized?.();
+        return;
+      }
+    } catch {
+      // A stopped/restarting local server is retryable; only an explicit 401 logs out.
+    }
+    this.scheduleReconnect();
+  }
+
+  private rejectAuthentication(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.handlers.onUnauthorized?.();
+    this.socket?.close();
   }
 }

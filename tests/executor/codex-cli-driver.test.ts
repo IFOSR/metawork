@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,15 @@ describe('CodexCliDriver', () => {
 
     expect(launch).toEqual({
       command: 'codex',
-      args: ['exec', 'implement change'],
+      args: [
+        'exec',
+        '--sandbox', 'workspace-write',
+        '-c', 'approval_policy="never"',
+        '--skip-git-repo-check',
+        '--ephemeral',
+        '--color', 'never',
+        'implement change',
+      ],
       cwd: '/workspace/task',
       environment: { CODEX_HOME: '/attempt/home' },
     });
@@ -44,6 +52,71 @@ describe('CodexCliDriver', () => {
 
       expect(home.environment).toEqual({ CODEX_HOME: home.homePath });
       expect(await stat(home.homePath)).toBeTruthy();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('seeds the attempt home with the rewritten provider config and env-file credentials', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-codex-driver-'));
+    try {
+      const templateDir = join(root, 'codex-template');
+      await mkdir(templateDir, { recursive: true });
+      await writeFile(join(templateDir, 'config.toml'), 'base_url = "https://provider.test/v1"\n');
+      const envFile = join(root, 'executor-codex.env');
+      await writeFile(envFile, 'OPENAI_API_KEY=sk-test\nOPENAI_BASE_URL=https://provider.test/v1\n');
+
+      const driver = new CodexCliDriver({
+        probeCommand: vi.fn(),
+        homeTemplateDir: templateDir,
+        envFile,
+      });
+      const home = await driver.materializeHome({
+        attemptId: 'attempt-1',
+        revisionId: 'revision-1',
+        agentClassId: 'codex-engineering',
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+      });
+
+      expect(await readFile(join(home.homePath, 'config.toml'), 'utf8'))
+        .toContain('https://provider.test/v1');
+      expect(home.environment).toEqual({
+        CODEX_HOME: home.homePath,
+        OPENAI_API_KEY: 'sk-test',
+        OPENAI_BASE_URL: 'https://provider.test/v1',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the assigned template or env file is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-codex-driver-'));
+    try {
+      const missingTemplate = new CodexCliDriver({
+        probeCommand: vi.fn(),
+        homeTemplateDir: join(root, 'missing-template'),
+      });
+      await expect(missingTemplate.materializeHome({
+        attemptId: 'attempt-1',
+        revisionId: 'revision-1',
+        agentClassId: 'codex-engineering',
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+      })).rejects.toThrow(/missing config\.toml/);
+
+      const missingEnvFile = new CodexCliDriver({
+        probeCommand: vi.fn(),
+        envFile: join(root, 'missing.env'),
+      });
+      await expect(missingEnvFile.materializeHome({
+        attemptId: 'attempt-2',
+        revisionId: 'revision-1',
+        agentClassId: 'codex-engineering',
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+      })).rejects.toThrow(/env file does not exist/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

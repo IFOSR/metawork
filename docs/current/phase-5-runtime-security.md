@@ -116,13 +116,15 @@ npm run smoke:metaclaw
 npm run smoke:metaclaw -- --scenario artifact
 ```
 
-The Docker integration and artifact smoke require the canonical attempt images
-and a trusted local Docker Engine. Their test bodies run inside a trusted
-control-plane container; the host only performs Docker orchestration. The
-artifact smoke verifies Planner → Kernel → disposable Executor attempt → scoped
-model gateway → persistent workspace/artifact → container cleanup. The default
-smoke instead verifies native Planner-thread continuity and does not prove the
-Executor artifact path. The attempt itself never receives the Engine socket.
+Both live smokes run as native host processes by default, using the AnyFusion
+configuration installed under `ANYFUSION_CONFIG_HOME` (default
+`~/.config/anyfusion`) and the worktree Executor backend; Docker is not
+required. `--mode docker` (auto-selected when the `docker/*.env` provider files
+exist) instead builds the unified runtime image and runs the same scenarios
+inside a control container against a trusted local Docker Engine. The artifact
+smoke verifies Planner → Kernel → disposable Executor attempt → persistent
+workspace/artifact → publication. The default smoke instead verifies native
+Planner-thread continuity and does not prove the Executor artifact path.
 
 Worktree validation additionally requires a Linux Runtime image with the trusted
 Codex/Pi CLIs installed. The focused gate verifies child-process start, loopback

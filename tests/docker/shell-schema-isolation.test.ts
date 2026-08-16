@@ -51,7 +51,7 @@ describe('Docker shell SQLite schema isolation', () => {
     };
     const plannerSettings = JSON.parse(
       readFileSync(resolve('docker/planner-pi-config/settings.json'), 'utf-8'),
-    ) as { defaultModel: string; defaultThinkingLevel: string };
+    ) as { defaultModel: string; defaultThinkingLevel: string; enabledModels?: string[] };
     const piModels = JSON.parse(
       readFileSync(resolve('docker/pi-config/models.json'), 'utf-8'),
     ) as {
@@ -59,7 +59,7 @@ describe('Docker shell SQLite schema isolation', () => {
     };
     const piSettings = JSON.parse(
       readFileSync(resolve('docker/pi-config/settings.json'), 'utf-8'),
-    ) as { defaultModel: string; defaultThinkingLevel: string };
+    ) as { defaultModel: string; defaultThinkingLevel: string; enabledModels?: string[] };
     const codexConfig = readFileSync(
       resolve('docker/codex-config/executor/config.toml'),
       'utf-8',
@@ -72,6 +72,7 @@ describe('Docker shell SQLite schema isolation', () => {
     );
     expect(plannerSettings.defaultModel).toBe(model);
     expect(plannerSettings.defaultThinkingLevel).toBe('high');
+    expect(plannerSettings.enabledModels).toEqual([`anyint/${model}`]);
     expect(plannerModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
     expect(piModels.providers.anyint.api).toBe('openai-responses');
     expect(piModels.providers.anyint.models).toContainEqual(
@@ -79,8 +80,14 @@ describe('Docker shell SQLite schema isolation', () => {
     );
     expect(piSettings.defaultModel).toBe(model);
     expect(piSettings.defaultThinkingLevel).toBe('high');
+    expect(piSettings.enabledModels).toEqual([`anyint/${model}`]);
     expect(piModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
     expect(codexConfig).toContain(`model = "${model}"`);
+    // These fields are load-bearing for the code-cli relay: without them Codex
+    // offers the wrong tool set and the relay returns garbled custom tool calls.
+    expect(codexConfig).toContain('model_reasoning_effort = "high"');
+    expect(codexConfig).toContain('preferred_auth_method = "apikey"');
+    expect(codexConfig).toContain('requires_openai_auth = false');
   });
 
   it('uses a data volume scoped to the current pre-release schema', () => {

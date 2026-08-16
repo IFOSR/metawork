@@ -7,7 +7,9 @@ import { prepareEditorSubmission } from '../session/session-helpers.js';
 import { startFeishuRuntimeBridge } from '../gateway/feishu-runtime.js';
 import type { CommandCompletion, CommandSuggestion } from '../commands/catalog.js';
 
-interface AppProps extends MetaclawSessionDeps {}
+interface AppProps extends MetaclawSessionDeps {
+  awaitAsyncWorkOnSubmit?: boolean;
+}
 
 type OutputKind = 'blank' | 'user' | 'system' | 'context' | 'agent' | 'result' | 'warning';
 
@@ -544,7 +546,10 @@ export function App(props: AppProps) {
     const session = sessionRef.current!;
     const unsubscribe = session.subscribe(setSnapshot);
     session.initialize();
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      void session.dispose();
+    };
   }, []);
 
   useEffect(() => {
@@ -664,7 +669,9 @@ export function App(props: AppProps) {
 
       setIsSubmitting(true);
       try {
-        const result = await sessionRef.current!.submit(userInput);
+        const result = await sessionRef.current!.submit(userInput, {
+          awaitAsyncWork: props.awaitAsyncWorkOnSubmit === true,
+        });
         if (result.exitRequested) {
           setTimeout(() => process.exit(0), 100);
         }

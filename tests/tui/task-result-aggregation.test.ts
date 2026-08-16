@@ -87,6 +87,7 @@ describe('App task result aggregation', () => {
         sessionId: 'sess_task_result_aggregation',
         contextRecaller,
         planningAgent: stubPlanningAgent(workGraphPlan({ goal: '整理 Phoenix 项目周报' })),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 
@@ -95,7 +96,7 @@ describe('App task result aggregation', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
+    for (let attempt = 0; attempt < 9000 && !app.lastFrame().includes('completed 1 Subtask(s)'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

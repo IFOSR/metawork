@@ -332,12 +332,26 @@ export async function runPlannerMcpServer(): Promise<void> {
   const configurationRepository = new FileConfigurationRepository(
     dirname(resolveAnyFusionPaths().configurationRevisions),
   );
-  const snapshot = await configurationRepository.getActiveSnapshot();
+  const snapshot = await loadPlannerConfigurationSnapshot(
+    configurationRepository,
+    process.env.METACLAW_CONFIGURATION_REVISION,
+  );
   const routingCatalog = buildPlannerRoutingCatalog(snapshot);
   const server = createPlannerMcpServer(
     new PlannerDataReader(db, sessionId, () => routingCatalog),
   );
   await server.connect(new StdioServerTransport());
+}
+
+export async function loadPlannerConfigurationSnapshot(
+  repository: Pick<FileConfigurationRepository, 'readSnapshot'>,
+  revisionId: string | undefined,
+) {
+  const normalizedRevisionId = revisionId?.trim();
+  if (!normalizedRevisionId) {
+    throw new Error('METACLAW_CONFIGURATION_REVISION is required');
+  }
+  return repository.readSnapshot(normalizedRevisionId);
 }
 
 function toolResult(value: unknown) {

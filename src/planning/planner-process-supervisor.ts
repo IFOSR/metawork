@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ export interface PlannerProcessSupervisorDeps {
   interactiveArgs?: string[];
   socketPath?: string;
   schemaPath?: string;
+  configurationRevision?: string;
   shutdownGraceMs?: number;
   ensureSessionDir?: (path: string) => Promise<void>;
 }
@@ -113,9 +115,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   async startInteractive(input: {
     sessionId: string;
     cwd: string;
+    configurationRevision?: string;
   }): Promise<void> {
     this.assertSessionOpen(input.sessionId);
-    const launch = await this.resolveLaunch(input.sessionId, input.cwd, 'interactive');
+    const launch = await this.resolveLaunch(
+      input.sessionId,
+      input.cwd,
+      'interactive',
+      'kernel',
+      'session',
+      input.configurationRevision,
+    );
     this.assertSessionOpen(input.sessionId);
     const child = (this.deps.spawn ?? spawn)(launch.command, launch.args, {
       cwd: launch.cwd,
@@ -139,7 +149,14 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }
 
   async probe(): Promise<{ available: boolean; detail: string }> {
-    const launch = await this.resolveLaunch('probe', this.deps.cwd, 'probe');
+    const launch = await this.resolveLaunch(
+      'probe',
+      this.deps.cwd,
+      'probe',
+      'kernel',
+      'session',
+      this.deps.configurationRevision,
+    );
     this.assertSessionOpen('probe');
     const child = (this.deps.spawn ?? spawn)(launch.command, ['--version'], {
       cwd: launch.cwd,
@@ -187,6 +204,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       'rpc',
       purpose,
       context.request.source,
+      context.configuration?.revisionId ?? this.deps.configurationRevision,
     );
     this.assertSessionOpen(context.request.sessionId);
     const sessionPath = join(launch.sessionDir, `${context.request.sessionId}.jsonl`);
@@ -348,6 +366,8 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     mode: 'interactive' | 'rpc' | 'probe',
     purpose: PlannerProposalPurpose = 'kernel',
     requestSource = 'session',
+    configurationRevision = this.deps.configurationRevision
+      ?? process.env.METACLAW_CONFIGURATION_REVISION,
   ): Promise<{
     command: string;
     args: string[];
@@ -357,6 +377,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }> {
     const command = this.resolveCommand();
     const cwd = cwdOverride ?? this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? process.cwd();
+    const authorizedWorkspace = process.env.ANYFUSION_PLANNER_WORKSPACE ?? realpathOrSelf(cwd);
     const plannerHome = this.deps.plannerHome
       ?? process.env.METACLAW_PLANNER_HOME
       ?? process.env.ANYFUSION_PLANNER_HOME
@@ -410,6 +431,8 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         ANYFUSION_BRIDGE_SOCKET: socketPath,
         METACLAW_PLANNER_TUI_SOCKET: socketPath,
         ANYFUSION_PLANNER_SCHEMA_PATH: schemaPath,
+        ANYFUSION_PLANNER_WORKSPACE: authorizedWorkspace,
+        METACLAW_CONFIGURATION_REVISION: configurationRevision,
         ...buildPlannerMcpLaunchEnv(),
       },
     };
@@ -569,4 +592,13 @@ function summarizeValue(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** The Planner bootstrap compares against its physical cwd, so resolve symlinks. */
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }

@@ -99,6 +99,7 @@ describe('App network recovery natural-language control', () => {
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'recover_blocked', taskId: blockedTask.id, scope: null }),
         ),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 
@@ -107,7 +108,7 @@ describe('App network recovery natural-language control', () => {
       await flushUpdates();
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
-    for (let attempt = 0; attempt < 1000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 9000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }

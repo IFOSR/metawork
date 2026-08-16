@@ -1,12 +1,13 @@
 import { useState } from 'react';
 
 interface TokenGateProps {
-  onAuth: (token: string, trust: boolean) => void;
+  error?: string | null;
+  onAuth: (token: string) => Promise<boolean>;
 }
 
-export function TokenGate({ onAuth }: TokenGateProps) {
+export function TokenGate({ error, onAuth }: TokenGateProps) {
   const [token, setToken] = useState('');
-  const [trust, setTrust] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   return (
     <div className="token-gate">
@@ -15,28 +16,25 @@ export function TokenGate({ onAuth }: TokenGateProps) {
         onSubmit={event => {
           event.preventDefault();
           const trimmed = token.trim();
-          if (!trimmed) return;
-          onAuth(trimmed, trust);
+          if (!trimmed || loading) return;
+          setLoading(true);
+          void onAuth(trimmed).finally(() => setLoading(false));
         }}
       >
         <h1>AnyFusion</h1>
-        <p>粘贴终端里打印的访问 token。</p>
+        <p>
+          自动登录不可用。请粘贴 <span className="mono">anyfusion web --no-open</span>
+          终端中显示的本机访问 token。它不是模型 API Key。
+        </p>
+        {error && <div className="result-banner result-error">{error}</div>}
         <input
           type="password"
           value={token}
           onChange={event => setToken(event.target.value)}
-          placeholder="token"
+          placeholder="Web access token"
           autoFocus
         />
-        <label className="trust-row">
-          <input
-            type="checkbox"
-            checked={trust}
-            onChange={event => setTrust(event.target.checked)}
-          />
-          信任本机（下次免输入）
-        </label>
-        <button type="submit">进入</button>
+        <button type="submit" disabled={loading}>{loading ? '验证中…' : '进入'}</button>
       </form>
     </div>
   );

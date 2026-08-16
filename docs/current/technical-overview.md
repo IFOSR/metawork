@@ -498,6 +498,32 @@ Or use the project helper:
 ./anyfusion.sh start
 ```
 
+Start the browser interaction surface with:
+
+```bash
+anyfusion web
+```
+
+Web mode binds only to `127.0.0.1`. Normal startup opens a short-lived,
+single-use URL-fragment bootstrap that is exchanged for an HttpOnly,
+SameSite=Strict process-local session cookie and removed from the address bar.
+No token is copied or stored by browser JavaScript. `anyfusion web --no-open`
+prints a manual fallback token for SSH and port-forwarded use. WebSocket
+upgrades require the session cookie and an allowed loopback Origin before the
+protocol switches; stale cookies return the browser to the fallback gate
+instead of reconnecting indefinitely.
+
+The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
+remain mutually exclusive Runtime modes.
+
+The runtime configuration remains pinned to the revision loaded at process
+startup. Web settings activation still performs validate, compile, probe, and
+immutable repository activation, but the new active revision is reported as a
+next-start revision with `restartRequired: true`. Planner child processes and
+their MCP server receive the running revision explicitly, so a configuration
+activation cannot split Planner context from Kernel/Execution policy. Restart
+AnyFusion to apply the new revision.
+
 The native launcher stores its local state under:
 
 ```text
@@ -881,7 +907,7 @@ npm run lint
 npm run smoke:anyfusion
 ```
 
-`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`.
+`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one MetaClaw session, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against the installed AnyFusion configuration (`ANYFUSION_CONFIG_HOME`, default `~/.config/anyfusion`); pass `--mode docker` to force the container path, which requires the `docker/*.env` provider files.
 
 Targeted tests:
 

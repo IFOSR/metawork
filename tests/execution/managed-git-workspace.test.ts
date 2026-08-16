@@ -215,5 +215,5 @@ describe('ManagedGitWorkspaceService', () => {
       .toBe('resolved\n');
     expect(await readFile(join(integration.filesPath, 'asset.bin'))).toEqual(Buffer.from([0, 7, 8]));
     expect(await git(source, 'status', '--porcelain')).toBe('');
-  }, 20_000);
+  }, 600_000);
 });

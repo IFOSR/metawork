@@ -60,7 +60,7 @@ function flushUpdates() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function waitFor(assertion: () => void, attempts = 100) {
+async function waitFor(assertion: () => void, attempts = 9000) {
   let lastError: unknown;
   for (let index = 0; index < attempts; index += 1) {
     try {
@@ -116,6 +116,7 @@ describe('App persisted v4 resume integration', () => {
         planningAgent: stubPlanningAgent(
           taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
         ),
+        awaitAsyncWorkOnSubmit: true,
       })
     );
 

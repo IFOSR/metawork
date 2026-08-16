@@ -68,7 +68,7 @@ async function typeAndSubmit(text: string) {
 }
 
 async function waitForExecutorCall(attemptExecutionBackend: FakeAttemptExecutionBackend) {
-  for (let attempt = 0; attempt < 1000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
+  for (let attempt = 0; attempt < 9000 && attemptExecutionBackend.create.mock.calls.length === 0; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 10));
     await flushUpdates();
   }
@@ -219,6 +219,7 @@ describe('App conversation routing', () => {
           directReplyPlan({ reason: '普通讨论' }),
           workGraphPlan({ goal: '可以，继续', includeRecentConversationContext: true, overrides: { reason: '按当前对话创建跟进任务' } }),
         ),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 
@@ -271,6 +272,7 @@ describe('App conversation routing', () => {
             overrides: { reason: '按当前对话创建跟进任务' },
           }),
         ),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 

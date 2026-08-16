@@ -7,19 +7,20 @@ import type {
 } from './types';
 
 export class HttpClient {
-  constructor(private readonly token: string) {}
+  constructor(private readonly onUnauthorized?: () => void) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
       ...init,
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.token}`,
         ...(init?.headers ?? {}),
       },
     });
     if (!response.ok) {
       const body = await response.text();
+      if (response.status === 401) this.onUnauthorized?.();
       throw new Error(`HTTP ${response.status}: ${body}`);
     }
     return response.json() as Promise<T>;

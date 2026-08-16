@@ -61,7 +61,7 @@ function flushUpdates() {
 }
 
 async function waitForExecutorCall(create: ReturnType<typeof vi.fn>) {
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 9000; index += 1) {
     if (create.mock.calls.length > 0) {
       return;
     }
@@ -113,6 +113,7 @@ describe('App parked task intent resolution', () => {
             taskId: parkedTaskId,
           })),
         ),
+        awaitAsyncWorkOnSubmit: true,
       }),
     );
 

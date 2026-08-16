@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { Socket } from 'node:net';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAX_MESSAGE_BYTES = 1024 * 1024;
+const MAX_FRAME_OVERHEAD_BYTES = 14;
 
 export interface WebSocketConnectionOptions {
   onMessage: (text: string) => void;
@@ -16,6 +18,7 @@ export interface WebSocketConnectionOptions {
 export class WebSocketConnection {
   private buffer = Buffer.alloc(0);
   private closed = false;
+  private finalized = false;
 
   constructor(
     private readonly socket: Socket,
@@ -23,10 +26,8 @@ export class WebSocketConnection {
   ) {
     socket.on('data', chunk => this.handleData(chunk as Buffer));
     socket.on('close', () => {
-      if (!this.closed) {
-        this.closed = true;
-        this.options.onClose();
-      }
+      this.closed = true;
+      this.finalize();
     });
     socket.on('error', error => {
       this.options.onError?.(error as Error);
@@ -67,15 +68,23 @@ export class WebSocketConnection {
   }
 
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    // close 帧（opcode 0x8）
-    this.socket.write(Buffer.from([0x88, 0x00]));
-    this.socket.end();
+    if (!this.closed) {
+      this.closed = true;
+      // close 帧（opcode 0x8）
+      if (!this.socket.destroyed) {
+        this.socket.write(Buffer.from([0x88, 0x00]));
+        this.socket.end();
+      }
+    }
+    this.finalize();
   }
 
   private handleData(chunk: Buffer): void {
     if (this.closed) return;
+    if (this.buffer.length + chunk.length > MAX_MESSAGE_BYTES + MAX_FRAME_OVERHEAD_BYTES) {
+      this.close();
+      return;
+    }
     this.buffer = Buffer.concat([this.buffer, chunk]);
     this.parseFrames();
   }
@@ -95,8 +104,17 @@ export class WebSocketConnection {
         offset = 4;
       } else if (payloadLength === 127) {
         if (this.buffer.length < 10) return;
-        payloadLength = Number(this.buffer.readBigUInt64BE(2));
+        const extendedLength = this.buffer.readBigUInt64BE(2);
+        if (extendedLength > BigInt(MAX_MESSAGE_BYTES)) {
+          this.close();
+          return;
+        }
+        payloadLength = Number(extendedLength);
         offset = 10;
+      }
+      if (payloadLength > MAX_MESSAGE_BYTES) {
+        this.close();
+        return;
       }
 
       let maskKey: Buffer | undefined;
@@ -138,5 +156,11 @@ export class WebSocketConnection {
     if (this.closed || this.socket.destroyed) return;
     const header = Buffer.from([0x8a, payload.length]);
     this.socket.write(Buffer.concat([header, payload]));
+  }
+
+  private finalize(): void {
+    if (this.finalized) return;
+    this.finalized = true;
+    this.options.onClose();
   }
 }

@@ -250,7 +250,8 @@ function Start-ShellContainer {
       -e METACLAW_PLANNER_ENV_FILE=$plannerEnvContainerPath `
       -e METACLAW_CODEX_EXECUTOR_ENV_FILE=$codexExecutorEnvContainerPath `
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
-      -e METACLAW_HOME=/data/metaclaw `
+      -e METACLAW_HOME=/data/anyfusion/data `
+      -e ANYFUSION_INSTALL_ROOT=/data/anyfusion `
       -e METACLAW_EXECUTOR_BACKEND=worktree `
       -e METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor `
       -e METACLAW_EXECUTOR_PI_HOME=/root `

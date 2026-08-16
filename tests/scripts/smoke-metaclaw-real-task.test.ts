@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  existsSync,
   mkdtempSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -58,19 +56,63 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(() => smoke.parseScenario('unknown')).toThrow(/Invalid smoke scenario/);
   });
 
-  it('installs Pi config under the provided executor home', async () => {
+  it('selects docker mode only when requested or when all provider env files exist', async () => {
     const smoke = await loadSmokeScript();
-    const sourceDir = join(tempRoot, 'pi-config');
-    const targetHome = join(tempRoot, 'home');
-    mkdirSync(sourceDir, { recursive: true });
-    writeFileSync(join(sourceDir, 'models.json'), '{"models":[]}');
-    writeFileSync(join(sourceDir, 'settings.json'), '{"defaultModel":"test"}');
+    const repoRoot = join(tempRoot, 'repo');
+    mkdirSync(join(repoRoot, 'docker'), { recursive: true });
 
-    const targetDir = smoke.installPiConfig({ sourceDir, targetHome, repoRoot: tempRoot });
+    expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('native');
+    expect(smoke.resolveSmokeMode(['--mode', 'docker'], {}, repoRoot)).toBe('docker');
+    expect(smoke.resolveSmokeMode([], { METACLAW_SMOKE_MODE: 'native' }, repoRoot)).toBe('native');
+    expect(() => smoke.resolveSmokeMode([], { METACLAW_SMOKE_MODE: 'podman' }, repoRoot))
+      .toThrow(/Invalid smoke mode/);
 
-    expect(targetDir).toBe(join(targetHome, '.pi', 'agent'));
-    expect(existsSync(join(targetDir, 'models.json'))).toBe(true);
-    expect(readFileSync(join(targetDir, 'settings.json'), 'utf-8')).toContain('defaultModel');
+    for (const fileName of ['planner-pi.env', 'executor-codex.env', 'executor-pi.env']) {
+      writeFileSync(join(repoRoot, 'docker', fileName), 'OPENAI_API_KEY=\n');
+    }
+    expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('docker');
+  });
+
+  it('builds the native overlay from the installed AnyFusion configuration home', async () => {
+    const smoke = await loadSmokeScript();
+    const configHome = join(tempRoot, 'anyfusion-config');
+    const repoRoot = join(tempRoot, 'repo');
+    mkdirSync(join(configHome, 'planner'), { recursive: true });
+    mkdirSync(join(configHome, 'codex'), { recursive: true });
+    mkdirSync(join(configHome, 'pi-home', '.pi', 'agent'), { recursive: true });
+    const plannerCli = join(
+      repoRoot, 'planner', 'AnyFusion-Pi', 'packages', 'coding-agent', 'dist', 'cli.js',
+    );
+    mkdirSync(join(plannerCli, '..'), { recursive: true });
+    writeFileSync(join(configHome, 'provider.env'), 'OPENAI_API_KEY=\n');
+    writeFileSync(join(configHome, 'planner', 'models.json'), '{}');
+    writeFileSync(join(configHome, 'planner', 'settings.json'), '{}');
+    writeFileSync(join(configHome, 'codex', 'config.toml'), '');
+    writeFileSync(join(configHome, 'pi-home', '.pi', 'agent', 'models.json'), '{}');
+    writeFileSync(join(configHome, 'pi-home', '.pi', 'agent', 'settings.json'), '{}');
+    writeFileSync(plannerCli, '#!/usr/bin/env node\n');
+
+    const overlay = smoke.buildNativeSmokeOverlay(
+      { ANYFUSION_CONFIG_HOME: configHome },
+      repoRoot,
+    );
+
+    expect(overlay.METACLAW_PLANNER_COMMAND).toBe(plannerCli);
+    expect(overlay.METACLAW_PLANNER_ENV_FILE).toBe(join(configHome, 'provider.env'));
+    expect(overlay.METACLAW_EXECUTOR_BACKEND).toBe('worktree');
+    expect(overlay.METACLAW_EXECUTOR_CODEX_HOME).toBe(join(configHome, 'codex'));
+    expect(overlay.METACLAW_EXECUTOR_PI_HOME).toBe(join(configHome, 'pi-home'));
+    expect(overlay.METACLAW_CODEX_EXECUTOR_ENV_FILE).toBe(join(configHome, 'provider.env'));
+  });
+
+  it('fails native mode with an actionable error when the configuration home is incomplete', async () => {
+    const smoke = await loadSmokeScript();
+    const configHome = join(tempRoot, 'missing-config');
+
+    expect(() => smoke.buildNativeSmokeOverlay(
+      { ANYFUSION_CONFIG_HOME: configHome },
+      tempRoot,
+    )).toThrow(/npm run setup:native/);
   });
 
   it('derives smoke configuration from the same template used by shell.ps1', async () => {

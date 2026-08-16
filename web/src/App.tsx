@@ -6,58 +6,81 @@ import { TokenGate } from './components/TokenGate';
 import { ChatPane } from './components/ChatPane';
 import { ExecutionTimelineView } from './components/ExecutionTimeline';
 import { SettingsPanel } from './components/SettingsPanel';
+import { establishWebSession, exchangeWebCredential } from './auth';
 
-const TOKEN_STORAGE_KEY = 'anyfusion.web.token';
+let startupAuthentication: Promise<boolean> | null = null;
 
 export function App() {
-  const [token, setToken] = useState<string | null>(() => {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? localStorage.getItem(TOKEN_STORAGE_KEY);
-  });
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [output, setOutput] = useState<string[]>([]);
   const [timeline, setTimeline] = useState<ExecutionTimeline | null>(null);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
 
   useEffect(() => {
-    if (!token) return;
+    let active = true;
+    startupAuthentication ??= establishWebSession();
+    void startupAuthentication
+      .then(ok => {
+        if (active) setAuthenticated(ok);
+      })
+      .catch(error => {
+        if (!active) return;
+        setAuthError((error as Error).message);
+        setAuthenticated(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-    const http = new HttpClient(token);
+  useEffect(() => {
+    if (!authenticated) return;
+    const handleUnauthorized = () => {
+      setAuthenticated(false);
+      setSessionId(null);
+      setConnected(false);
+      setAuthError('Web 会话已失效。请重新启动 Web 或输入 --no-open 显示的 token。');
+    };
+    const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
-    const ws = new WsClient(token, {
+    const ws = new WsClient({
       onHello: sid => setSessionId(sid),
       onOutput: lines => setOutput(prev => [...prev, ...lines]),
       onExecution: (_taskId, next) => setTimeline(next),
       onError: message => setOutput(prev => [...prev, `错误: ${message}`]),
+      onUnauthorized: handleUnauthorized,
       onStatusChange: setConnected,
     });
     wsRef.current = ws;
     ws.connect();
+    void http.getConfig()
+      .then(snapshot => setRevisionId(snapshot.runningRevisionId))
+      .catch(() => undefined);
+    return () => ws.close();
+  }, [authenticated]);
 
-    void http.getConfig().then(snapshot => setRevisionId(snapshot.revisionId)).catch(() => undefined);
-
-    return () => {
-      ws.close();
-    };
-  }, [token]);
-
-  const handleAuth = (newToken: string, trust: boolean) => {
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, newToken);
-    if (trust) localStorage.setItem(TOKEN_STORAGE_KEY, newToken);
-    setToken(newToken);
+  const handleAuth = async (token: string): Promise<boolean> => {
+    try {
+      const ok = await exchangeWebCredential(token);
+      setAuthError(ok ? null : 'token 无效或已过期。');
+      if (ok) setAuthenticated(true);
+      return ok;
+    } catch (error) {
+      setAuthError((error as Error).message);
+      return false;
+    }
   };
 
-  const handleSend = (text: string) => {
-    wsRef.current?.sendInput(text);
-  };
-
-  if (!token) {
-    return <TokenGate onAuth={handleAuth} />;
+  if (authenticated === null) {
+    return <div className="token-gate"><div className="token-gate-card">正在连接 AnyFusion…</div></div>;
   }
+  if (!authenticated) return <TokenGate error={authError} onAuth={handleAuth} />;
 
   return (
     <div className="app">
@@ -73,7 +96,7 @@ export function App() {
         </div>
       </header>
       <div className="main">
-        <ChatPane output={output} onSend={handleSend} />
+        <ChatPane output={output} onSend={text => wsRef.current?.sendInput(text)} />
         <ExecutionTimelineView timeline={timeline} />
       </div>
       {settingsOpen && (

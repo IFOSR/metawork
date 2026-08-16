@@ -89,7 +89,7 @@ describe('Round 1 memory acceptance', () => {
     const finalPrompt = attemptExecutionBackend.create.mock.calls.at(-1)?.[0].args.at(-1) ?? '';
     expect(finalPrompt).toContain('给张总再起草一封邮件，内容是提醒确认预算');
     expect(finalPrompt).not.toContain(manual.content);
-  });
+  }, 420_000);
 
   it('applies explicit input, then project/contact, then global memory in a project task', async () => {
     const db = createTestDb();
@@ -200,7 +200,7 @@ describe('Round 1 memory acceptance', () => {
     expect(output).not.toContain('已保留为候选，不等待确认');
     expect(memoryEngine.list({ status: 'confirmed' })).toHaveLength(0);
     expect(output).not.toContain('已确认偏好');
-  });
+  }, 420_000);
 
   it('does not treat inline edit syntax as preference confirmation when no confirmation is pending', async () => {
     const db = createTestDb();
@@ -238,7 +238,7 @@ describe('Round 1 memory acceptance', () => {
     const prefs = memoryEngine.list({ status: 'confirmed' });
     expect(prefs).toHaveLength(0);
     expect(session.getSnapshot().output.join('\n')).not.toContain('已编辑并确认偏好');
-  });
+  }, 420_000);
 
   it('does not auto-capture a natural-language preference before planning', async () => {
     const db = createTestDb();

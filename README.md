@@ -101,6 +101,27 @@ anyfusion
 The launcher's working directory is the user's current directory. It is not
 forced to the MetaWork repository or a fixed `/workspace`.
 
+Start the browser interface instead of the native TUI:
+
+```bash
+anyfusion web
+```
+
+The command opens `http://127.0.0.1:8788` and authenticates the browser
+automatically through a short-lived URL-fragment bootstrap. The fragment is
+removed immediately and exchanged for an HttpOnly, SameSite=Strict session
+cookie. No token copying or browser storage is used. For SSH, port forwarding,
+or manual browser startup, run `anyfusion web --no-open`; only that mode prints
+the process-local fallback token.
+
+The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
+are separate, mutually exclusive Runtime modes in this release.
+
+Configuration changes activated from the Web settings panel are validated and
+stored as the next-start revision. The running Planner, Kernel, and Executors
+remain pinned to the revision loaded at startup; restart AnyFusion to apply the
+new revision.
+
 ### Native Runtime Layout
 
 ```text

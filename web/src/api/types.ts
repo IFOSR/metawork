@@ -39,6 +39,7 @@ export interface ExecutionTimeline {
 
 export interface ConfigSnapshot {
   revisionId: string;
+  runningRevisionId: string;
   contentHash: string;
   // AnyFusionConfigurationV2；第 5 步补全精确类型。
   config: Record<string, unknown>;
@@ -49,6 +50,8 @@ export interface ActivateResult {
   revisionId?: string;
   code?: string;
   activeRevisionId?: string | null;
+  runningRevisionId?: string;
+  restartRequired?: boolean;
   issues?: string[];
 }
 
@@ -74,6 +77,5 @@ export type ServerMessage =
   | { type: 'error'; message: string };
 
 export type ClientMessage =
-  | { type: 'auth'; token: string }
   | { type: 'input'; text: string }
   | { type: 'close' };

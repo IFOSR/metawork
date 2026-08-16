@@ -524,6 +524,29 @@ anyfusion
 ./anyfusion.sh start
 ```
 
+浏览器交互端使用：
+
+```bash
+anyfusion web
+```
+
+Web 模式只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
+fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
+进程级会话 Cookie 后立即清除地址栏 fragment。用户无需复制 token，浏览器
+JavaScript 也不持久化 token。`anyfusion web --no-open` 仅为 SSH、端口转发
+和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
+和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
+
+原生 AnyFusion-Pi TUI 仍是 `anyfusion` 的默认入口。本版本中 Web 与 TUI
+仍是互斥的 Runtime 模式。
+
+运行中的 Planner、Kernel 和 Executor 始终固定使用进程启动时加载的配置
+revision。Web 设置页激活仍完整执行 validate、compile、probe 和 immutable
+repository activation，但新 active revision 会显示为“下次启动 revision”，
+并返回 `restartRequired: true`。Planner 子进程及其 MCP server 显式接收当前
+运行 revision，因此配置激活不会造成 Planner 上下文与 Kernel/Execution
+策略分裂。重启 AnyFusion 后新 revision 才会生效。
+
 原生 launcher 将本地状态保存在：
 
 ```text
@@ -862,7 +885,7 @@ anyfusion --script /tmp/anyfusion-flow.txt
 
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
 
-`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。
+`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 AnyFusion 配置（`ANYFUSION_CONFIG_HOME`，默认 `~/.config/anyfusion`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
 
 针对性测试：
 

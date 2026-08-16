@@ -8,6 +8,7 @@ import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
+import type { WebAuthService } from './web-auth.js';
 
 export interface TaskSummary {
   id: string;
@@ -23,6 +24,7 @@ export interface ExecutionQuery {
 
 export interface ConfigSnapshotResponse {
   revisionId: string;
+  runningRevisionId?: string;
   contentHash: string;
   config: unknown;
 }
@@ -37,6 +39,8 @@ export interface ActivateResult {
   revisionId?: string;
   code?: string;
   activeRevisionId?: string | null;
+  runningRevisionId?: string;
+  restartRequired?: boolean;
   issues?: string[];
 }
 
@@ -52,6 +56,9 @@ export interface ManagementServerDeps {
   port: number;
   webDistDir: string;
   token: string;
+  webAuth: WebAuthService;
+  runningRevisionId: string;
+  webSocketAuthTimeoutMs?: number;
   sessionFactory: (sessionId: string) => MetaclawSession;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
@@ -71,6 +78,7 @@ const MIME: Record<string, string> = {
 export class ManagementServer {
   private server: Server | null = null;
   private readonly wsConnections = new Set<WebSocketConnection>();
+  private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
   private singletonSession: MetaclawSession | null = null;
   private singletonSessionId: string | null = null;
   private lastTimelineJson: string | null = null;
@@ -101,6 +109,7 @@ export class ManagementServer {
       ws.close();
     }
     this.wsConnections.clear();
+    this.authenticatedWsConnections.clear();
     if (this.singletonSession) {
       await this.singletonSession.dispose();
       this.singletonSession = null;
@@ -123,6 +132,14 @@ export class ManagementServer {
       socket.destroy();
       return;
     }
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      this.rejectUpgrade(socket, 403, 'Forbidden');
+      return;
+    }
+    if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+      this.rejectUpgrade(socket, 401, 'Unauthorized');
+      return;
+    }
     const key = request.headers['sec-websocket-key'];
     if (!key) {
       socket.destroy();
@@ -134,33 +151,16 @@ export class ManagementServer {
   private handleWsConnection(socket: Socket, key: string): void {
     WebSocketConnection.accept(socket, key);
 
-    let authenticated = false;
     let adapter: SessionStreamAdapter | null = null;
+    let ws: WebSocketConnection;
 
-    const ws = new WebSocketConnection(socket, {
+    ws = new WebSocketConnection(socket, {
       onMessage: text => {
-        let message: { type?: string; token?: string; text?: string };
+        let message: { type?: string; text?: string };
         try {
-          message = JSON.parse(text) as { type?: string; token?: string; text?: string };
+          message = JSON.parse(text) as { type?: string; text?: string };
         } catch {
           ws.close();
-          return;
-        }
-
-        if (!authenticated) {
-          // 鉴权通过前拒绝一切非 auth 消息。
-          if (message.type !== 'auth' || !message.token || !tokenMatches(this.deps.token, message.token)) {
-            ws.send(JSON.stringify({ type: 'error', message: 'unauthorized' }));
-            ws.close();
-            return;
-          }
-          authenticated = true;
-          const session = this.ensureSession();
-          adapter = new SessionStreamAdapter(session, {
-            onOutput: lines => ws.send(JSON.stringify({ type: 'output', lines })),
-          });
-          adapter.attach();
-          ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
           return;
         }
 
@@ -176,11 +176,19 @@ export class ManagementServer {
       },
       onClose: () => {
         adapter?.detach();
+        this.authenticatedWsConnections.delete(ws);
         this.wsConnections.delete(ws);
       },
     });
 
     this.wsConnections.add(ws);
+    const session = this.ensureSession();
+    adapter = new SessionStreamAdapter(session, {
+      onOutput: lines => ws.send(JSON.stringify({ type: 'output', lines })),
+    });
+    adapter.attach();
+    this.authenticatedWsConnections.add(ws);
+    ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
   }
 
   /** 单例 session：第一个鉴权通过的连接创建，后续连接附着。 */
@@ -208,8 +216,22 @@ export class ManagementServer {
 
   private broadcast(message: unknown): void {
     const text = JSON.stringify(message);
-    for (const ws of this.wsConnections) {
+    for (const ws of this.authenticatedWsConnections) {
       ws.send(text);
+    }
+  }
+
+  private isAllowedWebSocketOrigin(origin: string | undefined): boolean {
+    if (!origin) return true;
+    try {
+      const parsed = new URL(origin);
+      const hostname = parsed.hostname.toLowerCase();
+      const port = parsed.port || (parsed.protocol === 'http:' ? '80' : '443');
+      return parsed.protocol === 'http:'
+        && (hostname === '127.0.0.1' || hostname === 'localhost')
+        && port === String(this.deps.port);
+    } catch {
+      return false;
     }
   }
 
@@ -229,8 +251,45 @@ export class ManagementServer {
     response: ServerResponse,
     url: URL,
   ): Promise<void> {
+    if (request.method === 'POST' && url.pathname === '/api/auth/bootstrap') {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+        this.sendJson(response, 403, { error: 'forbidden_origin' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (!body.token || !this.deps.webAuth.exchange(body.token)) {
+        this.sendJson(response, 401, { error: 'unauthorized' });
+        return;
+      }
+      response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.sessionCookie() });
+      response.end();
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/auth/session') {
+      if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+        this.sendJson(response, 401, { error: 'unauthorized' });
+        return;
+      }
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+        this.sendJson(response, 403, { error: 'forbidden_origin' });
+        return;
+      }
+      response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.clearSessionCookie() });
+      response.end();
+      return;
+    }
+
     const provided = bearerTokenFromHeader(request.headers.authorization);
-    if (!provided || !tokenMatches(this.deps.token, provided)) {
+    const authenticated = this.deps.webAuth.hasSession(request.headers.cookie)
+      || Boolean(provided && tokenMatches(this.deps.token, provided));
+    if (!authenticated) {
       this.sendJson(response, 401, { error: 'unauthorized' });
       return;
     }
@@ -252,7 +311,10 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/config') {
-      this.sendJson(response, 200, await this.deps.configQuery.getActive());
+      this.sendJson(response, 200, {
+        ...await this.deps.configQuery.getActive(),
+        runningRevisionId: this.deps.runningRevisionId,
+      });
       return;
     }
 
@@ -278,7 +340,13 @@ export class ManagementServer {
         this.sendJson(response, 400, { error: 'baseRevisionId and config are required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.activate(body.baseRevisionId, body.config));
+      this.sendJson(
+        response,
+        200,
+        this.withRuntimeRevision(
+          await this.deps.configQuery.activate(body.baseRevisionId, body.config),
+        ),
+      );
       return;
     }
 
@@ -288,7 +356,11 @@ export class ManagementServer {
         this.sendJson(response, 400, { error: 'targetRevisionId is required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.rollback(body.targetRevisionId));
+      this.sendJson(
+        response,
+        200,
+        this.withRuntimeRevision(await this.deps.configQuery.rollback(body.targetRevisionId)),
+      );
       return;
     }
 
@@ -320,6 +392,27 @@ export class ManagementServer {
     createReadStream(filePath).pipe(response);
   }
 
+  private rejectUpgrade(socket: Socket, status: number, message: string): void {
+    socket.end(
+      `HTTP/1.1 ${status} ${message}\r\n`
+      + 'Connection: close\r\n'
+      + 'Content-Length: 0\r\n'
+      + '\r\n',
+    );
+  }
+
+  private withRuntimeRevision(result: ActivateResult): ActivateResult {
+    const activeRevisionId = result.ok
+      ? result.revisionId ?? this.deps.runningRevisionId
+      : result.activeRevisionId ?? this.deps.runningRevisionId;
+    return {
+      ...result,
+      activeRevisionId,
+      runningRevisionId: this.deps.runningRevisionId,
+      restartRequired: activeRevisionId !== this.deps.runningRevisionId,
+    };
+  }
+
   private sendJson(response: ServerResponse, status: number, body: unknown): void {
     this.sendText(response, status, `${JSON.stringify(body)}\n`, 'application/json; charset=utf-8');
   }
@@ -336,6 +429,7 @@ export class ManagementServer {
 }
 
 interface RequestBody {
+  token?: string;
   baseRevisionId?: string;
   config?: unknown;
   targetRevisionId?: string;

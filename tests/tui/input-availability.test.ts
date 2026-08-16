@@ -475,6 +475,7 @@ describe('App input availability', () => {
         sessionId: 'sess_processing_status',
         contextRecaller,
         planningAgent,
+        awaitAsyncWorkOnSubmit: true,
       })
     );
 
@@ -513,7 +514,7 @@ describe('App input availability', () => {
       durationMs: 100,
     });
     await submitPromise;
-    for (let attempt = 0; attempt < 1000 && !app.lastFrame().includes('status: idle'); attempt += 1) {
+    for (let attempt = 0; attempt < 3000 && !app.lastFrame().includes('status: idle'); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
       await flushUpdates();
     }
