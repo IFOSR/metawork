@@ -119,9 +119,9 @@ npm run smoke:metaclaw -- --scenario artifact
 Both live smokes run as native host processes by default, using the AnyFusion
 configuration installed under `ANYFUSION_CONFIG_HOME` (default
 `~/.config/anyfusion`) and the worktree Executor backend; Docker is not
-required. `--mode docker` (auto-selected when the `docker/*.env` provider files
-exist) instead builds the unified runtime image and runs the same scenarios
-inside a control container against a trusted local Docker Engine. The artifact
+required. `--mode docker` instead builds the unified runtime image and runs
+the same scenarios inside a control container against a trusted local Docker
+Engine, requiring the `docker/*.env` provider files. The artifact
 smoke verifies Planner → Kernel → disposable Executor attempt → persistent
 workspace/artifact → publication. The default smoke instead verifies native
 Planner-thread continuity and does not prove the Executor artifact path.

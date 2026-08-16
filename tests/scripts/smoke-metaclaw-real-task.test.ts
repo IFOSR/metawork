@@ -56,21 +56,22 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(() => smoke.parseScenario('unknown')).toThrow(/Invalid smoke scenario/);
   });
 
-  it('selects docker mode only when requested or when all provider env files exist', async () => {
+  it('defaults to native mode and uses docker only when explicitly requested', async () => {
     const smoke = await loadSmokeScript();
     const repoRoot = join(tempRoot, 'repo');
     mkdirSync(join(repoRoot, 'docker'), { recursive: true });
 
     expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('native');
     expect(smoke.resolveSmokeMode(['--mode', 'docker'], {}, repoRoot)).toBe('docker');
-    expect(smoke.resolveSmokeMode([], { METACLAW_SMOKE_MODE: 'native' }, repoRoot)).toBe('native');
+    expect(smoke.resolveSmokeMode([], { METACLAW_SMOKE_MODE: 'docker' }, repoRoot)).toBe('docker');
     expect(() => smoke.resolveSmokeMode([], { METACLAW_SMOKE_MODE: 'podman' }, repoRoot))
       .toThrow(/Invalid smoke mode/);
 
+    // docker/*.env 文件的存在不再改变默认模式。
     for (const fileName of ['planner-pi.env', 'executor-codex.env', 'executor-pi.env']) {
       writeFileSync(join(repoRoot, 'docker', fileName), 'OPENAI_API_KEY=\n');
     }
-    expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('docker');
+    expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('native');
   });
 
   it('builds the native overlay from the installed AnyFusion configuration home', async () => {

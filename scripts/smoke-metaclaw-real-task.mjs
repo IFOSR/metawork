@@ -388,12 +388,6 @@ function readPlannerInteractions(repoRoot, metaclawHome) {
   return JSON.parse(String(result.stdout ?? '[]'));
 }
 
-const dockerProviderEnvFiles = [
-  'docker/planner-pi.env',
-  'docker/executor-codex.env',
-  'docker/executor-pi.env',
-];
-
 export function resolveSmokeMode(rawArgs, env, repoRoot = process.cwd()) {
   const explicit = readOption(rawArgs, '--mode') ?? env.METACLAW_SMOKE_MODE;
   if (explicit !== null && explicit !== undefined && String(explicit).trim() !== '') {
@@ -403,9 +397,8 @@ export function resolveSmokeMode(rawArgs, env, repoRoot = process.cwd()) {
     }
     return mode;
   }
-  return dockerProviderEnvFiles.every(file => existsSync(join(repoRoot, file)))
-    ? 'docker'
-    : 'native';
+  // Docker is an optional compatibility surface; native is always the default.
+  return 'native';
 }
 
 export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(process.cwd())) {
@@ -696,11 +689,10 @@ function buildHelp() {
     '                    (default ~/.config/anyfusion) installed by `npm run setup:native`.',
     '  docker            Build the unified runtime image and run the smoke inside a',
     '                    control container. Requires the docker/*.env provider files.',
-    '                    Selected automatically when all docker/*.env files exist.',
+    '                    Only used when explicitly requested; Docker is not needed otherwise.',
     '',
     'Environment variables:',
-    '  METACLAW_SMOKE_MODE          Smoke mode: native or docker. Defaults to docker when the',
-    '                               docker/*.env files exist, otherwise native.',
+    '  METACLAW_SMOKE_MODE          Smoke mode: native or docker. Defaults to native.',
     '  ANYFUSION_CONFIG_HOME        Native configuration home. Defaults to ~/.config/anyfusion.',
     '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
     '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',

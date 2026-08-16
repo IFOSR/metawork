@@ -93,11 +93,11 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - `npm install`, `npm run dev`, `npm run build`, `npm run start`
 - `npm run lint`, `npm test`, `npm run test:watch`
-- `npm run smoke:metaclaw` — native Planner-session smoke. Smokes run as native
-  host processes by default, using the configuration installed by
+- `npm run smoke:metaclaw` — native Planner-session smoke. Smokes always run as
+  native host processes by default, using the configuration installed by
   `npm run setup:native` under `ANYFUSION_CONFIG_HOME` (default
-  `~/.config/anyfusion`); `--mode docker` forces the container path, which is
-  selected automatically when the `docker/*.env` provider files exist.
+  `~/.config/anyfusion`); `--mode docker` opts into the container path, which
+  requires the `docker/*.env` provider files.
 - `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
   gate; see [runtime security](docs/current/phase-5-runtime-security.md).
 
