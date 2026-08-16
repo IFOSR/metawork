@@ -44,7 +44,7 @@ export function AgentClassForm({ agentClasses, models, onChange }: AgentClassFor
             <div className="form-field">
               <span className="field-label">modelPolicy</span>
               <select
-                value={policy.modelRef ?? 'auto'}
+                value={policy.mode === 'fixed' ? policy.modelRef : 'auto'}
                 onChange={event => update(id, {
                   modelPolicy: selectModelPolicy(
                     event.target.value,

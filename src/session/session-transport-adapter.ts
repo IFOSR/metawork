@@ -1,7 +1,11 @@
 import type { MetaclawSession } from './metaclaw-session.js';
 
 export interface SessionStreamCallbacks {
-  onOutput: (lines: string[]) => void;
+  /**
+   * 输出增量。`from` 是 `lines[0]` 在 session 完整输出中的绝对行号（稳定游标）：
+   * 新连接会收到 from=0 的全量回放，接收方按下标幂等合并即可去重。
+   */
+  onOutput: (lines: string[], from: number) => void;
   onExitRequested?: () => void;
 }
 
@@ -25,10 +29,11 @@ export class SessionStreamAdapter {
    */
   attach(): void {
     this.unsubscribe = this.session.subscribe(snapshot => {
-      const newLines = snapshot.output.slice(this.observedOutputLength);
+      const from = Math.min(this.observedOutputLength, snapshot.output.length);
+      const newLines = snapshot.output.slice(from);
       this.observedOutputLength = snapshot.output.length;
       if (newLines.length > 0) {
-        this.callbacks.onOutput(newLines);
+        this.callbacks.onOutput(newLines, from);
       }
     });
   }

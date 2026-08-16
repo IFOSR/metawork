@@ -82,6 +82,8 @@ export class ManagementServer {
   private singletonSession: MetaclawSession | null = null;
   private singletonSessionId: string | null = null;
   private lastTimelineJson: string | null = null;
+  private lastTimeline: ExecutionTimeline | null = null;
+  private lastTimelineTaskId: string | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
@@ -184,11 +186,19 @@ export class ManagementServer {
     this.wsConnections.add(ws);
     const session = this.ensureSession();
     adapter = new SessionStreamAdapter(session, {
-      onOutput: lines => ws.send(JSON.stringify({ type: 'output', lines })),
+      onOutput: (lines, from) => ws.send(JSON.stringify({ type: 'output', from, lines })),
     });
     adapter.attach();
     this.authenticatedWsConnections.add(ws);
     ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
+    // 新连接补发当前执行时间线：增量广播只发给当时已连接的客户端。
+    if (this.lastTimelineTaskId && this.lastTimeline) {
+      ws.send(JSON.stringify({
+        type: 'execution',
+        taskId: this.lastTimelineTaskId,
+        timeline: this.lastTimeline,
+      }));
+    }
   }
 
   /** 单例 session：第一个鉴权通过的连接创建，后续连接附着。 */
@@ -201,12 +211,18 @@ export class ManagementServer {
       // 执行时间线增量推送：session 快照变化时投影当前 task 并 diff。
       this.singletonSession.subscribe(snapshot => {
         const taskId = snapshot.currentTaskId;
-        if (!taskId) return;
+        if (!taskId) {
+          this.lastTimeline = null;
+          this.lastTimelineTaskId = null;
+          return;
+        }
         const timeline = this.deps.executionQuery.projectTimeline(taskId);
         if (!timeline) return;
         const json = JSON.stringify(timeline);
         if (json !== this.lastTimelineJson) {
           this.lastTimelineJson = json;
+          this.lastTimeline = timeline;
+          this.lastTimelineTaskId = taskId;
           this.broadcast({ type: 'execution', taskId, timeline });
         }
       });

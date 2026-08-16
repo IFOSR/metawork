@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HttpClient } from './api/http';
 import { WsClient } from './api/ws';
+import { mergeOutputLines } from './api/output-buffer';
 import type { ExecutionTimeline } from './api/types';
 import { TokenGate } from './components/TokenGate';
 import { ChatPane } from './components/ChatPane';
@@ -51,7 +52,7 @@ export function App() {
     httpRef.current = http;
     const ws = new WsClient({
       onHello: sid => setSessionId(sid),
-      onOutput: lines => setOutput(prev => [...prev, ...lines]),
+      onOutput: (lines, from) => setOutput(prev => mergeOutputLines(prev, from, lines)),
       onExecution: (_taskId, next) => setTimeline(next),
       onError: message => setOutput(prev => [...prev, `错误: ${message}`]),
       onUnauthorized: handleUnauthorized,
@@ -96,7 +97,7 @@ export function App() {
         </div>
       </header>
       <div className="main">
-        <ChatPane output={output} onSend={text => wsRef.current?.sendInput(text)} />
+        <ChatPane output={output} timeline={timeline} onSend={text => wsRef.current?.sendInput(text)} />
         <ExecutionTimelineView timeline={timeline} />
       </div>
       {settingsOpen && (

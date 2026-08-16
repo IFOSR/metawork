@@ -223,13 +223,116 @@ describe('ManagementServer WebSocket authentication', () => {
       await server.stop();
     }
   });
+
+  it('tags output increments with stable absolute cursors so reconnects dedupe by index', async () => {
+    const port = await reservePort();
+    const state = { output: ['第一行', '第二行'], currentTaskId: null as string | null };
+    const listeners = new Set<
+      (snapshot: { output: string[]; currentTaskId: string | null }) => void
+    >();
+    const session = {
+      initialize() {},
+      subscribe(listener) {
+        listeners.add(listener);
+        listener({ ...state, output: [...state.output] });
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      async submit() {
+        return { exitRequested: false };
+      },
+      async dispose() {},
+    } satisfies TestSession;
+    const server = createManagementServer(port, undefined, session);
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      // 新连接拿到 from=0 的全量回放。
+      await expect(first.nextText()).resolves.toBe(
+        JSON.stringify({ type: 'output', from: 0, lines: ['第一行', '第二行'] }),
+      );
+      await expect(first.nextText()).resolves.toContain('"type":"hello"');
+
+      // 后续增量携带绝对游标。
+      state.output.push('第三行');
+      for (const listener of listeners) {
+        listener({ ...state, output: [...state.output] });
+      }
+      await expect(first.nextText()).resolves.toBe(
+        JSON.stringify({ type: 'output', from: 2, lines: ['第三行'] }),
+      );
+
+      // 重连的新连接再次从 from=0 全量回放，客户端按下标幂等合并即无重复。
+      const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+      try {
+        await expect(second.nextText()).resolves.toBe(
+          JSON.stringify({ type: 'output', from: 0, lines: ['第一行', '第二行', '第三行'] }),
+        );
+      } finally {
+        second.close();
+      }
+    } finally {
+      first.close();
+      await server.stop();
+    }
+  });
+
+  it('sends the current execution timeline to a freshly connected client', async () => {
+    const port = await reservePort();
+    const state = { output: [] as string[], currentTaskId: 'task-live' as string | null };
+    const session = {
+      initialize() {},
+      subscribe(listener) {
+        listener({ ...state, output: [...state.output] });
+        return () => {};
+      },
+      async submit() {
+        return { exitRequested: false };
+      },
+      async dispose() {},
+    } satisfies TestSession;
+    const timeline = { taskId: 'task-live', title: 'demo', status: 'running', stages: [] };
+    const server = createManagementServer(port, undefined, session, {
+      listTasks: () => [],
+      projectTimeline: taskId => (taskId === 'task-live' ? timeline : null),
+    });
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      // 首条连接建立时投影过一次；第二条连接也要立刻拿到当前时间线。
+      await expect(client.nextText()).resolves.toContain('"type":"hello"');
+      await expect(client.nextText()).resolves.toBe(
+        JSON.stringify({ type: 'execution', taskId: 'task-live', timeline }),
+      );
+
+      const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+      try {
+        await expect(second.nextText()).resolves.toContain('"type":"hello"');
+        await expect(second.nextText()).resolves.toBe(
+          JSON.stringify({ type: 'execution', taskId: 'task-live', timeline }),
+        );
+      } finally {
+        second.close();
+      }
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
 });
 
 function createManagementServer(
   port: number,
   webSocketAuthTimeoutMs?: number,
+  sessionOverride?: TestSession,
+  executionQueryOverride?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown },
 ): ManagementServer {
-  const session = {
+  const session = sessionOverride ?? {
     initialize() {},
     subscribe(listener) {
       listener({ output: [], currentTaskId: null });
@@ -253,7 +356,7 @@ function createManagementServer(
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs,
     sessionFactory: () => session as never,
-    executionQuery: {
+    executionQuery: executionQueryOverride ?? {
       listTasks: () => [],
       projectTimeline: () => null,
     },

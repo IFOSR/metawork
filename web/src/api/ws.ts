@@ -2,7 +2,7 @@ import type { ClientMessage, ExecutionTimeline, ServerMessage } from './types';
 
 export interface WsHandlers {
   onHello?: (sessionId: string) => void;
-  onOutput?: (lines: string[]) => void;
+  onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onError?: (message: string) => void;
   onUnauthorized?: () => void;
@@ -39,7 +39,7 @@ export class WsClient {
           this.handlers.onHello?.(message.sessionId);
           break;
         case 'output':
-          this.handlers.onOutput?.(message.lines);
+          this.handlers.onOutput?.(message.lines, message.from);
           break;
         case 'execution':
           this.handlers.onExecution?.(message.taskId, message.timeline);
