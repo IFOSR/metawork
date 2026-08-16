@@ -29,6 +29,8 @@ export interface LegacySecretImportPlan {
   sourcePath: string;
   sourceKey: string;
   valueSha256: string;
+  /** 明文凭证，仅用于写入 SecretStore；报告/日志只写 valueSha256。 */
+  value?: string;
 }
 
 export interface LegacyRepositoryStatus {
@@ -262,10 +264,11 @@ export class LegacyConfigurationReader {
       const apiKey = typeof envValues.OPENAI_API_KEY === 'string' ? envValues.OPENAI_API_KEY : null;
       if (apiKey) {
         secretImportPlan.push({
-          reference: 'keychain:anyfusion/imported/openai',
+          reference: 'file-secret:anyfusion/providers/openai',
           sourcePath: parsed.source.path,
           sourceKey: 'OPENAI_API_KEY',
           valueSha256: createHash('sha256').update(apiKey).digest('hex'),
+          value: apiKey,
         });
       }
     }
@@ -277,7 +280,7 @@ export class LegacyConfigurationReader {
       const envKey = /env_key\s*=\s*"([^"]+)"/u.exec(parsed.value);
       if (envKey) {
         secretImportPlan.push({
-          reference: 'keychain:anyfusion/imported/openai',
+          reference: 'file-secret:anyfusion/providers/openai',
           sourcePath: parsed.source.path,
           sourceKey: envKey[1],
           valueSha256: 'external-secret',
@@ -310,7 +313,7 @@ export class LegacyConfigurationReader {
       openai: {
         protocol: 'openai-compatible' as const,
         baseUrl: providerUrl,
-        apiKeyRef: 'keychain:anyfusion/imported/openai',
+        apiKeyRef: 'file-secret:anyfusion/providers/openai',
         region: 'international',
         enabled: true,
       },

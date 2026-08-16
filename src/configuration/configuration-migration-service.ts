@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { dump } from 'js-yaml';
 import { FileConfigurationRepository } from './file-configuration-repository.js';
+import { assertSecretReference, type SecretStore } from './secret-store.js';
 import {
   LegacyConfigurationReader,
   type LegacyConfigurationInventory,
@@ -16,6 +17,7 @@ export class ConfigurationMigrationService {
   constructor(
     private readonly reader: LegacyConfigurationReader,
     private readonly repository?: FileConfigurationRepository,
+    private readonly secretStore?: SecretStore,
   ) {}
 
   async dryRun(): Promise<ConfigurationMigrationReport> {
@@ -37,6 +39,9 @@ export class ConfigurationMigrationService {
     }
     const revisionId = `import-${report.candidateHash.slice(0, 24)}`;
     await this.repository.initialize();
+    if (this.secretStore) {
+      await this.importSecrets(report.secretImportPlan);
+    }
     await this.repository.writeRevision({
       revisionId,
       contentHash: report.candidateHash,
@@ -44,13 +49,35 @@ export class ConfigurationMigrationService {
         'config.yaml': dump(report.candidate, { noRefs: true, sortKeys: true, lineWidth: -1 }),
         'migration-report.json': `${JSON.stringify({
           sourceHashes: report.sourceHashes,
-          secretImportPlan: report.secretImportPlan,
+          secretImportPlan: report.secretImportPlan.map(item => ({
+            reference: item.reference,
+            sourcePath: item.sourcePath,
+            sourceKey: item.sourceKey,
+            valueSha256: item.valueSha256,
+          })),
           conflicts: report.conflicts,
           dirtyRepositories: report.dirtyRepositories,
         }, null, 2)}\n`,
       },
     });
     return { revisionId, candidateHash: report.candidateHash };
+  }
+
+  private async importSecrets(
+    plan: LegacyConfigurationInventory['secretImportPlan'],
+  ): Promise<void> {
+    if (!this.secretStore) return;
+    for (const item of plan) {
+      if (!item.value) continue; // external-secret 无实际值
+      assertSecretReference(item.reference);
+      try {
+        await this.secretStore.get(item.reference);
+        continue; // 已存在，幂等跳过
+      } catch {
+        // 不存在，写入
+      }
+      await this.secretStore.put(item.reference, item.value);
+    }
   }
 }
 

@@ -18,6 +18,7 @@ import { parseCliArgs } from './cli/args.js';
 import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
+import { FileSecretStore } from './configuration/file-secret-store.js';
 import { ConfigurationService, type ActivateDraftResult } from './configuration/configuration-service.js';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './configuration/types.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
@@ -94,11 +95,12 @@ async function activateConfiguration(
 
 async function importAndActivateLegacyConfiguration(
   repository: FileConfigurationRepository,
+  secretStore: FileSecretStore,
 ): Promise<ConfigurationSnapshot> {
   const reader = new LegacyConfigurationReader({
     roots: [resolve(process.env.HOME ?? '.', '.config', 'anyfusion')],
   });
-  const migrationService = new ConfigurationMigrationService(reader, repository);
+  const migrationService = new ConfigurationMigrationService(reader, repository, secretStore);
   const report = await migrationService.dryRun();
   const blocking = report.conflicts.filter(conflict => conflict.severity === 'error');
   if (blocking.length > 0) {
@@ -258,9 +260,12 @@ async function main() {
     dirname(resolveAnyFusionPaths().configurationRevisions),
   );
   await configurationRepository.initialize();
+  const secretStore = new FileSecretStore(resolveAnyFusionPaths().secrets);
+  await secretStore.initialize();
+  await secretStore.assertSecurePermissions();
   const recovery = await configurationRepository.recover();
   const migratedSnapshot = recovery.status === 'empty'
-    ? await importAndActivateLegacyConfiguration(configurationRepository)
+    ? await importAndActivateLegacyConfiguration(configurationRepository, secretStore)
     : await configurationRepository.getActiveSnapshot();
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const importedAt = new Date().toISOString();

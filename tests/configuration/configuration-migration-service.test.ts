@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConfigurationMigrationService } from '../../src/configuration/configuration-migration-service.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
+import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { LegacyConfigurationReader } from '../../src/configuration/legacy-configuration-reader.js';
+import type { SecretStore } from '../../src/configuration/secret-store.js';
 
 const roots: string[] = [];
 
@@ -48,18 +50,18 @@ describe('ConfigurationMigrationService', () => {
     expect(first.candidateHash).toBe(second.candidateHash);
     expect(first.candidate.providers.openai).toMatchObject({
       baseUrl: 'https://api.example.com/v1',
-      apiKeyRef: 'keychain:anyfusion/imported/openai',
+      apiKeyRef: 'file-secret:anyfusion/providers/openai',
     });
     expect(first.candidate.models['legacy-model']).toMatchObject({
       modelId: 'legacy-model',
     });
     expect(first.secretImportPlan).toEqual([{
-      reference: 'keychain:anyfusion/imported/openai',
+      reference: 'file-secret:anyfusion/providers/openai',
       sourcePath: join(root, 'provider.env'),
       sourceKey: 'OPENAI_API_KEY',
       valueSha256: expect.any(String),
+      value: 'sk-legacy-secret',
     }]);
-    expect(JSON.stringify(first)).not.toContain('sk-legacy-secret');
   });
 
   it('fails closed on conflicting Provider URLs and competing root overrides', async () => {
@@ -107,6 +109,44 @@ describe('ConfigurationMigrationService', () => {
     await expect(repository.getActiveSnapshot()).rejects.toThrow(/active configuration/i);
     expect(await readFile(join(configRoot, 'revisions', staged.revisionId, 'config.yaml'), 'utf8'))
       .toContain('schemaVersion: 2');
+  });
+
+  it('imports the provider secret into the SecretStore and keeps reports redacted', async () => {
+    const root = await fixture();
+    const configRoot = join(root, 'new-config');
+    const secretsRoot = join(root, 'secrets');
+    const repository = new FileConfigurationRepository(configRoot);
+    const secretStore = new FileSecretStore(secretsRoot);
+    const reader = new LegacyConfigurationReader({ roots: [root], env: {} });
+    const service = new ConfigurationMigrationService(reader, repository, secretStore);
+    const report = await service.dryRun();
+    const staged = await service.stageCandidate(report);
+
+    await expect(secretStore.get('file-secret:anyfusion/providers/openai'))
+      .resolves.toBe('sk-legacy-secret');
+
+    const reportFile = await readFile(
+      join(configRoot, 'revisions', staged.revisionId, 'migration-report.json'),
+      'utf8',
+    );
+    expect(reportFile).not.toContain('sk-legacy-secret');
+    expect(reportFile).toContain('file-secret:anyfusion/providers/openai');
+  });
+
+  it('skips an existing secret on re-import', async () => {
+    const root = await fixture();
+    const repository = new FileConfigurationRepository(join(root, 'new-config'));
+    let puts = 0;
+    const secretStore: SecretStore = {
+      get: async () => 'already-set',
+      put: async () => { puts += 1; },
+      delete: async () => {},
+    };
+    const reader = new LegacyConfigurationReader({ roots: [root], env: {} });
+    const service = new ConfigurationMigrationService(reader, repository, secretStore);
+    const report = await service.dryRun();
+    await service.stageCandidate(report);
+    expect(puts).toBe(0);
   });
 });
 
