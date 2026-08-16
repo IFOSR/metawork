@@ -1,7 +1,8 @@
 # 多 Provider 与模型配置实施方案
 
-> 状态：待实施
+> 状态：已实施
 > 计划日期：2026-08-16
+> 完成日期：2026-08-16
 > 关联：ADR-0027（Configuration Control Plane）、ADR-0020（模块归属）、ADR-0018（路由契约）、CONTEXT.md、[Web 交互界面设计](2026-08-15-anyfusion-web-interaction-interface-design.md) §8.2、[Server 升级实现计划](2026-08-11-metawork-server-upgrade-implementation-plan.md)
 > 用途：让用户在设置界面（与 admin CLI）配置多个 OpenAI 兼容 Provider 和多个模型，并把模型绑定到 AgentClass。Harness 配置本期明确不开放（执行边界保持代码所有）。
 
@@ -149,3 +150,24 @@
 - **Planner 热切换**：长会话中切换默认模型需要新建 Planner session 才生效；如需会话内切换，得给 fork 加受控的模型切换 RPC（本期不做）。
 - **probe 成本**：activate 闭环的 probe 已存在；多 provider 后可考虑加「provider 可达性」可选检查，失败只警告不阻塞（probe 失败仍阻塞）。
 - **Keychain**：macOS 钥匙串存储作为 SecretStore 可选后端，接口已就位，单独立项评估。
+
+## 8. 实现记录
+
+完成日期：2026-08-16。按 §4 六步实现：
+
+- Task 1（SecretStore 生产接线 + legacy 导入落库）：`FileSecretStore` 装配于 main 启动路径；legacy 导入把 `OPENAI_API_KEY` 写入 `file-secret:anyfusion/providers/<ref>`，报告只写哈希，幂等跳过。commit `b132c1e`。
+- Task 2（runtime binding 生产接线）：`getRuntimeBinding` 经 `resolveRuntimePrivateConfigurationBinding` 产出 `{revisionId, bindingFingerprint, environment}`；所有 `MetaclawSession` 构造点传入；驱动移除 `readProviderEnvFile` 直读，凭证只来自 `environment`，secret 缺失 fail-closed。commit `f1f60e0`。
+- Task 3（激活渲染 generated 配置）：新增 `agent-runtime-renderer.ts`，激活/回滚时原子渲染 `generated/agent-runtime/<revisionId>/`（planner/codex/pi 三套），Planner supervisor 与两个驱动默认读当前 generated 目录。commit `50487b3`。
+- Task 4（设置 API 与 Web 表单）：`POST /api/config/secrets`（写 SecretStore，无明文回读）；Provider/Model 表单开放新建/编辑，AgentClass 的 modelPolicy 下拉用 enabled 模型；激活前先写凭证再 activate。commit `e6ba0fe`。
+- Task 5（多模型路由语义）：确认 `buildConfigurationCatalog` 已把 executor AgentClass 的 modelPolicy（fixed/auto）投影进 Planner catalog；补 auto 顺序 + disabled 排除单测。commit `d4d8773`。
+- Task 6（收尾）：本记录。
+
+验证：
+
+- `npm run lint` / `npm run build` 通过；`web/` 内 `tsc --noEmit` + `vite build` 通过。
+- `tests/configuration/`（含 renderer、secret store、migration、projections）+ `tests/management/`（含 secrets 端点）+ `tests/executor/` 全部通过。
+
+未验证（挂起，需有效 provider + executor CLI 的 live 环境）：
+
+- §6 验收 2/3/5 的 live smoke：artifact 用非默认模型执行、Planner 新 session 用新默认模型、回滚后 generated 目录切回——需 `codex`/`pi` CLI 与有效 provider key，当前环境未跑。
+- Task 6 剩余的 README/CONTEXT.md 文档段落更新未做（记录本处，后续补）。
