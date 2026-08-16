@@ -312,31 +312,32 @@ metawork/
 
 设置是抽屉（顶栏点开），不占常驻空间。
 
-### 8.2 设置页 scope 与生效范围（已决：收缩到非密字段）
+### 8.2 设置页交互（已决：针对 AgentClass 的 Provider/Model 级联选择）
 
-**背景**：当前 Planner 实际使用的模型和凭证来自 `METACLAW_PLANNER_ENV_FILE`（provider.env）+ planner home 的 `models.json`/`settings.json`；Executor 凭证来自 `METACLAW_*_EXECUTOR_ENV_FILE` + home 模板。`ConfigurationService` 激活的 revision 里 Provider 只有 `apiKeyRef` 引用，**secret store 在生产路径尚未接线**（迁移只写 `secretImportPlan` 报告，`resolveRuntimePrivateConfigurationBinding` 无生产调用方）。因此激活 revision 不会改变 Planner/Executor 实际使用的模型 ID 和凭证。
+设置页**不单独编辑 Provider/Model 实体**，而是直接针对每个 AgentClass（planner、各 executor）配置其 Provider 与 Model——这才是配置的语义落点。
 
-**结论（按方案 (ii) 收缩）**：设置页只编辑「激活 revision 后确实生效」的非密字段：
+- **Provider 下拉**：预设 `Code CLI` / `Kimi` / `DeepSeek` 三个（baseUrl 与模型目录内置），外加 `Other（自定义）`。
+- **Model 级联下拉**：选中 Provider 后展示该 Provider 底下的模型列表（预设目录内），用户选择。
+- **Other 展开**：选中 Other 时才展开 Provider 名 / baseUrl / API Key / Model ID 输入（自定义）。
 
-| 可编辑（revision 钉住，激活即生效） | 不可编辑（安装期权威，明确标注） |
-| --- | --- |
-| AgentClass：enabled / modelPolicy（引用已存在 model）/ harnessRef / permissionProfileRef / routingCapabilities / 使用场景字段 | apiKey（凭证） |
-| Model：enabled / capabilities / reasoning / costTier / latencyTier | modelId 的引入（新模型 ID 的创建） |
-| Provider：enabled / region | baseUrl 变更、新 Provider 创建 |
-| runtimePolicy：maxConcurrentAttempts 等 | — |
+预设目录（`web/src/preset-providers.ts`）：
 
-Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装期配置」），不提供编辑。设置页页首固定声明：「模型 ID 与凭证的权威是安装期配置（provider.env + 模板）；此处激活的 revision 影响 Kernel/Planner 的绑定、路由与开关行为。」
+| Provider | baseUrl | 模型 |
+| --- | --- | --- |
+| Code CLI | `https://www.code-cli.cn/v1` | gpt-5.6-sol / gpt-5.6-terra |
+| Kimi | `https://api.kimi.com/coding/v1` | k3 / kimi-for-coding / kimi-for-coding-highspeed / k3-256k |
+| DeepSeek | `https://api.deepseek.com/v1` | deepseek-chat / deepseek-reasoner / deepseek-v4-pro |
 
-**激活的真实成本（交互设计必须接受）**：`probeDraft` 会真实执行 `codex --version` / `pi --version`，executor CLI 缺失会导致**任何**配置变更激活失败（哪怕只改 runtimePolicy）。因此：激活是秒级操作但非零成本；`probe_failed` 时整页展示失败原因，并提示安装对应 CLI，不能静默。
+凭证链路（前置任务已完成，见多 Provider 方案）：凭证只经 `POST /api/config/secrets` 写入 SecretStore，revision 只含 `apiKeyRef` 引用，任何 API 响应不回显明文。预设 Provider 的 API Key 在安装期/导入时已落 SecretStore，UI 不重复输入；仅 Other 需输入。
 
-**前置任务声明**：secret store + runtime binding 生产接线是独立的前置任务（可能触及 ADR-0027 范围）。完成之后，设置页才扩展凭证与模型 ID 管理，届时新增 `POST /api/config/secrets`（先写 secret store，再激活引用它的配置），并重新评估 scope。**该前置任务已立项为 [多 Provider 与模型配置实施方案](2026-08-16-multi-provider-model-configuration.md)（2026-08-16），本节 scope 收缩在其 Task 4 完成前保持有效。**
+激活语义：针对 AgentClass 的选择组装成 `providers` + `models` + `agentClasses`（`modelPolicy.modelRef` 指向选中模型），走 validate → compile → probe → activate 闭环。`probeDraft` 真实执行 `codex --version` / `pi --version`，CLI 缺失导致任何激活失败，`probe_failed` 整页展示，不静默。
 
 ### 8.3 交互细节
 
 - **对话**：发送后消息进流；Planner 规划说明、交付摘要、错误都落在对话区。对话内容按 Markdown 渲染（标题/表格/列表/代码块），模型输出经消毒后插入，链接强制 `target="_blank" rel="noreferrer"`。
 - **对话内嵌执行轨迹（已决）**：时间线投影同时以「执行轨迹」卡片嵌入对话主视图——只展示可验证的 durable 执行事实（理解请求 → Planner 生成 N 个子任务 → Kernel 授权 → 分配给各 Executor → 验证 → 汇总交付），不展示模型 chain-of-thought。**默认紧凑一行摘要；任务进行中自动展开，完成后自动折叠；用户点击可随时覆盖，新任务出现时回到自动模式。** 右侧 Execution Timeline 面板保留，两者共用同一份投影数据。
 - **时间线**：与对话同步推进——用户一提交，右侧立刻出现 `planning` 阶段，随授权/执行实时点亮。subtask 卡片状态色点（ready / running / done / blocked / failed），点开看 Kernel 决策原因和 attempt 回执（含失败错误码和详细原因）。
-- **设置**：编辑本地副本 → 整体激活。apiKey 无编辑入口。
+- **设置**：针对每个 AgentClass 选 Provider + Model（级联下拉）→ 整体激活。预设 Provider 无 apiKey 输入，仅 Other 展开输入。
 - **权限升级**：execution 中的权限请求沿用 RPC 自然语言授权（CONTEXT.md 已支持）——Planner 在对话区提出升级请求，用户直接在对话里回复同意/拒绝，**不做独立审批按钮**。
 
 ### 8.4 状态管理
@@ -378,9 +379,9 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 ## 12. 已决与挂起
 
-**已决**：进程模型（复用主进程 composition）、实例锁（composition 层 runtime.lock，模式×锁覆盖矩阵：TUI/web/gateway 取锁、`--script`/admin 不取，PID 探测回收 stale）、gateway socket 归属（交互面，web 模式不启动）、会话基数（单例 session，鉴权通过前不创建）、设置页 scope（非密字段收缩）、apiKey 落点（本期无表单，挂起 secret store 前置任务）、token 传递（终端打印 + TokenGate + 首条消息鉴权）、模块归属（Application Shell 侧）、verification 推导规则、投影触发源保真度验证（第 4 步堵死缺口；例外授权 execution 落库点纯通知 hook）、权限升级呈现（对话内自然语言授权，无审批按钮）。
+**已决**：进程模型（复用主进程 composition）、实例锁（composition 层 runtime.lock，模式×锁覆盖矩阵：TUI/web/gateway 取锁、`--script`/admin 不取，PID 探测回收 stale）、gateway socket 归属（交互面，web 模式不启动）、会话基数（单例 session，鉴权通过前不创建）、设置页交互（针对 AgentClass 的 Provider/Model 级联下拉 + 预设 Code CLI/Kimi/DeepSeek + Other 自定义）、凭证链路（SecretStore 已接线，仅 Other 输入 apiKey）、token 传递（终端打印 + TokenGate + 首条消息鉴权）、模块归属（Application Shell 侧）、verification 推导规则、投影触发源保真度验证（第 4 步堵死缺口；例外授权 execution 落库点纯通知 hook）、权限升级呈现（对话内自然语言授权，无审批按钮）。
 
-**挂起（独立前置任务，不在本期）**：secret store + runtime binding 生产接线（完成后再扩展设置页与 `POST /api/config/secrets`）。
+**已解决的前置任务**：secret store + runtime binding 生产接线已在 [多 Provider 与模型配置实施方案](2026-08-16-multi-provider-model-configuration.md) 完成（`POST /api/config/secrets` + 级联选择设置页均已落地）。
 
 ## 13. 实现记录
 
