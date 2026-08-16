@@ -22,6 +22,9 @@ import type {
   PlannerConfigurationView,
   RuntimePrivateConfigurationBinding,
 } from './types.js';
+import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-binding-resolver.js';
+import type { SecretStore } from './secret-store.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
 export interface CompiledConfigurationRevision {
   contentHash: string;
@@ -54,6 +57,7 @@ interface ConfigurationDraft {
 
 export interface ConfigurationServiceDependencies {
   repository: FileConfigurationRepository;
+  secretStore?: SecretStore;
   createRevisionId?: () => string;
   probe?: (
     snapshot: ConfigurationSnapshot,
@@ -229,26 +233,30 @@ export class ConfigurationService implements ConfigurationServicePort {
     modelRef: string,
   ): Promise<RuntimePrivateConfigurationBinding> {
     const snapshot = await this.getSnapshot(revisionId);
+    const configuration = buildRuntimeConfigurationView(snapshot);
     const agentClass = snapshot.config.agentClasses[agentClassId];
     const model = snapshot.config.models[modelRef];
     if (!agentClass) throw new Error(`unknown AgentClass: ${agentClassId}`);
     if (!model) throw new Error(`unknown Model: ${modelRef}`);
-    const harness = snapshot.config.harnesses[agentClass.harnessRef];
-    const permissionProfile = agentClass.permissionProfileRef
-      ? snapshot.config.permissionProfiles[agentClass.permissionProfileRef]
-      : null;
-    const bindingFingerprint = createHash('sha256')
-      .update(stableJson({
-        revisionId,
-        agentClassId,
-        agentClass,
-        harness,
-        modelRef,
-        model,
-        permissionProfile,
-      }))
-      .digest('hex');
-    return { revisionId, bindingFingerprint };
+    if (!agentClass.permissionProfileRef) {
+      throw new Error(`Executor AgentClass requires a permission profile: ${agentClassId}`);
+    }
+    if (!this.dependencies.secretStore) {
+      throw new Error('secret store is required for runtime binding');
+    }
+    const authorizedBinding: AuthorizedExecutorBinding = {
+      agentClassRef: agentClassId,
+      harnessRef: agentClass.harnessRef,
+      providerRef: model.providerRef,
+      modelRef,
+      permissionProfileRef: agentClass.permissionProfileRef,
+      configurationRevision: revisionId,
+    };
+    return resolveRuntimePrivateConfigurationBinding({
+      configuration,
+      authorizedBinding,
+      secretStore: this.dependencies.secretStore,
+    });
   }
 
   private requireDraft(revisionId: string): ConfigurationDraft {

@@ -268,6 +268,17 @@ async function main() {
     ? await importAndActivateLegacyConfiguration(configurationRepository, secretStore)
     : await configurationRepository.getActiveSnapshot();
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
+  const configurationService = new ConfigurationService({
+    repository: configurationRepository,
+    secretStore,
+    probe: createLocalExecutorConfigurationProbe(),
+  });
+  const resolveRuntimeBinding = (binding: AuthorizedExecutorBinding) =>
+    configurationService.getRuntimeBinding(
+      binding.configurationRevision,
+      binding.agentClassRef,
+      binding.modelRef,
+    );
   const importedAt = new Date().toISOString();
   const plannerMigrationBinding = {
     ...stagedConfiguration.plannerBinding,
@@ -374,6 +385,7 @@ async function main() {
         plannerHost,
         plannerSupervisor,
         stagedConfiguration,
+        getRuntimeBinding: resolveRuntimeBinding,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
@@ -394,10 +406,6 @@ async function main() {
       decisionRepo: new KernelDecisionRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
     });
-    const configurationService = new ConfigurationService({
-      repository: configurationRepository,
-      probe: createLocalExecutorConfigurationProbe(),
-    });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
@@ -414,6 +422,7 @@ async function main() {
         plannerHost,
         plannerSupervisor,
         stagedConfiguration,
+        getRuntimeBinding: resolveRuntimeBinding,
       }),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({
@@ -486,6 +495,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
+      getRuntimeBinding: resolveRuntimeBinding,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
@@ -501,6 +511,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
+      getRuntimeBinding: resolveRuntimeBinding,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -539,6 +550,7 @@ async function main() {
     plannerHost,
     plannerSupervisor,
     stagedConfiguration,
+    getRuntimeBinding: resolveRuntimeBinding,
   });
 
   await gatewayServer.start();
@@ -558,6 +570,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
+      getRuntimeBinding: resolveRuntimeBinding,
     });
     gatewaySession = session;
     session.initialize({ showDashboard: false });

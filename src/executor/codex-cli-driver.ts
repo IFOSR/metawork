@@ -18,7 +18,6 @@ import type {
 import {
   emptyToUndefined,
   normalizeHarnessResult,
-  readProviderEnvFile,
   safeHostEnvironment,
 } from './harness-driver.js';
 
@@ -28,19 +27,14 @@ export class CodexCliDriver implements HarnessDriver {
   readonly id = 'codex-cli';
   private readonly runProbe: ProbeCommandRunner;
   private readonly homeTemplateDir?: string;
-  private readonly envFile?: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
-    envFile?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.homeTemplateDir = emptyToUndefined(
       dependencies.homeTemplateDir ?? process.env.METACLAW_EXECUTOR_CODEX_HOME,
-    );
-    this.envFile = emptyToUndefined(
-      dependencies.envFile ?? process.env.METACLAW_CODEX_EXECUTOR_ENV_FILE,
     );
   }
 
@@ -61,7 +55,7 @@ export class CodexCliDriver implements HarnessDriver {
       bindingFingerprint: input.bindingFingerprint,
       environment: {
         CODEX_HOME: homePath,
-        ...readProviderEnvFile(this.envFile, 'Codex'),
+        ...input.environment,
       },
     });
     await this.seedProviderConfig(homePath);

@@ -17,7 +17,6 @@ import type {
 import {
   emptyToUndefined,
   normalizeHarnessResult,
-  readProviderEnvFile,
   safeHostEnvironment,
 } from './harness-driver.js';
 
@@ -27,19 +26,14 @@ export class PiCliDriver implements HarnessDriver {
   readonly id = 'pi-cli';
   private readonly runProbe: ProbeCommandRunner;
   private readonly homeTemplateDir?: string;
-  private readonly envFile?: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
-    envFile?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.homeTemplateDir = emptyToUndefined(
       dependencies.homeTemplateDir ?? process.env.METACLAW_EXECUTOR_PI_HOME,
-    );
-    this.envFile = emptyToUndefined(
-      dependencies.envFile ?? process.env.METACLAW_PI_EXECUTOR_ENV_FILE,
     );
   }
 
@@ -64,7 +58,7 @@ export class PiCliDriver implements HarnessDriver {
         HOME: homePath,
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
-        ...readProviderEnvFile(this.envFile, 'Pi'),
+        ...input.environment,
       },
       homeDirectories: ['.pi/agent/sessions'],
     });

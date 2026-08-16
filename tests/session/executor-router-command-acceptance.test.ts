@@ -46,6 +46,15 @@ function createSession(input: {
     sessionId: input.sessionId,
     contextRecaller: new ContextRecaller(input.db),
     planningAgent: input.planningAgent,
+    getRuntimeBinding: async binding => ({
+      revisionId: binding.configurationRevision,
+      bindingFingerprint: 'test-fingerprint',
+      environment: {
+        OPENAI_BASE_URL: 'https://test.invalid/v1',
+        OPENAI_API_KEY: 'sk-test',
+        OPENAI_MODEL: 'test-model',
+      },
+    }),
   });
 }
 
@@ -130,6 +139,15 @@ describe('planner-first executor command acceptance', () => {
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli' }),
       ),
+      getRuntimeBinding: async binding => ({
+        revisionId: binding.configurationRevision,
+        bindingFingerprint: 'test-fingerprint',
+        environment: {
+          OPENAI_BASE_URL: 'https://test.invalid/v1',
+          OPENAI_API_KEY: 'sk-test',
+          OPENAI_MODEL: 'test-model',
+        },
+      }),
     });
 
     session.initialize();

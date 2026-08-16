@@ -125,7 +125,6 @@ import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
-import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
 
 export interface PlannerHostRegistrar {
@@ -469,9 +468,11 @@ export class MetaclawSession {
           : null
       ),
       getActiveRuntimeConfiguration: () => runtimeConfiguration,
-      getRuntimeBinding: binding => deps.getRuntimeBinding?.(binding) ?? {
-        revisionId: binding.configurationRevision,
-        bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+      getRuntimeBinding: binding => {
+        if (!deps.getRuntimeBinding) {
+          throw new Error('runtime binding resolver is required');
+        }
+        return deps.getRuntimeBinding(binding);
       },
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);

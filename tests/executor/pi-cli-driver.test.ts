@@ -42,6 +42,7 @@ describe('PiCliDriver', () => {
         agentClassId: 'pi-research',
         bindingFingerprint: 'fingerprint',
         attemptsRoot: root,
+        environment: {},
       });
 
       expect(await stat(home.environment.PI_CODING_AGENT_SESSION_DIR)).toBeTruthy();
@@ -51,20 +52,17 @@ describe('PiCliDriver', () => {
     }
   });
 
-  it('seeds the attempt home with the provider models and env-file credentials', async () => {
+  it('seeds the attempt home with the provider models and runtime credentials', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-driver-'));
     try {
       const templateDir = join(root, 'pi-home');
       await mkdir(join(templateDir, '.pi', 'agent'), { recursive: true });
       await writeFile(join(templateDir, '.pi', 'agent', 'models.json'), '{"providers":{}}\n');
       await writeFile(join(templateDir, '.pi', 'agent', 'settings.json'), '{"defaultProvider":"anyint"}\n');
-      const envFile = join(root, 'executor-pi.env');
-      await writeFile(envFile, 'OPENAI_API_KEY=sk-test\nPI_TELEMETRY=0\n');
 
       const driver = new PiCliDriver({
         probeCommand: vi.fn(),
         homeTemplateDir: templateDir,
-        envFile,
       });
       const home = await driver.materializeHome({
         attemptId: 'attempt-1',
@@ -72,6 +70,7 @@ describe('PiCliDriver', () => {
         agentClassId: 'pi-research',
         bindingFingerprint: 'fingerprint',
         attemptsRoot: join(root, 'attempts'),
+        environment: { OPENAI_API_KEY: 'sk-test', PI_TELEMETRY: '0' },
       });
 
       const agentDir = join(home.homePath, '.pi', 'agent');
@@ -85,7 +84,7 @@ describe('PiCliDriver', () => {
     }
   });
 
-  it('fails closed when the assigned template or env file is missing', async () => {
+  it('fails closed when the assigned template is missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-driver-'));
     try {
       const missingTemplate = new PiCliDriver({
@@ -98,19 +97,8 @@ describe('PiCliDriver', () => {
         agentClassId: 'pi-research',
         bindingFingerprint: 'fingerprint',
         attemptsRoot: join(root, 'attempts'),
+        environment: {},
       })).rejects.toThrow(/missing models\.json/);
-
-      const missingEnvFile = new PiCliDriver({
-        probeCommand: vi.fn(),
-        envFile: join(root, 'missing.env'),
-      });
-      await expect(missingEnvFile.materializeHome({
-        attemptId: 'attempt-2',
-        revisionId: 'revision-1',
-        agentClassId: 'pi-research',
-        bindingFingerprint: 'fingerprint',
-        attemptsRoot: join(root, 'attempts'),
-      })).rejects.toThrow(/env file does not exist/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

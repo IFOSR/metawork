@@ -48,6 +48,15 @@ describe('Kernel durable retry control loop', () => {
       sessionId: 'session_retry',
       contextRecaller: new ContextRecaller(db),
       planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'continue after a transient network failure' })),
+      getRuntimeBinding: async binding => ({
+        revisionId: binding.configurationRevision,
+        bindingFingerprint: 'test-fingerprint',
+        environment: {
+          OPENAI_BASE_URL: 'https://test.invalid/v1',
+          OPENAI_API_KEY: 'sk-test',
+          OPENAI_MODEL: 'test-model',
+        },
+      }),
     });
     session.initialize({ resumeStartupTasks: false, showDashboard: false });
 

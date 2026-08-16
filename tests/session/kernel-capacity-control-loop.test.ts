@@ -47,6 +47,15 @@ describe('Kernel capacity control loop', () => {
       sessionId: 'session_capacity',
       contextRecaller: new ContextRecaller(db),
       planningAgent: stubPlanningAgent(plan),
+      getRuntimeBinding: async binding => ({
+        revisionId: binding.configurationRevision,
+        bindingFingerprint: 'test-fingerprint',
+        environment: {
+          OPENAI_BASE_URL: 'https://test.invalid/v1',
+          OPENAI_API_KEY: 'sk-test',
+          OPENAI_MODEL: 'test-model',
+        },
+      }),
     });
     session.initialize({ resumeStartupTasks: false, showDashboard: false });
     db.prepare('DELETE FROM work_units').run();

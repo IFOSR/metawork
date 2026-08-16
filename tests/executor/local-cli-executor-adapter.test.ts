@@ -36,6 +36,7 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'quality-beta',
       bindingFingerprint: 'binding-fingerprint',
       attemptsRoot: '/runtime/attempts',
+      environment: {},
     });
     expect(driver.buildLaunch).toHaveBeenCalledWith({
       prompt: expect.stringContaining('Operative goal: Implement the selected slice'),

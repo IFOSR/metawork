@@ -37,6 +37,7 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'arbitrary-agent-class',
       bindingFingerprint: 'binding-fingerprint',
       attemptsRoot: '/runtime/attempts',
+      environment: {},
     });
     expect(driver.buildLaunch).toHaveBeenCalledWith({
       prompt: expect.stringContaining('Working directory: /workspace'),

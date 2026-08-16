@@ -8,7 +8,7 @@ import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
-import { MetaclawSession, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
+import { MetaclawSession, type MetaclawSessionDeps, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
@@ -28,6 +28,7 @@ interface GatewayServerDeps {
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
+  getRuntimeBinding: NonNullable<MetaclawSessionDeps['getRuntimeBinding']>;
 }
 
 export class MetaclawGatewayServer {
@@ -104,6 +105,7 @@ export class MetaclawGatewayServer {
       plannerHost: this.deps.plannerHost,
       plannerSupervisor: this.deps.plannerSupervisor,
       stagedConfiguration: this.deps.stagedConfiguration,
+      getRuntimeBinding: this.deps.getRuntimeBinding,
     });
     this.sessions.add(session);
 

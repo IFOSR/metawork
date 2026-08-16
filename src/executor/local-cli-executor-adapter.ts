@@ -83,6 +83,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         agentClassId: this.name,
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
+        environment: this.runtimeBinding.environment ?? {},
       });
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(input),
