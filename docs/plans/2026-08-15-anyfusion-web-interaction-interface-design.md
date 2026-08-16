@@ -413,8 +413,8 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 - **执行链路真实工作**：`planner-session` 场景通过；`python-hello` 场景中 Planner 规划（`authorize_task_plan`）、Kernel 授权（`dispatch_batch`）、codex executor 真实创建 `hello.py` 并运行 `python3`（stdout 严格 `Hello world`）均通过。
 - **投影在真实数据下正确**：对 smoke 产生的真实 durable 事实，五阶段推导为 `planning done / authorization done / execution blocked / verification failed / delivery pending`，与真实 subtask/receipt/decision 状态一致。
-- **发现两个执行链路问题（与 web 实现无关）**：
-  1. Planner 默认超时 `60_000ms` 对 reasoning 模型偏小（单次响应约 24s，规划需多次调用），需 `METACLAW_PLANNER_TIMEOUT_MS` 调高（本次用 300000 通过）。
-  2. completion contract 误判：edit 交付被判定为 `completion_report_workspace_changed`（「report delivery must not change the workspace」），导致本应成功的 `python-hello` 任务 blocked。
+- **发现并修复两个执行链路问题（与 web 实现无关，`b4f8cfb`）**：
+  1. Planner 默认超时 `60_000ms` 对 reasoning 模型偏小（单次响应约 24s，规划需多次调用）→ 调高为 `180_000ms`。
+  2. completion contract 误判：`deliveryKind` 在 schema 里无语义说明，Planner 把「创建文件」误标为 `report` → 给 `deliveryKind` 加 `.describe()`（edit=改 workspace，report=只读不改 workspace）。修复后 `python-hello` 场景完整通过（任务 done，hello.py 正确创建并发布）。
 
 **§7.3 触发源保真度仍未闭环**：上面验证的是投影逻辑（查询侧）在真实数据下正确，但「WS 增量在每次阶段切换时都有推送」仍需一次 web 模式下的真实任务观察；当前触发源是 `session.subscribe`，若出现停滞按 §7.3 预授权加 execution 落库点通知 hook。
