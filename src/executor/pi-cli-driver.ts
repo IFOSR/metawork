@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveCurrentRuntimeHome } from '../configuration/agent-runtime-renderer.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
 import type {
   HarnessDriver,
@@ -33,7 +35,9 @@ export class PiCliDriver implements HarnessDriver {
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.homeTemplateDir = emptyToUndefined(
-      dependencies.homeTemplateDir ?? process.env.METACLAW_EXECUTOR_PI_HOME,
+      dependencies.homeTemplateDir
+        ?? process.env.METACLAW_EXECUTOR_PI_HOME
+        ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'pi-home'),
     );
   }
 

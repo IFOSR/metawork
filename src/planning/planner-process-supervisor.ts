@@ -3,6 +3,8 @@ import { realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveCurrentRuntimeHome } from '../configuration/agent-runtime-renderer.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
@@ -381,6 +383,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     const plannerHome = this.deps.plannerHome
       ?? process.env.METACLAW_PLANNER_HOME
       ?? process.env.ANYFUSION_PLANNER_HOME
+      ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'planner')
       ?? join(process.env.METACLAW_HOME ?? tmpdir(), 'anyfusion-planner');
     const sessionDir = this.deps.sessionDir
       ?? process.env.METACLAW_PLANNER_SESSION_DIR

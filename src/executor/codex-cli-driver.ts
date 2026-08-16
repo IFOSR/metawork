@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveCurrentRuntimeHome } from '../configuration/agent-runtime-renderer.js';
 import { buildCodexNonInteractiveArgs } from './codex-args.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
 import type {
@@ -34,7 +36,9 @@ export class CodexCliDriver implements HarnessDriver {
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.homeTemplateDir = emptyToUndefined(
-      dependencies.homeTemplateDir ?? process.env.METACLAW_EXECUTOR_CODEX_HOME,
+      dependencies.homeTemplateDir
+        ?? process.env.METACLAW_EXECUTOR_CODEX_HOME
+        ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'codex'),
     );
   }
 

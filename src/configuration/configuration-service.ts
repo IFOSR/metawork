@@ -25,6 +25,7 @@ import type {
 import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-binding-resolver.js';
 import type { SecretStore } from './secret-store.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type { AgentRuntimeRenderer } from './agent-runtime-renderer.js';
 
 export interface CompiledConfigurationRevision {
   contentHash: string;
@@ -58,6 +59,7 @@ interface ConfigurationDraft {
 export interface ConfigurationServiceDependencies {
   repository: FileConfigurationRepository;
   secretStore?: SecretStore;
+  renderer?: AgentRuntimeRenderer;
   createRevisionId?: () => string;
   probe?: (
     snapshot: ConfigurationSnapshot,
@@ -188,6 +190,9 @@ export class ConfigurationService implements ConfigurationServicePort {
     }
 
     const snapshot = await this.dependencies.repository.readSnapshot(revisionId);
+    if (this.dependencies.renderer) {
+      await this.dependencies.renderer.render(snapshot);
+    }
     await this.dependencies.audit?.recordActivation({
       revisionId,
       previousRevisionId: expectedRevisionId,

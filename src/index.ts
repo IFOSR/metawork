@@ -19,6 +19,7 @@ import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
 import { FileSecretStore } from './configuration/file-secret-store.js';
+import { AgentRuntimeRenderer } from './configuration/agent-runtime-renderer.js';
 import { ConfigurationService, type ActivateDraftResult } from './configuration/configuration-service.js';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './configuration/types.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
@@ -96,6 +97,7 @@ async function activateConfiguration(
 async function importAndActivateLegacyConfiguration(
   repository: FileConfigurationRepository,
   secretStore: FileSecretStore,
+  renderer: AgentRuntimeRenderer,
 ): Promise<ConfigurationSnapshot> {
   const reader = new LegacyConfigurationReader({
     roots: [resolve(process.env.HOME ?? '.', '.config', 'anyfusion')],
@@ -110,7 +112,9 @@ async function importAndActivateLegacyConfiguration(
   }
   const staged = await migrationService.stageCandidate(report);
   await repository.activateRevision(staged.revisionId, null);
-  return repository.getActiveSnapshot();
+  const snapshot = await repository.getActiveSnapshot();
+  await renderer.render(snapshot);
+  return snapshot;
 }
 
 async function runWebMode(options: {
@@ -264,13 +268,15 @@ async function main() {
   await secretStore.initialize();
   await secretStore.assertSecurePermissions();
   const recovery = await configurationRepository.recover();
+  const renderer = new AgentRuntimeRenderer(resolveAnyFusionPaths().generatedAgentRuntime);
   const migratedSnapshot = recovery.status === 'empty'
-    ? await importAndActivateLegacyConfiguration(configurationRepository, secretStore)
+    ? await importAndActivateLegacyConfiguration(configurationRepository, secretStore, renderer)
     : await configurationRepository.getActiveSnapshot();
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const configurationService = new ConfigurationService({
     repository: configurationRepository,
     secretStore,
+    renderer,
     probe: createLocalExecutorConfigurationProbe(),
   });
   const resolveRuntimeBinding = (binding: AuthorizedExecutorBinding) =>
