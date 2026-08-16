@@ -406,3 +406,15 @@ Provider 卡片上的 `apiKeyRef` **只读展示**（显示「凭证来自安装
 
 - **§7.3 触发源保真度**：投影逻辑已单元测试覆盖，但「真实任务端到端每个阶段切换都有快照触发」未验证。当前触发源是 `session.subscribe`（不跨模块）；若实测出现缺口，按 §7.3 预授权在 execution 落库点新增纯通知 hook。
 - 设置页 activate 的 probe → activate 闭环（需 `codex --version` / `pi --version` 可用）。
+
+### 端到端测试（2026-08-16 补做）
+
+用 `npm run smoke:anyfusion`（真实 Planner + Kernel + Executor，reasoning 模型 gpt-5.6-terra）验证完整执行链路：
+
+- **执行链路真实工作**：`planner-session` 场景通过；`python-hello` 场景中 Planner 规划（`authorize_task_plan`）、Kernel 授权（`dispatch_batch`）、codex executor 真实创建 `hello.py` 并运行 `python3`（stdout 严格 `Hello world`）均通过。
+- **投影在真实数据下正确**：对 smoke 产生的真实 durable 事实，五阶段推导为 `planning done / authorization done / execution blocked / verification failed / delivery pending`，与真实 subtask/receipt/decision 状态一致。
+- **发现两个执行链路问题（与 web 实现无关）**：
+  1. Planner 默认超时 `60_000ms` 对 reasoning 模型偏小（单次响应约 24s，规划需多次调用），需 `METACLAW_PLANNER_TIMEOUT_MS` 调高（本次用 300000 通过）。
+  2. completion contract 误判：edit 交付被判定为 `completion_report_workspace_changed`（「report delivery must not change the workspace」），导致本应成功的 `python-hello` 任务 blocked。
+
+**§7.3 触发源保真度仍未闭环**：上面验证的是投影逻辑（查询侧）在真实数据下正确，但「WS 增量在每次阶段切换时都有推送」仍需一次 web 模式下的真实任务观察；当前触发源是 `session.subscribe`，若出现停滞按 §7.3 预授权加 execution 落库点通知 hook。
