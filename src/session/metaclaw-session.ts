@@ -126,6 +126,8 @@ import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
+import type { InteractionTrace, InteractionTraceStatus } from '../management/interaction-trace.js';
+import { InteractionTraceStream } from './interaction-trace-stream.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -388,6 +390,7 @@ export class MetaclawSession {
   private readonly kernelConfiguration: KernelConfigurationView;
   private readonly plannerBinding: RevisionedAgentBinding;
   private readonly plannerBindingFingerprint: string;
+  private readonly interactionTraceStream: InteractionTraceStream;
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
 
@@ -405,6 +408,7 @@ export class MetaclawSession {
     this.plannerBinding = stagedConfiguration.plannerBinding;
     this.plannerBindingFingerprint = stagedConfiguration.plannerBindingFingerprint;
     this.notifier = deps.notifier ?? new NoopNotificationService();
+    this.interactionTraceStream = new InteractionTraceStream(deps.sessionId);
     this.sessionStateRepo = new SessionStateRepo(deps.db);
     this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
     this.taskRuntimeService = new TaskRuntimeService({
@@ -694,6 +698,7 @@ export class MetaclawSession {
       presentation: this.presentation,
       callbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        onDecisionApplying: decision => this.recordKernelDecisionTrace(decision),
         deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
@@ -728,6 +733,16 @@ export class MetaclawSession {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  subscribeInteractionTrace(
+    listener: (trace: InteractionTrace | null) => void,
+  ): () => void {
+    return this.interactionTraceStream.subscribe(listener);
+  }
+
+  getInteractionTrace(): InteractionTrace | null {
+    return this.interactionTraceStream.getSnapshot();
   }
 
   getSnapshot(): SessionSnapshot {
@@ -959,17 +974,23 @@ export class MetaclawSession {
         message: 'Planner proposal session does not match the bound MetaClaw session.',
       };
     }
+    this.interactionTraceStream.beginTurn({
+      turnId: normalizedTurnId,
+      userInput: normalizedInput,
+    });
     const expectedSubmissionId = createPlannerProposalSubmissionId(
       normalizedSessionId, normalizedTurnId, submission.plan,
     );
     if (submission.submissionId !== expectedSubmissionId) {
-      return {
+      const conflict: PlannerProposalResult = {
         status: 'conflict',
         turnId: normalizedTurnId,
         submissionId: submission.submissionId,
         acceptedSubmissionId: null,
         message: 'Planner proposal submissionId does not match the runtime-derived plan fingerprint.',
       };
+      this.recordPlannerProposalTerminalTrace(conflict);
+      return conflict;
     }
 
     const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
@@ -1015,6 +1036,9 @@ export class MetaclawSession {
     );
     const parsedPlan = PlanningAgentPlanSchema.safeParse(normalizedPlan);
     const planId = parsedPlan.success ? parsedPlan.data.id : null;
+    if (parsedPlan.success) {
+      this.recordPlannerIntentTrace(parsedPlan.data as PlanningAgentPlan, submission.submissionId);
+    }
     const eventId = parsedPlan.success && purpose === 'kernel'
       ? `plan_event_${submission.submissionId}`
       : null;
@@ -1026,28 +1050,38 @@ export class MetaclawSession {
       planId,
       eventId,
     });
-    if (reservation.kind === 'replay') return reservation.result;
+    if (reservation.kind === 'replay') {
+      this.recordPlannerProposalTerminalTrace(reservation.result);
+      return reservation.result;
+    }
     if (reservation.kind === 'in_flight') {
       const latest = this.plannerProposalRepo.getSubmission(
         normalizedSessionId, normalizedTurnId, submission.submissionId,
       );
-      if (latest?.result) return latest.result;
-      return {
+      if (latest?.result) {
+        this.recordPlannerProposalTerminalTrace(latest.result);
+        return latest.result;
+      }
+      const uncertain: PlannerProposalResult = {
         status: 'transport_uncertain',
         turnId: normalizedTurnId,
         submissionId: submission.submissionId,
         retryableByReplay: true,
         message: 'The same Planner proposal is still being durably applied; replay the identical submission.',
       };
+      this.recordPlannerProposalTerminalTrace(uncertain);
+      return uncertain;
     }
     if (reservation.kind === 'conflict') {
-      return {
+      const conflict: PlannerProposalResult = {
         status: 'conflict',
         turnId: normalizedTurnId,
         submissionId: submission.submissionId,
         acceptedSubmissionId: reservation.acceptedSubmissionId,
         message: 'This Planner turn already has a different authoritative submission.',
       };
+      this.recordPlannerProposalTerminalTrace(conflict);
+      return conflict;
     }
 
     if (!validation.valid || !parsedPlan.success) {
@@ -1068,10 +1102,26 @@ export class MetaclawSession {
       this.plannerProposalRepo.completeSubmission(
         normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
       );
+      this.recordPlannerProposalTerminalTrace(rejected);
       return rejected;
     }
 
     const plan = parsedPlan.data as PlanningAgentPlan;
+    this.interactionTraceStream.append({
+      phase: 'planning',
+      actor: 'planner',
+      kind: 'planning_proposal_completed',
+      status: 'completed',
+      title: 'Structured plan completed',
+      summary: plan.reason,
+      details: {
+        planId: plan.id,
+        submissionId: submission.submissionId,
+        action: plan.action,
+        schemaVersion: plan.schemaVersion,
+      },
+      eventKey: submission.submissionId,
+    });
     if (purpose === 'validation') {
       const accepted: PlannerProposalResult & { status: 'accepted' } = {
         status: 'accepted',
@@ -1086,6 +1136,7 @@ export class MetaclawSession {
       this.plannerProposalRepo.completeSubmission(
         normalizedSessionId, normalizedTurnId, submission.submissionId, accepted,
       );
+      this.recordPlannerProposalTerminalTrace(accepted);
       return accepted;
     }
 
@@ -1101,13 +1152,15 @@ export class MetaclawSession {
         this.plannerProposalRepo.markUncertain(
           normalizedSessionId, normalizedTurnId, submission.submissionId,
         );
-        return {
+        const uncertain: PlannerProposalResult = {
           status: 'transport_uncertain',
           turnId: normalizedTurnId,
           submissionId: submission.submissionId,
           retryableByReplay: true,
           message: 'MetaClaw has not yet confirmed the authoritative Kernel application; replay the same submission.',
         };
+        this.recordPlannerProposalTerminalTrace(uncertain);
+        return uncertain;
       }
       if (kernelResult.decision.action.type === 'reject_request') {
         const rejected: PlannerProposalResult & { status: 'rejected' } = {
@@ -1126,6 +1179,7 @@ export class MetaclawSession {
         this.plannerProposalRepo.completeSubmission(
           normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
         );
+        this.recordPlannerProposalTerminalTrace(rejected);
         return rejected;
       }
       const accepted = this.toAcceptedPlannerProposalResult(
@@ -1135,18 +1189,21 @@ export class MetaclawSession {
       this.plannerProposalRepo.completeSubmission(
         normalizedSessionId, normalizedTurnId, submission.submissionId, accepted,
       );
+      this.recordPlannerProposalTerminalTrace(accepted);
       return accepted;
     } catch (error) {
       this.plannerProposalRepo.markUncertain(
         normalizedSessionId, normalizedTurnId, submission.submissionId,
       );
-      return {
+      const uncertain: PlannerProposalResult = {
         status: 'transport_uncertain',
         turnId: normalizedTurnId,
         submissionId: submission.submissionId,
         retryableByReplay: true,
         message: `MetaClaw proposal transport is uncertain: ${(error as Error).message}`,
       };
+      this.recordPlannerProposalTerminalTrace(uncertain);
+      return uncertain;
     }
   }
 
@@ -1584,9 +1641,22 @@ export class MetaclawSession {
   }
 
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    const turnId = `turn_${generateInteractionId()}`;
+    this.interactionTraceStream.beginTurn({ turnId, userInput });
+    this.interactionTraceStream.append({
+      phase: 'planning',
+      actor: 'planner',
+      kind: 'planner_started',
+      status: 'running',
+      title: 'Planner started',
+      summary: 'Parsing the request and preparing a structured proposal.',
+      details: {
+        configurationRevision: this.plannerConfiguration.revisionId,
+      },
+      eventKey: 'planner',
+    });
     this.appendOutput('【MetaClaw｜理解用户请求】');
     const context = this.buildPlanningContext(userInput);
-    const turnId = `turn_${generateInteractionId()}`;
     this.activePlannerRuns += 1;
     this.notify();
     let result: PlannerProposalResult;
@@ -1601,10 +1671,24 @@ export class MetaclawSession {
           runtimeMode: 'session',
         }),
       });
+    } catch (error) {
+      this.interactionTraceStream.append({
+        phase: 'planning',
+        actor: 'planner',
+        kind: 'planner_failed',
+        status: 'failed',
+        title: 'Planner failed',
+        summary: (error as Error).message,
+        details: {},
+        eventKey: 'planner',
+        traceStatus: 'failed',
+      });
+      throw error;
     } finally {
       this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
       this.notify();
     }
+    this.recordPlannerProposalTerminalTrace(result);
     if (result.status === 'accepted') return true;
     if (result.status === 'rejected') {
       this.appendOutput(this.presentation.formatKernelRejection(result.issues.join('; ')));
@@ -1616,6 +1700,130 @@ export class MetaclawSession {
     }
     this.appendOutput(`Warning: 规划提案传输状态不确定；请重放同一请求。${result.message}`);
     return true;
+  }
+
+  private recordPlannerIntentTrace(plan: PlanningAgentPlan, submissionId: string): void {
+    this.interactionTraceStream.append({
+      phase: 'planning',
+      actor: 'planner',
+      kind: 'intent_classified',
+      status: 'completed',
+      title: `Intent classified: ${plan.action}`,
+      summary: plan.reason,
+      details: {
+        planId: plan.id,
+        submissionId,
+        action: plan.action,
+        confidence: plan.confidence,
+        taskBinding: plan.task.binding,
+        taskTitle: plan.task.title,
+        riskLevel: plan.risk.level,
+        requiresConfirmation: plan.risk.requiresConfirmation,
+      },
+      eventKey: submissionId,
+    });
+  }
+
+  private recordPlannerProposalTerminalTrace(result: PlannerProposalResult): void {
+    const current = this.interactionTraceStream.getSnapshot();
+    if (!current || current.turnId !== result.turnId) return;
+    if (result.status === 'accepted') {
+      if (current.status !== 'running' || result.outcome === 'task_authorized') return;
+      this.interactionTraceStream.append({
+        phase: 'delivery',
+        actor: 'runtime',
+        kind: 'delivery_completed',
+        status: 'completed',
+        title: 'Response delivered',
+        summary: result.displayText,
+        details: {
+          planId: result.planId,
+          submissionId: result.submissionId,
+          outcome: result.outcome,
+          taskId: result.taskId,
+        },
+        eventKey: result.submissionId,
+        taskId: result.taskId,
+        traceStatus: 'completed',
+      });
+      return;
+    }
+    const mapping: Record<
+      Exclude<PlannerProposalResult['status'], 'accepted'>,
+      {
+        kind: string;
+        title: string;
+        eventStatus: 'failed' | 'blocked';
+        traceStatus: Exclude<InteractionTraceStatus, 'running' | 'completed'>;
+      }
+    > = {
+      rejected: {
+        kind: 'proposal_rejected',
+        title: 'Planner proposal rejected',
+        eventStatus: 'failed',
+        traceStatus: 'failed',
+      },
+      conflict: {
+        kind: 'proposal_conflict',
+        title: 'Planner proposal conflict',
+        eventStatus: 'blocked',
+        traceStatus: 'blocked',
+      },
+      transport_uncertain: {
+        kind: 'proposal_transport_uncertain',
+        title: 'Planner transport uncertain',
+        eventStatus: 'blocked',
+        traceStatus: 'blocked',
+      },
+    };
+    const mapped = mapping[result.status];
+    const summary = result.status === 'rejected'
+      ? result.issues.join('; ')
+      : result.message;
+    this.interactionTraceStream.append({
+      phase: 'planning',
+      actor: 'planner',
+      kind: mapped.kind,
+      status: mapped.eventStatus,
+      title: mapped.title,
+      summary,
+      details: {
+        turnId: result.turnId,
+        submissionId: result.submissionId,
+        ...(result.status === 'transport_uncertain'
+          ? { retryableByReplay: result.retryableByReplay }
+          : {}),
+        ...(result.status === 'conflict'
+          ? { acceptedSubmissionId: result.acceptedSubmissionId }
+          : {}),
+        ...(result.status === 'rejected'
+          ? { planId: result.planId, rejectionType: result.rejectionType }
+          : {}),
+      },
+      eventKey: result.submissionId,
+      traceStatus: mapped.traceStatus,
+    });
+  }
+
+  private recordKernelDecisionTrace(decision: KernelDecision): void {
+    const taskId = 'taskId' in decision.action ? decision.action.taskId : null;
+    this.interactionTraceStream.append({
+      phase: 'authorization',
+      actor: 'kernel',
+      kind: 'kernel_decision',
+      status: decision.action.type === 'reject_request' ? 'failed' : 'completed',
+      title: `Kernel decision: ${decision.action.type}`,
+      summary: decision.reason,
+      details: {
+        decisionId: decision.id,
+        action: decision.action.type,
+        eventId: decision.eventId,
+        configurationRevision: decision.configurationRevision,
+        taskId,
+      },
+      eventKey: decision.id,
+      taskId,
+    });
   }
 
   private async requestKernelReplan(
@@ -2169,6 +2377,19 @@ export class MetaclawSession {
   private deliverDirectReply(userInput: string, reply: string): void {
     this.setDirectReplyRuntimeState('planning-agent');
     try {
+      this.interactionTraceStream.append({
+        phase: 'delivery',
+        actor: 'runtime',
+        kind: 'delivery_completed',
+        status: 'completed',
+        title: 'Final answer delivered',
+        summary: 'The Planner answer passed Kernel authorization and was delivered.',
+        details: {
+          executor: 'planning-agent',
+        },
+        eventKey: 'direct_reply',
+        traceStatus: 'completed',
+      });
       this.appendOutput(reply);
       this.persistenceService.recordInteraction({
         taskId: null,

@@ -225,6 +225,17 @@ describe('natural-language planning/kernel path', () => {
     expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_handoff')).toEqual([
       expect.objectContaining({ action: 'deliver_direct_reply', taskId: null }),
     ]);
+    expect(harness.session.getInteractionTrace()).toMatchObject({
+      turnId,
+      status: 'completed',
+      events: [
+        { kind: 'query_received', actor: 'user' },
+        { kind: 'intent_classified', actor: 'planner' },
+        { kind: 'planning_proposal_completed', actor: 'planner' },
+        { kind: 'kernel_decision', actor: 'kernel' },
+        { kind: 'delivery_completed', actor: 'runtime' },
+      ],
+    });
   });
 
   it('rejects an invalid native TUI proposal before it reaches Kernel workflow', async () => {
@@ -244,6 +255,13 @@ describe('natural-language planning/kernel path', () => {
     expect(result.status).toBe('rejected');
     expect(result.status === 'rejected' ? result.issues.join('\n') : '').toContain('schemaVersion');
     expect(harness.kernelDecisionRepo.listBySession('sess_native_tui_invalid')).toHaveLength(0);
+    expect(harness.session.getInteractionTrace()).toMatchObject({
+      turnId,
+      status: 'failed',
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: 'proposal_rejected', status: 'failed' }),
+      ]),
+    });
   });
 
   it('rejects interactive authorization proposals before persisting a proposal turn', async () => {
@@ -408,6 +426,17 @@ describe('natural-language planning/kernel path', () => {
 
     expect(result).toMatchObject({ status: 'transport_uncertain', retryableByReplay: true });
     expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(0);
+    expect(harness.session.getInteractionTrace()).toMatchObject({
+      turnId,
+      status: 'blocked',
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'proposal_transport_uncertain',
+          status: 'blocked',
+          details: expect.objectContaining({ submissionId }),
+        }),
+      ]),
+    });
   });
 
   it('locks an accepted turn against a different submission', async () => {
@@ -511,6 +540,37 @@ describe('natural-language planning/kernel path', () => {
     const output = harness.session.getSnapshot().output.join('\n');
     expect(output).toContain('偏好需要通过 Planner MCP 查询。');
     expect(output).not.toContain('宿主注入了偏好。');
+  });
+
+  it('streams query intake before Planner start and Kernel authorization before final delivery', async () => {
+    const direct = plan({
+      id: 'plan_streamed_trace',
+      action: 'direct_reply',
+      response: { directReply: 'streamed final answer' },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const harness = createSession('sess_streamed_trace', direct);
+    const snapshots: string[][] = [];
+    const unsubscribe = harness.session.subscribeInteractionTrace(trace => {
+      snapshots.push(trace?.events.map(event => event.kind) ?? []);
+    });
+
+    await harness.session.submit('show the full execution flow', { awaitAsyncWork: true });
+    unsubscribe();
+
+    const trace = harness.session.getInteractionTrace();
+    const kinds = trace?.events.map(event => event.kind) ?? [];
+    expect(kinds.indexOf('query_received')).toBeLessThan(kinds.indexOf('planner_started'));
+    expect(kinds.indexOf('planner_started')).toBeLessThan(kinds.indexOf('intent_classified'));
+    expect(kinds.indexOf('planning_proposal_completed')).toBeLessThan(kinds.indexOf('kernel_decision'));
+    expect(kinds.indexOf('kernel_decision')).toBeLessThan(kinds.indexOf('delivery_completed'));
+    expect(trace).toMatchObject({ status: 'completed', taskId: null });
+    expect(snapshots.some(snapshot => snapshot.at(-1) === 'planner_started')).toBe(true);
+    expect(harness.session.getSnapshot().output.join('\n')).toContain('streamed final answer');
   });
 
   it('does not expose an unconfirmed global memory to a direct reply', async () => {

@@ -22,6 +22,7 @@ export interface SessionKernelRuntimeDeps {
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
+    onDecisionApplying?(decision: KernelDecision): void;
     deliverDirectReply(userInput: string, reply: string): void;
     prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void;
     refreshRuntimeState(): void;
@@ -47,6 +48,7 @@ export class SessionKernelRuntime {
   }
 
   private async apply(decision: KernelDecision, userInput: string): Promise<KernelEvent | null> {
+    this.deps.callbacks.onDecisionApplying?.(decision);
     switch (decision.action.type) {
       case 'reject_request':
         this.deps.callbacks.appendOutput(this.deps.presentation.formatKernelRejection(decision.reason));
