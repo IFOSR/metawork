@@ -5,6 +5,7 @@ import {
   ManagementServer,
   type ConfigQuery,
   type ManagementWebSessionCatalog,
+  type ManagementWebSessionRuntime,
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
 import type { InteractionTrace } from '../../src/management/interaction-trace.js';
@@ -21,6 +22,17 @@ interface TestSession {
   getInteractionTrace(): InteractionTrace | null;
   submit(): Promise<{ exitRequested: boolean }>;
   dispose(): Promise<void>;
+}
+
+function metadataFixture(id: string, active: boolean) {
+  return {
+    id,
+    title: id,
+    createdAt: '2026-08-17T08:00:00.000Z',
+    updatedAt: '2026-08-17T08:00:00.000Z',
+    active,
+    archived: false,
+  };
 }
 
 class RawWebSocketClient {
@@ -236,6 +248,170 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(persisted[0]?.status).toBe('completed');
     } finally {
       client.close();
+      await server.stop();
+    }
+  });
+
+  it('broadcasts active-session changes from the runtime to every connected client', async () => {
+    const port = await reservePort();
+    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const sessionRuntime: ManagementWebSessionRuntime = {
+      activeSessionId: 'session_live',
+      async initialize() {},
+      async dispose() {},
+      async submit() {},
+      async listSessions() {
+        return [];
+      },
+      async readSession() {
+        return null;
+      },
+      async createSession() {
+        throw new Error('not used');
+      },
+      async activateSession() {
+        return { state: 'active', sessionId: 'session_live' };
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      getReplayEvents: () => [],
+    };
+    const server = createManagementServer(
+      port,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      sessionRuntime,
+    );
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+    const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await expect(first.nextText()).resolves.toContain('"sessionId":"session_live"');
+      await expect(second.nextText()).resolves.toContain('"sessionId":"session_live"');
+      for (const listener of listeners) {
+        listener({ type: 'active_session_changed', sessionId: 'session_history' });
+      }
+      const expected = JSON.stringify({
+        type: 'active_session_changed',
+        sessionId: 'session_history',
+      });
+      await expect(first.nextText()).resolves.toBe(expected);
+      await expect(second.nextText()).resolves.toBe(expected);
+    } finally {
+      first.close();
+      second.close();
+      await server.stop();
+    }
+  });
+
+  it('exposes session list, history, creation, and structured activation results', async () => {
+    const port = await reservePort();
+    const live = metadataFixture('session_live', true);
+    const history = metadataFixture('session_history', false);
+    const historyRecord: WebSessionRecord = {
+      version: 1,
+      session: history,
+      turns: [],
+    };
+    const sessionRuntime: ManagementWebSessionRuntime = {
+      activeSessionId: 'session_live',
+      async initialize() {},
+      async dispose() {},
+      async submit() {},
+      async listSessions(query) {
+        return query === 'history' ? [history] : [live, history];
+      },
+      async readSession(sessionId) {
+        return sessionId === 'session_history' ? historyRecord : null;
+      },
+      async createSession(title) {
+        const session: WebSessionRecord = {
+          version: 1,
+          session: { ...metadataFixture('session_new', false), title: title ?? 'New session' },
+          turns: [],
+        };
+        return {
+          session,
+          activation: {
+            state: 'activation_blocked',
+            sessionId: 'session_new',
+            reason: 'task_runtime_active',
+          },
+        };
+      },
+      async activateSession(sessionId) {
+        return {
+          state: 'activation_blocked',
+          sessionId,
+          reason: 'planner_turn_active',
+        };
+      },
+      subscribe() {
+        return () => {};
+      },
+      getReplayEvents: () => [],
+    };
+    const server = createManagementServer(
+      port,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      sessionRuntime,
+    );
+    await server.start();
+
+    try {
+      const headers = {
+        authorization: 'Bearer manual-token',
+        'content-type': 'application/json',
+      };
+      const list = await fetch(
+        `http://127.0.0.1:${port}/api/sessions?q=history`,
+        { headers },
+      );
+      expect(await list.json()).toEqual({
+        activeSessionId: 'session_live',
+        sessions: [history],
+      });
+
+      const record = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_history`,
+        { headers },
+      );
+      expect(await record.json()).toEqual(historyRecord);
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ title: 'New research' }),
+      });
+      expect(await created.json()).toMatchObject({
+        session: { session: { id: 'session_new', title: 'New research' } },
+        activation: {
+          state: 'activation_blocked',
+          reason: 'task_runtime_active',
+        },
+      });
+
+      const activated = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_history/activate`,
+        { method: 'POST', headers },
+      );
+      expect(await activated.json()).toEqual({
+        state: 'activation_blocked',
+        sessionId: 'session_history',
+        reason: 'planner_turn_active',
+      });
+    } finally {
       await server.stop();
     }
   });
@@ -619,6 +795,7 @@ function createManagementServer(
   executionQueryOverride?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown },
   configQueryOverride?: Partial<ConfigQuery>,
   sessionCatalogOverride?: ManagementWebSessionCatalog,
+  sessionRuntimeOverride?: ManagementWebSessionRuntime,
 ): ManagementServer {
   const session = sessionOverride ?? {
     initialize() {},
@@ -651,6 +828,7 @@ function createManagementServer(
     webSocketAuthTimeoutMs,
     sessionFactory: () => session as never,
     sessionCatalog: sessionCatalogOverride,
+    sessionRuntime: sessionRuntimeOverride,
     executionQuery: executionQueryOverride ?? {
       listTasks: () => [],
       projectTimeline: () => null,

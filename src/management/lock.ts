@@ -4,6 +4,18 @@ export interface InstanceLock {
   release(): Promise<void>;
 }
 
+export interface StopInstanceForRestartResult {
+  status: 'stopped' | 'not_running';
+  pid?: number;
+}
+
+interface StopInstanceForRestartOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  signalProcess?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
+  sleep?: (durationMs: number) => Promise<void>;
+}
+
 interface LockRecord {
   pid: string;
   startedAt: string;
@@ -29,6 +41,49 @@ export async function acquireInstanceLock(lockPath: string): Promise<InstanceLoc
 
   const holder = await readLock(lockPath);
   throw new Error(`AnyFusion 已在运行（PID ${holder.pid}）`);
+}
+
+export async function stopInstanceForRestart(
+  lockPath: string,
+  options: StopInstanceForRestartOptions = {},
+): Promise<StopInstanceForRestartResult> {
+  const holder = await readLockIfPresent(lockPath);
+  if (!holder) return { status: 'not_running' };
+
+  const pid = Number(holder.pid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`AnyFusion 运行锁中的 PID 无效: ${holder.pid}`);
+  }
+  if (pid === process.pid) {
+    throw new Error('AnyFusion 拒绝重启当前进程自身');
+  }
+
+  const signalProcess = options.signalProcess ?? process.kill.bind(process);
+  if (!isProcessAlive(pid, signalProcess)) {
+    return { status: 'not_running', pid };
+  }
+
+  try {
+    signalProcess(pid, 'SIGTERM');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+      return { status: 'stopped', pid };
+    }
+    throw error;
+  }
+
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 100;
+  const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
+  const sleep = options.sleep ?? (durationMs => new Promise(resolve => setTimeout(resolve, durationMs)));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await sleep(pollIntervalMs);
+    if (!isProcessAlive(pid, signalProcess)) {
+      return { status: 'stopped', pid };
+    }
+  }
+
+  throw new Error(`AnyFusion 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
 }
 
 async function tryAcquire(lockPath: string, content: string): Promise<boolean> {
@@ -64,12 +119,35 @@ async function tryReclaimStale(lockPath: string): Promise<boolean> {
 }
 
 async function readLock(lockPath: string): Promise<LockRecord> {
-  const raw = await readFile(lockPath, 'utf8').catch(() => '');
+  return (await readLockIfPresent(lockPath)) ?? { pid: 'unknown', startedAt: '' };
+}
+
+async function readLockIfPresent(lockPath: string): Promise<LockRecord | null> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
   try {
     const parsed = JSON.parse(raw.trim()) as LockRecord;
     return { pid: parsed.pid || 'unknown', startedAt: parsed.startedAt || '' };
   } catch {
     return { pid: raw.trim() || 'unknown', startedAt: '' };
+  }
+}
+
+function isProcessAlive(
+  pid: number,
+  signalProcess: (pid: number, signal: NodeJS.Signals | 0) => boolean,
+): boolean {
+  try {
+    signalProcess(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
   }
 }
 

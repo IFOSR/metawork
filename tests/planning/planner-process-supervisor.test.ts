@@ -68,6 +68,89 @@ function completeRpcTurn(child: FakeProcess): void {
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('streams safe lifecycle and tool progress while the RPC turn is still running', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      const result = {
+        status: 'accepted',
+        turnId: 'turn-progress',
+        submissionId: 'submission-progress',
+        planId: 'plan-progress',
+        outcome: 'proposal_validated',
+        displayText: 'validated',
+        taskId: null,
+        kernel: null,
+      };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: request.id },
+        { type: 'agent_start' },
+        { type: 'turn_start' },
+        { type: 'message_start', message: { role: 'assistant', content: [] } },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-context',
+          toolName: 'get_planning_context',
+          args: { section: 'task', secret: 'must-not-stream' },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-context',
+          toolName: 'get_planning_context',
+          result: { status: 'ok', content: 'must-not-stream' },
+          isError: false,
+        },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-submit',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-progress', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-submit',
+          toolName: 'submit_planning_proposal',
+          result: { details: result },
+          isError: false,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-progress-${process.pid}`),
+      spawn: (() => child as never) as never,
+    });
+    const progress: Array<Record<string, unknown>> = [];
+
+    await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-progress', source: 'gateway' },
+    } as never, 'kernel', event => progress.push(event as unknown as Record<string, unknown>));
+
+    expect(progress.map(event => event.kind)).toEqual([
+      'process_started',
+      'prompt_accepted',
+      'agent_started',
+      'turn_started',
+      'model_stream_started',
+      'tool_started',
+      'tool_completed',
+      'tool_started',
+      'tool_completed',
+      'agent_completed',
+    ]);
+    expect(progress.find(event => event.kind === 'tool_started')).toMatchObject({
+      toolName: 'get_planning_context',
+      argumentFields: ['section'],
+    });
+    expect(JSON.stringify(progress)).not.toContain('must-not-stream');
+    expect(JSON.stringify(progress)).not.toContain('"secret"');
+  });
+
   it('returns a structured transport uncertainty instead of replacing it with a generic error', async () => {
     const child = fakeProcess();
     child.stdin.on('data', chunk => {

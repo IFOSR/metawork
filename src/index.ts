@@ -14,7 +14,7 @@ import { ContextRecaller } from './memory/context-recaller.js';
 import { loadConfig } from './utils/config.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
-import { parseCliArgs } from './cli/args.js';
+import { formatCliHelp, parseCliArgs } from './cli/args.js';
 import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
@@ -50,13 +50,20 @@ import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-r
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from './storage/executor-attempt-runtime-repo.js';
-import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
+import {
+  acquireInstanceLock,
+  stopInstanceForRestart,
+  type InstanceLock,
+} from './management/lock.js';
 import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
 import { createLocalExecutorConfigurationProbe } from './executor/configuration-probe.js';
 import { WebAuthService } from './management/web-auth.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
+import { FileWebSessionStore } from './storage/file-web-session-store.js';
+import { WebSessionCatalog } from './management/web-session-catalog.js';
+import { WebSessionRuntime } from './management/web-session-runtime.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -131,6 +138,11 @@ async function runWebMode(options: {
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
+  const sessionRuntime = new WebSessionRuntime({
+    catalog: new WebSessionCatalog(new FileWebSessionStore()),
+    sessionFactory: options.sessionFactory,
+    executionQuery: options.executionQuery,
+  });
   const managementServer = new ManagementServer({
     port: options.port,
     webDistDir,
@@ -138,6 +150,7 @@ async function runWebMode(options: {
     webAuth,
     runningRevisionId: options.runningRevisionId,
     sessionFactory: options.sessionFactory,
+    sessionRuntime,
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
   });
@@ -158,6 +171,21 @@ async function runWebMode(options: {
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
+
+  if (cliArgs.help) {
+    process.stdout.write(`${formatCliHelp()}\n`);
+    return;
+  }
+
+  if (cliArgs.webCommand === 'restart') {
+    const dataDir = resolveAnyFusionPaths().data;
+    mkdirSync(dataDir, { recursive: true });
+    const result = await stopInstanceForRestart(resolve(dataDir, 'runtime.lock'));
+    const message = result.status === 'stopped'
+      ? `AnyFusion Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
+      : '未检测到运行中的 AnyFusion 实例，正在启动 Web。';
+    process.stdout.write(`${message}\n`);
+  }
 
   // 1. 初始化目录
   const metaclawDir = resolveMetaclawDir();

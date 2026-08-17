@@ -58,3 +58,8 @@ export type WebSessionActivationResult =
     sessionId: string;
     reason: WebSessionActivationBlockReason;
   };
+
+export interface WebSessionCreationResult {
+  session: WebSessionRecord;
+  activation: WebSessionActivationResult;
+}

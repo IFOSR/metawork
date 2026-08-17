@@ -128,6 +128,7 @@ import { ContainerCompatibilityAdapter } from '../executor/container-compatibili
 import { resolveAnyFusionPaths } from '../installation/paths.js';
 import type { InteractionTrace, InteractionTraceStatus } from '../management/interaction-trace.js';
 import { InteractionTraceStream } from './interaction-trace-stream.js';
+import type { PlannerRunProgress } from '../planning/planner-progress.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -156,6 +157,24 @@ export interface MetaclawSessionDeps {
 
 function boundedKernelRequestText(value: string): string {
   return redactSensitiveText(value).slice(0, 24_000);
+}
+
+function plannerToolSummary(
+  toolName: string,
+  state: 'started' | 'completed' | 'failed',
+): string {
+  const action = toolName === 'submit_planning_proposal'
+    ? 'the structured proposal submission'
+    : toolName === 'get_planning_context'
+      ? 'the authoritative planning context query'
+      : toolName === 'get_runtime_state'
+        ? 'the current runtime-state query'
+        : toolName === 'list_executor_status'
+          ? 'the Executor status query'
+          : `the ${toolName} operation`;
+  return state === 'started'
+    ? `Planner started ${action}.`
+    : `Planner ${state} ${action}.`;
 }
 
 /** Maps a legacy local-CLI harness driver to its retained Docker image for container compatibility. */
@@ -221,6 +240,11 @@ export interface SessionSnapshot {
     status: 'idle' | 'running';
   };
   latestGuidance: GuidanceState | null;
+}
+
+export interface SessionSwitchingState {
+  plannerTurnActive: boolean;
+  taskRuntimeActive: boolean;
 }
 
 /** A bounded, read-only projection for the native Planner TUI bridge. */
@@ -769,6 +793,19 @@ export class MetaclawSession {
             reasons: [...this.latestGuidance.reasons],
           }
         : null,
+    };
+  }
+
+  getSwitchingState(): SessionSwitchingState {
+    const snapshot = this.getSnapshot();
+    return {
+      plannerTurnActive: this.activePlannerRuns > 0,
+      taskRuntimeActive: Boolean(
+        this.backgroundWork.size > 0
+        || snapshot.runtimeState.runningTaskId
+        || (snapshot.currentTask
+          && !['done', 'archived', 'cancelled'].includes(snapshot.currentTask.status)),
+      ),
     };
   }
 
@@ -1670,6 +1707,7 @@ export class MetaclawSession {
           plan,
           runtimeMode: 'session',
         }),
+        onProgress: progress => this.recordPlannerProgressTrace(progress),
       });
     } catch (error) {
       this.interactionTraceStream.append({
@@ -1700,6 +1738,124 @@ export class MetaclawSession {
     }
     this.appendOutput(`Warning: 规划提案传输状态不确定；请重放同一请求。${result.message}`);
     return true;
+  }
+
+  private recordPlannerProgressTrace(progress: PlannerRunProgress): void {
+    const current = this.interactionTraceStream.getSnapshot();
+    if (!current || current.status !== 'running') return;
+    const baseDetails = {
+      progressSequence: progress.sequence,
+      elapsedMs: progress.elapsedMs,
+    };
+    const eventKey = `rpc:${progress.sequence}`;
+    switch (progress.kind) {
+      case 'process_started':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_process_started',
+          status: 'running',
+          title: 'Planner process started',
+          summary: 'The isolated Planner RPC process is running.',
+          details: baseDetails,
+          eventKey,
+        });
+        return;
+      case 'prompt_accepted':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_prompt_accepted',
+          status: 'running',
+          title: 'Planner accepted the request',
+          summary: 'The request entered the Planner agent loop.',
+          details: baseDetails,
+          eventKey,
+        });
+        return;
+      case 'agent_started':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_agent_started',
+          status: 'running',
+          title: 'Planner agent loop started',
+          summary: 'Planner is preparing the next structured action.',
+          details: baseDetails,
+          eventKey,
+        });
+        return;
+      case 'turn_started':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_turn_started',
+          status: 'running',
+          title: `Planner processing cycle ${progress.turn}`,
+          summary: 'Planner is evaluating available context and the next tool action.',
+          details: { ...baseDetails, turn: progress.turn },
+          eventKey,
+        });
+        return;
+      case 'model_stream_started':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_model_stream_started',
+          status: 'running',
+          title: 'Planner model response started',
+          summary: 'The model is generating a structured action; hidden reasoning is not exposed.',
+          details: { ...baseDetails, turn: progress.turn },
+          eventKey,
+        });
+        return;
+      case 'tool_started':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_tool_started',
+          status: 'running',
+          title: `Planner tool started: ${progress.toolName}`,
+          summary: plannerToolSummary(progress.toolName, 'started'),
+          details: {
+            ...baseDetails,
+            toolSequence: progress.toolSequence,
+            toolName: progress.toolName,
+            argumentFields: progress.argumentFields,
+          },
+          eventKey,
+        });
+        return;
+      case 'tool_completed':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_tool_completed',
+          status: progress.status,
+          title: `Planner tool ${progress.status}: ${progress.toolName}`,
+          summary: plannerToolSummary(progress.toolName, progress.status),
+          details: {
+            ...baseDetails,
+            toolSequence: progress.toolSequence,
+            toolName: progress.toolName,
+            argumentFields: progress.argumentFields,
+            resultFields: progress.resultFields,
+          },
+          eventKey,
+        });
+        return;
+      case 'agent_completed':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_agent_completed',
+          status: 'completed',
+          title: 'Planner agent loop completed',
+          summary: 'Planner finished processing the structured proposal result.',
+          details: baseDetails,
+          eventKey,
+        });
+    }
   }
 
   private recordPlannerIntentTrace(plan: PlanningAgentPlan, submissionId: string): void {

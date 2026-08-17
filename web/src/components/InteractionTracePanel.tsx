@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   ExecutionTimeline,
   InteractionTrace,
@@ -39,13 +39,24 @@ export function InteractionTracePanel({
   timeline: ExecutionTimeline | null;
 }) {
   const scrollRef = useRef<HTMLElement | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const lastSequence = trace?.events.at(-1)?.sequence ?? 0;
+  const activeEventId = trace?.status === 'running'
+    ? [...trace.events].reverse().find(event => event.status === 'running')?.id
+    : undefined;
 
   useEffect(() => {
     if (trace?.status === 'running') {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }
   }, [lastSequence, trace?.status]);
+
+  useEffect(() => {
+    if (trace?.status !== 'running') return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [trace?.status, trace?.turnId]);
 
   return (
     <aside
@@ -60,6 +71,7 @@ export function InteractionTracePanel({
         </div>
         <span className="trace-status-badge" data-status={trace?.status ?? 'pending'}>
           {STATUS_LABEL[trace?.status ?? 'pending']}
+          {trace?.status === 'running' ? ` · ${formatDuration(nowMs - Date.parse(trace.startedAt))}` : ''}
         </span>
       </header>
 
@@ -74,7 +86,15 @@ export function InteractionTracePanel({
           </div>
           <ol className="interaction-events">
             {trace.events.map(event => (
-              <li className="interaction-event" key={event.id} data-status={event.status}>
+              <li
+                className="interaction-event"
+                key={event.id}
+                data-status={
+                  event.status === 'running' && event.id !== activeEventId
+                    ? 'completed'
+                    : event.status
+                }
+              >
                 <div className="event-rail"><span /></div>
                 <article>
                   <div className="event-meta">
@@ -84,6 +104,11 @@ export function InteractionTracePanel({
                   </div>
                   <h3>{event.title}</h3>
                   <p>{event.summary}</p>
+                  {event.id === activeEventId && (
+                    <span className="event-elapsed">
+                      当前阶段 {formatDuration(nowMs - Date.parse(event.occurredAt))}
+                    </span>
+                  )}
                   {Object.keys(event.details).length > 0 && (
                     <details>
                       <summary>查看结构化详情</summary>
@@ -145,4 +170,12 @@ function formatTime(value: string): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function formatDuration(valueMs: number): string {
+  if (!Number.isFinite(valueMs) || valueMs < 0) return '0秒';
+  const totalSeconds = Math.floor(valueMs / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes}分${totalSeconds % 60}秒`;
 }

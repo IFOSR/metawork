@@ -10,6 +10,11 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 import type { PlanningContext } from './planning-types.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
+import type {
+  PlannerRunProgress,
+  PlannerRunProgressObserver,
+  PlannerRunProgressPayload,
+} from './planner-progress.js';
 import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
 import {
   PlannerRunError,
@@ -18,12 +23,15 @@ import {
 } from './planner-audit-contract.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
+const SENSITIVE_PROGRESS_FIELD =
+  /(?:^|[_-])(secret|token|password|passwd|credential|authorization|private[_-]?key|api[_-]?key|prompt|conversation|content|reasoning|thoughts?|signature)(?:$|[_-])/iu;
 
 export interface PlannerRunner {
   run(
     prompt: string,
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
+    onProgress?: PlannerRunProgressObserver,
   ): Promise<PlannerRunResult>;
 }
 
@@ -75,6 +83,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     prompt: string,
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
+    onProgress?: PlannerRunProgressObserver,
   ): Promise<PlannerRunResult> {
     return this.runRpcTurn({
       sessionId: context.request.sessionId,
@@ -82,6 +91,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       prompt,
       context,
       purpose,
+      onProgress,
     });
   }
 
@@ -91,6 +101,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     prompt: string;
     context: PlanningContext;
     purpose: PlannerProposalPurpose;
+    onProgress?: PlannerRunProgressObserver;
   }): Promise<PlannerRunResult> {
     if (input.context.request.sessionId !== input.sessionId) {
       throw new Error('Planner RPC sessionId must match PlanningContext');
@@ -109,7 +120,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       return await this.runRpc(input.prompt, {
         ...input.context,
         request: { ...input.context.request, sessionId: input.sessionId },
-      }, input.purpose, input.cwd);
+      }, input.purpose, input.cwd, input.onProgress);
     } finally {
       release();
       if (this.sessionQueues.get(sessionId) === tail) {
@@ -202,6 +213,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
     cwdOverride?: string,
+    onProgress?: PlannerRunProgressObserver,
   ): Promise<PlannerRunResult> {
     const startedAt = Date.now();
     const launch = await this.resolveLaunch(
@@ -232,6 +244,24 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let submittedPlan: unknown;
       const toolCalls: PlannerToolCallTrace[] = [];
       const toolStarts = new Map<string, Record<string, unknown>>();
+      const toolSequences = new Map<string, number>();
+      let progressSequence = 0;
+      let turn = 0;
+      let modelStreamTurn = 0;
+      const reportProgress = (progress: PlannerRunProgressPayload) => {
+        if (!onProgress) return;
+        progressSequence += 1;
+        try {
+          onProgress({
+            ...progress,
+            sequence: progressSequence,
+            elapsedMs: Date.now() - startedAt,
+          } as PlannerRunProgress);
+        } catch {
+          // Presentation observers cannot affect Planner execution.
+        }
+      };
+      reportProgress({ kind: 'process_started' });
 
       const timer = setTimeout(() => {
         fail(new Error(`AnyFusion Planner RPC timed out after ${context.timeoutMs}ms`));
@@ -276,11 +306,39 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             return;
           }
           promptAccepted = true;
+          reportProgress({ kind: 'prompt_accepted' });
+          return;
+        }
+        if (event.type === 'agent_start') {
+          reportProgress({ kind: 'agent_started' });
+          return;
+        }
+        if (event.type === 'turn_start') {
+          turn += 1;
+          reportProgress({ kind: 'turn_started', turn });
+          return;
+        }
+        if (
+          (event.type === 'message_start' && isAssistantMessage(event.message))
+          || event.type === 'message_update'
+        ) {
+          if (turn > modelStreamTurn) {
+            modelStreamTurn = turn;
+            reportProgress({ kind: 'model_stream_started', turn });
+          }
           return;
         }
         if (event.type === 'tool_execution_start') {
           const toolCallId = String(event.toolCallId ?? toolStarts.size + 1);
           toolStarts.set(toolCallId, event);
+          const toolSequence = toolSequences.size + 1;
+          toolSequences.set(toolCallId, toolSequence);
+          reportProgress({
+            kind: 'tool_started',
+            toolSequence,
+            toolName: String(event.toolName ?? 'unknown'),
+            argumentFields: recordFields(event.args),
+          });
           if (event.toolName === 'submit_planning_proposal' && isRecord(event.args)) {
             submittedPlan = event.args.plan;
           }
@@ -290,12 +348,21 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           const toolCallId = String(event.toolCallId ?? toolCalls.length + 1);
           const start = toolStarts.get(toolCallId);
           const toolName = String(event.toolName ?? start?.toolName ?? 'unknown');
+          const toolSequence = toolSequences.get(toolCallId) ?? toolCalls.length + 1;
           toolCalls.push({
             sequence: toolCalls.length + 1,
             toolName,
             status: event.isError === true ? 'failed' : 'completed',
             argumentsSummary: summarizeValue(start?.args),
             resultSummary: summarizeValue(event.result),
+          });
+          reportProgress({
+            kind: 'tool_completed',
+            toolSequence,
+            toolName,
+            argumentFields: recordFields(start?.args),
+            resultFields: recordFields(event.result),
+            status: event.isError === true ? 'failed' : 'completed',
           });
           if (toolName === 'submit_planning_proposal') {
             const proposalResult = extractPlannerProposalResult(event.result);
@@ -304,6 +371,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           return;
         }
         if (event.type === 'agent_end') {
+          reportProgress({ kind: 'agent_completed' });
           if (terminalProposalResult) {
             pendingResult = {
               proposalResult: terminalProposalResult,
@@ -603,6 +671,21 @@ function summarizeValue(value: unknown): Record<string, unknown> {
     else if (isRecord(raw)) summary[key] = { keys: Object.keys(raw).slice(0, 8) };
   }
   return summary;
+}
+
+function isAssistantMessage(value: unknown): boolean {
+  return isRecord(value) && value.role === 'assistant';
+}
+
+function recordFields(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  return Object.keys(value)
+    .filter(key => {
+      const normalized = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2');
+      return !SENSITIVE_PROGRESS_FIELD.test(normalized);
+    })
+    .sort()
+    .slice(0, 20);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

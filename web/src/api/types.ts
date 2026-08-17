@@ -96,8 +96,20 @@ export interface ExecutorSummary {
 }
 
 // WebSocket 消息协议
+import type {
+  ConversationTurnProjection,
+  WebSessionMetadata,
+} from './session-types';
+
 export type ServerMessage =
   | { type: 'hello'; sessionId: string }
+  | {
+      type: 'session_catalog';
+      activeSessionId: string;
+      sessions: WebSessionMetadata[];
+    }
+  | { type: 'active_session_changed'; sessionId: string }
+  | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }

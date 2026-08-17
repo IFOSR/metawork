@@ -13,7 +13,15 @@ import {
   WebConversationProjector,
   type WebConversationProjectionStore,
 } from './web-conversation-projector.js';
-import type { WebSessionRecord } from './web-session-types.js';
+import type {
+  WebSessionActivationResult,
+  WebSessionCreationResult,
+  WebSessionMetadata,
+  WebSessionRecord,
+} from './web-session-types.js';
+import type {
+  WebSessionRuntimeEvent,
+} from './web-session-runtime.js';
 
 export interface TaskSummary {
   id: string;
@@ -63,6 +71,19 @@ export interface ManagementWebSessionCatalog extends WebConversationProjectionSt
   create(input?: { title?: string; active?: boolean }): Promise<WebSessionRecord>;
 }
 
+export interface ManagementWebSessionRuntime {
+  readonly activeSessionId: string;
+  initialize(): Promise<void>;
+  dispose(): Promise<void>;
+  submit(text: string): Promise<void>;
+  listSessions(query?: string): Promise<WebSessionMetadata[]>;
+  readSession(sessionId: string): Promise<WebSessionRecord | null>;
+  createSession(title?: string): Promise<WebSessionCreationResult>;
+  activateSession(sessionId: string): Promise<WebSessionActivationResult>;
+  subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void;
+  getReplayEvents(): WebSessionRuntimeEvent[];
+}
+
 export interface ManagementServerDeps {
   port: number;
   webDistDir: string;
@@ -72,6 +93,7 @@ export interface ManagementServerDeps {
   webSocketAuthTimeoutMs?: number;
   sessionFactory: (sessionId: string) => MetaclawSession;
   sessionCatalog?: ManagementWebSessionCatalog;
+  sessionRuntime?: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
 }
@@ -102,12 +124,18 @@ export class ManagementServer {
   private conversationTraceUnsubscribe: (() => void) | null = null;
   private conversationProjectionUnsubscribe: (() => void) | null = null;
   private conversationProjector: WebConversationProjector | null = null;
+  private sessionRuntimeUnsubscribe: (() => void) | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
   async start(): Promise<void> {
     if (this.server) return;
-    if (this.deps.sessionCatalog && !this.singletonSessionId) {
+    if (this.deps.sessionRuntime) {
+      await this.deps.sessionRuntime.initialize();
+      this.sessionRuntimeUnsubscribe = this.deps.sessionRuntime.subscribe(event => {
+        this.broadcast(event);
+      });
+    } else if (this.deps.sessionCatalog && !this.singletonSessionId) {
       await this.deps.sessionCatalog.initialize();
       const record = await this.deps.sessionCatalog.create({ active: true });
       this.singletonSessionId = record.session.id;
@@ -148,6 +176,11 @@ export class ManagementServer {
     this.conversationProjectionUnsubscribe?.();
     this.conversationProjectionUnsubscribe = null;
     this.conversationProjector = null;
+    this.sessionRuntimeUnsubscribe?.();
+    this.sessionRuntimeUnsubscribe = null;
+    if (this.deps.sessionRuntime) {
+      await this.deps.sessionRuntime.dispose();
+    }
     if (this.singletonSession) {
       await this.singletonSession.dispose();
       this.singletonSession = null;
@@ -210,7 +243,10 @@ export class ManagementServer {
           return;
         }
         if (message.type === 'input' && message.text) {
-          void adapter?.submit(message.text).catch(error => {
+          const submission = this.deps.sessionRuntime
+            ? this.deps.sessionRuntime.submit(message.text)
+            : adapter?.submit(message.text);
+          void submission?.catch(error => {
             ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
           });
         }
@@ -224,6 +260,17 @@ export class ManagementServer {
     });
 
     this.wsConnections.add(ws);
+    if (this.deps.sessionRuntime) {
+      this.authenticatedWsConnections.add(ws);
+      ws.send(JSON.stringify({
+        type: 'hello',
+        sessionId: this.deps.sessionRuntime.activeSessionId,
+      }));
+      for (const event of this.deps.sessionRuntime.getReplayEvents()) {
+        ws.send(JSON.stringify(event));
+      }
+      return;
+    }
     const session = this.ensureSession();
     adapter = new SessionStreamAdapter(session, {
       onOutput: (lines, from) => ws.send(JSON.stringify({ type: 'output', from, lines })),
@@ -414,6 +461,65 @@ export class ManagementServer {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/sessions') {
+      if (!this.deps.sessionRuntime) {
+        this.sendJson(response, 503, { error: 'session runtime unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, {
+        activeSessionId: this.deps.sessionRuntime.activeSessionId,
+        sessions: await this.deps.sessionRuntime.listSessions(url.searchParams.get('q') ?? ''),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/sessions') {
+      if (!this.deps.sessionRuntime) {
+        this.sendJson(response, 503, { error: 'session runtime unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      this.sendJson(
+        response,
+        201,
+        await this.deps.sessionRuntime.createSession(body.title),
+      );
+      return;
+    }
+
+    const sessionActivateMatch = /^\/api\/sessions\/([^/]+)\/activate$/u.exec(url.pathname);
+    if (request.method === 'POST' && sessionActivateMatch) {
+      if (!this.deps.sessionRuntime) {
+        this.sendJson(response, 503, { error: 'session runtime unavailable' });
+        return;
+      }
+      this.sendJson(
+        response,
+        200,
+        await this.deps.sessionRuntime.activateSession(
+          decodeURIComponent(sessionActivateMatch[1]!),
+        ),
+      );
+      return;
+    }
+
+    const sessionMatch = /^\/api\/sessions\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && sessionMatch) {
+      if (!this.deps.sessionRuntime) {
+        this.sendJson(response, 503, { error: 'session runtime unavailable' });
+        return;
+      }
+      const record = await this.deps.sessionRuntime.readSession(
+        decodeURIComponent(sessionMatch[1]!),
+      );
+      if (!record) {
+        this.sendJson(response, 404, { error: 'session not found' });
+        return;
+      }
+      this.sendJson(response, 200, record);
+      return;
+    }
+
     const taskMatch = /^\/api\/execution\/tasks\/([^/]+)$/u.exec(url.pathname);
     if (request.method === 'GET' && taskMatch) {
       const timeline = this.deps.executionQuery.projectTimeline(decodeURIComponent(taskMatch[1]));
@@ -560,6 +666,7 @@ interface RequestBody {
   targetRevisionId?: string;
   providerRef?: string;
   apiKey?: string;
+  title?: string;
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

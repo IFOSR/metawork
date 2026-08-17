@@ -12,6 +12,7 @@ const NON_COMPOSITION_GATEWAY_COMMANDS = new Set<NonNullable<CliArgs['gatewayCom
 ]);
 
 export function requiresCompositionLock(args: CliArgs): boolean {
+  if (args.help) return false;
   if (args.connect) return false;
   if (args.gatewayCommand && NON_COMPOSITION_GATEWAY_COMMANDS.has(args.gatewayCommand)) {
     return false;

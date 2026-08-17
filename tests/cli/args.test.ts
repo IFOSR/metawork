@@ -17,6 +17,19 @@ describe('parseCliArgs', () => {
     });
   });
 
+  it('parses help flags as an explicit CLI-only mode', () => {
+    expect(parseCliArgs(['--help'])).toEqual({
+      gateway: false,
+      connect: false,
+      help: true,
+    });
+    expect(parseCliArgs(['-h'])).toEqual({
+      gateway: false,
+      connect: false,
+      help: true,
+    });
+  });
+
   it('parses gateway and connect modes from argv', () => {
     expect(parseCliArgs(['--gateway'])).toEqual({
       gateway: true,
@@ -25,6 +38,14 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(['--connect'])).toEqual({
       gateway: false,
       connect: true,
+    });
+  });
+
+  it('parses Web service restart mode', () => {
+    expect(parseCliArgs(['web', 'restart', '--no-open'])).toEqual({
+      web: true,
+      webCommand: 'restart',
+      webNoOpen: true,
     });
   });
 

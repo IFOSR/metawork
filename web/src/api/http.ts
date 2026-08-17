@@ -5,6 +5,12 @@ import type {
   ExecutorSummary,
   TaskSummary,
 } from './types';
+import type {
+  WebSessionActivationResult,
+  WebSessionCreationResult,
+  WebSessionMetadata,
+  WebSessionRecord,
+} from './session-types';
 
 export class HttpClient {
   constructor(private readonly onUnauthorized?: () => void) {}
@@ -40,6 +46,31 @@ export class HttpClient {
 
   getExecutors(): Promise<ExecutorSummary[]> {
     return this.request<ExecutorSummary[]>('/api/execution/executors');
+  }
+
+  getSessions(query = ''): Promise<{
+    activeSessionId: string;
+    sessions: WebSessionMetadata[];
+  }> {
+    const suffix = query.trim() ? `?q=${encodeURIComponent(query)}` : '';
+    return this.request(`/api/sessions${suffix}`);
+  }
+
+  getSession(sessionId: string): Promise<WebSessionRecord> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  createSession(title?: string): Promise<WebSessionCreationResult> {
+    return this.request('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    });
+  }
+
+  activateSession(sessionId: string): Promise<WebSessionActivationResult> {
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, {
+      method: 'POST',
+    });
   }
 
   activate(baseRevisionId: string, config: Record<string, unknown>): Promise<ActivateResult> {

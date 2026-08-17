@@ -1,8 +1,10 @@
 export interface CliArgs {
+  help?: boolean;
   scriptPath?: string;
   gateway?: boolean;
   connect?: boolean;
   web?: boolean;
+  webCommand?: 'restart';
   webPort?: number;
   webNoOpen?: boolean;
   gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
@@ -11,6 +13,14 @@ export interface CliArgs {
 }
 
 export function parseCliArgs(argv: string[]): CliArgs {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    return {
+      gateway: false,
+      connect: false,
+      help: true,
+    };
+  }
+
   if (argv[0] === 'web') {
     return parseWebArgs(argv.slice(1));
   }
@@ -42,6 +52,26 @@ export function parseCliArgs(argv: string[]): CliArgs {
   };
 }
 
+export function formatCliHelp(): string {
+  return [
+    'AnyFusion',
+    '',
+    '用法:',
+    '  anyfusion',
+    '  anyfusion web [restart] [--port <端口>] [--no-open]',
+    '  anyfusion --script <脚本文件>',
+    '  anyfusion --gateway',
+    '  anyfusion --connect',
+    '  anyfusion gateway <run|setup|pairing|doctor|install|start|stop|restart|status>',
+    '  anyfusion <configure|config|provider|model|planner|executor|doctor|status> ...',
+    '',
+    '选项:',
+    '  -h, --help  显示帮助',
+    '',
+    '兼容命令别名: metawork、metaclaw',
+  ].join('\n');
+}
+
 function parseWebArgs(argv: string[]): CliArgs {
   const result: CliArgs = { web: true };
   for (let index = 0; index < argv.length; index += 1) {
@@ -58,6 +88,10 @@ function parseWebArgs(argv: string[]): CliArgs {
     }
     if (arg === '--no-open') {
       result.webNoOpen = true;
+      continue;
+    }
+    if (arg === 'restart') {
+      result.webCommand = 'restart';
       continue;
     }
     throw new Error(`未知 web 参数: ${arg}`);

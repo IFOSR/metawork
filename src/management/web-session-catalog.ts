@@ -146,6 +146,32 @@ export class WebSessionCatalog {
     return updated;
   }
 
+  async setActive(sessionId: string): Promise<WebSessionRecord | null> {
+    await this.ensureInitialized();
+    const target = await this.store.readSession(sessionId);
+    if (!target || target.session.archived) return null;
+    const catalog = await this.store.readCatalog();
+    const updatedMetadata: WebSessionMetadata[] = [];
+
+    for (const metadata of catalog.sessions) {
+      const active = metadata.id === sessionId;
+      const updated = { ...metadata, active };
+      updatedMetadata.push(updated);
+      const record = await this.store.readSession(metadata.id);
+      if (record && record.session.active !== active) {
+        await this.store.writeSession({
+          ...record,
+          session: { ...record.session, active },
+        });
+      }
+    }
+    await this.store.writeCatalog({
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: updatedMetadata.sort(compareUpdatedAt),
+    });
+    return this.store.readSession(sessionId);
+  }
+
   private async upsertMetadata(session: WebSessionMetadata): Promise<void> {
     const catalog = await this.store.readCatalog();
     const sessions = catalog.sessions.filter(existing => existing.id !== session.id);

@@ -5,9 +5,16 @@ import type {
   InteractionTraceEvent,
   ServerMessage,
 } from './types';
+import type {
+  ConversationTurnProjection,
+  WebSessionMetadata,
+} from './session-types';
 
 export interface WsHandlers {
   onHello?: (sessionId: string) => void;
+  onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
+  onActiveSessionChanged?: (sessionId: string) => void;
+  onConversationSnapshot?: (turn: ConversationTurnProjection) => void;
   onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
@@ -45,6 +52,15 @@ export class WsClient {
         case 'hello':
           this.handlers.onStatusChange?.(true);
           this.handlers.onHello?.(message.sessionId);
+          break;
+        case 'session_catalog':
+          this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions);
+          break;
+        case 'active_session_changed':
+          this.handlers.onActiveSessionChanged?.(message.sessionId);
+          break;
+        case 'conversation_snapshot':
+          this.handlers.onConversationSnapshot?.(message.turn);
           break;
         case 'output':
           this.handlers.onOutput?.(message.lines, message.from);

@@ -11,6 +11,7 @@ describe('requiresCompositionLock', () => {
   });
 
   it('does not lock commands that return before composition', () => {
+    expect(requiresCompositionLock({ help: true })).toBe(false);
     expect(requiresCompositionLock({ connect: true })).toBe(false);
     for (const gatewayCommand of [
       'setup', 'install', 'start', 'stop', 'restart', 'status', 'pairing', 'doctor',

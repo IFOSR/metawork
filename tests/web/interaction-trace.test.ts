@@ -18,9 +18,12 @@ describe('Web interaction trace panel', () => {
     expect(panel).toContain('<details');
     expect(panel).toContain('authorizedBinding');
     expect(panel).toContain('data-streaming');
-    expect(app).toContain('onTraceSnapshot');
-    expect(app).toContain('onTraceDelta');
-    expect(app).toContain('<InteractionTracePanel');
+    expect(panel).toContain('event-elapsed');
+    expect(panel).toContain('window.setInterval');
+    expect(app).toContain('onConversationSnapshot');
+    expect(app).toContain('<ConversationView');
+    expect(app).toContain('<TrajectoryView');
+    expect(app).not.toContain('<InteractionTracePanel');
     expect(chat).not.toContain('ExecutionTrace');
     expect(styles).toContain('@media (max-width: 820px)');
     expect(styles).toContain('@keyframes trace-pulse');

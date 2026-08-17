@@ -588,6 +588,70 @@ describe('natural-language planning/kernel path', () => {
     expect(harness.session.getSnapshot().output.join('\n')).toContain('streamed final answer');
   });
 
+  it('streams safe Planner RPC progress before the structured proposal completes', async () => {
+    const direct = plan({
+      id: 'plan_rpc_progress',
+      action: 'direct_reply',
+      response: { directReply: 'progress final answer' },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const harness = createSession('sess_rpc_progress', direct);
+    const sessionInternals = harness.session as unknown as {
+      planningAgent: {
+        submit: (
+          context: PlanningContext,
+          submitter: {
+            submit(plan: PlanningAgentPlan): Promise<unknown>;
+            onProgress?: (progress: unknown) => void;
+          },
+        ) => Promise<unknown>;
+      };
+    };
+    const originalSubmit = sessionInternals.planningAgent.submit.bind(sessionInternals.planningAgent);
+    sessionInternals.planningAgent.submit = vi.fn(async (context, submitter) => {
+      (submitter as any).onProgress?.({
+        sequence: 1,
+        kind: 'turn_started',
+        elapsedMs: 12,
+        turn: 1,
+      });
+      (submitter as any).onProgress?.({
+        sequence: 2,
+        kind: 'tool_started',
+        elapsedMs: 24,
+        toolSequence: 1,
+        toolName: 'get_planning_context',
+        argumentFields: ['section'],
+      });
+      return originalSubmit(context, submitter);
+    });
+    const snapshots: string[][] = [];
+    const unsubscribe = harness.session.subscribeInteractionTrace(trace => {
+      snapshots.push(trace?.events.map(event => event.kind) ?? []);
+    });
+
+    await harness.session.submit('stream planner progress', { awaitAsyncWork: true });
+    unsubscribe();
+
+    const trace = harness.session.getInteractionTrace();
+    const kinds = trace?.events.map(event => event.kind) ?? [];
+    expect(kinds).toContain('planner_turn_started');
+    expect(kinds).toContain('planner_tool_started');
+    expect(kinds.indexOf('planner_turn_started')).toBeLessThan(kinds.indexOf('intent_classified'));
+    expect(kinds.indexOf('planner_tool_started')).toBeLessThan(kinds.indexOf('planning_proposal_completed'));
+    expect(snapshots.some(snapshot => snapshot.at(-1) === 'planner_turn_started')).toBe(true);
+    expect(trace?.events.find(event => event.kind === 'planner_tool_started')).toMatchObject({
+      details: {
+        toolName: 'get_planning_context',
+        argumentFields: ['section'],
+      },
+    });
+  });
+
   it('does not expose an unconfirmed global memory to a direct reply', async () => {
     const harness = createSession('sess_direct_pending_memory', context => plan({
       action: 'direct_reply',

@@ -59,6 +59,11 @@ export type WebSessionActivationResult =
     reason: WebSessionActivationBlockReason;
   };
 
+export interface WebSessionCreationResult {
+  session: WebSessionRecord;
+  activation: WebSessionActivationResult;
+}
+
 export function boundWebSessionTurns(turns: ConversationTurn[]): ConversationTurn[] {
   return turns.slice(-MAX_WEB_SESSION_TURNS);
 }
