@@ -9,6 +9,11 @@ import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
 import type { WebAuthService } from './web-auth.js';
+import {
+  WebConversationProjector,
+  type WebConversationProjectionStore,
+} from './web-conversation-projector.js';
+import type { WebSessionRecord } from './web-session-types.js';
 
 export interface TaskSummary {
   id: string;
@@ -53,6 +58,11 @@ export interface ConfigQuery {
   writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
 }
 
+export interface ManagementWebSessionCatalog extends WebConversationProjectionStore {
+  initialize(): Promise<void>;
+  create(input?: { title?: string; active?: boolean }): Promise<WebSessionRecord>;
+}
+
 export interface ManagementServerDeps {
   port: number;
   webDistDir: string;
@@ -61,6 +71,7 @@ export interface ManagementServerDeps {
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
   sessionFactory: (sessionId: string) => MetaclawSession;
+  sessionCatalog?: ManagementWebSessionCatalog;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
 }
@@ -86,11 +97,21 @@ export class ManagementServer {
   private lastTimeline: ExecutionTimeline | null = null;
   private lastTimelineTaskId: string | null = null;
   private timelinePollTimer: NodeJS.Timeout | null = null;
+  private timelineSessionUnsubscribe: (() => void) | null = null;
+  private conversationAdapter: SessionStreamAdapter | null = null;
+  private conversationTraceUnsubscribe: (() => void) | null = null;
+  private conversationProjectionUnsubscribe: (() => void) | null = null;
+  private conversationProjector: WebConversationProjector | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
   async start(): Promise<void> {
     if (this.server) return;
+    if (this.deps.sessionCatalog && !this.singletonSessionId) {
+      await this.deps.sessionCatalog.initialize();
+      const record = await this.deps.sessionCatalog.create({ active: true });
+      this.singletonSessionId = record.session.id;
+    }
     const server = createServer((request, response) => {
       void this.handleRequest(request, response);
     });
@@ -118,6 +139,15 @@ export class ManagementServer {
     }
     this.wsConnections.clear();
     this.authenticatedWsConnections.clear();
+    this.timelineSessionUnsubscribe?.();
+    this.timelineSessionUnsubscribe = null;
+    this.conversationAdapter?.detach();
+    this.conversationAdapter = null;
+    this.conversationTraceUnsubscribe?.();
+    this.conversationTraceUnsubscribe = null;
+    this.conversationProjectionUnsubscribe?.();
+    this.conversationProjectionUnsubscribe = null;
+    this.conversationProjector = null;
     if (this.singletonSession) {
       await this.singletonSession.dispose();
       this.singletonSession = null;
@@ -197,10 +227,19 @@ export class ManagementServer {
     const session = this.ensureSession();
     adapter = new SessionStreamAdapter(session, {
       onOutput: (lines, from) => ws.send(JSON.stringify({ type: 'output', from, lines })),
+      onSubmitStarted: (text, outputFrom) => {
+        this.conversationProjector?.beginTurn({ userInput: text, outputFrom });
+      },
+      onSubmitCompleted: () => this.conversationProjector?.finishSubmission(),
+      onSubmitFailed: (_text, error) => this.conversationProjector?.failSubmission(error),
     });
     adapter.attach();
     this.authenticatedWsConnections.add(ws);
     ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
+    const conversation = this.conversationProjector?.getSnapshot();
+    if (conversation) {
+      ws.send(JSON.stringify({ type: 'conversation_snapshot', turn: conversation }));
+    }
     traceUnsubscribe = session.subscribeInteractionTrace(trace => {
       if (!trace) return;
       if (trace.turnId !== traceTurnId) {
@@ -232,14 +271,32 @@ export class ManagementServer {
   /** 单例 session：第一个鉴权通过的连接创建，后续连接附着。 */
   private ensureSession(): MetaclawSession {
     if (!this.singletonSession) {
-      this.singletonSessionId = `sess_web_${nanoid(10)}`;
+      this.singletonSessionId ??= `sess_web_${nanoid(10)}`;
       this.singletonSession = this.deps.sessionFactory(this.singletonSessionId);
       this.singletonSession.initialize({ showDashboard: false });
 
       // 执行时间线推送：session 快照变化时投影当前 task 并 diff。
-      this.singletonSession.subscribe(snapshot => {
+      this.timelineSessionUnsubscribe = this.singletonSession.subscribe(snapshot => {
         this.pushTimelineForTask(snapshot.currentTaskId);
       });
+      if (this.deps.sessionCatalog) {
+        this.conversationProjector = new WebConversationProjector({
+          sessionId: this.singletonSessionId,
+          store: this.deps.sessionCatalog,
+        });
+        this.conversationProjectionUnsubscribe = this.conversationProjector.subscribe(turn => {
+          if (turn) this.broadcast({ type: 'conversation_snapshot', turn });
+        });
+        this.conversationAdapter = new SessionStreamAdapter(this.singletonSession, {
+          onOutput: (lines, from) => this.conversationProjector?.applyOutput(lines, from),
+        });
+        this.conversationAdapter.attach();
+        this.conversationTraceUnsubscribe = this.singletonSession.subscribeInteractionTrace(
+          trace => {
+            if (trace) void this.conversationProjector?.applyTrace(trace);
+          },
+        );
+      }
       // execution 层 durable 翻转（subtask 创建/attempt receipt/publication）不触发
       // session notify，加轻量轮询兜底，保证时间线在任务执行过程中持续推进。
       this.timelinePollTimer = setInterval(() => {
@@ -268,6 +325,7 @@ export class ManagementServer {
       this.lastTimeline = timeline;
       this.lastTimelineTaskId = taskId;
       this.broadcast({ type: 'execution', taskId, timeline });
+      void this.conversationProjector?.applyTimeline(timeline);
     }
   }
 

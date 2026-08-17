@@ -7,6 +7,9 @@ export interface SessionStreamCallbacks {
    */
   onOutput: (lines: string[], from: number) => void;
   onExitRequested?: () => void;
+  onSubmitStarted?: (text: string, outputFrom: number) => void | Promise<void>;
+  onSubmitCompleted?: (text: string) => void | Promise<void>;
+  onSubmitFailed?: (text: string, error: unknown) => void | Promise<void>;
 }
 
 /**
@@ -45,7 +48,15 @@ export class SessionStreamAdapter {
   }
 
   async submit(text: string): Promise<void> {
-    const result = await this.session.submit(text);
+    await this.callbacks.onSubmitStarted?.(text, this.observedOutputLength);
+    let result;
+    try {
+      result = await this.session.submit(text);
+    } catch (error) {
+      await this.callbacks.onSubmitFailed?.(text, error);
+      throw error;
+    }
+    await this.callbacks.onSubmitCompleted?.(text);
     if (result.exitRequested) {
       this.callbacks.onExitRequested?.();
     }

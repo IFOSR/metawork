@@ -1,9 +1,17 @@
 import { randomBytes } from 'node:crypto';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { ManagementServer, type ConfigQuery } from '../../src/management/server.js';
+import {
+  ManagementServer,
+  type ConfigQuery,
+  type ManagementWebSessionCatalog,
+} from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
 import type { InteractionTrace } from '../../src/management/interaction-trace.js';
+import type {
+  ConversationTurn,
+  WebSessionRecord,
+} from '../../src/management/web-session-types.js';
 
 interface TestSession {
   initialize(): void;
@@ -95,6 +103,143 @@ class RawWebSocketClient {
 }
 
 describe('ManagementServer WebSocket authentication', () => {
+  it('streams structured conversation updates and persists only the terminal turn', async () => {
+    const port = await reservePort();
+    const snapshotListeners = new Set<
+      (snapshot: { output: string[]; currentTaskId: string | null }) => void
+    >();
+    const traceListeners = new Set<(trace: InteractionTrace | null) => void>();
+    const persisted: ConversationTurn[] = [];
+    const record: WebSessionRecord = {
+      version: 1,
+      session: {
+        id: 'session_catalog',
+        title: 'New session',
+        createdAt: '2026-08-17T08:00:00.000Z',
+        updatedAt: '2026-08-17T08:00:00.000Z',
+        active: true,
+        archived: false,
+      },
+      turns: [],
+    };
+    const sessionCatalog: ManagementWebSessionCatalog = {
+      async initialize() {},
+      async create() {
+        return record;
+      },
+      async appendTurn(_sessionId, turn) {
+        persisted.push(structuredClone(turn));
+        return record;
+      },
+    };
+    const session: TestSession = {
+      initialize() {},
+      subscribe(listener) {
+        snapshotListeners.add(listener);
+        listener({ output: [], currentTaskId: null });
+        return () => snapshotListeners.delete(listener);
+      },
+      getSnapshot: () => ({ output: [], currentTaskId: null }),
+      subscribeInteractionTrace(listener) {
+        traceListeners.add(listener);
+        listener(null);
+        return () => traceListeners.delete(listener);
+      },
+      getInteractionTrace: () => null,
+      async submit() {
+        const runningTrace: InteractionTrace = {
+          sessionId: 'session_catalog',
+          turnId: 'turn_stream',
+          taskId: null,
+          status: 'running',
+          startedAt: '2026-08-17T08:00:00.000Z',
+          completedAt: null,
+          events: [{
+            id: 'event_query',
+            sequence: 1,
+            occurredAt: '2026-08-17T08:00:00.000Z',
+            phase: 'intake',
+            actor: 'user',
+            kind: 'query_received',
+            status: 'completed',
+            title: 'User query received',
+            summary: 'Show the flow',
+            details: {},
+          }],
+        };
+        for (const listener of traceListeners) listener(runningTrace);
+        for (const listener of snapshotListeners) {
+          listener({
+            output: ['', '> Show the flow', 'Final answer'],
+            currentTaskId: null,
+          });
+        }
+        const completedTrace: InteractionTrace = {
+          ...runningTrace,
+          status: 'completed',
+          completedAt: '2026-08-17T08:00:03.000Z',
+          events: [...runningTrace.events, {
+            id: 'event_delivery',
+            sequence: 2,
+            occurredAt: '2026-08-17T08:00:03.000Z',
+            phase: 'delivery',
+            actor: 'runtime',
+            kind: 'delivery_completed',
+            status: 'completed',
+            title: 'Response delivered',
+            summary: 'Final answer',
+            details: {},
+          }],
+        };
+        for (const listener of traceListeners) listener(completedTrace);
+        return { exitRequested: false };
+      },
+      async dispose() {},
+    };
+    const server = createManagementServer(
+      port,
+      undefined,
+      session,
+      undefined,
+      undefined,
+      sessionCatalog,
+    );
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      expect(JSON.parse(await client.nextText())).toEqual({
+        type: 'hello',
+        sessionId: 'session_catalog',
+      });
+      client.sendJson({ type: 'input', text: 'Show the flow' });
+
+      const projections: Array<{ status: string; finalAnswer: string | null }> = [];
+      for (let index = 0; index < 10 && !projections.some(item => item.status === 'completed'); index += 1) {
+        const message = JSON.parse(await client.nextText()) as {
+          type: string;
+          turn?: { status: string; finalAnswer: string | null };
+        };
+        if (message.type === 'conversation_snapshot' && message.turn) {
+          projections.push(message.turn);
+        }
+      }
+
+      expect(projections[0]?.status).toBe('running');
+      expect(projections.at(-1)).toMatchObject({
+        status: 'completed',
+        finalAnswer: 'Final answer',
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]?.status).toBe('completed');
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
+
   it('sends trace snapshots on connect and ordered deltas while a turn is running', async () => {
     const port = await reservePort();
     let trace: InteractionTrace = {
@@ -473,6 +618,7 @@ function createManagementServer(
   sessionOverride?: TestSession,
   executionQueryOverride?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown },
   configQueryOverride?: Partial<ConfigQuery>,
+  sessionCatalogOverride?: ManagementWebSessionCatalog,
 ): ManagementServer {
   const session = sessionOverride ?? {
     initialize() {},
@@ -504,6 +650,7 @@ function createManagementServer(
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs,
     sessionFactory: () => session as never,
+    sessionCatalog: sessionCatalogOverride,
     executionQuery: executionQueryOverride ?? {
       listTasks: () => [],
       projectTimeline: () => null,

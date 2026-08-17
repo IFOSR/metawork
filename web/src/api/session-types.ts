@@ -39,6 +39,11 @@ export interface ConversationTurn {
   artifactRefs: string[];
 }
 
+export interface ConversationTurnProjection
+  extends Omit<ConversationTurn, 'status'> {
+  status: InteractionTraceStatus;
+}
+
 export interface WebSessionRecord {
   version: typeof WEB_SESSION_FORMAT_VERSION;
   session: WebSessionMetadata;
