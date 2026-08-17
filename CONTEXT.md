@@ -21,11 +21,23 @@ Web exposes a bounded `InteractionTrace` from query intake through Planner,
 Kernel authorization, exact authorized Executor bindings, execution progress,
 verification and delivery. Session events stream as `trace_snapshot` and
 ordered `trace_delta` messages; reconnect receives a full current-turn
-snapshot. Existing `ExecutionProjector` remains the durable source for
+snapshot. Planner RPC lifecycle and safe tool milestones are forwarded while
+the process is still running, including process start, prompt acceptance,
+processing cycles, model stream start, tool start/completion and agent
+completion. Existing `ExecutionProjector` remains the durable source for
 Subtask, attempt, verification and publication facts. Executor progress is
 noise-filtered, redacted and truncated before the existing attempt-runtime
 record is updated. The trace is presentation-only and never includes raw
-prompts, raw stdout/stderr, credentials or hidden chain-of-thought.
+prompts, raw stdout/stderr, credentials, sensitive field names or hidden
+chain-of-thought.
+
+Web now presents those facts through a persistent session workspace rather than
+a permanent chat/trace split. A file-backed Application-Shell projection under
+`~/.anyfusion/data/web-sessions/` stores bounded sanitized terminal turns.
+Historical sessions are browse-only until `WebSessionRuntime` passes the idle
+Planner/Task activation gate and recreates the one live `MetaclawSession` with
+the same stable Planner session ID. Conversation and Trajectory are two views
+of the same trace and execution projection; neither owns routing or execution.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 

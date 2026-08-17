@@ -42,6 +42,8 @@ replacing those semantics.
 
 ## Completed Roadmap
 
+- [Web session workspace redesign](plans/2026-08-17-web-session-workspace-redesign.md): persistent session rail, safe single-live-session activation, detailed Conversation narrative, dense Trajectory view, and sticky composer.
+- [Planner progress streaming](plans/2026-08-17-planner-progress-streaming.md): streams safe Planner lifecycle and tool progress into the existing Web interaction trace without exposing hidden reasoning or raw model/tool content.
 - [Web interaction trace and Planner socket reliability](plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md): completed shared composition locking, Planner Host socket ownership protection, preserved transport uncertainty, and the streaming redacted Web execution trace.
 - [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): completed unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, read-only Task dashboard, native command completion, and strict Planner/Kernel/Executor process separation.
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.

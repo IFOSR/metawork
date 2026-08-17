@@ -1,7 +1,8 @@
 # Web Session Workspace Redesign
 
-> Status: Approved
+> Status: Completed
 > Design date: 2026-08-17
+> Completion date: 2026-08-17
 
 ## Goal
 

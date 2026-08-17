@@ -504,6 +504,17 @@ Start the browser interaction surface with:
 anyfusion web
 ```
 
+Restart the active Runtime directly into Web mode with:
+
+```bash
+anyfusion web restart
+```
+
+The command reads the shared `runtime.lock`, sends `SIGTERM` to its holder,
+waits up to ten seconds for a clean exit, and then acquires the lock through
+the normal composition path before starting the replacement Web instance. It
+does not force-kill an unresponsive process.
+
 Web mode binds only to `127.0.0.1`. Normal startup opens a short-lived,
 single-use URL-fragment bootstrap that is exchanged for an HttpOnly,
 SameSite=Strict process-local session cookie and removed from the address bar.
@@ -513,7 +524,16 @@ upgrades require the session cookie and an allowed loopback Origin before the
 protocol switches; stale cookies return the browser to the fallback gate
 instead of reconnecting indefinitely.
 
-The Web right pane is the primary interaction trace. `MetaclawSession` emits a
+The Web surface is a persistent session workspace. A fixed history rail selects
+browse-only projections, while one live `MetaclawSession` remains active.
+Activation is rejected while a Planner turn, input submission, or Task runtime
+work is active; successful activation recreates the selected stable Planner
+session ID. Sanitized terminal turns are stored under
+`~/.anyfusion/data/web-sessions/` without changing SQLite schema 30.
+
+Conversation embeds the detailed execution narrative before the final answer;
+Trajectory reprojects the same facts into timing bands, metrics, filters, and
+dense event rows. `MetaclawSession` emits a
 bounded current-turn snapshot for query intake, Planner lifecycle, structured
 intent, Kernel decisions, exact authorized AgentClass/Harness/Provider/Model
 bindings and delivery. WebSocket reconnect sends the full snapshot and then
@@ -521,7 +541,12 @@ ordered deltas. The existing durable execution projector supplies Subtask,
 attempt, verification and publication state, including the latest normalized
 Executor progress summary. These are auditable events and schema summaries,
 not model chain-of-thought; secret-like fields, raw prompts and raw process
-output do not cross the browser boundary.
+output do not cross the browser boundary. Planner RPC lifecycle and safe tool
+milestones are forwarded as they arrive, so a long model turn shows process
+startup, request acceptance, processing cycles, model response start, tool
+start/completion, and agent completion instead of appearing idle until the
+final proposal returns. The panel also shows elapsed time for the active
+phase.
 
 All composition modes, including `--script`, share `runtime.lock`. Planner Host
 startup probes live sockets before reclaiming a confirmed stale socket and

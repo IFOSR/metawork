@@ -530,6 +530,16 @@ anyfusion
 anyfusion web
 ```
 
+将当前运行实例直接重启为 Web 模式：
+
+```bash
+anyfusion web restart
+```
+
+该命令读取共享 `runtime.lock`，向持锁进程发送 `SIGTERM`，最多等待十秒确认
+旧进程正常退出，然后通过标准 composition 路径重新取锁并启动 Web。旧进程
+无响应时命令会失败关闭，不会强制终止或并行启动第二个实例。
+
 Web 模式只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
 fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
 进程级会话 Cookie 后立即清除地址栏 fragment。用户无需复制 token，浏览器
@@ -537,13 +547,23 @@ JavaScript 也不持久化 token。`anyfusion web --no-open` 仅为 SSH、端口
 和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
 和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
 
-Web 右侧区域现在是主要执行轨迹。`MetaclawSession` 以有界事件流展示 query
+Web 现在采用持久会话工作区：左侧固定历史栏用于只读浏览，运行时始终只保留
+一个 live `MetaclawSession`。Planner 回合、输入提交或 Task runtime 工作仍
+活跃时，激活历史会话会返回结构化阻塞原因；安全激活后使用相同的稳定 Planner
+session ID 重建会话。清洗后的终态 turn 存放于
+`~/.anyfusion/data/web-sessions/`，不修改 SQLite schema 30。
+
+Conversation 会在最终答案前内嵌详细执行叙事；Trajectory 使用同一份事实展示
+耗时带、指标、筛选和高密度事件行。`MetaclawSession` 以有界事件流展示 query
 接收、Planner 生命周期、结构化意图、Kernel 决策、精确授权的
 AgentClass/Harness/Provider/Model binding 和交付；WebSocket 重连先发送完整
 snapshot，再发送有序 delta。现有 durable execution projector 继续提供
 Subtask、attempt、验证、publication 和最新的规范化 Executor 进度摘要。
 这些内容是可审计事件和 schema 摘要，不是模型隐藏思维链；secret、原始
-prompt 和原始 stdout/stderr 不会进入浏览器。
+prompt 和原始 stdout/stderr 不会进入浏览器。Planner RPC 运行期间会实时
+转发安全的生命周期与工具里程碑，包括进程启动、请求接收、处理周期、模型
+响应开始、工具开始/完成和 Planner 回合结束；长时间的模型处理不再等到最终
+proposal 返回后才一次性显示。右侧面板同时显示当前阶段耗时。
 
 包括 `--script` 在内的所有 composition 模式共享同一把 `runtime.lock`。
 Planner Host 启动时先探测活动 socket，只回收确认 stale 的路径；停止时校验

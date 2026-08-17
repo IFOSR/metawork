@@ -106,6 +106,16 @@ Start the browser interface instead of the native TUI:
 anyfusion web
 ```
 
+Restart the active Runtime directly into Web mode with:
+
+```bash
+anyfusion web restart
+```
+
+The restart command sends `SIGTERM` to the current `runtime.lock` holder,
+waits up to 10 seconds for a clean exit, and then starts the replacement Web
+instance. It fails without force-killing if the old process does not exit.
+
 The command opens `http://127.0.0.1:8788` and authenticates the browser
 automatically through a short-lived URL-fragment bootstrap. The fragment is
 removed immediately and exchanged for an HttpOnly, SameSite=Strict session
@@ -115,6 +125,13 @@ the process-local fallback token.
 
 The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
 are separate, mutually exclusive Runtime modes in this release.
+
+Web uses a session workspace with persistent history on the left, a full-width
+Conversation/Trajectory canvas, and one sticky composer. Conversation streams
+safe Planner, Kernel, routing, Executor, verification, and delivery milestones
+before the final answer. Trajectory reprojects the same facts into timing,
+filters, and dense event rows. Historical sessions are read-only until a safe
+activation gate confirms that no Planner turn or Task runtime work is active.
 
 Configuration changes activated from the Web settings panel are validated and
 stored as the next-start revision. The running Planner, Kernel, and Executors
