@@ -44,6 +44,22 @@ concurrently.
 
 The current native installer targets macOS and does not require Docker.
 
+**One-command install.** After the one-time prerequisites below are in place,
+the entire deployment is a single command. Run it from any directory:
+
+```bash
+git clone https://github.com/IFOSR/metawork.git && cd metawork && \
+  ANYFUSION_PROVIDER_KEY='your-api-key' \
+  ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1' \
+  ./setup.sh
+```
+
+This clones the repository, builds the MetaWork runtime and the vendored
+AnyFusion-Pi planner, installs the `anyfusion` launcher, and writes
+AnyFusion-only configuration — all in one step. Drop the two `ANYFUSION_*`
+lines to be prompted for the key and URL interactively. If you already cloned
+the repository, run `./setup.sh` from inside `metawork/` instead.
+
 Required:
 
 - Node.js `>=22.19.0`

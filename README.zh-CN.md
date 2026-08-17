@@ -41,6 +41,21 @@ AnyFusion 将自然语言目标转化为持久化工作图，通过确定性的 
 
 当前产品化原生安装路径支持 macOS，不需要 Docker。
 
+**一键部署。** 下面的前置依赖一次性装好后，整个部署就是一条命令。在任意
+目录运行：
+
+```bash
+git clone https://github.com/IFOSR/metawork.git && cd metawork && \
+  ANYFUSION_PROVIDER_KEY='你的-api-key' \
+  ANYFUSION_PROVIDER_URL='https://你的-openai-compatible服务地址.example/v1' \
+  ./setup.sh
+```
+
+这条命令会克隆仓库、构建 MetaWork Runtime 与内置 AnyFusion-Pi planner、
+安装 `anyfusion` 启动器，并写入 AnyFusion 专用配置——一步完成。省略两行
+`ANYFUSION_*` 环境变量会改为交互式询问 key 和 URL。若已克隆仓库，直接进入
+`metawork/` 运行 `./setup.sh` 即可。
+
 安装前需要：
 
 - Node.js `>=22.19.0`
