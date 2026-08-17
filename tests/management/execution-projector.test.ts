@@ -59,6 +59,7 @@ function makeProjector(overrides: Partial<ExecutionProjectorDeps> = {}): Executi
     receiptRepo: { listByTask: () => [] },
     decisionRepo: { listByTask: () => [] },
     publicationRepo: { listIntegratedByTaskIds: () => [], hasBlockingResidue: () => false },
+    attemptRuntimeRepo: { find: () => null },
     ...overrides,
   } as unknown as ExecutionProjectorDeps);
 }
@@ -120,6 +121,7 @@ describe('ExecutionProjector', () => {
     ];
     const receipts = [
       {
+        attemptId: 'attempt_1',
         subtaskId: 'sub_1',
         agentClassName: 'codex-cli',
         terminalState: 'completed',
@@ -131,6 +133,11 @@ describe('ExecutionProjector', () => {
     const timeline = makeProjector({
       subtaskRepo: { listByTask: () => subtasks },
       receiptRepo: { listByTask: () => receipts },
+      attemptRuntimeRepo: {
+        find: attemptId => attemptId === 'attempt_1'
+          ? { progress: { kind: 'log', text: 'Running focused tests' } }
+          : null,
+      },
     }).project(makeTask());
 
     const execution = timeline.stages[2];
@@ -138,6 +145,7 @@ describe('ExecutionProjector', () => {
     const sub1 = execution.subtasks?.find(subtask => subtask.id === 'sub_1');
     expect(sub1?.executor).toBe('codex-cli');
     expect(sub1?.attempts[0]?.result).toBe('success');
+    expect(sub1?.attempts[0]?.progress).toEqual({ kind: 'log', text: 'Running focused tests' });
   });
 
   it('verification 阶段按 receipt violations 推导 failed', () => {

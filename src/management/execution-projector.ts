@@ -3,6 +3,7 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 
 // 与 web/src/api/types.ts 同构的前端执行时间线类型。
 export type StagePhase = 'planning' | 'authorization' | 'execution' | 'verification' | 'delivery';
@@ -23,6 +24,7 @@ export interface TimelineAttempt {
   result: string;
   exitCode?: number;
   error?: string;
+  progress?: Record<string, unknown>;
 }
 
 export interface TimelineSubtask {
@@ -53,6 +55,7 @@ export interface ExecutionProjectorDeps {
   receiptRepo: ExecutorAttemptReceiptRepo;
   decisionRepo: KernelDecisionRepo;
   publicationRepo: WorkspacePublicationRepo;
+  attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
 }
 
 /**
@@ -146,10 +149,16 @@ export class ExecutionProjector {
           title: subtask.title,
           status: subtask.status,
           executor: subtaskReceipts[0]?.agentClassName ?? subtask.executorBindings[0]?.agentClassRef,
-          attempts: subtaskReceipts.map(receipt => ({
-            result: receipt.terminalState === 'completed' ? 'success' : 'failed',
-            error: receipt.errorDetail ?? receipt.errorCode ?? undefined,
-          })),
+          attempts: subtaskReceipts.map(receipt => {
+            const runtime = this.deps.attemptRuntimeRepo.find(receipt.attemptId);
+            return {
+              result: receipt.terminalState === 'completed' ? 'success' : 'failed',
+              error: receipt.errorDetail ?? receipt.errorCode ?? undefined,
+              ...(runtime?.progress && Object.keys(runtime.progress).length > 0
+                ? { progress: runtime.progress }
+                : {}),
+            };
+          }),
         };
       }),
     };

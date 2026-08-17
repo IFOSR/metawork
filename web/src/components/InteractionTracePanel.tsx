@@ -106,7 +106,11 @@ export function InteractionTracePanel({
               <div><strong>{subtask.executor ?? 'Executor'}</strong><span>{subtask.status}</span></div>
               <p>{subtask.title}</p>
               {subtask.attempts.map((attempt, index) => (
-                <small key={index}>{attempt.result}{attempt.error ? ` · ${attempt.error}` : ''}</small>
+                <small key={index}>
+                  {attempt.result}
+                  {attempt.progress?.text ? ` · ${String(attempt.progress.text)}` : ''}
+                  {attempt.error ? ` · ${attempt.error}` : ''}
+                </small>
               ))}
             </div>
           ))}

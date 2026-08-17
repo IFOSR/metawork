@@ -1,5 +1,7 @@
 // Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
 import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { truncateText } from '../utils/truncate-text.js';
 const EXECUTOR_NOISE_PATTERNS = [
   /^OpenAI Codex\b/i,
   /^Claude\b/i,
@@ -132,7 +134,7 @@ export function formatExecutorProgress(raw?: string): string | undefined {
     return '执行器网络连接异常，正在重试';
   }
 
-  return normalized;
+  return truncateText(redactSensitiveText(normalized), 500);
 }
 
 function stripExecutorLogPrefix(raw: string): string {

@@ -67,6 +67,7 @@ import {
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { formatExecutorProgress } from '../executor/error-utils.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -569,10 +570,13 @@ export class SubtaskAttemptRunner {
           },
         },
         onProgress: (event, executor) => {
-          this.attemptRuntimeRepo.recordProgress(attemptId, {
-            kind: event.kind,
-            text: event.text.slice(0, 2_000),
-          }, new Date().toISOString());
+          const safeText = formatExecutorProgress(event.text);
+          if (safeText) {
+            this.attemptRuntimeRepo.recordProgress(attemptId, {
+              kind: event.kind,
+              text: safeText,
+            }, new Date().toISOString());
+          }
           input.onProgress?.(event, executor);
         },
       });

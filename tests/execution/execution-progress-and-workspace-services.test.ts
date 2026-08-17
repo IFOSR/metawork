@@ -8,6 +8,7 @@ import { ExecutionProgressService } from '../../src/execution/execution-progress
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { WorkspaceStore } from '../../src/execution/workspace-store.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
+import { formatExecutorProgress } from '../../src/executor/error-utils.js';
 
 function createDb() {
   const db = new Database(':memory:');
@@ -17,6 +18,16 @@ function createDb() {
 }
 
 describe('execution progress and workspace services', () => {
+  it('redacts and bounds normalized executor progress before persistence', () => {
+    const progress = formatExecutorProgress(
+      `running command authorization: Bearer abcdefghijklmnopqrstuvwxyz ${'x'.repeat(2_000)}`,
+    );
+
+    expect(progress).toContain('[REDACTED]');
+    expect(progress).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(progress?.length).toBeLessThanOrEqual(500);
+  });
+
   it('ignores ordinary progress while preserving repeated skill events as verifier evidence', () => {
     const db = createDb();
     const service = new ExecutionProgressService(db);

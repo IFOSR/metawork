@@ -49,6 +49,7 @@ import { SubtaskRepo } from './storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-repo.js';
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
+import { ExecutorAttemptRuntimeRepo } from './storage/executor-attempt-runtime-repo.js';
 import { acquireInstanceLock, type InstanceLock } from './management/lock.js';
 import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
@@ -413,6 +414,7 @@ async function main() {
       receiptRepo: new ExecutorAttemptReceiptRepo(db),
       decisionRepo: new KernelDecisionRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
+      attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
     });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,

@@ -27,6 +27,7 @@ export interface SubtaskCard {
     result: string;
     exitCode?: number;
     error?: string;
+    progress?: Record<string, unknown>;
   }>;
 }
 
