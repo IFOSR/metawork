@@ -1,5 +1,8 @@
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
-import type { PlannerToolCallTrace } from './planner-audit-contract.js';
+import {
+  plannerRunFailureDetails,
+  type PlannerToolCallTrace,
+} from './planner-audit-contract.js';
 import {
   getDefaultPlannerProcessSupervisor,
   type PlannerRunner,
@@ -95,13 +98,16 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
       });
       return result;
     } catch (error) {
+      const failure = plannerRunFailureDetails(error);
       if (auditRun) this.finishAudit({
         id: auditRun.id,
         status: 'failed',
-        attemptCount: 0,
-        durationMs: Date.now() - startedAt,
+        attemptCount: failure?.toolCalls.filter(
+          call => call.toolName === 'submit_planning_proposal',
+        ).length ?? 0,
+        durationMs: failure?.durationMs ?? Date.now() - startedAt,
         errorSummary: (error as Error).message,
-        toolCalls: [],
+        toolCalls: failure?.toolCalls ?? [],
       });
       throw error;
     }

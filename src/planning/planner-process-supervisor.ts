@@ -11,7 +11,11 @@ import { truncateText } from '../utils/truncate-text.js';
 import type { PlanningContext } from './planning-types.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
 import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
-import type { PlannerRunResult, PlannerToolCallTrace } from './planner-audit-contract.js';
+import {
+  PlannerRunError,
+  type PlannerRunResult,
+  type PlannerToolCallTrace,
+} from './planner-audit-contract.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
 
@@ -224,7 +228,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let settled = false;
       let promptAccepted = false;
       let pendingResult: PlannerRunResult | null = null;
-      let terminalProposalResult: Extract<PlannerProposalResult, { status: 'accepted' }> | null = null;
+      let terminalProposalResult: PlannerProposalResult | null = null;
       let submittedPlan: unknown;
       const toolCalls: PlannerToolCallTrace[] = [];
       const toolStarts = new Map<string, Record<string, unknown>>();
@@ -242,9 +246,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         if (settled) return;
         settled = true;
         cleanup();
+        const plannerError = error instanceof PlannerRunError
+          ? error
+          : new PlannerRunError(error.message, {
+            toolCalls: [...toolCalls],
+            threadId: sessionPath,
+            durationMs: Date.now() - startedAt,
+            cause: error,
+          });
         void this.terminateProcess(proc).then(
-          () => reject(error),
-          () => reject(error),
+          () => reject(plannerError),
+          () => reject(plannerError),
         );
       };
       const acceptLine = (line: string) => {
@@ -287,11 +299,22 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           });
           if (toolName === 'submit_planning_proposal') {
             const proposalResult = extractPlannerProposalResult(event.result);
-            if (proposalResult?.status === 'accepted') terminalProposalResult = proposalResult;
+            if (proposalResult) terminalProposalResult = proposalResult;
           }
           return;
         }
         if (event.type === 'agent_end') {
+          if (terminalProposalResult) {
+            pendingResult = {
+              proposalResult: terminalProposalResult,
+              submittedPlan,
+              toolCalls,
+              threadId: sessionPath,
+              durationMs: Date.now() - startedAt,
+            };
+            proc.stdin?.end();
+            return;
+          }
           const modelError = extractPlannerModelError(event);
           if (modelError) {
             fail(new Error(
@@ -299,18 +322,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             ));
             return;
           }
-          if (!terminalProposalResult || submittedPlan === undefined) {
-            fail(new Error('AnyFusion Planner RPC completed without an accepted submit_planning_proposal tool result'));
-            return;
-          }
-          pendingResult = {
-            proposalResult: terminalProposalResult,
-            submittedPlan,
-            toolCalls,
-            threadId: sessionPath,
-            durationMs: Date.now() - startedAt,
-          };
-          proc.stdin?.end();
+          fail(new Error('AnyFusion Planner RPC completed without a submit_planning_proposal tool result'));
         }
       };
 

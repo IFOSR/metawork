@@ -94,7 +94,7 @@ function accepted(outcome = 'proposal_validated'): Extract<PlannerProposalResult
   };
 }
 
-function runner(result = accepted()) {
+function runner(result: PlannerProposalResult = accepted()) {
   return {
     run: vi.fn(async () => ({
       proposalResult: result,
@@ -131,6 +131,42 @@ describe('AnyFusionPlanningAgent native proposal tool adapter', () => {
     expect(plannerRunner.run).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves authoritative transport uncertainty and its tool trace in Planner audit', async () => {
+    const transportUncertain: PlannerProposalResult = {
+      status: 'transport_uncertain',
+      turnId: 'turn-uncertain',
+      submissionId: 'submission-uncertain',
+      retryableByReplay: true,
+      message: 'connect ENOENT /tmp/anyfusion-planner.sock',
+    };
+    const audit = {
+      start: vi.fn(() => ({ id: 'planner_run_uncertain' })),
+      finish: vi.fn(),
+    };
+    const plannerRunner = runner(transportUncertain);
+    const agent = new AnyFusionPlanningAgent({
+      runner: plannerRunner,
+      audit,
+      resolvePlannerAuditBinding: vi.fn(async () => ({
+        plannerBinding,
+        plannerBindingFingerprint: 'sha256:planner-binding',
+      })),
+    });
+
+    await expect(agent.submit(context())).resolves.toEqual(transportUncertain);
+    expect(audit.finish).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'planner_run_uncertain',
+      status: 'completed',
+      attemptCount: 1,
+      toolCalls: [expect.objectContaining({
+        toolName: 'submit_planning_proposal',
+      })],
+    }));
+    await expect(agent.plan(context())).rejects.toThrow(
+      'Planner proposal did not reach validated terminal state: transport_uncertain',
+    );
+  });
+
   it('does not add an outer repair loop when the structured runner fails', async () => {
     const plannerRunner = { run: vi.fn(async () => { throw new Error('agent ended after rejection'); }) };
     const agent = new AnyFusionPlanningAgent({ runner: plannerRunner as never });
@@ -141,6 +177,43 @@ describe('AnyFusionPlanningAgent native proposal tool adapter', () => {
       status: 'transport_uncertain', retryableByReplay: true,
     });
     expect(plannerRunner.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists partial tool calls attached to an unstructured Planner process failure', async () => {
+    const partialToolCalls = [{
+      sequence: 1,
+      toolName: 'read_planner_context',
+      status: 'completed' as const,
+      argumentsSummary: { section: 'task' },
+      resultSummary: { status: 'ok' },
+    }];
+    const plannerError = Object.assign(new Error('agent ended before proposal submission'), {
+      toolCalls: partialToolCalls,
+      durationMs: 17,
+      threadId: '/planner/sessions/session_test.jsonl',
+    });
+    const audit = {
+      start: vi.fn(() => ({ id: 'planner_run_partial' })),
+      finish: vi.fn(),
+    };
+    const agent = new AnyFusionPlanningAgent({
+      runner: { run: vi.fn(async () => { throw plannerError; }) },
+      audit,
+      resolvePlannerAuditBinding: vi.fn(async () => ({
+        plannerBinding,
+        plannerBindingFingerprint: 'sha256:planner-binding',
+      })),
+    });
+
+    await expect(agent.plan(context())).rejects.toThrow('agent ended before proposal submission');
+    expect(audit.finish).toHaveBeenCalledWith({
+      id: 'planner_run_partial',
+      status: 'failed',
+      attemptCount: 0,
+      durationMs: 17,
+      errorSummary: 'agent ended before proposal submission',
+      toolCalls: partialToolCalls,
+    });
   });
 
   it('keeps audit failure best-effort and counts native proposal tool calls', async () => {

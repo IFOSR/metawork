@@ -68,6 +68,110 @@ function completeRpcTurn(child: FakeProcess): void {
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('returns a structured transport uncertainty instead of replacing it with a generic error', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      const result = {
+        status: 'transport_uncertain',
+        turnId: 'turn-uncertain',
+        submissionId: 'submission-uncertain',
+        retryableByReplay: true,
+        message: 'connect ENOENT /tmp/anyfusion-planner.sock',
+      };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: request.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-uncertain',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-uncertain', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-uncertain',
+          toolName: 'submit_planning_proposal',
+          result: { details: result },
+          isError: true,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-uncertain-${process.pid}`),
+      spawn: (() => child as never) as never,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-uncertain', source: 'gateway' },
+    } as never, 'kernel')).resolves.toMatchObject({
+      proposalResult: {
+        status: 'transport_uncertain',
+        turnId: 'turn-uncertain',
+        submissionId: 'submission-uncertain',
+        retryableByReplay: true,
+        message: 'connect ENOENT /tmp/anyfusion-planner.sock',
+      },
+      submittedPlan: { id: 'plan-uncertain', schemaVersion: 8 },
+      toolCalls: [{
+        sequence: 1,
+        toolName: 'submit_planning_proposal',
+        status: 'failed',
+      }],
+    });
+  });
+
+  it('attaches partial tool calls when a turn ends without a structured proposal result', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: request.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-read',
+          toolName: 'read_planner_context',
+          args: { section: 'task' },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-read',
+          toolName: 'read_planner_context',
+          result: { status: 'ok' },
+          isError: false,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-partial-${process.pid}`),
+      spawn: (() => child as never) as never,
+      shutdownGraceMs: 10,
+    });
+
+    const error = await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-partial', source: 'gateway' },
+    } as never, 'kernel').catch(value => value as Error);
+
+    expect(error).toMatchObject({
+      message: 'AnyFusion Planner RPC completed without a submit_planning_proposal tool result',
+      toolCalls: [{
+        sequence: 1,
+        toolName: 'read_planner_context',
+        status: 'completed',
+      }],
+    });
+  });
+
   it('uses one launch identity for RPC and interactive Planner modes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-'));
     const launches: Array<{
