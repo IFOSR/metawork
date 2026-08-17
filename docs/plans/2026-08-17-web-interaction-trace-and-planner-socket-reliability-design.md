@@ -1,8 +1,9 @@
 # Web Interaction Trace And Planner Socket Reliability Design
 
-> Status: Approved
+> Status: Delivered
 > Design date: 2026-08-17
 > Approved date: 2026-08-17
+> Completion date: 2026-08-17
 > Related: ADR-0015, ADR-0020, ADR-0022, ADR-0023, ADR-0025, ADR-0026,
 > [AnyFusion Web interaction design](2026-08-15-anyfusion-web-interaction-interface-design.md)
 
@@ -18,6 +19,16 @@ Deliver two related reliability and transparency improvements:
 
 The trace is an Application-Shell projection over existing runtime facts. It
 must not become a second planner, scheduler, recovery loop, or state authority.
+
+## Delivery Record
+
+Delivered with shared composition locking, live/stale socket ownership checks,
+structured Planner transport-result preservation, a bounded Session trace
+stream, WebSocket snapshot/delta replay, exact authorized routing events,
+safe durable Executor progress summaries and the detailed responsive Web right
+pane. The implementation reused the existing `ExecutionProjector` for durable
+Subtask/attempt/verification/publication facts instead of adding a parallel
+business-state projector or trace table.
 
 ## 2. Safety And Product Boundary
 
@@ -264,4 +275,3 @@ Required focused coverage:
 - No hidden chain-of-thought, secret, complete prompt, or unbounded raw process
   output reaches the Web client.
 - Focused tests, root lint/build, and Web typecheck/build pass.
-

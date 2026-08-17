@@ -513,6 +513,21 @@ upgrades require the session cookie and an allowed loopback Origin before the
 protocol switches; stale cookies return the browser to the fallback gate
 instead of reconnecting indefinitely.
 
+The Web right pane is the primary interaction trace. `MetaclawSession` emits a
+bounded current-turn snapshot for query intake, Planner lifecycle, structured
+intent, Kernel decisions, exact authorized AgentClass/Harness/Provider/Model
+bindings and delivery. WebSocket reconnect sends the full snapshot and then
+ordered deltas. The existing durable execution projector supplies Subtask,
+attempt, verification and publication state, including the latest normalized
+Executor progress summary. These are auditable events and schema summaries,
+not model chain-of-thought; secret-like fields, raw prompts and raw process
+output do not cross the browser boundary.
+
+All composition modes, including `--script`, share `runtime.lock`. Planner Host
+startup probes live sockets before reclaiming a confirmed stale socket and
+records the created device/inode so shutdown cannot unlink a replacement.
+Planner RPC preserves structured transport uncertainty and partial tool audit.
+
 The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
 remain mutually exclusive Runtime modes.
 

@@ -537,6 +537,19 @@ JavaScript 也不持久化 token。`anyfusion web --no-open` 仅为 SSH、端口
 和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
 和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
 
+Web 右侧区域现在是主要执行轨迹。`MetaclawSession` 以有界事件流展示 query
+接收、Planner 生命周期、结构化意图、Kernel 决策、精确授权的
+AgentClass/Harness/Provider/Model binding 和交付；WebSocket 重连先发送完整
+snapshot，再发送有序 delta。现有 durable execution projector 继续提供
+Subtask、attempt、验证、publication 和最新的规范化 Executor 进度摘要。
+这些内容是可审计事件和 schema 摘要，不是模型隐藏思维链；secret、原始
+prompt 和原始 stdout/stderr 不会进入浏览器。
+
+包括 `--script` 在内的所有 composition 模式共享同一把 `runtime.lock`。
+Planner Host 启动时先探测活动 socket，只回收确认 stale 的路径；停止时校验
+创建时记录的 device/inode，不能删除后来替换的 socket。Planner RPC 会保留
+结构化 transport uncertainty 及其部分工具审计。
+
 原生 AnyFusion-Pi TUI 仍是 `anyfusion` 的默认入口。本版本中 Web 与 TUI
 仍是互斥的 Runtime 模式。
 

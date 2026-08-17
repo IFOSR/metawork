@@ -42,6 +42,7 @@ replacing those semantics.
 
 ## Completed Roadmap
 
+- [Web interaction trace and Planner socket reliability](plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md): completed shared composition locking, Planner Host socket ownership protection, preserved transport uncertainty, and the streaming redacted Web execution trace.
 - [AnyFusion Pi Planner and native TUI migration](plans/2026-07-31-pi-planner-tui-migration.md): completed unified interactive/RPC Planner runtime, fixed AnyFusion-managed models, read-only Task dashboard, native command completion, and strict Planner/Kernel/Executor process separation.
 - [Planner、Kernel 与并发调度收敛路线图](plans/2026-07-16-planner-kernel-concurrency-convergence-roadmap.md): completed convergence from capability-aware work graphs and executor scope through the Kernel control plane, resource partitions, single-Task DAG concurrency, Git publication and reliable asynchronous cancellation/recovery.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
@@ -49,7 +50,6 @@ replacing those semantics.
 
 ## Active Delivery
 
-- [Web interaction trace and Planner socket reliability](plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md): prevents composition processes from unlinking a live Planner Host socket and adds a streaming, refresh-safe, redacted query-to-delivery trace in the Web right pane.
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.
 - [Revised MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): fifteen TDD tasks covering signed release trust, immutable revisions, one schema 30-to-31 migration, generation-scoped Kernel/recovery bindings, atomic legacy cutover, Harness drivers, transactional database rollback, native release gates, and a deferred A2A seam.
 - [Conditionally approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, generation-scoped revision authority, Provider/Model health, signed transactional updates, isolated AgentClass runtimes, migration and acceptance criteria.

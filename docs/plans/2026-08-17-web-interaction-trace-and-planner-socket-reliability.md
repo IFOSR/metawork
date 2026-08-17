@@ -8,11 +8,33 @@
 
 **Tech Stack:** Node 22, TypeScript ESM, better-sqlite3, Vitest, React 18, Vite 6, native HTTP/WebSocket transport.
 
-> Status: In progress
+> Status: Completed
 > Plan date: 2026-08-17
+> Completion date: 2026-08-17
 > Design: [Web Interaction Trace And Planner Socket Reliability Design](2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md)
 
 ---
+
+## Completion Record
+
+Delivered commits:
+
+- `66561ef` lock scripted composition sessions;
+- `139de3a` preserve live Planner Host sockets;
+- `a9b6f7f` preserve Planner transport uncertainty;
+- `54a8170` stream interaction lifecycle events;
+- `038f174` stream Web interaction traces and exact routing;
+- `aa1e57b` render the detailed right-pane trace;
+- `7e90f26` persist and project safe Executor progress summaries.
+
+Validation completed with 59 focused socket/planning/trace/Web tests, root
+TypeScript lint/build, and Web TypeScript/build. The full
+`planning-kernel-path` file contains pre-existing environment-sensitive
+capacity and long-wait fixtures; the unchanged `a9b6f7f` baseline reproduces
+the background-Executor timeout. A full `npm test` run was attempted and
+stopped after unrelated existing failures in TUI/session acceptance suites and
+multi-minute Git/Executor fixtures; the task-focused suites above remained
+green. No new schema table or second policy authority was introduced.
 
 ### Task 1: Lock Every Composition Mode
 
@@ -429,4 +451,3 @@ navigation contracts.
 git add CONTEXT.md docs/current/technical-overview.md docs/current/technical-overview.zh-CN.md docs/plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability.md docs/plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md docs/README.md
 git commit -m "docs: close web interaction trace delivery"
 ```
-
