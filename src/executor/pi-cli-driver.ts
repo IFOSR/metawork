@@ -95,6 +95,10 @@ export class PiCliDriver implements HarnessDriver {
 
   parseResult(input: HarnessResultInput) {
     if (input.exitCode === 0) {
+      const streamedOutput = input.streamedOutput?.trim();
+      if (streamedOutput) {
+        return { success: true as const, output: streamedOutput };
+      }
       const messages = parseJsonLines(input.stdout)
         .filter(event => event.type === 'message_end')
         .map(event => assistantMessageText(event.message))
@@ -104,6 +108,13 @@ export class PiCliDriver implements HarnessDriver {
       }
     }
     return normalizeHarnessResult(input);
+  }
+
+  parseResultLine(input: HarnessProgressLineInput): string | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || !['message_end', 'turn_end'].includes(String(event.type))) return null;
+    return assistantMessageText(event.message);
   }
 
   parseProgressLine(input: HarnessProgressLineInput): HarnessProgressEvent | null {

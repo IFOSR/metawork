@@ -61,6 +61,15 @@ describe('CodexCliDriver', () => {
       success: true,
       output: 'Implemented safely',
     });
+    expect((driver as CodexCliDriver & {
+      parseResultLine?(input: { stream: 'stdout' | 'stderr'; line: string }): string | null;
+    }).parseResultLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'Implemented safely' },
+      }),
+    })).toBe('Implemented safely');
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({

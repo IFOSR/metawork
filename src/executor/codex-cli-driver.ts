@@ -86,6 +86,10 @@ export class CodexCliDriver implements HarnessDriver {
 
   parseResult(input: HarnessResultInput) {
     if (input.exitCode === 0) {
+      const streamedOutput = input.streamedOutput?.trim();
+      if (streamedOutput) {
+        return { success: true as const, output: streamedOutput };
+      }
       const messages = parseJsonLines(input.stdout)
         .filter(event => event.type === 'item.completed')
         .map(event => event.item)
@@ -100,6 +104,17 @@ export class CodexCliDriver implements HarnessDriver {
       }
     }
     return normalizeHarnessResult(input);
+  }
+
+  parseResultLine(input: HarnessProgressLineInput): string | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || event.type !== 'item.completed') return null;
+    const item = event.item;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    if (record.type !== 'agent_message' || typeof record.text !== 'string') return null;
+    return record.text.trim() || null;
   }
 
   parseProgressLine(input: HarnessProgressLineInput): HarnessProgressEvent | null {

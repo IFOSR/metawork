@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
-import type { HarnessDriver } from '../../src/executor/harness-driver.js';
+import type {
+  HarnessDriver,
+  HarnessProgressLineInput,
+  HarnessResultInput,
+} from '../../src/executor/harness-driver.js';
 import {
   LocalCliExecutorAdapter,
   SpawnLocalCliChildProcessRunner,
@@ -169,6 +173,40 @@ describe('LocalCliExecutorAdapter', () => {
     });
   });
 
+  it('returns a separately streamed final answer when bounded stdout no longer contains it', async () => {
+    const driver = harnessDriver('pi-cli') as HarnessDriver & {
+      parseResultLine?(input: HarnessProgressLineInput): string | null;
+    };
+    driver.parseResultLine = vi.fn(input => (
+      input.line.includes('"message_end"') ? 'Complete final answer' : null
+    ));
+    driver.parseResult = vi.fn((input: HarnessResultInput & { streamedOutput?: string | null }) => ({
+      success: true,
+      output: input.streamedOutput ?? 'truncated diagnostic tail',
+    }));
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        input.onLine?.('{"type":"message_end","message":{"role":"assistant"}}', 'stdout');
+        return { exitCode: 0, stdout: 'truncated diagnostic tail', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      attemptsRoot: '/runtime/attempts',
+      processRunner,
+    });
+
+    const result = await adapter.execute(executorInput('attempt-streamed-final'));
+
+    expect(result).toMatchObject({
+      success: true,
+      output: 'Complete final answer',
+    });
+  });
+
   it('does not inherit host Agent homes into a local CLI process', async () => {
     const spawnProcess = vi.fn((_command, _args, options) => {
       expect(options.env).not.toHaveProperty('HOME');
@@ -203,6 +241,32 @@ describe('LocalCliExecutorAdapter', () => {
     });
     expect(spawnProcess).toHaveBeenCalledTimes(1);
   });
+
+  it('retains final stdout events when a JSON stream exceeds the capture limit', async () => {
+    const finalEvent = `${JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Final answer' }],
+      },
+    })}\n`;
+    const spawnProcess = vi.fn(() => streamingChildProcess([
+      'x'.repeat(16 * 1024 * 1024),
+      finalEvent,
+    ]));
+    const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess });
+
+    const result = await runner.run({
+      attemptId: 'attempt-large-json-stream',
+      command: 'pi',
+      args: [],
+      cwd: '/workspace/attempt-large-json-stream',
+      environment: {},
+    });
+
+    expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect(result.stdout.endsWith(finalEvent)).toBe(true);
+  });
 });
 
 function completedChildProcess() {
@@ -215,6 +279,30 @@ function completedChildProcess() {
     once: vi.fn((event: string, listener: (...args: any[]) => void) => {
       listeners.set(event, listener);
       if (event === 'exit') queueMicrotask(() => listener(0));
+      return child;
+    }),
+    kill: vi.fn(),
+  };
+  return child;
+}
+
+function streamingChildProcess(stdoutChunks: string[]) {
+  let stdoutListener: ((chunk: string) => void) | null = null;
+  const child = {
+    pid: 123,
+    stdout: {
+      on: vi.fn((event: string, listener: (chunk: string) => void) => {
+        if (event === 'data') stdoutListener = listener;
+      }),
+    },
+    stderr: { on: vi.fn() },
+    once: vi.fn((event: string, listener: (...args: any[]) => void) => {
+      if (event === 'exit') {
+        queueMicrotask(() => {
+          for (const chunk of stdoutChunks) stdoutListener?.(chunk);
+          listener(0);
+        });
+      }
       return child;
     }),
     kill: vi.fn(),

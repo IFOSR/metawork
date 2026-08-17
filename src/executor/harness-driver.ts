@@ -9,6 +9,7 @@ export interface HarnessResultInput {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  streamedOutput?: string | null;
 }
 
 export interface HarnessProgressLineInput {
@@ -65,6 +66,7 @@ export interface HarnessDriver {
   materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome>;
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec;
   parseResult(input: HarnessResultInput): HarnessExecutorResult;
+  parseResultLine?(input: HarnessProgressLineInput): string | null;
   parseProgressLine?(input: HarnessProgressLineInput): HarnessProgressEvent | null;
 }
 
@@ -93,7 +95,7 @@ export function emptyToUndefined(value: string | undefined): string | undefined 
 }
 
 export function normalizeHarnessResult(input: HarnessResultInput): HarnessExecutorResult {
-  const output = input.stdout.trim();
+  const output = input.streamedOutput?.trim() || input.stdout.trim();
   if (input.exitCode === 0) return { success: true, output };
   return {
     success: false,

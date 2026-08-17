@@ -60,6 +60,18 @@ describe('PiCliDriver', () => {
       success: true,
       output: 'Final research answer',
     });
+    expect((driver as PiCliDriver & {
+      parseResultLine?(input: { stream: 'stdout' | 'stderr'; line: string }): string | null;
+    }).parseResultLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Final research answer' }],
+        },
+      }),
+    })).toBe('Final research answer');
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({ type: 'message_update', message: { role: 'assistant' } }),

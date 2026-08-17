@@ -91,6 +91,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         cwd: executionBinding.workspacePath,
         runtimeHomePath: runtimeHome.homePath,
       });
+      let streamedOutput: string | null = null;
       const rawResult = await this.processRunner.run({
         attemptId: executionBinding.attemptId,
         command: launch.command,
@@ -102,11 +103,17 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ...launch.environment,
         },
         onLine: (line, stream) => {
+          const resultLine = this.driver.parseResultLine?.({ line, stream });
+          if (resultLine !== null && resultLine !== undefined) {
+            streamedOutput = resultLine;
+          }
           const progress = this.driver.parseProgressLine?.({ line, stream });
           if (progress) input.onProgress?.(progress);
         },
       });
-      const result = this.driver.parseResult(rawResult);
+      const result = this.driver.parseResult(streamedOutput === null
+        ? rawResult
+        : { ...rawResult, streamedOutput });
       const exitCode = rawResult.exitCode ?? (result.success ? 0 : 1);
       if (result.success) {
         return {
@@ -187,13 +194,13 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         windowsHide: true,
       });
       this.activeProcesses.set(input.attemptId, child);
-      let stdout = '';
-      let stderr = '';
+      let stdout: Buffer = Buffer.alloc(0);
+      let stderr: Buffer = Buffer.alloc(0);
       let stdoutLineBuffer = '';
       let stderrLineBuffer = '';
       let settled = false;
       const appendStdout = (chunk: Buffer | string) => {
-        stdout = appendBounded(stdout, chunk);
+        stdout = appendBoundedTail(stdout, chunk);
         stdoutLineBuffer = emitCompleteLines(
           stdoutLineBuffer,
           chunk,
@@ -201,7 +208,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         );
       };
       const appendStderr = (chunk: Buffer | string) => {
-        stderr = appendBounded(stderr, chunk);
+        stderr = appendBoundedTail(stderr, chunk);
         stderrLineBuffer = emitCompleteLines(
           stderrLineBuffer,
           chunk,
@@ -216,7 +223,11 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         if (this.activeProcesses.get(input.attemptId) === child) {
           this.activeProcesses.delete(input.attemptId);
         }
-        resolve({ exitCode, stdout, stderr });
+        resolve({
+          exitCode,
+          stdout: decodeBoundedCapture(stdout),
+          stderr: decodeBoundedCapture(stderr),
+        });
       };
 
       child.stdout?.on('data', appendStdout);
@@ -246,11 +257,22 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   }
 }
 
-function appendBounded(current: string, chunk: Buffer | string): string {
-  const currentBytes = Buffer.byteLength(current, 'utf8');
-  if (currentBytes >= MAX_CAPTURE_BYTES) return current;
-  const remaining = MAX_CAPTURE_BYTES - currentBytes;
-  return current + Buffer.from(chunk).subarray(0, remaining).toString('utf8');
+function appendBoundedTail(current: Buffer, chunk: Buffer | string): Buffer {
+  const incoming = Buffer.from(chunk);
+  if (incoming.length >= MAX_CAPTURE_BYTES) {
+    return incoming.subarray(incoming.length - MAX_CAPTURE_BYTES);
+  }
+  const retainedBytes = MAX_CAPTURE_BYTES - incoming.length;
+  const retained = current.length > retainedBytes
+    ? current.subarray(current.length - retainedBytes)
+    : current;
+  return Buffer.concat([retained, incoming]);
+}
+
+function decodeBoundedCapture(value: Buffer): string {
+  let start = 0;
+  while (start < value.length && (value[start]! & 0xc0) === 0x80) start += 1;
+  return value.subarray(start).toString('utf8');
 }
 
 function emitCompleteLines(
