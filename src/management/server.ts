@@ -160,6 +160,9 @@ export class ManagementServer {
     WebSocketConnection.accept(socket, key);
 
     let adapter: SessionStreamAdapter | null = null;
+    let traceUnsubscribe: (() => void) | null = null;
+    let traceTurnId: string | null = null;
+    let traceSequence = 0;
     let ws: WebSocketConnection;
 
     ws = new WebSocketConnection(socket, {
@@ -184,6 +187,7 @@ export class ManagementServer {
       },
       onClose: () => {
         adapter?.detach();
+        traceUnsubscribe?.();
         this.authenticatedWsConnections.delete(ws);
         this.wsConnections.delete(ws);
       },
@@ -197,6 +201,24 @@ export class ManagementServer {
     adapter.attach();
     this.authenticatedWsConnections.add(ws);
     ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
+    traceUnsubscribe = session.subscribeInteractionTrace(trace => {
+      if (!trace) return;
+      if (trace.turnId !== traceTurnId) {
+        traceTurnId = trace.turnId;
+        traceSequence = trace.events.at(-1)?.sequence ?? 0;
+        ws.send(JSON.stringify({ type: 'trace_snapshot', trace }));
+        return;
+      }
+      const events = trace.events.filter(event => event.sequence > traceSequence);
+      if (events.length === 0) return;
+      traceSequence = events.at(-1)!.sequence;
+      ws.send(JSON.stringify({
+        type: 'trace_delta',
+        turnId: trace.turnId,
+        fromSequence: events[0]!.sequence,
+        events,
+      }));
+    });
     // 新连接补发当前执行时间线：增量广播只发给当时已连接的客户端。
     if (this.lastTimelineTaskId && this.lastTimeline) {
       ws.send(JSON.stringify({

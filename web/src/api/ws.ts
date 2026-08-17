@@ -1,9 +1,17 @@
-import type { ClientMessage, ExecutionTimeline, ServerMessage } from './types';
+import type {
+  ClientMessage,
+  ExecutionTimeline,
+  InteractionTrace,
+  InteractionTraceEvent,
+  ServerMessage,
+} from './types';
 
 export interface WsHandlers {
   onHello?: (sessionId: string) => void;
   onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
+  onTraceSnapshot?: (trace: InteractionTrace) => void;
+  onTraceDelta?: (turnId: string, fromSequence: number, events: InteractionTraceEvent[]) => void;
   onError?: (message: string) => void;
   onUnauthorized?: () => void;
   onStatusChange?: (connected: boolean) => void;
@@ -43,6 +51,12 @@ export class WsClient {
           break;
         case 'execution':
           this.handlers.onExecution?.(message.taskId, message.timeline);
+          break;
+        case 'trace_snapshot':
+          this.handlers.onTraceSnapshot?.(message.trace);
+          break;
+        case 'trace_delta':
+          this.handlers.onTraceDelta?.(message.turnId, message.fromSequence, message.events);
           break;
         case 'error':
           if (message.message === 'unauthorized') {

@@ -319,6 +319,21 @@ describe('natural-language planning/kernel path', () => {
     expect(harness.taskRepo.findAll()[0]?.id).toMatch(/^task_/);
     expect(harness.taskRepo.findById('')).toBeNull();
     expect(harness.taskRepo.findById('   ')).toBeNull();
+    expect(harness.session.getInteractionTrace()?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: 'routing',
+        kind: 'executor_routed',
+        details: expect.objectContaining({
+          fallbackOrder: 0,
+          authorizedBinding: expect.objectContaining({
+            agentClassRef: 'codex-cli',
+            harnessRef: 'codex-cli',
+            providerRef: 'test-provider',
+            modelRef: 'test-model',
+          }),
+        }),
+      }),
+    ]));
   });
 
   it('returns an accepted proposal after Task and Work Graph persistence without waiting for Executor completion', async () => {

@@ -37,6 +37,31 @@ export interface ExecutionTimeline {
   stages: TimelineStage[];
 }
 
+export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked';
+
+export interface InteractionTraceEvent {
+  id: string;
+  sequence: number;
+  occurredAt: string;
+  phase: 'intake' | 'planning' | 'authorization' | 'routing' | 'execution' | 'verification' | 'delivery';
+  actor: 'user' | 'planner' | 'kernel' | 'runtime' | 'executor';
+  kind: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+  title: string;
+  summary: string;
+  details: Record<string, unknown>;
+}
+
+export interface InteractionTrace {
+  sessionId: string;
+  turnId: string;
+  taskId: string | null;
+  status: InteractionTraceStatus;
+  startedAt: string;
+  completedAt: string | null;
+  events: InteractionTraceEvent[];
+}
+
 export interface ConfigSnapshot {
   revisionId: string;
   runningRevisionId: string;
@@ -75,6 +100,13 @@ export type ServerMessage =
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
+  | { type: 'trace_snapshot'; trace: InteractionTrace }
+  | {
+      type: 'trace_delta';
+      turnId: string;
+      fromSequence: number;
+      events: InteractionTraceEvent[];
+    }
   | { type: 'error'; message: string };
 
 export type ClientMessage =

@@ -1824,6 +1824,31 @@ export class MetaclawSession {
       eventKey: decision.id,
       taskId,
     });
+    if (decision.action.type !== 'authorize_task_plan') return;
+    const action = decision.action;
+    for (const subtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
+      const bindings = action.authorizedBindingsBySubtask[subtaskId] ?? [];
+      bindings.forEach((binding, fallbackOrder) => {
+        this.interactionTraceStream.append({
+          phase: 'routing',
+          actor: 'kernel',
+          kind: 'executor_routed',
+          status: 'completed',
+          title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
+          summary:
+            `${binding.agentClassRef} via ${binding.harnessRef} `
+            + `using ${binding.providerRef}/${binding.modelRef}`,
+          details: {
+            subtaskId,
+            fallbackOrder,
+            routingRole: fallbackOrder === 0 ? 'primary' : 'fallback',
+            authorizedBinding: binding,
+          },
+          eventKey: `${decision.id}:${subtaskId}:${fallbackOrder}`,
+          taskId: action.taskId,
+        });
+      });
+    }
   }
 
   private async requestKernelReplan(

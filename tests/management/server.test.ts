@@ -3,10 +3,14 @@ import { createConnection, createServer, type Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { ManagementServer, type ConfigQuery } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
+import type { InteractionTrace } from '../../src/management/interaction-trace.js';
 
 interface TestSession {
   initialize(): void;
   subscribe(listener: (snapshot: { output: string[]; currentTaskId: string | null }) => void): () => void;
+  getSnapshot(): { output: string[]; currentTaskId: string | null };
+  subscribeInteractionTrace(listener: (trace: InteractionTrace | null) => void): () => void;
+  getInteractionTrace(): InteractionTrace | null;
   submit(): Promise<{ exitRequested: boolean }>;
   dispose(): Promise<void>;
 }
@@ -91,6 +95,94 @@ class RawWebSocketClient {
 }
 
 describe('ManagementServer WebSocket authentication', () => {
+  it('sends trace snapshots on connect and ordered deltas while a turn is running', async () => {
+    const port = await reservePort();
+    let trace: InteractionTrace = {
+      sessionId: 'sess_web_trace',
+      turnId: 'turn-trace',
+      taskId: null,
+      status: 'running',
+      startedAt: '2026-08-17T00:00:00.000Z',
+      completedAt: null,
+      events: [{
+        id: 'interaction:turn-trace:query_received:query',
+        sequence: 1,
+        occurredAt: '2026-08-17T00:00:00.000Z',
+        phase: 'intake',
+        actor: 'user',
+        kind: 'query_received',
+        status: 'completed',
+        title: 'User query received',
+        summary: 'Show the process',
+        details: {},
+      }],
+    };
+    const traceListeners = new Set<(value: InteractionTrace | null) => void>();
+    const session: TestSession = {
+      initialize() {},
+      subscribe(listener) {
+        listener({ output: [], currentTaskId: null });
+        return () => {};
+      },
+      getSnapshot: () => ({ output: [], currentTaskId: null }),
+      subscribeInteractionTrace(listener) {
+        traceListeners.add(listener);
+        listener(structuredClone(trace));
+        return () => traceListeners.delete(listener);
+      },
+      getInteractionTrace: () => structuredClone(trace),
+      async submit() {
+        return { exitRequested: false };
+      },
+      async dispose() {},
+    };
+    const server = createManagementServer(port, undefined, session);
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await expect(first.nextText()).resolves.toContain('"type":"hello"');
+      await expect(first.nextText()).resolves.toContain('"type":"trace_snapshot"');
+      trace = {
+        ...trace,
+        events: [...trace.events, {
+          id: 'interaction:turn-trace:planner_started:planner',
+          sequence: 2,
+          occurredAt: '2026-08-17T00:00:01.000Z',
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_started',
+          status: 'running',
+          title: 'Planner started',
+          summary: 'Planning',
+          details: {},
+        }],
+      };
+      for (const listener of traceListeners) listener(structuredClone(trace));
+      await expect(first.nextText()).resolves.toBe(JSON.stringify({
+        type: 'trace_delta',
+        turnId: 'turn-trace',
+        fromSequence: 2,
+        events: [trace.events[1]],
+      }));
+
+      const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+      try {
+        await expect(second.nextText()).resolves.toContain('"type":"hello"');
+        await expect(second.nextText()).resolves.toBe(JSON.stringify({
+          type: 'trace_snapshot',
+          trace,
+        }));
+      } finally {
+        second.close();
+      }
+    } finally {
+      first.close();
+      await server.stop();
+    }
+  });
+
   it('broadcasts execution data only to authenticated connections', async () => {
     const port = await reservePort();
     const server = createManagementServer(port);
@@ -276,6 +368,12 @@ describe('ManagementServer WebSocket authentication', () => {
           listeners.delete(listener);
         };
       },
+      getSnapshot: () => ({ ...state, output: [...state.output] }),
+      subscribeInteractionTrace(listener) {
+        listener(null);
+        return () => {};
+      },
+      getInteractionTrace: () => null,
       async submit() {
         return { exitRequested: false };
       },
@@ -326,6 +424,12 @@ describe('ManagementServer WebSocket authentication', () => {
         listener({ ...state, output: [...state.output] });
         return () => {};
       },
+      getSnapshot: () => ({ ...state, output: [...state.output] }),
+      subscribeInteractionTrace(listener) {
+        listener(null);
+        return () => {};
+      },
+      getInteractionTrace: () => null,
       async submit() {
         return { exitRequested: false };
       },
@@ -376,6 +480,12 @@ function createManagementServer(
       listener({ output: [], currentTaskId: null });
       return () => {};
     },
+    getSnapshot: () => ({ output: [], currentTaskId: null }),
+    subscribeInteractionTrace(listener) {
+      listener(null);
+      return () => {};
+    },
+    getInteractionTrace: () => null,
     async submit() {
       return { exitRequested: false };
     },
