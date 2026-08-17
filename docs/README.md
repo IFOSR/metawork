@@ -49,6 +49,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Web interaction trace and Planner socket reliability](plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md): prevents composition processes from unlinking a live Planner Host socket and adds a streaming, refresh-safe, redacted query-to-delivery trace in the Web right pane.
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.
 - [Revised MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): fifteen TDD tasks covering signed release trust, immutable revisions, one schema 30-to-31 migration, generation-scoped Kernel/recovery bindings, atomic legacy cutover, Harness drivers, transactional database rollback, native release gates, and a deferred A2A seam.
 - [Conditionally approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, generation-scoped revision authority, Provider/Model health, signed transactional updates, isolated AgentClass runtimes, migration and acceptance criteria.

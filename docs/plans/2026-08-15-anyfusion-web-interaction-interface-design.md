@@ -3,7 +3,7 @@
 > 状态：已实现
 > 设计日期：2026-08-15
 > 完成日期：2026-08-16
-> 修订：2026-08-15（v4：锁覆盖矩阵、gateway socket 归属、投影触发跨模块预授权）
+> 修订：2026-08-17（v5：所有 composition 模式统一取锁，Planner socket 增加活跃探测与所有权校验）
 > 关联：Server 升级实现计划（2026-08-11）、ADR-0027（Configuration Control Plane）、ADR-0015（Planner-owned semantics）、ADR-0020（模块归属与依赖方向）
 > 用途：为 AnyFusion 设计一个基于浏览器的用户交互主界面，作为命令行 TUI 的并存替代，让用户输入问题、观察 Agent 执行全过程、配置 agents 和基础模型。
 
@@ -64,7 +64,7 @@
 | `metawork`（TUI） | 取 | 主交互面 |
 | `metawork web` | 取 | 主交互面 |
 | `metawork --gateway`（gateway 守护） | 取 | **持锁期间 TUI/web 被拒——这是显式的产品行为变更**：今天 gateway daemon 与 TUI 可以（带病）并存，上锁后互斥，方向正确但需知晓 |
-| `metawork --script` | **不取** | 调试/脚本用途；文档注明「不得与运行中实例并用」；smoke 等自动验证在独立 install root 下运行，天然隔离 |
+| `metawork --script` | 取 | 脚本同样创建 Session、Kernel、Runtime 和 Planner Host；必须在任何 socket cleanup 前被实例锁保护。smoke 等并行验证应使用独立 install root |
 | admin 命令（`metawork config ...` 等） | 不取 | 纯配置操作，不经 composition，不碰 planner socket |
 
 **gateway socket 属于交互面**：`MetaclawGatewayServer` 的 Unix socket 与 Pi TUI、HTTP/WS 并列——TUI 模式起 TUI + gateway socket（现状），web 模式**不启动** gateway socket（否则 gateway 的 per-connection session 与 web 的单例 session 同进程并存，与 §4.4 撞车）。web 模式只起 HTTP/WS。
@@ -86,7 +86,7 @@
 6. web 模式打印启动 URL + token（见第 6.4 节）
 ```
 
-锁文件写入 PID；正常退出（含 SIGINT/SIGTERM handler）时清理。SIGKILL/断电无法清理，由第 2 步的 PID 存活探测回收——**这一步必须在任何 socket unlink 之前执行**，保证第二个实例在抢 planner socket 之前就被拒绝。
+锁文件写入 PID；正常退出（含 SIGINT/SIGTERM handler）时清理。SIGKILL/断电无法清理，由第 2 步的 PID 存活探测回收——**这一步必须在任何 socket unlink 之前执行**，保证第二个实例在抢 planner socket 之前就被拒绝。`PlannerHostBridge` 还必须探测已有 socket 是否可达，并在 stop 时校验 socket inode 所有权；实例锁是主防线，socket 所有权校验是防御性兜底。详细契约见 [Web Interaction Trace And Planner Socket Reliability Design](2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md)。
 
 ### 4.3 模块归属（ADR-0020）
 
