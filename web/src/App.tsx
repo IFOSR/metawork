@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { HttpClient } from './api/http';
 import { WsClient } from './api/ws';
 import { mergeOutputLines } from './api/output-buffer';
-import type { ExecutionTimeline } from './api/types';
+import type { ExecutionTimeline, InteractionTrace } from './api/types';
 import { TokenGate } from './components/TokenGate';
 import { ChatPane } from './components/ChatPane';
-import { ExecutionTimelineView } from './components/ExecutionTimeline';
+import { InteractionTracePanel } from './components/InteractionTracePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { establishWebSession, exchangeWebCredential } from './auth';
 
@@ -18,6 +18,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [output, setOutput] = useState<string[]>([]);
   const [timeline, setTimeline] = useState<ExecutionTimeline | null>(null);
+  const [trace, setTrace] = useState<InteractionTrace | null>(null);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const httpRef = useRef<HttpClient | null>(null);
@@ -54,6 +55,31 @@ export function App() {
       onHello: sid => setSessionId(sid),
       onOutput: (lines, from) => setOutput(prev => mergeOutputLines(prev, from, lines)),
       onExecution: (_taskId, next) => setTimeline(next),
+      onTraceSnapshot: next => setTrace(next),
+      onTraceDelta: (turnId, fromSequence, events) => {
+        setTrace(current => {
+          if (!current || current.turnId !== turnId) return current;
+          const expected = (current.events.at(-1)?.sequence ?? 0) + 1;
+          if (fromSequence > expected) return current;
+          const merged = new Map(current.events.map(event => [event.id, event]));
+          for (const event of events) merged.set(event.id, event);
+          const ordered = [...merged.values()].sort((left, right) => left.sequence - right.sequence);
+          const last = ordered.at(-1);
+          const status = last?.kind === 'delivery_completed'
+            ? 'completed'
+            : last?.status === 'failed'
+              ? 'failed'
+              : last?.status === 'blocked'
+                ? 'blocked'
+                : current.status;
+          return {
+            ...current,
+            status,
+            completedAt: status === 'running' ? null : last?.occurredAt ?? current.completedAt,
+            events: ordered,
+          };
+        });
+      },
       onError: message => setOutput(prev => [...prev, `错误: ${message}`]),
       onUnauthorized: handleUnauthorized,
       onStatusChange: setConnected,
@@ -97,8 +123,8 @@ export function App() {
         </div>
       </header>
       <div className="main">
-        <ChatPane output={output} timeline={timeline} onSend={text => wsRef.current?.sendInput(text)} />
-        <ExecutionTimelineView timeline={timeline} />
+        <ChatPane output={output} onSend={text => wsRef.current?.sendInput(text)} />
+        <InteractionTracePanel trace={trace} timeline={timeline} />
       </div>
       {settingsOpen && (
         <SettingsPanel http={httpRef.current} onClose={() => setSettingsOpen(false)} />
