@@ -50,6 +50,7 @@ import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-r
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from './storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from './storage/executor-attempt-runtime-repo.js';
+import { KernelDispatchItemRepo } from './storage/kernel-dispatch-item-repo.js';
 import {
   acquireInstanceLock,
   stopInstanceForRestart,
@@ -443,6 +444,7 @@ async function main() {
       decisionRepo: new KernelDecisionRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
       attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
+      dispatchItemRepo: new KernelDispatchItemRepo(db),
     });
     await runWebMode({
       port: cliArgs.webPort ?? 8788,

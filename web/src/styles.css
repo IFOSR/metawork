@@ -1456,6 +1456,68 @@ select {
   background: #151916;
 }
 
+.executor-subtask {
+  margin-top: 7px;
+}
+
+.executor-attempt {
+  margin: 6px 0 0 10px;
+  overflow: hidden;
+  border: 1px solid #2b352d;
+  border-radius: 8px;
+  background: #111511;
+}
+
+.executor-attempt[data-status='running'] {
+  border-color: #46614d;
+}
+
+.executor-attempt > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #273028;
+  color: #77837a;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+}
+
+.executor-attempt > header strong {
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.executor-attempt ol {
+  margin: 0;
+  padding: 5px 10px 8px;
+  list-style: none;
+}
+
+.executor-attempt li {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+  padding: 5px 0;
+  color: #aeb8b0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.executor-attempt li + li {
+  border-top: 1px solid rgba(42, 50, 43, 0.55);
+}
+
+.executor-attempt li time {
+  color: #69756c;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+}
+
+.executor-waiting span {
+  color: var(--text-dim);
+}
+
 .subtask-fact span,
 .subtask-fact small {
   color: var(--text-dim);
@@ -1467,13 +1529,9 @@ select {
 }
 
 .final-answer {
-  margin-top: 25px;
-  padding: 24px 27px;
-  border: 1px solid #344239;
-  border-radius: 13px;
-  background:
-    linear-gradient(135deg, rgba(145, 210, 165, 0.055), transparent 45%),
-    #121612;
+  margin-top: 28px;
+  padding: 9px 2px 0;
+  border-top: 1px solid #2e3931;
 }
 
 .final-answer header {

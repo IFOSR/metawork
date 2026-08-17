@@ -11,6 +11,16 @@ export interface HarnessResultInput {
   stderr: string;
 }
 
+export interface HarnessProgressLineInput {
+  stream: 'stdout' | 'stderr';
+  line: string;
+}
+
+export interface HarnessProgressEvent {
+  kind: 'status' | 'log' | 'skill';
+  text: string;
+}
+
 export type HarnessExecutorResult =
   | { success: true; output: string }
   | { success: false; output: ''; error: string };
@@ -55,6 +65,7 @@ export interface HarnessDriver {
   materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome>;
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec;
   parseResult(input: HarnessResultInput): HarnessExecutorResult;
+  parseProgressLine?(input: HarnessProgressLineInput): HarnessProgressEvent | null;
 }
 
 /** Whitelists the host variables an Executor child process may inherit. */
@@ -89,4 +100,45 @@ export function normalizeHarnessResult(input: HarnessResultInput): HarnessExecut
     output: '',
     error: redactSensitiveText(input.stderr.trim() || `process exited with code ${input.exitCode ?? 'unknown'}`),
   };
+}
+
+export function parseJsonLine(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseJsonLines(value: string): Record<string, unknown>[] {
+  return value.split(/\r?\n/u)
+    .map(parseJsonLine)
+    .filter((entry): entry is Record<string, unknown> => entry !== null);
+}
+
+export function safeHarnessName(value: unknown): string {
+  const normalized = typeof value === 'string'
+    ? value.trim().replace(/[^A-Za-z0-9_.:-]+/gu, '_')
+    : '';
+  return normalized.slice(0, 120) || 'unknown';
+}
+
+export function assistantMessageText(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const message = value as Record<string, unknown>;
+  if (message.role !== 'assistant') return null;
+  if (typeof message.text === 'string' && message.text.trim()) return message.text.trim();
+  if (!Array.isArray(message.content)) return null;
+  const text = message.content
+    .filter((item): item is Record<string, unknown> => (
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+    ))
+    .filter(item => item.type === 'text' && typeof item.text === 'string')
+    .map(item => String(item.text))
+    .join('\n')
+    .trim();
+  return text || null;
 }

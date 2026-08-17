@@ -15,7 +15,7 @@ describe('PiCliDriver', () => {
 
     expect(launch).toEqual({
       command: 'pi',
-      args: ['-p', 'research current information'],
+      args: ['--mode', 'json', 'research current information'],
       cwd: '/workspace/task',
       environment: {
         HOME: '/attempt/home',
@@ -30,6 +30,51 @@ describe('PiCliDriver', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 1, stdout: '', stderr: 'token=sk-secret' }))
       .toEqual({ success: false, output: '', error: 'token=[REDACTED]' });
+  });
+
+  it('extracts the final assistant answer and only exposes safe lifecycle progress', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const stdout = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'turn_start', turnIndex: 0 }),
+      JSON.stringify({
+        type: 'message_update',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'hidden reasoning text' }] },
+      }),
+      JSON.stringify({
+        type: 'tool_execution_start',
+        toolCallId: 'tool_1',
+        toolName: 'web_search',
+        args: { query: 'sensitive query value' },
+      }),
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Final research answer' }],
+        },
+      }),
+    ].join('\n');
+
+    expect(driver.parseResult({ exitCode: 0, stdout, stderr: '' })).toEqual({
+      success: true,
+      output: 'Final research answer',
+    });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'message_update', message: { role: 'assistant' } }),
+    })).toBeNull();
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_start',
+        toolName: 'web_search',
+        args: { query: 'must not appear' },
+      }),
+    })).toEqual({
+      kind: 'skill',
+      text: 'Executor started tool: web_search',
+    });
   });
 
   it('pre-creates an isolated Pi session directory', async () => {

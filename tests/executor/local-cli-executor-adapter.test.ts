@@ -43,7 +43,7 @@ describe('LocalCliExecutorAdapter', () => {
       cwd: '/workspace/attempt-1',
       runtimeHomePath: '/runtime/attempts/attempt-1/home',
     });
-    expect(processRunner.run).toHaveBeenCalledWith({
+    expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
       command: 'selected-driver-command',
       args: ['--execute'],
@@ -52,7 +52,7 @@ describe('LocalCliExecutorAdapter', () => {
         DRIVER_HOME: 'materialized',
         DRIVER_LAUNCH: 'selected',
       },
-    });
+    }));
     expect(driver.parseResult).toHaveBeenCalledWith({
       exitCode: 0,
       stdout: 'raw output\n',
@@ -134,6 +134,39 @@ describe('LocalCliExecutorAdapter', () => {
       exitCode: 23,
     });
     expect(processRunner.abort).toHaveBeenCalledWith('attempt-23');
+  });
+
+  it('forwards only driver-parsed structured progress from child output', async () => {
+    const driver = harnessDriver('pi-cli');
+    driver.parseProgressLine = vi.fn(input => input.line.includes('tool_execution_start')
+      ? { kind: 'skill', text: 'Executor started tool: web_search' }
+      : null);
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        input.onLine?.('{"type":"message_update","secret":"hidden"}', 'stdout');
+        input.onLine?.('{"type":"tool_execution_start"}', 'stdout');
+        return { exitCode: 0, stdout: 'raw output\n', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const progress = vi.fn();
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      attemptsRoot: '/runtime/attempts',
+      processRunner,
+    });
+    const input = executorInput('attempt-progress');
+    input.onProgress = progress;
+
+    await adapter.execute(input);
+
+    expect(progress).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenCalledWith({
+      kind: 'skill',
+      text: 'Executor started tool: web_search',
+    });
   });
 
   it('does not inherit host Agent homes into a local CLI process', async () => {

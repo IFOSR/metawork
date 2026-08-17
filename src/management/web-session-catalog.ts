@@ -283,13 +283,32 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
           executor: sanitizeInteractionTraceText(subtask.executor, 160),
         } : {}),
         attempts: subtask.attempts.slice(0, 20).map(attempt => ({
+          ...(attempt.attemptId === undefined ? {} : {
+            attemptId: sanitizeInteractionTraceText(attempt.attemptId, 160),
+          }),
           result: sanitizeInteractionTraceText(attempt.result, 160),
+          ...(attempt.status === undefined ? {} : {
+            status: sanitizeInteractionTraceText(attempt.status, 80),
+          }),
+          ...(attempt.startedAt === undefined ? {} : {
+            startedAt: sanitizeInteractionTraceText(attempt.startedAt, 80),
+          }),
+          ...(attempt.updatedAt === undefined ? {} : {
+            updatedAt: sanitizeInteractionTraceText(attempt.updatedAt, 80),
+          }),
           ...(attempt.exitCode === undefined ? {} : { exitCode: attempt.exitCode }),
           ...(attempt.error === undefined ? {} : {
             error: sanitizeInteractionTraceText(attempt.error, 1_000),
           }),
           ...(attempt.progress === undefined ? {} : {
             progress: sanitizeInteractionTraceDetails(attempt.progress),
+          }),
+          ...(attempt.progressHistory === undefined ? {} : {
+            progressHistory: attempt.progressHistory.slice(-20).map(entry => ({
+              kind: sanitizeInteractionTraceText(entry.kind, 80),
+              text: sanitizeInteractionTraceText(entry.text, 500),
+              occurredAt: sanitizeInteractionTraceText(entry.occurredAt, 80),
+            })),
           }),
         })),
       })),

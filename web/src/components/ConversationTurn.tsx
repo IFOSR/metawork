@@ -10,9 +10,8 @@ export function ConversationTurnView({ turn }: { turn: ConversationTurnProjectio
         <p>{turn.userInput}</p>
       </section>
       <ExecutionNarrative turn={turn} />
-      {turn.finalAnswer && (
+      {turn.status !== 'running' && turn.finalAnswer && (
         <section className="final-answer">
-          <header><span>ANYFUSION</span><strong>最终答案</strong></header>
           <MarkdownContent value={turn.finalAnswer} />
         </section>
       )}

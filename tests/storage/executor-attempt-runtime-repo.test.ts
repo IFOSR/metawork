@@ -27,4 +27,55 @@ describe('ExecutorAttemptRuntimeRepo', () => {
       recoverySafety: 'workspace_reconcilable',
     });
   });
+
+  it('appends bounded safe progress history while retaining the latest summary', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const repo = new ExecutorAttemptRuntimeRepo(db);
+    repo.start({
+      attemptId: 'attempt_progress',
+      sourceAttemptId: null,
+      workspaceRoot: null,
+      recoverySafety: 'workspace_reconcilable',
+      now: '2026-08-17T08:00:00.000Z',
+    });
+
+    repo.appendProgress(
+      'attempt_progress',
+      { kind: 'status', text: '读取数据' },
+      '2026-08-17T08:00:01.000Z',
+      2,
+    );
+    repo.appendProgress(
+      'attempt_progress',
+      { kind: 'log', text: '分析趋势' },
+      '2026-08-17T08:00:02.000Z',
+      2,
+    );
+    repo.appendProgress(
+      'attempt_progress',
+      { kind: 'log', text: '生成结论' },
+      '2026-08-17T08:00:03.000Z',
+      2,
+    );
+
+    expect(repo.find('attempt_progress')?.progress).toEqual({
+      kind: 'log',
+      text: '生成结论',
+      occurredAt: '2026-08-17T08:00:03.000Z',
+      history: [
+        {
+          kind: 'log',
+          text: '分析趋势',
+          occurredAt: '2026-08-17T08:00:02.000Z',
+        },
+        {
+          kind: 'log',
+          text: '生成结论',
+          occurredAt: '2026-08-17T08:00:03.000Z',
+        },
+      ],
+    });
+    db.close();
+  });
 });

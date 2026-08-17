@@ -13,13 +13,16 @@ describe('Detailed conversation view', () => {
     ]);
 
     expect(view).toContain('ConversationTurnView');
-    expect(turn).toContain('最终答案');
+    expect(turn).toContain("turn.status !== 'running'");
     expect(turn).toContain('MarkdownContent');
+    expect(turn).not.toContain('<strong>最终答案</strong>');
     expect(narrative).toContain('Planner');
     expect(narrative).toContain('授权与路由');
     expect(narrative).toContain('执行');
     expect(narrative).toContain('验证与交付');
     expect(narrative).toContain('executionTimeline');
+    expect(narrative).toContain('progressHistory');
+    expect(narrative).toContain('hasStageContent');
     expect(step).toContain('<details');
     expect(step).toContain('event.details');
     expect(step).not.toContain('rawPrompt');

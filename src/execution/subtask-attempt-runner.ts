@@ -431,6 +431,10 @@ export class SubtaskAttemptRunner {
         recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
         now: startedAt,
       });
+      this.attemptRuntimeRepo.appendProgress(attemptId, {
+        kind: 'status',
+        text: 'Executor 已启动，正在准备受控执行上下文',
+      }, startedAt);
       const evidenceToolsAvailable = agentClassName === 'codex-cli' || agentClassName === 'pi-agent';
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
         ? '127.0.0.1'
@@ -572,7 +576,7 @@ export class SubtaskAttemptRunner {
         onProgress: (event, executor) => {
           const safeText = formatExecutorProgress(event.text);
           if (safeText) {
-            this.attemptRuntimeRepo.recordProgress(attemptId, {
+            this.attemptRuntimeRepo.appendProgress(attemptId, {
               kind: event.kind,
               text: safeText,
             }, new Date().toISOString());

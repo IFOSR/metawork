@@ -11,6 +11,7 @@ const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
+  onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
 }
 
 export interface LocalCliChildProcessResult {
@@ -100,6 +101,10 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ...runtimeHome.environment,
           ...launch.environment,
         },
+        onLine: (line, stream) => {
+          const progress = this.driver.parseProgressLine?.({ line, stream });
+          if (progress) input.onProgress?.(progress);
+        },
       });
       const result = this.driver.parseResult(rawResult);
       const exitCode = rawResult.exitCode ?? (result.success ? 0 : 1);
@@ -184,16 +189,30 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       this.activeProcesses.set(input.attemptId, child);
       let stdout = '';
       let stderr = '';
+      let stdoutLineBuffer = '';
+      let stderrLineBuffer = '';
       let settled = false;
       const appendStdout = (chunk: Buffer | string) => {
         stdout = appendBounded(stdout, chunk);
+        stdoutLineBuffer = emitCompleteLines(
+          stdoutLineBuffer,
+          chunk,
+          line => input.onLine?.(line, 'stdout'),
+        );
       };
       const appendStderr = (chunk: Buffer | string) => {
         stderr = appendBounded(stderr, chunk);
+        stderrLineBuffer = emitCompleteLines(
+          stderrLineBuffer,
+          chunk,
+          line => input.onLine?.(line, 'stderr'),
+        );
       };
       const finish = (exitCode: number | null) => {
         if (settled) return;
         settled = true;
+        if (stdoutLineBuffer.trim()) input.onLine?.(stdoutLineBuffer, 'stdout');
+        if (stderrLineBuffer.trim()) input.onLine?.(stderrLineBuffer, 'stderr');
         if (this.activeProcesses.get(input.attemptId) === child) {
           this.activeProcesses.delete(input.attemptId);
         }
@@ -232,6 +251,20 @@ function appendBounded(current: string, chunk: Buffer | string): string {
   if (currentBytes >= MAX_CAPTURE_BYTES) return current;
   const remaining = MAX_CAPTURE_BYTES - currentBytes;
   return current + Buffer.from(chunk).subarray(0, remaining).toString('utf8');
+}
+
+function emitCompleteLines(
+  current: string,
+  chunk: Buffer | string,
+  emit: (line: string) => void,
+): string {
+  const combined = current + Buffer.from(chunk).toString('utf8');
+  const lines = combined.split(/\r?\n/u);
+  const remainder = lines.pop() ?? '';
+  for (const line of lines) {
+    if (line.trim()) emit(line);
+  }
+  return remainder;
 }
 
 function configurationFailure(

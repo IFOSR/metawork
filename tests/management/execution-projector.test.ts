@@ -60,6 +60,7 @@ function makeProjector(overrides: Partial<ExecutionProjectorDeps> = {}): Executi
     decisionRepo: { listByTask: () => [] },
     publicationRepo: { listIntegratedByTaskIds: () => [], hasBlockingResidue: () => false },
     attemptRuntimeRepo: { find: () => null },
+    dispatchItemRepo: { listByTask: () => [] },
     ...overrides,
   } as unknown as ExecutionProjectorDeps);
 }
@@ -146,6 +147,56 @@ describe('ExecutionProjector', () => {
     expect(sub1?.executor).toBe('codex-cli');
     expect(sub1?.attempts[0]?.result).toBe('success');
     expect(sub1?.attempts[0]?.progress).toEqual({ kind: 'log', text: 'Running focused tests' });
+  });
+
+  it('projects active dispatch progress before a terminal receipt exists', () => {
+    const subtasks = [
+      makeSubtask({ id: 'sub_1', title: '研究主力合约', status: 'running' }),
+    ];
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_running',
+          subtaskId: 'sub_1',
+          status: 'running',
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+          launchStartedAt: '2026-08-17T08:00:00.000Z',
+          updatedAt: '2026-08-17T08:00:04.000Z',
+        }],
+      },
+      attemptRuntimeRepo: {
+        find: () => ({
+          progress: {
+            kind: 'log',
+            text: '正在整理四维度趋势数据',
+            history: [
+              {
+                kind: 'status',
+                text: '读取市场数据',
+                occurredAt: '2026-08-17T08:00:01.000Z',
+              },
+              {
+                kind: 'log',
+                text: '正在整理四维度趋势数据',
+                occurredAt: '2026-08-17T08:00:04.000Z',
+              },
+            ],
+          },
+        }),
+      },
+    }).project(makeTask());
+
+    const attempt = timeline.stages[2].subtasks?.[0]?.attempts[0];
+    expect(attempt).toMatchObject({
+      attemptId: 'attempt_running',
+      result: 'running',
+      progress: { text: '正在整理四维度趋势数据' },
+      progressHistory: [
+        { text: '读取市场数据' },
+        { text: '正在整理四维度趋势数据' },
+      ],
+    });
   });
 
   it('verification 阶段按 receipt violations 推导 failed', () => {

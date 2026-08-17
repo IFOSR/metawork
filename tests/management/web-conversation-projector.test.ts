@@ -174,6 +174,24 @@ describe('WebConversationProjector', () => {
     expect(persisted[0]?.finalAnswer).toBe('Direct final answer');
   });
 
+  it('does not treat dispatch notices as the final answer and extracts executor results', async () => {
+    const { projector } = makeProjector();
+    projector.beginTurn({ userInput: 'Run research', outputFrom: 0 });
+
+    projector.applyOutput([
+      '【Executor: pi-agent｜派发准备】',
+      '→ Executor: pi-agent 将处理该任务',
+    ], 0);
+
+    expect(projector.getSnapshot()?.finalAnswer).toBeNull();
+
+    projector.applyOutput([
+      '【Executor: pi-agent｜最终结果｜#task_1 / #sub_1】\nResearch result',
+    ], 2);
+
+    expect(projector.getSnapshot()?.finalAnswer).toBe('Research result');
+  });
+
   it('uses terminal execution state for authorized background tasks', async () => {
     const { projector, persisted } = makeProjector();
     projector.beginTurn({ userInput: 'Run the task', outputFrom: 0 });

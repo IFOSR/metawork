@@ -17,6 +17,7 @@ describe('CodexCliDriver', () => {
       command: 'codex',
       args: [
         'exec',
+        '--json',
         '--sandbox', 'workspace-write',
         '-c', 'approval_policy="never"',
         '--skip-git-repo-check',
@@ -36,6 +37,47 @@ describe('CodexCliDriver', () => {
       .toEqual({ success: true, output: 'done' });
     expect(driver.parseResult({ exitCode: 2, stdout: '', stderr: 'failed' }))
       .toEqual({ success: false, output: '', error: 'failed' });
+  });
+
+  it('extracts JSONL agent output and ignores reasoning details in progress', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+    const stdout = [
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-secret' }),
+      JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_1', type: 'reasoning', text: 'private reasoning' },
+      }),
+      JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_2', type: 'command_execution', command: 'cat secret.txt' },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'item_3', type: 'agent_message', text: 'Implemented safely' },
+      }),
+    ].join('\n');
+
+    expect(driver.parseResult({ exitCode: 0, stdout, stderr: '' })).toEqual({
+      success: true,
+      output: 'Implemented safely',
+    });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.started',
+        item: { type: 'reasoning', text: 'must not appear' },
+      }),
+    })).toBeNull();
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.started',
+        item: { type: 'command_execution', command: 'cat secret.txt' },
+      }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor started a workspace command',
+    });
   });
 
   it('materializes CODEX_HOME under the supplied attempts root', async () => {

@@ -183,4 +183,52 @@ describe('WebSessionCatalog', () => {
     expect(archived?.session).toMatchObject({ active: false, archived: true });
     expect(await catalog.read(record.session.id)).toEqual(archived);
   });
+
+  it('retains sanitized executor progress history in persisted turns', async () => {
+    const catalog = await makeCatalog([
+      '2026-08-17T08:00:00.000Z',
+      '2026-08-17T08:00:01.000Z',
+    ]);
+    const record = await catalog.create({ title: 'Executor progress' });
+    const turn = makeTurn(record.session.id, 1);
+    turn.executionTimeline = {
+      taskId: 'task_1',
+      title: 'Research',
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [{
+          id: 'sub_1',
+          title: 'Analyze data',
+          status: 'running',
+          executor: 'pi-agent',
+          attempts: [{
+            attemptId: 'attempt_1',
+            result: 'running',
+            status: 'running',
+            startedAt: '2026-08-17T08:00:00.000Z',
+            updatedAt: '2026-08-17T08:00:01.000Z',
+            progress: { text: 'token=secret-value analyzing data' },
+            progressHistory: [{
+              kind: 'log',
+              text: 'token=secret-value analyzing data',
+              occurredAt: '2026-08-17T08:00:01.000Z',
+            }],
+          }],
+        }],
+      }],
+    };
+
+    const updated = await catalog.appendTurn(record.session.id, turn);
+    const attempt = updated?.turns[0]?.executionTimeline?.stages[0]?.subtasks?.[0]?.attempts[0];
+
+    expect(attempt).toMatchObject({
+      attemptId: 'attempt_1',
+      status: 'running',
+      progressHistory: [{
+        text: 'token=[REDACTED] analyzing data',
+      }],
+    });
+  });
 });

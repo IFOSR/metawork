@@ -24,10 +24,19 @@ export interface SubtaskCard {
   status: string;
   executor?: string;
   attempts: Array<{
+    attemptId?: string;
     result: string;
+    status?: string;
+    startedAt?: string;
+    updatedAt?: string;
     exitCode?: number;
     error?: string;
     progress?: Record<string, unknown>;
+    progressHistory?: Array<{
+      kind: string;
+      text: string;
+      occurredAt: string;
+    }>;
   }>;
 }
 

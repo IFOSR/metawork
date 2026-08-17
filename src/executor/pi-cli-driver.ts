@@ -11,6 +11,8 @@ import type {
   HarnessLaunchInput,
   HarnessLaunchSpec,
   HarnessProbeResult,
+  HarnessProgressEvent,
+  HarnessProgressLineInput,
   HarnessResultInput,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
@@ -19,7 +21,11 @@ import type {
 import {
   emptyToUndefined,
   normalizeHarnessResult,
+  assistantMessageText,
+  parseJsonLine,
+  parseJsonLines,
   safeHostEnvironment,
+  safeHarnessName,
 } from './harness-driver.js';
 
 const execFileAsync = promisify(execFile);
@@ -77,7 +83,7 @@ export class PiCliDriver implements HarnessDriver {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
     return {
       command: 'pi',
-      args: ['-p', input.prompt],
+      args: ['--mode', 'json', input.prompt],
       cwd: input.cwd,
       environment: {
         HOME: input.runtimeHomePath,
@@ -88,7 +94,48 @@ export class PiCliDriver implements HarnessDriver {
   }
 
   parseResult(input: HarnessResultInput) {
+    if (input.exitCode === 0) {
+      const messages = parseJsonLines(input.stdout)
+        .filter(event => event.type === 'message_end')
+        .map(event => assistantMessageText(event.message))
+        .filter((value): value is string => Boolean(value));
+      if (messages.length > 0) {
+        return { success: true as const, output: messages.at(-1)! };
+      }
+    }
     return normalizeHarnessResult(input);
+  }
+
+  parseProgressLine(input: HarnessProgressLineInput): HarnessProgressEvent | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || typeof event.type !== 'string') return null;
+    if (event.type === 'agent_start') {
+      return { kind: 'status', text: 'Executor agent loop started' };
+    }
+    if (event.type === 'turn_start') {
+      const turn = typeof event.turnIndex === 'number' ? event.turnIndex + 1 : null;
+      return {
+        kind: 'status',
+        text: turn ? `Executor processing cycle ${turn}` : 'Executor processing cycle started',
+      };
+    }
+    if (event.type === 'tool_execution_start') {
+      return {
+        kind: 'skill',
+        text: `Executor started tool: ${safeHarnessName(event.toolName)}`,
+      };
+    }
+    if (event.type === 'tool_execution_end') {
+      return {
+        kind: 'skill',
+        text: `Executor ${event.isError === true ? 'failed' : 'completed'} tool: ${safeHarnessName(event.toolName)}`,
+      };
+    }
+    if (event.type === 'agent_end') {
+      return { kind: 'status', text: 'Executor agent loop completed' };
+    }
+    return null;
   }
 
   private async seedProviderConfig(homePath: string): Promise<void> {

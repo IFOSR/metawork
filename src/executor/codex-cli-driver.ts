@@ -12,6 +12,8 @@ import type {
   HarnessLaunchInput,
   HarnessLaunchSpec,
   HarnessProbeResult,
+  HarnessProgressEvent,
+  HarnessProgressLineInput,
   HarnessResultInput,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
@@ -20,6 +22,8 @@ import type {
 import {
   emptyToUndefined,
   normalizeHarnessResult,
+  parseJsonLine,
+  parseJsonLines,
   safeHostEnvironment,
 } from './harness-driver.js';
 
@@ -74,14 +78,69 @@ export class CodexCliDriver implements HarnessDriver {
       command: 'codex',
       // The attempt worktree is the trust boundary; codex still defaults to a
       // read-only sandbox for `exec`, so workspace writes must be explicit.
-      args: buildCodexNonInteractiveArgs(input.prompt),
+      args: buildCodexNonInteractiveArgs(input.prompt, { json: true }),
       cwd: input.cwd,
       environment: { CODEX_HOME: input.runtimeHomePath },
     };
   }
 
   parseResult(input: HarnessResultInput) {
+    if (input.exitCode === 0) {
+      const messages = parseJsonLines(input.stdout)
+        .filter(event => event.type === 'item.completed')
+        .map(event => event.item)
+        .filter((item): item is Record<string, unknown> => (
+          Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+        ))
+        .filter(item => item.type === 'agent_message' && typeof item.text === 'string')
+        .map(item => String(item.text).trim())
+        .filter(Boolean);
+      if (messages.length > 0) {
+        return { success: true as const, output: messages.at(-1)! };
+      }
+    }
     return normalizeHarnessResult(input);
+  }
+
+  parseProgressLine(input: HarnessProgressLineInput): HarnessProgressEvent | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || typeof event.type !== 'string') return null;
+    if (event.type === 'thread.started') {
+      return { kind: 'status', text: 'Executor session started' };
+    }
+    if (event.type === 'turn.started') {
+      return { kind: 'status', text: 'Executor processing cycle started' };
+    }
+    if (!['item.started', 'item.completed'].includes(event.type)) return null;
+    const item = event.item;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const itemType = (item as Record<string, unknown>).type;
+    const completed = event.type === 'item.completed';
+    if (itemType === 'command_execution') {
+      return {
+        kind: 'status',
+        text: completed
+          ? 'Executor completed a workspace command'
+          : 'Executor started a workspace command',
+      };
+    }
+    if (itemType === 'mcp_tool_call') {
+      return {
+        kind: 'skill',
+        text: completed ? 'Executor completed an MCP tool call' : 'Executor started an MCP tool call',
+      };
+    }
+    if (itemType === 'web_search') {
+      return {
+        kind: 'skill',
+        text: completed ? 'Executor completed a web search' : 'Executor started a web search',
+      };
+    }
+    if (itemType === 'file_change' && completed) {
+      return { kind: 'status', text: 'Executor recorded workspace changes' };
+    }
+    return null;
   }
 
   private async seedProviderConfig(homePath: string): Promise<void> {

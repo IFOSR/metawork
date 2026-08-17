@@ -136,11 +136,18 @@ export class WebConversationProjector {
         this.outputLines.set(absoluteIndex, line);
       }
     });
-    const answer = [...this.outputLines.entries()]
+    const orderedLines = [...this.outputLines.entries()]
       .sort(([left], [right]) => left - right)
-      .map(([, line]) => line)
+      .map(([, line]) => line);
+    const executorResults = orderedLines
+      .map(extractExecutorFinalResult)
+      .filter((value): value is string => Boolean(value));
+    const answer = (executorResults.length > 0
+      ? executorResults
+      : orderedLines
       .filter(line => isAnswerLine(line, this.current!.userInput))
-      .join('\n')
+    )
+      .join('\n\n')
       .trim();
     this.current.finalAnswer = answer
       ? sanitizeInteractionTraceText(answer, 40_000)
@@ -223,7 +230,15 @@ function isAnswerLine(line: string, userInput: string): boolean {
   if (!normalized) return false;
   if (normalized === `> ${userInput}`) return false;
   if (normalized.startsWith('【MetaClaw｜')) return false;
+  if (/^【Executor: .+｜派发准备】$/u.test(normalized)) return false;
+  if (/^→ Executor: .+ 将处理该任务$/u.test(normalized)) return false;
+  if (/^【Executor: .+｜最终结果｜#[^】]+】/u.test(normalized)) return false;
   return true;
+}
+
+function extractExecutorFinalResult(line: string): string | null {
+  const match = /^【Executor: .+｜最终结果｜#[^】]+】\r?\n([\s\S]+)$/u.exec(line.trim());
+  return match?.[1]?.trim() || null;
 }
 
 function terminalStatusFromTimeline(

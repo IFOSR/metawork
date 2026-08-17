@@ -75,6 +75,24 @@ export class ExecutorAttemptRuntimeRepo {
     `).run(JSON.stringify(progress), now, attemptId);
   }
 
+  appendProgress(
+    attemptId: string,
+    progress: { kind: string; text: string },
+    now: string,
+    maxEntries = 20,
+  ): void {
+    const current = this.find(attemptId);
+    if (!current) return;
+    const existing = Array.isArray(current.progress.history)
+      ? current.progress.history.filter(isProgressEntry)
+      : [];
+    const entry = { ...progress, occurredAt: now };
+    this.recordProgress(attemptId, {
+      ...entry,
+      history: [...existing, entry].slice(-Math.max(1, maxEntries)),
+    }, now);
+  }
+
   recordWorkspaceDelta(attemptId: string, delta: object, now: string): void {
     this.db.prepare(`
       UPDATE executor_attempt_runtime SET workspace_delta_json = ?, updated_at = ? WHERE attempt_id = ?
@@ -87,6 +105,16 @@ export class ExecutorAttemptRuntimeRepo {
     `).get(attemptId) as RuntimeRow | undefined;
     return row ? rowToRecord(row) : null;
   }
+}
+
+function isProgressEntry(
+  value: unknown,
+): value is { kind: string; text: string; occurredAt: string } {
+  return Boolean(value)
+    && typeof value === 'object'
+    && typeof (value as Record<string, unknown>).kind === 'string'
+    && typeof (value as Record<string, unknown>).text === 'string'
+    && typeof (value as Record<string, unknown>).occurredAt === 'string';
 }
 
 function rowToRecord(row: RuntimeRow): ExecutorAttemptRuntimeRecord {
