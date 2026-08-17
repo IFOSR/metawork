@@ -1,7 +1,9 @@
 import { once } from 'node:events';
-import { createConnection, type Socket } from 'node:net';
+import { lstat, unlink } from 'node:fs/promises';
+import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlannerProposalResult, PlannerProposalSubmission } from '../../src/planning/planner-proposal.js';
 import type {
@@ -101,6 +103,68 @@ afterEach(async () => {
 });
 
 describe('PlannerHostBridge shared Proposal Host', () => {
+  it('refuses to replace a reachable live Planner Host socket', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-live.sock`);
+    const first = new PlannerHostBridge({ socketPath });
+    const second = new PlannerHostBridge({ socketPath });
+    await first.start();
+
+    try {
+      await expect(second.start()).rejects.toThrow(/already active/i);
+      const socket = await connect(socketPath);
+      write(socket, { protocolVersion: 2, type: 'ping', requestId: 'ping-live' });
+      expect(await read(socket)).toMatchObject({
+        type: 'error',
+        requestId: 'ping-live',
+        error: { code: 'hello_required' },
+      });
+      socket.destroy();
+    } finally {
+      await second.stop();
+      await first.stop();
+    }
+  });
+
+  it('reclaims a stale Planner Host socket', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-stale.sock`);
+    await createStaleSocket(socketPath);
+    const staleIdentity = await socketIdentity(socketPath);
+    const bridge = new PlannerHostBridge({ socketPath });
+
+    try {
+      await bridge.start();
+      expect(await socketIdentity(socketPath)).not.toEqual(staleIdentity);
+      const socket = await connect(socketPath);
+      socket.destroy();
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it('does not unlink a replacement socket when the original bridge stops', async () => {
+    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-replacement.sock`);
+    const bridge = new PlannerHostBridge({ socketPath });
+    await bridge.start();
+    const originalIdentity = await socketIdentity(socketPath);
+    await unlink(socketPath);
+    const replacement = createServer(socket => socket.end('replacement'));
+    await listen(replacement, socketPath);
+    const replacementIdentity = await socketIdentity(socketPath);
+    expect(replacementIdentity).not.toEqual(originalIdentity);
+
+    try {
+      await bridge.stop();
+      expect(await socketIdentity(socketPath)).toEqual(replacementIdentity);
+      const socket = await connect(socketPath);
+      const [data] = await once(socket, 'data');
+      expect(String(data)).toBe('replacement');
+      socket.destroy();
+    } finally {
+      await close(replacement);
+      await unlink(socketPath).catch(() => undefined);
+    }
+  });
+
   it('binds hello to a registered session and returns the structured authoritative result', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
     const session = new FakeSession();
@@ -333,6 +397,37 @@ async function connect(socketPath: string): Promise<Socket> {
   socket.setEncoding('utf8');
   await once(socket, 'connect');
   return socket;
+}
+
+async function listen(server: Server, socketPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, resolve);
+  });
+}
+
+async function close(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+  });
+}
+
+async function socketIdentity(socketPath: string): Promise<{ dev: bigint; ino: bigint }> {
+  const stat = await lstat(socketPath, { bigint: true });
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+async function createStaleSocket(socketPath: string): Promise<void> {
+  const script = [
+    "const { createServer } = require('node:net');",
+    'const server = createServer();',
+    `server.listen(${JSON.stringify(socketPath)}, () => process.stdout.write('ready\\n'));`,
+  ].join('');
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await once(child.stdout!, 'data');
+  child.kill('SIGKILL');
+  await once(child, 'exit');
 }
 
 function write(socket: Socket, value: unknown): void {

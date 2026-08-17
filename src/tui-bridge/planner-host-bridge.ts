@@ -1,6 +1,7 @@
-import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
-import { createServer, type Server, type Socket } from 'node:net';
-import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { chmod, lstat, mkdir, rename, unlink } from 'node:fs/promises';
+import { createConnection, createServer, type Server, type Socket } from 'node:net';
+import { basename, dirname, join } from 'node:path';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type { PlannerProposalPurpose, PlannerProposalResult, PlannerProposalSubmission } from '../planning/planner-proposal.js';
 import type {
@@ -40,7 +41,9 @@ export interface PlannerHostBridgeDeps {
 
 type BridgeMessage = PlannerHostMessage<PlannerTuiSnapshot, PlannerTuiExecutorResult, PlannerTuiPermissionRequest>;
 type BoundClient = { sessionId: string; mode: 'interactive' | 'rpc' };
+type SocketIdentity = { dev: bigint; ino: bigint };
 const TRUNCATED_REPORT_SUFFIX = '\n\n> Executor report truncated to fit the 1 MiB Planner Host frame.';
+const SOCKET_PROBE_TIMEOUT_MS = 250;
 
 /**
  * Shared local Proposal Host for every AnyFusion-Pi surface.
@@ -52,6 +55,7 @@ const TRUNCATED_REPORT_SUFFIX = '\n\n> Executor report truncated to fit the 1 Mi
  */
 export class PlannerHostBridge {
   private server: Server | null = null;
+  private ownedSocketIdentity: SocketIdentity | null = null;
   private readonly clients = new Set<Socket>();
   private readonly bindings = new Map<Socket, BoundClient>();
   private readonly sessions = new Map<string, PlannerHostBridgeSession>();
@@ -75,7 +79,7 @@ export class PlannerHostBridge {
   async start(): Promise<void> {
     if (this.server) return;
     await mkdir(dirname(this.deps.socketPath), { recursive: true });
-    await this.removeStaleSocket();
+    await this.reclaimStaleSocket();
     const server = createServer(socket => this.handleConnection(socket));
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -92,6 +96,7 @@ export class PlannerHostBridge {
     });
     this.server = server;
     try {
+      this.ownedSocketIdentity = await this.readSocketIdentity();
       await chmod(this.deps.socketPath, 0o600);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -115,13 +120,12 @@ export class PlannerHostBridge {
     this.sentPermissionRequests.clear();
     this.permissionClosureHints.clear();
     const server = this.server;
+    const ownedSocketIdentity = this.ownedSocketIdentity;
     this.server = null;
+    this.ownedSocketIdentity = null;
     if (server) {
-      await new Promise<void>((resolve, reject) => {
-        server.close(error => error ? reject(error) : resolve());
-      });
+      await this.closeOwnedServer(server, ownedSocketIdentity);
     }
-    await this.removeStaleSocket();
   }
 
   private handleConnection(socket: Socket): void {
@@ -415,14 +419,106 @@ export class PlannerHostBridge {
     if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
   }
 
-  private async removeStaleSocket(): Promise<void> {
+  private async reclaimStaleSocket(attempt = 0): Promise<void> {
     try {
-      const stat = await lstat(this.deps.socketPath);
+      const stat = await lstat(this.deps.socketPath, { bigint: true });
       if (!stat.isSocket()) throw new Error(`refusing to replace non-socket bridge path: ${this.deps.socketPath}`);
+      const observed = { dev: stat.dev, ino: stat.ino };
+      if (await this.isSocketReachable()) {
+        throw new Error(`Planner host socket is already active: ${this.deps.socketPath}`);
+      }
+      const current = await this.readSocketIdentity();
+      if (!sameSocketIdentity(observed, current)) {
+        if (attempt >= 2) {
+          throw new Error(`Planner host socket changed while checking ownership: ${this.deps.socketPath}`);
+        }
+        await this.reclaimStaleSocket(attempt + 1);
+        return;
+      }
       await unlink(this.deps.socketPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw error;
     }
   }
+
+  private async isSocketReachable(): Promise<boolean> {
+    return new Promise(resolve => {
+      const socket = createConnection(this.deps.socketPath);
+      let settled = false;
+      const finish = (reachable: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(reachable);
+      };
+      const timer = setTimeout(() => finish(true), SOCKET_PROBE_TIMEOUT_MS);
+      socket.once('connect', () => {
+        socket.write(`${JSON.stringify({
+          protocolVersion: ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
+          type: 'ping',
+          requestId: `socket-probe-${process.pid}`,
+        })}\n`);
+        finish(true);
+      });
+      socket.once('error', error => {
+        const code = (error as NodeJS.ErrnoException).code;
+        finish(code !== 'ENOENT' && code !== 'ECONNREFUSED');
+      });
+    });
+  }
+
+  private async closeOwnedServer(server: Server, owned: SocketIdentity | null): Promise<void> {
+    let replacementGuardPath: string | null = null;
+    if (owned) {
+      const current = await this.readSocketIdentity().catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      });
+      if (current && !sameSocketIdentity(current, owned)) {
+        replacementGuardPath = join(
+          dirname(this.deps.socketPath),
+          `.${basename(this.deps.socketPath)}.${randomUUID()}.guard`,
+        );
+        await rename(this.deps.socketPath, replacementGuardPath);
+      }
+    }
+
+    let closeError: Error | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    } catch (error) {
+      closeError = error as Error;
+    } finally {
+      if (replacementGuardPath) {
+        await rename(replacementGuardPath, this.deps.socketPath);
+      } else if (owned) {
+        await this.unlinkIfOwned(owned);
+      }
+    }
+    if (closeError) throw closeError;
+  }
+
+  private async unlinkIfOwned(owned: SocketIdentity): Promise<void> {
+    try {
+      const current = await this.readSocketIdentity();
+      if (sameSocketIdentity(current, owned)) await unlink(this.deps.socketPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+  }
+
+  private async readSocketIdentity(): Promise<SocketIdentity> {
+    const stat = await lstat(this.deps.socketPath, { bigint: true });
+    if (!stat.isSocket()) throw new Error(`expected Planner host socket path: ${this.deps.socketPath}`);
+    return { dev: stat.dev, ino: stat.ino };
+  }
+}
+
+function sameSocketIdentity(left: SocketIdentity, right: SocketIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
