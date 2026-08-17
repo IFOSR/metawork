@@ -895,7 +895,7 @@ EOF
 anyfusion --script /tmp/anyfusion-flow.txt
 ```
 
-`--script` executes input line by line. Blank lines and lines starting with `#` are ignored.
+`--script` executes input line by line. Blank lines and lines starting with `#` are ignored. Scripted sessions enter the same Session/Kernel/Planner Host composition as Web, TUI, and Gateway, so they acquire the same `runtime.lock`; concurrent smoke runs must use an isolated `ANYFUSION_INSTALL_ROOT`.
 
 ## Development
 

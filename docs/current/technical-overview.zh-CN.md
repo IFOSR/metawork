@@ -883,7 +883,7 @@ EOF
 anyfusion --script /tmp/anyfusion-flow.txt
 ```
 
-`--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。
+`--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。脚本会话与 Web、TUI、Gateway 一样进入完整的 Session/Kernel/Planner Host composition，因此必须获取同一把 `runtime.lock`；并行烟测必须使用隔离的 `ANYFUSION_INSTALL_ROOT`。
 
 `npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 AnyFusion 配置（`ANYFUSION_CONFIG_HOME`，默认 `~/.config/anyfusion`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
 

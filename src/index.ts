@@ -55,6 +55,7 @@ import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './manag
 import { ExecutionProjector } from './management/execution-projector.js';
 import { createLocalExecutorConfigurationProbe } from './executor/configuration-probe.js';
 import { WebAuthService } from './management/web-auth.js';
+import { requiresCompositionLock } from './installation/composition-runtime.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -226,10 +227,11 @@ async function main() {
     return;
   }
 
-  // 实例锁（composition 层，TUI/web/gateway 取锁；--script 不取）
+  // Every mode that reaches Session/Kernel/Planner Host composition owns the
+  // same runtime lock, including scripted sessions.
   let instanceLock: InstanceLock | null = null;
   let instanceLockPath: string | null = null;
-  if (!cliArgs.scriptPath) {
+  if (requiresCompositionLock(cliArgs)) {
     const dataDir = resolveAnyFusionPaths().data;
     mkdirSync(dataDir, { recursive: true });
     instanceLockPath = resolve(dataDir, 'runtime.lock');
