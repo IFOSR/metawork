@@ -1,0 +1,125 @@
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  FileWebSessionStore,
+  type WebSessionCatalogFile,
+} from '../../src/storage/file-web-session-store.js';
+import {
+  WEB_SESSION_FORMAT_VERSION,
+  type WebSessionRecord,
+} from '../../src/management/web-session-types.js';
+
+const temporaryRoots: string[] = [];
+
+async function temporaryRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'anyfusion-web-session-store-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+function makeRecord(id = 'session_1'): WebSessionRecord {
+  return {
+    version: WEB_SESSION_FORMAT_VERSION,
+    session: {
+      id,
+      title: 'AI news',
+      createdAt: '2026-08-17T08:00:00.000Z',
+      updatedAt: '2026-08-17T08:00:05.000Z',
+      active: true,
+      archived: false,
+    },
+    turns: [],
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map(root => rm(root, {
+    recursive: true,
+    force: true,
+  })));
+});
+
+describe('FileWebSessionStore', () => {
+  it('initializes below the configured AnyFusion data directory', async () => {
+    const installRoot = await temporaryRoot();
+    const previous = process.env.ANYFUSION_INSTALL_ROOT;
+    process.env.ANYFUSION_INSTALL_ROOT = installRoot;
+    try {
+      const store = new FileWebSessionStore();
+      await store.initialize();
+
+      expect(store.rootDir).toBe(join(installRoot, 'data', 'web-sessions'));
+      expect(JSON.parse(await readFile(store.catalogPath, 'utf8'))).toEqual({
+        version: WEB_SESSION_FORMAT_VERSION,
+        sessions: [],
+      });
+      expect(await readdir(store.sessionsDir)).toEqual([]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ANYFUSION_INSTALL_ROOT;
+      } else {
+        process.env.ANYFUSION_INSTALL_ROOT = previous;
+      }
+    }
+  });
+
+  it('atomically writes catalog and session records that survive reload', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+    const record = makeRecord();
+    const catalog: WebSessionCatalogFile = {
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [record.session],
+    };
+
+    await store.writeSession(record);
+    await store.writeCatalog(catalog);
+
+    const reloaded = new FileWebSessionStore(join(root, 'web-sessions'));
+    await reloaded.initialize();
+    expect(await reloaded.readSession('session_1')).toEqual(record);
+    expect(await reloaded.readCatalog()).toEqual(catalog);
+    expect((await readdir(reloaded.rootDir)).some(name => name.includes('.tmp-'))).toBe(false);
+    expect((await readdir(reloaded.sessionsDir)).some(name => name.includes('.tmp-'))).toBe(false);
+  });
+
+  it('quarantines a malformed record without replacing the catalog', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+    const record = makeRecord();
+    const catalog: WebSessionCatalogFile = {
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [record.session],
+    };
+    await store.writeSession(record);
+    await store.writeCatalog(catalog);
+    await writeFile(join(store.sessionsDir, 'session_1.json'), '{broken json', 'utf8');
+
+    expect(await store.readSession('session_1')).toBeNull();
+    expect(await store.readCatalog()).toEqual(catalog);
+    expect(await readdir(store.quarantineDir)).toEqual([
+      expect.stringMatching(/^session_1\.\d+\.invalid\.json$/u),
+    ]);
+  });
+
+  it('rejects session identifiers that could escape the store directory', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+
+    await expect(store.readSession('../outside')).rejects.toThrow('Invalid Web session ID');
+    await expect(store.writeSession(makeRecord('../outside'))).rejects.toThrow(
+      'Invalid Web session ID',
+    );
+  });
+});
