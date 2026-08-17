@@ -35,6 +35,7 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
       environment: {
         OPENAI_BASE_URL: 'https://api.example.com/v1',
         OPENAI_API_KEY: 'sk-attempt-secret',
+        OPENAI_API_KEY__PROVIDER_MAIN: 'sk-attempt-secret',
         OPENAI_MODEL: 'engineering-v1',
       },
     });

@@ -97,9 +97,16 @@ export async function resolveRuntimePrivateConfigurationBinding(
     throw new Error(`Provider credential is empty: ${authorizedBinding.providerRef}`);
   }
 
+  // 与 AgentRuntimeRenderer 的多 provider 命名约定保持一致：单 provider 时
+  // codex/pi 配置用 `OPENAI_API_KEY`，多 provider 时用 `OPENAI_API_KEY__<REF>`。
+  // 两个变量都注入，兼容单/多 provider 以及历史配置模板。
+  const providerKeyVariable = `OPENAI_API_KEY__${authorizedBinding.providerRef
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, '_')}`;
   const environment = Object.freeze({
     OPENAI_BASE_URL: provider.baseUrl,
     OPENAI_API_KEY: apiKey,
+    [providerKeyVariable]: apiKey,
     OPENAI_MODEL: model.modelId,
   });
   return Object.freeze({

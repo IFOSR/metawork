@@ -112,4 +112,37 @@ describe('CodexCliDriver', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('prefers the generated agent-runtime home over the legacy env var', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-codex-priority-'));
+    const generatedRoot = join(root, 'generated', 'agent-runtime');
+    const codexDir = join(generatedRoot, 'revision-current', 'codex');
+    const legacyDir = join(root, 'legacy-codex');
+    try {
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(join(generatedRoot, 'current'), 'revision-current\n');
+      await writeFile(join(codexDir, 'config.toml'), 'base_url = "https://generated.test/v1"\n');
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(join(legacyDir, 'config.toml'), 'base_url = "https://legacy.test/v1"\n');
+
+      vi.stubEnv('ANYFUSION_INSTALL_ROOT', root);
+      vi.stubEnv('METACLAW_EXECUTOR_CODEX_HOME', legacyDir);
+
+      const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+      const home = await driver.materializeHome({
+        attemptId: 'attempt-1',
+        revisionId: 'revision-1',
+        agentClassId: 'codex-engineering',
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+
+      expect(await readFile(join(home.homePath, 'config.toml'), 'utf8'))
+        .toContain('https://generated.test/v1');
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -35,10 +35,13 @@ export class CodexCliDriver implements HarnessDriver {
     homeTemplateDir?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
+    // 优先级：显式依赖 > 当前 generated agent-runtime > legacy 环境变量。
+    // generated agent-runtime 由配置激活时渲染并切换 current 指针，是 executor
+    // 应使用的权威 home；legacy 环境变量仅作为未渲染时的兜底。
     this.homeTemplateDir = emptyToUndefined(
       dependencies.homeTemplateDir
-        ?? process.env.METACLAW_EXECUTOR_CODEX_HOME
-        ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'codex'),
+        ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'codex')
+        ?? process.env.METACLAW_EXECUTOR_CODEX_HOME,
     );
   }
 
