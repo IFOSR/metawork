@@ -177,7 +177,7 @@ native installation.
 flowchart LR
   Client[CLI / TUI / Gateway / Feishu] --> Session[MetaclawSession<br/>Application Shell]
   Session --> Planner[AnyFusion-Pi Planner<br/>isolated process]
-  Planner --> Proposal[PlanningAgentPlan v7]
+  Planner --> Proposal[PlanningAgentPlan v8]
   Proposal --> Workflow[DurableKernelWorkflow<br/>inbox / ledger / application]
   Workflow --> Kernel[ControlKernel v5<br/>pure policy decisions]
   Kernel --> Runtime[Execution Runtime<br/>authorized side effects]
@@ -234,9 +234,10 @@ There is no second semantic router or hidden Runtime-owned retry loop.
 - AnyFusion-Pi runs as a separate Planner process with its own session history.
 - Planner repository inspection is read-only and rooted at the user's launch
   directory.
-- Planning produces strict `PlanningAgentPlan v7` proposals.
-- Work Graph v6 models DAG topology, acceptance criteria, typed handoffs,
-  delivery kind and ordered AgentClass preferences.
+- Planning produces strict `PlanningAgentPlan v8` proposals.
+- Work Graph v7 models DAG topology, acceptance criteria, typed handoffs,
+  delivery kind, ordered AgentClass preferences and a pinned configuration
+  revision.
 - Planner proposals are revalidated before entering the Kernel workflow.
 
 ### Governed Execution
@@ -304,8 +305,8 @@ or runtime contracts.
 | Version | `v1.2.0-preview.0` |
 | Maturity | Developer Preview |
 | Runtime | Node.js `>=22.19.0`, TypeScript ESM |
-| Planner contract | PlanningAgentPlan v7 |
-| Work Graph contract | v6 |
+| Planner contract | PlanningAgentPlan v8 |
+| Work Graph contract | v7 |
 | Kernel contract | v5 |
 | Completion contract | v3 |
 | Persistence | SQLite schema v30 |

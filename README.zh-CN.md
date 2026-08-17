@@ -133,7 +133,7 @@ Docker 只保留为显式兼容模式和 CI 验证路径，不是正常本机安
 flowchart LR
   Client[CLI / TUI / Gateway / 飞书] --> Session[MetaclawSession<br/>Application Shell]
   Session --> Planner[AnyFusion-Pi Planner<br/>独立进程]
-  Planner --> Proposal[PlanningAgentPlan v7]
+  Planner --> Proposal[PlanningAgentPlan v8]
   Proposal --> Workflow[DurableKernelWorkflow<br/>Inbox / Ledger / Application]
   Workflow --> Kernel[ControlKernel v5<br/>纯策略决策]
   Kernel --> Runtime[Execution Runtime<br/>执行已授权副作用]
@@ -188,9 +188,9 @@ Planner proposes
 
 - AnyFusion-Pi 作为独立 Planner 进程运行，并维护自己的会话历史。
 - Planner 只能只读检查用户启动目录。
-- Planner 产出严格的 `PlanningAgentPlan v7` 提案。
-- Work Graph v6 描述 DAG、验收标准、类型化 handoff、delivery kind 和有序
-  AgentClass 偏好。
+- Planner 产出严格的 `PlanningAgentPlan v8` 提案。
+- Work Graph v7 描述 DAG、验收标准、类型化 handoff、delivery kind、有序
+  AgentClass 偏好，并绑定一个配置修订（configuration revision）。
 - Planner 提案进入 Kernel workflow 前会由 MetaWork 再次校验。
 
 ### 可治理执行
@@ -253,8 +253,8 @@ smoke 命令不能替代模块级专项测试。修改架构或 Runtime contract
 | 版本 | `v1.2.0-preview.0` |
 | 成熟度 | Developer Preview |
 | Runtime | Node.js `>=22.19.0`，TypeScript ESM |
-| Planner contract | PlanningAgentPlan v7 |
-| Work Graph contract | v6 |
+| Planner contract | PlanningAgentPlan v8 |
+| Work Graph contract | v7 |
 | Kernel contract | v5 |
 | Completion contract | v3 |
 | Persistence | SQLite schema v30 |
