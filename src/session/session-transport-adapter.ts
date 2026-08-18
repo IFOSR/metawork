@@ -1,4 +1,13 @@
-import type { MetaclawSession } from './metaclaw-session.js';
+/** 会话输出流的最小快照投影：adapter 只读 output。 */
+export interface SessionStreamSnapshot {
+  output: string[];
+}
+
+/** 传输层所需的会话窄接口：subscribe（推 output 增量）与 submit。 */
+export interface SessionStreamSource {
+  subscribe(listener: (snapshot: SessionStreamSnapshot) => void): () => void;
+  submit(text: string): Promise<{ exitRequested: boolean }>;
+}
 
 export interface SessionStreamCallbacks {
   /**
@@ -16,13 +25,16 @@ export interface SessionStreamCallbacks {
  * 传输无关的 session 输出流：封装 subscribe（推 output 增量）与 submit。
  * gateway 的 per-connection 会话与 web 的单例会话都复用它；
  * session 的生命周期（new / dispose）由传输层管理，adapter 不碰。
+ *
+ * adapter 只依赖窄接口 SessionStreamSource，不 import MetaclawSession 具体类
+ * （ADR-0031：客户端传输层不得依赖具体 Session 实现）。
  */
 export class SessionStreamAdapter {
   private observedOutputLength = 0;
   private unsubscribe: (() => void) | null = null;
 
   constructor(
-    private readonly session: MetaclawSession,
+    private readonly session: SessionStreamSource,
     private readonly callbacks: SessionStreamCallbacks,
   ) {}
 
