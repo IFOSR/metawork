@@ -18,12 +18,14 @@ import type { AccountRepositories } from './account-repositories.js';
 import { buildAccountRepositories } from './account-repositories.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import { buildAccountWorkspaceServices } from './account-workspace-services.js';
+import type { AccountExecutionServices } from './account-execution-services.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
   buildKernelServices?(accountId: string): AccountKernelServices;
   buildRepositories?(accountId: string): AccountRepositories;
   buildWorkspaceServices?(accountId: string): AccountWorkspaceServices;
+  buildExecutionServices?(accountId: string): AccountExecutionServices;
   recoverDurableStartup(accountId: string): Promise<void>;
   dispose?(accountId: string): Promise<void>;
 }
@@ -48,6 +50,9 @@ export class AccountRuntimeFactory {
       workspaceServices: this.deps.buildWorkspaceServices
         ? this.deps.buildWorkspaceServices(accountId)
         : buildAccountWorkspaceServices(this.defaultDb, resolve(process.cwd(), '.anyfusion-workspace')),
+      executionServices: this.deps.buildExecutionServices
+        ? this.deps.buildExecutionServices(accountId)
+        : undefined,
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
       dispose: this.deps.dispose
         ? () => this.deps.dispose!(accountId)

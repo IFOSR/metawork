@@ -102,6 +102,7 @@ import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
 import { buildAccountRepositories, type AccountRepositories } from '../account/account-repositories.js';
 import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
+import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -157,6 +158,7 @@ export interface MetaclawSessionDeps {
   kernelServices?: AccountKernelServices;
   accountRepositories?: AccountRepositories;
   accountWorkspaceServices?: AccountWorkspaceServices;
+  accountExecutionServices?: AccountExecutionServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -471,54 +473,15 @@ export class MetaclawSession {
     this.workspaceRepository = workspaceServices.workspaceRepository;
     this.workspaceStore = workspaceServices.workspaceStore;
     this.workspaceRetentionService = workspaceServices.workspaceRetentionService;
-    const runtimeConfiguration = buildRuntimeConfigurationView(
-      stagedConfiguration.snapshot,
-    );
-    const attemptsRoot = resolveAnyFusionPaths().attempts;
-    const driverRegistry = new HarnessDriverRegistry();
-    const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
-      driverRegistry.register(driver, input => {
-        if ((this.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
-          return new LocalCliExecutorAdapter({
-            agentClassId: input.authorizedBinding.agentClassRef,
-            driver: input.driver,
-            runtimeBinding: input.runtimeBinding,
-            attemptsRoot,
-          });
-        }
-        return new ContainerCompatibilityAdapter({
-          agentClassId: input.authorizedBinding.agentClassRef,
-          driver: input.driver,
-          runtimeBinding: input.runtimeBinding,
-          attemptsRoot,
-          imageRef: containerCompatibilityImage(input.driver.id),
-          backend: this.attemptExecutionBackend,
-          repository: this.attemptExecutionRepository,
-          egressMode: input.authorizedBinding.permissionProfileRef === 'public-web-research'
-            ? 'proxy'
-            : 'disabled',
-          nestedSandbox: input.driver.id === 'codex-cli'
-            ? 'codex-workspace-write'
-            : undefined,
-        });
-      });
-    };
-    const probeCommand = deps.probeCommand ?? (process.env.NODE_ENV === 'test'
-      ? async () => ({ code: 0, stdout: 'test-harness', stderr: '' })
-      : undefined);
-    registerLocalDriver(new CodexCliDriver({ probeCommand }));
-    registerLocalDriver(new PiCliDriver({ probeCommand }));
-    const executorRegistry = new ExecutorRegistry({
-      driverRegistry,
-      getRuntimeConfiguration: revisionId => (
-        revisionId === runtimeConfiguration.revisionId
-          ? runtimeConfiguration
-          : null
-      ),
-      getActiveRuntimeConfiguration: () => runtimeConfiguration,
+    const executionServices = deps.accountExecutionServices ?? buildAccountExecutionServices({
+      stagedConfiguration,
       getRuntimeBinding,
+      probeCommand: deps.probeCommand,
+      attemptExecutionBackend: this.attemptExecutionBackend,
+      attemptExecutionRepository: this.attemptExecutionRepository,
     });
-    this.executionRuntime = new ExecutionRuntime(executorRegistry);
+    const executorRegistry = executionServices.executorRegistry;
+    this.executionRuntime = executionServices.executionRuntime;
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime, {
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
     });
