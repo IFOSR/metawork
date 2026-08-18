@@ -177,7 +177,7 @@
 - AccountRuntime 生产装配只接受携带匹配 revision、Planner binding fingerprint 和 expected model 的 Supervisor，防止默认未绑定实例绕过握手。
 - native launcher 模板及本机受管 `anyfusion`/`metawork` launcher 移除静态 Planner home/env-file，只保留共享 `~/.anyfusion/data/planner-sessions`。
 - 验证：`npm run lint`、`npm run build`、28 个相关测试文件共 140 个测试通过；最终重启后的真实 Web 会话 `sess_web_5oiZPXy1D-` 完成，Pi JSONL 仅记录 `deepseek/deepseek-v4-pro`，`model_error` 为 0。
-- 收口提交：待代码提交后回填。
+- 收口提交：`85e4147`。
 
 未验证（挂起）：
 
