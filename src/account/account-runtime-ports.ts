@@ -13,6 +13,7 @@ import type { AccountExecutionServices } from './account-execution-services.js';
 import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
+import type { AccountPlannerServices } from './account-planner-services.js';
 
 /** AccountRuntime 暴露给 Application Shell 的窄句柄。 */
 export interface AccountRuntimeHandle {
@@ -33,4 +34,5 @@ export interface ConversationRuntimePort {
   readonly taskServices?: AccountTaskServices;
   readonly coordinatorServices?: AccountCoordinatorServices;
   readonly runtimeExecutionServices?: AccountRuntimeExecutionServices;
+  readonly plannerServices?: AccountPlannerServices;
 }

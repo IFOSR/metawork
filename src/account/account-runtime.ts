@@ -17,6 +17,7 @@ import type { AccountExecutionServices } from './account-execution-services.js';
 import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
+import type { AccountPlannerServices } from './account-planner-services.js';
 import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-runtime-ports.js';
 
 export interface AccountRuntimeDeps {
@@ -29,6 +30,7 @@ export interface AccountRuntimeDeps {
   readonly taskServices?: AccountTaskServices;
   readonly coordinatorServices?: AccountCoordinatorServices;
   readonly runtimeExecutionServices?: AccountRuntimeExecutionServices;
+  readonly plannerServices?: AccountPlannerServices;
   readonly recoverDurableStartup: () => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }
@@ -78,6 +80,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
     return this.deps.runtimeExecutionServices;
   }
 
+  get plannerServices(): AccountPlannerServices | undefined {
+    return this.deps.plannerServices;
+  }
+
   /** 单飞行、幂等的账户激活恢复。 */
   initialize(): Promise<void> {
     if (this.initialized) return Promise.resolve();
@@ -125,6 +131,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
       taskServices: this.taskServices,
       coordinatorServices: this.coordinatorServices,
       runtimeExecutionServices: this.runtimeExecutionServices,
+      plannerServices: this.plannerServices,
     };
   }
 }

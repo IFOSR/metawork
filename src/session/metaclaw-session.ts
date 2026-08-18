@@ -107,6 +107,7 @@ import { buildAccountTaskServices, type AccountTaskServices } from '../account/a
 import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
 import { buildAccountKernelExecutionServices, type AccountKernelExecutionServices } from '../account/account-kernel-execution-services.js';
+import { buildAccountPlannerServices, type AccountPlannerServices } from '../account/account-planner-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -167,6 +168,7 @@ export interface MetaclawSessionDeps {
   accountCoordinatorServices?: AccountCoordinatorServices;
   accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
   accountKernelExecutionServices?: AccountKernelExecutionServices;
+  accountPlannerServices?: AccountPlannerServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -516,31 +518,24 @@ export class MetaclawSession {
     this.workUnitClaimService = coordinatorServices.workUnitClaimService;
     this.executorRecoveryRefreshService = coordinatorServices.executorRecoveryRefreshService;
     const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
-    this.memoryContextService = new MemoryContextService({
+    const plannerServices = deps.accountPlannerServices ?? buildAccountPlannerServices({
+      db: deps.db,
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
+      plannerBinding: this.plannerBinding,
+      plannerBindingFingerprint: this.plannerBindingFingerprint,
+      plannerSupervisor: deps.plannerSupervisor,
+      planningAgent: deps.planningAgent,
     });
+    this.memoryContextService = plannerServices.memoryContextService;
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
       requestSource: 'session',
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
       getPlannerConfiguration: () => this.plannerConfiguration,
     });
-    this.plannerSupervisor = deps.plannerSupervisor
-      ?? (deps.planningAgent ? null : getDefaultPlannerProcessSupervisor());
-    this.planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
-      runner: this.plannerSupervisor!,
-      audit: new PlannerRunRepo(deps.db),
-      resolvePlannerAuditBinding: async configurationRevision => {
-        if (configurationRevision !== this.plannerBinding.configurationRevision) {
-          throw new Error(`Planner audit binding revision is unavailable: ${configurationRevision}`);
-        }
-        return {
-          plannerBinding: this.plannerBinding,
-          plannerBindingFingerprint: this.plannerBindingFingerprint,
-        };
-      },
-    });
+    this.plannerSupervisor = plannerServices.plannerSupervisor;
+    this.planningAgent = plannerServices.planningAgent;
     const kernelServices = deps.kernelServices ?? buildAccountKernelServices(deps.db);
     this.controlKernel = kernelServices.controlKernel;
     this.kernelDecisionRepo = kernelServices.kernelDecisionRepo;
