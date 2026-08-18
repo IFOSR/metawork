@@ -480,9 +480,132 @@ export class ConversationSession {
       return true;
     }
     if (result.type === 'directive') {
-      await this.deps.directiveExecutor?.(result.directive, input);
+      const directive = result.directive as {
+        kind: string;
+        taskId?: string;
+        recoveryItemId?: string;
+        resolution?: string;
+      };
+      if (directive.kind === 'show-task-recovery' && directive.taskId) {
+        this.appendOutput(this.formatTaskRecovery(directive.taskId));
+      } else if (directive.kind === 'resolve-task-recovery' && directive.taskId && directive.recoveryItemId) {
+        await this.resolveTaskRecovery({
+          taskId: directive.taskId,
+          recoveryItemId: directive.recoveryItemId,
+          resolution: directive.resolution as 'assume_applied' | 'retry',
+        });
+      } else {
+        await this.deps.directiveExecutor?.(result.directive, input);
+      }
     }
     return false;
+  }
+
+  private formatTaskRecovery(taskId: string): string {
+    const port = this.deps.runtimePort;
+    const kernelWorkflowRepo = port.kernelServices.kernelWorkflowRepo;
+    const effectOutboxRepo = port.repositories.effectOutboxRepo;
+    const applications = kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const effects = effectOutboxRepo.listRecoveryItems(taskId).map(item =>
+      `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
+    );
+    const items = [...applications, ...effects];
+    return items.length > 0
+      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
+      : `Task #${taskId} has no uncertain or failed recovery items.`;
+  }
+
+  private buildRecoverySnapshot(
+    taskId: string,
+    recoveryItemId: string,
+  ): Extract<KernelSnapshot, { type: 'recovery' }> {
+    const port = this.deps.runtimePort;
+    const task = port.taskServices?.taskRuntimeService.findTask(taskId);
+    const application = port.kernelServices.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
+    const effect = port.repositories.effectOutboxRepo.find(recoveryItemId);
+    return {
+      schemaVersion: 5,
+      type: 'recovery',
+      task: task ? { id: task.id, status: task.status } : null,
+      item: application
+        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
+        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+          ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
+          : null,
+    };
+  }
+
+  private async resolveTaskRecovery(input: {
+    taskId: string;
+    recoveryItemId: string;
+    resolution: 'assume_applied' | 'retry';
+  }): Promise<void> {
+    const port = this.deps.runtimePort;
+    const kernelWorkflowRepo = port.kernelServices.kernelWorkflowRepo;
+    const effectOutboxRepo = port.repositories.effectOutboxRepo;
+    const kernelDecisionRepo = port.kernelServices.kernelDecisionRepo;
+    const application = kernelWorkflowRepo.findRecoveryItem(input.recoveryItemId);
+    const effect = effectOutboxRepo.find(input.recoveryItemId);
+    const configurationRevision = application?.decision.configurationRevision
+      ?? (effect
+        ? kernelDecisionRepo.listByTask(input.taskId)
+            .find(record => record.id === effect.decisionId)
+            ?.configurationRevision
+        : null);
+    if (!configurationRevision) {
+      throw new Error(`recovery item has no persisted configuration revision: ${input.recoveryItemId}`);
+    }
+    const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'recovery_resolution_requested',
+      id: `recovery_event_${input.recoveryItemId}_${generateInteractionId()}`,
+      correlationId: input.taskId,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.plannerSessionId,
+      taskId: input.taskId,
+      recoveryItemId: input.recoveryItemId,
+      resolution: input.resolution,
+    };
+    const workflow = new DurableKernelWorkflow({
+      kernel: port.kernelServices.controlKernel,
+      buildSnapshot: claimed => {
+        const recovery = claimed as Extract<KernelEvent, { type: 'recovery_resolution_requested' }>;
+        return this.buildRecoverySnapshot(recovery.taskId!, recovery.recoveryItemId);
+      },
+      store: kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      runtime: {
+        apply: async decision => {
+          if (decision.action.type === 'resolve_recovery') {
+            const now = new Date().toISOString();
+            if (kernelWorkflowRepo.findRecoveryItem(decision.action.recoveryItemId)) {
+              kernelWorkflowRepo.resolveRecoveryItem(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            } else {
+              effectOutboxRepo.resolve(
+                decision.action.recoveryItemId, decision.action.resolution, now,
+              );
+            }
+            return null;
+          }
+          if (decision.action.type === 'block_work') {
+            this.appendOutput(`Recovery blocked: ${decision.reason}`);
+            return null;
+          }
+          throw new Error(`manual recovery Runtime cannot apply ${decision.action.type}`);
+        },
+      },
+      acceptedEventTypes: ['recovery_resolution_requested'],
+      acceptedActions: ['resolve_recovery', 'block_work'],
+      taskId: input.taskId,
+    });
+    await workflow.submit(event);
+    this.appendOutput(this.formatTaskRecovery(input.taskId));
   }
 
   private getCommandContext(): CommandContext {
