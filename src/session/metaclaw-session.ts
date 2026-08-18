@@ -263,99 +263,25 @@ function startupOrphanEvent(input: {
   };
 }
 
-export interface SessionSnapshot {
-  output: string[];
-  currentTaskId: string | null;
-  currentTask: {
-    id: string;
-    title: string;
-    status: Task['status'];
-  } | null;
-  runtimeState: RuntimeState;
-  plannerState: {
-    status: 'idle' | 'running';
-  };
-  latestGuidance: GuidanceState | null;
-}
+import type {
+  SessionSnapshot,
+  SessionSwitchingState,
+  PlannerTuiSnapshot,
+  PlannerTuiExecutorResult,
+  PlannerTuiPermissionRequest,
+  PlannerTuiPermissionResolutionResult,
+  PlannerTuiCommandSubmissionResult,
+} from './session-types.js';
 
-export interface SessionSwitchingState {
-  plannerTurnActive: boolean;
-  taskRuntimeActive: boolean;
-}
-
-/** A bounded, read-only projection for the native Planner TUI bridge. */
-export interface PlannerTuiSnapshot {
-  schemaVersion: 1;
-  session: {
-    id: string;
-    focusedTask: SessionSnapshot['currentTask'];
-    runtimeState: RuntimeState;
-    plannerState: SessionSnapshot['plannerState'];
-    recentOutput: string[];
-  };
-  taskPool: Array<{
-    id: string;
-    title: string;
-    goal: string;
-    status: Task['status'];
-    blockingReason: string | null;
-    subtasks: Array<{
-      id: string;
-      title: string;
-      status: Subtask['status'];
-      preferredAgentClassList: string[];
-    }>;
-  }>;
-  executorStatuses: KernelExecutorStatusProjection[];
-}
-
-/** A durable, presentation-only result projected from an integrated workspace publication. */
-export interface PlannerTuiExecutorResult {
-  schemaVersion: 1;
-  publicationId: string;
-  taskId: string;
-  taskTitle: string;
-  subtaskId: string;
-  subtaskTitle: string;
-  attemptId: string;
-  executorName: string;
-  report: string;
-  artifacts: string[];
-  warnings: string[];
-  integrationCommit: string | null;
-  completedAt: string;
-  reportTruncated: boolean;
-}
-
-export interface PlannerTuiPermissionRequest {
-  schemaVersion: 1;
-  permissionRequestId: string;
-  taskId: string;
-  taskTitle: string;
-  generationId: string;
-  subtaskId: string;
-  subtaskTitle: string;
-  attemptId: string;
-  executorName: string;
-  permissionProfileId: string;
-  capability: string;
-  resource: string;
-  operation: string;
-  reason: string;
-  suggestedScope: 'once' | 'attempt';
-  escalationReason: string;
-  createdAt: string;
-  expiresAt: string;
-}
-
-export type PlannerTuiPermissionResolutionResult =
-  | { status: 'resolved' | 'replayed'; resolution: 'approve' | 'deny'; message: string }
-  | { status: 'conflict'; resolution: null; message: string };
-
-export interface PlannerTuiCommandSubmissionResult {
-  exitRequested: boolean;
-  output: string[];
-}
+export type {
+  SessionSnapshot,
+  SessionSwitchingState,
+  PlannerTuiSnapshot,
+  PlannerTuiExecutorResult,
+  PlannerTuiPermissionRequest,
+  PlannerTuiPermissionResolutionResult,
+  PlannerTuiCommandSubmissionResult,
+};
 
 interface FocusContext {
   kind: 'conversation' | 'task';
