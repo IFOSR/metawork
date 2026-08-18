@@ -17,6 +17,7 @@ import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision } from '../kernel/control-kernel.js';
+import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -40,6 +41,7 @@ export interface ConversationSessionDeps {
   readonly sessionStateRepo?: SessionStateRepo;
   readonly persistenceService?: SessionPersistenceService;
   readonly interactionTraceStream?: InteractionTraceStream;
+  readonly kernelExecutionRuntime?: KernelExecutionRuntime;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -59,10 +61,13 @@ export class ConversationSession {
   private latestGuidance: GuidanceState | null = null;
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
+  private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
   private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
-  constructor(private readonly deps: ConversationSessionDeps) {}
+  constructor(private readonly deps: ConversationSessionDeps) {
+    this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
+  }
 
   get conversationId(): string {
     return this.deps.conversationId;
@@ -169,6 +174,27 @@ export class ConversationSession {
 
   setRunningExecutorName(taskId: string, subtaskId: string, attemptId: string, name: string): void {
     this.runningExecutorsByAttempt.set(attemptId, { taskId, subtaskId, name });
+  }
+
+  bindKernelExecutionRuntime(runtime: KernelExecutionRuntime): void {
+    this.kernelExecutionRuntime = runtime;
+  }
+
+  recordKernelDecisionTrace(decision: KernelDecision): void {
+    this.deps.interactionTraceStream?.append({
+      phase: 'kernel',
+      actor: 'kernel',
+      kind: 'kernel_decision',
+      status: 'completed',
+      title: 'Kernel decision',
+      summary: decision.reason,
+      details: {},
+      eventKey: 'kernel_decision',
+    } as never);
+  }
+
+  async cancelTask(taskId: string, reason: string): Promise<void> {
+    await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
   }
 
   clearRunningExecutorName(_taskId: string, attemptId: string): void {
