@@ -28,7 +28,7 @@ import { buildAccountExecutionServices } from './account-execution-services.js';
 import { buildAccountCoordinatorServices } from './account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import { buildAccountPlannerServices } from './account-planner-services.js';
-import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import { AccountRuntimeFactory } from './account-runtime-factory.js';
 import { AccountRuntime } from './account-runtime.js';
 import type { ConversationRuntimePort } from './account-runtime-ports.js';
@@ -60,8 +60,8 @@ export function buildAccountRuntimeComposition(deps: {
   plannerSupervisor?: PlannerProcessController;
   planningAgent?: PlanningAgent;
   getConfigurationRevision(): string;
-  buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
-  recoverDurableStartup(accountId: string): Promise<void>;
+  buildKernelCoordinator?(accountId: string): AccountKernelCoordinator;
+  recoverDurableStartup?(accountId: string): Promise<void>;
 }): AccountRuntimeComposition {
   const kernelServices = buildAccountKernelServices(deps.db);
   const repositories = buildAccountRepositories(deps.db);
@@ -120,8 +120,16 @@ export function buildAccountRuntimeComposition(deps: {
     planningAgent: deps.planningAgent,
   });
 
+  const kernelCoordinator = deps.buildKernelCoordinator
+    ? deps.buildKernelCoordinator(deps.accountId)
+    : new AccountKernelCoordinator({
+        kernel: kernelServices.controlKernel,
+        store: kernelServices.kernelWorkflowRepo,
+        clock: { now: () => new Date().toISOString() },
+      });
+
   const factory = new AccountRuntimeFactory({
-    buildKernelCoordinator: deps.buildKernelCoordinator,
+    buildKernelCoordinator: () => kernelCoordinator,
     buildKernelServices: () => kernelServices,
     buildRepositories: () => repositories,
     buildWorkspaceServices: () => workspaceServices,
@@ -130,7 +138,7 @@ export function buildAccountRuntimeComposition(deps: {
     buildTaskServices: () => taskServices,
     buildCoordinatorServices: () => coordinatorServices,
     buildRuntimeExecutionServices: () => runtimeExecutionServices,
-    recoverDurableStartup: deps.recoverDurableStartup,
+    recoverDurableStartup: deps.recoverDurableStartup ?? (async () => undefined),
   });
   const accountRuntime = factory.create(deps.accountId);
 

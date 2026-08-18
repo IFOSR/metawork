@@ -33,6 +33,9 @@ import { resolveAnyFusionPaths } from './installation/paths.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { resolveAccountPaths } from './account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
+import { buildAccountRuntimeComposition } from './account/account-runtime-composition.js';
+import { RuntimeRegistry } from './account/runtime-registry.js';
+import { AccountRuntimeFactory } from './account/account-runtime-factory.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
 import { nanoid } from 'nanoid';
@@ -376,8 +379,8 @@ async function main() {
     socketPath: plannerHostSocketPath,
     configurationRevision: stagedConfiguration.snapshot.revisionId,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
-    generatedRuntimeRoot: paths.generatedAgentRuntime,
-    sessionDir: paths.plannerSessions,
+    generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
+    sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: {
       provider: stagedConfiguration.plannerBinding.providerRef,
@@ -386,7 +389,42 @@ async function main() {
   });
   await plannerHost.start();
 
-  // ADR-0031: 所有表面通过同一会话工厂构造会话，未来在此接入 AccountRuntime。
+  // ADR-0031: 组合根构造 RuntimeRegistry + AccountRuntime（local-default），
+  // 会话工厂复用 AccountRuntime 的账户级服务簇。
+  const accountRuntimeComposition = buildAccountRuntimeComposition({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    db,
+    taskEngine,
+    memoryEngine,
+    orchestration,
+    contextRecaller,
+    notifier,
+    workspaceRoot: accountPaths.workspaceStore,
+    sourceRoot: process.cwd(),
+    sessionId,
+    stagedConfiguration,
+    plannerBinding: stagedConfiguration.plannerBinding,
+    plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+    getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+    plannerSupervisor,
+    getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
+  });
+  const accountRegistry = new RuntimeRegistry({
+    factory: new AccountRuntimeFactory({
+      buildKernelCoordinator: () => accountRuntimeComposition.runtimePort.kernelCoordinator,
+      buildKernelServices: () => accountRuntimeComposition.runtimePort.kernelServices,
+      buildRepositories: () => accountRuntimeComposition.runtimePort.repositories,
+      buildWorkspaceServices: () => accountRuntimeComposition.runtimePort.workspaceServices,
+      buildExecutionServices: () => accountRuntimeComposition.runtimePort.executionServices!,
+      buildPlannerServices: () => accountRuntimeComposition.runtimePort.plannerServices!,
+      buildTaskServices: () => accountRuntimeComposition.runtimePort.taskServices!,
+      buildCoordinatorServices: () => accountRuntimeComposition.runtimePort.coordinatorServices!,
+      buildRuntimeExecutionServices: () => accountRuntimeComposition.runtimePort.runtimeExecutionServices!,
+      recoverDurableStartup: async () => undefined,
+    }),
+  });
+
+  // ADR-0031: 所有表面通过同一会话工厂构造会话，注入 AccountRuntime 服务。
   const buildSession = (targetSessionId: string) => new MetaclawSession({
     taskEngine,
     memoryEngine,
@@ -400,6 +438,15 @@ async function main() {
     plannerSupervisor,
     stagedConfiguration,
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+    kernelCoordinator: accountRuntimeComposition.runtimePort.kernelCoordinator,
+    kernelServices: accountRuntimeComposition.runtimePort.kernelServices,
+    accountRepositories: accountRuntimeComposition.runtimePort.repositories,
+    accountWorkspaceServices: accountRuntimeComposition.runtimePort.workspaceServices,
+    accountExecutionServices: accountRuntimeComposition.runtimePort.executionServices,
+    accountTaskServices: accountRuntimeComposition.runtimePort.taskServices,
+    accountCoordinatorServices: accountRuntimeComposition.runtimePort.coordinatorServices,
+    accountRuntimeExecutionServices: accountRuntimeComposition.runtimePort.runtimeExecutionServices,
+    accountPlannerServices: accountRuntimeComposition.runtimePort.plannerServices,
   });
   if (cliArgs.scriptPath) {
     try {
