@@ -255,6 +255,44 @@ describe('PlannerProcessSupervisor', () => {
     });
   });
 
+  it('does not report a completed agent loop when the Planner model ends with an error', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: request.id },
+        { type: 'agent_start' },
+        { type: 'turn_start' },
+        { type: 'message_start', message: { role: 'assistant', content: [] } },
+        {
+          type: 'agent_end',
+          messages: [{
+            role: 'assistant',
+            errorMessage: 'OpenAI API error (403): usage limit reached',
+          }],
+        },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-model-error-${process.pid}`),
+      spawn: (() => child as never) as never,
+      shutdownGraceMs: 10,
+    });
+    const progress: Array<Record<string, unknown>> = [];
+
+    const error = await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-model-error', source: 'gateway' },
+    } as never, 'kernel', event => progress.push(event as unknown as Record<string, unknown>))
+      .catch(value => value as Error);
+
+    expect(error.message).toContain('AnyFusion Planner model failed');
+    expect(progress.map(event => event.kind)).not.toContain('agent_completed');
+  });
+
   it('uses one launch identity for RPC and interactive Planner modes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-'));
     const launches: Array<{

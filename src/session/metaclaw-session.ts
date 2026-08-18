@@ -1735,7 +1735,7 @@ export class MetaclawSession {
       this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
       this.notify();
     }
-    this.recordPlannerProposalTerminalTrace(result);
+    this.recordPlannerProposalTerminalTrace(result, turnId);
     if (result.status === 'accepted') return true;
     if (result.status === 'rejected') {
       this.appendOutput(this.presentation.formatKernelRejection(result.issues.join('; ')));
@@ -1745,7 +1745,9 @@ export class MetaclawSession {
       this.appendOutput(`规划回合冲突：${result.message}`);
       return true;
     }
-    this.appendOutput(`Warning: 规划提案传输状态不确定；请重放同一请求。${result.message}`);
+    this.appendOutput(
+      `Planner 未能完成到 Kernel 的交接，未进入 Kernel，也没有启动 Executor。${result.message}`,
+    );
     return true;
   }
 
@@ -1859,8 +1861,8 @@ export class MetaclawSession {
           actor: 'planner',
           kind: 'planner_agent_completed',
           status: 'completed',
-          title: 'Planner agent loop completed',
-          summary: 'Planner finished processing the structured proposal result.',
+          title: 'Planner handoff confirmed',
+          summary: 'Planner received the structured proposal result; Kernel/Runtime now owns the next action.',
           details: baseDetails,
           eventKey,
         });
@@ -1889,9 +1891,15 @@ export class MetaclawSession {
     });
   }
 
-  private recordPlannerProposalTerminalTrace(result: PlannerProposalResult): void {
+  private recordPlannerProposalTerminalTrace(
+    result: PlannerProposalResult,
+    fallbackTurnId?: string,
+  ): void {
     const current = this.interactionTraceStream.getSnapshot();
-    if (!current || current.turnId !== result.turnId) return;
+    const effectiveTurnId = result.turnId === 'unknown'
+      ? fallbackTurnId
+      : result.turnId;
+    if (!current || !effectiveTurnId || current.turnId !== effectiveTurnId) return;
     if (result.status === 'accepted') {
       if (current.status !== 'running' || result.outcome === 'task_authorized') return;
       this.interactionTraceStream.append({
@@ -1936,7 +1944,7 @@ export class MetaclawSession {
       },
       transport_uncertain: {
         kind: 'proposal_transport_uncertain',
-        title: 'Planner transport uncertain',
+        title: 'Planner handoff blocked',
         eventStatus: 'blocked',
         traceStatus: 'blocked',
       },
@@ -1953,10 +1961,19 @@ export class MetaclawSession {
       title: mapped.title,
       summary,
       details: {
-        turnId: result.turnId,
+        turnId: effectiveTurnId,
         submissionId: result.submissionId,
+        ...(result.turnId !== effectiveTurnId
+          ? { reportedTurnId: result.turnId }
+          : {}),
         ...(result.status === 'transport_uncertain'
-          ? { retryableByReplay: result.retryableByReplay }
+          ? {
+              retryableByReplay: result.retryableByReplay,
+              blockedAt: 'planner_to_kernel_handoff',
+              nextOwner: 'none',
+              kernelSubmitted: false,
+              executorStarted: false,
+            }
           : {}),
         ...(result.status === 'conflict'
           ? { acceptedSubmissionId: result.acceptedSubmissionId }
@@ -1965,7 +1982,9 @@ export class MetaclawSession {
           ? { planId: result.planId, rejectionType: result.rejectionType }
           : {}),
       },
-      eventKey: result.submissionId,
+      eventKey: result.submissionId === 'unknown'
+        ? `planner-run:${effectiveTurnId}`
+        : result.submissionId,
       traceStatus: mapped.traceStatus,
     });
   }

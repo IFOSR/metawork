@@ -652,6 +652,54 @@ describe('natural-language planning/kernel path', () => {
     });
   });
 
+  it('terminates the current trace when Planner fails before returning turn identity', async () => {
+    const harness = createSession('sess_planner_unknown_turn_failure', plan());
+    const sessionInternals = harness.session as unknown as {
+      planningAgent: {
+        submit: (
+          context: PlanningContext,
+          submitter: {
+            onProgress?: (progress: unknown) => void;
+          },
+        ) => Promise<unknown>;
+      };
+    };
+    sessionInternals.planningAgent.submit = vi.fn(async (_context, submitter) => {
+      submitter.onProgress?.({
+        sequence: 1,
+        kind: 'agent_completed',
+        elapsedMs: 3_052,
+      });
+      return {
+        status: 'transport_uncertain',
+        turnId: 'unknown',
+        submissionId: 'unknown',
+        retryableByReplay: true,
+        message: 'Planner unavailable: OpenAI API error (403): usage limit reached',
+      };
+    });
+
+    await harness.session.submit('continue with the next executor', { awaitAsyncWork: true });
+
+    expect(harness.session.getInteractionTrace()).toMatchObject({
+      status: 'blocked',
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'proposal_transport_uncertain',
+          status: 'blocked',
+          title: 'Planner handoff blocked',
+          summary: expect.stringContaining('usage limit reached'),
+          details: expect.objectContaining({
+            blockedAt: 'planner_to_kernel_handoff',
+            nextOwner: 'none',
+          }),
+        }),
+      ]),
+    });
+    expect(harness.session.getSnapshot().output.join('\n'))
+      .toContain('未进入 Kernel，也没有启动 Executor');
+  });
+
   it('does not expose an unconfirmed global memory to a direct reply', async () => {
     const harness = createSession('sess_direct_pending_memory', context => plan({
       action: 'direct_reply',

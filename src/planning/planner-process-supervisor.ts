@@ -371,8 +371,8 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           return;
         }
         if (event.type === 'agent_end') {
-          reportProgress({ kind: 'agent_completed' });
           if (terminalProposalResult) {
+            reportProgress({ kind: 'agent_completed' });
             pendingResult = {
               proposalResult: terminalProposalResult,
               submittedPlan,
