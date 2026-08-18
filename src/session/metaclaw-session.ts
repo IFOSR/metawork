@@ -108,6 +108,9 @@ import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from
 import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
 import { buildAccountKernelExecutionServices, type AccountKernelExecutionServices } from '../account/account-kernel-execution-services.js';
 import { buildAccountPlannerServices, type AccountPlannerServices } from '../account/account-planner-services.js';
+import { ConversationSession } from './conversation-session.js';
+import { ConversationInputMailbox } from './conversation-input-mailbox.js';
+import type { ConversationRuntimePort } from './conversation-runtime-port.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -1245,6 +1248,32 @@ export class MetaclawSession {
   ): Promise<{ exitRequested: boolean }> {
     await this.initialization;
     return this.inputController.submit(rawInput, options);
+  }
+
+  /**
+   * 过渡：把本会话包装为 ConversationSession（ADR-0031 迁移桥接）。
+   * ConversationSession 通过 runtimePort 访问账户服务，通过本会话的
+   * conversation-facing 服务与 submit 委托桥接 Planner 回合。
+   */
+  asConversationSession(runtimePort: ConversationRuntimePort): ConversationSession {
+    return new ConversationSession({
+      conversationId: this.deps.sessionId,
+      plannerSessionId: this.deps.sessionId,
+      runtimePort,
+      mailbox: new ConversationInputMailbox({
+        execute: async () => undefined,
+      }),
+      presentation: this.presentation,
+      sessionStateRepo: this.sessionStateRepo,
+      persistenceService: this.persistenceService,
+      interactionTraceStream: this.interactionTraceStream,
+      kernelExecutionRuntime: this.kernelExecutionRuntime,
+      planningContextBuilder: this.planningContextBuilder,
+      db: this.deps.db,
+      kernelConfiguration: this.kernelConfiguration,
+      sessionKernelRuntime: this.sessionKernelRuntime,
+      executeUserInput: text => this.submit(text),
+    });
   }
 
   async waitForAsyncWork(): Promise<void> {
