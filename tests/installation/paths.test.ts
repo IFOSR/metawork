@@ -5,6 +5,7 @@ describe('AnyFusion installation paths', () => {
   it('resolves the default unified ~/.anyfusion layout', () => {
     expect(resolveAnyFusionPaths('/Users/test')).toMatchObject({
       root: '/Users/test/.anyfusion',
+      accountsRoot: '/Users/test/.anyfusion/accounts',
       appCurrent: '/Users/test/.anyfusion/app/current',
       configFile: '/Users/test/.anyfusion/config/active/config.yaml',
       configurationRevisions: '/Users/test/.anyfusion/config/revisions',

@@ -3,6 +3,7 @@ import { resolve } from 'path';
 
 export interface AnyFusionPaths {
   root: string;
+  accountsRoot: string;
   appCurrent: string;
   releases: string;
   bin: string;
@@ -68,6 +69,7 @@ export function resolveAnyFusionPaths(
 
   return {
     root,
+    accountsRoot: resolve(root, 'accounts'),
     appCurrent: resolve(app, 'current'),
     releases: resolve(app, 'releases'),
     bin: resolve(root, 'bin'),
