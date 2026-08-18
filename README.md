@@ -105,11 +105,20 @@ pi --version
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
 
+# API key for your foundation-model provider — authenticates MetaWork to the model service.
 export ANYFUSION_PROVIDER_KEY='replace-with-your-key'
+
+# Base URL of that provider's OpenAI-compatible API (usually ends in /v1).
 export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
 
 ./setup.sh
 ```
+
+`ANYFUSION_PROVIDER_KEY` is the API key for your foundation-model provider,
+and `ANYFUSION_PROVIDER_URL` is its base URL — the OpenAI-compatible endpoint
+you already use to call foundation models. Despite the `ANYFUSION_` prefix
+(a legacy name for these variables), they tell MetaWork how to authenticate
+against and reach the model service behind its Planner and Executors.
 
 Optional provider variables:
 

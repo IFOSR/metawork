@@ -97,11 +97,19 @@ pi --version
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
 
+# 基座模型供应商的 API Key —— 用于鉴权，让 MetaWork 能调用你的模型服务。
 export ANYFUSION_PROVIDER_KEY='替换为你的密钥'
+
+# 基座模型供应商的 base URL —— OpenAI-compatible 端点地址，通常以 /v1 结尾。
 export ANYFUSION_PROVIDER_URL='https://你的-openai-compatible服务地址.example/v1'
 
 ./setup.sh
 ```
+
+`ANYFUSION_PROVIDER_KEY` 是你基座模型供应商的 API Key，`ANYFUSION_PROVIDER_URL`
+是该供应商的 base URL —— 也就是你用来调用基座模型的 OpenAI-compatible
+端点。尽管变量名带有 `ANYFUSION_` 前缀（历史命名），它们配置的是 MetaWork
+到基座模型供应商的连接，用于鉴权并访问 Planner 与 Executor 背后的模型服务。
 
 可选 Provider 变量：
 
