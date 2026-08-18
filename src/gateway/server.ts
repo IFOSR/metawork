@@ -12,15 +12,8 @@ import { MetaclawSession, type MetaclawSessionDeps, type PlannerHostRegistrar } 
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
-import { SessionStreamAdapter, type SessionStreamSource } from '../session/session-transport-adapter.js';
+import { SessionStreamAdapter, type GatewaySession } from '../session/session-transport-adapter.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
-
-/** Gateway 每连接构造的会话：输出流 + 可选初始化/系统消息 + dispose。 */
-export interface GatewaySession extends SessionStreamSource {
-  initialize?(options?: { showDashboard?: boolean }): Promise<void> | void;
-  appendSystemMessage?(...lines: string[]): void;
-  dispose(): Promise<void>;
-}
 
 interface GatewayServerDeps {
   socketPath: string;

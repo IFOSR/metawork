@@ -111,6 +111,7 @@ import { buildAccountPlannerServices, type AccountPlannerServices } from '../acc
 import { ConversationSession } from './conversation-session.js';
 import { ConversationInputMailbox } from './conversation-input-mailbox.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
+import type { GatewaySession } from './session-transport-adapter.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -1274,6 +1275,18 @@ export class MetaclawSession {
       sessionKernelRuntime: this.sessionKernelRuntime,
       executeUserInput: text => this.submit(text),
     });
+  }
+
+  /**
+   * 过渡：把本会话适配为 Gateway 会话（SessionStreamSource + 初始化/系统消息/释放）。
+   */
+  asGatewaySession(runtimePort: ConversationRuntimePort): GatewaySession {
+    const conversation = this.asConversationSession(runtimePort);
+    return {
+      subscribe: listener => conversation.subscribe(snapshot => listener({ output: [...snapshot.output] })),
+      submit: text => conversation.submitUserInput(text),
+      dispose: () => conversation.dispose(),
+    };
   }
 
   async waitForAsyncWork(): Promise<void> {
