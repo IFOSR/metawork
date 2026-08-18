@@ -104,6 +104,7 @@ import { buildAccountRepositories, type AccountRepositories } from '../account/a
 import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
 import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
 import { buildAccountTaskServices, type AccountTaskServices } from '../account/account-task-services.js';
+import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -161,6 +162,7 @@ export interface MetaclawSessionDeps {
   accountWorkspaceServices?: AccountWorkspaceServices;
   accountExecutionServices?: AccountExecutionServices;
   accountTaskServices?: AccountTaskServices;
+  accountCoordinatorServices?: AccountCoordinatorServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -500,51 +502,16 @@ export class MetaclawSession {
     this.attemptReceiptRepo = repositories.attemptReceiptRepo;
     this.workGraphRuntimeService = repositories.workGraphRuntimeService;
     this.kernelExecutorStatusRepo = repositories.kernelExecutorStatusRepo;
-    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
-    this.workUnitClaimService = new WorkUnitClaimService(
-      new WorkUnitRepo(deps.db),
-      60_000,
-      async (binding, mode) => {
-        const result = await this.executionRuntime.probeExecutor(binding);
-        if (!result.available && result.failure) {
-          kernelExecutorStatusProjector.recordExecutionOutcome({
-            agentClassName: binding.agentClassRef,
-            configurationRevision: binding.configurationRevision,
-            attemptId: `${mode}_probe_${binding.agentClassRef}_${binding.configurationRevision}`,
-            outcome: 'failed',
-            failure: result.failure,
-          });
-        }
-        return result.available;
-      },
-    );
-    this.executorRecoveryRefreshService = new ExecutorRecoveryRefreshService({
-      statusRepo: this.kernelExecutorStatusRepo,
-      statusProjector: kernelExecutorStatusProjector,
+    const coordinatorServices = deps.accountCoordinatorServices ?? buildAccountCoordinatorServices({
+      db: deps.db,
+      executionRuntime: this.executionRuntime,
+      executorRegistry,
+      kernelExecutorStatusRepo: this.kernelExecutorStatusRepo,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
-      probe: (name, configurationRevision, previousFailure) => {
-        const binding = executorRegistry.bindingForAgentClass(
-          name,
-          configurationRevision,
-        );
-        return binding
-          ? this.executionRuntime.probeExecutor(binding, previousFailure)
-          : Promise.resolve({
-              available: false,
-              failure: {
-                kind: 'configuration',
-                scope: 'agent_class',
-                code: 'executor_binding_not_found',
-                summary:
-                  `No Runtime binding is configured for AgentClass ${name} `
-                  + `at revision ${configurationRevision}`,
-              },
-            });
-      },
-      onRecovered: (name, configurationRevision, checkId) => (
-        this.kernelExecutionRuntime.executorRecovered(name, configurationRevision, checkId)
-      ),
     });
+    this.workUnitClaimService = coordinatorServices.workUnitClaimService;
+    this.executorRecoveryRefreshService = coordinatorServices.executorRecoveryRefreshService;
+    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     this.memoryContextService = new MemoryContextService({
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
@@ -679,6 +646,7 @@ export class MetaclawSession {
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
     });
+    coordinatorServices.bindKernelExecutionRuntime(this.kernelExecutionRuntime);
     this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
       taskRuntimeService: this.taskRuntimeService,
       kernelExecutionRuntime: this.kernelExecutionRuntime,
