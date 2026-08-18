@@ -42,6 +42,7 @@ export interface ConversationSessionDeps {
   readonly persistenceService?: SessionPersistenceService;
   readonly interactionTraceStream?: InteractionTraceStream;
   readonly kernelExecutionRuntime?: KernelExecutionRuntime;
+  readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -297,6 +298,17 @@ export class ConversationSession {
 
   submit(command: MailboxCommand): MailboxReceipt {
     return this.deps.mailbox.submit(command);
+  }
+
+  /**
+   * 提交用户输入并触发 Planner 回合（通过注入的执行委托）。委托由调用方
+   * （当前 MetaclawSession，未来 AccountRuntime 内联）提供。
+   */
+  async submitUserInput(text: string): Promise<{ exitRequested: boolean }> {
+    if (this.deps.executeUserInput) {
+      return this.deps.executeUserInput(text);
+    }
+    return { exitRequested: false };
   }
 
   cancelTurn(requestId: string): boolean {
