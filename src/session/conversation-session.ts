@@ -12,6 +12,12 @@
  */
 
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
+import type { Config } from '../core/types.js';
+import type { TaskEngine } from '../task/task-engine.js';
+import type { MemoryEngine } from '../memory/memory-engine.js';
+import type { OrchestrationEngine } from '../guidance/orchestration.js';
+import type { CommandCatalog, CommandContext } from '../commands/catalog.js';
+import type { CommandReadServices } from '../commands/command-read-services.js';
 import type { SessionPresentationService, GuidanceState } from './session-presentation-service.js';
 import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
@@ -58,6 +64,13 @@ export interface ConversationSessionDeps {
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
+  readonly commandCatalog?: CommandCatalog;
+  readonly commandReadServices?: CommandReadServices;
+  readonly taskEngine?: TaskEngine;
+  readonly memoryEngine?: MemoryEngine;
+  readonly orchestration?: OrchestrationEngine;
+  readonly config?: Config;
+  readonly directiveExecutor?: (directive: unknown, userInput: string) => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -86,7 +99,7 @@ export class ConversationSession {
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
-      handleCommand: input => this.deps.handleCommand?.(input) ?? this.defaultHandleCommand(input),
+      handleCommand: input => this.handleCommand(input),
       handleNaturalLanguageInput: input => this.handleNaturalLanguageInput(input),
       waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
       handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
@@ -449,9 +462,47 @@ export class ConversationSession {
     return this.inputController.submit(text);
   }
 
-  private async defaultHandleCommand(input: string): Promise<boolean> {
-    this.appendOutput(`命令不受支持（Conversation 外壳未接入命令处理）: ${input}`);
+  private async handleCommand(input: string): Promise<boolean> {
+    // 命令处理由调用方注入（当前 MetaclawSession.handleCommand 桥接）时优先使用；
+    // 否则降级为内联 commandCatalog 执行。
+    if (this.deps.handleCommand) {
+      return this.deps.handleCommand(input);
+    }
+    const commandCatalog = this.deps.commandCatalog;
+    if (!commandCatalog) {
+      this.appendOutput(`命令不受支持（Conversation 外壳未接入命令处理）: ${input}`);
+      return false;
+    }
+    const result = await commandCatalog.execute(input, this.getCommandContext());
+    this.appendOutput(result.content);
+    if (result.type === 'exit') {
+      this.persistSessionState({ lastSessionId: this.deps.plannerSessionId });
+      return true;
+    }
+    if (result.type === 'directive') {
+      await this.deps.directiveExecutor?.(result.directive, input);
+    }
     return false;
+  }
+
+  private getCommandContext(): CommandContext {
+    const port = this.deps.runtimePort;
+    return {
+      taskEngine: this.deps.taskEngine!,
+      memoryEngine: this.deps.memoryEngine!,
+      orchestration: this.deps.orchestration!,
+      activeExecutions: port.executionServices!.executionRuntime,
+      taskControl: this.kernelExecutionRuntime!,
+      readServices: this.deps.commandReadServices!,
+      refreshExecutors: agentClassNames => port.coordinatorServices!.executorRecoveryRefreshService.refresh({
+        trigger: 'manual',
+        agentClassNames,
+      }),
+      currentTaskId: this.getCurrentTaskId(),
+      db: this.deps.db!,
+      config: this.deps.config!,
+      executorAgentClassNames: port.taskServices!.agentClassService.listExecutorAgentClassNames(),
+    };
   }
 
   private async waitForBackgroundWork(): Promise<void> {
