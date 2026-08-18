@@ -23,6 +23,10 @@ import type { PlanningContext } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
 import type Database from 'better-sqlite3';
 import type { KernelConfigurationView } from '../configuration/index.js';
+import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
+import { generateInteractionId } from '../utils/id.js';
+import type { SessionKernelRuntime } from './session-kernel-runtime.js';
+import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -50,6 +54,7 @@ export interface ConversationSessionDeps {
   readonly planningContextBuilder?: PlanningContextBuilder;
   readonly db?: Database.Database;
   readonly kernelConfiguration?: KernelConfigurationView;
+  readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly dispose?: () => Promise<void>;
 }
@@ -269,23 +274,59 @@ export class ConversationSession {
     const context = this.buildPlanningContext(userInput);
     if (!context) return false;
     const result = await planningAgent.submit(context, {
-      submit: async () => {
-        await this.submitPlannerProposal(userInput, context);
-        return { status: 'accepted' } as PlannerProposalResult;
-      },
+      submit: async plan => this.submitPlannerProposal(userInput, plan, context),
     });
     return result.status === 'accepted';
   }
 
   private async submitPlannerProposal(
-    _userInput: string,
-    _context: PlanningContext,
-  ): Promise<void> {
-    // 完整提案提交链路（buildPlanAdmissionSnapshot + workflow + kernel runtime）
-    // 由后续步骤内联；当前由 executeUserInput 委托桥接 MetaclawSession。
-    if (this.deps.executeUserInput) {
-      await this.deps.executeUserInput(_userInput);
+    userInput: string,
+    plan: PlanningAgentPlan,
+    context: PlanningContext,
+  ): Promise<PlannerProposalResult> {
+    const port = this.deps.runtimePort;
+    const sessionKernelRuntime = this.deps.sessionKernelRuntime;
+    if (!sessionKernelRuntime) {
+      if (this.deps.executeUserInput) {
+        await this.deps.executeUserInput(userInput);
+      }
+      return { status: 'accepted' } as PlannerProposalResult;
     }
+
+    const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
+    const event: KernelEvent = {
+      schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
+      type: 'plan_proposed',
+      id: eventId,
+      correlationId: plan.id,
+      causationId: null,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.plannerSessionId,
+      taskId: plan.task.taskId ?? undefined,
+      proposal: plan,
+      requestText: userInput.slice(0, 24_000),
+      generationId: `generation_${eventId}`,
+      proposalSource: 'initial',
+      targetGraphRevision: 1,
+    };
+    const workflow = new DurableKernelWorkflow({
+      kernel: port.kernelServices.controlKernel,
+      buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
+        claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
+      )!,
+      store: port.kernelServices.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      runtime: sessionKernelRuntime.forInput(userInput),
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+        'record_permission_resolution',
+      ],
+    });
+    await workflow.submit(event);
+    return { status: 'accepted' } as PlannerProposalResult;
   }
 
   clearRunningExecutorName(_taskId: string, attemptId: string): void {
