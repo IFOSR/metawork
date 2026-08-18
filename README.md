@@ -8,68 +8,103 @@
 
 # AnyFusion
 
-**MetaWork Server for durable, governed multi-agent execution**
+**A local-first AI Task OS for durable, governed agent work.**
 
-AnyFusion turns natural-language objectives into persistent work graphs,
-authorizes every strategic state change through a deterministic Control Kernel,
-and executes approved subtasks with isolated Planner and Executor runtimes.
+AnyFusion turns natural-language objectives into persistent tasks that survive
+restarts, run through an isolated Planner/Executor pipeline, and deliver
+verified, auditable results — not just a chat reply.
 
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
 [![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
 
-[Install](#installation) · [Architecture](#core-architecture) ·
-[Features](#core-features) · [Development](#development) ·
-[中文](README.zh-CN.md)
+[Why AnyFusion](#why-anyfusion) · [Installation](#installation) ·
+[Usage](#usage) · [How it works](#how-it-works) ·
+[Project status](#project-status) · [中文](README.zh-CN.md)
 
 </div>
 
-## What This Repository Contains
+## Why AnyFusion
 
-This repository is the AnyFusion MetaWork Server. It owns durable Task state,
-Planner-to-Kernel authorization, Work Graph execution, Executor lifecycle,
-verification, Git publication, Gateway surfaces, and delivery.
+Most AI agent sessions are ephemeral: they answer the current turn and end.
+There is no durable state, no governance, and no verifiable artifact to show
+for the work. AnyFusion raises agent work to the level of a task operating
+system.
 
-The product is local-first and designed for work that must survive process
-restarts, span multiple specialist agents, pause for missing resources or user
-authorization, and produce auditable evidence rather than only a chat reply.
+### Durable tasks, not ephemeral turns
 
-The current release boundary is one active top-level Task. That Task may contain
-dependency-aware Subtasks, with up to four independent attempts running
-concurrently.
+- Tasks are first-class objects with an explicit state machine — `created`,
+  `ready`, `running`, `parked`, `blocked`, `done`, `archived`, `cancelled`.
+- Work survives process restarts and resumes with context, instead of starting
+  over from scratch.
+- Tasks are searchable (local SQLite full-text index) and can pause for a
+  missing resource or user authorization, then continue where they left off.
+
+### Governed execution, separated from planning
+
+Every strategic state change flows through one deterministic control loop:
+
+```text
+Planner proposes → ControlKernel decides → Runtime applies → Executor performs one authorized attempt
+```
+
+- The Planner proposes semantics; it never schedules, authorizes, or mutates
+  storage.
+- The ControlKernel is the only strategic decision seam, writing every decision
+  to an append-only, immutable ledger.
+- There is no second semantic router, no hidden retry loop, and no silent
+  fallback path.
+
+### Isolated, real execution
+
+- The Planner and each Executor run as separate processes.
+- Every attempt owns a private `(task, generation, subtask)` Git worktree that
+  persists across retries and restarts.
+- Codex and Pi run through your existing local CLIs, without sharing their
+  personal homes. The worktree backend is the default trusted native path.
+
+### Verified and deterministically published
+
+- Completion Protocol v3 requires structured evidence or a controlled failure.
+- The runtime computes one authoritative workspace delta per attempt.
+- Successful attempts produce immutable receipts and candidate Git commits,
+  integrated in deterministic order. Merge conflicts use bounded,
+  Kernel-authorized repair.
+- Results, artifacts, and handoffs become visible only after publication
+  succeeds.
+
+### Local-first and self-hosted
+
+- Native macOS installation with no Docker requirement.
+- Secrets stay in the macOS keychain; runtime state lives in a local SQLite
+  database.
+
+### Revisioned configuration, signed upgrades
+
+- Static configuration is immutable and revision-scoped; each Work Graph
+  generation pins exactly one revision.
+- Upgrades are signed, crash-recoverable transactions: a pinned trust root,
+  verified backup and migration, a candidate health check, and atomic pointer
+  activation with rollback.
+
+### Multiple surfaces
+
+- Native TUI (default), browser UI, Feishu delivery, and a local Gateway.
 
 ## Installation
 
-### Supported Native Path
+The current native installer targets macOS. Linux and WSL2 remain development
+and runtime environments; Docker is retained only as a compatibility and CI
+validation path.
 
-The current native installer targets macOS and does not require Docker.
-
-**One-command install.** After the one-time prerequisites below are in place,
-the entire deployment is a single command. Run it from any directory:
-
-```bash
-git clone https://github.com/IFOSR/metawork.git && cd metawork && \
-  ANYFUSION_PROVIDER_KEY='your-api-key' \
-  ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1' \
-  ./setup.sh
-```
-
-This clones the repository, builds the MetaWork runtime and the vendored
-AnyFusion-Pi planner, installs the `anyfusion` launcher, and writes
-AnyFusion-only configuration — all in one step. Drop the two `ANYFUSION_*`
-lines to be prompted for the key and URL interactively. If you already cloned
-the repository, run `./setup.sh` from inside `metawork/` instead.
-
-Required:
+### Prerequisites
 
 - Node.js `>=22.19.0`
 - npm
 - Git
-- macOS native build tools for `better-sqlite3`
+- macOS native build tools (for `better-sqlite3`)
 - Existing `codex` and `pi` commands on `PATH`
 - An OpenAI-compatible provider URL and API key
-
-Install prerequisites:
 
 ```bash
 xcode-select --install
@@ -83,7 +118,7 @@ codex --version
 pi --version
 ```
 
-Clone and install:
+### Install
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
@@ -95,226 +130,114 @@ export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v
 ./setup.sh
 ```
 
+Optional provider variables:
+
+```bash
+export ANYFUSION_PROVIDER_MODEL='your-model-id'    # default: gpt-5.6-terra
+export ANYFUSION_PROVIDER_REGION='international'  # default: international
+```
+
 The installer:
 
-- Builds MetaWork and the vendored AnyFusion-Pi planner in separate dependency trees.
-- Builds the AnyFusion-Pi planner directly from the checked-in `metawork/planner/AnyFusion-Pi` sources; no external repository is cloned.
+- Builds the MetaWork runtime and the vendored AnyFusion-Pi planner in separate
+  dependency trees, directly from the checked-in `planner/AnyFusion-Pi` sources.
 - Installs the launcher at `~/.local/bin/anyfusion`.
-- Writes AnyFusion-only configuration under `~/.config/anyfusion`.
-- Stores runtime state under `~/.local/share/anyfusion`.
-- Does not install, upgrade, downgrade, link, or reconfigure Codex or Pi.
-- Does not read or write the user's `~/.codex` or `~/.pi` homes.
+- Writes all state and configuration under `~/.anyfusion` (override with
+  `ANYFUSION_INSTALL_ROOT`).
+- Does not install, upgrade, downgrade, link, or reconfigure Codex or Pi, and
+  does not read or write your `~/.codex` or `~/.pi` homes.
 
-Open a new shell after installation. Start AnyFusion from the directory the
-Planner should inspect:
+### Runtime layout
+
+```text
+~/.local/bin/
+└── anyfusion                # launcher
+
+~/.anyfusion/
+├── app/current              # active release
+├── app/releases/            # versioned releases
+├── config/active/           # active immutable configuration revision
+├── config/secrets/          # secrets (macOS: keychain; Linux: file, 0600)
+├── data/metaclaw.db         # durable runtime state
+├── data/planner-sessions/
+├── data/execution-workspaces/
+└── upgrade-journals/
+```
+
+On non-macOS platforms, set `ANYFUSION_SECRET_STORE=file`; the keychain store
+requires macOS.
+
+## Usage
+
+### Native TUI (default)
 
 ```bash
 cd /path/to/your/project
 anyfusion
 ```
 
-The launcher's working directory is the user's current directory. It is not
+The launch directory is the read-only root the Planner inspects. It is not
 forced to the MetaWork repository or a fixed `/workspace`.
 
-Start the browser interface instead of the native TUI:
+### Web interface
 
 ```bash
 anyfusion web
+anyfusion web restart          # restart the running instance into Web mode
+anyfusion web --port 9000 --no-open
 ```
 
-Restart the active Runtime directly into Web mode with:
+`anyfusion web` opens `http://127.0.0.1:8788` and authenticates the browser
+automatically through a short-lived URL fragment, exchanged immediately for an
+HttpOnly, SameSite=Strict session cookie. Use `--no-open` for SSH, port
+forwarding, or manual browser startup.
 
-```bash
-anyfusion web restart
-```
-
-The restart command sends `SIGTERM` to the current `runtime.lock` holder,
-waits up to 10 seconds for a clean exit, and then starts the replacement Web
-instance. It fails without force-killing if the old process does not exit.
-
-The command opens `http://127.0.0.1:8788` and authenticates the browser
-automatically through a short-lived URL-fragment bootstrap. The fragment is
-removed immediately and exchanged for an HttpOnly, SameSite=Strict session
-cookie. No token copying or browser storage is used. For SSH, port forwarding,
-or manual browser startup, run `anyfusion web --no-open`; only that mode prints
-the process-local fallback token.
-
-The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
-are separate, mutually exclusive Runtime modes in this release.
-
-Web uses a session workspace with persistent history on the left, a full-width
-Conversation/Trajectory canvas, and one sticky composer. Conversation streams
-safe Planner, Kernel, routing, Executor, verification, and delivery milestones
-before the final answer. Trajectory reprojects the same facts into timing,
-filters, and dense event rows. Historical sessions are read-only until a safe
-activation gate confirms that no Planner turn or Task runtime work is active.
-
-Configuration changes activated from the Web settings panel are validated and
-stored as the next-start revision. The running Planner, Kernel, and Executors
-remain pinned to the revision loaded at startup; restart AnyFusion to apply the
-new revision.
-
-### Native Runtime Layout
+### CLI reference
 
 ```text
-metawork/
-└── planner/
-    └── AnyFusion-Pi/          # separate Planner source and dependency tree
-
-~/.local/bin/
-└── anyfusion                  # launcher
-
-~/.config/anyfusion/
-├── provider.env              # mode 0600
-├── planner/                  # isolated Planner model/settings home
-├── codex/                    # AnyFusion Codex template home
-└── pi-home/                  # AnyFusion Pi template home
-
-~/.local/share/anyfusion/
-├── metaclaw.db               # durable runtime state
-├── planner-sessions/
-└── workspaces/
+anyfusion                                   # native TUI
+anyfusion web [restart] [--port <p>] [--no-open]
+anyfusion --script <file>                   # scripted session
+anyfusion --gateway                         # local gateway
+anyfusion --connect                         # attach to a running gateway
+anyfusion gateway <run|setup|pairing|doctor|install|start|stop|restart|status>
+anyfusion <configure|config|provider|model|planner|executor|doctor|status> ...
 ```
 
-Each Executor attempt receives another private temporary runtime home derived
-from the AnyFusion template. Executor processes use the Subtask Git worktree as
-`cwd`; runtime homes and working directories are separate contracts.
-
-### Other Platforms
-
-Linux and WSL2 remain development/runtime environments, but the current
-productized native installer is macOS-specific. Docker is retained only as an
-explicit compatibility and CI validation path; it is not required for normal
-native installation.
-
-## Core Architecture
-
-```mermaid
-flowchart LR
-  Client[CLI / TUI / Gateway / Feishu] --> Session[MetaclawSession<br/>Application Shell]
-  Session --> Planner[AnyFusion-Pi Planner<br/>isolated process]
-  Planner --> Proposal[PlanningAgentPlan v8]
-  Proposal --> Workflow[DurableKernelWorkflow<br/>inbox / ledger / application]
-  Workflow --> Kernel[ControlKernel v5<br/>pure policy decisions]
-  Kernel --> Runtime[Execution Runtime<br/>authorized side effects]
-  Runtime --> Supervisor[Attempt Supervisor<br/>up to four attempts]
-  Supervisor --> Adapter[BackendExecutorAdapter]
-  Adapter --> Backend[AttemptExecutionBackend<br/>worktree or container]
-  Backend --> Executors[Codex / Pi Executor]
-  Executors --> Verify[Completion Protocol v3<br/>evidence / artifacts]
-  Verify --> Publish[Deterministic Git Publication]
-  Publish --> Delivery[Gateway / TUI / Feishu Delivery]
-
-  Store[(SQLite v30<br/>Tasks / graph / decisions / attempts / audit)]
-  Session <--> Store
-  Workflow <--> Store
-  Runtime <--> Store
-```
-
-### Authority Boundaries
-
-| Component | Owns | Must not own |
-| --- | --- | --- |
-| **Planner** | Natural-language understanding, Task binding proposals, Work Graph proposals, direct replies | Scheduling, authorization, storage mutation, Executor control |
-| **Control Kernel** | Admission, dispatch, retry, fallback, cancellation, recovery, permission and publication policy | Repositories, process launch, clocks, raw logs |
-| **Runtime** | Applying Kernel decisions, persistence, WorkUnits, leases, workspaces, processes and normalized observations | Independent retry, fallback, replan or routing policy |
-| **Executor Adapter** | One authorized attempt, probe/abort, command lifecycle and result normalization | Task state or strategic decisions |
-| **Gateway** | Client and integration connectivity | Planner, Kernel or Executor policy |
-
-The fixed control loop is:
+Management commands:
 
 ```text
-Planner proposes
-  -> ControlKernel decides
-  -> Runtime applies
-  -> Executor performs one authorized attempt
-  -> Runtime reports normalized facts
-  -> ControlKernel decides the next action
+anyfusion status
+anyfusion doctor
+anyfusion config show | validate | history | diff | rollback
+anyfusion provider list | add | edit | test | remove
+anyfusion model    list | add | edit | test | remove
+anyfusion executor list | add | edit | enable | disable | remove | test
 ```
 
-There is no second semantic router or hidden Runtime-owned retry loop.
+Compatibility aliases: `metawork`, `metaclaw`.
 
-## Core Features
+## How it works
 
-### Durable Task OS
+AnyFusion separates agent work into four explicit runtime boundaries:
 
-- Persistent Task and Subtask state across sessions and process restarts.
-- One active top-level Task with dependency-aware concurrent Subtasks.
-- Durable inbox, immutable Kernel decision ledger, idempotent application and
-  recovery.
-- Task search, resume context, cancellation fences, partial acceptance and
-  explicit blocked/parked states.
+- **Planner** — owns natural-language understanding and produces strict
+  `PlanningAgentPlan v8` proposals (direct replies, task bindings, Work Graph
+  proposals). It inspects your repository read-only and never mutates state.
+- **ControlKernel** — owns admission, dispatch, retry, fallback, cancellation,
+  recovery, permission, and publication policy. `decide(event, snapshot)` is
+  the only strategic decision seam.
+- **Runtime** — applies authorized decisions: durable Task and Subtask state,
+  Work Graph execution, WorkUnit claims and leases, workspaces, and process
+  lifecycle. It reports normalized facts back to the Kernel.
+- **Executor adapter** — transports exactly one authorized attempt per call,
+  through the worktree backend (default) or the Docker compatibility backend.
 
-### Planner and Work Graph
+The current release boundary is one active top-level Task, which may contain
+dependency-aware Subtasks with up to four independent attempts running
+concurrently.
 
-- AnyFusion-Pi runs as a separate Planner process with its own session history.
-- Planner repository inspection is read-only and rooted at the user's launch
-  directory.
-- Planning produces strict `PlanningAgentPlan v8` proposals.
-- Work Graph v7 models DAG topology, acceptance criteria, typed handoffs,
-  delivery kind, ordered AgentClass preferences and a pinned configuration
-  revision.
-- Planner proposals are revalidated before entering the Kernel workflow.
-
-### Governed Execution
-
-- `ControlKernel.decide(event, snapshot)` is the only strategic decision seam.
-- Deterministic frontier batches support up to four concurrent child attempts.
-- Codex and Pi use existing local CLI binaries without sharing personal homes.
-- Worktree execution is the default trusted native backend.
-- The Docker backend remains an explicit compatibility mode and is the only
-  backend described as a container sandbox.
-- Resource leases, permission requests, bounded grants and cancellation cleanup
-  are persisted and recoverable.
-
-### Verification and Publication
-
-- Completion Protocol v3 requires structured evidence or a controlled failure.
-- Runtime computes the authoritative workspace delta.
-- Successful attempts produce immutable receipts and candidate Git commits.
-- Publication integrates candidates in deterministic order.
-- Results, artifacts and handoffs become visible only after publication
-  succeeds.
-- Merge conflicts use bounded Kernel-authorized repair and replan paths.
-
-### Connectivity and Delivery
-
-- Native AnyFusion-Pi TUI is the default local surface.
-- Local Gateway supports multiple terminal/client connections.
-- Feishu integration provides remote intake, progress and artifact delivery.
-- Presentation surfaces receive bounded projections and do not write Kernel or
-  storage state directly.
-
-## Development
-
-```bash
-npm install
-npm run lint
-npm test
-npm run build
-npm run start
-```
-
-Focused native installer validation:
-
-```bash
-npx vitest run tests/installation tests/configuration
-bash -n setup.sh
-```
-
-Live Planner smoke testing requires valid provider credentials and the
-AnyFusion-Pi source:
-
-```bash
-npm run smoke:anyfusion
-npm run smoke:anyfusion -- --scenario artifact
-```
-
-Do not use the smoke command as a substitute for focused module tests. See
-[AGENTS.md](AGENTS.md) and [CONTEXT.md](CONTEXT.md) before changing architecture
-or runtime contracts.
-
-## Project Status
+## Project status
 
 | Area | Current state |
 | --- | --- |
@@ -328,18 +251,17 @@ or runtime contracts.
 | Persistence | SQLite schema v31 |
 | Canonical Executors | Codex CLI and Pi Agent |
 
-This is not a stable production release. Installation, configuration and
+This is not a stable production release. Installation, configuration, and
 extension contracts may change before the first stable version.
 
 ## Documentation
 
 | Resource | Purpose |
 | --- | --- |
-| [Current Technical Overview](docs/current/technical-overview.md) | Full runtime, deployment, configuration and repository overview |
-| [Runtime Security](docs/current/phase-5-runtime-security.md) | Workspaces, resource leases, permission boundaries and execution backends |
+| [Current Technical Overview](docs/current/technical-overview.md) | Full runtime, deployment, configuration, and repository overview |
+| [Runtime Security](docs/current/phase-5-runtime-security.md) | Workspaces, resource leases, permission boundaries, and execution backends |
 | [Architecture Decisions](docs/adr/README.md) | Accepted decisions and authority matrix |
-| [Server Upgrade Design](docs/plans/2026-08-07-metawork-server-upgrade-technical-design.md) | Target Server installer, unified configuration and extensibility design |
-| [Documentation Map](docs/README.md) | Current docs, plans, technical debt and archives |
+| [Documentation Map](docs/README.md) | Current docs, plans, technical debt, and archives |
 
 ## License
 

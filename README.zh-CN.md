@@ -8,64 +8,94 @@
 
 # AnyFusion
 
-**面向持久化、可治理多智能体执行的 MetaWork Server**
+**面向持久化、可治理智能体工作的本地优先 AI Task OS。**
 
-AnyFusion 将自然语言目标转化为持久化工作图，通过确定性的 Control Kernel
-授权每一次战略状态变更，并由相互隔离的 Planner 和 Executor Runtime 执行
-已批准的 Subtask。
+AnyFusion 将自然语言目标转化为持久化任务，这些任务可以跨进程重启存活，
+经过相互隔离的 Planner/Executor 流水线执行，并交付可验证、可审计的成果——
+而不只是一次聊天回复。
 
 [![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](docs/releases/v1.2.0-preview.0.md)
 [![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#许可证)
 
-[安装](#安装方式) · [架构](#核心架构) · [功能](#核心功能) ·
-[开发](#开发与验证) · [English](README.md)
+[为什么用 AnyFusion](#为什么用-anyfusion) · [安装方式](#安装方式) ·
+[使用](#使用) · [工作原理](#工作原理) ·
+[项目状态](#项目状态) · [English](README.md)
 
 </div>
 
-## 项目定位
+## 为什么用 AnyFusion
 
-本仓库是 AnyFusion 的 MetaWork Server，负责持久化 Task、Planner 到 Kernel
-的授权链、Work Graph 执行、Executor 生命周期、结果验收、Git 发布、Gateway
-接入与交付。
+大多数 AI 智能体会话都是短暂的：回答完当前回合就结束，没有持久状态、没有
+治理、也拿不出可验证的成果。AnyFusion 把智能体工作提升到「任务操作系统」
+的高度。
 
-它面向需要跨进程恢复、多个专业 Agent 协作、等待材料或人工授权，并且要求
-结果可验证、过程可审计的长周期工作，而不是只完成一次聊天回复。
+### 持久化任务，而非一次性的对话回合
 
-当前产品边界是同一时间只允许一个活跃顶层 Task。该 Task 内可以包含有依赖
-关系的多个 Subtask，并行运行最多四个互相独立的 attempt。
+- Task 是一等对象，拥有显式状态机——`created`、`ready`、`running`、
+  `parked`、`blocked`、`done`、`archived`、`cancelled`。
+- 工作跨进程重启存活，并带着上下文恢复，而不是从头再来。
+- 任务可搜索（本地 SQLite 全文索引），可以在缺少资源或等待人工授权时暂停，
+  之后从断点继续。
+
+### 治理与执行分离
+
+每一次战略状态变更都经过同一条确定性控制链：
+
+```text
+Planner proposes → ControlKernel decides → Runtime applies → Executor performs one authorized attempt
+```
+
+- Planner 只提语义提案；它从不调度、授权，也不写存储。
+- ControlKernel 是唯一的战略决策入口，把每一个决策写入 append-only、不可变
+  的账本。
+- 不存在第二套语义 Router，没有隐藏重试循环，也没有静默回退路径。
+
+### 隔离且真实的执行
+
+- Planner 与每个 Executor 以独立进程运行。
+- 每次 attempt 拥有一个私有的 `(task, generation, subtask)` Git worktree，
+  在重试和重启后依然保留。
+- Codex 与 Pi 复用你本机已有的 CLI，且不共享它们的个人 home。worktree 后端
+  是默认受信任的原生路径。
+
+### 验证与确定性发布
+
+- Completion Protocol v3 要求结构化证据，或一次受控失败。
+- Runtime 为每次 attempt 计算唯一的权威 workspace delta。
+- 成功的 attempt 生成不可变 receipt 与候选 Git commit，并按确定性顺序集成；
+  合并冲突走有界、由 Kernel 授权的修复链路。
+- 结果、产物和 handoff 只有在发布成功后才对外可见。
+
+### 本地优先、可自托管
+
+- macOS 原生安装，无需 Docker。
+- 密钥保存在 macOS keychain；运行状态保存在本地 SQLite 数据库。
+
+### 修订化配置、签名升级
+
+- 静态配置是不可变的、按 revision 作用域管理；每一代 Work Graph 绑定唯一的
+  一个 revision。
+- 升级是签名、崩溃可恢复的事务：固定信任根、经校验的备份与迁移、候选健康
+  检查、原子指针切换与回滚。
+
+### 多种接入面
+
+- 原生 TUI（默认）、浏览器 UI、飞书交付，以及本地 Gateway。
 
 ## 安装方式
 
-### macOS 原生安装
+当前原生安装器面向 macOS。Linux 与 WSL2 仍是开发与运行环境；Docker 只保留
+为兼容性与 CI 验证路径。
 
-当前产品化原生安装路径支持 macOS，不需要 Docker。
-
-**一键部署。** 下面的前置依赖一次性装好后，整个部署就是一条命令。在任意
-目录运行：
-
-```bash
-git clone https://github.com/IFOSR/metawork.git && cd metawork && \
-  ANYFUSION_PROVIDER_KEY='你的-api-key' \
-  ANYFUSION_PROVIDER_URL='https://你的-openai-compatible服务地址.example/v1' \
-  ./setup.sh
-```
-
-这条命令会克隆仓库、构建 MetaWork Runtime 与内置 AnyFusion-Pi planner、
-安装 `anyfusion` 启动器，并写入 AnyFusion 专用配置——一步完成。省略两行
-`ANYFUSION_*` 环境变量会改为交互式询问 key 和 URL。若已克隆仓库，直接进入
-`metawork/` 运行 `./setup.sh` 即可。
-
-安装前需要：
+### 前置条件
 
 - Node.js `>=22.19.0`
 - npm
 - Git
 - 用于编译 `better-sqlite3` 的 macOS 原生构建工具
-- 已经安装并位于 `PATH` 中的 `codex` 和 `pi`
-- OpenAI-compatible Provider URL 与 API Key
-
-安装依赖：
+- 已安装并位于 `PATH` 中的 `codex` 与 `pi`
+- 一个 OpenAI-compatible Provider URL 与 API Key
 
 ```bash
 xcode-select --install
@@ -79,7 +109,7 @@ codex --version
 pi --version
 ```
 
-克隆并安装：
+### 安装
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
@@ -91,175 +121,108 @@ export ANYFUSION_PROVIDER_URL='https://你的-openai-compatible服务地址.exam
 ./setup.sh
 ```
 
+可选 Provider 变量：
+
+```bash
+export ANYFUSION_PROVIDER_MODEL='你的模型ID'      # 默认：gpt-5.6-terra
+export ANYFUSION_PROVIDER_REGION='international'  # 默认：international
+```
+
 安装器会：
 
-- 分别构建 MetaWork 和仓库内置的 AnyFusion-Pi planner，保持两套独立依赖树。
-- 直接构建仓库内检入的 `metawork/planner/AnyFusion-Pi` 源码，不克隆任何外部仓库。
+- 分别构建 MetaWork Runtime 与仓库内置的 AnyFusion-Pi planner，保持两套独立
+  依赖树，直接从检入的 `planner/AnyFusion-Pi` 源码构建。
 - 将启动器安装到 `~/.local/bin/anyfusion`。
-- 将 AnyFusion 专用配置写入 `~/.config/anyfusion`。
-- 将运行状态保存到 `~/.local/share/anyfusion`。
-- 不安装、升级、降级、链接或重新配置 Codex/Pi。
-- 不读取或写入用户个人的 `~/.codex` 和 `~/.pi`。
+- 将所有状态与配置写入 `~/.anyfusion`（可用 `ANYFUSION_INSTALL_ROOT` 覆盖）。
+- 不安装、升级、降级、链接或重新配置 Codex/Pi，也不读取或写入你的
+  `~/.codex` 与 `~/.pi` home。
 
-安装后打开一个新 shell，从 Planner 需要检查的目录启动：
+### 运行时目录布局
+
+```text
+~/.local/bin/
+└── anyfusion                # 启动器
+
+~/.anyfusion/
+├── app/current              # 当前生效的 release
+├── app/releases/            # 版本化 release
+├── config/active/           # 当前生效的不可变配置 revision
+├── config/secrets/          # 密钥（macOS：keychain；Linux：file，0600）
+├── data/metaclaw.db         # 持久化运行状态
+├── data/planner-sessions/
+├── data/execution-workspaces/
+└── upgrade-journals/
+```
+
+在非 macOS 平台上需设置 `ANYFUSION_SECRET_STORE=file`；keychain 存储仅支持
+macOS。
+
+## 使用
+
+### 原生 TUI（默认）
 
 ```bash
 cd /path/to/your/project
 anyfusion
 ```
 
-Planner 工作目录就是用户执行 `anyfusion` 时的当前目录，不会被强制设置为
-MetaWork 仓库或固定 `/workspace`。
+启动目录就是 Planner 只读检查的根目录，不会被强制为 MetaWork 仓库或固定
+`/workspace`。
 
-### 本机目录布局
+### Web 界面
+
+```bash
+anyfusion web
+anyfusion web restart          # 将正在运行的实例重启为 Web 模式
+anyfusion web --port 9000 --no-open
+```
+
+`anyfusion web` 会打开 `http://127.0.0.1:8788`，并通过短生命周期的 URL
+fragment 自动完成浏览器认证，随后立即换发为 HttpOnly、SameSite=Strict 的
+会话 Cookie。SSH、端口转发或手动打开浏览器时使用 `--no-open`。
+
+### CLI 参考
 
 ```text
-metawork/
-└── planner/
-    └── AnyFusion-Pi/          # 独立 Planner 源码和依赖树
-
-~/.local/bin/
-└── anyfusion                  # 启动器
-
-~/.config/anyfusion/
-├── provider.env              # 权限 0600
-├── planner/                  # Planner 独立模型和设置 Home
-├── codex/                    # AnyFusion Codex 模板 Home
-└── pi-home/                  # AnyFusion Pi 模板 Home
-
-~/.local/share/anyfusion/
-├── metaclaw.db               # 持久化运行状态
-├── planner-sessions/
-└── workspaces/
+anyfusion                                   # 原生 TUI
+anyfusion web [restart] [--port <端口>] [--no-open]
+anyfusion --script <文件>                   # 脚本化会话
+anyfusion --gateway                         # 本地 Gateway
+anyfusion --connect                         # 接入正在运行的 Gateway
+anyfusion gateway <run|setup|pairing|doctor|install|start|stop|restart|status>
+anyfusion <configure|config|provider|model|planner|executor|doctor|status> ...
 ```
 
-每次 Executor attempt 会基于 AnyFusion 模板再生成一个私有临时 Runtime
-Home。Executor 的 `cwd` 是对应 Subtask Git worktree；Runtime Home 与工作
-目录是两个独立路径契约。
-
-### 其他平台
-
-Linux 和 WSL2 仍可用于开发和运行，但当前产品化原生安装器是 macOS 专用。
-Docker 只保留为显式兼容模式和 CI 验证路径，不是正常本机安装的依赖。
-
-## 核心架构
-
-```mermaid
-flowchart LR
-  Client[CLI / TUI / Gateway / 飞书] --> Session[MetaclawSession<br/>Application Shell]
-  Session --> Planner[AnyFusion-Pi Planner<br/>独立进程]
-  Planner --> Proposal[PlanningAgentPlan v8]
-  Proposal --> Workflow[DurableKernelWorkflow<br/>Inbox / Ledger / Application]
-  Workflow --> Kernel[ControlKernel v5<br/>纯策略决策]
-  Kernel --> Runtime[Execution Runtime<br/>执行已授权副作用]
-  Runtime --> Supervisor[Attempt Supervisor<br/>最多四个 Attempt]
-  Supervisor --> Adapter[BackendExecutorAdapter]
-  Adapter --> Backend[AttemptExecutionBackend<br/>Worktree 或 Container]
-  Backend --> Executors[Codex / Pi Executor]
-  Executors --> Verify[Completion Protocol v3<br/>证据 / 产物]
-  Verify --> Publish[确定性 Git Publication]
-  Publish --> Delivery[Gateway / TUI / 飞书交付]
-
-  Store[(SQLite v30<br/>Task / 工作图 / 决策 / Attempt / 审计)]
-  Session <--> Store
-  Workflow <--> Store
-  Runtime <--> Store
-```
-
-### 权限与职责边界
-
-| 组件 | 负责 | 不负责 |
-| --- | --- | --- |
-| **Planner** | 自然语言理解、Task 绑定提案、Work Graph 提案、直接回复 | 调度、授权、数据库写入、控制 Executor |
-| **Control Kernel** | admission、dispatch、retry、fallback、取消、恢复、权限和发布策略 | Repository、启动进程、读取时钟和原始日志 |
-| **Runtime** | 应用 Kernel Decision、持久化、WorkUnit、lease、workspace、进程和规范化事实 | 自行决定 retry、fallback、replan 或路由 |
-| **Executor Adapter** | 执行一次已授权 attempt、probe/abort、命令生命周期和结果规范化 | Task 状态和战略决策 |
-| **Gateway** | Client 与集成连接 | Planner、Kernel 或 Executor 策略 |
-
-固定控制链如下：
+管理命令：
 
 ```text
-Planner proposes
-  -> ControlKernel decides
-  -> Runtime applies
-  -> Executor performs one authorized attempt
-  -> Runtime reports normalized facts
-  -> ControlKernel decides the next action
+anyfusion status
+anyfusion doctor
+anyfusion config show | validate | history | diff | rollback
+anyfusion provider list | add | edit | test | remove
+anyfusion model    list | add | edit | test | remove
+anyfusion executor list | add | edit | enable | disable | remove | test
 ```
 
-系统中不存在第二套语义 Router，也不存在 Runtime 隐式拥有的 retry loop。
+兼容别名：`metawork`、`metaclaw`。
 
-## 核心功能
+## 工作原理
 
-### 持久化 Task OS
+AnyFusion 把智能体工作划分为四道明确的运行时边界：
 
-- Task 与 Subtask 状态可以跨 Session 和进程重启恢复。
-- 单一活跃顶层 Task 内支持依赖感知的并发 Subtask。
-- 持久 inbox、不可变 Kernel decision ledger、幂等 application 与恢复。
-- 支持任务搜索、resume context、取消栅栏、部分结果接受和显式
-  blocked/parked 状态。
+- **Planner** —— 负责自然语言理解，产出严格的 `PlanningAgentPlan v8` 提案
+  （直接回复、Task 绑定、Work Graph 提案）。它只读检查你的仓库，从不修改
+  状态。
+- **ControlKernel** —— 负责 admission、dispatch、retry、fallback、取消、
+  恢复、权限与发布策略。`decide(event, snapshot)` 是唯一的战略决策入口。
+- **Runtime** —— 应用已授权的决策：持久化 Task 与 Subtask 状态、Work Graph
+  执行、WorkUnit 认领与 lease、workspace、进程生命周期，并向 Kernel 回报
+  规范化事实。
+- **Executor adapter** —— 每次调用只传输一次已授权的 attempt，通过 worktree
+  后端（默认）或 Docker 兼容后端执行。
 
-### Planner 与 Work Graph
-
-- AnyFusion-Pi 作为独立 Planner 进程运行，并维护自己的会话历史。
-- Planner 只能只读检查用户启动目录。
-- Planner 产出严格的 `PlanningAgentPlan v8` 提案。
-- Work Graph v7 描述 DAG、验收标准、类型化 handoff、delivery kind、有序
-  AgentClass 偏好，并绑定一个配置修订（configuration revision）。
-- Planner 提案进入 Kernel workflow 前会由 MetaWork 再次校验。
-
-### 可治理执行
-
-- `ControlKernel.decide(event, snapshot)` 是唯一战略决策入口。
-- 确定性 frontier batch 可并行运行最多四个 child attempt。
-- Codex/Pi 复用用户已经安装的 CLI binary，但不共享个人 Home。
-- Worktree 是默认受信任的本机执行后端。
-- Docker 后端只作为显式兼容模式保留，并且只有 container backend 被称为
-  sandbox。
-- Resource lease、permission request、受限 grant 和取消清理均持久化且可恢复。
-
-### 验收与发布
-
-- Completion Protocol v3 要求结构化证据或受控失败。
-- Runtime 计算权威 workspace delta。
-- 成功 attempt 先生成不可变 receipt 和候选 Git commit。
-- Publication 按确定性顺序集成候选提交。
-- 只有发布成功后才公开结果、artifact 和 handoff。
-- Merge conflict 进入有界、由 Kernel 授权的 repair 与 replan 链路。
-
-### 接入与交付
-
-- AnyFusion-Pi 原生 TUI 是默认本地入口。
-- Local Gateway 支持多个终端或 Client 连接。
-- 飞书集成支持远程请求、进度和 artifact 交付。
-- 所有展示层只读取受限投影，不直接写 Kernel 或存储状态。
-
-## 开发与验证
-
-```bash
-npm install
-npm run lint
-npm test
-npm run build
-npm run start
-```
-
-原生安装器专项验证：
-
-```bash
-npx vitest run tests/installation tests/configuration
-bash -n setup.sh
-```
-
-真实 Planner smoke 需要有效 Provider 凭证和 AnyFusion-Pi 源码：
-
-```bash
-npm run smoke:anyfusion
-npm run smoke:anyfusion -- --scenario artifact
-```
-
-smoke 命令不能替代模块级专项测试。修改架构或 Runtime contract 前应先阅读
-[AGENTS.md](AGENTS.md) 和 [CONTEXT.md](CONTEXT.md)。
+当前发布边界是同一时间一个活跃顶层 Task，该 Task 内可包含依赖感知的
+Subtask，最多并行运行四个相互独立的 attempt。
 
 ## 项目状态
 
@@ -275,17 +238,16 @@ smoke 命令不能替代模块级专项测试。修改架构或 Runtime contract
 | Persistence | SQLite schema v31 |
 | Canonical Executor | Codex CLI 与 Pi Agent |
 
-当前版本不是稳定生产版本。安装、配置和扩展契约在首个稳定版本前仍可能调整。
+当前版本不是稳定生产版本。安装、配置与扩展契约在首个稳定版本前仍可能调整。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [当前技术总览](docs/current/technical-overview.zh-CN.md) | 完整 Runtime、部署、配置和仓库说明 |
-| [运行时安全](docs/current/phase-5-runtime-security.md) | Workspace、resource lease、权限边界和执行后端 |
+| [当前技术总览](docs/current/technical-overview.zh-CN.md) | 完整 Runtime、部署、配置与仓库说明 |
+| [运行时安全](docs/current/phase-5-runtime-security.md) | Workspace、resource lease、权限边界与执行后端 |
 | [架构决策](docs/adr/README.md) | 已接受决策与权威矩阵 |
-| [Server 升级技术设计](docs/plans/2026-08-07-metawork-server-upgrade-technical-design.md) | Server Installer、统一配置和扩展能力目标设计 |
-| [文档地图](docs/README.md) | 当前文档、计划、技术债和归档索引 |
+| [文档地图](docs/README.md) | 当前文档、计划、技术债与归档索引 |
 
 ## 许可证
 
