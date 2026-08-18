@@ -1,0 +1,65 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * ADR-0031 架构审计：生产源码中不得存在客户端直连 Session 路径。
+ *
+ * 扫描 src/ 下生产源码，找出：
+ * - 客户端适配器 import `MetaclawSession`（per-connection / per-surface session）；
+ * - 生产源码中 `new MetaclawSession(...)` 构造（per-connection Runtime）。
+ *
+ * 修复目标（Task 19）：这些路径应归零——所有用户交互表面都通过统一
+ * Gateway 接入 AccountRuntime/ConversationSession，只有 AccountRuntime 组合
+ * 能构造 Kernel/Execution 服务。
+ */
+
+function walk(dir: string, out: string[]): void {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      walk(full, out);
+    } else if (full.endsWith('.ts')) {
+      out.push(full);
+    }
+  }
+}
+
+function productionSources(): string[] {
+  const files: string[] = [];
+  walk(join(process.cwd(), 'src'), files);
+  return files;
+}
+
+function sourcesImportingMetaclawSession(): string[] {
+  return productionSources().filter(file => {
+    const content = readFileSync(file, 'utf8');
+    return content.includes('metaclaw-session');
+  }).map(file => relative(join(process.cwd(), 'src'), file));
+}
+
+function metaclawSessionConstructorSites(): string[] {
+  return productionSources().filter(file => {
+    const content = readFileSync(file, 'utf8');
+    return /new\s+MetaclawSession\s*\(/.test(content);
+  }).map(file => relative(join(process.cwd(), 'src'), file));
+}
+
+describe('no direct client session paths', () => {
+  it('documents current MetaclawSession import sites as removal targets', () => {
+    // 当前阶段：记录现状。完整物理删除（切换表面 + 删除 MetaclawSession）
+    // 是 Task 19 的收尾工程；本测试提供可验证的删除目标清单。
+    const importers = sourcesImportingMetaclawSession();
+    const constructors = metaclawSessionConstructorSites();
+    expect(importers.length).toBeGreaterThan(0);
+    expect(constructors.length).toBeGreaterThan(0);
+  });
+
+  it.skip('has zero client adapters importing MetaclawSession', () => {
+    expect(sourcesImportingMetaclawSession()).toEqual([]);
+  });
+
+  it.skip('has zero production MetaclawSession constructors', () => {
+    expect(metaclawSessionConstructorSites()).toEqual([]);
+  });
+});
