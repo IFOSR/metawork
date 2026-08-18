@@ -44,8 +44,11 @@ The implementation plan's foundation phases — characterization, contracts,
 account storage and migration, AccountRuntime ownership, Conversation runtime,
 unified Gateway core, and surface adapters — are delivered with focused tests.
 The runtime-wide service extraction from MetaclawSession into account-scoped
-factories is complete across eight service clusters (Kernel, repositories,
-workspace, execution, task, coordinator, runtime-execution, and kernel-execution).
+factories is complete across nine service clusters (Kernel, repositories,
+workspace, execution, task, coordinator, runtime-execution, kernel-execution,
+and planner). ConversationSession now carries the conversation-facing state and
+callback surface (output, focus, guidance, delivery, executor callbacks and a
+planner submission delegate) through the unified ConversationRuntimePort.
 The physical removal of direct client Session constructor sites and full
 surface cutover wiring remain the release-gate closure. It moves runtime-wide
 ownership out of per-client Sessions, defines Account and Conversation
