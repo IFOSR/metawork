@@ -99,6 +99,7 @@ import {
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
+import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -151,6 +152,7 @@ export interface MetaclawSessionDeps {
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
   probeCommand?: ProbeCommandRunner;
+  kernelServices?: AccountKernelServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -604,9 +606,10 @@ export class MetaclawSession {
         };
       },
     });
-    this.controlKernel = new ControlKernel();
-    this.kernelDecisionRepo = new KernelDecisionRepo(deps.db);
-    this.kernelWorkflowRepo = new KernelWorkflowRepo(deps.db);
+    const kernelServices = deps.kernelServices ?? buildAccountKernelServices(deps.db);
+    this.controlKernel = kernelServices.controlKernel;
+    this.kernelDecisionRepo = kernelServices.kernelDecisionRepo;
+    this.kernelWorkflowRepo = kernelServices.kernelWorkflowRepo;
     this.commandCatalog = createDefaultCommandCatalog();
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),

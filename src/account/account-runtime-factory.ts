@@ -7,9 +7,13 @@
 
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import { AccountRuntime } from './account-runtime.js';
+import Database from 'better-sqlite3';
+import type { AccountKernelServices } from './account-kernel-services.js';
+import { buildAccountKernelServices } from './account-kernel-services.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
+  buildKernelServices?(accountId: string): AccountKernelServices;
   recoverDurableStartup(accountId: string): Promise<void>;
   dispose?(accountId: string): Promise<void>;
 }
@@ -21,6 +25,9 @@ export class AccountRuntimeFactory {
     return new AccountRuntime({
       accountId,
       kernelCoordinator: this.deps.buildKernelCoordinator(accountId),
+      kernelServices: this.deps.buildKernelServices
+        ? this.deps.buildKernelServices(accountId)
+        : buildAccountKernelServices(new Database(':memory:')),
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
       dispose: this.deps.dispose
         ? () => this.deps.dispose!(accountId)
