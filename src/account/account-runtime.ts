@@ -14,6 +14,9 @@ import type { AccountKernelServices } from './account-kernel-services.js';
 import type { AccountRepositories } from './account-repositories.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountExecutionServices } from './account-execution-services.js';
+import type { AccountTaskServices } from './account-task-services.js';
+import type { AccountCoordinatorServices } from './account-coordinator-services.js';
+import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-runtime-ports.js';
 
 export interface AccountRuntimeDeps {
@@ -23,6 +26,9 @@ export interface AccountRuntimeDeps {
   readonly repositories: AccountRepositories;
   readonly workspaceServices: AccountWorkspaceServices;
   readonly executionServices?: AccountExecutionServices;
+  readonly taskServices?: AccountTaskServices;
+  readonly coordinatorServices?: AccountCoordinatorServices;
+  readonly runtimeExecutionServices?: AccountRuntimeExecutionServices;
   readonly recoverDurableStartup: () => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }
@@ -58,6 +64,18 @@ export class AccountRuntime implements AccountRuntimeHandle {
 
   get executionServices(): AccountExecutionServices | undefined {
     return this.deps.executionServices;
+  }
+
+  get taskServices(): AccountTaskServices | undefined {
+    return this.deps.taskServices;
+  }
+
+  get coordinatorServices(): AccountCoordinatorServices | undefined {
+    return this.deps.coordinatorServices;
+  }
+
+  get runtimeExecutionServices(): AccountRuntimeExecutionServices | undefined {
+    return this.deps.runtimeExecutionServices;
   }
 
   /** 单飞行、幂等的账户激活恢复。 */
@@ -97,6 +115,16 @@ export class AccountRuntime implements AccountRuntimeHandle {
   }
 
   getConversationPort(): ConversationRuntimePort {
-    return { accountId: this.accountId };
+    return {
+      accountId: this.accountId,
+      kernelCoordinator: this.kernelCoordinator,
+      kernelServices: this.kernelServices,
+      repositories: this.repositories,
+      workspaceServices: this.workspaceServices,
+      executionServices: this.executionServices,
+      taskServices: this.taskServices,
+      coordinatorServices: this.coordinatorServices,
+      runtimeExecutionServices: this.runtimeExecutionServices,
+    };
   }
 }
