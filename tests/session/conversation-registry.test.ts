@@ -64,7 +64,7 @@ describe('ConversationRegistry', () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const registry = new ConversationRegistry();
     const session = await registry.getOrOpen('conv_1', async () => makeSession('conv_1', { gate }));
-    session.submit({ requestId: 'req_1', idempotencyKey: 'idem_1' });
+    session.submitCommand({ requestId: 'req_1', idempotencyKey: 'idem_1' });
 
     // 等 turn 活跃（busy）。
     await new Promise(resolve => setTimeout(resolve, 10));

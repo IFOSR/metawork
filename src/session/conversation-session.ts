@@ -454,8 +454,21 @@ export class ConversationSession {
     };
   }
 
-  submit(command: MailboxCommand): MailboxReceipt {
+  submitCommand(command: MailboxCommand): MailboxReceipt {
     return this.deps.mailbox.submit(command);
+  }
+
+  /** GatewaySession 兼容：提交用户文本并触发 Planner 回合。 */
+  async submit(text: string): Promise<{ exitRequested: boolean }> {
+    return this.submitUserInput(text);
+  }
+
+  initialize(_options?: { showDashboard?: boolean }): void {
+    // Conversation 外壳无需初始化；账户级恢复由 AccountRuntime 负责。
+  }
+
+  appendSystemMessage(...lines: string[]): void {
+    this.appendOutput(...lines);
   }
 
   /**

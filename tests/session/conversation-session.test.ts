@@ -68,7 +68,7 @@ describe('ConversationSession', () => {
 
   it('routes submission through its mailbox', () => {
     const session = makeSession('conv_1', 'planner_1');
-    const receipt = session.submit({ requestId: 'req_1', idempotencyKey: 'idem_1' });
+    const receipt = session.submitCommand({ requestId: 'req_1', idempotencyKey: 'idem_1' });
     expect(receipt.status).toBe('accepted');
   });
 });
