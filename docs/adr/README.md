@@ -43,11 +43,15 @@ ADR-0031 governs the accepted AccountRuntime and unified client Gateway target.
 The implementation plan's foundation phases — characterization, contracts,
 account storage and migration, AccountRuntime ownership, Conversation runtime,
 unified Gateway core, and surface adapters — are delivered with focused tests.
-The physical removal of direct client Session paths and full surface cutover
-wiring remain the release-gate closure. It moves runtime-wide ownership out of
-per-client Sessions, defines Account and Conversation cardinality, scopes
-ADR-0011 per AccountRuntime, and requires TUI, Web conversation, Feishu and
-future App traffic to use one Gateway command/event plane.
+The runtime-wide service extraction from MetaclawSession into account-scoped
+factories is complete across eight service clusters (Kernel, repositories,
+workspace, execution, task, coordinator, runtime-execution, and kernel-execution).
+The physical removal of direct client Session constructor sites and full
+surface cutover wiring remain the release-gate closure. It moves runtime-wide
+ownership out of per-client Sessions, defines Account and Conversation
+cardinality, scopes ADR-0011 per AccountRuntime, and requires TUI, Web
+conversation, Feishu and future App traffic to use one Gateway command/event
+plane.
 
 ## Current authority matrix
 
