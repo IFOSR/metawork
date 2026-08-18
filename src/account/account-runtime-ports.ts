@@ -12,6 +12,7 @@ export interface AccountRuntimeHandle {
   readonly accountId: string;
   readonly kernelCoordinator: AccountKernelCoordinator;
   initialize(): Promise<void>;
+  closeWhenIdle(): Promise<'closed' | 'busy'>;
 }
 
 /** Conversation 通过该端口访问账户事实；方法在后续任务逐步补齐。 */
