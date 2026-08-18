@@ -54,6 +54,36 @@ implementation is deferred to a separate roadmap.
 
 AnyFusion is task-oriented rather than session-only. A normal agent session answers the current turn. AnyFusion decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
 
+### Accepted Multi-Client Target
+
+ADR-0031, accepted on August 18, 2026, defines the next Server architecture but
+is not yet delivered. TUI, Web conversation, Feishu and a future App will use
+one versioned Gateway command/event plane. Authenticated clients for the same
+Account will share one `AccountRuntime` containing configuration, memory, Task,
+Kernel, Executor and recovery services, while each Conversation retains an
+independent stable Planner session, serialized input mailbox, trace and
+presentation stream.
+
+The target cardinality is:
+
+```text
+ServerProcess -> RuntimeRegistry -> AccountRuntime
+  -> ConversationRegistry -> ConversationSession -> ClientConnection
+```
+
+Runtime-wide KernelWorkflow, execution and startup recovery will move out of
+per-client `MetaclawSession` construction. One account Kernel coordinator will
+own durable decision/application draining, and ADR-0011 will remain one active
+top-level Task per AccountRuntime. Accounts will use separate data roots and
+SQLite databases; the current installation will migrate transactionally into
+`local-default`.
+
+Until the implementation plan reaches its release gate, the mode-specific
+Session/Gateway/Web/Feishu composition below remains the executable baseline.
+See [ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md), the
+[approved design](../plans/2026-08-18-account-runtime-unified-gateway-design.md),
+and the [implementation plan](../plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md).
+
 ```mermaid
 flowchart LR
   User[User] --> Surfaces[Client surfaces<br/>TUI, CLI, Gateway, Feishu]
@@ -180,7 +210,7 @@ The conversation/task boundary matters:
 
 The current direct-reply path is explicit: MetaClaw sends the current turn through the bound persisted AnyFusion-Pi Planner session, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
-The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries, elastic work-unit spawn, and large multi-client Gateway expansion remain intentionally out of scope for this cycle.
+The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence is now an accepted target under ADR-0031 but has not yet been delivered.
 
 Important runtime boundary: there is no second strategy/orchestration loop
 beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph

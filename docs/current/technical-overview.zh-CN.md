@@ -55,6 +55,33 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 
 AnyFusion 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。AnyFusion 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
 
+### 已接受的多客户端目标架构
+
+ADR-0031 已于 2026 年 8 月 18 日接受，但尚未完成代码交付。目标架构要求
+TUI、Web 对话、飞书和未来 App 统一使用带版本的 Gateway command/event
+协议。同一认证 Account 的客户端共享一个 `AccountRuntime`，其中包含配置、
+记忆、Task、Kernel、Executor 和恢复服务；不同 Conversation 继续拥有独立的
+持久 Planner session、串行输入 mailbox、trace 和展示流。
+
+目标基数关系为：
+
+```text
+ServerProcess -> RuntimeRegistry -> AccountRuntime
+  -> ConversationRegistry -> ConversationSession -> ClientConnection
+```
+
+KernelWorkflow、Execution Runtime 和启动恢复等账号级服务将从每个客户端
+`MetaclawSession` 的构造中迁出。每个 Account 只有一个 Kernel coordinator
+负责 durable decision/application drain，ADR-0011 继续保持每个
+AccountRuntime 只允许一个活跃顶层 Task。不同 Account 使用独立数据根和
+SQLite；现有安装会通过事务迁移成为 `local-default` Account。
+
+在实施计划通过 release gate 之前，下文描述的 mode-specific
+Session/Gateway/Web/飞书组合仍是当前可执行基线。参见
+[ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md)、
+[已批准设计](../plans/2026-08-18-account-runtime-unified-gateway-design.md)和
+[实施计划](../plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md)。
+
 ```mermaid
 flowchart LR
   User[用户] --> Surfaces[客户端入口<br/>TUI、CLI、Gateway、飞书]
@@ -186,7 +213,7 @@ conversation / task 的边界很重要：
 
 当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
-[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry、弹性 work-unit spawn 和大规模多客户端 Gateway 扩展仍然不是本轮重点。
+[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；多客户端 Gateway 收敛已经由 ADR-0031 接受为目标，但尚未完成交付。
 
 重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
 

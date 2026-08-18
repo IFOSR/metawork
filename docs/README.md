@@ -34,6 +34,7 @@ Key recent ADRs:
 - [ADR-0024: Resource Partition, Sandbox And Runtime Elevation](adr/0024-resource-partition-sandbox-and-runtime-elevation.md): Phase 5 resource identities, Docker attempts, persistent workspaces, leases and structured permission elevation.
 - [ADR-0025: Single-Task Concurrency And Git Publication](adr/0025-single-task-concurrency-and-git-publication.md): Phase 6 runnable frontier, batch dispatch, asynchronous attempts, Git-backed workspaces and publication.
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
+- [ADR-0031: Account Runtime And Unified Client Gateway](adr/0031-account-runtime-and-unified-client-gateway.md): accepted target for account-scoped Runtime ownership, conversation isolation, one Gateway command/event plane, and TUI/Web/Feishu/App convergence.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
@@ -52,6 +53,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Account Runtime and unified Gateway implementation plan](plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md): planned extraction of account-wide Runtime/Kernel ownership from `MetaclawSession`, account-isolated data migration, durable Conversations, versioned Gateway replay, and Web/Feishu/TUI cutover. The [approved design](plans/2026-08-18-account-runtime-unified-gateway-design.md) records the target topology and migration gates.
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.
 - [Revised MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): code closure for signed release trust, immutable revisions, schema 30-to-31 migration, Planner v8/Work Graph v7, generation-scoped bindings, Harness drivers and transactional rollback; native online daemon and release-infrastructure gates remain open.
 - [Conditionally approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, generation-scoped revision authority, Provider/Model health, signed transactional updates, isolated AgentClass runtimes, migration and acceptance criteria.

@@ -39,10 +39,18 @@ release gate is complete:
 - ADR-0030 owns signed native releases and the crash-recoverable program,
   configuration, generated-runtime, and database upgrade transaction.
 
+ADR-0031 governs the accepted AccountRuntime and unified client Gateway target.
+It is not current delivered behavior until its implementation plan reaches the
+release gate. It moves runtime-wide ownership out of per-client Sessions,
+defines Account and Conversation cardinality, scopes ADR-0011 per AccountRuntime,
+and requires TUI, Web conversation, Feishu and future App traffic to use one
+Gateway command/event plane.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Account Runtime and unified client Gateway | [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | Account/Conversation/connection cardinality, account-scoped Runtime and Kernel ownership, client Gateway ingress/egress, identity mapping and account data isolation |
 | Revisioned Configuration Control Plane | [ADR-0027](0027-configuration-control-plane-and-revision-authority.md) | Static configuration authority, immutable revision layout, generation-scoped revision pinning, projections, activation and one-way cutover |
 | AgentClass, Model and Harness routing | [ADR-0028](0028-agentclass-model-and-harness-routing-contract.md) | Authorized binding tuple, model policy, health identities, fallback attempt identity and Permission Profile ownership |
 | Future remote Executor transport | [ADR-0029](0029-executor-transport-and-a2a-boundary.md) | A2A transport-only boundary, authorized envelope and explicit deferral from the current release |
@@ -57,7 +65,7 @@ release gate is complete:
 | Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome/recovery projection, static/dynamic fact split, and `error` versus `disabled` semantics |
 | Planner semantics and context | [ADR-0015](0015-planner-owned-semantics-and-tool-mediated-context.md) | semantic ownership, isolated planner runner, bounded/tool-mediated read-only context and fail-closed behavior |
-| Single-active top-level Task | [ADR-0011](0011-single-active-task-admission-gate.md) | current product constraint; ADR-0020 governs final Kernel ownership of admission policy |
+| Single-active top-level Task | [ADR-0011](0011-single-active-task-admission-gate.md), [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | current product constraint; ADR-0031 scopes the unchanged one-Task rule per AccountRuntime |
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 

@@ -30,6 +30,7 @@ Architecture shortcuts:
 - Kernel/recovery: [ADR-0022](docs/adr/0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](docs/adr/0023-durable-kernel-workflow-recovery-and-availability.md)
 - Execution backends/resources: [ADR-0024](docs/adr/0024-resource-partition-sandbox-and-runtime-elevation.md), [runtime security](docs/current/phase-5-runtime-security.md)
 - Single-Task boundary: [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md), [future roadmap](docs/plans/future-multi-task-scheduling-roadmap.md)
+- Accounts, Conversations, and client Gateway: [ADR-0031](docs/adr/0031-account-runtime-and-unified-client-gateway.md), [approved design](docs/plans/2026-08-18-account-runtime-unified-gateway-design.md)
 
 ## Repository Map
 

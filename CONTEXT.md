@@ -39,6 +39,44 @@ Planner/Task activation gate and recreates the one live `MetaclawSession` with
 the same stable Planner session ID. Conversation and Trajectory are two views
 of the same trace and execution projection; neither owns routing or execution.
 
+## Accepted Account Runtime And Gateway Target
+
+ADR-0031 is accepted on 2026-08-18 but is not yet implemented. The current
+mode-specific `MetaclawSession`, Web, Unix Socket Gateway and Feishu composition
+described above remains the executable baseline until the linked implementation
+plan reaches its release gate.
+
+The target ownership hierarchy is:
+
+```text
+ServerProcess
+  -> RuntimeRegistry
+    -> AccountRuntime
+      -> ConversationRegistry
+        -> ConversationSession
+          -> ClientConnection
+```
+
+TUI, Web conversation, Feishu and future App input must converge on one
+versioned Gateway command/event plane. The same authenticated Account shares
+configuration, memory, Task, Kernel, Executor, recovery and durable account
+facts through one AccountRuntime. Conversations remain separate: each owns one
+stable Planner session, serialized input mailbox, safe trace and presentation
+state. Sharing an Account never implicitly merges Planner history.
+
+Runtime-wide KernelWorkflow, Execution Runtime, startup recovery, attempt,
+publication and timer services move out of `MetaclawSession` and become
+single-owner AccountRuntime services. One account-scoped Kernel coordinator is
+the only Application-layer drainer of durable Kernel events and applications.
+ADR-0011 remains one active top-level Task per AccountRuntime.
+
+Accounts use physically separate data roots and SQLite databases. The existing
+installation migrates transactionally into the reserved `local-default`
+Account; runtime dual-read and dual-write compatibility paths are forbidden.
+See `docs/adr/0031-account-runtime-and-unified-client-gateway.md`,
+`docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`, and
+`docs/plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md`.
+
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
@@ -119,6 +157,46 @@ second scheduler, router, retry loop, recovery ledger or Planner-to-Executor
 shortcut.
 
 ## Routing Language
+
+**Account**:
+The durable security and state namespace accepted by ADR-0031. It owns
+configuration, memory, Tasks, Kernel facts, Executor runtime state, Planner
+sessions, Conversations and an isolated data root. This is a target contract
+until the ADR-0031 implementation plan reaches its release gate.
+_Avoid_: transport user ID, chat ID, browser cookie, client connection
+
+**AccountRuntime**:
+The single live application/runtime coordinator for one loaded Account. It owns
+account-wide Kernel sequencing, Task admission, Execution Runtime, recovery,
+timers and the Conversation registry. ADR-0011 permits one active top-level Task
+per AccountRuntime.
+_Avoid_: conversation, MetaclawSession, Web tab, Gateway connection
+
+**Conversation**:
+A durable interaction thread inside one Account with one stable Planner session
+identity, serialized input mailbox and bounded safe presentation history.
+Conversations share account Task/runtime facts but do not implicitly share
+Planner history.
+_Avoid_: Account, Task, socket, Feishu user
+
+**ConversationSession**:
+The live Application-Shell object for one Conversation. It owns Planner turn,
+focus, output and safe trace projection, and uses narrow AccountRuntime ports.
+It does not construct Kernel, recovery, scheduling or Executor services.
+_Avoid_: AccountRuntime, WorkUnit, Task runtime
+
+**ClientConnection**:
+A transient authenticated attachment from TUI, Web, Feishu or a future App to
+one Account and optionally one Conversation. Disconnect does not destroy the
+Conversation or AccountRuntime.
+_Avoid_: Conversation, Planner session, Account
+
+**Gateway**:
+The sole accepted user-message connectivity plane under ADR-0031. It
+authenticates a Principal, resolves Account and Conversation identity, admits a
+versioned command and streams sanitized ordered events. The current
+mode-specific Gateway is not yet this completed target.
+_Avoid_: semantic router, Runtime owner, Executor transport, shared Session
 
 **Task**:
 A durable top-level unit of user work. ADR-0011 admits at most one active top-level Task; Phase 6 allows independent Subtasks inside it to execute concurrently and keeps the Task's single-active slot occupied while cancellation cleanup still owns containers or leases.
