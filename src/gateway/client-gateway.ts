@@ -12,7 +12,7 @@ import type { AccountResolver } from './account-resolver.js';
 import type { Authenticator, AuthenticatorTransport } from './authenticator.js';
 import type { CommandReceipt } from './command-admission.js';
 import { IdempotentCommandAdmission } from './command-admission.js';
-import type { GatewayCommandEnvelope } from './client-protocol.js';
+import type { GatewayCommandEnvelope, GatewayCommand } from './client-protocol.js';
 import type { ConversationResolver } from './conversation-resolver.js';
 
 export interface ClientGatewayDeps {
@@ -24,6 +24,7 @@ export interface ClientGatewayDeps {
     conversationId: string,
     requestId: string,
     idempotencyKey: string,
+    command: GatewayCommand,
   ): Promise<{ status: 'accepted' | 'duplicate' | 'rejected'; reason?: string }>;
 }
 
@@ -34,8 +35,8 @@ export class ClientGateway {
 
   constructor(private readonly deps: ClientGatewayDeps) {
     this.admission = new IdempotentCommandAdmission({
-      submit: async (conversationId, requestId, idempotencyKey) => {
-        const result = await this.deps.submitToConversation(conversationId, requestId, idempotencyKey);
+      submit: async (conversationId, requestId, idempotencyKey, command) => {
+        const result = await this.deps.submitToConversation(conversationId, requestId, idempotencyKey, command);
         return { requestId, idempotencyKey, status: result.status, reason: result.reason };
       },
     });
@@ -79,6 +80,7 @@ export class ClientGateway {
       envelope.requestId,
       envelope.idempotencyKey,
       conversation.conversationId,
+      envelope.command,
     );
   }
 }
