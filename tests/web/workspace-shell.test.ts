@@ -28,4 +28,11 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('@media (max-width: 860px)');
     expect(styles).toContain('.workspace-sidebar');
   });
+
+  it('keeps the settings drawer above the shared composer', async () => {
+    const styles = await readFile(new URL('styles.css', root), 'utf8');
+    const drawerBackdrop = styles.match(/\.drawer-backdrop\s*\{([^}]*)\}/u)?.[1] ?? '';
+
+    expect(drawerBackdrop).toContain('z-index: 20');
+  });
 });
