@@ -18,6 +18,9 @@ import type { SessionPersistenceService } from './session-persistence-service.js
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision } from '../kernel/control-kernel.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
+import type { PlanningContext } from '../planning/planning-types.js';
+import type { PlannerProposalResult } from '../planning/planner-proposal.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -42,6 +45,7 @@ export interface ConversationSessionDeps {
   readonly persistenceService?: SessionPersistenceService;
   readonly interactionTraceStream?: InteractionTraceStream;
   readonly kernelExecutionRuntime?: KernelExecutionRuntime;
+  readonly planningContextBuilder?: PlanningContextBuilder;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly dispose?: () => Promise<void>;
 }
@@ -196,6 +200,59 @@ export class ConversationSession {
 
   async cancelTask(taskId: string, reason: string): Promise<void> {
     await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
+  }
+
+  buildPlanningContext(userInput: string): PlanningContext | null {
+    if (!this.deps.planningContextBuilder) return null;
+    const permissionRepository = this.deps.runtimePort.workspaceServices.permissionRepository;
+    const pendingPermission = permissionRepository.findOldestPending();
+    return this.deps.planningContextBuilder.build({
+      userInput,
+      pendingAuthorizationRequest: pendingPermission
+        ? {
+            requestId: pendingPermission.request.id,
+            taskId: pendingPermission.request.taskId,
+            capability: pendingPermission.request.capability,
+            resource: pendingPermission.request.resource,
+            operation: pendingPermission.request.operation,
+            reason: pendingPermission.request.reason,
+          }
+        : null,
+    });
+  }
+
+  async handleNaturalLanguageInput(userInput: string): Promise<void> {
+    const handled = await this.handlePlanningKernelDecision(userInput);
+    if (handled) return;
+    this.appendOutput(
+      '-> ControlKernel did not produce a runtime action.',
+      'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
+    );
+  }
+
+  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+    const planningAgent = this.deps.runtimePort.plannerServices?.planningAgent;
+    if (!planningAgent) return false;
+    const context = this.buildPlanningContext(userInput);
+    if (!context) return false;
+    const result = await planningAgent.submit(context, {
+      submit: async () => {
+        await this.submitPlannerProposal(userInput, context);
+        return { status: 'accepted' } as PlannerProposalResult;
+      },
+    });
+    return result.status === 'accepted';
+  }
+
+  private async submitPlannerProposal(
+    _userInput: string,
+    _context: PlanningContext,
+  ): Promise<void> {
+    // 完整提案提交链路（buildPlanAdmissionSnapshot + workflow + kernel runtime）
+    // 由后续步骤内联；当前由 executeUserInput 委托桥接 MetaclawSession。
+    if (this.deps.executeUserInput) {
+      await this.deps.executeUserInput(_userInput);
+    }
   }
 
   clearRunningExecutorName(_taskId: string, attemptId: string): void {
