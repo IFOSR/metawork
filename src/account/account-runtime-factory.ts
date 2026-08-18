@@ -20,6 +20,9 @@ import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import { buildAccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountExecutionServices } from './account-execution-services.js';
 import type { AccountPlannerServices } from './account-planner-services.js';
+import type { AccountTaskServices } from './account-task-services.js';
+import type { AccountCoordinatorServices } from './account-coordinator-services.js';
+import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
@@ -28,6 +31,9 @@ export interface AccountRuntimeFactoryDeps {
   buildWorkspaceServices?(accountId: string): AccountWorkspaceServices;
   buildExecutionServices?(accountId: string): AccountExecutionServices;
   buildPlannerServices?(accountId: string): AccountPlannerServices;
+  buildTaskServices?(accountId: string): AccountTaskServices;
+  buildCoordinatorServices?(accountId: string): AccountCoordinatorServices;
+  buildRuntimeExecutionServices?(accountId: string): AccountRuntimeExecutionServices;
   recoverDurableStartup(accountId: string): Promise<void>;
   dispose?(accountId: string): Promise<void>;
 }
@@ -57,6 +63,15 @@ export class AccountRuntimeFactory {
         : undefined,
       plannerServices: this.deps.buildPlannerServices
         ? this.deps.buildPlannerServices(accountId)
+        : undefined,
+      taskServices: this.deps.buildTaskServices
+        ? this.deps.buildTaskServices(accountId)
+        : undefined,
+      coordinatorServices: this.deps.buildCoordinatorServices
+        ? this.deps.buildCoordinatorServices(accountId)
+        : undefined,
+      runtimeExecutionServices: this.deps.buildRuntimeExecutionServices
+        ? this.deps.buildRuntimeExecutionServices(accountId)
         : undefined,
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
       dispose: this.deps.dispose
