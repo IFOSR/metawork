@@ -1787,11 +1787,11 @@ and schema hash.
 Record:
 
 ```text
-Completion date
+Completion date: 2026-08-18
 Delivered behavior
 Validation commands
-MetaWork closing commit
-AnyFusion-Pi pinned commit
+MetaWork closing commit: f126bbd
+AnyFusion-Pi pinned commit: vendored under planner/AnyFusion-Pi
 Known deferred work
 ```
 
