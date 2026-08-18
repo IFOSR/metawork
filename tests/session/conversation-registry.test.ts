@@ -19,7 +19,7 @@ function makeSession(
       applicationCounts: { pending: 0, applying: 0, applied: 0, uncertain: 0, failed: 0 },
     }),
   };
-  const port: ConversationRuntimePort = { accountId: 'local-default', kernelCoordinator: coordinator };
+  const port: ConversationRuntimePort = { accountId: 'local-default', kernelCoordinator: coordinator } as unknown as ConversationRuntimePort;
   return new ConversationSession({
     conversationId,
     plannerSessionId: `planner_${conversationId}`,

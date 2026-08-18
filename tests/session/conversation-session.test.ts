@@ -18,7 +18,7 @@ function mockCoordinator(): AccountKernelCoordinator {
 }
 
 function makePort(accountId: string): ConversationRuntimePort {
-  return { accountId, kernelCoordinator: mockCoordinator() };
+  return { accountId, kernelCoordinator: mockCoordinator() } as unknown as ConversationRuntimePort;
 }
 
 function makeSession(conversationId: string, plannerSessionId: string, accountId = 'local-default') {
