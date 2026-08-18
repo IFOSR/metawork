@@ -103,6 +103,7 @@ import { buildAccountKernelServices, type AccountKernelServices } from '../accou
 import { buildAccountRepositories, type AccountRepositories } from '../account/account-repositories.js';
 import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
 import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
+import { buildAccountTaskServices, type AccountTaskServices } from '../account/account-task-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -159,6 +160,7 @@ export interface MetaclawSessionDeps {
   accountRepositories?: AccountRepositories;
   accountWorkspaceServices?: AccountWorkspaceServices;
   accountExecutionServices?: AccountExecutionServices;
+  accountTaskServices?: AccountTaskServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -458,14 +460,14 @@ export class MetaclawSession {
     this.interactionTraceStream = new InteractionTraceStream(deps.sessionId);
     this.sessionStateRepo = new SessionStateRepo(deps.db);
     this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
-    this.taskRuntimeService = new TaskRuntimeService({
+    const taskServices = deps.accountTaskServices ?? buildAccountTaskServices({
       taskEngine: deps.taskEngine,
-      taskRepo: deps.taskEngine.getTaskRepo(),
-    });
-    this.agentClassService = new AgentClassService({
       agentClasses: stagedConfiguration.snapshot.config.agentClasses,
+      attemptExecutionBackend: deps.attemptExecutionBackend,
     });
-    this.attemptExecutionBackend = deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend();
+    this.taskRuntimeService = taskServices.taskRuntimeService;
+    this.agentClassService = taskServices.agentClassService;
+    this.attemptExecutionBackend = taskServices.attemptExecutionBackend;
     const workspaceServices = deps.accountWorkspaceServices
       ?? buildAccountWorkspaceServices(deps.db, resolveMetaclawDir());
     this.permissionRepository = workspaceServices.permissionRepository;
