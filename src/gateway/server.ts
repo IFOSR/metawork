@@ -12,8 +12,15 @@ import { MetaclawSession, type MetaclawSessionDeps, type PlannerHostRegistrar } 
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
-import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
+import { SessionStreamAdapter, type SessionStreamSource } from '../session/session-transport-adapter.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
+
+/** Gateway 每连接构造的会话：输出流 + 可选初始化/系统消息 + dispose。 */
+export interface GatewaySession extends SessionStreamSource {
+  initialize?(options?: { showDashboard?: boolean }): Promise<void> | void;
+  appendSystemMessage?(...lines: string[]): void;
+  dispose(): Promise<void>;
+}
 
 interface GatewayServerDeps {
   socketPath: string;
@@ -29,12 +36,14 @@ interface GatewayServerDeps {
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
   getRuntimeBinding: NonNullable<MetaclawSessionDeps['getRuntimeBinding']>;
+  /** 可选：迁移到 AccountRuntime/ConversationSession 时注入会话工厂。 */
+  sessionFactory?: (sessionId: string) => GatewaySession;
 }
 
 export class MetaclawGatewayServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
-  private readonly sessions = new Set<MetaclawSession>();
+  private readonly sessions = new Set<GatewaySession>();
   private stopping = false;
 
   constructor(private readonly deps: GatewayServerDeps) {}
@@ -93,20 +102,22 @@ export class MetaclawGatewayServer {
 
   private async handleConnection(socket: Socket): Promise<void> {
     const sessionId = `sess_gateway_${nanoid(10)}`;
-    const session = new MetaclawSession({
-      taskEngine: this.deps.taskEngine,
-      memoryEngine: this.deps.memoryEngine,
-      orchestration: this.deps.orchestration,
-      db: this.deps.db,
-      config: this.deps.config,
-      sessionId,
-      contextRecaller: this.deps.contextRecaller,
-      notifier: this.deps.notifier,
-      plannerHost: this.deps.plannerHost,
-      plannerSupervisor: this.deps.plannerSupervisor,
-      stagedConfiguration: this.deps.stagedConfiguration,
-      getRuntimeBinding: this.deps.getRuntimeBinding,
-    });
+    const session: GatewaySession = this.deps.sessionFactory
+      ? this.deps.sessionFactory(sessionId)
+      : new MetaclawSession({
+          taskEngine: this.deps.taskEngine,
+          memoryEngine: this.deps.memoryEngine,
+          orchestration: this.deps.orchestration,
+          db: this.deps.db,
+          config: this.deps.config,
+          sessionId,
+          contextRecaller: this.deps.contextRecaller,
+          notifier: this.deps.notifier,
+          plannerHost: this.deps.plannerHost,
+          plannerSupervisor: this.deps.plannerSupervisor,
+          stagedConfiguration: this.deps.stagedConfiguration,
+          getRuntimeBinding: this.deps.getRuntimeBinding,
+        });
     this.sessions.add(session);
 
     const send = (message: GatewayServerMessage) => {
@@ -132,8 +143,8 @@ export class MetaclawGatewayServer {
     socket.on('error', cleanup);
 
     send({ type: 'hello', sessionId });
-    session.initialize({ showDashboard: false });
-    session.appendSystemMessage(`→ Gateway session ${sessionId} 已连接`);
+    session.initialize?.({ showDashboard: false });
+    session.appendSystemMessage?.(`→ Gateway session ${sessionId} 已连接`);
 
     const parse = createJsonLineParser<GatewayClientMessage>((message) => {
       if (message.type === 'close') {
