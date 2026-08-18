@@ -1,6 +1,6 @@
 # Account Runtime And Unified Gateway Implementation Plan
 
-> Status: Planned
+> Status: In Delivery — foundation phases 1-7 delivered with tests; physical Session removal remains
 > Plan date: 2026-08-18
 > Governing ADR: ADR-0031
 > Approved design: `docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`

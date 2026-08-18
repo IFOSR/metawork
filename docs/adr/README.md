@@ -40,11 +40,14 @@ release gate is complete:
   configuration, generated-runtime, and database upgrade transaction.
 
 ADR-0031 governs the accepted AccountRuntime and unified client Gateway target.
-It is not current delivered behavior until its implementation plan reaches the
-release gate. It moves runtime-wide ownership out of per-client Sessions,
-defines Account and Conversation cardinality, scopes ADR-0011 per AccountRuntime,
-and requires TUI, Web conversation, Feishu and future App traffic to use one
-Gateway command/event plane.
+The implementation plan's foundation phases — characterization, contracts,
+account storage and migration, AccountRuntime ownership, Conversation runtime,
+unified Gateway core, and surface adapters — are delivered with focused tests.
+The physical removal of direct client Session paths and full surface cutover
+wiring remain the release-gate closure. It moves runtime-wide ownership out of
+per-client Sessions, defines Account and Conversation cardinality, scopes
+ADR-0011 per AccountRuntime, and requires TUI, Web conversation, Feishu and
+future App traffic to use one Gateway command/event plane.
 
 ## Current authority matrix
 
