@@ -97,6 +97,7 @@ import {
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
+import { AccountKernelCoordinator } from '../account/account-kernel-coordinator.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
@@ -349,6 +350,7 @@ export class MetaclawSession {
   private readonly controlKernel: ControlKernel;
   private readonly kernelDecisionRepo: KernelDecisionRepo;
   private readonly kernelWorkflowRepo: KernelWorkflowRepo;
+  private readonly kernelCoordinator: AccountKernelCoordinator;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
   private readonly effectOutboxRepo: KernelEffectOutboxRepo;
@@ -470,6 +472,17 @@ export class MetaclawSession {
     this.controlKernel = kernelServices.controlKernel;
     this.kernelDecisionRepo = kernelServices.kernelDecisionRepo;
     this.kernelWorkflowRepo = kernelServices.kernelWorkflowRepo;
+    this.kernelCoordinator = new AccountKernelCoordinator({
+      kernel: this.controlKernel,
+      store: this.kernelWorkflowRepo,
+      clock: { now: () => new Date().toISOString() },
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: [
+        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+        'record_permission_resolution',
+      ],
+    });
     this.commandCatalog = createDefaultCommandCatalog();
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
@@ -1489,24 +1502,14 @@ export class MetaclawSession {
       proposalSource: 'initial',
       targetGraphRevision: 1,
     };
-    const workflow = new DurableKernelWorkflow({
-      kernel: this.controlKernel,
+    const workflowResult = await this.kernelCoordinator.submit(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
         context.configuration,
         userInput,
       ),
-      store: this.kernelWorkflowRepo,
-      clock: { now: () => new Date().toISOString() },
       runtime: this.sessionKernelRuntime.forInput(userInput),
-      acceptedEventTypes: ['plan_proposed'],
-      acceptedActions: [
-        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
-        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
-        'record_permission_resolution',
-      ],
     });
-    const workflowResult = await workflow.submit(event);
     const decision = workflowResult.decisions.find(candidate => candidate.eventId === eventId)
       ?? this.kernelDecisionRepo.findByEventId(eventId)?.decision
       ?? null;

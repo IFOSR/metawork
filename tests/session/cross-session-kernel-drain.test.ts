@@ -5,7 +5,10 @@ import type {
   KernelEvent,
   KernelSnapshot,
 } from '../../src/kernel/control-kernel.js';
-import { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
+import {
+  AccountKernelCoordinator,
+  type AccountKernelCoordinatorSubmitContext,
+} from '../../src/account/account-kernel-coordinator.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -31,20 +34,22 @@ describe('cross-session kernel drain ownership', () => {
     const applied: string[] = [];
     const coordinator = new AccountKernelCoordinator({
       kernel: { decide: event => directReplyDecision(event) },
-      buildSnapshot: () => planSnapshot(),
       store: repo,
+      clock: { now: () => '2026-07-21T00:00:01.000Z' },
+    });
+    const context: AccountKernelCoordinatorSubmitContext = {
+      buildSnapshot: () => planSnapshot(),
       runtime: {
         apply: async (decision) => {
           applied.push(decision.eventId);
           return null;
         },
       },
-      clock: { now: () => '2026-07-21T00:00:01.000Z' },
-    });
+    };
 
     // 两个不同 session 的事件都通过同一账户协调器提交。
-    await coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'));
-    await coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'));
+    await coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'), context);
+    await coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'), context);
 
     // 单一协调器按 FIFO 应用所有事件，不存在第二个 drain loop 抢占。
     expect(applied).toEqual(['event_a', 'event_b']);

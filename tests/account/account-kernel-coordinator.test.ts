@@ -5,7 +5,10 @@ import type {
   KernelEvent,
   KernelSnapshot,
 } from '../../src/kernel/control-kernel.js';
-import { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
+import {
+  AccountKernelCoordinator,
+  type AccountKernelCoordinatorSubmitContext,
+} from '../../src/account/account-kernel-coordinator.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -14,11 +17,11 @@ const CONFIGURATION_REVISION = 'revision_coordinator';
 describe('AccountKernelCoordinator', () => {
   it('serializes concurrent submissions through one drain loop', async () => {
     const { repo, applied } = makeStore();
-    const coordinator = makeCoordinator(repo, applied);
+    const { coordinator, context } = makeCoordinator(repo, applied);
 
     await Promise.all([
-      coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a')),
-      coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b')),
+      coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'), context),
+      coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'), context),
     ]);
 
     expect(applied).toEqual(['event_a', 'event_b']);
@@ -29,30 +32,32 @@ describe('AccountKernelCoordinator', () => {
     const snapshotsBuilt: string[] = [];
     const coordinator = new AccountKernelCoordinator({
       kernel: { decide: event => directReplyDecision(event) },
+      store: repo,
+      clock: { now: () => '2026-08-18T00:00:01.000Z' },
+    });
+    const context: AccountKernelCoordinatorSubmitContext = {
       buildSnapshot: event => {
         snapshotsBuilt.push(event.id);
         return planSnapshot();
       },
-      store: repo,
       runtime: { apply: async () => null },
-      clock: { now: () => '2026-08-18T00:00:01.000Z' },
-    });
+    };
 
-    await coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'));
-    await coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'));
+    await coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'), context);
+    await coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'), context);
 
     expect(snapshotsBuilt).toEqual(['event_a', 'event_b']);
   });
 
   it('runs a single drain loop across recover and submit', async () => {
     const { repo, applied } = makeStore();
-    const coordinator = makeCoordinator(repo, applied);
+    const { coordinator, context } = makeCoordinator(repo, applied);
 
     // 先入队一个事件（模拟崩溃残留），随后并发 recover + submit。
     repo.enqueue(planProposedEvent('event_pending', 'session_pending', 'generation_pending'));
     await Promise.all([
-      coordinator.recover(),
-      coordinator.submit(planProposedEvent('event_new', 'session_new', 'generation_new')),
+      coordinator.recover(context),
+      coordinator.submit(planProposedEvent('event_new', 'session_new', 'generation_new'), context),
     ]);
 
     // 每个事件恰好应用一次，且顺序稳定（pending 先于 new）。
@@ -69,19 +74,25 @@ function makeStore(): { repo: KernelWorkflowRepo; applied: string[] } {
   return { repo, applied: [] };
 }
 
-function makeCoordinator(repo: KernelWorkflowRepo, applied: string[]): AccountKernelCoordinator {
-  return new AccountKernelCoordinator({
+function makeCoordinator(
+  repo: KernelWorkflowRepo,
+  applied: string[],
+): { coordinator: AccountKernelCoordinator; context: AccountKernelCoordinatorSubmitContext } {
+  const coordinator = new AccountKernelCoordinator({
     kernel: { decide: event => directReplyDecision(event) },
-    buildSnapshot: () => planSnapshot(),
     store: repo,
+    clock: { now: () => '2026-08-18T00:00:01.000Z' },
+  });
+  const context: AccountKernelCoordinatorSubmitContext = {
+    buildSnapshot: () => planSnapshot(),
     runtime: {
       apply: async decision => {
         applied.push(decision.eventId);
         return null;
       },
     },
-    clock: { now: () => '2026-08-18T00:00:01.000Z' },
-  });
+  };
+  return { coordinator, context };
 }
 
 function planProposedEvent(id: string, sessionId: string, generationId: string): KernelEvent {
