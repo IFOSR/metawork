@@ -2,16 +2,29 @@
  * ConversationSession（ADR-0031 第 2、7 节）。
  *
  * 一个 Conversation 的实时应用外壳对象。它拥有稳定的 Planner 会话身份、
- * 串行输入邮箱、输出/轨迹投影与客户端附着；通过 ConversationRuntimePort
- * 访问账户事实，不拥有 Kernel、调度、恢复或 Executor 服务。
+ * 串行输入邮箱、输出/轨迹投影、聚焦状态与客户端附着；通过
+ * ConversationRuntimePort 访问账户事实，不拥有 Kernel、调度、恢复或
+ * Executor 服务。
+ *
+ * 本文件逐步接管 MetaclawSession 的 conversation-facing 行为。当前实现
+ * 基础状态（output/currentTaskId/runtimeState/focus/listeners）与基础
+ * callbacks（appendOutput/setCurrentTaskId/getCurrentTaskId/refreshRuntimeState）。
  */
 
+import type { RuntimeState } from '../core/types.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
   type MailboxReceipt,
 } from './conversation-input-mailbox.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
+
+export interface ConversationSessionSnapshot {
+  readonly output: string[];
+  readonly currentTaskId: string | null;
+  readonly runtimeState: RuntimeState;
+  readonly plannerState: { readonly status: 'idle' | 'running' };
+}
 
 export interface ConversationSessionDeps {
   readonly conversationId: string;
@@ -23,6 +36,18 @@ export interface ConversationSessionDeps {
 
 export class ConversationSession {
   private output: string[] = [];
+  private currentTaskId: string | null = null;
+  private runtimeState: RuntimeState = {
+    runningTaskId: null,
+    runningExecutorName: null,
+    readyTaskIds: [],
+    blockedTaskIds: [],
+    parkedTaskIds: [],
+    lastEvent: null,
+  };
+  private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
+  private activePlannerRuns = 0;
+  private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
   constructor(private readonly deps: ConversationSessionDeps) {}
@@ -52,11 +77,70 @@ export class ConversationSession {
   }
 
   appendOutput(...lines: string[]): void {
+    if (lines.length === 0) return;
     this.output.push(...lines);
+    this.notify();
   }
 
   getOutput(): readonly string[] {
     return [...this.output];
+  }
+
+  setCurrentTaskId(taskId: string | null): void {
+    this.currentTaskId = taskId;
+    this.notify();
+  }
+
+  getCurrentTaskId(): string | null {
+    return this.currentTaskId;
+  }
+
+  setFocusContext(focus: { kind: 'conversation' | 'task'; taskId: string | null } | null): void {
+    this.focusContext = focus;
+  }
+
+  getFocusContext(): { kind: 'conversation' | 'task'; taskId: string | null } | null {
+    return this.focusContext;
+  }
+
+  refreshRuntimeState(): void {
+    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
+    if (!taskRuntimeService) return;
+    const tasks = taskRuntimeService.listTasks();
+    const runningTask = tasks.find(task => task.status === 'running') ?? null;
+    this.runtimeState = {
+      runningTaskId: runningTask?.id ?? null,
+      runningExecutorName: null,
+      readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
+      blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
+      parkedTaskIds: tasks.filter(task => task.status === 'parked').map(task => task.id),
+      lastEvent: this.runtimeState.lastEvent,
+    };
+    this.notify();
+  }
+
+  subscribe(listener: (snapshot: ConversationSessionSnapshot) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.getSnapshot());
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  getSnapshot(): ConversationSessionSnapshot {
+    return {
+      output: [...this.output],
+      currentTaskId: this.currentTaskId,
+      runtimeState: {
+        ...this.runtimeState,
+        readyTaskIds: [...this.runtimeState.readyTaskIds],
+        blockedTaskIds: [...this.runtimeState.blockedTaskIds],
+        parkedTaskIds: [...this.runtimeState.parkedTaskIds],
+      },
+      plannerState: {
+        status: this.activePlannerRuns > 0 ? 'running' : 'idle',
+      },
+    };
   }
 
   submit(command: MailboxCommand): MailboxReceipt {
@@ -73,5 +157,12 @@ export class ConversationSession {
 
   async dispose(): Promise<void> {
     await (this.deps.dispose ?? (async () => undefined))();
+  }
+
+  private notify(): void {
+    const snapshot = this.getSnapshot();
+    for (const listener of this.listeners) {
+      listener(snapshot);
+    }
   }
 }
