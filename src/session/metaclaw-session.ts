@@ -106,6 +106,7 @@ import { buildAccountExecutionServices, type AccountExecutionServices } from '..
 import { buildAccountTaskServices, type AccountTaskServices } from '../account/account-task-services.js';
 import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
+import { buildAccountKernelExecutionServices, type AccountKernelExecutionServices } from '../account/account-kernel-execution-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -165,6 +166,7 @@ export interface MetaclawSessionDeps {
   accountTaskServices?: AccountTaskServices;
   accountCoordinatorServices?: AccountCoordinatorServices;
   accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
+  accountKernelExecutionServices?: AccountKernelExecutionServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -579,11 +581,14 @@ export class MetaclawSession {
     const generationReplanRepo = runtimeExecutionServices.generationReplanRepo;
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
-    this.kernelExecutionRuntime = new KernelExecutionRuntime({
+    const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
+      db: deps.db,
       sessionId: deps.sessionId,
-      getConfigurationRevision: () => this.kernelConfiguration.revisionId,
+      sourceRoot,
       orchestration: deps.orchestration,
       notifier: this.notifier,
+      maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
+      getConfigurationRevision: () => this.kernelConfiguration.revisionId,
       taskRuntimeService: this.taskRuntimeService,
       agentClassService: this.agentClassService,
       workGraphRuntimeService: this.workGraphRuntimeService,
@@ -591,26 +596,12 @@ export class MetaclawSession {
       workGraphRevisionRepo: this.workGraphRevisionRepo,
       effectOutboxRepo: this.effectOutboxRepo,
       attemptReceiptRepo: this.attemptReceiptRepo,
-      subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
       attemptRunner: this.attemptRunner,
       controlKernel: this.controlKernel,
-      kernelWorkflowStore: this.kernelWorkflowRepo,
+      kernelWorkflowRepo: this.kernelWorkflowRepo,
       dispatchItemRepo,
-      maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
-      publicationWorker: new WorkspacePublicationWorker({
-        db: deps.db,
-        sessionId: deps.sessionId,
-        sourceRoot,
-        workspaceStore: this.workspaceStore,
-        workspaceRepository: this.workspaceRepository,
-        subtaskRepo: this.subtaskRepo,
-        attemptReceiptRepo: this.attemptReceiptRepo,
-        resourceLeaseService,
-        dispatchItemRepo,
-        taskRuntimeService: this.taskRuntimeService,
-      }),
       publicationRepo: this.publicationRepo,
       generationReplanRepo,
       cancellationCoordinator,
@@ -619,7 +610,12 @@ export class MetaclawSession {
       persistenceService: this.persistenceService,
       kernelExecutorStatusProjector,
       presentation: this.presentation,
-      callbacks: {
+      workspaceStore: this.workspaceStore,
+      workspaceRepository: this.workspaceRepository,
+      resourceLeaseService,
+      memoryContextService: this.memoryContextService,
+      executionRuntime: this.executionRuntime,
+      kernelExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
@@ -635,27 +631,13 @@ export class MetaclawSession {
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
-    });
-    coordinatorServices.bindKernelExecutionRuntime(this.kernelExecutionRuntime);
-    this.taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
-      taskRuntimeService: this.taskRuntimeService,
-      kernelExecutionRuntime: this.kernelExecutionRuntime,
-      presentation: this.presentation,
-      callbacks: {
+      taskExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
       },
-    });
-    this.sessionKernelRuntime = new SessionKernelRuntime({
-      sessionId: deps.sessionId,
-      taskRuntimeService: this.taskRuntimeService,
-      memoryContextService: this.memoryContextService,
-      orchestration: deps.orchestration,
-      activeExecutions: this.executionRuntime,
-      presentation: this.presentation,
-      callbacks: {
+      sessionKernelCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
         onDecisionApplying: decision => this.recordKernelDecisionTrace(decision),
         deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
@@ -673,6 +655,10 @@ export class MetaclawSession {
         },
       },
     });
+    this.kernelExecutionRuntime = kernelExecutionServices.kernelExecutionRuntime;
+    coordinatorServices.bindKernelExecutionRuntime(this.kernelExecutionRuntime);
+    this.taskExecutionApplicationService = kernelExecutionServices.taskExecutionApplicationService;
+    this.sessionKernelRuntime = kernelExecutionServices.sessionKernelRuntime;
 
     this.unregisterPlannerHost = deps.plannerHost?.registerSession(deps.sessionId, this) ?? null;
   }
