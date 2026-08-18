@@ -46,6 +46,23 @@ function metaclawSessionConstructorSites(): string[] {
 }
 
 describe('no direct client session paths', () => {
+  it('extracts runtime-wide service construction into account factories', () => {
+    // 物理搬迁（8 簇）完成后，MetaclawSession 通过账户级工厂构造
+    // runtime-wide 服务，不再内联构造这些服务的构造逻辑。
+    const sessionSource = readFileSync(
+      join(process.cwd(), 'src', 'session', 'metaclaw-session.ts'),
+      'utf8',
+    );
+    expect(sessionSource).toContain('buildAccountKernelServices');
+    expect(sessionSource).toContain('buildAccountRepositories');
+    expect(sessionSource).toContain('buildAccountWorkspaceServices');
+    expect(sessionSource).toContain('buildAccountExecutionServices');
+    expect(sessionSource).toContain('buildAccountTaskServices');
+    expect(sessionSource).toContain('buildAccountCoordinatorServices');
+    expect(sessionSource).toContain('buildAccountRuntimeExecutionServices');
+    expect(sessionSource).toContain('buildAccountKernelExecutionServices');
+  });
+
   it('documents current MetaclawSession import sites as removal targets', () => {
     // 当前阶段：记录现状。完整物理删除（切换表面 + 删除 MetaclawSession）
     // 是 Task 19 的收尾工程；本测试提供可验证的删除目标清单。
