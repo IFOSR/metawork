@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccountRuntimeFactory } from '../../src/account/account-runtime-factory.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
@@ -64,6 +66,25 @@ describe('unified server composition', () => {
 });
 
 function clientOwnedRuntimeConstructors(): string[] {
-  // 当前阶段为占位；Task 19 替换为生产 import 扫描。
-  return [];
+  // 真实扫描：客户端适配器（gateway/management/integrations/tui-bridge）
+  // 不得构造 AccountRuntime 或 Kernel/Execution/Workflow 服务。
+  const roots = ['gateway', 'management', 'integrations', 'tui-bridge'];
+  const violations: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+      } else if (full.endsWith('.ts')) {
+        const content = readFileSync(full, 'utf8');
+        if (/new\s+(AccountRuntime|KernelExecutionRuntime|DurableKernelWorkflow|ControlKernel|ExecutionRuntime)\s*\(/.test(content)) {
+          violations.push(relative(join(process.cwd(), 'src'), full));
+        }
+      }
+    }
+  };
+  for (const root of roots) {
+    walk(join(process.cwd(), 'src', root));
+  }
+  return violations;
 }
