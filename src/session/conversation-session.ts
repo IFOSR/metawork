@@ -16,11 +16,13 @@ import type { SessionPresentationService, GuidanceState } from './session-presen
 import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
-import type { KernelDecision } from '../kernel/control-kernel.js';
+import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import type { PlanningContext } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
+import type Database from 'better-sqlite3';
+import type { KernelConfigurationView } from '../configuration/index.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -46,6 +48,8 @@ export interface ConversationSessionDeps {
   readonly interactionTraceStream?: InteractionTraceStream;
   readonly kernelExecutionRuntime?: KernelExecutionRuntime;
   readonly planningContextBuilder?: PlanningContextBuilder;
+  readonly db?: Database.Database;
+  readonly kernelConfiguration?: KernelConfigurationView;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly dispose?: () => Promise<void>;
 }
@@ -219,6 +223,35 @@ export class ConversationSession {
           }
         : null,
     });
+  }
+
+  buildPlanAdmissionSnapshot(
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+  ): Extract<KernelSnapshot, { type: 'plan_admission' }> | null {
+    const port = this.deps.runtimePort;
+    const plannerConfiguration = this.deps.planningContextBuilder?.getPlannerConfiguration();
+    if (!plannerConfiguration || !this.deps.kernelConfiguration) return null;
+    if (
+      event.configurationRevision !== plannerConfiguration.revisionId
+      || event.configurationRevision !== this.deps.kernelConfiguration.revisionId
+    ) {
+      throw new Error(`plan admission configuration revision mismatch: ${event.configurationRevision}`);
+    }
+    return {
+      schemaVersion: 5,
+      type: 'plan_admission',
+      tasks: port.taskServices?.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })) ?? [],
+      runningTaskId: this.kernelExecutionRuntime?.getSingleActiveTaskId() ?? null,
+      plannerConfiguration,
+      kernelConfiguration: this.deps.kernelConfiguration,
+      executorStatuses: port.repositories.kernelExecutorStatusRepo.list(event.configurationRevision),
+      v5WorkGraphTaskIds: port.repositories.subtaskRepo.listTaskIds(),
+      eligibleContextRefKeys: [],
+      pendingAuthorizationRequest: (() => {
+        const pending = port.workspaceServices.permissionRepository.findOldestPending();
+        return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
+      })(),
+    };
   }
 
   async handleNaturalLanguageInput(userInput: string): Promise<void> {
