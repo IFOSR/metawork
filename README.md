@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Shanghai Yuanjubian Artificial Intelligence Technology Co., Ltd.</strong>
+  <strong>Shanghai Metafusion Artificial Intelligence Technology Co., Ltd.</strong>
 </p>
 
 <div align="center">
@@ -266,4 +266,4 @@ extension contracts may change before the first stable version.
 
 MetaWork is licensed under the [Apache License, Version 2.0](LICENSE).
 
-Copyright 2026 Shanghai Yuanjubian Artificial Intelligence Technology Co., Ltd.
+Copyright 2026 Shanghai Metafusion Artificial Intelligence Technology Co., Ltd.
