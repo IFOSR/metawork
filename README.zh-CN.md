@@ -1,16 +1,14 @@
 <p align="center">
-  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="80" align="middle" /></a>
-  <img src="docs/assets/brand-times.svg" alt="x" height="80" align="middle" />
-  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="80" align="middle" /></a>
+  <strong>上海元聚变人工智能科技有限公司</strong>
 </p>
 
 <div align="center">
 
-# AnyFusion
+# MetaWork
 
 **面向持久化、可治理智能体工作的本地优先 AI Task OS。**
 
-AnyFusion 将自然语言目标转化为持久化任务，这些任务可以跨进程重启存活，
+MetaWork 将自然语言目标转化为持久化任务，这些任务可以跨进程重启存活，
 经过相互隔离的 Planner/Executor 流水线执行，并交付可验证、可审计的成果——
 而不只是一次聊天回复。
 
@@ -18,16 +16,16 @@ AnyFusion 将自然语言目标转化为持久化任务，这些任务可以跨�
 [![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#许可证)
 
-[为什么用 AnyFusion](#为什么用-anyfusion) · [安装方式](#安装方式) ·
+[为什么用 MetaWork](#为什么用-metawork) · [安装方式](#安装方式) ·
 [使用](#使用) · [工作原理](#工作原理) ·
 [项目状态](#项目状态) · [English](README.md)
 
 </div>
 
-## 为什么用 AnyFusion
+## 为什么用 MetaWork
 
 大多数 AI 智能体会话都是短暂的：回答完当前回合就结束，没有持久状态、没有
-治理、也拿不出可验证的成果。AnyFusion 把智能体工作提升到「任务操作系统」
+治理、也拿不出可验证的成果。MetaWork 把智能体工作提升到「任务操作系统」
 的高度。
 
 ### 持久化任务，而非一次性的对话回合
@@ -130,8 +128,8 @@ export ANYFUSION_PROVIDER_REGION='international'  # 默认：international
 
 安装器会：
 
-- 分别构建 MetaWork Runtime 与仓库内置的 AnyFusion-Pi planner，保持两套独立
-  依赖树，直接从检入的 `planner/AnyFusion-Pi` 源码构建。
+- 分别构建 MetaWork Runtime 与仓库内置的 Pi planner，保持两套独立依赖树，
+  直接从检入的 `planner/AnyFusion-Pi` 源码构建。
 - 将启动器安装到 `~/.local/bin/anyfusion`。
 - 将所有状态与配置写入 `~/.anyfusion`（可用 `ANYFUSION_INSTALL_ROOT` 覆盖）。
 - 不安装、升级、降级、链接或重新配置 Codex/Pi，也不读取或写入你的
@@ -204,11 +202,11 @@ anyfusion model    list | add | edit | test | remove
 anyfusion executor list | add | edit | enable | disable | remove | test
 ```
 
-兼容别名：`metawork`、`metaclaw`。
+命令行入口为 `anyfusion`；兼容别名有 `metawork`、`metaclaw`。
 
 ## 工作原理
 
-AnyFusion 把智能体工作划分为四道明确的运行时边界：
+MetaWork 把智能体工作划分为四道明确的运行时边界：
 
 - **Planner** —— 负责自然语言理解，产出严格的 `PlanningAgentPlan v8` 提案
   （直接回复、Task 绑定、Work Graph 提案）。它只读检查你的仓库，从不修改
@@ -251,6 +249,6 @@ Subtask，最多并行运行四个相互独立的 attempt。
 
 ## 许可证
 
-AnyFusion 使用 [Apache License, Version 2.0](LICENSE)。
+MetaWork 使用 [Apache License, Version 2.0](LICENSE)。
 
-Copyright 2026 The AnyFusion Contributors.
+Copyright 2026 上海元聚变人工智能科技有限公司

@@ -1,16 +1,14 @@
 <p align="center">
-  <a href="https://anyint.ai/"><img src="docs/assets/brand-anyint.svg" alt="AnyInt" height="80" align="middle" /></a>
-  <img src="docs/assets/brand-times.svg" alt="x" height="80" align="middle" />
-  <a href="https://www.metafusion.cc/"><img src="docs/assets/brand-metafusion.svg" alt="MetaFusion" height="80" align="middle" /></a>
+  <strong>Shanghai Yuanjubian Artificial Intelligence Technology Co., Ltd.</strong>
 </p>
 
 <div align="center">
 
-# AnyFusion
+# MetaWork
 
 **A local-first AI Task OS for durable, governed agent work.**
 
-AnyFusion turns natural-language objectives into persistent tasks that survive
+MetaWork turns natural-language objectives into persistent tasks that survive
 restarts, run through an isolated Planner/Executor pipeline, and deliver
 verified, auditable results — not just a chat reply.
 
@@ -18,17 +16,17 @@ verified, auditable results — not just a chat reply.
 [![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
 
-[Why AnyFusion](#why-anyfusion) · [Installation](#installation) ·
+[Why MetaWork](#why-metawork) · [Installation](#installation) ·
 [Usage](#usage) · [How it works](#how-it-works) ·
 [Project status](#project-status) · [中文](README.zh-CN.md)
 
 </div>
 
-## Why AnyFusion
+## Why MetaWork
 
 Most AI agent sessions are ephemeral: they answer the current turn and end.
 There is no durable state, no governance, and no verifiable artifact to show
-for the work. AnyFusion raises agent work to the level of a task operating
+for the work. MetaWork raises agent work to the level of a task operating
 system.
 
 ### Durable tasks, not ephemeral turns
@@ -139,7 +137,7 @@ export ANYFUSION_PROVIDER_REGION='international'  # default: international
 
 The installer:
 
-- Builds the MetaWork runtime and the vendored AnyFusion-Pi planner in separate
+- Builds the MetaWork runtime and the vendored Pi planner in separate
   dependency trees, directly from the checked-in `planner/AnyFusion-Pi` sources.
 - Installs the launcher at `~/.local/bin/anyfusion`.
 - Writes all state and configuration under `~/.anyfusion` (override with
@@ -215,11 +213,12 @@ anyfusion model    list | add | edit | test | remove
 anyfusion executor list | add | edit | enable | disable | remove | test
 ```
 
-Compatibility aliases: `metawork`, `metaclaw`.
+The command-line entry point is `anyfusion`; compatibility aliases are
+`metawork` and `metaclaw`.
 
 ## How it works
 
-AnyFusion separates agent work into four explicit runtime boundaries:
+MetaWork separates agent work into four explicit runtime boundaries:
 
 - **Planner** — owns natural-language understanding and produces strict
   `PlanningAgentPlan v8` proposals (direct replies, task bindings, Work Graph
@@ -265,6 +264,6 @@ extension contracts may change before the first stable version.
 
 ## License
 
-AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
+MetaWork is licensed under the [Apache License, Version 2.0](LICENSE).
 
-Copyright 2026 The AnyFusion Contributors.
+Copyright 2026 Shanghai Yuanjubian Artificial Intelligence Technology Co., Ltd.
