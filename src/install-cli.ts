@@ -7,6 +7,7 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { createProductionSecretStore } from './configuration/production-secret-store.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { InstallerCore } from './installation/installer-core.js';
+import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
 import { ServerUpdateCoordinator } from './session/server-update-coordinator.js';
@@ -163,6 +164,9 @@ async function runOfflineNativeTransaction<T>(input: {
     install: async () => {
       try {
         value = await input.operation();
+        // ADR-0031: 安装/升级后把本地状态迁移进 local-default 账户根。
+        const migrator = new AccountLayoutMigrator({ paths: input.paths });
+        await migrator.migrate();
       } catch (error) {
         operationError = error;
         throw error;

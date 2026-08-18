@@ -43,4 +43,25 @@ describe('installation doctor', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('reports account diagnostics when anyfusionRoot is provided', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metaclaw-doctor-account-'));
+    try {
+      const checks = await runInstallationDoctor({
+        installRoot: root,
+        detectCommand: async () => false,
+        anyfusionRoot: root,
+      });
+      const byName = Object.fromEntries(checks.map(check => [check.name, check]));
+      expect(byName['account_metadata']).toBeDefined();
+      expect(byName['account_data_root']).toBeDefined();
+      expect(byName['legacy_database_residue']).toBeDefined();
+      // 未迁移：无账户元数据、无账户数据根、无 legacy 数据库残留。
+      expect(byName['account_metadata']!.ok).toBe(false);
+      expect(byName['account_data_root']!.ok).toBe(false);
+      expect(byName['legacy_database_residue']!.ok).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
