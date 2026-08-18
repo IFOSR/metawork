@@ -1615,14 +1615,13 @@ export class MetaclawSession {
       proposalSource: 'initial',
       targetGraphRevision: 1,
     };
-    const snapshot = this.buildPlanAdmissionSnapshot(
-      event,
-      context.configuration,
-      userInput,
-    );
     const workflow = new DurableKernelWorkflow({
       kernel: this.controlKernel,
-      buildSnapshot: () => snapshot,
+      buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
+        claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
+        context.configuration,
+        userInput,
+      ),
       store: this.kernelWorkflowRepo,
       clock: { now: () => new Date().toISOString() },
       runtime: this.sessionKernelRuntime.forInput(userInput),
@@ -2470,7 +2469,10 @@ export class MetaclawSession {
     };
     const workflow = new DurableKernelWorkflow({
       kernel: this.controlKernel,
-      buildSnapshot: () => this.buildRecoverySnapshot(input.taskId, input.recoveryItemId),
+      buildSnapshot: claimed => {
+        const recovery = claimed as Extract<KernelEvent, { type: 'recovery_resolution_requested' }>;
+        return this.buildRecoverySnapshot(recovery.taskId!, recovery.recoveryItemId);
+      },
       store: this.kernelWorkflowRepo,
       clock: { now: () => new Date().toISOString() },
       runtime: {

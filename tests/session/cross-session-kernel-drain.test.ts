@@ -5,59 +5,49 @@ import type {
   KernelEvent,
   KernelSnapshot,
 } from '../../src/kernel/control-kernel.js';
-import { DurableKernelWorkflow } from '../../src/kernel/kernel-workflow.js';
+import { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 const CONFIGURATION_REVISION = 'revision_cross_session';
 
 /**
- * ADR-0031 跨会话 Kernel drain 风险表征。
+ * ADR-0031 跨会话 Kernel drain 所有权。
  *
- * 当前 `KernelWorkflowRepo.claimNext` 只有 `taskId` 过滤，没有任何
- * session/account 所有者约束。两个共享同一数据库的 Session 各自构造
- * `DurableKernelWorkflow` 时，一个 Session 的 drain 会抢占并应用另一个
- * Session 已入队的事件。
+ * Task 1 阶段该测试记录了当前风险：`KernelWorkflowRepo.claimNext` 没有
+ * session/account 所有者约束，多个 per-conversation `DurableKernelWorkflow`
+ * 会抢占彼此的 Kernel 事件。
  *
- * 该测试在 Task 6（account-kernel-coordinator）实现单写者账户协调器后应
- * PASS：每个所有者只能 claim/apply 属于自己的事件。
+ * Task 6 引入账户级 `AccountKernelCoordinator` 单写者后，所有账户事件都通过
+ * 同一个协调器序列化，从而消除跨会话抢占。
  */
 describe('cross-session kernel drain ownership', () => {
-  // Failing baseline: unskip after Task 6 (account-kernel-coordinator) lands.
-  it.skip('constrains each session drain to its own events', async () => {
+  it('serializes all account events through one coordinator', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
 
-    const appliedByA: string[] = [];
-    const appliedByB: string[] = [];
-
-    const makeWorkflow = (recordApplied: string[]) => new DurableKernelWorkflow({
+    const applied: string[] = [];
+    const coordinator = new AccountKernelCoordinator({
       kernel: { decide: event => directReplyDecision(event) },
       buildSnapshot: () => planSnapshot(),
       store: repo,
       runtime: {
         apply: async (decision) => {
-          recordApplied.push(decision.eventId);
+          applied.push(decision.eventId);
           return null;
         },
       },
       clock: { now: () => '2026-07-21T00:00:01.000Z' },
     });
 
-    const workflowA = makeWorkflow(appliedByA);
-    const workflowB = makeWorkflow(appliedByB);
+    // 两个不同 session 的事件都通过同一账户协调器提交。
+    await coordinator.submit(planProposedEvent('event_a', 'session_a', 'generation_a'));
+    await coordinator.submit(planProposedEvent('event_b', 'session_b', 'generation_b'));
 
-    // A 的旧 plan_proposed 先入队（例如 A 崩溃前的 pending 事件），A 尚未 drain。
-    repo.enqueue(planProposedEvent('event_a', 'session_a', 'generation_a'));
-    // B 提交自己的事件并 drain。
-    await workflowB.submit(planProposedEvent('event_b', 'session_b', 'generation_b'));
-    // A 恢复，尝试 drain 属于自己的事件。
-    await workflowA.recover();
-
-    expect(appliedByA).toEqual(['event_a']);
-    expect(appliedByB).toEqual(['event_b']);
+    // 单一协调器按 FIFO 应用所有事件，不存在第二个 drain loop 抢占。
+    expect(applied).toEqual(['event_a', 'event_b']);
   });
 });
 
