@@ -1218,7 +1218,13 @@ export class MetaclawSession {
       db: this.deps.db,
       kernelConfiguration: this.kernelConfiguration,
       sessionKernelRuntime: this.sessionKernelRuntime,
-      handleCommand: input => this.handleCommand(input),
+      commandCatalog: this.commandCatalog,
+      commandReadServices: this.commandReadServices,
+      taskEngine: this.deps.taskEngine,
+      memoryEngine: this.deps.memoryEngine,
+      orchestration: this.deps.orchestration,
+      config: this.deps.config,
+      taskExecutionApplicationService: this.taskExecutionApplicationService,
     });
   }
 

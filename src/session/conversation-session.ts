@@ -13,6 +13,9 @@
 
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { Config } from '../core/types.js';
+import type { Task, TaskRecoveryTrigger } from '../core/types.js';
+import type { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
+import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
@@ -70,6 +73,7 @@ export interface ConversationSessionDeps {
   readonly memoryEngine?: MemoryEngine;
   readonly orchestration?: OrchestrationEngine;
   readonly config?: Config;
+  readonly taskExecutionApplicationService?: SessionTaskExecutionApplicationService;
   readonly directiveExecutor?: (directive: unknown, userInput: string) => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }
@@ -473,8 +477,15 @@ export class ConversationSession {
       this.appendOutput(`命令不受支持（Conversation 外壳未接入命令处理）: ${input}`);
       return false;
     }
+    const executorRecoveryRefreshService = this.deps.runtimePort.coordinatorServices?.executorRecoveryRefreshService;
+    if (/^\/task\s+(resume|recover|recovery)\b/iu.test(input)) {
+      await executorRecoveryRefreshService?.refresh({ trigger: 'task_recovery' });
+    }
     const result = await commandCatalog.execute(input, this.getCommandContext());
     this.appendOutput(result.content);
+    if (/^\/executor\s+(register|unregister)\b/iu.test(input)) {
+      await executorRecoveryRefreshService?.refresh({ trigger: 'executor_changed' });
+    }
     if (result.type === 'exit') {
       this.persistSessionState({ lastSessionId: this.deps.plannerSessionId });
       return true;
@@ -485,6 +496,9 @@ export class ConversationSession {
         taskId?: string;
         recoveryItemId?: string;
         resolution?: string;
+        mode?: 'resume-parked' | 'resume-blocked';
+        newlyProvidedResources?: string[];
+        blockedReason?: string;
       };
       if (directive.kind === 'show-task-recovery' && directive.taskId) {
         this.appendOutput(this.formatTaskRecovery(directive.taskId));
@@ -494,11 +508,81 @@ export class ConversationSession {
           recoveryItemId: directive.recoveryItemId,
           resolution: directive.resolution as 'assume_applied' | 'retry',
         });
+      } else if (directive.kind === 'resume-task' && directive.taskId) {
+        await this.resumeTask(directive.taskId, input, directive);
       } else {
         await this.deps.directiveExecutor?.(result.directive, input);
       }
     }
     return false;
+  }
+
+  private async resumeTask(
+    taskId: string,
+    userInput: string,
+    directive: {
+      mode?: 'resume-parked' | 'resume-blocked';
+      newlyProvidedResources?: string[];
+      blockedReason?: string;
+    },
+  ): Promise<void> {
+    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
+    const taskExecutionApplicationService = this.deps.taskExecutionApplicationService;
+    if (!taskRuntimeService || !taskExecutionApplicationService) return;
+    const resumedTask = taskRuntimeService.findTask(taskId);
+    if (!resumedTask) return;
+    this.setCurrentTaskId(resumedTask.id);
+    taskExecutionApplicationService.prepareTaskExecution(resumedTask.id, {
+      userPrompt: resumedTask.goal,
+      contextTaskId: resumedTask.id,
+      executionMode: directive.mode ?? 'resume-parked',
+      schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+      newlyProvidedResources: directive.newlyProvidedResources,
+      recoveryTrigger: directive.mode === 'resume-blocked'
+        ? this.buildRecoveryTrigger(resumedTask, {
+            kind: 'explicit-task-command',
+            blockedReason: directive.blockedReason,
+            triggerReason: directive.newlyProvidedResources?.length ? '显式解除阻塞并补充材料' : '显式解除阻塞',
+            sourceInput: userInput,
+            newlyProvidedResources: directive.newlyProvidedResources,
+          })
+        : undefined,
+    });
+  }
+
+  private buildRecoveryTrigger(
+    task: Task,
+    input: {
+      kind: TaskRecoveryTrigger['kind'];
+      triggerReason: string;
+      sourceInput?: string;
+      blockedReason?: string;
+      newlyProvidedResources?: string[];
+    },
+  ): TaskRecoveryTrigger {
+    return {
+      kind: input.kind,
+      blockedReason: input.blockedReason || this.getWaitingBlockReason(task) || '未知原因',
+      triggerReason: input.triggerReason,
+      sourceInputExcerpt: input.sourceInput ? this.excerptInput(input.sourceInput) : undefined,
+      newlyProvidedResources: input.newlyProvidedResources,
+    };
+  }
+
+  private getWaitingBlockReason(task: Task): string {
+    return task.dependencies
+      .filter(dependency => dependency.status === 'waiting')
+      .map(dependency => dependency.description)
+      .filter(Boolean)
+      .join('；');
+  }
+
+  private excerptInput(input: string, maxLength = 80): string {
+    const normalized = input.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxLength - 1)}…`;
   }
 
   private formatTaskRecovery(taskId: string): string {
