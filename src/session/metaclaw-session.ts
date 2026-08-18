@@ -101,6 +101,7 @@ import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
 import { buildAccountRepositories, type AccountRepositories } from '../account/account-repositories.js';
+import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -155,6 +156,7 @@ export interface MetaclawSessionDeps {
   probeCommand?: ProbeCommandRunner;
   kernelServices?: AccountKernelServices;
   accountRepositories?: AccountRepositories;
+  accountWorkspaceServices?: AccountWorkspaceServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -462,14 +464,13 @@ export class MetaclawSession {
       agentClasses: stagedConfiguration.snapshot.config.agentClasses,
     });
     this.attemptExecutionBackend = deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend();
-    this.permissionRepository = new SqlitePermissionRepository(deps.db);
-    this.attemptExecutionRepository = new SqliteAttemptExecutionRepository(deps.db);
-    this.workspaceRepository = new SqliteWorkspaceRepository(deps.db);
-    this.workspaceStore = new WorkspaceStore(resolve(resolveMetaclawDir(), 'workspace-store'));
-    this.workspaceRetentionService = new WorkspaceRetentionService(
-      this.workspaceRepository,
-      this.workspaceStore,
-    );
+    const workspaceServices = deps.accountWorkspaceServices
+      ?? buildAccountWorkspaceServices(deps.db, resolveMetaclawDir());
+    this.permissionRepository = workspaceServices.permissionRepository;
+    this.attemptExecutionRepository = workspaceServices.attemptExecutionRepository;
+    this.workspaceRepository = workspaceServices.workspaceRepository;
+    this.workspaceStore = workspaceServices.workspaceStore;
+    this.workspaceRetentionService = workspaceServices.workspaceRetentionService;
     const runtimeConfiguration = buildRuntimeConfigurationView(
       stagedConfiguration.snapshot,
     );

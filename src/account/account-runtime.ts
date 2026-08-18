@@ -12,6 +12,7 @@
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import type { AccountKernelServices } from './account-kernel-services.js';
 import type { AccountRepositories } from './account-repositories.js';
+import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-runtime-ports.js';
 
 export interface AccountRuntimeDeps {
@@ -19,6 +20,7 @@ export interface AccountRuntimeDeps {
   readonly kernelCoordinator: AccountKernelCoordinator;
   readonly kernelServices: AccountKernelServices;
   readonly repositories: AccountRepositories;
+  readonly workspaceServices: AccountWorkspaceServices;
   readonly recoverDurableStartup: () => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }
@@ -46,6 +48,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
 
   get repositories(): AccountRepositories {
     return this.deps.repositories;
+  }
+
+  get workspaceServices(): AccountWorkspaceServices {
+    return this.deps.workspaceServices;
   }
 
   /** 单飞行、幂等的账户激活恢复。 */
