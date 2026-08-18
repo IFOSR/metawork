@@ -1218,7 +1218,7 @@ export class MetaclawSession {
       db: this.deps.db,
       kernelConfiguration: this.kernelConfiguration,
       sessionKernelRuntime: this.sessionKernelRuntime,
-      executeUserInput: text => this.submit(text),
+      handleCommand: input => this.handleCommand(input),
     });
   }
 

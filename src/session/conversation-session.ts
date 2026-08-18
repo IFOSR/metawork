@@ -32,6 +32,7 @@ import {
   type MailboxCommand,
   type MailboxReceipt,
 } from './conversation-input-mailbox.js';
+import { InputController, type InputControllerSubmitOptions } from './input-controller.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
 
 export interface ConversationSessionSnapshot {
@@ -56,6 +57,7 @@ export interface ConversationSessionDeps {
   readonly kernelConfiguration?: KernelConfigurationView;
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
+  readonly handleCommand?: (input: string) => Promise<boolean>;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -76,11 +78,19 @@ export class ConversationSession {
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
   private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
+  private readonly inputController: InputController;
   private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
   constructor(private readonly deps: ConversationSessionDeps) {
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
+    this.inputController = new InputController({
+      appendUserInput: input => this.appendOutput('', `> ${input}`),
+      handleCommand: input => this.deps.handleCommand?.(input) ?? this.defaultHandleCommand(input),
+      handleNaturalLanguageInput: input => this.handleNaturalLanguageInput(input),
+      waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
+      handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
+    });
   }
 
   get conversationId(): string {
@@ -436,10 +446,18 @@ export class ConversationSession {
    * （当前 MetaclawSession，未来 AccountRuntime 内联）提供。
    */
   async submitUserInput(text: string): Promise<{ exitRequested: boolean }> {
-    if (this.deps.executeUserInput) {
-      return this.deps.executeUserInput(text);
+    return this.inputController.submit(text);
+  }
+
+  private async defaultHandleCommand(input: string): Promise<boolean> {
+    this.appendOutput(`命令不受支持（Conversation 外壳未接入命令处理）: ${input}`);
+    return false;
+  }
+
+  private async waitForBackgroundWork(): Promise<void> {
+    while (this.backgroundWork.size > 0) {
+      await Promise.allSettled(Array.from(this.backgroundWork));
     }
-    return { exitRequested: false };
   }
 
   cancelTurn(requestId: string): boolean {
