@@ -63,13 +63,29 @@ describe('no direct client session paths', () => {
     expect(sessionSource).toContain('buildAccountKernelExecutionServices');
   });
 
-  it('documents current MetaclawSession import sites as removal targets', () => {
-    // 当前阶段：记录现状。完整物理删除（切换表面 + 删除 MetaclawSession）
-    // 是 Task 19 的收尾工程；本测试提供可验证的删除目标清单。
-    const importers = sourcesImportingMetaclawSession();
+  it('reduces production constructors to the composition root and scripted adapter', () => {
+    // 客户端适配器（gateway/management/integrations/tui-bridge）不再构造
+    // MetaclawSession；只剩组合根（index.ts 的会话工厂）与脚本适配器保留构造。
     const constructors = metaclawSessionConstructorSites();
+    expect(constructors).toEqual(['index.ts', 'session/scripted-session.ts']);
+  });
+
+  it('has zero client adapter constructors', () => {
+    const constructors = metaclawSessionConstructorSites();
+    const clientAdapterConstructors = constructors.filter(site => (
+      site.startsWith('gateway/')
+      || site.startsWith('management/')
+      || site.startsWith('integrations/')
+      || site.startsWith('tui-bridge/')
+    ));
+    expect(clientAdapterConstructors).toEqual([]);
+  });
+
+  it('documents remaining MetaclawSession import sites as removal targets', () => {
+    // 完整物理删除（切换 scripted-session + 删除 MetaclawSession 类）是
+    // Task 19 的最终收尾；本测试提供可验证的删除目标清单。
+    const importers = sourcesImportingMetaclawSession();
     expect(importers.length).toBeGreaterThan(0);
-    expect(constructors.length).toBeGreaterThan(0);
   });
 
   it.skip('has zero client adapters importing MetaclawSession', () => {

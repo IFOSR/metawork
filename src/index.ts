@@ -358,6 +358,21 @@ async function main() {
   });
   await plannerHost.start();
 
+  // ADR-0031: 所有表面通过同一会话工厂构造会话，未来在此接入 AccountRuntime。
+  const buildSession = (targetSessionId: string) => new MetaclawSession({
+    taskEngine,
+    memoryEngine,
+    orchestration,
+    db,
+    config,
+    sessionId: targetSessionId,
+    contextRecaller,
+    notifier,
+    plannerHost,
+    plannerSupervisor,
+    stagedConfiguration,
+    getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+  });
   if (cliArgs.scriptPath) {
     try {
       const result = await runScriptedSessionFile(cliArgs.scriptPath, {
@@ -399,20 +414,7 @@ async function main() {
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
-      sessionFactory: webSessionId => new MetaclawSession({
-        taskEngine,
-        memoryEngine,
-        orchestration,
-        db,
-        config,
-        sessionId: webSessionId,
-        contextRecaller,
-        notifier,
-        plannerHost,
-        plannerSupervisor,
-        stagedConfiguration,
-        getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-      }),
+      sessionFactory: webSessionId => buildSession(webSessionId),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({
           id: task.id,
@@ -479,20 +481,7 @@ async function main() {
   const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
   if (process.env.METACLAW_STANDBY_TUI !== '1') {
-    const plannerTuiSession = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration,
-      db,
-      config,
-      sessionId,
-      contextRecaller,
-      notifier,
-      plannerHost,
-      plannerSupervisor,
-      stagedConfiguration,
-      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-    });
+    const plannerTuiSession = buildSession(sessionId);
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
       socketPath: gatewaySocketPath,
@@ -508,6 +497,7 @@ async function main() {
       plannerSupervisor,
       stagedConfiguration,
       getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+      sessionFactory: buildSession,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -547,6 +537,7 @@ async function main() {
     plannerSupervisor,
     stagedConfiguration,
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+    sessionFactory: buildSession,
   });
 
   await gatewayServer.start();
@@ -554,20 +545,7 @@ async function main() {
   let gatewayBlockedRecheckTimer: NodeJS.Timeout | null = null;
   let gatewaySession: MetaclawSession | null = null;
   if (cliArgs.gateway) {
-    const session = new MetaclawSession({
-      taskEngine,
-      memoryEngine,
-      orchestration,
-      db,
-      config,
-      sessionId,
-      contextRecaller,
-      notifier,
-      plannerHost,
-      plannerSupervisor,
-      stagedConfiguration,
-      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-    });
+    const session = buildSession(sessionId);
     gatewaySession = session;
     session.initialize({ showDashboard: false });
     gatewayFeishuBridge = await startFeishuRuntimeBridge(config, session);

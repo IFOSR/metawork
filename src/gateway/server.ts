@@ -8,7 +8,7 @@ import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
-import { MetaclawSession, type MetaclawSessionDeps, type PlannerHostRegistrar } from '../session/metaclaw-session.js';
+import type { MetaclawSessionDeps, PlannerHostRegistrar } from '../session/metaclaw-session.js';
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
@@ -29,8 +29,8 @@ interface GatewayServerDeps {
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
   getRuntimeBinding: NonNullable<MetaclawSessionDeps['getRuntimeBinding']>;
-  /** 可选：迁移到 AccountRuntime/ConversationSession 时注入会话工厂。 */
-  sessionFactory?: (sessionId: string) => GatewaySession;
+  /** 会话工厂：由组合根注入（ADR-0031：传输层不得构造具体 Session）。 */
+  sessionFactory: (sessionId: string) => GatewaySession;
 }
 
 export class MetaclawGatewayServer {
@@ -95,22 +95,7 @@ export class MetaclawGatewayServer {
 
   private async handleConnection(socket: Socket): Promise<void> {
     const sessionId = `sess_gateway_${nanoid(10)}`;
-    const session: GatewaySession = this.deps.sessionFactory
-      ? this.deps.sessionFactory(sessionId)
-      : new MetaclawSession({
-          taskEngine: this.deps.taskEngine,
-          memoryEngine: this.deps.memoryEngine,
-          orchestration: this.deps.orchestration,
-          db: this.deps.db,
-          config: this.deps.config,
-          sessionId,
-          contextRecaller: this.deps.contextRecaller,
-          notifier: this.deps.notifier,
-          plannerHost: this.deps.plannerHost,
-          plannerSupervisor: this.deps.plannerSupervisor,
-          stagedConfiguration: this.deps.stagedConfiguration,
-          getRuntimeBinding: this.deps.getRuntimeBinding,
-        });
+    const session: GatewaySession = this.deps.sessionFactory(sessionId);
     this.sessions.add(session);
 
     const send = (message: GatewayServerMessage) => {
