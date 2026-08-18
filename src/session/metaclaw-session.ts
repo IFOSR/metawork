@@ -105,6 +105,7 @@ import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '..
 import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
 import { buildAccountTaskServices, type AccountTaskServices } from '../account/account-task-services.js';
 import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
+import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -163,6 +164,7 @@ export interface MetaclawSessionDeps {
   accountExecutionServices?: AccountExecutionServices;
   accountTaskServices?: AccountTaskServices;
   accountCoordinatorServices?: AccountCoordinatorServices;
+  accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -553,42 +555,30 @@ export class MetaclawSession {
       ?? (process.env.NODE_ENV === 'test'
         ? resolve(process.cwd(), 'tests', 'fixtures', 'workspace-source')
         : process.cwd());
-    const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
-    const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
-    this.publicationRepo = new WorkspacePublicationRepo(deps.db);
-    const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
-    const cancellationCoordinator = new TaskCancellationCoordinator({
+    const runtimeExecutionServices = deps.accountRuntimeExecutionServices ?? buildAccountRuntimeExecutionServices({
       db: deps.db,
+      sessionId: deps.sessionId,
+      sourceRoot,
       taskRuntimeService: this.taskRuntimeService,
       subtaskRepo: this.subtaskRepo,
       taskEventRepo: this.taskEventRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
-      dispatchItemRepo,
-      publicationRepo: this.publicationRepo,
-      generationReplanRepo,
-      resourceLeaseService,
-      workUnitClaimService: this.workUnitClaimService,
-      activeExecutions: this.executionRuntime,
-      attemptExecutionBackend: this.attemptExecutionBackend,
-      attemptExecutionRepository: this.attemptExecutionRepository,
-    });
-    this.attemptRunner = new SubtaskAttemptRunner({
-      db: deps.db,
-      sessionId: deps.sessionId,
-      taskRuntimeService: this.taskRuntimeService,
-      subtaskRepo: this.subtaskRepo,
       workUnitClaimService: this.workUnitClaimService,
       executionRuntime: this.executionRuntime,
       agentClassService: this.agentClassService,
       workspaceStore: this.workspaceStore,
       attemptExecutionBackend: this.attemptExecutionBackend,
-      resourceLeaseService,
       permissionRepository: this.permissionRepository,
-      kernelWorkflowStore: this.kernelWorkflowRepo,
+      kernelWorkflowRepo: this.kernelWorkflowRepo,
       workspaceRepository: this.workspaceRepository,
-      sourceRoot,
-      controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+      attemptExecutionRepository: this.attemptExecutionRepository,
     });
+    const resourceLeaseService = runtimeExecutionServices.resourceLeaseService;
+    const dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
+    this.publicationRepo = runtimeExecutionServices.publicationRepo;
+    const generationReplanRepo = runtimeExecutionServices.generationReplanRepo;
+    const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
+    this.attemptRunner = runtimeExecutionServices.attemptRunner;
     this.kernelExecutionRuntime = new KernelExecutionRuntime({
       sessionId: deps.sessionId,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
