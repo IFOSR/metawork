@@ -11,7 +11,9 @@
  * callbacks（appendOutput/setCurrentTaskId/getCurrentTaskId/refreshRuntimeState）。
  */
 
-import type { RuntimeState } from '../core/types.js';
+import type { GuidanceProposal, RuntimeState } from '../core/types.js';
+import type { SessionPresentationService, GuidanceState } from './session-presentation-service.js';
+import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -31,6 +33,8 @@ export interface ConversationSessionDeps {
   readonly plannerSessionId: string;
   readonly runtimePort: ConversationRuntimePort;
   readonly mailbox: ConversationInputMailbox;
+  readonly presentation?: SessionPresentationService;
+  readonly sessionStateRepo?: SessionStateRepo;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -47,6 +51,7 @@ export class ConversationSession {
   };
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
   private activePlannerRuns = 0;
+  private latestGuidance: GuidanceState | null = null;
   private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
@@ -97,10 +102,57 @@ export class ConversationSession {
 
   setFocusContext(focus: { kind: 'conversation' | 'task'; taskId: string | null } | null): void {
     this.focusContext = focus;
+    if (focus?.kind === 'task' && focus.taskId) {
+      this.persistSessionState({ lastFocusedTaskId: focus.taskId });
+    }
   }
 
   getFocusContext(): { kind: 'conversation' | 'task'; taskId: string | null } | null {
     return this.focusContext;
+  }
+
+  setLatestGuidance(
+    scene: string,
+    suggestion: { taskId: string; recommendedAction: string; reasons: string[] },
+  ): GuidanceState | null {
+    if (!this.deps.presentation) return null;
+    this.latestGuidance = this.deps.presentation.buildGuidanceState(
+      scene,
+      suggestion,
+      this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(suggestion.taskId)?.title ?? '',
+    );
+    return this.latestGuidance;
+  }
+
+  appendGuidance(
+    scene: string,
+    suggestion: { taskId: string; recommendedAction: string; reasons: string[] },
+  ): void {
+    this.setLatestGuidance(scene, suggestion);
+    if (!this.deps.presentation) return;
+    this.appendOutput(
+      ...this.deps.presentation.formatGuidanceBlock(scene, suggestion, this.latestGuidance?.taskTitle ?? ''),
+    );
+  }
+
+  queueProposal(scene: string, proposal: GuidanceProposal): void {
+    if (!this.deps.presentation) return;
+    this.appendOutput(...this.deps.presentation.formatProposalBlock(
+      scene,
+      proposal,
+      proposal.taskId
+        ? this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(proposal.taskId)?.title ?? ''
+        : '',
+    ));
+    this.appendOutput('→ 操作提案已记录，不等待用户确认；满足执行条件的任务由调度器自动处理');
+  }
+
+  persistSessionState(changes: {
+    lastFocusedTaskId?: string | null;
+    lastCompletedTaskId?: string | null;
+    lastSessionId?: string | null;
+  }): void {
+    this.deps.sessionStateRepo?.upsert(changes);
   }
 
   refreshRuntimeState(): void {
