@@ -14,6 +14,9 @@
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { SessionPresentationService, GuidanceState } from './session-presentation-service.js';
 import type { SessionStateRepo } from '../storage/session-state-repo.js';
+import type { SessionPersistenceService } from './session-persistence-service.js';
+import type { InteractionTraceStream } from './interaction-trace-stream.js';
+import type { KernelDecision } from '../kernel/control-kernel.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -35,6 +38,8 @@ export interface ConversationSessionDeps {
   readonly mailbox: ConversationInputMailbox;
   readonly presentation?: SessionPresentationService;
   readonly sessionStateRepo?: SessionStateRepo;
+  readonly persistenceService?: SessionPersistenceService;
+  readonly interactionTraceStream?: InteractionTraceStream;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -52,6 +57,8 @@ export class ConversationSession {
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
   private activePlannerRuns = 0;
   private latestGuidance: GuidanceState | null = null;
+  private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
+  private backgroundWork = new Set<Promise<void>>();
   private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
@@ -153,6 +160,73 @@ export class ConversationSession {
     lastSessionId?: string | null;
   }): void {
     this.deps.sessionStateRepo?.upsert(changes);
+  }
+
+  resolveRequestText(eventId: string): string {
+    const event = this.deps.runtimePort.kernelServices.kernelWorkflowRepo.findEvent(eventId);
+    return event?.type === 'plan_proposed' ? event.requestText : '';
+  }
+
+  setRunningExecutorName(taskId: string, subtaskId: string, attemptId: string, name: string): void {
+    this.runningExecutorsByAttempt.set(attemptId, { taskId, subtaskId, name });
+  }
+
+  clearRunningExecutorName(_taskId: string, attemptId: string): void {
+    this.runningExecutorsByAttempt.delete(attemptId);
+  }
+
+  startBackgroundExecution(_taskId: string, launch: () => Promise<void>): void {
+    const promise = launch()
+      .catch(() => undefined)
+      .finally(() => {
+        this.backgroundWork.delete(promise);
+      });
+    this.backgroundWork.add(promise);
+  }
+
+  deliverDirectReply(userInput: string, reply: string): void {
+    this.setDirectReplyRuntimeState('planning-agent');
+    try {
+      this.deps.interactionTraceStream?.append({
+        phase: 'delivery',
+        actor: 'runtime',
+        kind: 'delivery_completed',
+        status: 'completed',
+        title: 'Final answer delivered',
+        summary: 'The Planner answer passed Kernel authorization and was delivered.',
+        details: { executor: 'planning-agent' },
+        eventKey: 'direct_reply',
+        traceStatus: 'completed',
+      } as never);
+      this.appendOutput(reply);
+      this.deps.persistenceService?.recordInteraction({
+        taskId: null,
+        sessionId: this.deps.plannerSessionId,
+        userInput,
+        systemOutput: reply,
+        executorUsed: 'planning-agent',
+      });
+      this.setFocusContext({ kind: 'conversation', taskId: null });
+    } finally {
+      this.setDirectReplyRuntimeState(null);
+    }
+  }
+
+  private setDirectReplyRuntimeState(executorName: string | null): void {
+    this.refreshRuntimeState();
+    const schedulerState = this.runtimeState;
+    if (schedulerState.runningTaskId) {
+      this.refreshRuntimeState();
+      return;
+    }
+    this.runtimeState = {
+      ...schedulerState,
+      runningExecutorName: executorName,
+      lastEvent: executorName
+        ? `普通对话由 ${executorName} 生成回答`
+        : schedulerState.lastEvent,
+    };
+    this.notify();
   }
 
   refreshRuntimeState(): void {
