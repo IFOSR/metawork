@@ -30,6 +30,9 @@ import {
 import { prepareProductionSecretStore } from './configuration/production-secret-store.js';
 import { FileSecretStore } from './configuration/file-secret-store.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
+import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
+import { resolveAccountPaths } from './account/account-paths.js';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
 import { nanoid } from 'nanoid';
@@ -276,9 +279,12 @@ async function main() {
 
   // 2. Load the sole active configuration revision. Legacy import belongs to
   // the transactional installer rather than ordinary runtime startup.
-  const configurationRepository = new FileConfigurationRepository(
-    dirname(paths.configurationRevisions),
-  );
+
+  // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
+  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+  await new AccountLayoutMigrator({ paths }).migrate();
+
+  const configurationRepository = new FileConfigurationRepository(accountPaths.config);
   await configurationRepository.initialize();
   const recovery = await configurationRepository.recover();
   if (recovery.status === 'empty') {
@@ -305,13 +311,13 @@ async function main() {
 
   // 3. Bind Planner, Kernel and Runtime to the exact active revision.
   const secretStore = createProductionSecretStore({
-    secretsRoot: paths.secrets,
+    secretsRoot: accountPaths.secrets,
     env: process.env,
     references: Object.values(migratedSnapshot.config.providers)
       .map(provider => provider.apiKeyRef),
   });
   await prepareProductionSecretStore(secretStore);
-  const renderer = new AgentRuntimeRenderer(paths.generatedAgentRuntime);
+  const renderer = new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime'));
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const configurationService = new ConfigurationService({
     repository: configurationRepository,
@@ -340,7 +346,7 @@ async function main() {
     plannerBinding: stagedConfiguration.plannerBinding,
     secretStore,
   });
-  const db = createDatabase(paths.database);
+  const db = createDatabase(accountPaths.database);
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
