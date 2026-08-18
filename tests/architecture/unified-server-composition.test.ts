@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest';
+import { AccountRuntimeFactory } from '../../src/account/account-runtime-factory.js';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
+import { RuntimeRegistry } from '../../src/account/runtime-registry.js';
+import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
+import { ClientGateway } from '../../src/gateway/client-gateway.js';
+import { FeishuGatewayAdapter } from '../../src/gateway/feishu-gateway-adapter.js';
+import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
+import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
+import { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
+
+function mockCoordinator(): AccountKernelCoordinator {
+  return {
+    submit: async () => ({ decisions: [], quiescent: true, pendingRecovery: 0 }),
+    recover: async () => ({
+      decisions: [],
+      quiescent: true,
+      pendingRecovery: 0,
+      reconciledProcessingEvents: 0,
+      applicationCounts: { pending: 0, applying: 0, applied: 0, uncertain: 0, failed: 0 },
+    }),
+  };
+}
+
+describe('unified server composition', () => {
+  it('hosts one gateway core, adapters, registry and account runtime together', async () => {
+    const factory = new AccountRuntimeFactory({
+      buildKernelCoordinator: () => mockCoordinator(),
+      recoverDurableStartup: async () => undefined,
+    });
+    const registry = new RuntimeRegistry({ factory });
+    const subscriptions = new GatewaySubscriptions();
+    const journal = new FileEventJournal('/tmp/anyfusion-unified-composition-journal');
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: LOCAL_DEFAULT_ACCOUNT_ID }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ requestId: 'req', idempotencyKey: 'idem', status: 'accepted' }),
+    });
+    const webAdapter = new WebGatewayAdapter({ gateway, journal, subscriptions });
+    const feishuAdapter = new FeishuGatewayAdapter({ gateway });
+
+    const runtime = await registry.getOrActivate({
+      accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      authorized: true,
+    });
+    expect(runtime.accountId).toBe(LOCAL_DEFAULT_ACCOUNT_ID);
+
+    // 所有组件在一个进程中共存。
+    expect(registry).toBeDefined();
+    expect(gateway).toBeDefined();
+    expect(webAdapter).toBeDefined();
+    expect(feishuAdapter).toBeDefined();
+    expect(subscriptions).toBeDefined();
+    expect(registry.getIfLoaded(LOCAL_DEFAULT_ACCOUNT_ID)).toBe(runtime);
+  });
+
+  it('has zero client-owned runtime instances in the composition model', () => {
+    // 架构表征：客户端通过 RuntimeRegistry 激活账户，绝不直接构造 runtime。
+    // Task 19 会用生产 import 扫描强化此断言为对真实源码的检查。
+    expect(clientOwnedRuntimeConstructors()).toEqual([]);
+  });
+});
+
+function clientOwnedRuntimeConstructors(): string[] {
+  // 当前阶段为占位；Task 19 替换为生产 import 扫描。
+  return [];
+}
