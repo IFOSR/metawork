@@ -84,7 +84,10 @@ export class ConfigurationService implements ConfigurationServicePort {
   constructor(private readonly dependencies: ConfigurationServiceDependencies) {
     this.createRevisionId = dependencies.createRevisionId
       ?? (() => `revision-${randomUUID()}`);
-    this.probe = dependencies.probe ?? (async () => ({ ok: true }));
+    this.probe = dependencies.probe ?? (async () => ({
+      ok: false,
+      issues: ['configuration probe is not configured'],
+    }));
   }
 
   async initialize(): Promise<void> {

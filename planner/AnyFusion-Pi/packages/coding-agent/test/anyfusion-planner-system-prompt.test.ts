@@ -12,21 +12,30 @@ describe("AnyFusion Planner system prompt", () => {
 
 		const prompt = buildAnyFusionPlannerSystemPrompt(skillPath);
 
-		expect(prompt).toContain("PlanningAgentPlan v7");
+		expect(prompt).toContain("PlanningAgentPlan v8");
 		expect(prompt).toContain("Every completed semantic turn MUST call submit_planning_proposal");
 		expect(prompt.match(new RegExp(marker, "g"))).toHaveLength(1);
 	});
 
-	it("contains the migrated Planner behavior without embedding dynamic routing facts", () => {
+	it("contains the v8 Planner behavior without embedding dynamic routing facts", () => {
 		const prompt = buildAnyFusionPlannerSystemPrompt();
 
 		expect(prompt).toContain("copy it verbatim from the prior user turn");
 		expect(prompt).toContain("There is no proposal-specific retry limit or outer repair loop");
 		expect(prompt).toContain("The submit_planning_proposal tool schema is the sole field-level authority");
 		expect(prompt).toContain("workGraph` is a top-level sibling of `task`");
-		expect(prompt).not.toContain("deliveryKind");
+		expect(prompt).toContain("contains exactly `schemaVersion`, `configurationRevision`, `reason`, and `subtasks`");
+		expect(prompt).toContain("set `schemaVersion` to `7`");
+		expect(prompt).toContain("copy `configuration.revisionId` verbatim");
+		expect(prompt).toContain("`executorBindings`");
+		expect(prompt).toContain("`agentClassRef`");
+		expect(prompt).toContain('"mode": "fixed-by-agent-class"');
+		expect(prompt).toContain('"mode": "proposed"');
+		expect(prompt).toContain('"mode": "agent-class-default"');
+		expect(prompt).toContain("Never invent AgentClass or Model references");
+		expect(prompt).toContain("never bypass Kernel authorization");
 		expect(prompt).not.toContain("reasons_note");
-		expect(prompt).toContain("complete ordered set of canonical AgentClasses");
+		expect(prompt).not.toContain("preferredAgentClassList");
 		expect(prompt).toContain("Their arrival is not a semantic turn");
 		expect(prompt).toContain("only when the current user explicitly asks");
 		expect(prompt).not.toContain("ANYFUSION_PLANNER_CATALOG_JSON");

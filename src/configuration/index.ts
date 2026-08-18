@@ -72,6 +72,13 @@ export {
 export {
   resolveRuntimePrivateConfigurationBinding,
 } from './runtime-private-binding-resolver.js';
+export {
+  createProductionRuntimeBindings,
+  type ProductionRuntimeBindings,
+} from './production-runtime-bindings.js';
+export { createProductionSecretStore } from './production-secret-store.js';
+export { createProductionConfigurationProbe } from './production-configuration-probe.js';
+export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   RuntimePrivateBindingResolverInput,
 } from './runtime-private-binding-resolver.js';

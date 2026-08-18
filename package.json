@@ -11,6 +11,7 @@
   "bin": {
     "anyfusion": "./dist/index.js",
     "metaclaw": "./dist/index.js",
+    "anyfusion-install": "./dist/install-cli.js",
     "request_capability": "./dist/capability-request-cli.js",
     "use_capability": "./dist/capability-use-cli.js"
   },

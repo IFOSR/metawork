@@ -31,10 +31,13 @@ export interface InstallTransactionResult {
 }
 
 export class InstallerCore {
-  constructor(private readonly deps: InstallerCoreDeps) {}
+  constructor(
+    private readonly deps: InstallerCoreDeps,
+    private readonly options: { journalPath?: string } = {},
+  ) {}
 
   async install(releaseId: string, upgradeId: string, timeoutMs: number): Promise<InstallTransactionResult> {
-    const journal = new UpgradeJournal(upgradeId, releaseId);
+    const journal = new UpgradeJournal(upgradeId, releaseId, this.options.journalPath);
     journal.mark('preflight');
     try {
       await this.deps.preflight();

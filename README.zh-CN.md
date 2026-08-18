@@ -247,7 +247,7 @@ npm run start
 原生安装器专项验证：
 
 ```bash
-npm test -- tests/scripts/native-install-lib.test.ts
+npx vitest run tests/installation tests/configuration
 bash -n setup.sh
 ```
 
@@ -272,7 +272,7 @@ smoke 命令不能替代模块级专项测试。修改架构或 Runtime contract
 | Work Graph contract | v7 |
 | Kernel contract | v5 |
 | Completion contract | v3 |
-| Persistence | SQLite schema v30 |
+| Persistence | SQLite schema v31 |
 | Canonical Executor | Codex CLI 与 Pi Agent |
 
 当前版本不是稳定生产版本。安装、配置和扩展契约在首个稳定版本前仍可能调整。

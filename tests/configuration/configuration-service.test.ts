@@ -88,6 +88,26 @@ async function serviceFixture() {
 }
 
 describe('ConfigurationService', () => {
+  it('fails closed when no configuration probe is provided', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-configuration-no-probe-'));
+    roots.push(root);
+    const service = new ConfigurationService({
+      repository: new FileConfigurationRepository(join(root, 'config')),
+      createRevisionId: () => 'revision-no-probe',
+    });
+    await service.initialize();
+    const draft = service.createDraft(completeConfiguration(), null);
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+
+    await expect(service.probeDraft(draft.revisionId)).resolves.toEqual({
+      ok: false,
+      issues: ['configuration probe is not configured'],
+    });
+    await expect(service.activateDraft(draft.revisionId, null))
+      .rejects.toThrow('must be probed');
+  });
+
   it('runs the exact draft lifecycle and activates with optimistic concurrency', async () => {
     const { service, probe } = await serviceFixture();
     const draft = service.createDraft(completeConfiguration(), null);

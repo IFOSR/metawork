@@ -2,18 +2,16 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-08-03）：PlanningAgentPlan v7、Work Graph
-> v6、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> 以及支持唯一事务式 29→30 迁移的 SQLite schema v30。`KernelWorkflow` 串行完成
+> 当前实现基线（2026-08-17）：PlanningAgentPlan v8、Work Graph
+> v7、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
+> 以及支持唯一事务式 30→31 迁移路径的 SQLite schema v31。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
 
-> 已接受的 Server 升级过渡契约（2026-08-11）：ADR-0027 至 ADR-0030
-> 定义目标 Configuration Control Plane、generation 级 AgentClass/Model/Harness
-> 绑定、future A2A transport seam，以及带签名和崩溃恢复的原生 update
-> transaction。在最终 release gate 完成前，这些是实施权威，不代表当前 runtime
-> 已经升级为 v8/v7/v31。
+> ADR-0027 至 ADR-0030 约束当前生效的 Configuration Control Plane、
+> generation 级 AgentClass/Model/Harness 绑定、future A2A transport seam，
+> 以及带签名和崩溃恢复的原生 update transaction。
 
 升级保持唯一控制链：
 
@@ -63,7 +61,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>统一 runtime 协调层]
   Session --> MemoryFast[显式记忆和偏好快路]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v7<br/>意图、目标、候选、<br/>v6 graph 或授权确认]
+  Planning --> Plan[PlanningAgentPlan v8<br/>意图、目标、候选、<br/>v7 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
   Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
@@ -99,7 +97,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约，Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。Planner 只允许通过 `read`、`grep`、`find` 和 `ls` 读取其进程工作目录；原生启动时该目录就是用户执行 `anyfusion` 时的当前目录。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
@@ -551,7 +549,7 @@ Web 现在采用持久会话工作区：左侧固定历史栏用于只读浏览�
 一个 live `MetaclawSession`。Planner 回合、输入提交或 Task runtime 工作仍
 活跃时，激活历史会话会返回结构化阻塞原因；安全激活后使用相同的稳定 Planner
 session ID 重建会话。清洗后的终态 turn 存放于
-`~/.anyfusion/data/web-sessions/`，不修改 SQLite schema 30。
+`~/.anyfusion/data/web-sessions/`，不引入第二套持久化 schema。
 
 Conversation 会在最终答案前内嵌详细执行叙事；Trajectory 使用同一份事实展示
 耗时带、指标、筛选和高密度事件行。`MetaclawSession` 以有界事件流展示 query
@@ -630,7 +628,7 @@ BuildKit 同时读取 MetaClaw 与仓库内置的 AnyFusion-Pi planner 源码，
 保持 MetaClaw control process、Planner process 和依赖树相互隔离。
 Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
 
-完整 Runtime image 内置 MetaClaw CLI、v7 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建仓库内检入的 MetaClaw 与 vendored planner 源码，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。源码变化后使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
+完整 Runtime image 内置 MetaClaw CLI、v8 schema、编译后的 Planner MCP server、构建后的 AnyFusion-Pi 应用、版本化 host bridge、Codex/Pi CLI 与对应配置。`docker/Dockerfile.runtime` 构建仓库内检入的 MetaClaw 与 vendored planner 源码，并把两个独立应用树复制进最终镜像。Planner launcher 与 MetaClaw 注入的 `/app/dist/planner-mcp.js` 命令都使用 `/usr/local/bin/node`，禁止存在 `/opt/anyfusion-planner/node`。默认 launcher 只启动这一个 Runtime 容器，不挂 Docker socket、不构建 sibling Executor 镜像，也不创建 attempt control network。源码变化后使用 `docker/shell.ps1 -Rebuild`；只保留 workspace/data volume。完整要求见 [Phase 5 Runtime Security](phase-5-runtime-security.md)。
 
 ## 配置
 
@@ -838,14 +836,14 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 ## PlanningAgent、ControlKernel 和 Work Unit
 
-自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v7 `PlanningAgentPlan`。Work Graph 使用 v6 契约；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
+自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定配置 revision 并携带完整 Executor bindings；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。
 
 `ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和执行后端恢复。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v6 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v7 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -855,7 +853,7 @@ AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求�
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v3 的模型侧严格 JSON 只允许 `evidence` 与可空 `noChangeReason`，或受控 `failure`；模型提供的身份和 artifacts 会被拒绝。Runtime 在校验前计算一次权威 workspace delta：`report` 必须零变化，`edit` 的有变化/零变化分别要求空原因/非空原因；新增和修改文件由 Runtime 生成 artifacts，删除只保留在 delta/evidence。delta 截断或不确定时 fail-closed，随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope 并执行预算和直接边汇总校验。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v6 `Subtask` revision。未发布产品使用 SQLite schema v30，且只支持事务式 29→30 升级；运行时不双读旧 Planning、Subtask 或 worktree 契约。当前 schema 包含持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/执行后端、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。物理表/字段/事件名 `attempt_sandboxes`、`sandbox_container_id`、`sandbox_lost` 仅作为 schema v30 兼容名称保留，不再代表当前 TypeScript 抽象。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v31，且只支持事务式 30→31 原生升级路径；普通运行时遇到 schema 30 会拒绝启动，而不是原地迁移。当前 schema 包含持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/执行后端、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。物理表/字段/事件名 `attempt_sandboxes`、`sandbox_container_id`、`sandbox_lost` 仅作为持久兼容名称保留，不再代表当前 TypeScript 抽象。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

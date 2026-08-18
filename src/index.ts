@@ -11,17 +11,23 @@ import { TaskEngine } from './task/task-engine.js';
 import { MemoryEngine } from './memory/memory-engine.js';
 import { OrchestrationEngine } from './guidance/orchestration.js';
 import { ContextRecaller } from './memory/context-recaller.js';
-import { loadConfig } from './utils/config.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
 import { formatCliHelp, parseCliArgs } from './cli/args.js';
 import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
-import { FileSecretStore } from './configuration/file-secret-store.js';
 import { AgentRuntimeRenderer } from './configuration/agent-runtime-renderer.js';
 import { ConfigurationService, type ActivateDraftResult } from './configuration/configuration-service.js';
-import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './configuration/types.js';
+import type { AnyFusionConfigurationV2 } from './configuration/types.js';
+import {
+  buildApplicationConfig,
+  createProductionConfigurationProbe,
+  createProductionRuntimeBindings,
+  createProductionSecretStore,
+} from './configuration/index.js';
+import { prepareProductionSecretStore } from './configuration/production-secret-store.js';
+import { FileSecretStore } from './configuration/file-secret-store.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
@@ -38,13 +44,6 @@ import { MetaclawSession } from './session/metaclaw-session.js';
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
-import { LegacyConfigurationReader } from './configuration/legacy-configuration-reader.js';
-import { ConfigurationMigrationService } from './configuration/configuration-migration-service.js';
-import {
-  authorizedExecutorBindingFingerprint,
-  type AuthorizedExecutorBinding,
-} from './core/authorized-executor-binding.js';
-import { createSchema30MigrationContext } from './storage/migrations.js';
 import { SubtaskRepo } from './storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-repo.js';
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
@@ -59,7 +58,6 @@ import {
 import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
-import { createLocalExecutorConfigurationProbe } from './executor/configuration-probe.js';
 import { WebAuthService } from './management/web-auth.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
 import { FileWebSessionStore } from './storage/file-web-session-store.js';
@@ -102,29 +100,6 @@ async function activateConfiguration(
     };
   }
   return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
-}
-
-async function importAndActivateLegacyConfiguration(
-  repository: FileConfigurationRepository,
-  secretStore: FileSecretStore,
-  renderer: AgentRuntimeRenderer,
-): Promise<ConfigurationSnapshot> {
-  const reader = new LegacyConfigurationReader({
-    roots: [resolve(process.env.HOME ?? '.', '.config', 'anyfusion')],
-  });
-  const migrationService = new ConfigurationMigrationService(reader, repository, secretStore);
-  const report = await migrationService.dryRun();
-  const blocking = report.conflicts.filter(conflict => conflict.severity === 'error');
-  if (blocking.length > 0) {
-    throw new Error(
-      `legacy configuration import blocked: ${blocking.map(conflict => conflict.message).join('; ')}`,
-    );
-  }
-  const staged = await migrationService.stageCandidate(report);
-  await repository.activateRevision(staged.revisionId, null);
-  const snapshot = await repository.getActiveSnapshot();
-  await renderer.render(snapshot);
-  return snapshot;
 }
 
 async function runWebMode(options: {
@@ -172,6 +147,10 @@ async function runWebMode(options: {
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
+  const paths = resolveAnyFusionPaths();
+  const applicationRoot = existsSync(paths.appCurrent)
+    ? paths.appCurrent
+    : resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
   if (cliArgs.help) {
     process.stdout.write(`${formatCliHelp()}\n`);
@@ -179,7 +158,7 @@ async function main() {
   }
 
   if (cliArgs.webCommand === 'restart') {
-    const dataDir = resolveAnyFusionPaths().data;
+    const dataDir = paths.data;
     mkdirSync(dataDir, { recursive: true });
     const result = await stopInstanceForRestart(resolve(dataDir, 'runtime.lock'));
     const message = result.status === 'stopped'
@@ -215,8 +194,17 @@ async function main() {
   }
 
   if (cliArgs.gatewayCommand === 'doctor') {
-    const configPath = resolve(metaclawDir, 'config.yaml');
-    const config = loadConfig(configPath);
+    const configurationRepository = new FileConfigurationRepository(
+      dirname(paths.configurationRevisions),
+    );
+    await configurationRepository.initialize();
+    const recovery = await configurationRepository.recover();
+    if (recovery.status === 'empty') {
+      throw new Error('active configuration is missing; run `anyfusion-install install`');
+    }
+    const config = buildApplicationConfig(
+      await configurationRepository.getActiveSnapshot(),
+    );
     console.log(formatGatewayDoctorChecks(runGatewayDoctor({ config, metaclawDir })));
     return;
   }
@@ -235,15 +223,29 @@ async function main() {
   const adminCommand = parseAdminArgs(process.argv.slice(2));
   if (adminCommand) {
     const configurationRepository = new FileConfigurationRepository(
-      dirname(resolveAnyFusionPaths().configurationRevisions),
+      dirname(paths.configurationRevisions),
     );
     await configurationRepository.initialize();
-    await configurationRepository.recover();
+    const recovery = await configurationRepository.recover();
+    if (recovery.status === 'empty') {
+      throw new Error('active configuration is missing; run `anyfusion-install install`');
+    }
+    const activeSnapshot = await configurationRepository.getActiveSnapshot();
+    const secretStore = createProductionSecretStore({
+      secretsRoot: paths.secrets,
+      env: process.env,
+      references: Object.values(activeSnapshot.config.providers)
+        .map(provider => provider.apiKeyRef),
+    });
+    await prepareProductionSecretStore(secretStore);
     const configurationService = new ConfigurationService({
       repository: configurationRepository,
-      probe: createLocalExecutorConfigurationProbe(),
+      renderer: new AgentRuntimeRenderer(paths.generatedAgentRuntime),
+      probe: createProductionConfigurationProbe({
+        releaseRoot: applicationRoot,
+        secretStore,
+      }),
     });
-    const activeSnapshot = await configurationService.getActiveSnapshot();
     const lines = await runConfigurationAdmin(adminCommand, {
       getActiveSnapshot: () => configurationService.getActiveSnapshot(),
       rollback: async targetRevisionId => toMutationResult(
@@ -262,7 +264,7 @@ async function main() {
   let instanceLock: InstanceLock | null = null;
   let instanceLockPath: string | null = null;
   if (requiresCompositionLock(cliArgs)) {
-    const dataDir = resolveAnyFusionPaths().data;
+    const dataDir = paths.data;
     mkdirSync(dataDir, { recursive: true });
     instanceLockPath = resolve(dataDir, 'runtime.lock');
     instanceLock = await acquireInstanceLock(instanceLockPath);
@@ -271,9 +273,18 @@ async function main() {
     });
   }
 
-  // 2. 加载配置
-  const configPath = resolve(metaclawDir, 'config.yaml');
-  const config = loadConfig(configPath);
+  // 2. Load the sole active configuration revision. Legacy import belongs to
+  // the transactional installer rather than ordinary runtime startup.
+  const configurationRepository = new FileConfigurationRepository(
+    dirname(paths.configurationRevisions),
+  );
+  await configurationRepository.initialize();
+  const recovery = await configurationRepository.recover();
+  if (recovery.status === 'empty') {
+    throw new Error('active configuration is missing; run `anyfusion-install install`');
+  }
+  const migratedSnapshot = await configurationRepository.getActiveSnapshot();
+  const config = buildApplicationConfig(migratedSnapshot);
   const markdownPreviewConfig = config.integrations?.markdown_preview;
   const markdownPreviewServer = markdownPreviewConfig?.enabled
     ? new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())
@@ -291,93 +302,31 @@ async function main() {
     }
   }
 
-  // 3. Seal the one staged configuration before storage migration and Session composition.
-  const configurationRepository = new FileConfigurationRepository(
-    dirname(resolveAnyFusionPaths().configurationRevisions),
-  );
-  await configurationRepository.initialize();
-  const secretStore = new FileSecretStore(resolveAnyFusionPaths().secrets);
-  await secretStore.initialize();
-  await secretStore.assertSecurePermissions();
-  const recovery = await configurationRepository.recover();
-  const renderer = new AgentRuntimeRenderer(resolveAnyFusionPaths().generatedAgentRuntime);
-  const migratedSnapshot = recovery.status === 'empty'
-    ? await importAndActivateLegacyConfiguration(configurationRepository, secretStore, renderer)
-    : await configurationRepository.getActiveSnapshot();
+  // 3. Bind Planner, Kernel and Runtime to the exact active revision.
+  const secretStore = createProductionSecretStore({
+    secretsRoot: paths.secrets,
+    env: process.env,
+    references: Object.values(migratedSnapshot.config.providers)
+      .map(provider => provider.apiKeyRef),
+  });
+  await prepareProductionSecretStore(secretStore);
+  const renderer = new AgentRuntimeRenderer(paths.generatedAgentRuntime);
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const configurationService = new ConfigurationService({
     repository: configurationRepository,
     secretStore,
     renderer,
-    probe: createLocalExecutorConfigurationProbe(),
+    probe: createProductionConfigurationProbe({
+      releaseRoot: applicationRoot,
+      secretStore,
+    }),
   });
-  const resolveRuntimeBinding = (binding: AuthorizedExecutorBinding) =>
-    configurationService.getRuntimeBinding(
-      binding.configurationRevision,
-      binding.agentClassRef,
-      binding.modelRef,
-    );
-  const importedAt = new Date().toISOString();
-  const plannerMigrationBinding = {
-    ...stagedConfiguration.plannerBinding,
-    bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
-  };
-  const legacyAgentClassBindings = {
-    planner: {
-      agentClassRef: plannerMigrationBinding.agentClassRef,
-      harnessRef: plannerMigrationBinding.harnessRef,
-      providerRef: plannerMigrationBinding.providerRef,
-      modelRef: plannerMigrationBinding.modelRef,
-      permissionProfileRef: plannerMigrationBinding.permissionProfileRef,
-      bindingFingerprint: plannerMigrationBinding.bindingFingerprint,
-    },
-    ...Object.fromEntries(
-      Object.entries(stagedConfiguration.snapshot.config.agentClasses)
-        .filter(([, agentClass]) => agentClass.kind === 'executor')
-        .map(([agentClassRef, agentClass]) => {
-          if (agentClass.modelPolicy.mode !== 'fixed' || !agentClass.permissionProfileRef) {
-            throw new Error(
-              `staged legacy AgentClass requires fixed model and permission profile: ${agentClassRef}`,
-            );
-          }
-          const model = stagedConfiguration.snapshot.config.models[
-            agentClass.modelPolicy.modelRef
-          ];
-          if (!model) {
-            throw new Error(
-              `staged legacy AgentClass references missing Model: ${agentClassRef}`,
-            );
-          }
-          const binding: AuthorizedExecutorBinding = {
-            agentClassRef,
-            harnessRef: agentClass.harnessRef,
-            providerRef: model.providerRef,
-            modelRef: agentClass.modelPolicy.modelRef,
-            permissionProfileRef: agentClass.permissionProfileRef,
-            configurationRevision: stagedConfiguration.snapshot.revisionId,
-          };
-          return [agentClassRef, {
-            agentClassRef: binding.agentClassRef,
-            harnessRef: binding.harnessRef,
-            providerRef: binding.providerRef,
-            modelRef: binding.modelRef,
-            permissionProfileRef: binding.permissionProfileRef,
-            bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
-          }];
-        }),
-    ),
-  };
-  const migrationContext = createSchema30MigrationContext({
-    revisionId: stagedConfiguration.snapshot.revisionId,
-    contentHash: stagedConfiguration.snapshot.contentHash,
-    importedAt,
-    plannerBinding: plannerMigrationBinding,
-    legacyAgentClassBindings,
+  const runtimeBindings = createProductionRuntimeBindings({
+    snapshot: migratedSnapshot,
+    secretStore,
+    getSnapshot: revisionId => configurationRepository.readSnapshot(revisionId),
   });
-  const db = createDatabase(
-    resolve(metaclawDir, 'metaclaw.db'),
-    migrationContext,
-  );
+  const db = createDatabase(paths.database);
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
@@ -423,7 +372,7 @@ async function main() {
         plannerHost,
         plannerSupervisor,
         stagedConfiguration,
-        getRuntimeBinding: resolveRuntimeBinding,
+        getRuntimeBinding: runtimeBindings.getRuntimeBinding,
       });
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
@@ -462,7 +411,7 @@ async function main() {
         plannerHost,
         plannerSupervisor,
         stagedConfiguration,
-        getRuntimeBinding: resolveRuntimeBinding,
+        getRuntimeBinding: runtimeBindings.getRuntimeBinding,
       }),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({
@@ -516,7 +465,9 @@ async function main() {
           return toMutationResult(await configurationService.rollback(targetRevisionId, active.revisionId));
         },
         writeSecret: async (providerRef, apiKey) => {
-          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
+          const reference = secretStore instanceof FileSecretStore
+            ? `file-secret:anyfusion/providers/${providerRef}` as const
+            : `keychain:anyfusion/providers/${providerRef}` as const;
           await secretStore.put(reference, apiKey);
           return { apiKeyRef: reference };
         },
@@ -540,7 +491,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
-      getRuntimeBinding: resolveRuntimeBinding,
+      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     });
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
@@ -556,7 +507,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
-      getRuntimeBinding: resolveRuntimeBinding,
+      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -595,7 +546,7 @@ async function main() {
     plannerHost,
     plannerSupervisor,
     stagedConfiguration,
-    getRuntimeBinding: resolveRuntimeBinding,
+    getRuntimeBinding: runtimeBindings.getRuntimeBinding,
   });
 
   await gatewayServer.start();
@@ -615,7 +566,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
-      getRuntimeBinding: resolveRuntimeBinding,
+      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     });
     gatewaySession = session;
     session.initialize({ showDashboard: false });

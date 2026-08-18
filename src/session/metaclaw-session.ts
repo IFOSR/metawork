@@ -83,9 +83,10 @@ import {
   buildStagedLegacyConfiguration,
   type StagedLegacyConfiguration,
 } from '../configuration/staged-legacy-configuration.js';
-import type {
-  AuthorizedExecutorBinding,
-  RevisionedAgentBinding,
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+  type RevisionedAgentBinding,
 } from '../core/authorized-executor-binding.js';
 import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
 import {
@@ -153,6 +154,19 @@ export interface MetaclawSessionDeps {
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
+}
+
+type RuntimeBindingResolver = NonNullable<MetaclawSessionDeps['getRuntimeBinding']>;
+
+function resolveRuntimeBindingResolver(deps: MetaclawSessionDeps): RuntimeBindingResolver {
+  if (deps.getRuntimeBinding) return deps.getRuntimeBinding;
+  if (process.env.NODE_ENV === 'test') {
+    return binding => ({
+      revisionId: binding.configurationRevision,
+      bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+    });
+  }
+  throw new Error('runtime binding resolver is required');
 }
 
 function boundedKernelRequestText(value: string): string {
@@ -419,6 +433,7 @@ export class MetaclawSession {
   private disposePromise: Promise<void> | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
+    const getRuntimeBinding = resolveRuntimeBindingResolver(deps);
     const stagedConfiguration = deps.stagedConfiguration
       ?? buildStagedLegacyConfiguration();
     new ConfigurationRevisionRepo(deps.db).ensure({
@@ -496,12 +511,7 @@ export class MetaclawSession {
           : null
       ),
       getActiveRuntimeConfiguration: () => runtimeConfiguration,
-      getRuntimeBinding: binding => {
-        if (!deps.getRuntimeBinding) {
-          throw new Error('runtime binding resolver is required');
-        }
-        return deps.getRuntimeBinding(binding);
-      },
+      getRuntimeBinding,
     });
     this.executionRuntime = new ExecutionRuntime(executorRegistry);
     this.commandReadServices = new CommandReadServices(deps.db, this.executionRuntime, {

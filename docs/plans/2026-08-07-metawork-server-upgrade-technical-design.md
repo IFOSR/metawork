@@ -1,9 +1,9 @@
 # MetaWork Server 升级总体技术设计
 
-Status: Revised after architecture review; Conditional Go
+Status: Implemented in code; Conditional Go pending native release gates
 Design date: 2026-08-07
 Approved: 2026-08-11
-Last verified: 2026-08-11
+Last verified: 2026-08-18
 Review update: 2026-08-11
 Implementation gate: Phase 0 contracts, the complete schema 30-to-31 migration, database rollback, and release-signing trust model must be accepted before destructive migration or legacy-authority removal.
 Scope: Server 安装、配置、Planner、Kernel、Executor、Gateway 与现有冗余收敛

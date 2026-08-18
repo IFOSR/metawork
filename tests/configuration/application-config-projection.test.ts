@@ -1,0 +1,72 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildApplicationConfig,
+} from '../../src/configuration/application-config-projection.js';
+import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
+
+describe('application configuration projection', () => {
+  it('derives Session and Gateway settings from the active schema-v2 snapshot', () => {
+    const config = buildApplicationConfig(snapshot());
+
+    expect(config.executor.command).toBe('codex');
+    expect(config.orchestration.max_concurrent_attempts).toBe(2);
+    expect(config.gateway?.enabled).toBe(true);
+    expect(config.notifications?.feishu?.enabled).toBe(false);
+    expect(config.integrations?.markdown_preview).toMatchObject({
+      enabled: true,
+      host: '127.0.0.1',
+      port: 8790,
+    });
+  });
+});
+
+function snapshot(): ConfigurationSnapshot {
+  return {
+    revisionId: 'revision-application',
+    contentHash: 'sha256:application',
+    config: {
+      schemaVersion: 2,
+      providers: {},
+      models: {},
+      harnesses: {
+        'codex-cli': {
+          kind: 'executor',
+          transport: 'local-cli',
+          command: 'codex',
+          args: [],
+          driverId: 'codex-cli',
+          supportsProbe: true,
+          supportsAbort: true,
+          supportsContinuation: false,
+          enabled: true,
+        },
+      },
+      agentClasses: {
+        'codex-engineering': {
+          kind: 'executor',
+          harnessRef: 'codex-cli',
+          modelPolicy: { mode: 'fixed', modelRef: 'disabled-model' },
+          permissionProfileRef: 'workspace-engineering',
+          routingCapabilities: ['workspace-engineering'],
+          primaryUseCases: [],
+          avoidUseCases: [],
+          plannerAffordances: [],
+          skills: [],
+          mcpServers: [],
+          plugins: [],
+          generatedRuntimeRef: 'codex-engineering',
+          enabled: false,
+        },
+      },
+      permissionProfiles: {
+        'workspace-engineering': {
+          profileId: 'workspace-engineering',
+          version: 1,
+          parameters: {},
+        },
+      },
+      runtimePolicy: { maxConcurrentAttempts: 2 },
+      gateway: { enabled: true },
+    },
+  };
+}

@@ -298,7 +298,7 @@ npm run start
 Focused native installer validation:
 
 ```bash
-npm test -- tests/scripts/native-install-lib.test.ts
+npx vitest run tests/installation tests/configuration
 bash -n setup.sh
 ```
 
@@ -325,7 +325,7 @@ or runtime contracts.
 | Work Graph contract | v7 |
 | Kernel contract | v5 |
 | Completion contract | v3 |
-| Persistence | SQLite schema v30 |
+| Persistence | SQLite schema v31 |
 | Canonical Executors | Codex CLI and Pi Agent |
 
 This is not a stable production release. Installation, configuration and

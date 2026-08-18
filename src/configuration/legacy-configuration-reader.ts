@@ -29,8 +29,6 @@ export interface LegacySecretImportPlan {
   sourcePath: string;
   sourceKey: string;
   valueSha256: string;
-  /** 明文凭证，仅用于写入 SecretStore；报告/日志只写 valueSha256。 */
-  value?: string;
 }
 
 export interface LegacyRepositoryStatus {
@@ -268,7 +266,6 @@ export class LegacyConfigurationReader {
           sourcePath: parsed.source.path,
           sourceKey: 'OPENAI_API_KEY',
           valueSha256: createHash('sha256').update(apiKey).digest('hex'),
-          value: apiKey,
         });
       }
     }

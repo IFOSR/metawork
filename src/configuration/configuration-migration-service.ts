@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { dump } from 'js-yaml';
+import { readEnvFileIfExists } from '../utils/env-file.js';
 import { FileConfigurationRepository } from './file-configuration-repository.js';
 import { assertSecretReference, type SecretStore } from './secret-store.js';
 import {
@@ -39,9 +40,7 @@ export class ConfigurationMigrationService {
     }
     const revisionId = `import-${report.candidateHash.slice(0, 24)}`;
     await this.repository.initialize();
-    if (this.secretStore) {
-      await this.importSecrets(report.secretImportPlan);
-    }
+    if (this.secretStore) await this.importSecrets(report.secretImportPlan);
     await this.repository.writeRevision({
       revisionId,
       contentHash: report.candidateHash,
@@ -68,7 +67,6 @@ export class ConfigurationMigrationService {
   ): Promise<void> {
     if (!this.secretStore) return;
     for (const item of plan) {
-      if (!item.value) continue; // external-secret 无实际值
       assertSecretReference(item.reference);
       try {
         await this.secretStore.get(item.reference);
@@ -76,7 +74,20 @@ export class ConfigurationMigrationService {
       } catch {
         // 不存在，写入
       }
-      await this.secretStore.put(item.reference, item.value);
+      if (item.valueSha256 === 'external-secret') {
+        throw new Error(
+          `legacy secret requires an explicit value instead of external lookup: ${item.sourceKey}`,
+        );
+      }
+      const sourceValue = readEnvFileIfExists(item.sourcePath)[item.sourceKey];
+      if (!sourceValue) {
+        throw new Error(`legacy secret source value is missing: ${item.sourceKey}`);
+      }
+      const sourceHash = createHash('sha256').update(sourceValue).digest('hex');
+      if (sourceHash !== item.valueSha256) {
+        throw new Error(`legacy secret changed after dry-run: ${item.sourceKey}`);
+      }
+      await this.secretStore.put(item.reference, sourceValue);
     }
   }
 }

@@ -72,7 +72,7 @@
 1. `getRuntimeBinding` 改为经 `resolveRuntimePrivateConfigurationBinding` 产出 `{ revisionId, bindingFingerprint, environment }`（SecretStore 注入 ConfigurationService 构造参数）。
 2. 所有 `MetaclawSession` 构造点传入 `getRuntimeBinding`，删除 env-less fallback；解析失败 fail-closed（attempt 报 configuration failure，不回退到环境变量）。
 3. Executor 驱动移除 `readProviderEnvFile` 直读（`harness-driver.ts`、`codex-cli-driver.ts`、`pi-cli-driver.ts`），凭证只来自 `runtimeBinding.environment`；home 模板播种保留（Task 3 换模板来源）。
-4. `METACLAW_CODEX_EXECUTOR_ENV_FILE` / `METACLAW_PI_EXECUTOR_ENV_FILE` 从生产读取路径删除，仅保留在 installer/entrypoint 的导入语境；`native-install-lib.mjs` 的 launcher 渲染同步收窄。
+4. `METACLAW_CODEX_EXECUTOR_ENV_FILE` / `METACLAW_PI_EXECUTOR_ENV_FILE` 从生产读取路径删除，仅保留在 installer/entrypoint 的导入语境；权威 native launcher 渲染同步收窄。
 
 **Validation:** 单测覆盖「revision + SecretStore → attempt 环境含三元组」与「secret 缺失 → 明确 configuration failure」；`npm run smoke:anyfusion -- --scenario artifact`（native）通过，证明凭证链等价。
 
@@ -120,7 +120,7 @@
 
 ### Task 6：安装器、文档与收尾
 
-**Files:** `scripts/install-native-macos.mjs`、`scripts/native-install-lib.mjs`、`README.md`、`README.zh-CN.md`、`CONTEXT.md`、`docs/current/technical-overview*.md`、`AGENTS.md`（导航如需）
+**Files:** `scripts/install-native-macos.mjs`、`README.md`、`README.zh-CN.md`、`CONTEXT.md`、`docs/current/technical-overview*.md`、`AGENTS.md`（导航如需）
 
 **Steps:**
 

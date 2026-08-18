@@ -26,8 +26,8 @@ export function createPlanningProposalTool(
 		name: TOOL_NAME,
 		label: "Submit planning proposal",
 		description:
-			"Submit a PlanningAgentPlan v7 proposal to MetaClaw for authoritative validation and Kernel handling. The runtime injects session, turn, user input, and submission identity.",
-		promptSnippet: "Submit a PlanningAgentPlan v7 proposal to MetaClaw and read the structured result",
+			"Submit a PlanningAgentPlan v8 proposal to MetaClaw for authoritative validation and Kernel handling. The runtime injects session, turn, user input, and submission identity.",
+		promptSnippet: "Submit a PlanningAgentPlan v8 proposal to MetaClaw and read the structured result",
 		promptGuidelines: [
 			"Every completed semantic turn must call submit_planning_proposal; do not finish with assistant text alone.",
 			"Pass only the plan. Never invent sessionId, turnId, userInput, or submissionId.",
@@ -113,7 +113,7 @@ function readPlanSchema(schemaPath: string | undefined): TSchema {
 	if (!schemaPath) throw new Error("ANYFUSION_PLANNER_SCHEMA_PATH is required for submit_planning_proposal");
 	const parsed: unknown = JSON.parse(readFileSync(schemaPath, "utf8"));
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error("PlanningAgentPlan v7 schema must be a JSON object");
+		throw new Error("PlanningAgentPlan v8 schema must be a JSON object");
 	}
 	return parsed as TSchema;
 }

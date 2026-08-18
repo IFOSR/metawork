@@ -60,8 +60,8 @@ describe('ConfigurationMigrationService', () => {
       sourcePath: join(root, 'provider.env'),
       sourceKey: 'OPENAI_API_KEY',
       valueSha256: expect.any(String),
-      value: 'sk-legacy-secret',
     }]);
+    expect(JSON.stringify(first)).not.toContain('sk-legacy-secret');
   });
 
   it('fails closed on conflicting Provider URLs and competing root overrides', async () => {
@@ -147,6 +147,23 @@ describe('ConfigurationMigrationService', () => {
     const report = await service.dryRun();
     await service.stageCandidate(report);
     expect(puts).toBe(0);
+  });
+
+  it('fails closed when a legacy secret changes after dry-run', async () => {
+    const root = await fixture();
+    const repository = new FileConfigurationRepository(join(root, 'new-config'));
+    const secretStore = new FileSecretStore(join(root, 'secrets'));
+    const reader = new LegacyConfigurationReader({ roots: [root], env: {} });
+    const service = new ConfigurationMigrationService(reader, repository, secretStore);
+    const report = await service.dryRun();
+    await writeFile(join(root, 'provider.env'), [
+      'OPENAI_API_KEY="changed-after-dry-run"',
+      'OPENAI_BASE_URL=https://api.example.com/v1/',
+      '',
+    ].join('\n'));
+
+    await expect(service.stageCandidate(report))
+      .rejects.toThrow('legacy secret changed after dry-run');
   });
 });
 

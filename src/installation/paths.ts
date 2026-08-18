@@ -5,14 +5,20 @@ export interface AnyFusionPaths {
   root: string;
   appCurrent: string;
   releases: string;
+  bin: string;
+  launcher: string;
   data: string;
   configFile: string;
   secrets: string;
   database: string;
+  databaseRevisions: string;
+  backups: string;
   configurationRevisions: string;
   plannerSessions: string;
   executionWorkspaces: string;
   generatedAgentRuntime: string;
+  generatedCurrent: string;
+  upgradeJournals: string;
   attempts: string;
   logs: string;
   cache: string;
@@ -28,21 +34,32 @@ export interface AnyFusionReleasePaths {
 }
 
 export function resolveAnyFusionRoot(
-  userHome = homedir(),
-  envInstallRoot = process.env.ANYFUSION_INSTALL_ROOT,
+  userHome?: string,
+  envInstallRoot?: string,
 ): string {
-  if (envInstallRoot && envInstallRoot.trim().length > 0) {
-    return resolve(envInstallRoot);
+  const resolvedHome = userHome ?? homedir();
+  const rootOverride = arguments.length >= 2
+    ? envInstallRoot
+    : userHome === undefined
+      ? process.env.ANYFUSION_INSTALL_ROOT
+      : undefined;
+  if (rootOverride && rootOverride.trim().length > 0) {
+    return resolve(rootOverride);
   }
 
-  return resolve(userHome, '.anyfusion');
+  return resolve(resolvedHome, '.anyfusion');
 }
 
 export function resolveAnyFusionPaths(
-  userHome = homedir(),
-  envInstallRoot = process.env.ANYFUSION_INSTALL_ROOT,
+  userHome?: string,
+  envInstallRoot?: string,
 ): AnyFusionPaths {
-  const root = resolveAnyFusionRoot(userHome, envInstallRoot);
+  const resolvedHome = userHome ?? homedir();
+  const root = arguments.length >= 2
+    ? resolveAnyFusionRoot(resolvedHome, envInstallRoot)
+    : userHome === undefined
+      ? resolveAnyFusionRoot()
+      : resolveAnyFusionRoot(resolvedHome);
   const app = resolve(root, 'app');
   const config = resolve(root, 'config');
   const data = resolve(root, 'data');
@@ -53,14 +70,20 @@ export function resolveAnyFusionPaths(
     root,
     appCurrent: resolve(app, 'current'),
     releases: resolve(app, 'releases'),
+    bin: resolve(root, 'bin'),
+    launcher: resolve(resolvedHome, '.local', 'bin', 'anyfusion'),
     data,
     configFile: resolve(config, 'active', 'config.yaml'),
     secrets: resolve(config, 'secrets'),
     database: resolve(data, 'metaclaw.db'),
+    databaseRevisions: resolve(data, 'database-revisions'),
+    backups: resolve(data, 'backups'),
     configurationRevisions: resolve(config, 'revisions'),
     plannerSessions: resolve(data, 'planner-sessions'),
     executionWorkspaces: resolve(data, 'execution-workspaces'),
     generatedAgentRuntime: resolve(generated, 'agent-runtime'),
+    generatedCurrent: resolve(generated, 'current'),
+    upgradeJournals: resolve(root, 'upgrade-journals'),
     attempts: resolve(tmp, 'attempts'),
     logs: resolve(root, 'logs'),
     cache: resolve(root, 'cache'),

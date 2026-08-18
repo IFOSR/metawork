@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-Status: Implemented (core code tasks complete; release-infrastructure smoke and AnyFusion-Pi cutover deferred)
+Status: Implemented (source integration and local release gates complete; live native upgrade smoke deferred)
 Plan date: 2026-08-11
-Last revised: 2026-08-16
+Last revised: 2026-08-18
 Execution gate: Tasks that remove legacy authority or mutate SQLite may not start until Task 1 ADRs and the complete schema 30-to-31 migration/rollback contract are accepted.
 
 **Amendment (2026-08-16, commit `dc41bd9`):** AnyFusion-Pi is no longer a
@@ -28,11 +28,42 @@ core, and the frozen A2A boundary. Validated with `tsc --noEmit`, `npm run build
 release-gate workflow, and AnyFusion-Pi companion cutover remain deferred to a
 macOS release environment. See the task-by-task commit history on `main`.
 
+**Release closure (2026-08-17):** Integrated the useful release-worktree changes
+into `main` without replacing the newer Web session workspace, streaming
+InteractionTrace, restart locking, or required Gateway runtime binding. Runtime
+composition now uses the active immutable configuration revision, schema-v31
+database path, reference-compatible SecretStore, and revision-pinned private
+Executor bindings. Ordinary startup refuses schema 30; the source-native
+installer/updater owns transactional 30-to-31 migration, database backup,
+four-pointer activation, rollback journals, and the standalone
+`anyfusion-install` CLI. Bootstrap verifies a signed manifest before artifact
+download, requires the vendored Planner artifact to share the MetaWork source
+and revision, verifies both artifact hashes and sizes before extraction, and
+only then executes the installer. Planner instructions and tests now use
+PlanningAgentPlan v8 and Work Graph v7. Local validation includes TypeScript,
+build, full Vitest, Task 8, focused Planner tests, bootstrap trust fixtures, and
+read-only checks against the active local revision; live daemon replacement and
+real release-server update smoke remain operational release gates rather than
+source-integration blockers.
+
+**Final consolidation (2026-08-18):** Unified `setup.sh` and the macOS source
+installer on the transactional `anyfusion-install` path, removed the duplicate
+native launcher template, isolated every Vitest case from the live
+`~/.anyfusion` installation root, and retained production fail-closed
+RuntimeBinding resolution. Validation passed with `npm run lint`,
+`npm run build`, script syntax checks, focused Planner tests, Task 8, and the
+complete suite: 260 test files and 1079 tests passed, with 4 files and 15 tests
+skipped by design. The audited `metawork-release-closure`,
+`anyfusion-pi-server-upgrade`, external `AnyFusion-Pi`, and `.pytest_cache`
+directories were removed; the vendored Planner under `planner/AnyFusion-Pi`
+is the only Planner source checkout. The live Web service remained available
+throughout and was not restarted.
+
 **Goal:** Deliver the native MetaWork Server upgrade with one installation root, one revisioned configuration authority, generation-scoped Planner/Kernel/Runtime bindings, isolated AgentClass runtimes, controlled AnyFusion-Pi lifecycle, and a signed transactional update/rollback path.
 
 **Architecture:** Add a Configuration Control Plane at the Application Shell boundary while preserving `Planner proposes -> Kernel decides -> Runtime applies -> Executor executes`. Prepare immutable revisions and new consumers without changing the current runtime authority, then perform one explicit cutover after Planner v8, Work Graph v7, Kernel authorization, recovery, Harness Drivers, and Runtime consumers are complete. Do not introduce dual-read or dual-write compatibility paths.
 
-**Tech Stack:** Node.js 22.19+, TypeScript ESM, Zod, js-yaml, better-sqlite3, Vitest, Unix sockets/JSONL, Git worktrees, native Codex/Pi CLIs, AnyFusion-Pi companion repository.
+**Tech Stack:** Node.js 22.19+, TypeScript ESM, Zod, js-yaml, better-sqlite3, Vitest, Unix sockets/JSONL, Git worktrees, native Codex/Pi CLIs, and the vendored AnyFusion-Pi Planner.
 
 ---
 
@@ -1435,7 +1466,6 @@ git commit -m "refactor: consolidate server lifecycle and delivery"
 - Create: `src/install-cli.ts`
 - Create: `scripts/bootstrap-install.sh`
 - Modify: `scripts/install-native-macos.mjs`
-- Modify: `scripts/native-install-lib.mjs`
 - Modify: `setup.sh`
 - Modify: `tsup.config.ts`
 - Modify: `package.json`
@@ -1445,7 +1475,6 @@ git commit -m "refactor: consolidate server lifecycle and delivery"
 - Create: `tests/installation/database-backup.test.ts`
 - Create: `tests/installation/upgrade-journal.test.ts`
 - Create: `tests/installation/configuration-wizard.test.ts`
-- Modify: `tests/scripts/native-install-lib.test.ts`
 
 **Step 1: Write failing install transaction tests**
 
@@ -1508,7 +1537,7 @@ state all return to the compatible previous combination.
 **Step 4: Run tests and verify failure**
 
 ```bash
-npx vitest run tests/installation tests/scripts/native-install-lib.test.ts
+npx vitest run tests/installation tests/configuration
 ```
 
 Expected: FAIL.
@@ -1561,7 +1590,7 @@ Allow non-interactive input through a config file. Missing Executor commands cre
 **Step 8: Run validation**
 
 ```bash
-npx vitest run tests/installation tests/scripts/native-install-lib.test.ts
+npx vitest run tests/installation tests/configuration
 npm run build
 npm run lint
 ```

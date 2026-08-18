@@ -48,7 +48,22 @@ export const ReleaseManifestSchema = z.object({
   compatibility: CompatibilitySchema,
   signature: SignatureSchema,
   previousCompatibleRelease: SemverSchema.nullable(),
-}).strict();
+}).strict().superRefine((manifest, context) => {
+  if (manifest.planner.source !== manifest.metawork.source) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['planner', 'source'],
+      message: 'vendored planner source must match MetaWork source',
+    });
+  }
+  if (manifest.planner.revision !== manifest.metawork.revision) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['planner', 'revision'],
+      message: 'vendored planner revision must match MetaWork revision',
+    });
+  }
+});
 
 export type ReleaseManifest = z.infer<typeof ReleaseManifestSchema>;
 export type ReleaseManifestInput = z.input<typeof ReleaseManifestSchema>;

@@ -40,7 +40,7 @@ function baseManifest(overrides: Partial<ReleaseManifestInput> = {}): ReleaseMan
       // The planner is vendored at planner/AnyFusion-Pi; a release pins it to
       // the same metawork revision and may still ship it as a separate tarball.
       source: 'https://github.com/IFOSR/metawork.git',
-      revision: 'd62eed393f77fadf771d881b56176f680eb4da57',
+      revision: 'metawork-revision-pin',
       url: 'https://releases.example.test/planner.tgz',
       byteSize: plannerBytes.byteLength,
       sha256: sha256(plannerBytes),
@@ -81,6 +81,23 @@ describe('release manifest parsing and verification', () => {
       ...baseManifest(),
       planner: { ...baseManifest().planner, revision: '' },
     })).toThrow(/revision/i);
+  });
+
+  it('requires the Planner artifact to come from the vendored MetaWork revision', () => {
+    expect(() => parseReleaseManifest({
+      ...baseManifest(),
+      planner: {
+        ...baseManifest().planner,
+        source: 'https://github.com/IFOSR/AnyFusion-Pi.git',
+      },
+    })).toThrow(/vendored planner source/i);
+    expect(() => parseReleaseManifest({
+      ...baseManifest(),
+      planner: {
+        ...baseManifest().planner,
+        revision: 'independent-planner-revision',
+      },
+    })).toThrow(/vendored planner revision/i);
   });
 
   it('verifies trust, target platform, expiry, signature, and artifact integrity before activation', () => {

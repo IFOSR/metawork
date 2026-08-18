@@ -9,9 +9,14 @@ describe('AnyFusion installation paths', () => {
       configFile: '/Users/test/.anyfusion/config/active/config.yaml',
       configurationRevisions: '/Users/test/.anyfusion/config/revisions',
       database: '/Users/test/.anyfusion/data/metaclaw.db',
+      databaseRevisions: '/Users/test/.anyfusion/data/database-revisions',
+      backups: '/Users/test/.anyfusion/data/backups',
+      launcher: '/Users/test/.local/bin/anyfusion',
       plannerSessions: '/Users/test/.anyfusion/data/planner-sessions',
       executionWorkspaces: '/Users/test/.anyfusion/data/execution-workspaces',
       generatedAgentRuntime: '/Users/test/.anyfusion/generated/agent-runtime',
+      generatedCurrent: '/Users/test/.anyfusion/generated/current',
+      upgradeJournals: '/Users/test/.anyfusion/upgrade-journals',
       attempts: '/Users/test/.anyfusion/tmp/attempts',
     });
   });
@@ -21,6 +26,7 @@ describe('AnyFusion installation paths', () => {
       root: '/opt/anyfusion',
       data: '/opt/anyfusion/data',
       database: '/opt/anyfusion/data/metaclaw.db',
+      launcher: '/Users/test/.local/bin/anyfusion',
     });
   });
 

@@ -6,15 +6,14 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-08-03): PlanningAgentPlan v7, Work
-> Graph v6, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> and SQLite schema v30 with one transactional 29→30 migration.
+> Current implementation baseline (2026-08-17): PlanningAgentPlan v8, Work
+> Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
+> and SQLite schema v31 with one transactional 30→31 migration path.
 
-> Accepted Server upgrade transition (2026-08-11): ADR-0027 through ADR-0030
-> define the target revisioned Configuration Control Plane, generation-scoped
-> AgentClass/Model/Harness binding, future transport-only A2A seam, and signed
-> crash-recoverable native update transaction. These contracts are not current
-> runtime claims until the upgrade release gate completes.
+> ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
+> Plane, generation-scoped AgentClass/Model/Harness binding, future
+> transport-only A2A seam, and signed crash-recoverable native update
+> transaction.
 
 The transition keeps the existing ownership path:
 
@@ -61,7 +60,7 @@ flowchart LR
   Surfaces --> Session[MetaclawSession<br/>single runtime coordinator]
   Session --> MemoryFast[Explicit memory and preference fast path]
   Session --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v7<br/>intent, target, risk,<br/>v6 graph or authorization resolution]
+  Planning --> Plan[PlanningAgentPlan v8<br/>intent, target, risk,<br/>v7 graph or authorization resolution]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Loop[Durable KernelWorkflow v5<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
@@ -488,7 +487,7 @@ The default command launches the pinned AnyFusion-Pi Planner TUI:
 - Host Protocol v2 advertises `executor_result` and passively replays each unseen integrated Subtask publication associated with the current MetaClaw session. Pi persists one visible custom message containing the Executor report, warnings, integration commit, and every artifact path. The write uses `triggerTurn: false`: it enters later Planner context but never starts or steers a turn, and the Planner consults it only when the current user explicitly asks about results, output, artifacts, or status.
 - Host Protocol v2 advertises `permission_request` only to interactive clients. The Session derives open requests from applied Kernel escalation/resolution facts plus the durable request status and 24-hour validity window. Pi keeps a non-persistent sorted inbox and uses its native approve/deny Selector; Esc, expiry, and disconnect produce no authorization fact. Button resolution re-enters the existing permission workflow with `source: button`. Interactive Planner authorization proposals and `/permission` commands are unavailable, while RPC, Feishu, and Session Planner exact natural-language resolution retain their existing validation path.
 - The projection and dashboard are read-only. They cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
-- Direct replies and clarifications render from the accepted tool result. The raw v7 plan remains internal; rejected revisions may be resubmitted in the same Agent turn, and the first accepted submission terminates with MetaClaw's authoritative `displayText`.
+- Direct replies and clarifications render from the accepted tool result. The raw v8 plan remains internal; rejected revisions may be resubmitted in the same Agent turn, and the first accepted submission terminates with MetaClaw's authoritative `displayText`.
 - Bridge failure, stale data, or malformed data degrades Task projection and proposal submission explicitly; it never pretends a Task was created and does not terminate ordinary conversation.
 - Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and receives no migration feature work.
 
@@ -529,7 +528,7 @@ browse-only projections, while one live `MetaclawSession` remains active.
 Activation is rejected while a Planner turn, input submission, or Task runtime
 work is active; successful activation recreates the selected stable Planner
 session ID. Sanitized terminal turns are stored under
-`~/.anyfusion/data/web-sessions/` without changing SQLite schema 30.
+`~/.anyfusion/data/web-sessions/` without adding a separate persistence schema.
 
 Conversation embeds the detailed execution narrative before the final answer;
 Trajectory reprojects the same facts into timing bands, metrics, filters, and
@@ -616,7 +615,7 @@ and the final image keeps the MetaClaw control process and Planner process
 isolated with separate dependency trees. The Docker attempt path is
 compatibility-only and is not started by the native launcher.
 
-The Runtime image contains the MetaClaw CLI, generated v7 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+The Runtime image contains the MetaClaw CLI, generated v8 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
@@ -821,7 +820,7 @@ Whole-Task and explicit Subtask cancellation use the same durable control chain.
 
 ## Planning Agent, Control Kernel, And Work Units
 
-Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated AnyFusion-Pi runner submits a strict v7 `PlanningAgentPlan` through the native proposal tool and queries bounded read-only MCP tools when evidence is needed. Work Graph uses the v6 contract; authorization resolution remains limited to an exact pending request and does not add resource claims.
+Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated AnyFusion-Pi runner submits a strict v8 `PlanningAgentPlan` through the native proposal tool and queries bounded read-only MCP tools when evidence is needed. Work Graph uses the v7 contract and pins one configuration revision with complete Executor bindings; authorization resolution remains limited to an exact pending request and does not add resource claims.
 
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
@@ -836,7 +835,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v6 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v30 and supports only the transactional 29→30 upgrade; it does not dual-read legacy Planning, Subtask or worktree contracts. The schema includes persisted Planner proposal turns/submissions and accepted-turn locks alongside the durable inbox/application/outbox and graph revisions, resource/workspace/permission/execution-backend records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain schema-v30 compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v31 and supports only the transactional 30→31 native upgrade path; ordinary runtime startup refuses schema 30 rather than migrating it in place. The schema includes persisted Planner proposal turns/submissions and accepted-turn locks alongside the durable inbox/application/outbox and graph revisions, resource/workspace/permission/execution-backend records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 

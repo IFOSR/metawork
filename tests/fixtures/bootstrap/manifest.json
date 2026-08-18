@@ -1,0 +1,40 @@
+{
+  "manifestSchemaVersion": 1,
+  "releaseId": "1.2.0-preview.0",
+  "channel": "preview",
+  "publishedAt": "2026-08-14T00:00:00.000Z",
+  "expiresAt": "2036-08-14T00:00:00.000Z",
+  "minimumInstallerVersion": "1.2.0",
+  "minimumNodeVersion": "22.19.0",
+  "platform": "linux",
+  "arch": "x64",
+  "metawork": {
+    "source": "https://github.com/IFOSR/metawork.git",
+    "revision": "fixture-metawork-revision",
+    "url": "fixture://runtime",
+    "byteSize": 32,
+    "sha256": "de529f8a57016ebaa802277c6d28c1e8802f4e00152a554abe595b039b6230cf"
+  },
+  "planner": {
+    "source": "https://github.com/IFOSR/metawork.git",
+    "revision": "fixture-metawork-revision",
+    "url": "fixture://planner",
+    "byteSize": 32,
+    "sha256": "63721c908a5c9a52e1002e345f01097b2169cd90ae113d4e6ea8705c090b61a6"
+  },
+  "compatibility": {
+    "configurationSchema": 2,
+    "plannerHostProtocol": 2,
+    "planningPlanSchema": 8,
+    "planningPlanSchemaHash": "fixture-schema-hash",
+    "workGraphSchema": 7,
+    "kernelDecisionSchema": 6,
+    "databaseSchema": 31
+  },
+  "previousCompatibleRelease": null,
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "release-2026-preview-01",
+    "value": "8L/iGF9DqT1Kc4ujjDXjUdRL7j+zSSjoKYOT3VYila5bJftVO4mt89U76uFe7IlkzkYmxqC6bL91Okx/PlSZDQ=="
+  }
+}

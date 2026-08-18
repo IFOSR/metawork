@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { InstallerCore, type InstallerCoreDeps } from '../../src/installation/installer-core.js';
 
@@ -116,6 +119,24 @@ describe('InstallerCore', () => {
       const { deps, calls } = makeDeps(failAt ? { failAt } : {});
       await new InstallerCore(deps).install('1.2.0', 'upgrade-release', 5_000);
       expect(calls).toContain('releaseUpdateLock');
+    }
+  });
+
+  it('persists transaction progress to the configured journal path', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'anyfusion-installer-core-journal-'));
+    try {
+      const journalPath = join(root, 'upgrade-1.json');
+      const { deps } = makeDeps();
+
+      await new InstallerCore(deps, { journalPath })
+        .install('1.2.0', 'upgrade-1', 5_000);
+
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
+        records: Array<{ phase: string }>;
+      };
+      expect(journal.records.at(-1)?.phase).toBe('committed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
