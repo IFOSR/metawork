@@ -100,6 +100,7 @@ import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
+import { buildAccountRepositories, type AccountRepositories } from '../account/account-repositories.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -153,6 +154,7 @@ export interface MetaclawSessionDeps {
   stagedConfiguration?: StagedLegacyConfiguration;
   probeCommand?: ProbeCommandRunner;
   kernelServices?: AccountKernelServices;
+  accountRepositories?: AccountRepositories;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -522,20 +524,16 @@ export class MetaclawSession {
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
-    this.executionProgressService = new ExecutionProgressService(deps.db);
-    this.subtaskRepo = new SubtaskRepo(deps.db);
-    this.taskEventRepo = new TaskEventRepo(deps.db);
-    this.workGraphRevisionRepo = new WorkGraphRevisionRepo(deps.db);
-    this.effectOutboxRepo = new KernelEffectOutboxRepo(deps.db);
-    this.taskExecutionEvidenceRepo = new TaskExecutionEvidenceRepo(deps.db);
-    this.attemptReceiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
-    this.workGraphRuntimeService = new WorkGraphRuntimeService(
-      this.subtaskRepo,
-      this.taskEventRepo,
-      this.workGraphRevisionRepo,
-      this.taskExecutionEvidenceRepo,
-    );
-    this.kernelExecutorStatusRepo = new KernelExecutorStatusRepo(deps.db);
+    const repositories = deps.accountRepositories ?? buildAccountRepositories(deps.db);
+    this.executionProgressService = repositories.executionProgressService;
+    this.subtaskRepo = repositories.subtaskRepo;
+    this.taskEventRepo = repositories.taskEventRepo;
+    this.workGraphRevisionRepo = repositories.workGraphRevisionRepo;
+    this.effectOutboxRepo = repositories.effectOutboxRepo;
+    this.taskExecutionEvidenceRepo = repositories.taskExecutionEvidenceRepo;
+    this.attemptReceiptRepo = repositories.attemptReceiptRepo;
+    this.workGraphRuntimeService = repositories.workGraphRuntimeService;
+    this.kernelExecutorStatusRepo = repositories.kernelExecutorStatusRepo;
     const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     this.workUnitClaimService = new WorkUnitClaimService(
       new WorkUnitRepo(deps.db),
