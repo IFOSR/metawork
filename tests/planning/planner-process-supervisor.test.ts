@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -28,46 +28,343 @@ function fakeProcess(): FakeProcess {
   return child;
 }
 
-function completeRpcTurn(child: FakeProcess): void {
-  let input = '';
+function completeRpcTurn(
+  child: FakeProcess,
+  expectedModel?: { provider: string; modelId: string },
+): void {
+  let inputBuffer = '';
   child.stdin.on('data', chunk => {
-    input += chunk.toString();
-    if (!input.includes('\n')) return;
-    const request = JSON.parse(input.trim()) as { id: string };
-    const result = {
-      status: 'accepted',
-      turnId: 'turn-1',
-      submissionId: 'submission-1',
-      planId: 'plan-1',
-      outcome: 'proposal_validated',
-      displayText: 'validated',
-      taskId: null,
-      kernel: null,
-    };
-    for (const event of [
-      { type: 'response', command: 'prompt', success: true, id: request.id },
-      {
-        type: 'tool_execution_start',
-        toolCallId: 'tool-1',
-        toolName: 'submit_planning_proposal',
-        args: { plan: { id: 'plan-1', schemaVersion: 8 } },
-      },
-      {
-        type: 'tool_execution_end',
-        toolCallId: 'tool-1',
-        toolName: 'submit_planning_proposal',
-        result: { details: result },
-        isError: false,
-      },
-      { type: 'agent_end', messages: [] },
-    ]) {
-      child.stdout.write(`${JSON.stringify(event)}\n`);
+    inputBuffer += chunk.toString();
+    let newline = inputBuffer.indexOf('\n');
+    while (newline >= 0) {
+      const request = JSON.parse(inputBuffer.slice(0, newline)) as {
+        id: string;
+        type: string;
+      };
+      inputBuffer = inputBuffer.slice(newline + 1);
+      if (request.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: request.id,
+          data: {
+            model: {
+              provider: expectedModel?.provider ?? 'deepseek',
+              id: expectedModel?.modelId ?? 'deepseek-v4-pro',
+            },
+          },
+        })}\n`);
+      } else {
+        const result = {
+          status: 'accepted',
+          turnId: 'turn-1',
+          submissionId: 'submission-1',
+          planId: 'plan-1',
+          outcome: 'proposal_validated',
+          displayText: 'validated',
+          taskId: null,
+          kernel: null,
+        };
+        for (const event of [
+          { type: 'response', command: 'prompt', success: true, id: request.id },
+          {
+            type: 'tool_execution_start',
+            toolCallId: 'tool-1',
+            toolName: 'submit_planning_proposal',
+            args: { plan: { id: 'plan-1', schemaVersion: 8 } },
+          },
+          {
+            type: 'tool_execution_end',
+            toolCallId: 'tool-1',
+            toolName: 'submit_planning_proposal',
+            result: { details: result },
+            isError: false,
+          },
+          { type: 'agent_end', messages: [] },
+        ]) {
+          child.stdout.write(`${JSON.stringify(event)}\n`);
+        }
+      }
+      newline = inputBuffer.indexOf('\n');
     }
   });
   child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('uses the revision-pinned Planner runtime instead of a legacy environment override', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-revision-'));
+    const generatedRoot = join(root, 'generated');
+    const revisionHome = join(generatedRoot, 'revision-deepseek', 'planner');
+    const sessionDir = join(root, 'planner-sessions');
+    await mkdir(revisionHome, { recursive: true });
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+    const previousHome = process.env.METACLAW_PLANNER_HOME;
+    process.env.METACLAW_PLANNER_HOME = join(root, 'legacy-kimi-home');
+
+    try {
+      const supervisor = new PlannerProcessSupervisor({
+        command: '/release/planner',
+        generatedRuntimeRoot: generatedRoot,
+        sessionDir,
+        expectedModel: {
+          provider: 'deepseek',
+          modelId: 'deepseek-v4-pro',
+        },
+        spawn: spawn as never,
+      });
+
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-revision', source: 'gateway' },
+        configuration: {
+          revisionId: 'revision-deepseek',
+        },
+      } as never, 'kernel');
+
+      expect(spawn).toHaveBeenCalledWith(
+        '/release/planner',
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            ANYFUSION_PLANNER_HOME: revisionHome,
+          }),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.METACLAW_PLANNER_HOME;
+      else process.env.METACLAW_PLANNER_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks the restored Planner model before sending the prompt', async () => {
+    const child = fakeProcess();
+    const commands: Array<Record<string, unknown>> = [];
+    child.stdin.on('data', chunk => {
+      const command = JSON.parse(chunk.toString().trim()) as Record<string, unknown>;
+      commands.push(command);
+      if (command.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: command.id,
+          data: {
+            model: { provider: 'kimi', id: 'k3' },
+          },
+        })}\n`);
+      }
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-model-check-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-model-check-${process.pid}`),
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+      },
+      spawn: (() => child as never) as never,
+      shutdownGraceMs: 10,
+    });
+
+    const error = await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-model-check', source: 'gateway' },
+    } as never, 'kernel').catch(value => value as Error);
+
+    expect(error.message).toContain(
+      'Planner model binding mismatch: expected deepseek/deepseek-v4-pro, received kimi/k3',
+    );
+    expect(commands.map(command => command.type)).toEqual(['get_state']);
+  });
+
+  it('sends the prompt only after the restored Planner model matches', async () => {
+    const child = fakeProcess();
+    const commands: Array<Record<string, unknown>> = [];
+    child.stdin.on('data', chunk => {
+      const command = JSON.parse(chunk.toString().trim()) as Record<string, unknown>;
+      commands.push(command);
+      if (command.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: command.id,
+          data: {
+            model: { provider: 'deepseek', id: 'deepseek-v4-pro' },
+          },
+        })}\n`);
+        return;
+      }
+      if (command.type !== 'prompt') return;
+      const result = {
+        status: 'accepted',
+        turnId: 'turn-model-match',
+        submissionId: 'submission-model-match',
+        planId: 'plan-model-match',
+        outcome: 'proposal_validated',
+        displayText: 'validated',
+        taskId: null,
+        kernel: null,
+      };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: command.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-model-match',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-model-match', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-model-match',
+          toolName: 'submit_planning_proposal',
+          result: { details: result },
+          isError: false,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-model-match-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-model-match-${process.pid}`),
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+      },
+      spawn: (() => child as never) as never,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-model-match', source: 'gateway' },
+    } as never, 'kernel')).resolves.toMatchObject({
+      submittedPlan: { id: 'plan-model-match' },
+    });
+    expect(commands.map(command => command.type)).toEqual(['get_state', 'prompt']);
+  });
+
+  it('fails closed when the exact revision Planner home is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-missing-revision-'));
+    const spawn = vi.fn();
+    const previousHome = process.env.METACLAW_PLANNER_HOME;
+    process.env.METACLAW_PLANNER_HOME = join(root, 'legacy-kimi-home');
+
+    try {
+      const supervisor = new PlannerProcessSupervisor({
+        command: '/release/planner',
+        generatedRuntimeRoot: join(root, 'generated'),
+        sessionDir: join(root, 'planner-sessions'),
+        spawn: spawn as never,
+      });
+
+      await expect(supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-missing-revision', source: 'gateway' },
+        configuration: { revisionId: 'revision-deepseek' },
+      } as never, 'kernel')).rejects.toThrow(
+        'Planner runtime is unavailable for configuration revision revision-deepseek',
+      );
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      if (previousHome === undefined) delete process.env.METACLAW_PLANNER_HOME;
+      else process.env.METACLAW_PLANNER_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a request revision that differs from the supervisor binding', async () => {
+    const spawn = vi.fn();
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-revision-mismatch-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-revision-mismatch-${process.pid}`),
+      configurationRevision: 'revision-deepseek',
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+      },
+      spawn: spawn as never,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-revision-mismatch', source: 'gateway' },
+      configuration: { revisionId: 'revision-other' },
+    } as never, 'kernel')).rejects.toThrow(
+      'Planner supervisor revision mismatch: expected revision-deepseek, received revision-other',
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('requires an expected model before running a revision-bound RPC turn', async () => {
+    const spawn = vi.fn();
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-expected-model-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-expected-model-${process.pid}`),
+      spawn: spawn as never,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-expected-model', source: 'gateway' },
+      configuration: { revisionId: 'revision-deepseek' },
+    } as never, 'kernel')).rejects.toThrow(
+      'Planner expected model binding is required for configuration revision revision-deepseek',
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('injects the revision-authorized Provider environment after legacy env files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-env-'));
+    const envFile = join(root, 'provider.env');
+    await writeFile(
+      envFile,
+      'OPENAI_BASE_URL=https://api.kimi.example/v1\nOPENAI_API_KEY=legacy\n',
+    );
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(root, 'planner-home'),
+      sessionDir: join(root, 'planner-sessions'),
+      envFile,
+      runtimeEnvironment: {
+        OPENAI_BASE_URL: 'https://api.deepseek.example/v1',
+        OPENAI_API_KEY: 'deepseek-key',
+      },
+      spawn: spawn as never,
+    });
+
+    try {
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-env', source: 'gateway' },
+      } as never, 'kernel');
+
+      expect(spawn.mock.calls[0]?.[2].env).toMatchObject({
+        OPENAI_BASE_URL: 'https://api.deepseek.example/v1',
+        OPENAI_API_KEY: 'deepseek-key',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('streams safe lifecycle and tool progress while the RPC turn is still running', async () => {
     const child = fakeProcess();
     child.stdin.on('data', chunk => {
@@ -326,6 +623,10 @@ describe('PlannerProcessSupervisor', () => {
       socketPath: join(root, 'planner.sock'),
       schemaPath: '/release/planning-agent-plan-v8.schema.json',
       configurationRevision: 'revision-runtime',
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+      },
       spawn: spawn as never,
     });
 

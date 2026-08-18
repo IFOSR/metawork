@@ -4,7 +4,10 @@ import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
-import { resolveCurrentRuntimeHome } from '../configuration/agent-runtime-renderer.js';
+import {
+  resolveCurrentRuntimeHome,
+  resolveRevisionRuntimeHome,
+} from '../configuration/agent-runtime-renderer.js';
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
@@ -35,7 +38,15 @@ export interface PlannerRunner {
   ): Promise<PlannerRunResult>;
 }
 
+export interface PlannerSupervisorRuntimeBinding {
+  configurationRevision: string;
+  bindingFingerprint: string;
+  provider: string;
+  modelId: string;
+}
+
 export interface PlannerProcessController extends PlannerRunner {
+  readonly runtimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
   stop(): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
 }
@@ -54,6 +65,13 @@ export interface PlannerProcessSupervisorDeps {
   socketPath?: string;
   schemaPath?: string;
   configurationRevision?: string;
+  bindingFingerprint?: string;
+  generatedRuntimeRoot?: string;
+  runtimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  expectedModel?: {
+    provider: string;
+    modelId: string;
+  };
   shutdownGraceMs?: number;
   ensureSessionDir?: (path: string) => Promise<void>;
 }
@@ -71,13 +89,28 @@ interface TrackedPlannerProcess {
  * session are serialized so Gateway/Feishu cannot corrupt the Pi session file.
  */
 export class PlannerProcessSupervisor implements PlannerProcessController {
+  readonly runtimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
   private readonly sessionQueues = new Map<string, Promise<void>>();
   private readonly closedSessions = new Set<string>();
   private readonly activeProcesses = new Set<ChildProcess>();
   private readonly trackedProcesses = new Map<ChildProcess, TrackedPlannerProcess>();
   private stopping = false;
 
-  constructor(private readonly deps: PlannerProcessSupervisorDeps = {}) {}
+  constructor(private readonly deps: PlannerProcessSupervisorDeps = {}) {
+    if (
+      deps.configurationRevision
+      && deps.bindingFingerprint
+      && deps.expectedModel
+      && hasCompleteRuntimeEnvironment(deps.runtimeEnvironment, deps.expectedModel)
+    ) {
+      this.runtimeBinding = Object.freeze({
+        configurationRevision: deps.configurationRevision,
+        bindingFingerprint: deps.bindingFingerprint,
+        provider: deps.expectedModel.provider,
+        modelId: deps.expectedModel.modelId,
+      });
+    }
+  }
 
   async run(
     prompt: string,
@@ -224,9 +257,16 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       context.request.source,
       context.configuration?.revisionId ?? this.deps.configurationRevision,
     );
+    if (context.configuration?.revisionId && !this.deps.expectedModel) {
+      throw new Error(
+        `Planner expected model binding is required for configuration revision `
+        + context.configuration.revisionId,
+      );
+    }
     this.assertSessionOpen(context.request.sessionId);
     const sessionPath = join(launch.sessionDir, `${context.request.sessionId}.jsonl`);
     const requestId = `planner-${context.request.sessionId}-${startedAt}`;
+    const stateRequestId = `${requestId}-state`;
 
     return new Promise((resolve, reject) => {
       const proc = (this.deps.spawn ?? spawn)(launch.command, launch.args, {
@@ -239,6 +279,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let stderr = '';
       let settled = false;
       let promptAccepted = false;
+      let modelChecked = this.deps.expectedModel === undefined;
       let pendingResult: PlannerRunResult | null = null;
       let terminalProposalResult: PlannerProposalResult | null = null;
       let submittedPlan: unknown;
@@ -289,6 +330,9 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           () => reject(plannerError),
         );
       };
+      const sendPrompt = () => {
+        proc.stdin?.write(`${JSON.stringify({ id: requestId, type: 'prompt', message: prompt })}\n`);
+      };
       const acceptLine = (line: string) => {
         if (!line.trim()) return;
         let event: Record<string, unknown>;
@@ -298,6 +342,42 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           event = parsed;
         } catch (error) {
           fail(new Error(`AnyFusion Planner RPC emitted malformed JSONL: ${error instanceof Error ? error.message : String(error)}`));
+          return;
+        }
+        if (
+          event.type === 'response'
+          && event.id === stateRequestId
+          && event.command === 'get_state'
+        ) {
+          if (event.success !== true) {
+            fail(new Error(
+              `AnyFusion Planner state check failed: ${truncateText(
+                redactSensitiveText(String(event.error ?? 'unknown error')),
+                500,
+              )}`,
+            ));
+            return;
+          }
+          const model = isRecord(event.data) && isRecord(event.data.model)
+            ? event.data.model
+            : null;
+          const actualProvider = typeof model?.provider === 'string' ? model.provider : 'none';
+          const actualModelId = typeof model?.id === 'string' ? model.id : 'none';
+          const expected = this.deps.expectedModel;
+          if (
+            !expected
+            || actualProvider !== expected.provider
+            || actualModelId !== expected.modelId
+          ) {
+            fail(new Error(
+              `Planner model binding mismatch: expected `
+              + `${expected?.provider ?? 'unknown'}/${expected?.modelId ?? 'unknown'}, `
+              + `received ${actualProvider}/${actualModelId}`,
+            ));
+            return;
+          }
+          modelChecked = true;
+          sendPrompt();
           return;
         }
         if (event.type === 'response' && event.id === requestId && event.command === 'prompt') {
@@ -425,7 +505,9 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           return;
         }
         if (!promptAccepted) {
-          fail(new Error('AnyFusion Planner RPC exited before accepting the prompt'));
+          fail(new Error(modelChecked
+            ? 'AnyFusion Planner RPC exited before accepting the prompt'
+            : 'AnyFusion Planner RPC exited before reporting its model binding'));
           return;
         }
         if (!pendingResult) {
@@ -438,7 +520,11 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       });
 
       proc.stdin?.on('error', error => fail(error));
-      proc.stdin?.write(`${JSON.stringify({ id: requestId, type: 'prompt', message: prompt })}\n`);
+      if (this.deps.expectedModel) {
+        proc.stdin?.write(`${JSON.stringify({ id: stateRequestId, type: 'get_state' })}\n`);
+      } else {
+        sendPrompt();
+      }
     });
   }
 
@@ -457,13 +543,35 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     env: NodeJS.ProcessEnv;
     sessionDir: string;
   }> {
+    if (
+      this.deps.configurationRevision
+      && configurationRevision
+      && configurationRevision !== this.deps.configurationRevision
+    ) {
+      throw new Error(
+        `Planner supervisor revision mismatch: expected ${this.deps.configurationRevision}, `
+        + `received ${configurationRevision}`,
+      );
+    }
     const command = this.resolveCommand();
     const cwd = cwdOverride ?? this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? process.cwd();
     const authorizedWorkspace = process.env.ANYFUSION_PLANNER_WORKSPACE ?? realpathOrSelf(cwd);
+    const anyFusionPaths = resolveAnyFusionPaths();
+    const generatedRuntimeRoot = this.deps.generatedRuntimeRoot
+      ?? anyFusionPaths.generatedAgentRuntime;
+    const revisionPlannerHome = this.deps.plannerHome
+      ? undefined
+      : resolveRevisionRuntimeHome(generatedRuntimeRoot, configurationRevision, 'planner');
+    if (configurationRevision && !this.deps.plannerHome && !revisionPlannerHome) {
+      throw new Error(
+        `Planner runtime is unavailable for configuration revision ${configurationRevision}`,
+      );
+    }
     const plannerHome = this.deps.plannerHome
+      ?? revisionPlannerHome
       ?? process.env.METACLAW_PLANNER_HOME
       ?? process.env.ANYFUSION_PLANNER_HOME
-      ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'planner')
+      ?? resolveCurrentRuntimeHome(generatedRuntimeRoot, 'planner')
       ?? join(process.env.METACLAW_HOME ?? tmpdir(), 'anyfusion-planner');
     const sessionDir = this.deps.sessionDir
       ?? process.env.METACLAW_PLANNER_SESSION_DIR
@@ -504,6 +612,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       sessionDir,
       env: {
         ...env,
+        ...this.deps.runtimeEnvironment,
         ANYFUSION_PLANNER_MODE: '1',
         ANYFUSION_PLANNER_HOME: plannerHome,
         ANYFUSION_PLANNER_SESSION_DIR: sessionDir,
@@ -699,4 +808,23 @@ function realpathOrSelf(path: string): string {
   } catch {
     return path;
   }
+}
+
+function hasCompleteRuntimeEnvironment(
+  environment: Readonly<NodeJS.ProcessEnv> | undefined,
+  expectedModel: { provider: string; modelId: string },
+): boolean {
+  if (!environment) return false;
+  const providerKeyVariable = `OPENAI_API_KEY__${expectedModel.provider
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, '_')}`;
+  const apiKey = environment.OPENAI_API_KEY?.trim();
+  const providerApiKey = environment[providerKeyVariable]?.trim();
+  return Boolean(
+    environment.OPENAI_BASE_URL?.trim()
+    && apiKey
+    && providerApiKey
+    && apiKey === providerApiKey
+    && environment.OPENAI_MODEL === expectedModel.modelId,
+  );
 }

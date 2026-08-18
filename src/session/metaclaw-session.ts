@@ -451,12 +451,17 @@ export class MetaclawSession {
     this.workUnitClaimService = coordinatorServices.workUnitClaimService;
     this.executorRecoveryRefreshService = coordinatorServices.executorRecoveryRefreshService;
     const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
+    const plannerModel = stagedConfiguration.snapshot.config.models[this.plannerBinding.modelRef];
+    if (!plannerModel) {
+      throw new Error(`Planner Model is unavailable: ${this.plannerBinding.modelRef}`);
+    }
     const plannerServices = deps.accountPlannerServices ?? buildAccountPlannerServices({
       db: deps.db,
       memoryEngine: deps.memoryEngine,
       contextRecaller: deps.contextRecaller,
       plannerBinding: this.plannerBinding,
       plannerBindingFingerprint: this.plannerBindingFingerprint,
+      plannerModelId: plannerModel.modelId,
       plannerSupervisor: deps.plannerSupervisor,
       planningAgent: deps.planningAgent,
     });

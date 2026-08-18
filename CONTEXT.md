@@ -126,6 +126,16 @@ recovery packet, attempt and receipt in that generation remains on the same
 revision. An active configuration change affects only a new generation. Runtime
 must fail closed rather than substitute the current active revision.
 
+Planner launch follows the same revision-pinning rule. For every semantic turn,
+the Planner supervisor resolves the generated Planner home for the request's
+exact `configurationRevision` before considering legacy environment overrides,
+injects the authorized Provider credential from SecretStore, and queries the Pi
+RPC state before sending the user prompt. If the restored provider/model differs
+from the authorized Planner binding, the turn fails closed and no model request
+is sent. Persisted Planner sessions remain in the account/runtime data path and
+may survive configuration changes; session history is not allowed to restore an
+unauthorized model.
+
 The authorized execution identity is the complete AgentClass/Harness/Model/
 Permission Profile/revision tuple plus generation, Subtask and attempt kind.
 Provider, Model, AgentClass and binding health are dynamic Kernel-owned facts

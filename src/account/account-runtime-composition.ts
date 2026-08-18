@@ -103,12 +103,19 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceRepository: workspaceServices.workspaceRepository,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
   });
+  const plannerModel = deps.stagedConfiguration.snapshot.config.models[
+    deps.plannerBinding.modelRef
+  ];
+  if (!plannerModel) {
+    throw new Error(`Planner Model is unavailable: ${deps.plannerBinding.modelRef}`);
+  }
   const plannerServices = buildAccountPlannerServices({
     db: deps.db,
     memoryEngine: deps.memoryEngine,
     contextRecaller: deps.contextRecaller,
     plannerBinding: deps.plannerBinding,
     plannerBindingFingerprint: deps.plannerBindingFingerprint,
+    plannerModelId: plannerModel.modelId,
     plannerSupervisor: deps.plannerSupervisor,
     planningAgent: deps.planningAgent,
   });

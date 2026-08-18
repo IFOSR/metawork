@@ -3,6 +3,7 @@
 > 状态：已实施
 > 计划日期：2026-08-16
 > 完成日期：2026-08-16
+> 可靠性收口：2026-08-18，Planner 按请求 revision 解析 generated home，由 SecretStore 注入凭证，并在发送 prompt 前校验 Pi 实际 provider/model；修复 legacy launcher 造成的双权威。
 > 关联：ADR-0027（Configuration Control Plane）、ADR-0020（模块归属）、ADR-0018（路由契约）、CONTEXT.md、[Web 交互界面设计](2026-08-15-anyfusion-web-interaction-interface-design.md) §8.2、[Server 升级实现计划](2026-08-11-metawork-server-upgrade-implementation-plan.md)
 > 用途：让用户在设置界面（与 admin CLI）配置多个 OpenAI 兼容 Provider 和多个模型，并把模型绑定到 AgentClass。Harness 配置本期明确不开放（执行边界保持代码所有）。
 
@@ -47,6 +48,7 @@
 - **生成配置按 revision 分目录**：`generated/agent-runtime/<revisionId>/` 不可变；激活写新目录，回滚切回旧目录。generation 钉 revision 的既有语义不变（CONTEXT.md：激活只影响新 generation，运行中任务 fail-closed 不替换）。
 - **生效时机**：Executor 绑定对新 attempt 立即按 revision 生效；Planner 模型切换对**新 Planner session** 生效（planner 进程在 session 启动时读 models.json/settings.json，长会话不热切换）；UI 沿用现有 `runningRevisionId` / `restartRequired` 语义提示。
 - **env 文件降级**：`provider.env` / `METACLAW_*_ENV_FILE` 不再是运行时权威，仅作为安装期/容器的导入源（legacy import 读它们建首个 revision 并落 SecretStore）。驱动的 env-file 直读逻辑（`readProviderEnvFile`）在 Task 2 完成后移除，避免双权威。
+- **Planner 进程边界校验**：每次 semantic turn 按请求的 `configurationRevision` 选择 generated Planner home，SecretStore 环境覆盖 legacy env-file；发送用户 prompt 前先调用 Pi RPC `get_state`，实际 provider/model 与授权绑定不一致时 fail-closed。
 
 ## 4. 任务分解（每步独立可提交）
 
@@ -167,6 +169,15 @@
 - `npm run lint` / `npm run build` 通过；`web/` 内 `tsc --noEmit` + `vite build` 通过。
 - `tests/configuration/`（含 renderer、secret store、migration、projections）+ `tests/management/`（含 secrets 端点）+ `tests/executor/` 全部通过。
 - **live smoke（Kimi，2026-08-16 补做）**：把本机 Kimi（`https://api.kimi.com/coding/v1`，模型 `k3`）作为 provider 配置，`python-hello` 场景 `--executor codex` **通过**——Planner 规划、Kernel 授权、codex 创建并运行 `hello.py` 全链路成功。这验证了 import → SecretStore 落库（key 0o600）→ generated 渲染（k3 + Kimi baseUrl）→ runtime binding 注入凭证的完整闭环。
+
+2026-08-18 可靠性收口：
+
+- Planner supervisor 按每次请求的精确 `configurationRevision` 选择 generated home；目录缺失或请求 revision 与 Supervisor 绑定不一致时在启动 Pi 前 fail-closed，不再回退 legacy/current 配置。
+- 生产组合从 SecretStore 解析 Planner Provider 凭证并覆盖 legacy env-file；Pi RPC 在发送用户 prompt 前执行 `get_state`，实际 provider/model 与授权绑定不一致时终止回合。
+- AccountRuntime 生产装配只接受携带匹配 revision、Planner binding fingerprint 和 expected model 的 Supervisor，防止默认未绑定实例绕过握手。
+- native launcher 模板及本机受管 `anyfusion`/`metawork` launcher 移除静态 Planner home/env-file，只保留共享 `~/.anyfusion/data/planner-sessions`。
+- 验证：`npm run lint`、`npm run build`、28 个相关测试文件共 140 个测试通过；最终重启后的真实 Web 会话 `sess_web_5oiZPXy1D-` 完成，Pi JSONL 仅记录 `deepseek/deepseek-v4-pro`，`model_error` 为 0。
+- 收口提交：待代码提交后回填。
 
 未验证（挂起）：
 

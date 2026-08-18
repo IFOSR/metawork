@@ -31,6 +31,7 @@ export function buildAccountPlannerServices(deps: {
   contextRecaller: ContextRecaller;
   plannerBinding: RevisionedAgentBinding;
   plannerBindingFingerprint: string;
+  plannerModelId: string;
   plannerSupervisor?: PlannerProcessController;
   planningAgent?: PlanningAgent;
 }): AccountPlannerServices {
@@ -39,6 +40,23 @@ export function buildAccountPlannerServices(deps: {
     contextRecaller: deps.contextRecaller,
   });
 
+  if (!deps.planningAgent && process.env.NODE_ENV !== 'test') {
+    const runtimeBinding = deps.plannerSupervisor?.runtimeBinding;
+    if (!runtimeBinding) {
+      throw new Error('revision-bound Planner supervisor is required');
+    }
+    if (
+      runtimeBinding.configurationRevision !== deps.plannerBinding.configurationRevision
+      || runtimeBinding.bindingFingerprint !== deps.plannerBindingFingerprint
+      || runtimeBinding.provider !== deps.plannerBinding.providerRef
+      || runtimeBinding.modelId !== deps.plannerModelId
+    ) {
+      throw new Error(
+        `Planner supervisor binding mismatch for revision `
+        + deps.plannerBinding.configurationRevision,
+      );
+    }
+  }
   const plannerSupervisor = deps.plannerSupervisor
     ?? (deps.planningAgent ? null : getDefaultPlannerProcessSupervisor());
 

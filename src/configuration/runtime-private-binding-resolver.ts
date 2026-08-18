@@ -1,6 +1,7 @@
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
+  type RevisionedAgentBinding,
 } from '../core/authorized-executor-binding.js';
 import {
   assertSecretReference,
@@ -15,6 +16,12 @@ import type {
 export interface RuntimePrivateBindingResolverInput {
   configuration: RuntimeConfigurationView;
   authorizedBinding: AuthorizedExecutorBinding;
+  secretStore: SecretStore;
+}
+
+export interface PlannerRuntimeEnvironmentResolverInput {
+  configuration: RuntimeConfigurationView;
+  plannerBinding: RevisionedAgentBinding;
   secretStore: SecretStore;
 }
 
@@ -71,43 +78,11 @@ export async function resolveRuntimePrivateConfigurationBinding(
     );
   }
 
-  const provider = configuration.providers[authorizedBinding.providerRef];
-  if (!provider || !provider.enabled) {
-    throw new Error(`Provider is not enabled: ${authorizedBinding.providerRef}`);
-  }
-  if (provider.protocol !== 'openai-compatible') {
-    throw new Error(
-      `Provider protocol is not supported for runtime binding: ${provider.protocol}`,
-    );
-  }
-  if (!provider.baseUrl.trim()) {
-    throw new Error(`Provider base URL is empty: ${authorizedBinding.providerRef}`);
-  }
-
-  assertSecretReference(provider.apiKeyRef);
-  let apiKey: string;
-  try {
-    apiKey = await secretStore.get(provider.apiKeyRef);
-  } catch {
-    throw new Error(
-      `Provider credential could not be resolved: ${authorizedBinding.providerRef}`,
-    );
-  }
-  if (!apiKey.trim()) {
-    throw new Error(`Provider credential is empty: ${authorizedBinding.providerRef}`);
-  }
-
-  // 与 AgentRuntimeRenderer 的多 provider 命名约定保持一致：单 provider 时
-  // codex/pi 配置用 `OPENAI_API_KEY`，多 provider 时用 `OPENAI_API_KEY__<REF>`。
-  // 两个变量都注入，兼容单/多 provider 以及历史配置模板。
-  const providerKeyVariable = `OPENAI_API_KEY__${authorizedBinding.providerRef
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]/g, '_')}`;
-  const environment = Object.freeze({
-    OPENAI_BASE_URL: provider.baseUrl,
-    OPENAI_API_KEY: apiKey,
-    [providerKeyVariable]: apiKey,
-    OPENAI_MODEL: model.modelId,
+  const environment = await resolveProviderEnvironment({
+    configuration,
+    providerRef: authorizedBinding.providerRef,
+    modelId: model.modelId,
+    secretStore,
   });
   return Object.freeze({
     revisionId: configuration.revisionId,
@@ -116,14 +91,54 @@ export async function resolveRuntimePrivateConfigurationBinding(
   });
 }
 
+export async function resolvePlannerRuntimeEnvironment(
+  input: PlannerRuntimeEnvironmentResolverInput,
+): Promise<Readonly<Record<string, string>>> {
+  const { configuration, plannerBinding, secretStore } = input;
+  requireRevision(configuration, plannerBinding);
+  const agentClass = configuration.agentClasses[plannerBinding.agentClassRef];
+  if (!agentClass || !agentClass.enabled || agentClass.kind !== 'planner') {
+    throw new Error(`Planner AgentClass is not enabled: ${plannerBinding.agentClassRef}`);
+  }
+  if (agentClass.harnessRef !== plannerBinding.harnessRef) {
+    throw new Error(
+      `Harness binding mismatch for Planner AgentClass ${plannerBinding.agentClassRef}: `
+      + `expected ${agentClass.harnessRef}, received ${plannerBinding.harnessRef}`,
+    );
+  }
+  const harness = configuration.harnesses[plannerBinding.harnessRef];
+  if (!harness || !harness.enabled || harness.kind !== 'planner') {
+    throw new Error(`Planner Harness is not enabled: ${plannerBinding.harnessRef}`);
+  }
+  const model = configuration.models[plannerBinding.modelRef];
+  if (!model || !model.enabled || !modelPolicyAllows(agentClass, plannerBinding.modelRef)) {
+    throw new Error(`Planner Model binding is not enabled: ${plannerBinding.modelRef}`);
+  }
+  if (model.providerRef !== plannerBinding.providerRef) {
+    throw new Error(
+      `Provider binding mismatch for Planner Model ${plannerBinding.modelRef}: `
+      + `expected ${model.providerRef}, received ${plannerBinding.providerRef}`,
+    );
+  }
+  if (plannerBinding.permissionProfileRef !== null) {
+    throw new Error('Planner binding must not include an Executor Permission Profile');
+  }
+  return resolveProviderEnvironment({
+    configuration,
+    providerRef: plannerBinding.providerRef,
+    modelId: model.modelId,
+    secretStore,
+  });
+}
+
 function requireRevision(
   configuration: RuntimeConfigurationView,
-  authorizedBinding: AuthorizedExecutorBinding,
+  binding: RevisionedAgentBinding,
 ): void {
-  if (configuration.revisionId !== authorizedBinding.configurationRevision) {
+  if (configuration.revisionId !== binding.configurationRevision) {
     throw new Error(
       `Configuration revision mismatch: expected ${configuration.revisionId}, `
-      + `received ${authorizedBinding.configurationRevision}`,
+      + `received ${binding.configurationRevision}`,
     );
   }
 }
@@ -135,4 +150,45 @@ function modelPolicyAllows(
   return agentClass.modelPolicy.mode === 'fixed'
     ? agentClass.modelPolicy.modelRef === modelRef
     : agentClass.modelPolicy.allowedModelRefs.includes(modelRef);
+}
+
+async function resolveProviderEnvironment(input: {
+  configuration: RuntimeConfigurationView;
+  providerRef: string;
+  modelId: string;
+  secretStore: SecretStore;
+}): Promise<Readonly<Record<string, string>>> {
+  const provider = input.configuration.providers[input.providerRef];
+  if (!provider || !provider.enabled) {
+    throw new Error(`Provider is not enabled: ${input.providerRef}`);
+  }
+  if (provider.protocol !== 'openai-compatible') {
+    throw new Error(
+      `Provider protocol is not supported for runtime binding: ${provider.protocol}`,
+    );
+  }
+  if (!provider.baseUrl.trim()) {
+    throw new Error(`Provider base URL is empty: ${input.providerRef}`);
+  }
+
+  assertSecretReference(provider.apiKeyRef);
+  let apiKey: string;
+  try {
+    apiKey = await input.secretStore.get(provider.apiKeyRef);
+  } catch {
+    throw new Error(`Provider credential could not be resolved: ${input.providerRef}`);
+  }
+  if (!apiKey.trim()) {
+    throw new Error(`Provider credential is empty: ${input.providerRef}`);
+  }
+
+  const providerKeyVariable = `OPENAI_API_KEY__${input.providerRef
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, '_')}`;
+  return Object.freeze({
+    OPENAI_BASE_URL: provider.baseUrl,
+    OPENAI_API_KEY: apiKey,
+    [providerKeyVariable]: apiKey,
+    OPENAI_MODEL: input.modelId,
+  });
 }

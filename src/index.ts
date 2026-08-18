@@ -25,6 +25,7 @@ import {
   createProductionConfigurationProbe,
   createProductionRuntimeBindings,
   createProductionSecretStore,
+  resolvePlannerRuntimeEnvironment,
 } from './configuration/index.js';
 import { prepareProductionSecretStore } from './configuration/production-secret-store.js';
 import { FileSecretStore } from './configuration/file-secret-store.js';
@@ -326,6 +327,19 @@ async function main() {
     secretStore,
     getSnapshot: revisionId => configurationRepository.readSnapshot(revisionId),
   });
+  const plannerModel = migratedSnapshot.config.models[
+    stagedConfiguration.plannerBinding.modelRef
+  ];
+  if (!plannerModel) {
+    throw new Error(
+      `Planner Model is unavailable: ${stagedConfiguration.plannerBinding.modelRef}`,
+    );
+  }
+  const plannerRuntimeEnvironment = await resolvePlannerRuntimeEnvironment({
+    configuration: runtimeBindings.runtimeConfiguration,
+    plannerBinding: stagedConfiguration.plannerBinding,
+    secretStore,
+  });
   const db = createDatabase(paths.database);
 
   // 4. 初始化 Repos
@@ -355,6 +369,14 @@ async function main() {
   const plannerSupervisor = new PlannerProcessSupervisor({
     socketPath: plannerHostSocketPath,
     configurationRevision: stagedConfiguration.snapshot.revisionId,
+    bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+    generatedRuntimeRoot: paths.generatedAgentRuntime,
+    sessionDir: paths.plannerSessions,
+    runtimeEnvironment: plannerRuntimeEnvironment,
+    expectedModel: {
+      provider: stagedConfiguration.plannerBinding.providerRef,
+      modelId: plannerModel.modelId,
+    },
   });
   await plannerHost.start();
 

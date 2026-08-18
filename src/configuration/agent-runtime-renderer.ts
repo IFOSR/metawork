@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './types.js';
@@ -183,4 +183,14 @@ export function resolveCurrentRuntimeHome(generatedRoot: string, subdir: string)
   } catch {
     return undefined;
   }
+}
+
+export function resolveRevisionRuntimeHome(
+  generatedRoot: string,
+  revisionId: string | undefined,
+  subdir: string,
+): string | undefined {
+  if (!revisionId) return undefined;
+  const path = join(generatedRoot, revisionId, subdir);
+  return existsSync(path) ? path : undefined;
 }

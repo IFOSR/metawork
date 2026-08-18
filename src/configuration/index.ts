@@ -70,6 +70,7 @@ export {
   LegacyConfigurationReader,
 } from './legacy-configuration-reader.js';
 export {
+  resolvePlannerRuntimeEnvironment,
   resolveRuntimePrivateConfigurationBinding,
 } from './runtime-private-binding-resolver.js';
 export {
@@ -80,5 +81,6 @@ export { createProductionSecretStore } from './production-secret-store.js';
 export { createProductionConfigurationProbe } from './production-configuration-probe.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
+  PlannerRuntimeEnvironmentResolverInput,
   RuntimePrivateBindingResolverInput,
 } from './runtime-private-binding-resolver.js';
