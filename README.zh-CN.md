@@ -24,62 +24,46 @@ MetaWork 将自然语言目标转化为持久化任务，这些任务可以跨�
 
 ## 为什么用 MetaWork
 
-大多数 AI 智能体会话都是短暂的：回答完当前回合就结束，没有持久状态、没有
-治理、也拿不出可验证的成果。MetaWork 把智能体工作提升到「任务操作系统」
-的高度。
+面向所有智能体工作的统一入口。你运行的 Agent 越多，越需要一个唯一入口：
+你只需描述目标，MetaWork 在后台匹配最合适的 Agent、基座模型与 Harness。
 
-### 持久化任务，而非一次性的对话回合
+### 一个入口，而非一份 Agent 清单
 
-- Task 是一等对象，拥有显式状态机——`created`、`ready`、`running`、
-  `parked`、`blocked`、`done`、`archived`、`cancelled`。
-- 工作跨进程重启存活，并带着上下文恢复，而不是从头再来。
-- 任务可搜索（本地 SQLite 全文索引），可以在缺少资源或等待人工授权时暂停，
-  之后从断点继续。
+- **用户不该管理 Agent 清单。** 当每个 Agent 都有独立入口，你既难判断该用
+  哪个，又会在它们之间反复迁移上下文。
+- **固定组合不是最优解。** 任务特征变化后，最合适的模型、Harness、成本与
+  时延组合也会随之变化。
+- **能力扩展不应增加入口。** 垂类 Agent 应作为后台能力挂载，而不是继续
+  增加需要学习的产品界面。
 
-### 治理与执行分离
+### 任务级路由，而非模型排行榜
 
-每一次战略状态变更都经过同一条确定性控制链：
+同一个任务，模型 × Harness 的组合会同时改变质量、成本、上下文与完成时间。
+MetaWork 不按模型排行榜做静态选择，而是为当前任务约束寻找更优的完整组合。
+
+- 大多数真实工程任务属于低到中等复杂度，固定调用最强组合是系统性浪费。
+- 单 Token 更便宜不等于任务成本更低：Harness 决定上下文被重复投喂的量，
+  这才是真实任务成本的大头。
+- 路由对完整组合评分——任务画像 × 模型层级 × Harness 画像——得到任务级
+  Pareto 最优，优化的是任务成本与最终交付质量，而非单 Token 价格或单一
+  模型分数。
+
+### 持久化、可治理的任务控制平面
+
+这套路由机制以 MetaWork 开源落地——不是又一个聊天窗口，而是一个本地、
+可持久化、可恢复、可治理的 AI 任务控制平面。
 
 ```text
-Planner proposes → ControlKernel decides → Runtime applies → Executor performs one authorized attempt
+Plan → Govern → Schedule → Route → Execute → Verify
 ```
 
-- Planner 只提语义提案；它从不调度、授权，也不写存储。
-- ControlKernel 是唯一的战略决策入口，把每一个决策写入 append-only、不可变
-  的账本。
-- 不存在第二套语义 Router，没有隐藏重试循环，也没有静默回退路径。
-
-### 隔离且真实的执行
-
-- Planner 与每个 Executor 以独立进程运行。
-- 每次 attempt 拥有一个私有的 `(task, generation, subtask)` Git worktree，
-  在重试和重启后依然保留。
-- Codex 与 Pi 复用你本机已有的 CLI，且不共享它们的个人 home。worktree 后端
-  是默认受信任的原生路径。
-
-### 验证与确定性发布
-
-- Completion Protocol v3 要求结构化证据，或一次受控失败。
-- Runtime 为每次 attempt 计算唯一的权威 workspace delta。
-- 成功的 attempt 生成不可变 receipt 与候选 Git commit，并按确定性顺序集成；
-  合并冲突走有界、由 Kernel 授权的修复链路。
-- 结果、产物和 handoff 只有在发布成功后才对外可见。
-
-### 本地优先、可自托管
-
-- macOS 原生安装，无需 Docker。
-- 密钥保存在 macOS keychain；运行状态保存在本地 SQLite 数据库。
-
-### 修订化配置、签名升级
-
-- 静态配置是不可变的、按 revision 作用域管理；每一代 Work Graph 绑定唯一的
-  一个 revision。
-- 升级是签名、崩溃可恢复的事务：固定信任根、经校验的备份与迁移、候选健康
-  检查、原子指针切换与回滚。
-
-### 多种接入面
-
-- 原生 TUI（默认）、浏览器 UI、飞书交付，以及本地 Gateway。
+- **持久化任务** —— 任务不会随会话结束而消失，跨重启保留持久状态
+  （`ready`、`running`、`parked`、`blocked`、`done`）。
+- **工作图** —— 复杂目标被拆成依赖感知的 DAG，调度器只运行真正就绪的工作。
+- **可治理执行** —— Planner 提出变化，Control Kernel 决定是否执行，校验
+  状态、策略、预算与授权边界。
+- **可扩展执行器** —— Codex、Pi、Hermes、自定义脚本与垂类 Agent 都挂载到
+  同一个控制平面。
 
 ## 安装方式
 

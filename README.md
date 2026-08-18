@@ -24,70 +24,53 @@ verified, auditable results — not just a chat reply.
 
 ## Why MetaWork
 
-Most AI agent sessions are ephemeral: they answer the current turn and end.
-There is no durable state, no governance, and no verifiable artifact to show
-for the work. MetaWork raises agent work to the level of a task operating
-system.
+One interface for all your agent work. The more agents you run, the more you
+need a single entry point: you describe the goal, and MetaWork matches the
+right Agent, model, and Harness behind the scenes.
 
-### Durable tasks, not ephemeral turns
+### One interface, not an agent list
 
-- Tasks are first-class objects with an explicit state machine — `created`,
-  `ready`, `running`, `parked`, `blocked`, `done`, `archived`, `cancelled`.
-- Work survives process restarts and resumes with context, instead of starting
-  over from scratch.
-- Tasks are searchable (local SQLite full-text index) and can pause for a
-  missing resource or user authorization, then continue where they left off.
+- **Users shouldn't manage an agent list.** When every agent has its own entry
+  point, you can't tell which one to use, and context is lost moving between
+  them.
+- **A fixed combination isn't optimal.** As task characteristics change, so
+  does the best model, Harness, cost, and latency combination.
+- **New capabilities shouldn't add new entry points.** Vertical agents should
+  mount as background capabilities, not as more UIs to learn.
 
-### Governed execution, separated from planning
+### Task-level routing, not model leaderboards
 
-Every strategic state change flows through one deterministic control loop:
+The same task changes quality, cost, context, and completion time depending on
+the model × Harness combination. MetaWork does not statically pick the
+strongest model; it finds the better complete combination for the current
+task's constraints.
+
+- Most real engineering tasks are low-to-medium complexity; always calling the
+  strongest combination is systematic waste.
+- Cheaper per token is not cheaper per task: the Harness changes how much
+  context is re-fed, which dominates real task cost.
+- Routing scores the full combination — task profile × model tier × Harness
+  profile — into a task-level Pareto-optimal choice, optimizing task cost and
+  final delivery quality rather than single-token price or a single model score.
+
+### A durable, governed task control plane
+
+That routing mechanism ships as open source in MetaWork — not another chat
+window, but a local, durable, recoverable, governed AI task control plane.
 
 ```text
-Planner proposes → ControlKernel decides → Runtime applies → Executor performs one authorized attempt
+Plan → Govern → Schedule → Route → Execute → Verify
 ```
 
-- The Planner proposes semantics; it never schedules, authorizes, or mutates
-  storage.
-- The ControlKernel is the only strategic decision seam, writing every decision
-  to an append-only, immutable ledger.
-- There is no second semantic router, no hidden retry loop, and no silent
-  fallback path.
-
-### Isolated, real execution
-
-- The Planner and each Executor run as separate processes.
-- Every attempt owns a private `(task, generation, subtask)` Git worktree that
-  persists across retries and restarts.
-- Codex and Pi run through your existing local CLIs, without sharing their
-  personal homes. The worktree backend is the default trusted native path.
-
-### Verified and deterministically published
-
-- Completion Protocol v3 requires structured evidence or a controlled failure.
-- The runtime computes one authoritative workspace delta per attempt.
-- Successful attempts produce immutable receipts and candidate Git commits,
-  integrated in deterministic order. Merge conflicts use bounded,
-  Kernel-authorized repair.
-- Results, artifacts, and handoffs become visible only after publication
-  succeeds.
-
-### Local-first and self-hosted
-
-- Native macOS installation with no Docker requirement.
-- Secrets stay in the macOS keychain; runtime state lives in a local SQLite
-  database.
-
-### Revisioned configuration, signed upgrades
-
-- Static configuration is immutable and revision-scoped; each Work Graph
-  generation pins exactly one revision.
-- Upgrades are signed, crash-recoverable transactions: a pinned trust root,
-  verified backup and migration, a candidate health check, and atomic pointer
-  activation with rollback.
-
-### Multiple surfaces
-
-- Native TUI (default), browser UI, Feishu delivery, and a local Gateway.
+- **Durable tasks** — tasks don't vanish when a session ends; they carry
+  persistent state (`ready`, `running`, `parked`, `blocked`, `done`) across
+  restarts.
+- **Work Graph** — complex goals become a dependency-aware DAG; the scheduler
+  runs only what is actually ready.
+- **Governed execution** — the Planner proposes changes; the Control Kernel
+  decides, validating state, policy, budget, and authorization.
+- **Extensible executors** — Codex, Pi, Hermes, custom scripts, and vertical
+  agents all mount onto the same control plane.
 
 ## Installation
 
