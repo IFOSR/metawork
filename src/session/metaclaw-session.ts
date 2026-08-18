@@ -165,6 +165,7 @@ export interface MetaclawSessionDeps {
   plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
   probeCommand?: ProbeCommandRunner;
+  kernelCoordinator?: AccountKernelCoordinator;
   kernelServices?: AccountKernelServices;
   accountRepositories?: AccountRepositories;
   accountWorkspaceServices?: AccountWorkspaceServices;
@@ -472,7 +473,7 @@ export class MetaclawSession {
     this.controlKernel = kernelServices.controlKernel;
     this.kernelDecisionRepo = kernelServices.kernelDecisionRepo;
     this.kernelWorkflowRepo = kernelServices.kernelWorkflowRepo;
-    this.kernelCoordinator = new AccountKernelCoordinator({
+    this.kernelCoordinator = deps.kernelCoordinator ?? new AccountKernelCoordinator({
       kernel: this.controlKernel,
       store: this.kernelWorkflowRepo,
       clock: { now: () => new Date().toISOString() },
