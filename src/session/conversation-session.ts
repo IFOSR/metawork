@@ -103,12 +103,16 @@ export class ConversationSession {
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
   private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
+  private sessionKernelRuntime: SessionKernelRuntime | null = null;
+  private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
   private readonly inputController: InputController;
   private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
   private attachedClients = 0;
 
   constructor(private readonly deps: ConversationSessionDeps) {
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
+    this.sessionKernelRuntime = deps.sessionKernelRuntime ?? null;
+    this.taskExecutionApplicationService = deps.taskExecutionApplicationService ?? null;
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
       handleCommand: input => this.handleCommand(input),
@@ -229,6 +233,14 @@ export class ConversationSession {
     this.kernelExecutionRuntime = runtime;
   }
 
+  bindSessionKernelRuntime(runtime: SessionKernelRuntime): void {
+    this.sessionKernelRuntime = runtime;
+  }
+
+  bindTaskExecutionApplicationService(service: SessionTaskExecutionApplicationService): void {
+    this.taskExecutionApplicationService = service;
+  }
+
   recordKernelDecisionTrace(decision: KernelDecision): void {
     this.deps.interactionTraceStream?.append({
       phase: 'kernel',
@@ -320,7 +332,7 @@ export class ConversationSession {
     context: PlanningContext,
   ): Promise<PlannerProposalResult> {
     const port = this.deps.runtimePort;
-    const sessionKernelRuntime = this.deps.sessionKernelRuntime;
+    const sessionKernelRuntime = this.sessionKernelRuntime;
     if (!sessionKernelRuntime) {
       if (this.deps.executeUserInput) {
         await this.deps.executeUserInput(userInput);
@@ -548,7 +560,7 @@ export class ConversationSession {
     },
   ): Promise<void> {
     const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
-    const taskExecutionApplicationService = this.deps.taskExecutionApplicationService;
+    const taskExecutionApplicationService = this.taskExecutionApplicationService;
     if (!taskRuntimeService || !taskExecutionApplicationService) return;
     const resumedTask = taskRuntimeService.findTask(taskId);
     if (!resumedTask) return;
@@ -902,7 +914,7 @@ export class ConversationSession {
   }
 
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void {
-    this.deps.taskExecutionApplicationService?.prepareTaskExecution(taskId, request);
+    this.taskExecutionApplicationService?.prepareTaskExecution(taskId, request);
   }
 
   /** 装配账户级 Kernel 执行服务所需的三个 callbacks 对象（ADR-0031）。 */
