@@ -14,10 +14,10 @@ describe('production composition root', () => {
     expect(index).not.toContain('loadConfig(');
     expect(index).not.toContain('createSchema30MigrationContext');
     expect(index).toContain('getRuntimeBinding: runtimeBindings.getRuntimeBinding');
-    expect(gateway).toContain(
-      'getRuntimeBinding: NonNullable<MetaclawSessionDeps[\'getRuntimeBinding\']>',
-    );
-    expect(gateway).toContain('getRuntimeBinding: this.deps.getRuntimeBinding');
+    // gateway/server.ts 已改为 per-Conversation：持有 ConversationRegistry + 工厂。
+    expect(gateway).toContain('conversationRegistry');
+    expect(gateway).toContain('conversationFactory');
+    expect(gateway).toContain('getOrOpen');
   });
 
   it('routes native transactions through the shared installer and Server coordinator', () => {
