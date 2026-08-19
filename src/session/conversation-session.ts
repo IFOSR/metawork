@@ -34,6 +34,14 @@ import type Database from 'better-sqlite3';
 import type { KernelConfigurationView } from '../configuration/index.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { generateInteractionId } from '../utils/id.js';
+import { contextRefKey } from '../work-graph/index.js';
+import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import type {
+  KernelExecutionRuntimeCallbacks,
+  TaskExecutionApplicationCallbacks,
+  SessionKernelRuntimeCallbacks,
+} from '../account/account-kernel-execution-services.js';
 import type { SessionKernelRuntime } from './session-kernel-runtime.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
@@ -356,8 +364,8 @@ export class ConversationSession {
     return { status: 'accepted' } as PlannerProposalResult;
   }
 
-  clearRunningExecutorName(_taskId: string, attemptId: string): void {
-    this.runningExecutorsByAttempt.delete(attemptId);
+  clearRunningExecutorName(_taskId: string, attemptId?: string): void {
+    if (attemptId) this.runningExecutorsByAttempt.delete(attemptId);
   }
 
   startBackgroundExecution(_taskId: string, launch: () => Promise<void>): void {
@@ -703,6 +711,244 @@ export class ConversationSession {
     });
     await workflow.submit(event);
     this.appendOutput(this.formatTaskRecovery(input.taskId));
+  }
+
+  private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
+    const planningAgent = this.deps.runtimePort.plannerServices?.planningAgent;
+    if (!planningAgent) throw new Error('planning agent is unavailable');
+    this.activePlannerRuns += 1;
+    this.notify();
+    try {
+      return await planningAgent.plan(context);
+    } finally {
+      this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.notify();
+    }
+  }
+
+  private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
+    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
+    const refs = (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs);
+    const targetTask = plan.task.taskId ? taskRuntimeService?.findTask(plan.task.taskId) : null;
+    const eligible = new Set<string>();
+    const db = this.deps.db;
+    for (const ref of refs) {
+      if (ref.kind === 'current_user_input') {
+        eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (ref.kind === 'task_resource') {
+        if (targetTask?.resources.includes(ref.locator) || (!targetTask && userInput.includes(ref.locator))) {
+          eligible.add(contextRefKey(ref));
+        }
+        continue;
+      }
+      if (ref.kind === 'preference') {
+        const row = db?.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
+        if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (ref.kind === 'task_evidence') {
+        const row = db?.prepare(`
+          SELECT id FROM task_execution_evidence WHERE id = ? AND task_id = ? AND kind = 'task_evidence'
+        `).get(ref.evidenceId, targetTask?.id ?? '') as { id: string } | undefined;
+        if (row) eligible.add(contextRefKey(ref));
+        continue;
+      }
+      if (db && isEligibleInteractionRef({
+        db,
+        sessionId: this.deps.plannerSessionId,
+        ref,
+        targetTaskId: targetTask?.id ?? null,
+        userInput,
+      })) {
+        eligible.add(contextRefKey(ref));
+      }
+    }
+    return [...eligible];
+  }
+
+  private async requestKernelReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
+    const port = this.deps.runtimePort;
+    const taskRuntimeService = port.taskServices!.taskRuntimeService;
+    const task = taskRuntimeService.findTask(decision.action.taskId);
+    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
+    port.repositories.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
+    const evidence = port.repositories.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(
+      task.id,
+      decision.action.generationId,
+    );
+    const failures = port.repositories.attemptReceiptRepo.listByTask(task.id)
+      .filter(item =>
+        item.generationId === decision.action.generationId
+        && item.graphRevision === decision.action.sourceRevision
+        && item.terminalState !== 'completed'
+      )
+      .sort((left, right) =>
+        left.completedAt.localeCompare(right.completedAt)
+        || left.attemptId.localeCompare(right.attemptId)
+      );
+    const request = [
+      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Generation: ${decision.action.generationId}`,
+      `Superseded revision: ${decision.action.sourceRevision}`,
+      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
+        evidenceId: item.id,
+        title: item.title,
+        summary: item.content.slice(0, 2_000),
+      })))}`,
+      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
+        attemptId: item.attemptId,
+        agentClassName: item.agentClassName,
+        terminalState: item.terminalState,
+        failure: item.failure,
+        code: item.errorCode,
+        summary: String(item.errorDetail ?? '').slice(0, 1_000),
+      })))}`,
+      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.deps.planningContextBuilder!.build({ userInput: request });
+    const plan = await this.runPlanningAgent(context);
+    return {
+      schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
+      type: 'plan_proposed',
+      id: `replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.plannerSessionId,
+      taskId: task.id,
+      proposal: plan,
+      requestText: redactSensitiveText(request).slice(0, 24_000),
+      generationId: decision.action.generationId,
+      proposalSource: 'replan',
+      targetGraphRevision: decision.action.sourceRevision + 1,
+      availabilityExplanation: null,
+    };
+  }
+
+  private async requestKernelMergeReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+    const port = this.deps.runtimePort;
+    const task = port.taskServices!.taskRuntimeService.findTask(decision.action.taskId);
+    const revision = port.repositories.workGraphRevisionRepo.findActive(decision.action.taskId);
+    if (!task || !revision) return null;
+    const request = [
+      'Replan only the remaining semantic work after a Git publication conflict.',
+      'Do not create a dedicated conflict-resolution Subtask.',
+      'Return plan_work_graph bound to the exact existing Task and preserve completed facts.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Conflicted Subtask id: ${decision.action.subtaskId}`,
+      `Publication id: ${decision.action.publicationId}`,
+      `Conflict chain id: ${decision.action.conflictChainId}`,
+      'The revised remaining work must let the original delivery intent publish without choosing or silently overwriting a conflicting version.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.deps.planningContextBuilder!.build({ userInput: request });
+    const plan = await this.runPlanningAgent(context);
+    return {
+      schemaVersion: 5,
+      configurationRevision: context.configuration.revisionId,
+      type: 'plan_proposed',
+      id: `merge_replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.plannerSessionId,
+      taskId: task.id,
+      proposal: plan,
+      requestText: redactSensitiveText(request).slice(0, 24_000),
+      generationId: revision.generationId,
+      proposalSource: 'conflict_replan',
+      targetGraphRevision: revision.revision + 1,
+      availabilityExplanation: null,
+    };
+  }
+
+  private appendTaskQueueSnapshot(trigger: string): void {
+    const entries = this.buildTaskQueueSnapshotEntries();
+    if (entries.length === 0) return;
+    this.appendOutput(...this.deps.presentation!.formatTaskQueueSnapshot({
+      trigger,
+      runtimeState: this.runtimeState,
+      entries,
+    }));
+  }
+
+  private buildTaskQueueSnapshotEntries() {
+    return this.deps.presentation!.buildTaskQueueSnapshotEntries({
+      tasks: this.deps.runtimePort.taskServices!.taskRuntimeService.listTasks(),
+      runningTaskId: this.runtimeState.runningTaskId,
+      evaluateTask: task => this.deps.orchestration!.evaluateTask(task),
+    });
+  }
+
+  private formatRunningExecutors(taskId: string): string | null {
+    const names = [...this.runningExecutorsByAttempt.values()]
+      .filter(active => active.taskId === taskId)
+      .map(active => active.name);
+    return names.length > 0 ? names.join('、') : null;
+  }
+
+  prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void {
+    this.deps.taskExecutionApplicationService?.prepareTaskExecution(taskId, request);
+  }
+
+  /** 装配账户级 Kernel 执行服务所需的三个 callbacks 对象（ADR-0031）。 */
+  getKernelExecutionCallbacks(): {
+    kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
+    taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
+    sessionKernelCallbacks: SessionKernelRuntimeCallbacks;
+  } {
+    return {
+      kernelExecutionCallbacks: {
+        appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        refreshRuntimeState: () => this.refreshRuntimeState(),
+        appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
+        setFocusContext: focus => this.setFocusContext(focus),
+        setRunningExecutorName: (taskId, subtaskId, attemptId, name) => (
+          this.setRunningExecutorName(taskId, subtaskId, attemptId, name)
+        ),
+        clearRunningExecutorName: (taskId, attemptId) => this.clearRunningExecutorName(taskId, attemptId),
+        persistSessionState: changes => this.persistSessionState(changes),
+        setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion)!,
+        queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
+        requestReplan: decision => this.requestKernelReplan(decision),
+        requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
+        buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event)!,
+      },
+      taskExecutionCallbacks: {
+        appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
+        refreshRuntimeState: () => this.refreshRuntimeState(),
+        startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
+      },
+      sessionKernelCallbacks: {
+        appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        onDecisionApplying: decision => this.recordKernelDecisionTrace(decision),
+        deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
+        prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
+        refreshRuntimeState: () => this.refreshRuntimeState(),
+        setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
+        getCurrentTaskId: () => this.getCurrentTaskId(),
+        setFocusContext: focus => this.setFocusContext(focus),
+        resolveRequestText: eventId => this.resolveRequestText(eventId),
+        cancelTask: async (taskId, reason) => {
+          await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
+        },
+      },
+    };
   }
 
   private getCommandContext(): CommandContext {
