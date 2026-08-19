@@ -2,7 +2,23 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import * as instanceLock from '../../src/management/lock.js';
+import {
+  isInstanceRunning,
+  stopInstanceForRestart,
+} from '../../src/management/lock.js';
+
+describe('isInstanceRunning', () => {
+  it('recognizes a live runtime lock record', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(
+      lockPath,
+      `{"pid":"${process.pid}","startedAt":"2026-08-19T00:00:00.000Z"}\n`,
+    );
+
+    await expect(isInstanceRunning(lockPath)).resolves.toBe(true);
+  });
+});
 
 describe('stopInstanceForRestart', () => {
   it('signals the lock holder and waits for it to exit', async () => {
@@ -12,7 +28,7 @@ describe('stopInstanceForRestart', () => {
     let running = true;
     const signals: Array<NodeJS.Signals | 0> = [];
 
-    const result = await (instanceLock as any).stopInstanceForRestart(lockPath, {
+    const result = await stopInstanceForRestart(lockPath, {
       signalProcess: (_pid: number, signal: NodeJS.Signals | 0) => {
         signals.push(signal);
         if (signal === 'SIGTERM') running = false;

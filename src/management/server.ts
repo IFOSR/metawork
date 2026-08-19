@@ -2,26 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { Socket } from 'node:net';
 import { extname, join, normalize, resolve } from 'node:path';
-import { nanoid } from 'nanoid';
-import type { WebSessionRuntimeSession } from './web-session-runtime.js';
-import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
 import type { WebAuthService } from './web-auth.js';
-import {
-  WebConversationProjector,
-  type WebConversationProjectionStore,
-} from './web-conversation-projector.js';
 import type {
-  WebSessionActivationResult,
-  WebSessionCreationResult,
-  WebSessionMetadata,
-  WebSessionRecord,
-} from './web-session-types.js';
-import type {
-  WebSessionRuntimeEvent,
-} from './web-session-runtime.js';
+  ManagementWebSessionRuntime,
+} from './web-session-runtime-types.js';
 
 export interface TaskSummary {
   id: string;
@@ -66,23 +53,7 @@ export interface ConfigQuery {
   writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
 }
 
-export interface ManagementWebSessionCatalog extends WebConversationProjectionStore {
-  initialize(): Promise<void>;
-  create(input?: { title?: string; active?: boolean }): Promise<WebSessionRecord>;
-}
-
-export interface ManagementWebSessionRuntime {
-  readonly activeSessionId: string;
-  initialize(): Promise<void>;
-  dispose(): Promise<void>;
-  submit(text: string): Promise<void>;
-  listSessions(query?: string): Promise<WebSessionMetadata[]>;
-  readSession(sessionId: string): Promise<WebSessionRecord | null>;
-  createSession(title?: string): Promise<WebSessionCreationResult>;
-  activateSession(sessionId: string): Promise<WebSessionActivationResult>;
-  subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void;
-  getReplayEvents(): WebSessionRuntimeEvent[];
-}
+export type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
 
 export interface ManagementServerDeps {
   port: number;
@@ -91,9 +62,7 @@ export interface ManagementServerDeps {
   webAuth: WebAuthService;
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
-  sessionFactory: (sessionId: string) => WebSessionRuntimeSession;
-  sessionCatalog?: ManagementWebSessionCatalog;
-  sessionRuntime?: ManagementWebSessionRuntime;
+  sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
 }
@@ -113,33 +82,19 @@ export class ManagementServer {
   private server: Server | null = null;
   private readonly wsConnections = new Set<WebSocketConnection>();
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
-  private singletonSession: WebSessionRuntimeSession | null = null;
-  private singletonSessionId: string | null = null;
-  private lastTimelineJson: string | null = null;
-  private lastTimeline: ExecutionTimeline | null = null;
-  private lastTimelineTaskId: string | null = null;
-  private timelinePollTimer: NodeJS.Timeout | null = null;
-  private timelineSessionUnsubscribe: (() => void) | null = null;
-  private conversationAdapter: SessionStreamAdapter | null = null;
-  private conversationTraceUnsubscribe: (() => void) | null = null;
-  private conversationProjectionUnsubscribe: (() => void) | null = null;
-  private conversationProjector: WebConversationProjector | null = null;
   private sessionRuntimeUnsubscribe: (() => void) | null = null;
+  private stopping = false;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(private readonly deps: ManagementServerDeps) {}
 
   async start(): Promise<void> {
     if (this.server) return;
-    if (this.deps.sessionRuntime) {
-      await this.deps.sessionRuntime.initialize();
-      this.sessionRuntimeUnsubscribe = this.deps.sessionRuntime.subscribe(event => {
-        this.broadcast(event);
-      });
-    } else if (this.deps.sessionCatalog && !this.singletonSessionId) {
-      await this.deps.sessionCatalog.initialize();
-      const record = await this.deps.sessionCatalog.create({ active: true });
-      this.singletonSessionId = record.session.id;
-    }
+    if (this.stopping) throw new Error('ManagementServer is stopping');
+    await this.deps.sessionRuntime.initialize();
+    this.sessionRuntimeUnsubscribe = this.deps.sessionRuntime.subscribe(event => {
+      this.broadcast(event);
+    });
     const server = createServer((request, response) => {
       void this.handleRequest(request, response);
     });
@@ -157,41 +112,28 @@ export class ManagementServer {
     });
   }
 
-  async stop(): Promise<void> {
-    if (this.timelinePollTimer) {
-      clearInterval(this.timelinePollTimer);
-      this.timelinePollTimer = null;
-    }
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopping = true;
+    const server = this.server;
+    this.server = null;
+    const closeServer = server
+      ? new Promise<void>((resolvePromise) => {
+          server.close(() => resolvePromise());
+        })
+      : Promise.resolve();
     for (const ws of this.wsConnections) {
       ws.close();
     }
     this.wsConnections.clear();
     this.authenticatedWsConnections.clear();
-    this.timelineSessionUnsubscribe?.();
-    this.timelineSessionUnsubscribe = null;
-    this.conversationAdapter?.detach();
-    this.conversationAdapter = null;
-    this.conversationTraceUnsubscribe?.();
-    this.conversationTraceUnsubscribe = null;
-    this.conversationProjectionUnsubscribe?.();
-    this.conversationProjectionUnsubscribe = null;
-    this.conversationProjector = null;
     this.sessionRuntimeUnsubscribe?.();
     this.sessionRuntimeUnsubscribe = null;
-    if (this.deps.sessionRuntime) {
-      await this.deps.sessionRuntime.dispose();
-    }
-    if (this.singletonSession) {
-      await this.singletonSession.dispose();
-      this.singletonSession = null;
-      this.singletonSessionId = null;
-    }
-    if (!this.server) return;
-    const server = this.server;
-    this.server = null;
-    await new Promise<void>((resolvePromise) => {
-      server.close(() => resolvePromise());
-    });
+    this.stopPromise = Promise.all([
+      closeServer,
+      this.deps.sessionRuntime.dispose(),
+    ]).then(() => undefined);
+    return this.stopPromise;
   }
 
   get address(): string {
@@ -199,6 +141,10 @@ export class ManagementServer {
   }
 
   private handleUpgrade(request: IncomingMessage, socket: Socket): void {
+    if (this.stopping) {
+      socket.destroy();
+      return;
+    }
     if (request.url !== '/ws') {
       socket.destroy();
       return;
@@ -222,10 +168,6 @@ export class ManagementServer {
   private handleWsConnection(socket: Socket, key: string): void {
     WebSocketConnection.accept(socket, key);
 
-    let adapter: SessionStreamAdapter | null = null;
-    let traceUnsubscribe: (() => void) | null = null;
-    let traceTurnId: string | null = null;
-    let traceSequence = 0;
     let ws: WebSocketConnection;
 
     ws = new WebSocketConnection(socket, {
@@ -243,136 +185,25 @@ export class ManagementServer {
           return;
         }
         if (message.type === 'input' && message.text) {
-          const submission = this.deps.sessionRuntime
-            ? this.deps.sessionRuntime.submit(message.text)
-            : adapter?.submit(message.text);
-          void submission?.catch(error => {
+          void this.deps.sessionRuntime.submit(message.text).catch(error => {
             ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
           });
         }
       },
       onClose: () => {
-        adapter?.detach();
-        traceUnsubscribe?.();
         this.authenticatedWsConnections.delete(ws);
         this.wsConnections.delete(ws);
       },
     });
 
     this.wsConnections.add(ws);
-    if (this.deps.sessionRuntime) {
-      this.authenticatedWsConnections.add(ws);
-      ws.send(JSON.stringify({
-        type: 'hello',
-        sessionId: this.deps.sessionRuntime.activeSessionId,
-      }));
-      for (const event of this.deps.sessionRuntime.getReplayEvents()) {
-        ws.send(JSON.stringify(event));
-      }
-      return;
-    }
-    const session = this.ensureSession();
-    adapter = new SessionStreamAdapter(session, {
-      onOutput: (lines, from) => ws.send(JSON.stringify({ type: 'output', from, lines })),
-      onSubmitStarted: (text, outputFrom) => {
-        this.conversationProjector?.beginTurn({ userInput: text, outputFrom });
-      },
-      onSubmitCompleted: () => this.conversationProjector?.finishSubmission(),
-      onSubmitFailed: (_text, error) => this.conversationProjector?.failSubmission(error),
-    });
-    adapter.attach();
     this.authenticatedWsConnections.add(ws);
-    ws.send(JSON.stringify({ type: 'hello', sessionId: this.singletonSessionId }));
-    const conversation = this.conversationProjector?.getSnapshot();
-    if (conversation) {
-      ws.send(JSON.stringify({ type: 'conversation_snapshot', turn: conversation }));
-    }
-    traceUnsubscribe = session.subscribeInteractionTrace(trace => {
-      if (!trace) return;
-      if (trace.turnId !== traceTurnId) {
-        traceTurnId = trace.turnId;
-        traceSequence = trace.events.at(-1)?.sequence ?? 0;
-        ws.send(JSON.stringify({ type: 'trace_snapshot', trace }));
-        return;
-      }
-      const events = trace.events.filter(event => event.sequence > traceSequence);
-      if (events.length === 0) return;
-      traceSequence = events.at(-1)!.sequence;
-      ws.send(JSON.stringify({
-        type: 'trace_delta',
-        turnId: trace.turnId,
-        fromSequence: events[0]!.sequence,
-        events,
-      }));
-    });
-    // 新连接补发当前执行时间线：增量广播只发给当时已连接的客户端。
-    if (this.lastTimelineTaskId && this.lastTimeline) {
-      ws.send(JSON.stringify({
-        type: 'execution',
-        taskId: this.lastTimelineTaskId,
-        timeline: this.lastTimeline,
-      }));
-    }
-  }
-
-  /** 单例 session：第一个鉴权通过的连接创建，后续连接附着。 */
-  private ensureSession(): WebSessionRuntimeSession {
-    if (!this.singletonSession) {
-      this.singletonSessionId ??= `sess_web_${nanoid(10)}`;
-      this.singletonSession = this.deps.sessionFactory(this.singletonSessionId);
-      this.singletonSession.initialize({ showDashboard: false });
-
-      // 执行时间线推送：session 快照变化时投影当前 task 并 diff。
-      this.timelineSessionUnsubscribe = this.singletonSession.subscribe(snapshot => {
-        this.pushTimelineForTask(snapshot.currentTaskId);
-      });
-      if (this.deps.sessionCatalog) {
-        this.conversationProjector = new WebConversationProjector({
-          sessionId: this.singletonSessionId,
-          store: this.deps.sessionCatalog,
-        });
-        this.conversationProjectionUnsubscribe = this.conversationProjector.subscribe(turn => {
-          if (turn) this.broadcast({ type: 'conversation_snapshot', turn });
-        });
-        this.conversationAdapter = new SessionStreamAdapter(this.singletonSession, {
-          onOutput: (lines, from) => this.conversationProjector?.applyOutput(lines, from),
-        });
-        this.conversationAdapter.attach();
-        this.conversationTraceUnsubscribe = this.singletonSession.subscribeInteractionTrace(
-          trace => {
-            if (trace) void this.conversationProjector?.applyTrace(trace);
-          },
-        );
-      }
-      // execution 层 durable 翻转（subtask 创建/attempt receipt/publication）不触发
-      // session notify，加轻量轮询兜底，保证时间线在任务执行过程中持续推进。
-      this.timelinePollTimer = setInterval(() => {
-        if (this.singletonSession) {
-          this.pushTimelineForTask(this.singletonSession.getSnapshot().currentTaskId);
-        }
-      }, 500);
-    }
-    return this.singletonSession;
-  }
-
-  private pushTimelineForTask(taskId: string | null): void {
-    if (!taskId) {
-      if (this.lastTimelineTaskId !== null) {
-        this.lastTimeline = null;
-        this.lastTimelineTaskId = null;
-        this.lastTimelineJson = null;
-      }
-      return;
-    }
-    const timeline = this.deps.executionQuery.projectTimeline(taskId);
-    if (!timeline) return;
-    const json = JSON.stringify(timeline);
-    if (json !== this.lastTimelineJson) {
-      this.lastTimelineJson = json;
-      this.lastTimeline = timeline;
-      this.lastTimelineTaskId = taskId;
-      this.broadcast({ type: 'execution', taskId, timeline });
-      void this.conversationProjector?.applyTimeline(timeline);
+    ws.send(JSON.stringify({
+      type: 'hello',
+      sessionId: this.deps.sessionRuntime.activeSessionId,
+    }));
+    for (const event of this.deps.sessionRuntime.getReplayEvents()) {
+      ws.send(JSON.stringify(event));
     }
   }
 
@@ -398,6 +229,11 @@ export class ManagementServer {
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (this.stopping) {
+      response.writeHead(503);
+      response.end();
+      return;
+    }
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
 
     if (url.pathname.startsWith('/api/')) {
@@ -462,10 +298,6 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/sessions') {
-      if (!this.deps.sessionRuntime) {
-        this.sendJson(response, 503, { error: 'session runtime unavailable' });
-        return;
-      }
       this.sendJson(response, 200, {
         activeSessionId: this.deps.sessionRuntime.activeSessionId,
         sessions: await this.deps.sessionRuntime.listSessions(url.searchParams.get('q') ?? ''),
@@ -474,10 +306,6 @@ export class ManagementServer {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/sessions') {
-      if (!this.deps.sessionRuntime) {
-        this.sendJson(response, 503, { error: 'session runtime unavailable' });
-        return;
-      }
       const body = await readRequestBody(request);
       this.sendJson(
         response,
@@ -489,10 +317,6 @@ export class ManagementServer {
 
     const sessionActivateMatch = /^\/api\/sessions\/([^/]+)\/activate$/u.exec(url.pathname);
     if (request.method === 'POST' && sessionActivateMatch) {
-      if (!this.deps.sessionRuntime) {
-        this.sendJson(response, 503, { error: 'session runtime unavailable' });
-        return;
-      }
       this.sendJson(
         response,
         200,
@@ -505,10 +329,6 @@ export class ManagementServer {
 
     const sessionMatch = /^\/api\/sessions\/([^/]+)$/u.exec(url.pathname);
     if (request.method === 'GET' && sessionMatch) {
-      if (!this.deps.sessionRuntime) {
-        this.sendJson(response, 503, { error: 'session runtime unavailable' });
-        return;
-      }
       const record = await this.deps.sessionRuntime.readSession(
         decodeURIComponent(sessionMatch[1]!),
       );

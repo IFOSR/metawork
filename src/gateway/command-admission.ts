@@ -26,7 +26,10 @@ export interface CommandAdmissionDeps {
 }
 
 export class IdempotentCommandAdmission {
-  private readonly seen = new Map<string, CommandReceipt>();
+  private readonly seen = new Map<string, {
+    fingerprint: string;
+    receipt: Promise<CommandReceipt>;
+  }>();
 
   constructor(private readonly deps: CommandAdmissionDeps) {}
 
@@ -36,20 +39,38 @@ export class IdempotentCommandAdmission {
     conversationId: string,
     command: GatewayCommand,
   ): Promise<CommandReceipt> {
+    const fingerprint = JSON.stringify({ conversationId, command });
     const existing = this.seen.get(idempotencyKey);
     if (existing) {
-      return { ...existing, status: 'duplicate', reason: undefined };
+      if (existing.fingerprint !== fingerprint) {
+        return {
+          requestId,
+          idempotencyKey,
+          status: 'rejected',
+          conversationId,
+          reason: 'idempotency_conflict',
+        };
+      }
+      const receipt = await existing.receipt;
+      return receipt.status === 'accepted'
+        ? { ...receipt, requestId, status: 'duplicate' }
+        : { ...receipt, requestId };
     }
 
-    const mailboxReceipt = await this.deps.submit(conversationId, requestId, idempotencyKey, command);
-    const receipt: CommandReceipt = {
-      requestId,
-      idempotencyKey,
-      status: mailboxReceipt.status === 'rejected' ? 'rejected' : 'accepted',
-      conversationId,
-      reason: mailboxReceipt.reason,
-    };
-    this.seen.set(idempotencyKey, receipt);
-    return receipt;
+    const receipt = this.deps.submit(conversationId, requestId, idempotencyKey, command)
+      .then(mailboxReceipt => ({
+        requestId,
+        idempotencyKey,
+        status: mailboxReceipt.status === 'rejected' ? 'rejected' as const : 'accepted' as const,
+        conversationId,
+        reason: mailboxReceipt.reason,
+      }));
+    this.seen.set(idempotencyKey, { fingerprint, receipt });
+    try {
+      return await receipt;
+    } catch (error) {
+      this.seen.delete(idempotencyKey);
+      throw error;
+    }
   }
 }

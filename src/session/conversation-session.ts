@@ -30,9 +30,18 @@ import type { KernelExecutionRuntime } from '../execution/kernel-execution-runti
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import type { PlanningContext } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
+import {
+  createPlannerProposalSubmissionId,
+  plannerProposalFingerprint,
+  type PlannerProposalPurpose,
+  type PlannerProposalSubmission,
+} from '../planning/planner-proposal.js';
+import { PlannerProposalRepo } from '../storage/planner-proposal-repo.js';
+import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
+import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
+import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type Database from 'better-sqlite3';
 import type { KernelConfigurationView } from '../configuration/index.js';
-import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { generateInteractionId } from '../utils/id.js';
 import { contextRefKey } from '../work-graph/index.js';
 import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
@@ -53,6 +62,15 @@ import {
 } from './conversation-input-mailbox.js';
 import { InputController, type InputControllerSubmitOptions } from './input-controller.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
+import type { GatewayCommand } from '../gateway/client-protocol.js';
+import type { CommandCompletion } from '../commands/catalog.js';
+import type {
+  PlannerTuiCommandSubmissionResult,
+  PlannerTuiExecutorResult,
+  PlannerTuiPermissionRequest,
+  PlannerTuiPermissionResolutionResult,
+  PlannerTuiSnapshot,
+} from './session-types.js';
 
 export interface ConversationSessionSnapshot {
   readonly output: string[];
@@ -85,6 +103,7 @@ export interface ConversationSessionDeps {
   readonly config?: Config;
   readonly taskExecutionApplicationService?: SessionTaskExecutionApplicationService;
   readonly directiveExecutor?: (directive: unknown, userInput: string) => Promise<void>;
+  readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -114,6 +133,7 @@ export class ConversationSession {
   private readonly inputController: InputController;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
   private attachedClients = 0;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(private readonly deps: ConversationSessionDeps) {
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
@@ -190,7 +210,7 @@ export class ConversationSession {
     this.latestGuidance = this.deps.presentation.buildGuidanceState(
       scene,
       suggestion,
-      this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(suggestion.taskId)?.title ?? '',
+      this.deps.runtimePort.queries.findTask(suggestion.taskId)?.title ?? '',
     );
     return this.latestGuidance;
   }
@@ -212,7 +232,7 @@ export class ConversationSession {
       scene,
       proposal,
       proposal.taskId
-        ? this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(proposal.taskId)?.title ?? ''
+        ? this.deps.runtimePort.queries.findTask(proposal.taskId)?.title ?? ''
         : '',
     ));
     this.appendOutput('→ 操作提案已记录，不等待用户确认；满足执行条件的任务由调度器自动处理');
@@ -227,7 +247,7 @@ export class ConversationSession {
   }
 
   resolveRequestText(eventId: string): string {
-    const event = this.deps.runtimePort.kernelServices.kernelWorkflowRepo.findEvent(eventId);
+    const event = this.deps.runtimePort.queries.findKernelEvent(eventId);
     return event?.type === 'plan_proposed' ? event.requestText : '';
   }
 
@@ -266,8 +286,7 @@ export class ConversationSession {
 
   buildPlanningContext(userInput: string): PlanningContext | null {
     if (!this.deps.planningContextBuilder) return null;
-    const permissionRepository = this.deps.runtimePort.workspaceServices.permissionRepository;
-    const pendingPermission = permissionRepository.findOldestPending();
+    const pendingPermission = this.deps.runtimePort.queries.findOldestPendingPermission();
     return this.deps.planningContextBuilder.build({
       userInput,
       pendingAuthorizationRequest: pendingPermission
@@ -298,15 +317,15 @@ export class ConversationSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: port.taskServices?.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })) ?? [],
+      tasks: port.queries.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.kernelExecutionRuntime?.getSingleActiveTaskId() ?? null,
       plannerConfiguration,
       kernelConfiguration: this.deps.kernelConfiguration,
-      executorStatuses: port.repositories.kernelExecutorStatusRepo.list(event.configurationRevision),
-      v5WorkGraphTaskIds: port.repositories.subtaskRepo.listTaskIds(),
+      executorStatuses: port.queries.listExecutorStatuses(event.configurationRevision),
+      v5WorkGraphTaskIds: port.queries.listWorkGraphTaskIds(),
       eligibleContextRefKeys: [],
       pendingAuthorizationRequest: (() => {
-        const pending = port.workspaceServices.permissionRepository.findOldestPending();
+        const pending = port.queries.findOldestPendingPermission();
         return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
       })(),
     };
@@ -322,20 +341,24 @@ export class ConversationSession {
   }
 
   private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
-    const planningAgent = this.deps.runtimePort.plannerServices?.planningAgent;
+    const planningAgent = this.deps.runtimePort.planning;
     if (!planningAgent) return false;
     const context = this.buildPlanningContext(userInput);
     if (!context) return false;
     const result = await planningAgent.submit(context, {
-      submit: async plan => this.submitPlannerProposal(userInput, plan, context),
+      submit: async plan => this.submitValidatedPlannerProposal(userInput, plan, context),
     });
-    return result.status === 'accepted';
+    if (result.status === 'transport_uncertain' || result.status === 'conflict') {
+      throw new Error(result.message);
+    }
+    return result.status === 'accepted' || result.status === 'rejected';
   }
 
-  private async submitPlannerProposal(
+  private async submitValidatedPlannerProposal(
     userInput: string,
     plan: PlanningAgentPlan,
     context: PlanningContext,
+    eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
   ): Promise<PlannerProposalResult> {
     const port = this.deps.runtimePort;
     const sessionKernelRuntime = this.sessionKernelRuntime;
@@ -346,7 +369,6 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    const eventId = `plan_event_${plan.id}_${generateInteractionId()}`;
     const event: KernelEvent = {
       schemaVersion: 5,
       configurationRevision: context.configuration.revisionId,
@@ -363,23 +385,54 @@ export class ConversationSession {
       proposalSource: 'initial',
       targetGraphRevision: 1,
     };
-    const workflow = new DurableKernelWorkflow({
-      kernel: port.kernelServices.controlKernel,
+    const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
       )!,
-      store: port.kernelServices.kernelWorkflowRepo,
-      clock: { now: () => new Date().toISOString() },
       runtime: sessionKernelRuntime.forInput(userInput),
-      acceptedEventTypes: ['plan_proposed'],
-      acceptedActions: [
-        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
-        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
-        'record_permission_resolution',
-      ],
     });
-    await workflow.submit(event);
-    return { status: 'accepted' } as PlannerProposalResult;
+    const decision = result.decisions.find(item => item.eventId === eventId) ?? null;
+    if (!decision) {
+      return {
+        status: 'transport_uncertain',
+        turnId: event.correlationId,
+        submissionId: eventId,
+        retryableByReplay: true,
+        message: 'Kernel application did not produce an authoritative decision.',
+      };
+    }
+    if (decision.action.type === 'reject_request') {
+      return {
+        status: 'rejected',
+        turnId: event.correlationId,
+        submissionId: eventId,
+        planId: plan.id,
+        rejectionType: 'kernel',
+        issues: [decision.reason],
+        kernel: {
+          decisionId: decision.id,
+          action: 'reject_request',
+          reason: decision.reason,
+        },
+      };
+    }
+    return {
+      status: 'accepted',
+      turnId: event.correlationId,
+      submissionId: eventId,
+      planId: plan.id,
+      outcome: plannerOutcome(decision.action.type),
+      displayText: this.output.at(-1) ?? decision.reason,
+      taskId: plan.task.taskId
+        ?? ('taskId' in decision.action && typeof decision.action.taskId === 'string'
+          ? decision.action.taskId
+          : null),
+      kernel: {
+        decisionId: decision.id,
+        action: decision.action.type,
+        reason: decision.reason,
+      },
+    };
   }
 
   clearRunningExecutorName(_taskId: string, attemptId?: string): void {
@@ -441,9 +494,7 @@ export class ConversationSession {
   }
 
   refreshRuntimeState(): void {
-    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
-    if (!taskRuntimeService) return;
-    const tasks = taskRuntimeService.listTasks();
+    const tasks = this.deps.runtimePort.queries.listTasks();
     const runningTask = tasks.find(task => task.status === 'running') ?? null;
     this.runtimeState = {
       runningTaskId: runningTask?.id ?? null,
@@ -466,7 +517,7 @@ export class ConversationSession {
 
   getSnapshot(): SessionSnapshot {
     const currentTask = this.currentTaskId
-      ? this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(this.currentTaskId) ?? null
+      ? this.deps.runtimePort.queries.findTask(this.currentTaskId)
       : null;
     return {
       output: [...this.output],
@@ -508,6 +559,319 @@ export class ConversationSession {
     return this.deps.mailbox.submit(command);
   }
 
+  bindMailboxExecutor(
+    execute: (command: MailboxCommand) => Promise<void>,
+  ): void {
+    this.deps.mailbox.bindExecutor(execute);
+  }
+
+  async executeGatewayCommand(
+    command: GatewayCommand,
+    options: InputControllerSubmitOptions = {},
+  ): Promise<void> {
+    switch (command.kind) {
+      case 'user_message':
+      case 'slash_command':
+        await this.submitUserInput(command.text, options);
+        return;
+      case 'permission_resolution':
+        await this.resolvePermission(command.requestId, command.resolution, 'button');
+        return;
+      case 'cancel_turn':
+        throw new Error(`turn cancellation is not available for completed admission: ${command.turnId}`);
+    }
+  }
+
+  completeCommand(text: string, cursor = text.length): CommandCompletion {
+    return this.deps.commandCatalog?.complete({
+      text,
+      cursor,
+      context: this.getCommandContext(),
+    }) ?? {
+      state: 'inactive',
+      suggestions: [],
+      hint: null,
+      error: null,
+    };
+  }
+
+  getPlannerTuiSnapshot(): PlannerTuiSnapshot {
+    const snapshot = this.getSnapshot();
+    const port = this.deps.runtimePort;
+    return {
+      schemaVersion: 1,
+      session: {
+        id: this.plannerSessionId,
+        focusedTask: snapshot.currentTask,
+        runtimeState: snapshot.runtimeState,
+        plannerState: snapshot.plannerState,
+        recentOutput: snapshot.output.slice(-100),
+      },
+      taskPool: port.queries.listTasks().slice(0, 100).map(task => ({
+        id: task.id,
+        title: task.title,
+        goal: task.goal,
+        status: task.status,
+        blockingReason: (
+          task.lastInterruptionReason
+          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+          || ''
+        ).slice(0, 500) || null,
+        subtasks: port.queries.listSubtasks(task.id).slice(0, 100).map(subtask => ({
+          id: subtask.id,
+          title: subtask.title,
+          status: subtask.status,
+          preferredAgentClassList: subtask.executorBindings.map(binding => binding.agentClassRef),
+        })),
+      })),
+      executorStatuses: port.queries.listExecutorStatuses(
+        this.deps.kernelConfiguration?.revisionId ?? '',
+      ),
+    };
+  }
+
+  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
+    const port = this.deps.runtimePort;
+    const taskIds = [...new Set(
+      port.queries.listKernelDecisionsBySession(this.plannerSessionId)
+        .map(decision => decision.taskId)
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    )];
+    return port.queries.listIntegratedPublications(taskIds)
+      .map(publication => {
+        const task = port.queries.findTask(publication.taskId);
+        const subtask = port.queries.findSubtask(publication.subtaskId);
+        return {
+          schemaVersion: 1,
+          publicationId: publication.id,
+          taskId: publication.taskId,
+          taskTitle: task?.title ?? publication.taskId,
+          subtaskId: publication.subtaskId,
+          subtaskTitle: subtask?.title ?? publication.subtaskId,
+          attemptId: publication.sourceAttemptId,
+          executorName: publication.agentClassName,
+          report: publication.originalCompletion.body,
+          artifacts: [...publication.originalCompletion.artifacts],
+          warnings: [...publication.originalCompletion.warnings],
+          integrationCommit: publication.integrationCommit,
+          completedAt: publication.updatedAt,
+          reportTruncated: false,
+        };
+      });
+  }
+
+  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
+    return this.deps.runtimePort.permissions?.listForSession(this.plannerSessionId) ?? [];
+  }
+
+  async resolvePlannerTuiPermission(
+    permissionRequestId: string,
+    resolution: 'approve' | 'deny',
+  ): Promise<PlannerTuiPermissionResolutionResult> {
+    try {
+      const result = await this.resolvePermission(permissionRequestId, resolution, 'button');
+      if (result.status === 'conflict' || result.resolution === null) {
+        return { status: 'conflict', resolution: null, message: result.message };
+      }
+      return {
+        status: result.status,
+        resolution: result.resolution,
+        message: result.message,
+      };
+    } catch (error) {
+      return {
+        status: 'conflict',
+        resolution: null,
+        message: (error as Error).message,
+      };
+    }
+  }
+
+  private async resolvePermission(
+    requestId: string,
+    resolution: 'approve' | 'deny',
+    source: 'button' | 'planner',
+    plannerPlanId: string | null = null,
+  ) {
+    const permissionService = this.deps.runtimePort.permissions;
+    if (!permissionService) throw new Error('Account permission service is unavailable');
+    const result = await permissionService.resolve({
+      sessionId: this.plannerSessionId,
+      requestId,
+      resolution,
+      source,
+      plannerPlanId,
+    });
+    if (result.status === 'conflict') throw new Error(result.message);
+    if (result.recoveryTaskId) {
+      await this.prepareTaskExecution(result.recoveryTaskId, {
+        userPrompt: this.deps.runtimePort.queries.findTask(result.recoveryTaskId)?.goal ?? '',
+        contextTaskId: result.recoveryTaskId,
+        executionMode: 'resume-blocked',
+        schedulingReason: `permission ${requestId} approved; recover persistent workspace`,
+      });
+    }
+    return result;
+  }
+
+  async submitPlannerTuiCommand(rawCommand: string): Promise<PlannerTuiCommandSubmissionResult> {
+    const command = rawCommand.trim();
+    if (!/^\/\S/u.test(command)) {
+      throw new Error('Planner TUI commands must start with /');
+    }
+    const outputStart = this.output.length;
+    const result = await this.submitUserInput(command);
+    await this.waitForBackgroundWork();
+    return {
+      exitRequested: result.exitRequested,
+      output: this.output.slice(outputStart),
+    };
+  }
+
+  async submitPlannerProposal(
+    submission: PlannerProposalSubmission,
+    purpose: PlannerProposalPurpose = 'kernel',
+  ): Promise<PlannerProposalResult> {
+    const sessionId = submission.sessionId.trim();
+    const turnId = submission.turnId.trim();
+    const userInput = submission.userInput.trim();
+    if (!sessionId || !turnId || !userInput || sessionId !== this.plannerSessionId) {
+      return {
+        status: 'conflict',
+        turnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner proposal identity does not match the bound Conversation.',
+      };
+    }
+    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    const parsed = PlanningAgentPlanSchema.safeParse(normalizedPlan);
+    const context = this.buildPlanningContext(userInput);
+    const validation = context
+      ? validatePlanningAgentPlan(
+          normalizedPlan,
+          context.configuration,
+          context.pendingAuthorizationRequest
+            ? {
+                requestId: context.pendingAuthorizationRequest.requestId,
+                taskId: context.pendingAuthorizationRequest.taskId,
+              }
+            : null,
+        )
+      : { valid: false, errors: ['Planner context is unavailable'] };
+    const expectedSubmissionId = createPlannerProposalSubmissionId(sessionId, turnId, submission.plan);
+    if (submission.submissionId !== expectedSubmissionId) {
+      return {
+        status: 'conflict',
+        turnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner proposal submissionId does not match the runtime-derived fingerprint.',
+      };
+    }
+    const repo = this.deps.plannerProposalRepo;
+    if (!repo) throw new Error('Planner proposal repository is unavailable');
+    const turn = repo.ensureTurn(sessionId, turnId, userInput);
+    if (turn.conflict) {
+      return {
+        status: 'conflict',
+        turnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: null,
+        message: 'Planner turn is already bound to different user input.',
+      };
+    }
+    const planId = parsed.success ? parsed.data.id : null;
+    const eventId = parsed.success && purpose === 'kernel'
+      ? `plan_event_${submission.submissionId}`
+      : null;
+    const reservation = repo.reserveSubmission({
+      sessionId,
+      turnId,
+      submissionId: submission.submissionId,
+      planFingerprint: plannerProposalFingerprint(submission.plan),
+      planId,
+      eventId,
+    });
+    if (reservation.kind === 'replay') return reservation.result;
+    if (reservation.kind === 'conflict') {
+      return {
+        status: 'conflict',
+        turnId,
+        submissionId: submission.submissionId,
+        acceptedSubmissionId: reservation.acceptedSubmissionId,
+        message: 'This Planner turn already has a different authoritative submission.',
+      };
+    }
+    if (reservation.kind === 'in_flight') {
+      return {
+        status: 'transport_uncertain',
+        turnId,
+        submissionId: submission.submissionId,
+        retryableByReplay: true,
+        message: 'The same Planner proposal is still being durably applied; replay it.',
+      };
+    }
+    if (!parsed.success || !validation.valid || !context) {
+      const rejected: Extract<PlannerProposalResult, { status: 'rejected' }> = {
+        status: 'rejected',
+        turnId,
+        submissionId: submission.submissionId,
+        planId,
+        rejectionType: 'validation',
+        issues: parsed.success ? validation.errors : parsed.error.issues.map(issue => issue.message),
+        kernel: null,
+      };
+      repo.completeSubmission(sessionId, turnId, submission.submissionId, rejected);
+      return rejected;
+    }
+    if (purpose === 'validation') {
+      const accepted: Extract<PlannerProposalResult, { status: 'accepted' }> = {
+        status: 'accepted',
+        turnId,
+        submissionId: submission.submissionId,
+        planId: parsed.data.id,
+        outcome: 'proposal_validated',
+        displayText: 'PlanningAgentPlan v8 proposal validated by AnyFusion.',
+        taskId: parsed.data.task.taskId,
+        kernel: null,
+      };
+      repo.completeSubmission(sessionId, turnId, submission.submissionId, accepted);
+      return accepted;
+    }
+    try {
+      const result = await this.submitValidatedPlannerProposal(
+        userInput,
+        parsed.data as PlanningAgentPlan,
+        context,
+        eventId!,
+      );
+      if (result.status === 'accepted' || result.status === 'rejected') {
+        repo.completeSubmission(sessionId, turnId, submission.submissionId, {
+          ...result,
+          turnId,
+          submissionId: submission.submissionId,
+        });
+        return {
+          ...result,
+          turnId,
+          submissionId: submission.submissionId,
+        };
+      }
+      repo.markUncertain(sessionId, turnId, submission.submissionId);
+      return { ...result, turnId, submissionId: submission.submissionId };
+    } catch (error) {
+      repo.markUncertain(sessionId, turnId, submission.submissionId);
+      return {
+        status: 'transport_uncertain',
+        turnId,
+        submissionId: submission.submissionId,
+        retryableByReplay: true,
+        message: `Planner proposal transport is uncertain: ${(error as Error).message}`,
+      };
+    }
+  }
+
   /** GatewaySession 兼容：提交用户文本并触发 Planner 回合。 */
   async submit(text: string): Promise<{ exitRequested: boolean }> {
     return this.submitUserInput(text);
@@ -525,8 +889,11 @@ export class ConversationSession {
    * 提交用户输入并触发 Planner 回合（通过注入的执行委托）。委托由调用方
    * （当前 MetaclawSession，未来 AccountRuntime 内联）提供。
    */
-  async submitUserInput(text: string): Promise<{ exitRequested: boolean }> {
-    return this.inputController.submit(text);
+  async submitUserInput(
+    text: string,
+    options: InputControllerSubmitOptions = {},
+  ): Promise<{ exitRequested: boolean }> {
+    return this.inputController.submit(text, options);
   }
 
   private async handleCommand(input: string): Promise<boolean> {
@@ -540,14 +907,13 @@ export class ConversationSession {
       this.appendOutput(`命令不受支持（Conversation 外壳未接入命令处理）: ${input}`);
       return false;
     }
-    const executorRecoveryRefreshService = this.deps.runtimePort.coordinatorServices?.executorRecoveryRefreshService;
     if (/^\/task\s+(resume|recover|recovery)\b/iu.test(input)) {
-      await executorRecoveryRefreshService?.refresh({ trigger: 'task_recovery' });
+      await this.deps.runtimePort.commands.refreshExecutors({ trigger: 'task_recovery' });
     }
     const result = await commandCatalog.execute(input, this.getCommandContext());
     this.appendOutput(result.content);
     if (/^\/executor\s+(register|unregister)\b/iu.test(input)) {
-      await executorRecoveryRefreshService?.refresh({ trigger: 'executor_changed' });
+      await this.deps.runtimePort.commands.refreshExecutors({ trigger: 'executor_changed' });
     }
     if (result.type === 'exit') {
       this.persistSessionState({ lastSessionId: this.deps.plannerSessionId });
@@ -589,10 +955,9 @@ export class ConversationSession {
       blockedReason?: string;
     },
   ): Promise<void> {
-    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
     const taskExecutionApplicationService = this.taskExecutionApplicationService;
-    if (!taskRuntimeService || !taskExecutionApplicationService) return;
-    const resumedTask = taskRuntimeService.findTask(taskId);
+    if (!taskExecutionApplicationService) return;
+    const resumedTask = this.deps.runtimePort.queries.findTask(taskId);
     if (!resumedTask) return;
     this.setCurrentTaskId(resumedTask.id);
     taskExecutionApplicationService.prepareTaskExecution(resumedTask.id, {
@@ -650,12 +1015,10 @@ export class ConversationSession {
 
   private formatTaskRecovery(taskId: string): string {
     const port = this.deps.runtimePort;
-    const kernelWorkflowRepo = port.kernelServices.kernelWorkflowRepo;
-    const effectOutboxRepo = port.repositories.effectOutboxRepo;
-    const applications = kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
+    const applications = port.queries.listRecoveryApplications(taskId).map(item =>
       `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
     );
-    const effects = effectOutboxRepo.listRecoveryItems(taskId).map(item =>
+    const effects = port.queries.listRecoveryEffects(taskId).map(item =>
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
     );
     const items = [...applications, ...effects];
@@ -669,9 +1032,9 @@ export class ConversationSession {
     recoveryItemId: string,
   ): Extract<KernelSnapshot, { type: 'recovery' }> {
     const port = this.deps.runtimePort;
-    const task = port.taskServices?.taskRuntimeService.findTask(taskId);
-    const application = port.kernelServices.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
-    const effect = port.repositories.effectOutboxRepo.find(recoveryItemId);
+    const task = port.queries.findTask(taskId);
+    const application = port.queries.findRecoveryApplication(recoveryItemId);
+    const effect = port.queries.findRecoveryEffect(recoveryItemId);
     return {
       schemaVersion: 5,
       type: 'recovery',
@@ -690,14 +1053,11 @@ export class ConversationSession {
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
     const port = this.deps.runtimePort;
-    const kernelWorkflowRepo = port.kernelServices.kernelWorkflowRepo;
-    const effectOutboxRepo = port.repositories.effectOutboxRepo;
-    const kernelDecisionRepo = port.kernelServices.kernelDecisionRepo;
-    const application = kernelWorkflowRepo.findRecoveryItem(input.recoveryItemId);
-    const effect = effectOutboxRepo.find(input.recoveryItemId);
+    const application = port.queries.findRecoveryApplication(input.recoveryItemId);
+    const effect = port.queries.findRecoveryEffect(input.recoveryItemId);
     const configurationRevision = application?.decision.configurationRevision
       ?? (effect
-        ? kernelDecisionRepo.listByTask(input.taskId)
+        ? port.queries.listKernelDecisionsByTask(input.taskId)
             .find(record => record.id === effect.decisionId)
             ?.configurationRevision
         : null);
@@ -717,24 +1077,21 @@ export class ConversationSession {
       recoveryItemId: input.recoveryItemId,
       resolution: input.resolution,
     };
-    const workflow = new DurableKernelWorkflow({
-      kernel: port.kernelServices.controlKernel,
+    await port.commands.submitKernel(event, {
       buildSnapshot: claimed => {
         const recovery = claimed as Extract<KernelEvent, { type: 'recovery_resolution_requested' }>;
         return this.buildRecoverySnapshot(recovery.taskId!, recovery.recoveryItemId);
       },
-      store: kernelWorkflowRepo,
-      clock: { now: () => new Date().toISOString() },
       runtime: {
         apply: async decision => {
           if (decision.action.type === 'resolve_recovery') {
             const now = new Date().toISOString();
-            if (kernelWorkflowRepo.findRecoveryItem(decision.action.recoveryItemId)) {
-              kernelWorkflowRepo.resolveRecoveryItem(
+            if (port.queries.findRecoveryApplication(decision.action.recoveryItemId)) {
+              port.commands.resolveRecoveryApplication(
                 decision.action.recoveryItemId, decision.action.resolution, now,
               );
             } else {
-              effectOutboxRepo.resolve(
+              port.commands.resolveRecoveryEffect(
                 decision.action.recoveryItemId, decision.action.resolution, now,
               );
             }
@@ -747,16 +1104,12 @@ export class ConversationSession {
           throw new Error(`manual recovery Runtime cannot apply ${decision.action.type}`);
         },
       },
-      acceptedEventTypes: ['recovery_resolution_requested'],
-      acceptedActions: ['resolve_recovery', 'block_work'],
-      taskId: input.taskId,
     });
-    await workflow.submit(event);
     this.appendOutput(this.formatTaskRecovery(input.taskId));
   }
 
   private async runPlanningAgent(context: PlanningContext): Promise<PlanningAgentPlan> {
-    const planningAgent = this.deps.runtimePort.plannerServices?.planningAgent;
+    const planningAgent = this.deps.runtimePort.planning;
     if (!planningAgent) throw new Error('planning agent is unavailable');
     this.activePlannerRuns += 1;
     this.notify();
@@ -769,9 +1122,10 @@ export class ConversationSession {
   }
 
   private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
-    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
     const refs = (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs);
-    const targetTask = plan.task.taskId ? taskRuntimeService?.findTask(plan.task.taskId) : null;
+    const targetTask = plan.task.taskId
+      ? this.deps.runtimePort.queries.findTask(plan.task.taskId)
+      : null;
     const eligible = new Set<string>();
     const db = this.deps.db;
     for (const ref of refs) {
@@ -816,15 +1170,14 @@ export class ConversationSession {
     },
   ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
     const port = this.deps.runtimePort;
-    const taskRuntimeService = port.taskServices!.taskRuntimeService;
-    const task = taskRuntimeService.findTask(decision.action.taskId);
+    const task = port.queries.findTask(decision.action.taskId);
     if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
-    port.repositories.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
-    const evidence = port.repositories.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(
+    port.commands.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
+    const evidence = port.queries.listTaskEvidence(
       task.id,
       decision.action.generationId,
     );
-    const failures = port.repositories.attemptReceiptRepo.listByTask(task.id)
+    const failures = port.queries.listAttemptReceipts(task.id)
       .filter(item =>
         item.generationId === decision.action.generationId
         && item.graphRevision === decision.action.sourceRevision
@@ -883,8 +1236,8 @@ export class ConversationSession {
     },
   ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
     const port = this.deps.runtimePort;
-    const task = port.taskServices!.taskRuntimeService.findTask(decision.action.taskId);
-    const revision = port.repositories.workGraphRevisionRepo.findActive(decision.action.taskId);
+    const task = port.queries.findTask(decision.action.taskId);
+    const revision = port.queries.findActiveWorkGraphRevision(decision.action.taskId);
     if (!task || !revision) return null;
     const request = [
       'Replan only the remaining semantic work after a Git publication conflict.',
@@ -930,7 +1283,7 @@ export class ConversationSession {
 
   private buildTaskQueueSnapshotEntries() {
     return this.deps.presentation!.buildTaskQueueSnapshotEntries({
-      tasks: this.deps.runtimePort.taskServices!.taskRuntimeService.listTasks(),
+      tasks: this.deps.runtimePort.queries.listTasks(),
       runningTaskId: this.runtimeState.runningTaskId,
       evaluateTask: task => this.deps.orchestration!.evaluateTask(task),
     });
@@ -949,8 +1302,7 @@ export class ConversationSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
-    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
-    for (const task of taskRuntimeService?.listTasksByStatus('blocked') ?? []) {
+    for (const task of this.deps.runtimePort.queries.listTasksByStatus('blocked')) {
       if (await this.kernelExecutionRuntime?.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
@@ -968,7 +1320,7 @@ export class ConversationSession {
     if (this.lastBlockedRecheckAt !== null && nowMs - this.lastBlockedRecheckAt < intervalMs) {
       return false;
     }
-    const candidates = this.deps.runtimePort.kernelServices.kernelDecisionRepo.listCurrentByAction('wait_for_capacity');
+    const candidates = this.deps.runtimePort.queries.listCurrentKernelDecisions('wait_for_capacity');
     if (candidates.length === 0) {
       this.lastBlockedRecheckAt = nowMs;
       return false;
@@ -994,9 +1346,9 @@ export class ConversationSession {
 
   private maybeEmitTaskPoolWatchdogReminder(nowMs: number): boolean {
     if (!this.deps.config?.orchestration.reminder_enabled) return false;
-    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
-    const blockedTasks = taskRuntimeService?.listTasks().filter(task => task.status === 'blocked') ?? [];
-    const parkedTasks = taskRuntimeService?.listTasks().filter(task => task.status === 'parked') ?? [];
+    const tasks = this.deps.runtimePort.queries.listTasks();
+    const blockedTasks = tasks.filter(task => task.status === 'blocked');
+    const parkedTasks = tasks.filter(task => task.status === 'parked');
     if (blockedTasks.length === 0 && parkedTasks.length === 0) return false;
     const fingerprint = [
       ...blockedTasks.map(task => `b:${task.id}:${this.getWaitingBlockReason(task)}`),
@@ -1072,21 +1424,24 @@ export class ConversationSession {
 
   private getCommandContext(): CommandContext {
     const port = this.deps.runtimePort;
+    if (!port.execution) {
+      throw new Error('Account execution facade is unavailable');
+    }
     return {
       taskEngine: this.deps.taskEngine!,
       memoryEngine: this.deps.memoryEngine!,
       orchestration: this.deps.orchestration!,
-      activeExecutions: port.executionServices!.executionRuntime,
+      activeExecutions: port.execution.activeExecutions,
       taskControl: this.kernelExecutionRuntime!,
       readServices: this.deps.commandReadServices!,
-      refreshExecutors: agentClassNames => port.coordinatorServices!.executorRecoveryRefreshService.refresh({
+      refreshExecutors: agentClassNames => port.commands.refreshExecutors({
         trigger: 'manual',
         agentClassNames,
       }),
       currentTaskId: this.getCurrentTaskId(),
       db: this.deps.db!,
       config: this.deps.config!,
-      executorAgentClassNames: port.taskServices!.agentClassService.listExecutorAgentClassNames(),
+      executorAgentClassNames: port.execution.listExecutorAgentClassNames(),
     };
   }
 
@@ -1101,11 +1456,18 @@ export class ConversationSession {
   }
 
   isIdle(): boolean {
-    return !this.deps.mailbox.isActive;
+    return this.deps.mailbox.isIdle && this.backgroundWork.size === 0;
   }
 
   async dispose(): Promise<void> {
-    await (this.deps.dispose ?? (async () => undefined))();
+    this.disposePromise ??= (async () => {
+      this.deps.mailbox.closeAdmission();
+      await this.deps.mailbox.waitForIdle();
+      await this.waitForBackgroundWork();
+      this.listeners.clear();
+      await (this.deps.dispose ?? (async () => undefined))();
+    })();
+    await this.disposePromise;
   }
 
   private notify(): void {
@@ -1113,5 +1475,24 @@ export class ConversationSession {
     for (const listener of this.listeners) {
       listener(snapshot);
     }
+  }
+}
+
+function plannerOutcome(
+  action: KernelDecision['action']['type'],
+): Extract<PlannerProposalResult, { status: 'accepted' }>['outcome'] {
+  switch (action) {
+    case 'authorize_task_plan':
+      return 'task_authorized';
+    case 'authorize_task_control':
+      return 'task_control_authorized';
+    case 'deliver_direct_reply':
+      return 'direct_reply_delivered';
+    case 'request_clarification':
+      return 'clarification_requested';
+    case 'record_permission_resolution':
+      return 'authorization_recorded';
+    default:
+      return 'no_action';
   }
 }

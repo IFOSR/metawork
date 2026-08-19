@@ -48,6 +48,7 @@ describe('KernelDecisionRepo', () => {
     expect(repo.insertIfAbsent(record)).toBe(true);
     expect(repo.insertIfAbsent({ ...record, id: 'another_decision' })).toBe(false);
     expect(repo.findByEventId(record.eventId)).toMatchObject({ id: record.id, action: 'no_op' });
+    expect(repo.findById(record.id)).toMatchObject({ eventId: record.eventId, sessionId: 'session_1' });
   });
 
   it('fails closed when a persisted Decision is not the unique v4 contract', () => {

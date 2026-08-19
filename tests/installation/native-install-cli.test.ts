@@ -11,6 +11,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
+import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import {
   parseNativeInstallArgs,
   runNativeInstallCli,
@@ -83,7 +85,48 @@ describe('native install CLI', () => {
     expect(exitCode).toBe(0);
     expect(readFileSync(join(installRoot, 'app', 'current', 'dist', 'index.js'), 'utf8'))
       .toBe('runtime\n');
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    expect(lstatSync(accountPaths.database).isSymbolicLink()).toBe(true);
+    expect(lstatSync(accountPaths.configActive).isSymbolicLink()).toBe(true);
+    expect(lstatSync(accountPaths.generatedCurrent).isSymbolicLink()).toBe(true);
+    expect(() => lstatSync(join(installRoot, 'data', 'metaclaw.db'))).toThrow();
+    expect(() => lstatSync(join(installRoot, 'config', 'active'))).toThrow();
     expect(output.join('\n')).toContain('installed 1.2.0-preview.0');
+  });
+
+  it('refuses an offline update while the production runtime lock is live', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'anyfusion-native-cli-lock-'));
+    cleanup.push(root);
+    const installRoot = join(root, 'installed');
+    const sourceRoot = join(root, 'source');
+    const plannerRoot = join(root, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    mkdirSync(join(installRoot, 'data'), { recursive: true });
+    writeFileSync(
+      join(installRoot, 'data', 'runtime.lock'),
+      `{"pid":"${process.pid}","startedAt":"2026-08-19T00:00:00.000Z"}\n`,
+    );
+
+    await expect(runNativeInstallCli([
+      'update',
+      '1.2.0-preview.1',
+      '--source-root',
+      sourceRoot,
+      '--planner-root',
+      plannerRoot,
+    ], {
+      env: {
+        HOME: root,
+        ANYFUSION_INSTALL_ROOT: installRoot,
+        ANYFUSION_SECRET_STORE: 'file',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+    })).rejects.toThrow(
+      'running Server cannot be safely coordinated by the offline installer',
+    );
+    expect(() => lstatSync(join(installRoot, 'app', 'releases', '1.2.0-preview.1')))
+      .toThrow();
   });
 });
 

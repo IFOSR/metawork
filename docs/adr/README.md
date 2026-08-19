@@ -50,12 +50,13 @@ workspace, execution, task, coordinator, runtime-execution, kernel-execution,
 and planner). ConversationSession now carries the conversation-facing state and
 callback surface (output, focus, guidance, delivery, executor callbacks and a
 planner submission delegate) through the unified ConversationRuntimePort.
-The physical removal of direct client Session constructor sites and full
-surface cutover wiring remain the release-gate closure. It moves runtime-wide
-ownership out of per-client Sessions, defines Account and Conversation
-cardinality, scopes ADR-0011 per AccountRuntime, and requires TUI, Web
-conversation, Feishu and future App traffic to use one Gateway command/event
-plane.
+Direct client Session constructor sites and mode-specific Runtime ownership have
+been removed from production composition. RuntimeRegistry activation now runs
+account startup recovery before command admission, and TUI, Web conversation,
+Feishu, script and Unix clients converge on the versioned Gateway command/event
+plane. Native install/update/rollback also switches the account-scoped
+database, configuration, SecretStore and generated-runtime pointers rather than
+the legacy installation-global authority.
 
 ## Current authority matrix
 

@@ -179,7 +179,7 @@ describe('unified client runtime integration', () => {
     await c.appendEvent('e3', 'final_answer');
 
     const replay = await c.webAdapter.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_1', 1);
-    expect(replay.deltas.map(event => event.eventId)).toEqual(['e2', 'e3']);
+    expect(replay.deltas.map(event => event.eventId)).toEqual(['e2']);
     expect(replay.snapshot.map(event => event.eventId)).toEqual(['e3']);
   });
 });

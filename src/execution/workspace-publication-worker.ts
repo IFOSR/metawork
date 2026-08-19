@@ -48,6 +48,7 @@ export type WorkspacePublicationOutcome =
 export interface WorkspacePublicationWorkerDeps {
   db: Database.Database;
   sessionId: string;
+  getSessionId?(): string;
   sourceRoot: string;
   workspaceStore: WorkspaceStore;
   workspaceRepository: WorkspaceRepositoryPort;
@@ -74,6 +75,10 @@ export class WorkspacePublicationWorker {
     this.publications = new WorkspacePublicationRepo(deps.db);
     this.handoffs = new SubtaskHandoffRepo(deps.db);
     this.git = new ManagedGitWorkspaceService(deps.workspaceStore);
+  }
+
+  private get sessionId(): string {
+    return this.deps.getSessionId?.() ?? this.deps.sessionId;
   }
 
   async drain(taskId: string, generationId: string): Promise<WorkspacePublicationOutcome[]> {
@@ -310,7 +315,7 @@ export class WorkspacePublicationWorker {
             correlationId: publication.id,
             causationId: decisionId,
             occurredAt: now,
-            sessionId: this.deps.sessionId,
+            sessionId: this.sessionId,
             taskId: publication.taskId,
             subtaskId: publication.subtaskId,
             publicationId: publication.id,

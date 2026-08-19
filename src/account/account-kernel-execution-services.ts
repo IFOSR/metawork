@@ -27,6 +27,7 @@ import type { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.j
 import type { ControlKernel } from '../kernel/control-kernel.js';
 import type { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import type { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
@@ -54,6 +55,7 @@ export interface AccountKernelExecutionServices {
 export function buildAccountKernelExecutionServices(deps: {
   db: Database.Database;
   sessionId: string;
+  getSessionId?: () => string;
   sourceRoot: string;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
@@ -71,6 +73,7 @@ export function buildAccountKernelExecutionServices(deps: {
   attemptRunner: SubtaskAttemptRunner;
   controlKernel: ControlKernel;
   kernelWorkflowRepo: KernelWorkflowRepo;
+  kernelDecisionRepo: KernelDecisionRepo;
   dispatchItemRepo: KernelDispatchItemRepo;
   publicationRepo: WorkspacePublicationRepo;
   generationReplanRepo: GenerationReplanRequestRepo;
@@ -91,6 +94,7 @@ export function buildAccountKernelExecutionServices(deps: {
 }): AccountKernelExecutionServices {
   const kernelExecutionRuntime = new KernelExecutionRuntime({
     sessionId: deps.sessionId,
+    getSessionId: deps.getSessionId,
     getConfigurationRevision: deps.getConfigurationRevision,
     orchestration: deps.orchestration,
     notifier: deps.notifier,
@@ -107,11 +111,13 @@ export function buildAccountKernelExecutionServices(deps: {
     attemptRunner: deps.attemptRunner,
     controlKernel: deps.controlKernel,
     kernelWorkflowStore: deps.kernelWorkflowRepo,
+    kernelDecisionRepo: deps.kernelDecisionRepo,
     dispatchItemRepo: deps.dispatchItemRepo,
     maxConcurrentAttempts: deps.maxConcurrentAttempts,
     publicationWorker: new WorkspacePublicationWorker({
       db: deps.db,
       sessionId: deps.sessionId,
+      getSessionId: deps.getSessionId,
       sourceRoot: deps.sourceRoot,
       workspaceStore: deps.workspaceStore,
       workspaceRepository: deps.workspaceRepository,

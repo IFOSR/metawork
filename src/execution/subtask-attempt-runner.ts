@@ -87,6 +87,7 @@ export type SubtaskAttemptOutcome =
 export interface SubtaskAttemptRunnerDeps {
   db: Database.Database;
   sessionId: string;
+  getSessionId?(): string;
   taskRuntimeService: TaskRuntimeService;
   subtaskRepo: SubtaskRepo;
   workUnitClaimService: Pick<WorkUnitClaimService, 'claim' | 'isClaimCurrent'>;
@@ -122,6 +123,10 @@ export class SubtaskAttemptRunner {
     this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     this.terminalService = new AttemptTerminalService(deps.db);
+  }
+
+  private get sessionId(): string {
+    return this.deps.getSessionId?.() ?? this.deps.sessionId;
   }
 
   supportsResponseOnly(
@@ -183,7 +188,7 @@ export class SubtaskAttemptRunner {
         correlationId: dispatch.decisionId,
         causationId: dispatch.decisionId,
         occurredAt: now,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         taskId: dispatch.taskId,
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,
@@ -446,7 +451,7 @@ export class SubtaskAttemptRunner {
         allSubtasks,
         attemptId,
         workUnitId: claim.workUnit.id,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         workspaceContext: {
           allowFilesystem: true,
           workingDirectory: workspace.filesPath,
@@ -481,7 +486,7 @@ export class SubtaskAttemptRunner {
         built.context.evidenceTools.binding = await evidenceToolServer.start();
       }
       const capabilityContext = {
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         taskId: task.id,
         generationId: subtask.generationId,
         subtaskId: subtask.id,
@@ -669,7 +674,7 @@ export class SubtaskAttemptRunner {
             correlationId: dispatchItem.decisionId,
             causationId: dispatchItem.decisionId,
             occurredAt: completedAt,
-            sessionId: this.deps.sessionId,
+            sessionId: this.sessionId,
             taskId: dispatchItem.taskId,
             subtaskId: dispatchItem.subtaskId,
             attemptId: dispatchItem.attemptId,
@@ -842,7 +847,7 @@ export class SubtaskAttemptRunner {
           correlationId: dispatchItem.decisionId,
           causationId: dispatchItem.decisionId,
           occurredAt: completedAt,
-          sessionId: this.deps.sessionId,
+          sessionId: this.sessionId,
           taskId: dispatchItem.taskId,
           subtaskId: dispatchItem.subtaskId,
           attemptId: dispatchItem.attemptId,
@@ -1129,7 +1134,7 @@ export class SubtaskAttemptRunner {
           correlationId: dispatchItem.decisionId,
           causationId: dispatchItem.decisionId,
           occurredAt: completedAt,
-          sessionId: this.deps.sessionId,
+          sessionId: this.sessionId,
           taskId: dispatchItem.taskId,
           subtaskId: dispatchItem.subtaskId,
           attemptId: dispatchItem.attemptId,
@@ -1271,7 +1276,7 @@ export class SubtaskAttemptRunner {
         correlationId: dispatch.decisionId,
         causationId: dispatch.decisionId,
         occurredAt: now,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         taskId: dispatch.taskId,
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,
@@ -1343,7 +1348,7 @@ export class SubtaskAttemptRunner {
         correlationId: dispatch.decisionId,
         causationId: dispatch.decisionId,
         occurredAt: now,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         taskId: dispatch.taskId,
         subtaskId: dispatch.subtaskId,
         attemptId: dispatch.attemptId,

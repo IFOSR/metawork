@@ -24,6 +24,7 @@
     "lint": "tsc --noEmit",
     "setup:native": "node scripts/install-native-macos.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
+    "smoke:gateway": "node scripts/smoke-unified-gateway.mjs",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
     "start": "node dist/index.js"
   },

@@ -15,6 +15,20 @@ export interface FeishuSessionPort {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
   getSnapshot(): SessionSnapshot;
   submit(text: string): Promise<{ exitRequested: boolean }>;
+  submitGatewayMessage?(input: {
+    senderId: string;
+    chatId: string;
+    text: string;
+    requestId: string;
+    onProgress: (text: string) => void;
+  }): Promise<string[]>;
+  readonly runtimePaths?: {
+    pairing: string;
+    audit: string;
+    uploads: string;
+    replies: string;
+    config: string;
+  };
 }
 import { resolveFeishuGatewayConfig, toFeishuAppConfig } from '../gateway/feishu-config.js';
 import {
@@ -423,6 +437,13 @@ interface FeishuMessageSession {
   subscribe?: (listener: (snapshot: Pick<SessionSnapshot, 'output'>) => void) => () => void;
   submit(rawInput: string, options?: { awaitAsyncWork?: boolean }): Promise<{ exitRequested: boolean }>;
   appendSystemMessage(...lines: string[]): void;
+  submitGatewayMessage?(input: {
+    senderId: string;
+    chatId: string;
+    text: string;
+    requestId: string;
+    onProgress: (text: string) => void;
+  }): Promise<string[]>;
 }
 
 export interface FeishuMarkdownPreviewOptions {
@@ -447,6 +468,7 @@ interface FeishuMessageHandlerDeps {
   transport?: 'websocket' | 'webhook';
   pendingResourcesByChatId?: Map<string, string[]>;
   uploadDir?: string;
+  replyDir?: string;
   markdownPreview?: FeishuMarkdownPreviewOptions;
 }
 
@@ -577,13 +599,17 @@ export class FeishuEventBridge {
       session: this.deps.session,
       seenMessageIds: this.seenMessageIds,
       accessPolicy: this.deps.gatewayConfig?.accessPolicy,
-      pairingStore: this.deps.gatewayConfig ? new FeishuPairingStore() : undefined,
+      pairingStore: this.deps.gatewayConfig
+        ? new FeishuPairingStore(this.deps.gatewayConfig.pairingPath)
+        : undefined,
       setHomeChannel: this.deps.gatewayConfig
         ? chatId => writeFeishuHomeChannel(this.deps.gatewayConfig!.configPath, chatId)
         : undefined,
-      audit: createFeishuDeliveryAudit(),
+      audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
       transport: 'webhook',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
+      uploadDir: this.deps.gatewayConfig?.uploadDir,
+      replyDir: this.deps.gatewayConfig?.replyDir,
       markdownPreview: this.deps.markdownPreview,
     });
   }
@@ -602,6 +628,10 @@ interface FeishuWebSocketBridgeDeps {
 interface ResolvedFeishuRuntimeBridgeConfig {
   accessPolicy: FeishuGatewayAccessPolicy;
   configPath: string;
+  pairingPath: string;
+  auditPath: string;
+  uploadDir: string;
+  replyDir: string;
 }
 
 export class FeishuWebSocketBridge implements FeishuBridge {
@@ -624,13 +654,17 @@ export class FeishuWebSocketBridge implements FeishuBridge {
       session: this.deps.session,
       seenMessageIds: this.seenMessageIds,
       accessPolicy: this.deps.gatewayConfig?.accessPolicy,
-      pairingStore: this.deps.gatewayConfig ? new FeishuPairingStore() : undefined,
+      pairingStore: this.deps.gatewayConfig
+        ? new FeishuPairingStore(this.deps.gatewayConfig.pairingPath)
+        : undefined,
       setHomeChannel: this.deps.gatewayConfig
         ? chatId => writeFeishuHomeChannel(this.deps.gatewayConfig!.configPath, chatId)
         : undefined,
-      audit: createFeishuDeliveryAudit(),
+      audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
       transport: 'websocket',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
+      uploadDir: this.deps.gatewayConfig?.uploadDir,
+      replyDir: this.deps.gatewayConfig?.replyDir,
       markdownPreview: this.deps.markdownPreview,
     }));
 
@@ -749,6 +783,42 @@ export async function handleFeishuMessageEvent(
   }
 
   try {
+    if (deps.session.submitGatewayMessage) {
+      const textWithResources = appendPendingFeishuResourcesToText(
+        text,
+        chatId,
+        deps.pendingResourcesByChatId,
+      );
+      const progressQueue: Promise<void>[] = [];
+      const outputLines = await deps.session.submitGatewayMessage({
+        senderId: normalizedEvent.userId ?? 'unknown-sender',
+        chatId,
+        text: textWithResources,
+        requestId: messageId,
+        onProgress: progress => {
+          progressQueue.push(
+            deps.client.sendMarkdownCardToChat(chatId, progress)
+              .catch(error => {
+                deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
+              }),
+          );
+        },
+      });
+      await Promise.all(progressQueue);
+      const targetTaskId = extractFeishuReplyTargetTaskId(outputLines);
+      const replyOutputLines = targetTaskId
+        ? filterFeishuOutputLinesForTask(outputLines, targetTaskId)
+        : outputLines;
+      const rawOutput = formatFeishuReply(replyOutputLines) || formatFeishuPendingReply(replyOutputLines);
+      const output = sanitizeFeishuFinalReply(rawOutput, replyOutputLines);
+      const reply = appendMarkdownPreviewLinks(output, replyOutputLines, deps.markdownPreview);
+      if (reply) {
+        await sendFeishuFinalReplyChunks(chatId, splitForFeishu(reply), deps);
+        await sendArtifactFilesToFeishu(chatId, replyOutputLines, deps);
+      }
+      return true;
+    }
+
     const before = deps.session.getSnapshot().output.length;
     let observedOutputLength = before;
     let progressSendQueue = Promise.resolve();
@@ -867,7 +937,15 @@ export function createFeishuBridge(config: Config, session: FeishuSessionPort): 
   const markdownPreview = buildFeishuMarkdownPreviewOptions(config);
   const gatewayConfig = {
     accessPolicy: buildFeishuGatewayAccessPolicy(config),
-    configPath: resolve(resolveMetaclawDir(), 'config.yaml'),
+    configPath: session.runtimePaths?.config ?? resolve(resolveMetaclawDir(), 'config.yaml'),
+    pairingPath: session.runtimePaths?.pairing
+      ?? resolve(resolveMetaclawDir(), 'feishu-pairings.json'),
+    auditPath: session.runtimePaths?.audit
+      ?? resolve(resolveMetaclawDir(), 'gateway-audit.jsonl'),
+    uploadDir: session.runtimePaths?.uploads
+      ?? resolve(resolveMetaclawDir(), 'feishu-uploads'),
+    replyDir: session.runtimePaths?.replies
+      ?? resolve(resolveMetaclawDir(), 'feishu-replies'),
   };
 
   if (gatewayFeishu.connectionMode === 'webhook') {
@@ -904,8 +982,8 @@ function buildFeishuGatewayAccessPolicy(config: Config): FeishuGatewayAccessPoli
   };
 }
 
-function createFeishuDeliveryAudit(): FeishuDeliveryAudit {
-  const auditLog = new GatewayAuditLog();
+function createFeishuDeliveryAudit(path?: string): FeishuDeliveryAudit {
+  const auditLog = new GatewayAuditLog(path);
   return {
     record(event) {
       auditLog.record({
@@ -2070,7 +2148,7 @@ async function sendFeishuCompleteReplyFallback(
   }
 
   try {
-    const outputDir = resolve(resolveMetaclawDir(), 'feishu-replies');
+    const outputDir = deps.replyDir ?? resolve(resolveMetaclawDir(), 'feishu-replies');
     mkdirSync(outputDir, { recursive: true });
     const filePath = resolve(outputDir, `metaclaw-reply-${Date.now()}.md`);
     writeFileSync(filePath, fullReply.trimEnd() + '\n', 'utf-8');

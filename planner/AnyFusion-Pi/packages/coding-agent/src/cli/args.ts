@@ -27,6 +27,8 @@ export interface Args {
 	sessionId?: string;
 	fork?: string;
 	sessionDir?: string;
+	gatewaySocket?: string;
+	conversationId?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -111,6 +113,10 @@ export function parseArgs(args: string[]): Args {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
+		} else if (arg === "--gateway-socket" && i + 1 < args.length) {
+			result.gatewaySocket = args[++i];
+		} else if (arg === "--conversation-id" && i + 1 < args.length) {
+			result.conversationId = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -223,6 +229,8 @@ ${chalk.bold("Options:")}
   --session <path|id>    使用指定会话
   --session-id <id>      使用指定会话 ID
   --session-dir <dir>    指定会话存储目录
+  --gateway-socket <path> 作为 Gateway TUI 客户端启动
+  --conversation-id <id>  连接到指定 Conversation
   --name, -n <name>      设置会话名称
   --offline              禁止启动期网络访问
   --help, -h             显示帮助

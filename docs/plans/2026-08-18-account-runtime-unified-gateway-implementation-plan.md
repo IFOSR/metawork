@@ -1,6 +1,6 @@
 # Account Runtime And Unified Gateway Implementation Plan
 
-> Status: Delivered — 2026-08-19; account data root, AccountRuntime composition, unified Gateway core, and all surface cutovers (Web/Feishu/TUI/Gateway) shipped; production MetaclawSession construction removed
+> Status: Delivered — 2026-08-19; account-scoped install/update authority, AccountRuntime composition and startup recovery, unified Gateway core, ordered replay, and all surface cutovers (Web/Feishu/TUI/Unix/script) shipped; production MetaclawSession construction removed
 > Plan date: 2026-08-18
 > Governing ADR: ADR-0031
 > Approved design: `docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`
@@ -1432,6 +1432,80 @@ git add docs/plans/2026-08-18-account-runtime-unified-gateway-implementation-pla
   docs/plans/2026-08-18-account-runtime-unified-gateway-design.md docs/README.md
 git commit -m "docs: close unified gateway plan"
 ```
+
+## Delivery Closure
+
+**Completion date:** 2026-08-19
+
+Delivered behavior:
+
+- production startup activates one
+  `RuntimeRegistry -> AccountRuntime -> ConversationRegistry` hierarchy;
+- one `ClientGateway` serves Unix, Web, Feishu, native AnyFusion-Pi and scripted
+  clients, with Web/Feishu/Unix able to coexist in one Server;
+- `ConversationSession` owns only conversation mailbox, Planner turn and safe
+  presentation state; AccountRuntime owns recovery, Kernel coordination,
+  execution, publication and timers;
+- native AnyFusion-Pi enters Gateway-only client mode before local model, tool
+  or semantic-session construction; controlled Planner RPC remains server-side;
+- command admission, idempotency, ordered journal replay, reconnect cursor
+  handling and uncertain-execution recovery are durable;
+- event append and replay recursively sanitize sensitive content and enforce a
+  64 KiB payload bound;
+- stale replay cursors reset to a compacted current/terminal snapshot; current
+  oversized answers complete successfully through a bounded terminal
+  projection and historical oversized answers remain readable;
+- account timers run once per AccountRuntime without requiring an open
+  Conversation, and shutdown drains attachment, command, cancellation retry
+  and timer work before storage closes;
+- SQLite migration preserves committed WAL data, activates from a verified
+  staging manifest, and archives the legacy layout outside writable authority;
+- clean install, update and rollback switch account-scoped database,
+  configuration, SecretStore and generated-runtime authority;
+- the preserved Ink TUI remains source-available as a standby module and is not
+  the production default path.
+
+Migration evidence:
+
+- legacy database, Planner sessions, configuration, secrets, generated
+  runtimes, workspaces and attempts migrate once into
+  `accounts/local-default`;
+- the migrated database becomes an account-local revision pointer;
+- active configuration pointers are rebuilt inside the account root;
+- runtime, administration and later native update/rollback do not write legacy
+  installation-global account-state paths.
+
+Validation completed on 2026-08-19:
+
+- `npm run lint -- --pretty false`: passed;
+- `npm run build`: passed;
+- `npm test`: 302 files passed, 4 skipped; 1312 tests passed, 15 skipped;
+- `cd web && npm run build`: passed;
+- `cd planner/AnyFusion-Pi && npm run build:offline`: passed;
+- final architecture/integration topology audit: 5 files, 22 tests passed;
+- `npm run smoke:gateway`: 7 files, 27 tests passed with an isolated install
+  root;
+- focused account install/update/migration gate: 6 files, 22 tests passed;
+- after moving legacy migration inside the native updater's `update.lock`
+  critical section, the affected 5 files/19 tests, lint and root build passed;
+  the complete suite was not repeated after this final sequencing-only change;
+- `npm run smoke:metaclaw`: reached
+  `ScriptedGatewaySession -> ClientGateway -> Conversation -> server Planner`
+  and the external model Provider, then failed with HTTP 401 because the
+  installed Kimi API key is invalid or expired. No Markdown Preview port error
+  or internal composition failure remained.
+
+Release notes:
+
+- closing commit: not created;
+- Docker compatibility build/run was not executed on this native macOS closure;
+- the provider-dependent live semantic smoke must be rerun after installing a
+  valid credential, but this does not invalidate the provider-independent
+  architecture, recovery and Gateway gates above.
+
+Explicitly deferred non-goals remain unchanged: multi-top-level-Task scheduling,
+cross-account collaboration, cloud organization/billing, distributed Runtime
+leadership, concrete App authentication/UI and remote A2A Executor transport.
 
 ## Phase Gates
 

@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
+  lstat,
   mkdir,
-  open,
   readdir,
   readlink,
+  rename,
   rm,
+  symlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
+import { resolveAccountPaths, type AccountPaths } from '../account/account-paths.js';
 import { ConfigurationCompiler } from '../configuration/configuration-compiler.js';
 import { ConfigurationService } from '../configuration/configuration-service.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
@@ -26,6 +30,8 @@ import {
 } from './release-pointer-transaction.js';
 import { createMigrationContextFromSnapshot } from './schema30-migration-context.js';
 import { stageSourceRelease } from './source-native-installer.js';
+import { AccountLayoutMigrator } from './account-layout-migrator.js';
+import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
 
 export interface SourceNativeUpdateInput {
   releaseId: string;
@@ -49,37 +55,33 @@ export class SourceNativeUpdater {
   }) {}
 
   async update(input: SourceNativeUpdateInput): Promise<SourceNativeUpdateResult> {
+    const paths = this.dependencies.paths;
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     if (await this.dependencies.isServerRunning()) {
       throw new Error(
         'running Server must be quiesced through ServerUpdateCoordinator before update',
       );
     }
-    const paths = this.dependencies.paths;
-    await mkdir(paths.root, { recursive: true, mode: 0o700 });
-    const lockPath = join(paths.root, 'update.lock');
-    const lock = await open(lockPath, 'wx', 0o600).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'EEXIST') {
-        throw new Error('another AnyFusion update transaction holds the update lock');
-      }
-      throw error;
-    });
+    const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      const pointerPaths = releasePointerPaths(paths);
+      await new AccountLayoutMigrator({ paths }).migrate();
+      await ensureRevisionedDatabasePointer(accountPaths);
+      const pointerPaths = releasePointerPaths(paths, accountPaths);
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths);
       const upgradeId = `update-${input.releaseId}-${randomUUID()}`;
       const release = resolveReleasePaths(paths.root, input.releaseId);
-      const repository = new FileConfigurationRepository(dirname(paths.configurationRevisions));
+      const repository = new FileConfigurationRepository(accountPaths.config);
       await repository.initialize();
       await repository.recover();
       const snapshot = await repository.getActiveSnapshot();
 
       await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
-      const sourceSchema = readSchemaVersion(paths.database);
+      const sourceSchema = readSchemaVersion(accountPaths.database);
       if (sourceSchema !== 30 && sourceSchema !== 31) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
-      const candidateDatabase = join(paths.databaseRevisions, `${upgradeId}.db`);
-      const backupDatabase = join(paths.backups, upgradeId, 'metaclaw.db');
+      const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
+      const backupDatabase = join(accountPaths.backups, upgradeId, 'anyfusion.db');
       const migrationContext = sourceSchema === 30
         ? createMigrationContextFromSnapshot(snapshot)
         : undefined;
@@ -95,7 +97,7 @@ export class SourceNativeUpdater {
         },
       });
       await databaseTransaction.prepare({
-        sourcePath: paths.database,
+        sourcePath: accountPaths.database,
         backupPath: backupDatabase,
         clonePath: candidateDatabase,
         expectedSourceSchema: sourceSchema,
@@ -105,7 +107,7 @@ export class SourceNativeUpdater {
       await chmod(candidateDatabase, 0o600);
 
       const candidateTargets: Record<ReleasePointerName, string> = {
-        database: relative(dirname(paths.database), candidateDatabase),
+        database: relative(dirname(accountPaths.database), candidateDatabase),
         configuration: await readlink(pointerPaths.configuration),
         generated: await readlink(pointerPaths.generated),
         application: relative(dirname(paths.appCurrent), release.releaseRoot),
@@ -127,34 +129,29 @@ export class SourceNativeUpdater {
               `candidate configuration probe failed: ${(probeResult.issues ?? []).join('; ')}`,
             );
           }
-          verifyActiveDatabase(paths.database);
+          verifyActiveDatabase(accountPaths.database);
         },
       });
       await activation.activate(candidateTargets);
       return { outcome: 'committed', upgradeId, journalPath };
     } finally {
-      await lock.close();
-      await rm(lockPath, { force: true });
+      await lock.release();
     }
   }
 
   async rollback(releaseId: string): Promise<SourceNativeUpdateResult> {
+    const paths = this.dependencies.paths;
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     if (await this.dependencies.isServerRunning()) {
       throw new Error(
         'running Server must be quiesced through ServerUpdateCoordinator before rollback',
       );
     }
-    const paths = this.dependencies.paths;
-    await mkdir(paths.root, { recursive: true, mode: 0o700 });
-    const lockPath = join(paths.root, 'update.lock');
-    const lock = await open(lockPath, 'wx', 0o600).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'EEXIST') {
-        throw new Error('another AnyFusion update transaction holds the update lock');
-      }
-      throw error;
-    });
+    const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      const pointerPaths = releasePointerPaths(paths);
+      await new AccountLayoutMigrator({ paths }).migrate();
+      await ensureRevisionedDatabasePointer(accountPaths);
+      const pointerPaths = releasePointerPaths(paths, accountPaths);
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths);
       const currentApplication = await readlink(paths.appCurrent);
       const names = await readdir(paths.upgradeJournals)
@@ -178,7 +175,7 @@ export class SourceNativeUpdater {
         throw new Error(`rollback target was not previously verified compatible: ${releaseId}`);
       }
 
-      const repository = new FileConfigurationRepository(dirname(paths.configurationRevisions));
+      const repository = new FileConfigurationRepository(accountPaths.config);
       await repository.initialize();
       await repository.recover();
       const targetRevision = basename(target.previousTargets.configuration);
@@ -218,7 +215,7 @@ export class SourceNativeUpdater {
         files: compiledConfiguration.files,
       });
       const compiledRuntime = await new ConfigurationCompiler(
-        paths.generatedAgentRuntime,
+        accountPaths.generatedAgentRuntime,
       ).compile({
         revisionId: upgradeId,
         contentHash: compiledConfiguration.contentHash,
@@ -229,9 +226,9 @@ export class SourceNativeUpdater {
         ...target.previousTargets,
         configuration: relative(
           dirname(pointerPaths.configuration),
-          join(paths.configurationRevisions, upgradeId),
+          join(accountPaths.configRevisions, upgradeId),
         ),
-        generated: relative(dirname(paths.generatedCurrent), compiledRuntime.rootPath),
+        generated: relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
       };
       const journalPath = join(paths.upgradeJournals, `${upgradeId}-activation.json`);
       const activation = new ReleasePointerTransaction({
@@ -248,27 +245,60 @@ export class SourceNativeUpdater {
               `rollback configuration probe failed: ${(probeResult.issues ?? []).join('; ')}`,
             );
           }
-          verifyCompatibleDatabase(paths.database);
+          verifyCompatibleDatabase(accountPaths.database);
         },
       });
       await activation.activate(rollbackTargets);
       return { outcome: 'committed', upgradeId, journalPath };
     } finally {
-      await lock.close();
-      await rm(lockPath, { force: true });
+      await lock.release();
     }
   }
 }
 
 function releasePointerPaths(
   paths: AnyFusionPaths,
+  accountPaths: AccountPaths,
 ): Record<ReleasePointerName, string> {
   return {
-    database: paths.database,
-    configuration: join(dirname(paths.configurationRevisions), 'active'),
-    generated: paths.generatedCurrent,
+    database: accountPaths.database,
+    configuration: accountPaths.configActive,
+    generated: accountPaths.generatedCurrent,
     application: paths.appCurrent,
   };
+}
+
+async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Promise<void> {
+  const info = await lstat(accountPaths.database);
+  if (info.isSymbolicLink()) return;
+  if (!info.isFile()) {
+    throw new Error(`account database is not a file or symlink: ${accountPaths.database}`);
+  }
+  verifyCompatibleDatabase(accountPaths.database);
+  await mkdir(accountPaths.databaseRevisions, { recursive: true, mode: 0o700 });
+  const baseline = join(
+    accountPaths.databaseRevisions,
+    `pre-revision-pointer-${randomUUID()}.db`,
+  );
+  await backupSqliteDatabase(accountPaths.database, baseline);
+  await chmod(baseline, 0o600);
+  verifyCompatibleDatabase(baseline);
+  const temporary = `${accountPaths.database}.next-${randomUUID()}`;
+  await symlink(relative(dirname(accountPaths.database), baseline), temporary);
+  await rename(temporary, accountPaths.database);
+}
+
+async function backupSqliteDatabase(sourcePath: string, targetPath: string): Promise<void> {
+  await rm(targetPath, { force: true });
+  const source = new Database(sourcePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    await source.backup(targetPath);
+  } finally {
+    source.close();
+  }
 }
 
 function readSchemaVersion(path: string): number {

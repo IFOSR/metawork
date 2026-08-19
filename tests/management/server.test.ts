@@ -4,25 +4,10 @@ import { describe, expect, it } from 'vitest';
 import {
   ManagementServer,
   type ConfigQuery,
-  type ManagementWebSessionCatalog,
   type ManagementWebSessionRuntime,
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
-import type { InteractionTrace } from '../../src/management/interaction-trace.js';
-import type {
-  ConversationTurn,
-  WebSessionRecord,
-} from '../../src/management/web-session-types.js';
-
-interface TestSession {
-  initialize(): void;
-  subscribe(listener: (snapshot: { output: string[]; currentTaskId: string | null }) => void): () => void;
-  getSnapshot(): { output: string[]; currentTaskId: string | null };
-  subscribeInteractionTrace(listener: (trace: InteractionTrace | null) => void): () => void;
-  getInteractionTrace(): InteractionTrace | null;
-  submit(): Promise<{ exitRequested: boolean }>;
-  dispose(): Promise<void>;
-}
+import type { WebSessionRecord } from '../../src/management/web-session-types.js';
 
 function metadataFixture(id: string, active: boolean) {
   return {
@@ -115,107 +100,49 @@ class RawWebSocketClient {
 }
 
 describe('ManagementServer WebSocket authentication', () => {
-  it('streams structured conversation updates and persists only the terminal turn', async () => {
+  it('stops accepting connections before waiting for the session runtime to dispose', async () => {
     const port = await reservePort();
-    const snapshotListeners = new Set<
-      (snapshot: { output: string[]; currentTaskId: string | null }) => void
-    >();
-    const traceListeners = new Set<(trace: InteractionTrace | null) => void>();
-    const persisted: ConversationTurn[] = [];
-    const record: WebSessionRecord = {
-      version: 1,
-      session: {
-        id: 'session_catalog',
-        title: 'New session',
-        createdAt: '2026-08-17T08:00:00.000Z',
-        updatedAt: '2026-08-17T08:00:00.000Z',
-        active: true,
-        archived: false,
-      },
-      turns: [],
-    };
-    const sessionCatalog: ManagementWebSessionCatalog = {
-      async initialize() {},
-      async create() {
-        return record;
-      },
-      async appendTurn(_sessionId, turn) {
-        persisted.push(structuredClone(turn));
-        return record;
-      },
-    };
-    const session: TestSession = {
-      initialize() {},
-      subscribe(listener) {
-        snapshotListeners.add(listener);
-        listener({ output: [], currentTaskId: null });
-        return () => snapshotListeners.delete(listener);
-      },
-      getSnapshot: () => ({ output: [], currentTaskId: null }),
-      subscribeInteractionTrace(listener) {
-        traceListeners.add(listener);
-        listener(null);
-        return () => traceListeners.delete(listener);
-      },
-      getInteractionTrace: () => null,
-      async submit() {
-        const runningTrace: InteractionTrace = {
-          sessionId: 'session_catalog',
-          turnId: 'turn_stream',
-          taskId: null,
-          status: 'running',
-          startedAt: '2026-08-17T08:00:00.000Z',
-          completedAt: null,
-          events: [{
-            id: 'event_query',
-            sequence: 1,
-            occurredAt: '2026-08-17T08:00:00.000Z',
-            phase: 'intake',
-            actor: 'user',
-            kind: 'query_received',
-            status: 'completed',
-            title: 'User query received',
-            summary: 'Show the flow',
-            details: {},
-          }],
-        };
-        for (const listener of traceListeners) listener(runningTrace);
-        for (const listener of snapshotListeners) {
-          listener({
-            output: ['', '> Show the flow', 'Final answer'],
-            currentTaskId: null,
-          });
+    const disposal = deferred<void>();
+    let disposeCalls = 0;
+    const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        dispose: async () => {
+          disposeCalls += 1;
+          await disposal.promise;
+        },
+      }),
+    });
+    await server.start();
+
+    const firstStop = server.stop();
+    const secondStop = server.stop();
+    try {
+      expect(await canConnect(port)).toBe(false);
+      expect(disposeCalls).toBe(1);
+    } finally {
+      disposal.resolve();
+      await Promise.all([firstStop, secondStop]);
+    }
+  });
+
+  it('submits WebSocket input only through the required session runtime', async () => {
+    const port = await reservePort();
+    const submitted: string[] = [];
+    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const sessionRuntime = createSessionRuntime({
+      activeSessionId: 'session_gateway',
+      submit: async text => {
+        submitted.push(text);
+        for (const listener of listeners) {
+          listener({ type: 'output', from: 0, lines: ['Final answer'] });
         }
-        const completedTrace: InteractionTrace = {
-          ...runningTrace,
-          status: 'completed',
-          completedAt: '2026-08-17T08:00:03.000Z',
-          events: [...runningTrace.events, {
-            id: 'event_delivery',
-            sequence: 2,
-            occurredAt: '2026-08-17T08:00:03.000Z',
-            phase: 'delivery',
-            actor: 'runtime',
-            kind: 'delivery_completed',
-            status: 'completed',
-            title: 'Response delivered',
-            summary: 'Final answer',
-            details: {},
-          }],
-        };
-        for (const listener of traceListeners) listener(completedTrace);
-        return { exitRequested: false };
       },
-      async dispose() {},
-    };
-    const server = createManagementServer(
-      port,
-      undefined,
-      session,
-      undefined,
-      undefined,
-      sessionCatalog,
-    );
+      subscribe: listener => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
     const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
@@ -223,29 +150,15 @@ describe('ManagementServer WebSocket authentication', () => {
     try {
       expect(JSON.parse(await client.nextText())).toEqual({
         type: 'hello',
-        sessionId: 'session_catalog',
+        sessionId: 'session_gateway',
       });
       client.sendJson({ type: 'input', text: 'Show the flow' });
-
-      const projections: Array<{ status: string; finalAnswer: string | null }> = [];
-      for (let index = 0; index < 10 && !projections.some(item => item.status === 'completed'); index += 1) {
-        const message = JSON.parse(await client.nextText()) as {
-          type: string;
-          turn?: { status: string; finalAnswer: string | null };
-        };
-        if (message.type === 'conversation_snapshot' && message.turn) {
-          projections.push(message.turn);
-        }
-      }
-
-      expect(projections[0]?.status).toBe('running');
-      expect(projections.at(-1)).toMatchObject({
-        status: 'completed',
-        finalAnswer: 'Final answer',
-      });
-      await new Promise(resolve => setTimeout(resolve, 0));
-      expect(persisted).toHaveLength(1);
-      expect(persisted[0]?.status).toBe('completed');
+      await expect(client.nextText()).resolves.toBe(JSON.stringify({
+        type: 'output',
+        from: 0,
+        lines: ['Final answer'],
+      }));
+      expect(submitted).toEqual(['Show the flow']);
     } finally {
       client.close();
       await server.stop();
@@ -278,15 +191,7 @@ describe('ManagementServer WebSocket authentication', () => {
       },
       getReplayEvents: () => [],
     };
-    const server = createManagementServer(
-      port,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      sessionRuntime,
-    );
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
     const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
@@ -358,15 +263,7 @@ describe('ManagementServer WebSocket authentication', () => {
       },
       getReplayEvents: () => [],
     };
-    const server = createManagementServer(
-      port,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      sessionRuntime,
-    );
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
 
     try {
@@ -416,16 +313,9 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('sends trace snapshots on connect and ordered deltas while a turn is running', async () => {
+  it('replays trace events on connect and streams ordered deltas while a turn is running', async () => {
     const port = await reservePort();
-    let trace: InteractionTrace = {
-      sessionId: 'sess_web_trace',
-      turnId: 'turn-trace',
-      taskId: null,
-      status: 'running',
-      startedAt: '2026-08-17T00:00:00.000Z',
-      completedAt: null,
-      events: [{
+    const firstEvent = {
         id: 'interaction:turn-trace:query_received:query',
         sequence: 1,
         occurredAt: '2026-08-17T00:00:00.000Z',
@@ -436,38 +326,35 @@ describe('ManagementServer WebSocket authentication', () => {
         title: 'User query received',
         summary: 'Show the process',
         details: {},
+      } as const;
+    const traceListeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const sessionRuntime = createSessionRuntime({
+      activeSessionId: 'sess_web_trace',
+      getReplayEvents: () => [{
+        type: 'trace_delta',
+        turnId: 'turn-trace',
+        fromSequence: 1,
+        events: [firstEvent],
       }],
-    };
-    const traceListeners = new Set<(value: InteractionTrace | null) => void>();
-    const session: TestSession = {
-      initialize() {},
       subscribe(listener) {
-        listener({ output: [], currentTaskId: null });
-        return () => {};
-      },
-      getSnapshot: () => ({ output: [], currentTaskId: null }),
-      subscribeInteractionTrace(listener) {
         traceListeners.add(listener);
-        listener(structuredClone(trace));
         return () => traceListeners.delete(listener);
       },
-      getInteractionTrace: () => structuredClone(trace),
-      async submit() {
-        return { exitRequested: false };
-      },
-      async dispose() {},
-    };
-    const server = createManagementServer(port, undefined, session);
+    });
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
     const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
 
     try {
       await expect(first.nextText()).resolves.toContain('"type":"hello"');
-      await expect(first.nextText()).resolves.toContain('"type":"trace_snapshot"');
-      trace = {
-        ...trace,
-        events: [...trace.events, {
+      await expect(first.nextText()).resolves.toBe(JSON.stringify({
+        type: 'trace_delta',
+        turnId: 'turn-trace',
+        fromSequence: 1,
+        events: [firstEvent],
+      }));
+      const secondEvent = {
           id: 'interaction:turn-trace:planner_started:planner',
           sequence: 2,
           occurredAt: '2026-08-17T00:00:01.000Z',
@@ -478,22 +365,30 @@ describe('ManagementServer WebSocket authentication', () => {
           title: 'Planner started',
           summary: 'Planning',
           details: {},
-        }],
-      };
-      for (const listener of traceListeners) listener(structuredClone(trace));
+        } as const;
+      for (const listener of traceListeners) {
+        listener({
+          type: 'trace_delta',
+          turnId: 'turn-trace',
+          fromSequence: 2,
+          events: [secondEvent],
+        });
+      }
       await expect(first.nextText()).resolves.toBe(JSON.stringify({
         type: 'trace_delta',
         turnId: 'turn-trace',
         fromSequence: 2,
-        events: [trace.events[1]],
+        events: [secondEvent],
       }));
 
       const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
       try {
         await expect(second.nextText()).resolves.toContain('"type":"hello"');
         await expect(second.nextText()).resolves.toBe(JSON.stringify({
-          type: 'trace_snapshot',
-          trace,
+          type: 'trace_delta',
+          turnId: 'turn-trace',
+          fromSequence: 1,
+          events: [firstEvent],
         }));
       } finally {
         second.close();
@@ -587,7 +482,7 @@ describe('ManagementServer WebSocket authentication', () => {
 
   it('rejects WebSocket upgrades without a session Cookie', async () => {
     const port = await reservePort();
-    const server = createManagementServer(port, 20);
+    const server = createManagementServer(port, { webSocketAuthTimeoutMs: 20 });
     await server.start();
 
     try {
@@ -640,10 +535,12 @@ describe('ManagementServer WebSocket authentication', () => {
   it('writes a provider secret and never echoes the plaintext back', async () => {
     const port = await reservePort();
     let storedApiKey = '';
-    const server = createManagementServer(port, undefined, undefined, undefined, {
-      writeSecret: async (_ref, apiKey) => {
-        storedApiKey = apiKey;
-        return { apiKeyRef: 'file-secret:anyfusion/providers/provider-test' };
+    const server = createManagementServer(port, {
+      configQuery: {
+        writeSecret: async (_ref, apiKey) => {
+          storedApiKey = apiKey;
+          return { apiKeyRef: 'file-secret:anyfusion/providers/provider-test' };
+        },
       },
     });
     await server.start();
@@ -676,46 +573,32 @@ describe('ManagementServer WebSocket authentication', () => {
 
   it('tags output increments with stable absolute cursors so reconnects dedupe by index', async () => {
     const port = await reservePort();
-    const state = { output: ['第一行', '第二行'], currentTaskId: null as string | null };
-    const listeners = new Set<
-      (snapshot: { output: string[]; currentTaskId: string | null }) => void
-    >();
-    const session = {
-      initialize() {},
+    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const replay = [{ type: 'output', from: 0, lines: ['第一行', '第二行'] }] as const;
+    const sessionRuntime = createSessionRuntime({
+      getReplayEvents: () => structuredClone(replay),
       subscribe(listener) {
         listeners.add(listener);
-        listener({ ...state, output: [...state.output] });
         return () => {
           listeners.delete(listener);
         };
       },
-      getSnapshot: () => ({ ...state, output: [...state.output] }),
-      subscribeInteractionTrace(listener) {
-        listener(null);
-        return () => {};
-      },
-      getInteractionTrace: () => null,
-      async submit() {
-        return { exitRequested: false };
-      },
-      async dispose() {},
-    } satisfies TestSession;
-    const server = createManagementServer(port, undefined, session);
+    });
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
     const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
 
     try {
+      await expect(first.nextText()).resolves.toContain('"type":"hello"');
       // 新连接拿到 from=0 的全量回放。
       await expect(first.nextText()).resolves.toBe(
         JSON.stringify({ type: 'output', from: 0, lines: ['第一行', '第二行'] }),
       );
-      await expect(first.nextText()).resolves.toContain('"type":"hello"');
 
       // 后续增量携带绝对游标。
-      state.output.push('第三行');
       for (const listener of listeners) {
-        listener({ ...state, output: [...state.output] });
+        listener({ type: 'output', from: 2, lines: ['第三行'] });
       }
       await expect(first.nextText()).resolves.toBe(
         JSON.stringify({ type: 'output', from: 2, lines: ['第三行'] }),
@@ -724,8 +607,9 @@ describe('ManagementServer WebSocket authentication', () => {
       // 重连的新连接再次从 from=0 全量回放，客户端按下标幂等合并即无重复。
       const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
       try {
+        await expect(second.nextText()).resolves.toContain('"type":"hello"');
         await expect(second.nextText()).resolves.toBe(
-          JSON.stringify({ type: 'output', from: 0, lines: ['第一行', '第二行', '第三行'] }),
+          JSON.stringify({ type: 'output', from: 0, lines: ['第一行', '第二行'] }),
         );
       } finally {
         second.close();
@@ -738,29 +622,15 @@ describe('ManagementServer WebSocket authentication', () => {
 
   it('sends the current execution timeline to a freshly connected client', async () => {
     const port = await reservePort();
-    const state = { output: [] as string[], currentTaskId: 'task-live' as string | null };
-    const session = {
-      initialize() {},
-      subscribe(listener) {
-        listener({ ...state, output: [...state.output] });
-        return () => {};
-      },
-      getSnapshot: () => ({ ...state, output: [...state.output] }),
-      subscribeInteractionTrace(listener) {
-        listener(null);
-        return () => {};
-      },
-      getInteractionTrace: () => null,
-      async submit() {
-        return { exitRequested: false };
-      },
-      async dispose() {},
-    } satisfies TestSession;
     const timeline = { taskId: 'task-live', title: 'demo', status: 'running', stages: [] };
-    const server = createManagementServer(port, undefined, session, {
-      listTasks: () => [],
-      projectTimeline: taskId => (taskId === 'task-live' ? timeline : null),
+    const sessionRuntime = createSessionRuntime({
+      getReplayEvents: () => [{
+        type: 'execution',
+        taskId: 'task-live',
+        timeline,
+      }],
     });
+    const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
     const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
@@ -788,32 +658,17 @@ describe('ManagementServer WebSocket authentication', () => {
   });
 });
 
+interface ManagementServerTestOverrides {
+  readonly webSocketAuthTimeoutMs?: number;
+  readonly sessionRuntime?: ManagementWebSessionRuntime;
+  readonly executionQuery?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown };
+  readonly configQuery?: Partial<ConfigQuery>;
+}
+
 function createManagementServer(
   port: number,
-  webSocketAuthTimeoutMs?: number,
-  sessionOverride?: TestSession,
-  executionQueryOverride?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown },
-  configQueryOverride?: Partial<ConfigQuery>,
-  sessionCatalogOverride?: ManagementWebSessionCatalog,
-  sessionRuntimeOverride?: ManagementWebSessionRuntime,
+  overrides: ManagementServerTestOverrides = {},
 ): ManagementServer {
-  const session = sessionOverride ?? {
-    initialize() {},
-    subscribe(listener) {
-      listener({ output: [], currentTaskId: null });
-      return () => {};
-    },
-    getSnapshot: () => ({ output: [], currentTaskId: null }),
-    subscribeInteractionTrace(listener) {
-      listener(null);
-      return () => {};
-    },
-    getInteractionTrace: () => null,
-    async submit() {
-      return { exitRequested: false };
-    },
-    async dispose() {},
-  } satisfies TestSession;
   const webAuth = new WebAuthService({
     bootstrapToken: 'bootstrap-token',
     manualAccessToken: 'manual-token',
@@ -825,11 +680,9 @@ function createManagementServer(
     token: webAuth.manualAccessToken,
     webAuth,
     runningRevisionId: 'revision-runtime',
-    webSocketAuthTimeoutMs,
-    sessionFactory: () => session as never,
-    sessionCatalog: sessionCatalogOverride,
-    sessionRuntime: sessionRuntimeOverride,
-    executionQuery: executionQueryOverride ?? {
+    webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
+    sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
+    executionQuery: overrides.executionQuery ?? {
       listTasks: () => [],
       projectTimeline: () => null,
     },
@@ -840,9 +693,37 @@ function createManagementServer(
       activate: async () => ({ ok: true, revisionId: 'revision-next' }),
       rollback: async () => ({ ok: true, revisionId: 'revision-test' }),
       writeSecret: async () => ({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' }),
-      ...configQueryOverride,
+      ...overrides.configQuery,
     },
   });
+}
+
+function createSessionRuntime(
+  overrides: Partial<ManagementWebSessionRuntime> = {},
+): ManagementWebSessionRuntime {
+  return {
+    activeSessionId: 'session_live',
+    async initialize() {},
+    async dispose() {},
+    async submit() {},
+    async listSessions() {
+      return [];
+    },
+    async readSession() {
+      return null;
+    },
+    async createSession() {
+      throw new Error('not used');
+    },
+    async activateSession(sessionId) {
+      return { state: 'active', sessionId };
+    },
+    subscribe() {
+      return () => {};
+    },
+    getReplayEvents: () => [],
+    ...overrides,
+  };
 }
 
 async function reservePort(): Promise<number> {
@@ -855,6 +736,25 @@ async function reservePort(): Promise<number> {
   if (!address || typeof address === 'string') throw new Error('failed to reserve port');
   await new Promise<void>(resolve => server.close(() => resolve()));
   return address.port;
+}
+
+async function canConnect(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 async function connectWebSocket(

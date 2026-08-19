@@ -342,6 +342,8 @@ describe('PlannerProcessSupervisor', () => {
       command: '/release/planner',
       plannerHome: join(root, 'planner-home'),
       sessionDir: join(root, 'planner-sessions'),
+      databasePath: join(root, 'account', 'data', 'anyfusion.db'),
+      configurationRoot: join(root, 'account', 'config'),
       envFile,
       runtimeEnvironment: {
         OPENAI_BASE_URL: 'https://api.deepseek.example/v1',
@@ -359,6 +361,8 @@ describe('PlannerProcessSupervisor', () => {
       expect(spawn.mock.calls[0]?.[2].env).toMatchObject({
         OPENAI_BASE_URL: 'https://api.deepseek.example/v1',
         OPENAI_API_KEY: 'deepseek-key',
+        METACLAW_DB_PATH: join(root, 'account', 'data', 'anyfusion.db'),
+        ANYFUSION_ACCOUNT_CONFIG_ROOT: join(root, 'account', 'config'),
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -667,7 +671,13 @@ describe('PlannerProcessSupervisor', () => {
           METACLAW_CONFIGURATION_REVISION: 'revision-runtime',
         });
       }
-      expect(launches[1]?.args).toContain(join(root, 'planner-sessions', 'session-1.interactive.jsonl'));
+      expect(launches[1]?.args).toEqual(expect.arrayContaining([
+        '--gateway-socket',
+        join(root, 'planner.sock'),
+        '--conversation-id',
+        'session-1',
+      ]));
+      expect(launches[1]?.args).not.toContain('--session');
       expect(launches[2]).toMatchObject({
         command: '/release/planner',
         args: ['--version'],

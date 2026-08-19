@@ -327,11 +327,14 @@ export async function runPlannerMcpServer(): Promise<void> {
   const sessionId = process.env.METACLAW_PLANNER_SESSION_ID;
   if (!home) throw new Error('METACLAW_HOME is required');
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
-  const dbPath = process.env.METACLAW_DB_PATH ?? join(home, 'metaclaw.db');
+  const paths = resolvePlannerMcpRuntimePaths({
+    home,
+    databasePath: process.env.METACLAW_DB_PATH,
+    configurationRoot: process.env.ANYFUSION_ACCOUNT_CONFIG_ROOT,
+  });
+  const dbPath = paths.databasePath;
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-  const configurationRepository = new FileConfigurationRepository(
-    dirname(resolveAnyFusionPaths().configurationRevisions),
-  );
+  const configurationRepository = new FileConfigurationRepository(paths.configurationRoot);
   const snapshot = await loadPlannerConfigurationSnapshot(
     configurationRepository,
     process.env.METACLAW_CONFIGURATION_REVISION,
@@ -341,6 +344,18 @@ export async function runPlannerMcpServer(): Promise<void> {
     new PlannerDataReader(db, sessionId, () => routingCatalog),
   );
   await server.connect(new StdioServerTransport());
+}
+
+export function resolvePlannerMcpRuntimePaths(input: {
+  home: string;
+  databasePath?: string;
+  configurationRoot?: string;
+}): { databasePath: string; configurationRoot: string } {
+  return {
+    databasePath: input.databasePath?.trim() || join(input.home, 'metaclaw.db'),
+    configurationRoot: input.configurationRoot?.trim()
+      || dirname(resolveAnyFusionPaths().configurationRevisions),
+  };
 }
 
 export async function loadPlannerConfigurationSnapshot(

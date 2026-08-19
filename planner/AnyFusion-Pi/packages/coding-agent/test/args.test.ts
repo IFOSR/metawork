@@ -85,6 +85,18 @@ describe("parseArgs", () => {
 	});
 
 	describe("flags with values", () => {
+		test("parses Gateway client-only launch flags", () => {
+			const result = parseArgs([
+				"--gateway-socket",
+				"/tmp/anyfusion-gateway.sock",
+				"--conversation-id",
+				"conv_native",
+			]);
+			expect(result.gatewaySocket).toBe("/tmp/anyfusion-gateway.sock");
+			expect(result.conversationId).toBe("conv_native");
+			expect(result.unknownFlags.size).toBe(0);
+		});
+
 		test("parses --provider", () => {
 			const result = parseArgs(["--provider", "openai"]);
 			expect(result.provider).toBe("openai");

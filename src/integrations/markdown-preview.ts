@@ -76,7 +76,7 @@ export class MarkdownPreviewServer {
       return Promise.resolve();
     }
 
-    this.server = createServer((request, response) => {
+    const server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', createMarkdownPreviewBaseUrl(this.config)).pathname;
       if (request.method !== 'GET' || !pathname.startsWith('/preview/')) {
         writeHtml(response, 404, '<h1>Not Found</h1>');
@@ -99,10 +99,15 @@ export class MarkdownPreviewServer {
       writeHtml(response, 200, renderMarkdownPreviewPage(markdown, basename(filePath)));
     });
 
+    this.server = server;
     return new Promise((resolveStart, reject) => {
-      this.server!.once('error', reject);
-      this.server!.listen(this.config.port, this.config.host, () => {
-        this.server!.off('error', reject);
+      const failStart = (error: Error) => {
+        if (this.server === server) this.server = null;
+        reject(error);
+      };
+      server.once('error', failStart);
+      server.listen(this.config.port, this.config.host, () => {
+        server.off('error', failStart);
         resolveStart();
       });
     });
@@ -115,6 +120,7 @@ export class MarkdownPreviewServer {
 
     const server = this.server;
     this.server = null;
+    if (!server.listening) return Promise.resolve();
     return new Promise((resolveStop, reject) => {
       server.closeIdleConnections?.();
       server.closeAllConnections?.();

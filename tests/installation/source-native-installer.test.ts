@@ -14,6 +14,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
+import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
@@ -36,7 +38,8 @@ describe('SourceNativeInstaller', () => {
     const plannerRoot = join(home, 'planner-source');
     fixtureRelease(sourceRoot, plannerRoot);
     const paths = resolveAnyFusionPaths(home);
-    const secretStore = new FileSecretStore(paths.secrets);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+    const secretStore = new FileSecretStore(accountPaths.secrets);
     const installer = new SourceNativeInstaller({
       paths,
       secretStore,
@@ -59,23 +62,25 @@ describe('SourceNativeInstaller', () => {
     expect(result.releaseId).toBe('1.2.0-preview.0');
     expect(lstatSync(paths.appCurrent).isSymbolicLink()).toBe(true);
     expect(readlinkSync(paths.appCurrent)).toContain('releases/1.2.0-preview.0');
-    expect(lstatSync(paths.database).isSymbolicLink()).toBe(true);
-    expect(lstatSync(paths.generatedCurrent).isSymbolicLink()).toBe(true);
+    expect(lstatSync(accountPaths.database).isSymbolicLink()).toBe(true);
+    expect(lstatSync(accountPaths.generatedCurrent).isSymbolicLink()).toBe(true);
+    expect(() => lstatSync(paths.database)).toThrow();
+    expect(() => lstatSync(paths.generatedCurrent)).toThrow();
     expect(readFileSync(join(paths.appCurrent, 'dist', 'index.js'), 'utf8')).toBe('runtime\n');
     expect(readFileSync(join(paths.appCurrent, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js'), 'utf8'))
       .toBe('planner\n');
     await expect(secretStore.get('file-secret:anyfusion/provider')).resolves.toBe('install-secret');
 
-    const repository = new FileConfigurationRepository(join(paths.root, 'config'));
+    const repository = new FileConfigurationRepository(accountPaths.config);
     const snapshot = await repository.getActiveSnapshot();
     expect(snapshot.revisionId).toBe(result.configurationRevision);
     expect(snapshot.config.agentClasses['codex-engineering']?.enabled).toBe(true);
     expect(snapshot.config.agentClasses['pi-research']?.enabled).toBe(false);
 
-    const db = new Database(paths.database, { readonly: true });
+    const db = new Database(accountPaths.database, { readonly: true });
     expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 31 });
     db.close();
-    expect(statSync(paths.database).mode & 0o777).toBe(0o600);
+    expect(statSync(accountPaths.database).mode & 0o777).toBe(0o600);
     expect(statSync(paths.launcher).mode & 0o777).toBe(0o755);
     const launcher = readFileSync(paths.launcher, 'utf8');
     expect(launcher).toContain('# AnyFusion managed launcher');
@@ -90,12 +95,13 @@ describe('SourceNativeInstaller', () => {
     const plannerRoot = join(home, 'planner-source');
     fixtureRelease(sourceRoot, plannerRoot);
     const paths = resolveAnyFusionPaths(home);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     mkdirSync(join(home, '.local', 'bin'), { recursive: true });
     writeFileSync(paths.launcher, '#!/bin/sh\necho other\n', { mode: 0o755 });
 
     await expect(new SourceNativeInstaller({
       paths,
-      secretStore: new FileSecretStore(paths.secrets),
+      secretStore: new FileSecretStore(accountPaths.secrets),
       detectCommand: async () => true,
     }).install({
       releaseId: '1.2.0-preview.0',
@@ -121,6 +127,7 @@ describe('SourceNativeInstaller', () => {
     const plannerRoot = join(home, 'planner-source');
     fixtureRelease(sourceRoot, plannerRoot);
     const paths = resolveAnyFusionPaths(home);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const input = {
       releaseId: '1.2.0-preview.0',
       sourceRoot,
@@ -149,7 +156,7 @@ describe('SourceNativeInstaller', () => {
 
     await expect(new SourceNativeInstaller({
       paths,
-      secretStore: new FileSecretStore(paths.secrets),
+      secretStore: new FileSecretStore(accountPaths.secrets),
       detectCommand: async () => true,
     }).install(input)).resolves.toMatchObject({ releaseId: input.releaseId });
   });

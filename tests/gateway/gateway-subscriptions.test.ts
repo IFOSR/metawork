@@ -67,4 +67,24 @@ describe('GatewaySubscriptions', () => {
 
     expect(received).toEqual([]);
   });
+
+  it('isolates a faulty listener from the durable publisher and other subscribers', () => {
+    const subscriptions = new GatewaySubscriptions();
+    const received: string[] = [];
+    subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: null,
+      listener: () => {
+        throw new Error('client disconnected');
+      },
+    });
+    subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: null,
+      listener: event => received.push(event.eventId),
+    });
+
+    expect(() => subscriptions.publish(makeEvent('e1', 'final_answer'))).not.toThrow();
+    expect(received).toEqual(['e1']);
+  });
 });

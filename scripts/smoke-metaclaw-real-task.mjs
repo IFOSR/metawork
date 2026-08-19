@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
+import { dump, load } from 'js-yaml';
 
 const artifactExpectedLine = 'MetaClaw real task smoke passed.';
 const pythonHelloFileName = 'hello.py';
@@ -103,8 +104,16 @@ export function findPythonCommand() {
   throw new Error('Smoke failed: neither python3 nor python is available for independent verification');
 }
 
-export function readAuthoritativeTaskState(metaclawHome) {
-  const dbPath = join(metaclawHome, 'metaclaw.db');
+export function resolveSmokeAccountPaths(installRoot) {
+  const accountRoot = join(resolve(installRoot), 'accounts', 'local-default');
+  return {
+    accountRoot,
+    database: join(accountRoot, 'data', 'anyfusion.db'),
+    plannerSessions: join(accountRoot, 'planner', 'sessions'),
+  };
+}
+
+export function readAuthoritativeTaskState(dbPath) {
   if (!existsSync(dbPath)) {
     throw new Error(`Smoke failed: authoritative database does not exist: ${dbPath}`);
   }
@@ -177,10 +186,24 @@ export function buildSmokeConfig(input) {
   if (!existsSync(templatePath)) {
     throw new Error(`Smoke failed: shell config template does not exist: ${templatePath}`);
   }
-  return readFileSync(templatePath, 'utf-8')
-    .replace(/^(\s*command:)\s*.*$/m, `$1 ${input.executorCommand}`)
-    .replace(/^(\s*timeout:)\s*.*$/m, `$1 ${input.executorTimeout}`)
-    .replace(/^(\s*max_duration:)\s*.*$/m, `$1 ${input.executorMaxDuration}`);
+  const config = load(readFileSync(templatePath, 'utf-8'));
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new Error(`Smoke failed: invalid shell config template: ${templatePath}`);
+  }
+  config.executor = {
+    ...(typeof config.executor === 'object' && config.executor !== null
+      ? config.executor
+      : {}),
+    command: input.executorCommand,
+    timeout: input.executorTimeout,
+    max_duration: input.executorMaxDuration,
+  };
+  // These legacy presentation/integration fields intentionally have no schema-v2
+  // mapping. Smoke exercises Runtime behavior and uses the schema-v2 defaults.
+  delete config.ui;
+  delete config.integrations;
+  delete config.notifications;
+  return dump(config, { noRefs: true, sortKeys: true, lineWidth: -1 });
 }
 
 export function verifyAuthoritativeTaskState(state) {
@@ -349,8 +372,7 @@ export function run(command, args, options = {}) {
   return result;
 }
 
-function readPlannerDiagnostics(repoRoot, metaclawHome) {
-  const dbPath = join(metaclawHome, 'metaclaw.db');
+function readPlannerDiagnostics(repoRoot, dbPath) {
   if (!existsSync(dbPath)) return '';
   const source = [
     "import Database from 'better-sqlite3';",
@@ -369,8 +391,7 @@ function readPlannerDiagnostics(repoRoot, metaclawHome) {
   return result.status === 0 ? String(result.stdout ?? '').trim() : '';
 }
 
-function readPlannerInteractions(repoRoot, metaclawHome) {
-  const dbPath = join(metaclawHome, 'metaclaw.db');
+function readPlannerInteractions(repoRoot, dbPath) {
   const source = [
     "import Database from 'better-sqlite3';",
     "const db = new Database(process.argv[1], { readonly: true });",
@@ -481,6 +502,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     ? resolve(env.ANYFUSION_INSTALL_ROOT)
     : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-install-'));
   const metaclawHome = join(installRoot, 'data');
+  const accountPaths = resolveSmokeAccountPaths(installRoot);
   const workdir = env.METACLAW_SMOKE_WORKDIR
     ? resolve(env.METACLAW_SMOKE_WORKDIR)
     : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-work-'));
@@ -511,7 +533,23 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
         shell: process.platform === 'win32',
       });
     }
-    const plannerSessionDir = join(metaclawHome, 'anyfusion-planner', 'sessions');
+    const configHome = overlayEnv?.ANYFUSION_PLANNER_HOME
+      ? resolve(overlayEnv.ANYFUSION_PLANNER_HOME, '..')
+      : resolve(env.ANYFUSION_CONFIG_HOME ?? join(homedir(), '.config', 'anyfusion'));
+    run('node', [
+      join(repoRoot, 'dist', 'prepare-smoke-configuration.js'),
+      installRoot,
+      configHome,
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...(overlayEnv ?? {}),
+        METACLAW_SMOKE_EXECUTOR: executorCommand,
+        METACLAW_SMOKE_EXECUTOR_TIMEOUT: String(executorTimeout),
+        METACLAW_SMOKE_EXECUTOR_MAX_DURATION: String(executorMaxDuration),
+      },
+    });
+    const plannerSessionDir = accountPaths.plannerSessions;
     // Keep the bridge socket path short: macOS rejects Unix socket paths
     // longer than 104 bytes, and tmpdir() roots are already deep.
     const bridgeSocketPath = join(scriptDir, 'bridge.sock');
@@ -523,6 +561,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
       METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
       METACLAW_PLANNER_HOST_SOCKET: bridgeSocketPath,
       METACLAW_PLANNER_TUI_SOCKET: bridgeSocketPath,
+      METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',
     };
     const runResult = run('node', [join(repoRoot, 'dist/index.js'), '--script', scriptPath], {
       cwd: workdir,
@@ -538,11 +577,11 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
 
     const authoritativeState = scenario === 'planner-session'
       ? null
-      : readAuthoritativeTaskState(metaclawHome);
+      : readAuthoritativeTaskState(accountPaths.database);
 
     const verification = scenario === 'planner-session'
       ? verifyPlannerSessionScenario({
-        interactions: readPlannerInteractions(repoRoot, metaclawHome),
+        interactions: readPlannerInteractions(repoRoot, accountPaths.database),
         sessionFiles: findFiles(
           plannerSessionDir,
           filePath => filePath.endsWith('.jsonl'),
@@ -566,7 +605,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     ].join('\n'));
     succeeded = true;
   } catch (error) {
-    const plannerDiagnostics = readPlannerDiagnostics(repoRoot, metaclawHome);
+    const plannerDiagnostics = readPlannerDiagnostics(repoRoot, accountPaths.database);
     if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
     process.stderr.write([
       'Smoke failed; diagnostics were preserved:',

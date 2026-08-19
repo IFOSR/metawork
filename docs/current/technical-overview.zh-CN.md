@@ -43,51 +43,50 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
 - Planner → ControlKernel → Runtime 是唯一策略主链；验收、retry、fallback、replan 和 recovery 不再由第二套 Agentic Loop 解释。
-- 每个活动 MetaClaw session 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
+- 每个 Conversation 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
-- 默认本地界面使用 `planner/AnyFusion-Pi` 下的 Planner TUI，保留对话历史、resume/fork/archive、压缩、命令、补全、interrupt 和只读工具渲染。
-- 在不转移 Task、Kernel 或 Executor 权限的前提下增加响应式只读 AnyFusion 任务面板；原 Ink UI 完整保留为备用模块。
+- 默认本地界面使用 `planner/AnyFusion-Pi` 下的 Gateway-only TUI，以独立的执行轨迹和对话区域流式展示安全事件，不创建本地语义 runtime。
+- 支持按游标重放与重连、版本化斜杠命令和权限决议；原 Ink UI 完整保留为备用模块。
 - 提供 `npm run smoke:anyfusion` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
 
 AnyFusion 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。AnyFusion 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
 
-### 已接受的多客户端目标架构
+### 已实施的多客户端架构
 
-ADR-0031 已于 2026 年 8 月 18 日接受，但尚未完成代码交付。目标架构要求
-TUI、Web 对话、飞书和未来 App 统一使用带版本的 Gateway command/event
+ADR-0031 已于 2026 年 8 月 19 日完成代码交付。TUI、Web 对话、飞书、脚本和
+Unix 客户端统一使用带版本的 Gateway command/event
 协议。同一认证 Account 的客户端共享一个 `AccountRuntime`，其中包含配置、
 记忆、Task、Kernel、Executor 和恢复服务；不同 Conversation 继续拥有独立的
 持久 Planner session、串行输入 mailbox、trace 和展示流。
 
-目标基数关系为：
+当前基数关系为：
 
 ```text
 ServerProcess -> RuntimeRegistry -> AccountRuntime
   -> ConversationRegistry -> ConversationSession -> ClientConnection
 ```
 
-KernelWorkflow、Execution Runtime 和启动恢复等账号级服务将从每个客户端
-`MetaclawSession` 的构造中迁出。每个 Account 只有一个 Kernel coordinator
+KernelWorkflow、Execution Runtime 和启动恢复等账号级服务由
+`AccountRuntime` 单例持有。每个 Account 只有一个 Kernel coordinator
 负责 durable decision/application drain，ADR-0011 继续保持每个
 AccountRuntime 只允许一个活跃顶层 Task。不同 Account 使用独立数据根和
-SQLite；现有安装会通过事务迁移成为 `local-default` Account。
-
-在实施计划通过 release gate 之前，下文描述的 mode-specific
-Session/Gateway/Web/飞书组合仍是当前可执行基线。参见
+SQLite；现有安装以 `local-default` Account 激活。参见
 [ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md)、
 [已批准设计](../plans/2026-08-18-account-runtime-unified-gateway-design.md)和
 [实施计划](../plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md)。
 
 ```mermaid
 flowchart LR
-  User[用户] --> Surfaces[客户端入口<br/>TUI、CLI、Gateway、飞书]
-  Surfaces --> Session[MetaclawSession<br/>统一 runtime 协调层]
-  Session --> MemoryFast[显式记忆和偏好快路]
-  Session --> Planning[Planner Work Unit<br/>PlanningAgent]
+  User[用户] --> Surfaces[客户端入口<br/>TUI、CLI、Web、飞书]
+  Surfaces --> Gateway[ClientGateway<br/>版本化 command/event]
+  Gateway --> Conversation[ConversationSession<br/>mailbox 与展示状态]
+  Conversation --> Account[AccountRuntime<br/>共享 runtime owner]
+  Conversation --> MemoryFast[显式记忆和偏好快路]
+  Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v8<br/>意图、目标、候选、<br/>v7 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
@@ -126,9 +125,9 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个活动 MetaClaw session 对应一个持久 Pi session 文件。非交互入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 session 的 turn 串行执行，避免多个进程并发写入 session 文件。Planner fork 管理对话历史和固定 system instructions；MetaClaw 不再从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。Planner 只允许通过 `read`、`grep`、`find` 和 `ls` 读取其进程工作目录；原生启动时该目录就是用户执行 `anyfusion` 时的当前目录。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
+AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；AnyFusion 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。Planner 只允许通过 `read`、`grep`、`find` 和 `ls` 读取其进程工作目录。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
-本地 AnyFusion-Pi TUI 与 RPC runner 通过 mode-`0600` Unix JSONL `PlannerTuiBridge` 和 Host Protocol v2 共用同一 proposal 工具链。bridge 还提供有界只读 Task 投影、`command_complete/command_completion`，并透传用户明确输入的 MetaClaw slash command。Pi 复用原生异步编辑器、候选列表、Tab、上下键和 tool-call 机制；命令树遍历、replacement range、hint/error、动态 Task/Executor 候选、参数校验与执行仍唯一来自 `MetaclawSession → CommandCatalog/InputController`。MetaClaw 持久化 proposal submission，实现 rejected revision、accepted turn lock、identical replay 和 conflict；Pi 只展示补全数据或权威结果，不获得通用 mutation API，也不能直接调用 Kernel、调度、Execution 或 Executor。
+本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → DurableKernelWorkflow → ControlKernel`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
 
 Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
 enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
@@ -195,10 +194,12 @@ flowchart LR
 ```mermaid
 flowchart LR
   Feishu[飞书事件] --> Handler[飞书消息处理器]
-  Handler --> Session[MetaclawSession]
-  Session --> Progress[进度格式化<br/>AnyFusion 里程碑 vs Executor 里程碑]
+  Handler --> Adapter[飞书 Gateway adapter]
+  Adapter --> Gateway[ClientGateway]
+  Gateway --> Conversation[ConversationSession]
+  Conversation --> Progress[Gateway trace 事件<br/>AnyFusion 里程碑 vs Executor 里程碑]
   Progress --> Cards[飞书过程卡片]
-  Session --> Final[最终答案 settle]
+  Conversation --> Final[最终 Gateway 事件]
   Final --> Reply[最终回复卡片或富文本 fallback]
   Reply --> Files[产物上传和 Markdown 预览链接]
 ```
@@ -213,9 +214,11 @@ conversation / task 的边界很重要：
 
 当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
-[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；多客户端 Gateway 收敛已经由 ADR-0031 接受为目标，但尚未完成交付。
+[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；ADR-0031 的多客户端 Gateway 收敛已于 2026 年 8 月 19 日完成。
 
-重要边界：Agentic Loop 已作为核心架构层实现并测试；当前交互式/script session 默认执行路径仍沿用 session runtime，只有明确接入策略/编排循环的功能路径才会调用它。这样可以在增强复杂任务验收能力的同时，保持现有用户路径稳定。
+重要边界：不存在第二套策略或编排循环。交互式、Web、飞书、Unix 与
+`--script` 输入都先进入 `ClientGateway` 和 Conversation mailbox，再由服务端
+PlanningAgent → ControlKernel → Runtime 链处理；脚本入口不再直连 Session。
 
 ## 当前执行器
 
@@ -284,8 +287,8 @@ macOS 上，`setup.sh` 要求 Node.js 22.19+、Git、npm，以及已经存在的
 `codex` 和 `pi` 命令。它会直接构建仓库内检入的 `planner/AnyFusion-Pi` planner
 源码（不克隆外部仓库），两者使用独立依赖树，构建后把 mode-`0600` 的 AnyFusion 专用 provider
 和模型配置写入 `~/.config/anyfusion`，只安装
-`~/.local/bin/anyfusion`，并将运行状态保存在
-`~/.local/share/anyfusion`。安装期间不会运行两个 Executor，也不会
+`~/.local/bin/anyfusion`，并将账户运行状态保存在
+`~/.anyfusion/accounts/local-default`。安装期间不会运行两个 Executor，也不会
 写入 `~/.codex` 或 `~/.pi`。
 
 安装后的 launcher 在每次执行时读取当前目录。请从 Planner 需要检查的
@@ -532,16 +535,17 @@ Skill 的限制：
 anyfusion
 ```
 
-默认命令启动固定版本的 AnyFusion-Pi Planner TUI：
+默认命令启动固定版本的 AnyFusion-Pi Gateway client：
 
-- AnyFusion-Pi 持有 conversation transcript、resume/fork/archive、compaction、斜杠命令、补全、中断处理和只读工具渲染。
-- 可执行命令为 `anyfusion-planner`；fork 禁用用户可见的 Pi/Earendil 品牌、账号登录、自更新和任意 Provider/Model 切换。
-- 本地 host bridge 传递有界的全局 Task 池以及当前 Task/Subtask/Executor/blocking 投影。宽/中终端在 transcript 右侧显示 dashboard；窄终端自动隐藏并保持普通对话可用。显式 Pi 原生 Loader 动态展示当前快照中的 Executor 名称，并在名称清空或快照 unavailable/stale 时停止。初始 loading、unavailable 和 malformed/stale snapshot 只降级面板，不修改 Task 状态。
-- Host Protocol v2 通过 `executor_result` capability 被动补发当前 MetaClaw session 尚未展示的 integrated Subtask publication。Pi 为每条结果持久化一条可见 custom message，包含 Executor 总结、warnings、integration commit 和全部 artifact 路径。写入使用 `triggerTurn: false`：消息进入后续 Planner 上下文，但不启动或 steer 回合；Planner 仅在当前用户明确询问结果、输出、artifact 或状态时查看。
-- 当前投影和 dashboard 都是只读的，不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
-- direct reply 与 clarification 由 accepted tool result 展示；rejected proposal 可在同一 Agent turn 修订，首个 accepted submission 终止本轮并展示 MetaClaw 权威 `displayText`。
-- bridge 断开、数据过期或格式错误会明确降级 Task 投影或 proposal 提交，不能伪装 Task 已创建，也不得终止普通对话。
-- 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，也不承担本次迁移后的持续功能开发。
+- `anyfusion-planner` 由 Server 传入 Gateway socket 和稳定 Conversation ID。
+- client mode 在创建模型、工具、项目资源或本地语义 session 之前分流。
+- Pi 编辑器把原始文本、版本化斜杠命令、权限决议和取消请求提交给 `ClientGateway`。
+- 执行轨迹区域按事件到达顺序展示安全的 Planner、路由、Kernel 和 Executor 里程碑；对话区域展示 replay/live 输出和最终答案。
+- 重连从最后事件游标附着到同一 Conversation，并对 replay/live 的 event ID 去重。
+- 权限请求只作为有界 UI 事实；`/approve` 与 `/deny` 只提交 request ID 和决议。
+- client 不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
+- 原始 v8 plan、prompt、隐藏推理、凭据和原始进程输出都保留在服务端。
+- 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，未来启用也必须通过 Gateway。
 
 或使用项目脚本：
 
@@ -555,31 +559,32 @@ anyfusion
 anyfusion web
 ```
 
-将当前运行实例直接重启为 Web 模式：
+重启统一 Server，并选择 Web 作为前台交互界面：
 
 ```bash
 anyfusion web restart
 ```
 
 该命令读取共享 `runtime.lock`，向持锁进程发送 `SIGTERM`，最多等待十秒确认
-旧进程正常退出，然后通过标准 composition 路径重新取锁并启动 Web。旧进程
-无响应时命令会失败关闭，不会强制终止或并行启动第二个实例。
+旧进程正常退出，然后通过标准 composition 路径重新取锁并启动替代 Server。
+Unix Gateway、AccountRuntime 和 Conversation 拓扑不会改变。旧进程无响应时
+命令会失败关闭，不会强制终止或并行启动第二个实例。
 
-Web 模式只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
+Web 交互面只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
 fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
 进程级会话 Cookie 后立即清除地址栏 fragment。用户无需复制 token，浏览器
 JavaScript 也不持久化 token。`anyfusion web --no-open` 仅为 SSH、端口转发
 和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
 和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
 
-Web 现在采用持久会话工作区：左侧固定历史栏用于只读浏览，运行时始终只保留
-一个 live `MetaclawSession`。Planner 回合、输入提交或 Task runtime 工作仍
-活跃时，激活历史会话会返回结构化阻塞原因；安全激活后使用相同的稳定 Planner
-session ID 重建会话。清洗后的终态 turn 存放于
-`~/.anyfusion/data/web-sessions/`，不引入第二套持久化 schema。
+Web 现在采用持久 Conversation 工作区：左侧固定历史栏用于浏览有界投影，
+`WebGatewaySessionRuntime` 通过 `WebGatewayAdapter` 附着到选定的稳定
+Conversation。Web 不再拥有 live Runtime 或 `MetaclawSession`。清洗后的终态
+turn 存放于账户 Conversation 根
+`accounts/local-default/conversations/web/`。
 
 Conversation 会在最终答案前内嵌详细执行叙事；Trajectory 使用同一份事实展示
-耗时带、指标、筛选和高密度事件行。`MetaclawSession` 以有界事件流展示 query
+耗时带、指标、筛选和高密度事件行。`ConversationSession` 以有界事件流展示 query
 接收、Planner 生命周期、结构化意图、Kernel 决策、精确授权的
 AgentClass/Harness/Provider/Model binding 和交付；WebSocket 重连先发送完整
 snapshot，再发送有序 delta。现有 durable execution projector 继续提供
@@ -590,13 +595,17 @@ prompt 和原始 stdout/stderr 不会进入浏览器。Planner RPC 运行期间�
 响应开始、工具开始/完成和 Planner 回合结束；长时间的模型处理不再等到最终
 proposal 返回后才一次性显示。右侧面板同时显示当前阶段耗时。
 
-包括 `--script` 在内的所有 composition 模式共享同一把 `runtime.lock`。
-Planner Host 启动时先探测活动 socket，只回收确认 stale 的路径；停止时校验
-创建时记录的 device/inode，不能删除后来替换的 socket。Planner RPC 会保留
-结构化 transport uncertainty 及其部分工具审计。
+包括 `--script` 在内的所有前台选择共享同一把 `runtime.lock`。
+`ScriptedGatewaySession` 把每一行提交给 `ClientGateway`，等待有序终态事件，
+不会直接调用 `ConversationSession`。Planner Host 启动时先探测活动 socket，
+只回收确认 stale 的路径；停止时校验创建时记录的 device/inode，不能删除后来
+替换的 socket。Planner RPC 会保留结构化 transport uncertainty 及其部分工具
+审计。
 
-原生 AnyFusion-Pi TUI 仍是 `anyfusion` 的默认入口。本版本中 Web 与 TUI
-仍是互斥的 Runtime 模式。
+原生 AnyFusion-Pi TUI 仍是 `anyfusion` 的默认入口。Web 与 TUI 可以选择
+不同的前台展示模式，但都使用同一套 `RuntimeRegistry`、`AccountRuntime`、
+`ConversationRegistry` 和 `ClientGateway` 组合，不再拥有互斥的 Runtime
+架构。
 
 运行中的 Planner、Kernel 和 Executor 始终固定使用进程启动时加载的配置
 revision。Web 设置页激活仍完整执行 validate、compile、probe 和 immutable
@@ -605,13 +614,32 @@ repository activation，但新 active revision 会显示为“下次启动 revis
 运行 revision，因此配置激活不会造成 Planner 上下文与 Kernel/Execution
 策略分裂。重启 AnyFusion 后新 revision 才会生效。
 
-原生 launcher 将本地状态保存在：
+原生 launcher 将账户状态保存在：
 
 ```text
-~/.local/share/anyfusion/
-├── metaclaw.db
+~/.anyfusion/accounts/local-default/
+├── config/
+├── secrets/
+├── generated/
+│   ├── agent-runtime/
+│   └── current
+├── data/
+│   ├── anyfusion.db
+│   ├── database-revisions/
+│   └── backups/
+├── planner/sessions/
+├── conversations/
+├── gateway/
+├── workspace-store/
+└── attempts/
+```
+
+安装级 transport 状态保留在账户根之外：
+
+```text
+~/.anyfusion/
 ├── gateway.sock
-└── planner-sessions/
+└── runtime.lock
 ```
 
 连接已有实例：
@@ -659,70 +687,18 @@ Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
 
 ## 配置
 
-编辑：
+通过 Web 设置页或 `anyfusion config|provider|model|planner|executor` 管理命令
+修改配置。激活流程会 validate、compile、probe 并生成账户级不可变 revision；
+运行中的 Server 在重启后应用新 revision。当前生效指针是：
 
-```bash
-~/.local/share/anyfusion/config.yaml
+```text
+~/.anyfusion/accounts/local-default/config/active
+  -> revisions/<revision-id>/
 ```
 
-示例：
-
-```yaml
-version: 1
-
-executor:
-  command: codex
-  timeout: 300
-  max_duration: 3600
-
-orchestration:
-  reminder_enabled: true
-  reminder_throttle: 300
-  top_k_preferences: 5
-  blocked_recheck_enabled: true
-  blocked_recheck_interval: 60
-
-ui:
-  language: zh-CN
-  dashboard_on_start: true
-
-notifications:
-  feishu:
-    enabled: false
-    webhook_url: ""
-    secret: ""
-
-gateway:
-  enabled: true
-  platforms:
-    feishu:
-      enabled: true
-      domain: feishu
-      connection_mode: websocket
-      app_id: ""
-      app_secret_env: FEISHU_APP_SECRET
-      event_port: 8787
-      event_path: /feishu/events
-      verification_token: ""
-      encrypt_key_env: FEISHU_ENCRYPT_KEY
-      home_channel: ""
-      access:
-        dm_policy: pairing
-        allowed_users: []
-        group_policy: open
-        require_mention: true
-      delivery:
-        final_markdown_mode: card
-        fallback_mode: post
-        final_file_fallback: true
-
-integrations:
-  markdown_preview:
-    enabled: true
-    host: 127.0.0.1
-    port: 8790
-    public_base_url: ""
-```
+不要原地编辑不可变 revision 文件。Provider 凭据由账户 SecretStore 解析；
+macOS 默认使用 Keychain，只有显式设置 `ANYFUSION_SECRET_STORE=file` 时才使用
+权限为 `0600` 的文件。
 
 启动前导出飞书密钥：
 
@@ -831,12 +807,11 @@ AnyFusion 会：
 /exit
 ```
 
-主 TUI 的补全、`/help`、参数校验和执行都来自同一个 `CommandCatalog`。`↑/↓` 选择候选，`Tab` 只补全光标所在 token，`Enter` 只提交完整且有效的命令；目录节点、缺参命令和无效动态引用会保留在编辑器中。旧扁平入口和 aliases 不再注册。
-
-AnyFusion-Pi 下游原生 TUI 是默认本地入口。Planner fork 持有会话交互；MetaClaw 向
-面板投影只读 Task 状态，并继续独占确定性命令执行以及所有持久化 Task、Kernel 和 Executor 权限。Pi TUI 通过 host bridge 查询完整 MetaClaw 命令树，使用 Pi 原生补全 UI 展示候选并应用 MetaClaw 返回的 replacement range，提交前再次校验，再透传用户原始输入；它不维护第二套 CommandCatalog。AnyFusion 像素风欢迎组件在 quiet startup 下仍保留，展示 Planner 版本、bridge 状态、模型/工作区与有界任务摘要。
-原 Ink TUI 完整保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它是
-备用模块而不是第二套持续维护的前端。飞书与 Gateway 是后端交付面，不依赖本地使用哪套 TUI。
+AnyFusion-Pi Gateway TUI 是默认本地入口。client 只拥有编辑器和展示状态；
+`ClientGateway`、`ConversationSession`、AccountRuntime 和 ControlKernel
+继续独占命令校验、语义规划、持久化 mutation 和执行权限。原 Ink TUI 完整
+保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它只是源码保留
+的备用模块，不是第二套持续维护的前端。
 
 ## 任务检索
 
@@ -928,6 +903,7 @@ npm run build
 npm test
 npm run lint
 npm run smoke:anyfusion
+npm run smoke:gateway
 ```
 
 脚本化烟测：
@@ -941,9 +917,16 @@ EOF
 anyfusion --script /tmp/anyfusion-flow.txt
 ```
 
-`--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。脚本会话与 Web、TUI、Gateway 一样进入完整的 Session/Kernel/Planner Host composition，因此必须获取同一把 `runtime.lock`；并行烟测必须使用隔离的 `ANYFUSION_INSTALL_ROOT`。
+`--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。每一行都与
+Web、TUI、飞书和 Unix 客户端一样进入 `ClientGateway`、Conversation mailbox、
+服务端 Planner 与 AccountRuntime，因此必须获取同一把 `runtime.lock`；并行
+烟测必须使用隔离的 `ANYFUSION_INSTALL_ROOT`。
 
-`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 MetaClaw session 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 AnyFusion 配置（`ANYFUSION_CONFIG_HOME`，默认 `~/.config/anyfusion`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
+`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 AnyFusion 配置（`ANYFUSION_CONFIG_HOME`，默认 `~/.config/anyfusion`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
+
+`npm run smoke:gateway` 是不依赖外部模型凭据的生产边界门禁，覆盖 Gateway
+准入、replay、重连、账户恢复、统一 surface composition 和脚本 Gateway
+adapter。
 
 针对性测试：
 

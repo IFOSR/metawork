@@ -54,6 +54,6 @@ export class FeishuGatewayAdapter {
       command: { kind: 'user_message', text, attachments: [] },
       clientCapabilities: [],
     };
-    return this.deps.gateway.handle(envelope, 'feishu');
+    return this.deps.gateway.handle(envelope, 'feishu', sender);
   }
 }

@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
 import { createProductionSecretStore } from './configuration/production-secret-store.js';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
+import { resolveAccountPaths } from './account/account-paths.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { InstallerCore } from './installation/installer-core.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
+import { isInstanceRunning } from './management/lock.js';
 import { ServerUpdateCoordinator } from './session/server-update-coordinator.js';
 
 export type NativeInstallCommand = 'install' | 'update' | 'rollback';
@@ -64,15 +66,16 @@ export async function runNativeInstallCli(
   const args = parseNativeInstallArgs(argv);
   const env = dependencies.env ?? process.env;
   const paths = resolveAnyFusionPaths(env.HOME, env.ANYFUSION_INSTALL_ROOT);
+  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const secretStore = createProductionSecretStore({
     platform: dependencies.platform,
-    secretsRoot: paths.secrets,
+    secretsRoot: accountPaths.secrets,
     env,
   });
   const detectCommand = dependencies.detectCommand
     ?? (command => commandExistsOnPath(command, env.PATH ?? ''));
   const isServerRunning = dependencies.isServerRunning
-    ?? (() => isPidFileRunning(`${paths.data}/server.pid`));
+    ?? (() => isInstanceRunning(join(paths.data, 'runtime.lock')));
   const write = dependencies.write ?? (line => process.stdout.write(`${line}\n`));
 
   if (args.command === 'install') {
@@ -221,25 +224,6 @@ async function runOfflineNativeTransaction<T>(input: {
     throw new Error(`native ${input.command} transaction returned no result`);
   }
   return value;
-}
-
-async function isPidFileRunning(path: string): Promise<boolean> {
-  const source = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (source === null) return false;
-  const pid = Number.parseInt(source.trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error('Server pid file is invalid; refusing unsafe update');
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    return true;
-  }
 }
 
 function requiredEnvironment(env: NodeJS.ProcessEnv, name: string): string {

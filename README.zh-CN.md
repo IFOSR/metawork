@@ -136,11 +136,15 @@ export ANYFUSION_PROVIDER_REGION='international'  # 默认：international
 ~/.anyfusion/
 ├── app/current              # 当前生效的 release
 ├── app/releases/            # 版本化 release
-├── config/active/           # 当前生效的不可变配置 revision
-├── config/secrets/          # 密钥（macOS：keychain；Linux：file，0600）
-├── data/metaclaw.db         # 持久化运行状态
-├── data/planner-sessions/
-├── data/execution-workspaces/
+├── accounts/local-default/
+│   ├── config/              # 当前配置和不可变 revision
+│   ├── secrets/             # 密钥（macOS：keychain；Linux：file，0600）
+│   ├── data/anyfusion.db    # 持久化账户 Runtime 状态
+│   ├── planner/sessions/
+│   ├── conversations/
+│   ├── gateway/
+│   ├── workspace-store/
+│   └── attempts/
 └── upgrade-journals/
 ```
 
@@ -163,7 +167,7 @@ anyfusion
 
 ```bash
 anyfusion web
-anyfusion web restart          # 将正在运行的实例重启为 Web 模式
+anyfusion web restart          # 重启统一 Server，并以前台 Web 作为交互界面
 anyfusion web --port 9000 --no-open
 ```
 
@@ -235,6 +239,7 @@ Subtask，最多并行运行四个相互独立的 attempt。
 | 文档 | 内容 |
 | --- | --- |
 | [当前技术总览](docs/current/technical-overview.zh-CN.md) | 完整 Runtime、部署、配置与仓库说明 |
+| [账户 Runtime 运维](docs/current/account-runtime-and-gateway-operations.md) | 统一 Server 生命周期、账户路径、Gateway replay 与诊断 |
 | [运行时安全](docs/current/phase-5-runtime-security.md) | Workspace、resource lease、权限边界与执行后端 |
 | [架构决策](docs/adr/README.md) | 已接受决策与权威矩阵 |
 | [文档地图](docs/README.md) | 当前文档、计划、技术债与归档索引 |

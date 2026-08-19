@@ -31,8 +31,18 @@ function productionSources(): string[] {
   return files;
 }
 
-function sourcesImportingMetaclawSession(): string[] {
+function clientSourcesImportingMetaclawSession(): string[] {
   return productionSources().filter(file => {
+    const relativePath = relative(join(process.cwd(), 'src'), file);
+    if (![
+      'gateway/',
+      'management/',
+      'integrations/',
+      'tui-bridge/',
+      'session/scripted-session.ts',
+    ].some(prefix => relativePath.startsWith(prefix))) {
+      return false;
+    }
     const content = readFileSync(file, 'utf8');
     return content.includes('metaclaw-session');
   }).map(file => relative(join(process.cwd(), 'src'), file));
@@ -46,6 +56,29 @@ function metaclawSessionConstructorSites(): string[] {
 }
 
 describe('no direct client session paths', () => {
+  it('keeps ConversationSession behind narrow account facades', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'src', 'session', 'conversation-session.ts'),
+      'utf8',
+    );
+    for (const forbidden of [
+      '.kernelServices',
+      '.repositories',
+      '.workspaceServices',
+      '.executionServices',
+      '.taskServices',
+      '.coordinatorServices',
+      '.runtimeExecutionServices',
+      '.plannerServices',
+      '.conversationExecutionBinder',
+      '.permissionService',
+    ]) {
+      expect(source).not.toContain(forbidden);
+    }
+    expect(source).toContain('.runtimePort.queries');
+    expect(source).toContain('.runtimePort.commands');
+  });
+
   it('extracts runtime-wide service construction into account factories', () => {
     // 物理搬迁（8 簇）完成后，MetaclawSession 通过账户级工厂构造
     // runtime-wide 服务，不再内联构造这些服务的构造逻辑。
@@ -63,11 +96,8 @@ describe('no direct client session paths', () => {
     expect(sessionSource).toContain('buildAccountKernelExecutionServices');
   });
 
-  it('reduces production constructors to the scripted adapter only', () => {
-    // 生产组合根（index.ts）已不再构造 MetaclawSession，所有表面（Web/Feishu/
-    // TUI/Gateway）通过 ConversationSession；仅脚本适配器保留构造。
-    const constructors = metaclawSessionConstructorSites();
-    expect(constructors).toEqual(['session/scripted-session.ts']);
+  it('has zero production MetaclawSession constructors', () => {
+    expect(metaclawSessionConstructorSites()).toEqual([]);
   });
 
   it('has zero client adapter constructors', () => {
@@ -81,18 +111,7 @@ describe('no direct client session paths', () => {
     expect(clientAdapterConstructors).toEqual([]);
   });
 
-  it('documents remaining MetaclawSession import sites as removal targets', () => {
-    // 完整物理删除（切换 scripted-session + 删除 MetaclawSession 类）是
-    // Task 19 的最终收尾；本测试提供可验证的删除目标清单。
-    const importers = sourcesImportingMetaclawSession();
-    expect(importers.length).toBeGreaterThan(0);
-  });
-
-  it.skip('has zero client adapters importing MetaclawSession', () => {
-    expect(sourcesImportingMetaclawSession()).toEqual([]);
-  });
-
-  it.skip('has zero production MetaclawSession constructors', () => {
-    expect(metaclawSessionConstructorSites()).toEqual([]);
+  it('has zero client adapters importing MetaclawSession', () => {
+    expect(clientSourcesImportingMetaclawSession()).toEqual([]);
   });
 });

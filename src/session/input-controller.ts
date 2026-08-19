@@ -2,6 +2,7 @@
 // slash command input, or natural-language work.
 export interface InputControllerSubmitOptions {
   awaitAsyncWork?: boolean;
+  rethrowErrors?: boolean;
 }
 
 export interface InputControllerSubmitResult {
@@ -50,6 +51,7 @@ export class InputController {
       if (options.awaitAsyncWork) {
         await this.port.waitForAsyncWork();
       }
+      if (options.rethrowErrors) throw error;
       return { exitRequested: false };
     }
   }

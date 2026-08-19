@@ -8,9 +8,12 @@
  * 邮箱只拥有 turn 准入；账户 Kernel 策略仍归 AccountKernelCoordinator。
  */
 
+import type { GatewayCommand } from '../gateway/client-protocol.js';
+
 export interface MailboxCommand {
   readonly requestId: string;
   readonly idempotencyKey: string;
+  readonly command?: GatewayCommand;
 }
 
 export interface MailboxReceipt {
@@ -31,17 +34,37 @@ export class ConversationInputMailbox {
   private readonly queue: MailboxCommand[] = [];
   private activeCommand: MailboxCommand | null = null;
   private readonly receipts = new Map<string, MailboxReceipt>();
+  private readonly idleWaiters = new Set<() => void>();
   private draining = false;
+  private closed = false;
   private readonly maxQueueSize: number;
+  private execute: ConversationInputMailboxDeps['execute'];
 
   constructor(private readonly deps: ConversationInputMailboxDeps) {
     this.maxQueueSize = deps.maxQueueSize ?? DEFAULT_MAX_QUEUE_SIZE;
+    this.execute = deps.execute;
+  }
+
+  bindExecutor(execute: ConversationInputMailboxDeps['execute']): void {
+    if (this.activeCommand || this.queue.length > 0) {
+      throw new Error('cannot rebind an active conversation mailbox');
+    }
+    this.execute = execute;
   }
 
   submit(command: MailboxCommand): MailboxReceipt {
     const existing = this.receipts.get(command.idempotencyKey);
     if (existing) {
       return { ...existing, status: 'duplicate', reason: undefined };
+    }
+
+    if (this.closed) {
+      return {
+        requestId: command.requestId,
+        idempotencyKey: command.idempotencyKey,
+        status: 'rejected',
+        reason: 'closed',
+      };
     }
 
     const occupied = this.queue.length + (this.activeCommand ? 1 : 0);
@@ -82,6 +105,19 @@ export class ConversationInputMailbox {
     return this.queue.length;
   }
 
+  get isIdle(): boolean {
+    return !this.draining && this.activeCommand === null && this.queue.length === 0;
+  }
+
+  closeAdmission(): void {
+    this.closed = true;
+  }
+
+  waitForIdle(): Promise<void> {
+    if (this.isIdle) return Promise.resolve();
+    return new Promise(resolve => this.idleWaiters.add(resolve));
+  }
+
   private async drain(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
@@ -90,7 +126,7 @@ export class ConversationInputMailbox {
         const command = this.queue.shift()!;
         this.activeCommand = command;
         try {
-          await this.deps.execute(command);
+          await this.execute(command);
         } catch {
           // 失败释放下一个 turn，不终止 drain 循环。
         } finally {
@@ -99,6 +135,10 @@ export class ConversationInputMailbox {
       }
     } finally {
       this.draining = false;
+      if (this.isIdle) {
+        for (const resolve of this.idleWaiters) resolve();
+        this.idleWaiters.clear();
+      }
     }
   }
 }

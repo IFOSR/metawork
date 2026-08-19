@@ -3,6 +3,39 @@ import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-run
 import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
 describe('KernelExecutionRuntime dispatch snapshots', () => {
+  it('uses the persisted decision Conversation while recovering derived events', async () => {
+    const runtime = new KernelExecutionRuntime({
+      sessionId: 'bootstrap-session',
+      getSessionId: () => 'task-level-session',
+      kernelDecisionRepo: {
+        findById: vi.fn().mockReturnValue({ sessionId: 'conversation-origin' }),
+      },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-origin',
+      eventId: 'event-origin',
+      reason: 'recover persisted event',
+      action: { type: 'no_op' },
+    } as const;
+
+    const observed = await (runtime as unknown as {
+      withDecisionSession<T>(
+        decisionInput: typeof decision,
+        operation: () => Promise<T>,
+      ): Promise<T>;
+      sessionId: string;
+    }).withDecisionSession(decision, async () => (
+      (runtime as unknown as { sessionId: string }).sessionId
+    ));
+
+    expect(observed).toBe('conversation-origin');
+  });
+
   it('reads the Task before and after durable recovery', async () => {
     const task = {
       id: 'task_1', title: 'Task', goal: 'Goal', status: 'blocked',
@@ -150,4 +183,74 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       vi.useRealTimers();
     }
   });
+
+  it('waits for in-flight cancellation cleanup during dispose', async () => {
+    const cleanup = deferred<void>();
+    const recover = vi.fn(async () => cleanup.promise);
+    const runtime = new KernelExecutionRuntime({
+      taskEventRepo: {},
+      dispatchItemRepo: {
+        listPending: vi.fn().mockReturnValue([]),
+      },
+      maxConcurrentAttempts: 4,
+      cancellationCoordinator: {
+        recover,
+        findCleanupTaskId: vi.fn().mockReturnValue(null),
+      },
+      callbacks: { refreshRuntimeState: vi.fn() },
+    } as never);
+
+    const draining = (runtime as unknown as {
+      startCancellationDrain(taskId: string): Promise<void>;
+    }).startCancellationDrain('task_cancel');
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+
+    let disposed = false;
+    const disposing = runtime.dispose().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    cleanup.resolve();
+    await Promise.all([draining, disposing]);
+    expect(disposed).toBe(true);
+  });
+
+  it('clears scheduled cancellation retries during dispose', async () => {
+    vi.useFakeTimers();
+    const recover = vi.fn().mockRejectedValue(new Error('still unavailable'));
+    const runtime = new KernelExecutionRuntime({
+      taskEventRepo: {},
+      dispatchItemRepo: {
+        listPending: vi.fn().mockReturnValue([]),
+      },
+      maxConcurrentAttempts: 4,
+      cancellationCoordinator: {
+        recover,
+        findCleanupTaskId: vi.fn().mockReturnValue(null),
+      },
+      callbacks: { refreshRuntimeState: vi.fn() },
+    } as never);
+
+    try {
+      await (runtime as unknown as {
+        startCancellationDrain(taskId: string): Promise<void>;
+      }).startCancellationDrain('task_cancel');
+      expect(recover).toHaveBeenCalledTimes(1);
+
+      await runtime.dispose();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(recover).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}

@@ -18,6 +18,7 @@ import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountPlannerServices } from './account-planner-services.js';
+import type { AccountPermissionService } from './account-permission-service.js';
 import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-runtime-ports.js';
 
 export interface AccountRuntimeDeps {
@@ -31,7 +32,9 @@ export interface AccountRuntimeDeps {
   readonly coordinatorServices?: AccountCoordinatorServices;
   readonly runtimeExecutionServices?: AccountRuntimeExecutionServices;
   readonly plannerServices?: AccountPlannerServices;
+  readonly permissionService?: AccountPermissionService;
   readonly recoverDurableStartup: () => Promise<void>;
+  readonly reviewTaskPoolOnTimer?: (nowMs: number) => Promise<boolean>;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -39,8 +42,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private disposed = false;
+  private closing: Promise<void> | null = null;
   private attachedClients = 0;
-  private activeWork = false;
+  private activeWorkCount = 0;
+  private periodicReview: Promise<boolean> | null = null;
 
   constructor(private readonly deps: AccountRuntimeDeps) {}
 
@@ -84,6 +89,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
     return this.deps.plannerServices;
   }
 
+  get permissionService(): AccountPermissionService | undefined {
+    return this.deps.permissionService;
+  }
+
   /** 单飞行、幂等的账户激活恢复。 */
   initialize(): Promise<void> {
     if (this.initialized) return Promise.resolve();
@@ -92,11 +101,17 @@ export class AccountRuntime implements AccountRuntimeHandle {
       .then(() => this.deps.recoverDurableStartup())
       .then(() => {
         this.initialized = true;
+      })
+      .catch(error => {
+        this.initialization = null;
+        throw error;
       });
     return this.initialization;
   }
 
   attachClient(): void {
+    if (this.disposed) throw new Error(`AccountRuntime is closed: ${this.accountId}`);
+    if (this.closing) throw new Error(`AccountRuntime is closing: ${this.accountId}`);
     this.attachedClients += 1;
   }
 
@@ -104,34 +119,135 @@ export class AccountRuntime implements AccountRuntimeHandle {
     this.attachedClients = Math.max(0, this.attachedClients - 1);
   }
 
-  setActiveWork(active: boolean): void {
-    this.activeWork = active;
+  beginWork(): void {
+    if (this.disposed) throw new Error(`AccountRuntime is closed: ${this.accountId}`);
+    if (this.closing) throw new Error(`AccountRuntime is closing: ${this.accountId}`);
+    this.activeWorkCount += 1;
+  }
+
+  endWork(): void {
+    this.activeWorkCount = Math.max(0, this.activeWorkCount - 1);
   }
 
   isBusy(): boolean {
-    return this.attachedClients > 0 || this.activeWork;
+    return this.attachedClients > 0 || this.activeWorkCount > 0;
+  }
+
+  reviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    if (this.disposed || this.closing) return Promise.resolve(false);
+    if (this.periodicReview) return this.periodicReview;
+    const operation = this.deps.reviewTaskPoolOnTimer?.(nowMs) ?? Promise.resolve(false);
+    const review = operation.finally(() => {
+      if (this.periodicReview === review) this.periodicReview = null;
+    });
+    this.periodicReview = review;
+    return review;
   }
 
   async closeWhenIdle(): Promise<'closed' | 'busy'> {
     if (this.isBusy()) return 'busy';
     if (this.disposed) return 'closed';
-    this.disposed = true;
-    await (this.deps.dispose ?? (async () => undefined))();
+    this.closing ??= Promise.resolve()
+      .then(async () => {
+        if (this.periodicReview) await this.periodicReview;
+      })
+      .then(() => (this.deps.dispose ?? (async () => undefined))())
+      .then(() => {
+        this.disposed = true;
+      })
+      .catch(error => {
+        this.closing = null;
+        throw error;
+      });
+    await this.closing;
     return 'closed';
   }
 
   getConversationPort(): ConversationRuntimePort {
+    const taskRuntimeService = this.deps.taskServices?.taskRuntimeService;
+    const coordinator = this.deps.coordinatorServices;
     return {
       accountId: this.accountId,
-      kernelCoordinator: this.kernelCoordinator,
-      kernelServices: this.kernelServices,
-      repositories: this.repositories,
-      workspaceServices: this.workspaceServices,
-      executionServices: this.executionServices,
-      taskServices: this.taskServices,
-      coordinatorServices: this.coordinatorServices,
-      runtimeExecutionServices: this.runtimeExecutionServices,
-      plannerServices: this.plannerServices,
+      planning: this.deps.plannerServices?.planningAgent ?? null,
+      permissions: this.deps.permissionService ?? null,
+      queries: {
+        findTask: taskId => taskRuntimeService?.findTask(taskId) ?? null,
+        listTasks: () => taskRuntimeService?.listTasks() ?? [],
+        listTasksByStatus: status => taskRuntimeService?.listTasksByStatus(status) ?? [],
+        listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId),
+        findSubtask: subtaskId => this.deps.repositories.subtaskRepo.findById(subtaskId),
+        findKernelEvent: eventId => this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId),
+        listKernelDecisionsBySession: sessionId => (
+          this.deps.kernelServices.kernelDecisionRepo.listBySession(sessionId)
+        ),
+        listKernelDecisionsByTask: taskId => (
+          this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId)
+        ),
+        listCurrentKernelDecisions: action => (
+          this.deps.kernelServices.kernelDecisionRepo.listCurrentByAction(action)
+        ),
+        listExecutorStatuses: configurationRevision => (
+          this.deps.repositories.kernelExecutorStatusRepo.list(configurationRevision)
+        ),
+        listWorkGraphTaskIds: () => this.deps.repositories.subtaskRepo.listTaskIds(),
+        findOldestPendingPermission: () => (
+          this.deps.workspaceServices.permissionRepository.findOldestPending()
+        ),
+        listIntegratedPublications: taskIds => (
+          this.deps.runtimeExecutionServices?.publicationRepo.listIntegratedByTaskIds(taskIds) ?? []
+        ),
+        listRecoveryApplications: taskId => (
+          this.deps.kernelServices.kernelWorkflowRepo.listRecoveryItems(taskId)
+        ),
+        findRecoveryApplication: recoveryItemId => (
+          this.deps.kernelServices.kernelWorkflowRepo.findRecoveryItem(recoveryItemId)
+        ),
+        listRecoveryEffects: taskId => (
+          this.deps.repositories.effectOutboxRepo.listRecoveryItems(taskId)
+        ),
+        findRecoveryEffect: recoveryItemId => (
+          this.deps.repositories.effectOutboxRepo.find(recoveryItemId)
+        ),
+        findActiveWorkGraphRevision: taskId => (
+          this.deps.repositories.workGraphRevisionRepo.findActive(taskId)
+        ),
+        listTaskEvidence: (taskId, generationId) => (
+          this.deps.repositories.taskExecutionEvidenceRepo
+            .listTaskEvidenceByGeneration(taskId, generationId)
+        ),
+        listAttemptReceipts: taskId => (
+          this.deps.repositories.attemptReceiptRepo.listByTask(taskId)
+        ),
+      },
+      commands: {
+        submitKernel: this.deps.kernelCoordinator.submit.bind(this.deps.kernelCoordinator),
+        materializeCompletedEvidence: (taskId, revision) => {
+          this.deps.repositories.workGraphRuntimeService
+            .materializeCompletedEvidence(taskId, revision);
+        },
+        resolveRecoveryApplication: (recoveryItemId, resolution, now) => {
+          this.deps.kernelServices.kernelWorkflowRepo.resolveRecoveryItem(
+            recoveryItemId,
+            resolution,
+            now,
+          );
+        },
+        resolveRecoveryEffect: (recoveryItemId, resolution, now) => {
+          this.deps.repositories.effectOutboxRepo.resolve(recoveryItemId, resolution, now);
+        },
+        refreshExecutors: input => {
+          if (!coordinator) throw new Error('Executor recovery service is unavailable');
+          return coordinator.executorRecoveryRefreshService.refresh(input);
+        },
+      },
+      execution: this.deps.executionServices && this.deps.taskServices
+        ? {
+            activeExecutions: this.deps.executionServices.executionRuntime,
+            listExecutorAgentClassNames: () => (
+              this.deps.taskServices!.agentClassService.listExecutorAgentClassNames()
+            ),
+          }
+        : null,
     };
   }
 }

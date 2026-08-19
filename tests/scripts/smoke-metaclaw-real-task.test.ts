@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  readFileSync,
   mkdtempSync,
   mkdirSync,
   rmSync,
@@ -74,6 +75,29 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(smoke.resolveSmokeMode([], {}, repoRoot)).toBe('native');
   });
 
+  it('resolves ADR-0031 account-scoped smoke state paths', async () => {
+    const smoke = await loadSmokeScript();
+    const installRoot = join(tempRoot, 'install');
+
+    expect(smoke.resolveSmokeAccountPaths(installRoot)).toEqual({
+      accountRoot: join(installRoot, 'accounts', 'local-default'),
+      database: join(
+        installRoot,
+        'accounts',
+        'local-default',
+        'data',
+        'anyfusion.db',
+      ),
+      plannerSessions: join(
+        installRoot,
+        'accounts',
+        'local-default',
+        'planner',
+        'sessions',
+      ),
+    });
+  });
+
   it('builds the native overlay from the installed AnyFusion configuration home', async () => {
     const smoke = await loadSmokeScript();
     const configHome = join(tempRoot, 'anyfusion-config');
@@ -140,7 +164,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(config).toContain('command: pi');
     expect(config).toContain('timeout: 901');
     expect(config).toContain('max_duration: 3601');
-    expect(config).toContain('dashboard_on_start: true');
+    expect(config).not.toContain('dashboard_on_start');
   });
 
   it('verifies the authoritative Subtask artifact and its exact stdout', async () => {
@@ -201,6 +225,11 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(turns[1]).not.toContain(smoke.plannerMemoryMarker);
     expect(turns[1]).toContain('刚才');
     expect(turns[2]).toBe('/exit');
+  });
+
+  it('disables the interactive Markdown preview server in isolated smoke processes', () => {
+    const source = readFileSync('scripts/smoke-metaclaw-real-task.mjs', 'utf8');
+    expect(source).toContain("METACLAW_DISABLE_MARKDOWN_PREVIEW: '1'");
   });
 
   it('keeps the Python hello requirements in one Planner turn', async () => {

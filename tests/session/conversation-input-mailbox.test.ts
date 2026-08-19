@@ -120,4 +120,35 @@ describe('ConversationInputMailbox', () => {
 
     releaseFirst!();
   });
+
+  it('closes admission and waits for accepted commands to drain', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const executed: string[] = [];
+    const mailbox = new ConversationInputMailbox({
+      execute: async command => {
+        await gate;
+        executed.push(command.requestId);
+      },
+    });
+
+    mailbox.submit(makeCommand('req_1', 'idem_1'));
+    mailbox.submit(makeCommand('req_2', 'idem_2'));
+    await waitFor(() => mailbox.isActive);
+    mailbox.closeAdmission();
+
+    expect(mailbox.submit(makeCommand('req_3', 'idem_3'))).toMatchObject({
+      status: 'rejected',
+      reason: 'closed',
+    });
+    let drained = false;
+    const waiting = mailbox.waitForIdle().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    release!();
+    await waiting;
+    expect(executed).toEqual(['req_1', 'req_2']);
+    expect(mailbox.isIdle).toBe(true);
+  });
 });

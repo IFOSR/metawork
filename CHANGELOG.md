@@ -24,6 +24,13 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - Event-driven recovery probes for enabled AgentClasses already in `error`,
   including bounded Planner-visible diagnostics and `/executor refresh`.
 - Planner and Executor activity state projected to the current Ink TUI.
+- Account-scoped `RuntimeRegistry -> AccountRuntime -> ConversationRegistry`
+  production composition with one versioned ClientGateway for Unix, Web,
+  Feishu, native TUI and scripted input.
+- Durable Gateway command admission, ordered replay/reconnect, bounded
+  sanitized event journals, and a provider-independent `smoke:gateway` gate.
+- Transactional account migration with SQLite WAL-safe backup, verified staging
+  manifests, crash recovery, and legacy-state archival.
 
 ### Changed
 
@@ -45,6 +52,16 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - Availability-exhausted replans now persist a deferred proposal and recover
   through Kernel admission instead of leaving an errored Executor permanently
   unavailable.
+- Native install/update/rollback now activates database, configuration,
+  SecretStore and generated-runtime revisions under
+  `accounts/local-default`; legacy installation-global state is migration
+  evidence only.
+- Account-owned periodic recovery no longer depends on open Conversations;
+  shutdown drains client attachments, accepted commands, cancellation retries,
+  Planner/Executor work, and an in-flight account timer before closing storage.
+- Expired Gateway cursors now reset to a bounded current/terminal snapshot,
+  oversized answers remain successful through bounded projection, and native
+  Pi reconnect/frame handling fails safely and remains retryable.
 
 ## [1.2.0-preview.0] - 2026-07-17
 

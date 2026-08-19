@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   GATEWAY_PROTOCOL_VERSION,
+  MAX_GATEWAY_ATTACHMENTS,
+  MAX_GATEWAY_COMMAND_TEXT_BYTES,
+  MAX_GATEWAY_ID_BYTES,
   parseGatewayCommandEnvelope,
   type GatewayCommandEnvelope,
 } from '../../src/gateway/client-protocol.js';
@@ -96,7 +99,52 @@ describe('gateway client command protocol', () => {
     expect(parseGatewayCommandEnvelope(input)).toBeNull();
   });
 
+  it('rejects command text and identifiers above their protocol limits', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...validEnvelope(),
+      requestId: 'r'.repeat(MAX_GATEWAY_ID_BYTES + 1),
+    })).toBeNull();
+    expect(parseGatewayCommandEnvelope({
+      ...validEnvelope(),
+      command: {
+        kind: 'user_message',
+        text: 'x'.repeat(MAX_GATEWAY_COMMAND_TEXT_BYTES + 1),
+        attachments: [],
+      },
+    })).toBeNull();
+  });
+
+  it('rejects excessive capabilities and attachment references', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...validEnvelope(),
+      command: {
+        kind: 'user_message',
+        text: 'hello',
+        attachments: Array.from(
+          { length: MAX_GATEWAY_ATTACHMENTS + 1 },
+          (_, index) => ({ attachmentId: `attachment_${index}`, kind: 'file' }),
+        ),
+      },
+    })).toBeNull();
+    expect(parseGatewayCommandEnvelope({
+      ...validEnvelope(),
+      clientCapabilities: Array.from({ length: 33 }, (_, index) => `capability_${index}`),
+    })).toBeNull();
+  });
+
   it('exports a stable protocol version constant', () => {
     expect(GATEWAY_PROTOCOL_VERSION).toBe(1);
   });
 });
+
+function validEnvelope(): GatewayCommandEnvelope {
+  return {
+    protocolVersion: 1,
+    requestId: 'req_1',
+    idempotencyKey: 'idem_1',
+    connectionId: 'conn_1',
+    conversation: { mode: 'attach', conversationId: 'conv_1' },
+    command: { kind: 'user_message', text: 'hello', attachments: [] },
+    clientCapabilities: ['trace_v1'],
+  };
+}

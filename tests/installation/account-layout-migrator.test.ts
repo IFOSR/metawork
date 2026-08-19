@@ -1,4 +1,12 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -41,6 +49,18 @@ afterEach(async () => {
 });
 
 describe('account layout migration', () => {
+  it('rebuilds the active configuration pointer inside the account root', async () => {
+    const installRoot = await makeInstallRoot();
+    const paths = resolveAnyFusionPaths(undefined, installRoot);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    await mkdir(join(paths.configurationRevisions, 'revision-1'), { recursive: true });
+    await symlink(join('revisions', 'revision-1'), join(installRoot, 'config', 'active'), 'dir');
+
+    await new AccountLayoutMigrator({ paths }).migrate();
+
+    expect(await readlink(accountPaths.configActive)).toBe(join('revisions', 'revision-1'));
+  });
+
   it('migrates legacy state into local-default and is idempotent', async () => {
     const installRoot = await makeInstallRoot();
     const paths = resolveAnyFusionPaths(undefined, installRoot);
@@ -61,7 +81,14 @@ describe('account layout migration', () => {
 
     // 账户目录有迁移后的数据
     expect((await readdir(accountPaths.data)).length).toBeGreaterThan(0);
+    expect((await lstat(accountPaths.database)).isSymbolicLink()).toBe(true);
+    expect(await readlink(accountPaths.database)).toMatch(/^database-revisions\//u);
     expect(await readdir(accountPaths.plannerSessions)).toContain('session_1.jsonl');
+    const manifest = JSON.parse(
+      await readFile(join(accountPaths.root, 'account-layout-manifest.json'), 'utf8'),
+    ) as { schemaVersion: number; entries: unknown[] };
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.entries.length).toBeGreaterThan(0);
 
     // 账户元数据已写入
     const repository = new FileAccountRepository(paths.accountsRoot);
@@ -101,7 +128,7 @@ describe('account layout migration', () => {
     await expect(migrator.migrate()).rejects.toThrow();
   });
 
-  it('leaves legacy state present and does not re-write it after migration', async () => {
+  it('archives legacy state after migration so it cannot remain a write authority', async () => {
     const installRoot = await makeInstallRoot();
     const paths = resolveAnyFusionPaths(undefined, installRoot);
 
@@ -112,9 +139,99 @@ describe('account layout migration', () => {
 
     await new AccountLayoutMigrator({ paths }).migrate();
 
-    // 迁移后 legacy 状态仍存在（回滚元数据保留），账户目录有副本。
-    expect(await readdir(paths.plannerSessions)).toContain('s.jsonl');
+    await expect(readdir(paths.plannerSessions)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(lstat(paths.database)).rejects.toMatchObject({ code: 'ENOENT' });
+    const archiveRoot = join(
+      installRoot,
+      'legacy-account-layout',
+      LOCAL_DEFAULT_ACCOUNT_ID,
+    );
+    expect(await readdir(join(archiveRoot, 'data', 'planner-sessions')))
+      .toContain('s.jsonl');
+    expect((await lstat(join(archiveRoot, 'data', 'metaclaw.db'))).isFile()).toBe(true);
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
     expect(await readdir(accountPaths.plannerSessions)).toContain('s.jsonl');
+  });
+
+  it('backs up committed WAL data into the account database before archiving legacy state', async () => {
+    const installRoot = await makeInstallRoot();
+    const paths = resolveAnyFusionPaths(undefined, installRoot);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    await mkdir(paths.data, { recursive: true });
+    seedLegacyState(paths);
+    const writer = new Database(paths.database);
+    try {
+      writer.pragma('journal_mode = WAL');
+      writer.pragma('wal_autocheckpoint = 0');
+      writer.exec('CREATE TABLE wal_migration_probe (value TEXT NOT NULL)');
+      writer.prepare('INSERT INTO wal_migration_probe (value) VALUES (?)').run('committed-in-wal');
+      expect((await lstat(`${paths.database}-wal`)).size).toBeGreaterThan(0);
+
+      await new AccountLayoutMigrator({ paths }).migrate();
+
+      const migrated = new Database(accountPaths.database, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        expect(migrated.prepare('SELECT value FROM wal_migration_probe').get())
+          .toEqual({ value: 'committed-in-wal' });
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      writer.close();
+    }
+  });
+
+  it('resumes activation after a crash between directory rename and account metadata', async () => {
+    const installRoot = await makeInstallRoot();
+    const paths = resolveAnyFusionPaths(undefined, installRoot);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    await mkdir(paths.data, { recursive: true });
+    await mkdir(paths.plannerSessions, { recursive: true });
+    seedLegacyState(paths);
+    await writeFile(join(paths.plannerSessions, 'recover.jsonl'), '{}', 'utf8');
+    let failOnce = true;
+
+    const interrupted = new AccountLayoutMigrator({
+      paths,
+      afterActivate: async () => {
+        if (!failOnce) return;
+        failOnce = false;
+        throw new Error('simulated activation crash');
+      },
+    });
+    await expect(interrupted.migrate()).rejects.toThrow('simulated activation crash');
+    await expect(readFile(accountPaths.accountJson, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    const recovered = await new AccountLayoutMigrator({ paths }).migrate();
+    expect(recovered.outcome).toBe('migrated');
+    expect(await readdir(accountPaths.plannerSessions)).toContain('recover.jsonl');
+    await expect(readdir(paths.plannerSessions)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(join(
+      installRoot,
+      'legacy-account-layout',
+      LOCAL_DEFAULT_ACCOUNT_ID,
+      'data',
+      'planner-sessions',
+    ))).toContain('recover.jsonl');
+    const repository = new FileAccountRepository(paths.accountsRoot);
+    expect((await repository.load(LOCAL_DEFAULT_ACCOUNT_ID))?.migratedAt).toBeTruthy();
+  });
+
+  it('rejects an unjournaled mixed legacy and account layout', async () => {
+    const installRoot = await makeInstallRoot();
+    const paths = resolveAnyFusionPaths(undefined, installRoot);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    await mkdir(paths.data, { recursive: true });
+    seedLegacyState(paths);
+    await mkdir(accountPaths.root, { recursive: true });
+    await writeFile(join(accountPaths.root, 'partial.txt'), 'partial', 'utf8');
+
+    await expect(new AccountLayoutMigrator({ paths }).migrate())
+      .rejects.toThrow('mixed account layout');
   });
 });

@@ -5,6 +5,7 @@ import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import {
   loadPlannerConfigurationSnapshot,
   PlannerDataReader,
+  resolvePlannerMcpRuntimePaths,
 } from '../../src/planning/planner-mcp-server.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
@@ -64,6 +65,17 @@ describe('PlannerDataReader', () => {
       { readSnapshot: async () => ({}) } as never,
       undefined,
     )).rejects.toThrow('METACLAW_CONFIGURATION_REVISION is required');
+  });
+
+  it('uses explicit account-scoped database and configuration roots', () => {
+    expect(resolvePlannerMcpRuntimePaths({
+      home: '/legacy/data',
+      databasePath: '/accounts/local-default/data/anyfusion.db',
+      configurationRoot: '/accounts/local-default/config',
+    })).toEqual({
+      databasePath: '/accounts/local-default/data/anyfusion.db',
+      configurationRoot: '/accounts/local-default/config',
+    });
   });
 
   it('bounds task search results and truncates summaries', () => {

@@ -98,4 +98,17 @@ describe('RuntimeRegistry', () => {
 
     expect(disposed.sort()).toEqual(['acct-two', 'local-default']);
   });
+
+  it('fails shutdown instead of silently dropping a busy runtime', async () => {
+    const registry = makeRegistry();
+    const runtime = await registry.getOrActivate({
+      accountId: 'local-default',
+      authorized: true,
+    });
+    runtime.beginWork();
+
+    await expect(registry.shutdown()).rejects.toThrow(
+      'AccountRuntime remained busy during shutdown: local-default',
+    );
+  });
 });

@@ -11,8 +11,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
+import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
@@ -31,9 +33,9 @@ afterEach(() => {
 describe('SourceNativeUpdater', () => {
   it('backs up and clones the database, then activates one complete candidate set', async () => {
     const fixture = await installedFixture();
-    const previousDatabaseTarget = readlinkSync(fixture.paths.database);
-    const previousConfigurationTarget = readlinkSync(join(fixture.paths.root, 'config', 'active'));
-    const previousGeneratedTarget = readlinkSync(fixture.paths.generatedCurrent);
+    const previousDatabaseTarget = readlinkSync(fixture.accountPaths.database);
+    const previousConfigurationTarget = readlinkSync(fixture.accountPaths.configActive);
+    const previousGeneratedTarget = readlinkSync(fixture.accountPaths.generatedCurrent);
     const nextSource = join(fixture.home, 'source-next');
     const nextPlanner = join(fixture.home, 'planner-next');
     fixtureRelease(nextSource, nextPlanner, 'runtime-next\n', 'planner-next\n');
@@ -53,14 +55,93 @@ describe('SourceNativeUpdater', () => {
     expect(result.outcome).toBe('committed');
     expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
       .toBe('runtime-next\n');
-    expect(readlinkSync(fixture.paths.database)).not.toBe(previousDatabaseTarget);
-    expect(readlinkSync(join(fixture.paths.root, 'config', 'active')))
+    expect(readlinkSync(fixture.accountPaths.database)).not.toBe(previousDatabaseTarget);
+    expect(readlinkSync(fixture.accountPaths.configActive))
       .toBe(previousConfigurationTarget);
-    expect(readlinkSync(fixture.paths.generatedCurrent)).toBe(previousGeneratedTarget);
+    expect(readlinkSync(fixture.accountPaths.generatedCurrent)).toBe(previousGeneratedTarget);
+    expect(() => readlinkSync(fixture.paths.database)).toThrow();
     const journal = JSON.parse(readFileSync(result.journalPath, 'utf8')) as {
       phase: string;
     };
     expect(journal.phase).toBe('committed');
+  });
+
+  it('normalizes a previously migrated regular account database before update', async () => {
+    const fixture = await installedFixture();
+    const activeTarget = resolve(
+      dirname(fixture.accountPaths.database),
+      readlinkSync(fixture.accountPaths.database),
+    );
+    const databaseBytes = readFileSync(activeTarget);
+    rmSync(fixture.accountPaths.database);
+    writeFileSync(fixture.accountPaths.database, databaseBytes);
+
+    const nextSource = join(fixture.home, 'source-normalized-next');
+    const nextPlanner = join(fixture.home, 'planner-normalized-next');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-normalized\n', 'planner-normalized\n');
+    await new SourceNativeUpdater({
+      paths: fixture.paths,
+      secretStore: fixture.secretStore,
+      detectCommand: async command => command === 'codex',
+      isServerRunning: async () => false,
+    }).update({
+      releaseId: '1.2.1-preview.0',
+      sourceRoot: nextSource,
+      plannerRoot: nextPlanner,
+    });
+
+    expect(lstatSync(fixture.accountPaths.database).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
+      .toBe('runtime-normalized\n');
+  });
+
+  it('preserves committed WAL data while normalizing a regular account database', async () => {
+    const fixture = await installedFixture();
+    const activeTarget = resolve(
+      dirname(fixture.accountPaths.database),
+      readlinkSync(fixture.accountPaths.database),
+    );
+    const databaseBytes = readFileSync(activeTarget);
+    rmSync(fixture.accountPaths.database);
+    writeFileSync(fixture.accountPaths.database, databaseBytes);
+    const writer = new (await import('better-sqlite3')).default(
+      fixture.accountPaths.database,
+    );
+    const nextSource = join(fixture.home, 'source-wal-next');
+    const nextPlanner = join(fixture.home, 'planner-wal-next');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-wal\n', 'planner-wal\n');
+
+    try {
+      writer.pragma('journal_mode = WAL');
+      writer.pragma('wal_autocheckpoint = 0');
+      writer.exec('CREATE TABLE updater_wal_probe (value TEXT NOT NULL)');
+      writer.prepare('INSERT INTO updater_wal_probe (value) VALUES (?)').run('committed-in-wal');
+      expect(lstatSync(`${fixture.accountPaths.database}-wal`).size).toBeGreaterThan(0);
+
+      await new SourceNativeUpdater({
+        paths: fixture.paths,
+        secretStore: fixture.secretStore,
+        detectCommand: async command => command === 'codex',
+        isServerRunning: async () => false,
+      }).update({
+        releaseId: '1.2.1-preview.0',
+        sourceRoot: nextSource,
+        plannerRoot: nextPlanner,
+      });
+
+      const migrated = new (await import('better-sqlite3')).default(
+        fixture.accountPaths.database,
+        { readonly: true, fileMustExist: true },
+      );
+      try {
+        expect(migrated.prepare('SELECT value FROM updater_wal_probe').get())
+          .toEqual({ value: 'committed-in-wal' });
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      writer.close();
+    }
   });
 
   it('fails closed before staging when a daemon is still running', async () => {
@@ -85,12 +166,41 @@ describe('SourceNativeUpdater', () => {
       .toBe('runtime-initial\n');
   });
 
+  it('fails closed when the atomic runtime-update lock is held by runtime', async () => {
+    const fixture = await installedFixture();
+    const nextSource = join(fixture.home, 'source-runtime-locked');
+    const nextPlanner = join(fixture.home, 'planner-runtime-locked');
+    fixtureRelease(nextSource, nextPlanner, 'blocked\n', 'blocked\n');
+    mkdirSync(fixture.paths.data, { recursive: true });
+    writeFileSync(
+      join(fixture.paths.data, 'runtime.lock'),
+      `${JSON.stringify({
+        pid: String(process.pid),
+        startedAt: '2026-08-19T00:00:00.000Z',
+      })}\n`,
+    );
+
+    await expect(new SourceNativeUpdater({
+      paths: fixture.paths,
+      secretStore: fixture.secretStore,
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+    }).update({
+      releaseId: '1.2.1-preview.0',
+      sourceRoot: nextSource,
+      plannerRoot: nextPlanner,
+    })).rejects.toThrow('runtime holds the runtime/update lock');
+
+    expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
+      .toBe('runtime-initial\n');
+  });
+
   it('rolls back to the exact previously journaled compatible pointer set', async () => {
     const fixture = await installedFixture();
     const initialTargets = {
-      database: readlinkSync(fixture.paths.database),
-      configuration: readlinkSync(join(fixture.paths.root, 'config', 'active')),
-      generated: readlinkSync(fixture.paths.generatedCurrent),
+      database: readlinkSync(fixture.accountPaths.database),
+      configuration: readlinkSync(fixture.accountPaths.configActive),
+      generated: readlinkSync(fixture.accountPaths.generatedCurrent),
       application: readlinkSync(fixture.paths.appCurrent),
     };
     const nextSource = join(fixture.home, 'source-rollback-next');
@@ -111,14 +221,14 @@ describe('SourceNativeUpdater', () => {
     const result = await updater.rollback('1.2.0-preview.0');
 
     expect(result.outcome).toBe('committed');
-    expect(readlinkSync(fixture.paths.database)).toBe(initialTargets.database);
+    expect(readlinkSync(fixture.accountPaths.database)).toBe(initialTargets.database);
     expect(readlinkSync(fixture.paths.appCurrent)).toBe(initialTargets.application);
-    expect(readlinkSync(join(fixture.paths.root, 'config', 'active')))
+    expect(readlinkSync(fixture.accountPaths.configActive))
       .not.toBe(initialTargets.configuration);
-    expect(readlinkSync(fixture.paths.generatedCurrent)).not.toBe(initialTargets.generated);
+    expect(readlinkSync(fixture.accountPaths.generatedCurrent)).not.toBe(initialTargets.generated);
     expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
       .toBe('runtime-initial\n');
-    const repository = new FileConfigurationRepository(join(fixture.paths.root, 'config'));
+    const repository = new FileConfigurationRepository(fixture.accountPaths.config);
     const rollbackSnapshot = await repository.getActiveSnapshot();
     const originalSnapshot = await repository.readSnapshot(
       initialTargets.configuration.split('/').at(-1)!,
@@ -130,17 +240,17 @@ describe('SourceNativeUpdater', () => {
   it('recovers an earlier prepared activation journal before starting a new update', async () => {
     const fixture = await installedFixture();
     const previousTargets = {
-      database: readlinkSync(fixture.paths.database),
-      configuration: readlinkSync(join(fixture.paths.root, 'config', 'active')),
-      generated: readlinkSync(fixture.paths.generatedCurrent),
+      database: readlinkSync(fixture.accountPaths.database),
+      configuration: readlinkSync(fixture.accountPaths.configActive),
+      generated: readlinkSync(fixture.accountPaths.generatedCurrent),
       application: readlinkSync(fixture.paths.appCurrent),
     };
-    const interruptedDatabase = join(fixture.paths.databaseRevisions, 'interrupted.db');
+    const interruptedDatabase = join(fixture.accountPaths.databaseRevisions, 'interrupted.db');
     writeFileSync(interruptedDatabase, 'not-a-database');
-    rmSync(fixture.paths.database);
+    rmSync(fixture.accountPaths.database);
     symlinkSync(
       join('database-revisions', 'interrupted.db'),
-      fixture.paths.database,
+      fixture.accountPaths.database,
     );
     const interruptedJournal = join(
       fixture.paths.upgradeJournals,
@@ -151,9 +261,9 @@ describe('SourceNativeUpdater', () => {
       schemaVersion: 1,
       phase: 'prepared',
       paths: {
-        database: fixture.paths.database,
-        configuration: join(fixture.paths.root, 'config', 'active'),
-        generated: fixture.paths.generatedCurrent,
+        database: fixture.accountPaths.database,
+        configuration: fixture.accountPaths.configActive,
+        generated: fixture.accountPaths.generatedCurrent,
         application: fixture.paths.appCurrent,
       },
       previousTargets,
@@ -192,7 +302,8 @@ async function installedFixture() {
   const plannerRoot = join(home, 'planner-initial');
   fixtureRelease(sourceRoot, plannerRoot, 'runtime-initial\n', 'planner-initial\n');
   const paths = resolveAnyFusionPaths(home);
-  const secretStore = new FileSecretStore(paths.secrets);
+  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+  const secretStore = new FileSecretStore(accountPaths.secrets);
   await new SourceNativeInstaller({
     paths,
     secretStore,
@@ -209,7 +320,7 @@ async function installedFixture() {
       secretReference: 'file-secret:anyfusion/provider',
     },
   });
-  return { home, paths, secretStore };
+  return { home, paths, accountPaths, secretStore };
 }
 
 function fixtureRelease(

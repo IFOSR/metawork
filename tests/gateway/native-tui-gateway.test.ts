@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { GatewayClient } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/gateway-client.js';
 import type {
   GatewayCommandEnvelope,
@@ -93,5 +94,22 @@ describe('native TUI gateway client', () => {
     // 本地语义 AgentSession。本测试通过类型边界验证：client 无本地语义依赖。
     const { client } = makeClient();
     expect(client).toBeDefined();
+  });
+
+  it('has a production client-only mode caller before Pi creates AgentSession runtime', () => {
+    const mainSource = readFileSync(
+      'planner/AnyFusion-Pi/packages/coding-agent/src/main.ts',
+      'utf8',
+    );
+    const clientModeSource = readFileSync(
+      'planner/AnyFusion-Pi/packages/coding-agent/src/modes/interactive/anyfusion-client-mode.ts',
+      'utf8',
+    );
+
+    expect(mainSource).toContain('runAnyFusionClientMode');
+    expect(mainSource.indexOf('await runAnyFusionClientMode'))
+      .toBeLessThan(mainSource.indexOf('createAgentSessionRuntime(createRuntime'));
+    expect(clientModeSource).not.toContain('AgentSession');
+    expect(clientModeSource).not.toContain('.prompt(');
   });
 });

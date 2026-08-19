@@ -1,6 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ClientGateway } from '../../src/gateway/client-gateway.js';
-import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
+import {
+  MAX_GATEWAY_COMMAND_TEXT_BYTES,
+  type GatewayCommandEnvelope,
+} from '../../src/gateway/client-protocol.js';
+import {
+  FileCommandAdmissionStore,
+  MemoryCommandAdmissionStore,
+} from '../../src/gateway/command-admission-store.js';
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
 
 const envelope: GatewayCommandEnvelope = {
   protocolVersion: 1,
@@ -39,6 +55,41 @@ describe('ClientGateway', () => {
     expect(result).toMatchObject({ kind: 'authorization', requestId: 'req_1' });
   });
 
+  it('rejects an oversized command before authentication or durable admission', async () => {
+    let authenticated = false;
+    const store = new MemoryCommandAdmissionStore();
+    const gateway = new ClientGateway({
+      authenticator: {
+        authenticate: async () => {
+          authenticated = true;
+          return { kind: 'local', id: 'local-installation' };
+        },
+      },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+      commandAdmissionStore: store,
+    });
+
+    const result = await gateway.handle({
+      ...envelope,
+      command: {
+        kind: 'user_message',
+        text: 'x'.repeat(MAX_GATEWAY_COMMAND_TEXT_BYTES + 1),
+        attachments: [],
+      },
+    }, 'local');
+
+    expect(result).toMatchObject({
+      kind: 'invalid_command',
+      code: 'invalid_gateway_command',
+      requestId: 'req_1',
+    });
+    expect(authenticated).toBe(false);
+    await expect(store.listRecoverable()).resolves.toEqual([]);
+  });
+
   it('admits a valid command end to end', async () => {
     const activated: string[] = [];
     const submitted: string[] = [];
@@ -74,5 +125,209 @@ describe('ClientGateway', () => {
 
     expect(duplicate).toMatchObject({ status: 'duplicate' });
     expect(submits).toBe(1);
+  });
+
+  it('single-flights a concurrent new-Conversation retry before resolving the Conversation', async () => {
+    let resolves = 0;
+    let submits = 0;
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: {
+        resolve: async () => {
+          resolves += 1;
+          return { status: 'created', conversationId: 'conv_1' };
+        },
+      },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => {
+        submits += 1;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { status: 'accepted' };
+      },
+    });
+
+    const [first, duplicate] = await Promise.all([
+      gateway.handle(envelope, 'local'),
+      gateway.handle({ ...envelope, requestId: 'req_2' }, 'local'),
+    ]);
+
+    expect(first).toMatchObject({ status: 'accepted', conversationId: 'conv_1' });
+    expect(duplicate).toMatchObject({ status: 'duplicate', conversationId: 'conv_1' });
+    expect(resolves).toBe(1);
+    expect(submits).toBe(1);
+  });
+
+  it('replays a durable receipt before activating or resolving after restart', async () => {
+    const store = new MemoryCommandAdmissionStore();
+    const build = (failIfCalled: () => never) => new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: {
+        resolve: async () => ({ status: 'created', conversationId: failIfCalled() }),
+      },
+      activateAccount: async () => { failIfCalled(); },
+      submitToConversation: async () => {
+        failIfCalled();
+      },
+      commandAdmissionStore: store,
+    });
+    const first = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+      commandAdmissionStore: store,
+    });
+    await first.handle(envelope, 'local');
+
+    const restarted = build(() => {
+      throw new Error('must not activate or resolve');
+    });
+    await expect(restarted.handle({ ...envelope, requestId: 'req_2' }, 'local'))
+      .resolves.toMatchObject({
+        status: 'duplicate',
+        conversationId: 'conv_1',
+      });
+  });
+
+  it('rejects an idempotency key reused with a different payload', async () => {
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+    });
+    await gateway.handle(envelope, 'local');
+
+    const conflict = await gateway.handle({
+      ...envelope,
+      requestId: 'req_2',
+      command: { kind: 'user_message', text: 'different', attachments: [] },
+    }, 'local');
+
+    expect(conflict).toMatchObject({
+      kind: 'conflict',
+      code: 'idempotency_conflict',
+      requestId: 'req_2',
+    });
+  });
+
+  it('recovers a persisted submitted command with one stable new-Conversation identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-client-gateway-restart-'));
+    roots.push(root);
+    const firstStore = new FileCommandAdmissionStore(root);
+    const terminal = new Promise<void>(() => undefined);
+    let resolves = 0;
+    const first = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: {
+        resolve: async () => {
+          resolves += 1;
+          return { status: 'created', conversationId: 'conv_stable' };
+        },
+      },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({
+        status: 'accepted',
+        completion: terminal.then(() => ({ status: 'completed' as const })),
+      }),
+      commandAdmissionStore: firstStore,
+    });
+
+    const accepted = await first.handle(envelope, 'local');
+    expect(accepted).toMatchObject({
+      status: 'accepted',
+      conversationId: 'conv_stable',
+    });
+    const conversationId = 'conversationId' in accepted ? accepted.conversationId : null;
+    await expect(firstStore.find('local-default', 'idem_1')).resolves.toMatchObject({
+      state: 'submitted',
+      conversationId: 'conv_stable',
+    });
+
+    let recoverySubmits = 0;
+    const restartedStore = new FileCommandAdmissionStore(root);
+    const restarted = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: {
+        resolve: async () => {
+          throw new Error('recovery must reuse the durable Conversation identity');
+        },
+      },
+      activateAccount: async () => undefined,
+      submitToConversation: async recoveredConversationId => {
+        recoverySubmits += 1;
+        expect(recoveredConversationId).toBe(conversationId);
+        return {
+          status: 'rejected',
+          reason: 'command_execution_uncertain',
+          completion: Promise.resolve({
+            status: 'failed' as const,
+            reason: 'command_execution_uncertain',
+          }),
+        };
+      },
+      commandAdmissionStore: restartedStore,
+    });
+
+    await restarted.recover();
+    expect(resolves).toBe(1);
+    expect(recoverySubmits).toBe(1);
+    await expect(restartedStore.find('local-default', 'idem_1')).resolves.toMatchObject({
+      state: 'terminal',
+      receipt: {
+        status: 'rejected',
+        conversationId,
+        reason: 'command_execution_uncertain',
+      },
+    });
+
+    const replay = await restarted.handle({ ...envelope, requestId: 'req_retry' }, 'local');
+    expect(replay).toMatchObject({
+      status: 'rejected',
+      conversationId,
+      reason: 'command_execution_uncertain',
+    });
+    expect(recoverySubmits).toBe(1);
+  });
+
+  it('closes command admission and drains a handle already in progress', async () => {
+    let releaseAuthentication: (() => void) | null = null;
+    const authenticationGate = new Promise<void>(resolve => {
+      releaseAuthentication = resolve;
+    });
+    const gateway = new ClientGateway({
+      authenticator: {
+        authenticate: async () => {
+          await authenticationGate;
+          return { kind: 'local', id: 'local-installation' };
+        },
+      },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+    });
+
+    const active = gateway.handle(envelope, 'local');
+    gateway.closeAdmission();
+    await expect(gateway.handle({ ...envelope, requestId: 'req_closed' }, 'local'))
+      .resolves.toMatchObject({
+        kind: 'unavailable',
+        code: 'gateway_closing',
+      });
+    let drained = false;
+    const draining = gateway.drain().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    releaseAuthentication!();
+    await expect(active).resolves.toMatchObject({ status: 'accepted' });
+    await draining;
   });
 });

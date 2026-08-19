@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  resolveServerSurface,
   ServerApplication,
   type ServerApplicationDeps,
   type ServerSurface,
@@ -25,7 +26,7 @@ function makeDeps(surface: ServerSurface, overrides: {
 }
 
 describe('ServerApplication', () => {
-  for (const surface of ['interactive', 'gateway', 'scripted', 'standby'] as ServerSurface[]) {
+  for (const surface of ['interactive', 'gateway', 'web', 'scripted', 'standby'] as ServerSurface[]) {
     it(`starts shared then the ${surface} surface`, async () => {
       const { deps, calls } = makeDeps(surface);
       const app = new ServerApplication(deps);
@@ -66,5 +67,13 @@ describe('ServerApplication', () => {
     await app.stop();
 
     expect(calls).toEqual(['startShared', 'startSurface:standby', 'stopSurface:standby', 'stopShared']);
+  });
+
+  it('selects only the foreground client without changing shared Server composition', () => {
+    expect(resolveServerSurface({}, {})).toBe('interactive');
+    expect(resolveServerSurface({ gateway: true }, {})).toBe('gateway');
+    expect(resolveServerSurface({ web: true }, {})).toBe('web');
+    expect(resolveServerSurface({ scriptPath: '/tmp/flow.txt' }, {})).toBe('scripted');
+    expect(resolveServerSurface({}, { METACLAW_STANDBY_TUI: '1' })).toBe('standby');
   });
 });

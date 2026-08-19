@@ -75,6 +75,12 @@ export class KernelDecisionRepo {
     return row ? rowToRecord(row) : null;
   }
 
+  findById(decisionId: string): RevisionedKernelDecisionLedgerRecord | null {
+    const row = this.db.prepare('SELECT * FROM kernel_decisions WHERE id = ?')
+      .get(decisionId) as KernelDecisionRow | undefined;
+    return row ? rowToRecord(row) : null;
+  }
+
   listBySession(sessionId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE session_id = ? ORDER BY created_at ASC, id ASC

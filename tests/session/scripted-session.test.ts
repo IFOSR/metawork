@@ -10,7 +10,14 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import { parseScriptInputs, runScriptedSession } from '../../src/session/scripted-session.js';
+import {
+  parseScriptInputs,
+  runScriptedSession as runScriptedSessionPort,
+} from '../../src/session/scripted-session.js';
+import {
+  MetaclawSession,
+  type MetaclawSessionDeps,
+} from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
@@ -39,6 +46,16 @@ function createConfig(): Config {
       dashboard_on_start: true,
     },
   };
+}
+
+function runScriptedSession(
+  input: { inputs: string[] } & MetaclawSessionDeps,
+) {
+  const { inputs, ...deps } = input;
+  return runScriptedSessionPort({
+    inputs,
+    session: new MetaclawSession(deps),
+  });
 }
 
 describe('scripted session', () => {

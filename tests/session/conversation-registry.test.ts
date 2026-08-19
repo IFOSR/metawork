@@ -83,4 +83,72 @@ describe('ConversationRegistry', () => {
     expect(await registry.closeIdle('conv_1')).toBe('missing');
     expect(disposed).toBe(1);
   });
+
+  it('waits for active conversation work during closeAll and rejects later opens', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let disposed = 0;
+    const registry = new ConversationRegistry();
+    const session = await registry.getOrOpen(
+      'conv_1',
+      async () => makeSession('conv_1', { gate, disposed: () => { disposed += 1; } }),
+    );
+    session.submitCommand({ requestId: 'req_1', idempotencyKey: 'idem_1' });
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    let closed = false;
+    const closing = registry.closeAll().then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    await expect(registry.getOrOpen('conv_2', async () => makeSession('conv_2')))
+      .rejects.toThrow('Conversation registry is closing');
+
+    release!();
+    await closing;
+    expect(disposed).toBe(1);
+  });
+
+  it('reviews every open conversation on the shared timer tick', async () => {
+    const registry = new ConversationRegistry();
+    const reviewed: string[] = [];
+    for (const id of ['conv_1', 'conv_2']) {
+      const session = makeSession(id);
+      session.maybeReviewTaskPoolOnTimer = async () => {
+        reviewed.push(id);
+        return true;
+      };
+      await registry.getOrOpen(id, async () => session);
+    }
+
+    await expect(registry.reviewTaskPoolOnTimer(1_000)).resolves.toBe(true);
+    expect(reviewed).toEqual(['conv_1', 'conv_2']);
+  });
+
+  it('waits for an in-flight timer review before disposing conversations', async () => {
+    const registry = new ConversationRegistry();
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const calls: string[] = [];
+    const session = makeSession('conv_1', {
+      disposed: () => { calls.push('dispose'); },
+    });
+    session.maybeReviewTaskPoolOnTimer = async () => {
+      calls.push('review:start');
+      await gate;
+      calls.push('review:end');
+      return true;
+    };
+    await registry.getOrOpen('conv_1', async () => session);
+
+    const review = registry.reviewTaskPoolOnTimer();
+    await new Promise(resolve => setTimeout(resolve, 1));
+    const closing = registry.closeAll();
+    await Promise.resolve();
+    expect(calls).toEqual(['review:start']);
+
+    release!();
+    await Promise.all([review, closing]);
+    expect(calls).toEqual(['review:start', 'review:end', 'dispose']);
+    await expect(registry.reviewTaskPoolOnTimer()).resolves.toBe(false);
+  });
 });

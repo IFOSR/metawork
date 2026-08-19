@@ -422,6 +422,7 @@ export class MetaclawSession {
       probeCommand: deps.probeCommand,
       attemptExecutionBackend: this.attemptExecutionBackend,
       attemptExecutionRepository: this.attemptExecutionRepository,
+      attemptsRoot: resolve(resolveMetaclawDir(), 'attempts'),
     });
     const executorRegistry = executionServices.executorRegistry;
     this.executionRuntime = executionServices.executionRuntime;
@@ -545,6 +546,7 @@ export class MetaclawSession {
       attemptRunner: this.attemptRunner,
       controlKernel: this.controlKernel,
       kernelWorkflowRepo: this.kernelWorkflowRepo,
+      kernelDecisionRepo: this.kernelDecisionRepo,
       dispatchItemRepo,
       publicationRepo: this.publicationRepo,
       generationReplanRepo,

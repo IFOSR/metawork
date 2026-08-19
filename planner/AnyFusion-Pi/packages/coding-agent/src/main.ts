@@ -46,6 +46,7 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { runAnyFusionClientMode } from "./modes/interactive/anyfusion-client-mode.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
@@ -482,6 +483,25 @@ export async function main(args: string[], _options?: MainOptions) {
 
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	}
+
+	const clientParsed = parseArgs(args);
+	if (clientParsed.gatewaySocket) {
+		if (!clientParsed.conversationId?.trim()) {
+			console.error(chalk.red("Error: --conversation-id is required with --gateway-socket"));
+			process.exitCode = 1;
+			return;
+		}
+		initTheme("dark", true);
+		try {
+			await runAnyFusionClientMode({
+				socketPath: clientParsed.gatewaySocket,
+				conversationId: clientParsed.conversationId,
+			});
+		} finally {
+			stopThemeWatcher();
+		}
+		return;
 	}
 
 	const cwd = process.cwd();

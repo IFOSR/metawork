@@ -20,8 +20,12 @@ export interface AccountPaths {
   readonly configRevisions: string;
   readonly secrets: string;
   readonly generated: string;
+  readonly generatedAgentRuntime: string;
+  readonly generatedCurrent: string;
   readonly data: string;
   readonly database: string;
+  readonly databaseRevisions: string;
+  readonly backups: string;
   readonly plannerSessions: string;
   readonly conversations: string;
   readonly workspaceStore: string;
@@ -48,8 +52,12 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     configRevisions: resolve(config, 'revisions'),
     secrets: resolve(root, 'secrets'),
     generated: resolve(root, 'generated'),
+    generatedAgentRuntime: resolve(root, 'generated', 'agent-runtime'),
+    generatedCurrent: resolve(root, 'generated', 'current'),
     data,
     database: resolve(data, 'anyfusion.db'),
+    databaseRevisions: resolve(data, 'database-revisions'),
+    backups: resolve(data, 'backups'),
     plannerSessions: resolve(planner, 'sessions'),
     conversations: resolve(root, 'conversations'),
     workspaceStore: resolve(root, 'workspace-store'),

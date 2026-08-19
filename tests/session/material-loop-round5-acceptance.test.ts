@@ -9,6 +9,7 @@ import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { runScriptedSession } from '../../src/session/scripted-session.js';
+import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 
@@ -57,17 +58,19 @@ describe('Round 5 material loop acceptance', () => {
         '/task attach {{last_task_id}} fixture-a.md fixture-b.md',
         '/task show {{last_task_id}}',
       ],
-      taskEngine,
-      memoryEngine,
-      orchestration,
-      attemptExecutionBackend,
-      db,
-      config: createConfig(),
-      sessionId: 'sess_round5_materials',
-      contextRecaller,
-      planningAgent: stubPlanningAgent(
-        workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
-      ),
+      session: new MetaclawSession({
+        taskEngine,
+        memoryEngine,
+        orchestration,
+        attemptExecutionBackend,
+        db,
+        config: createConfig(),
+        sessionId: 'sess_round5_materials',
+        contextRecaller,
+        planningAgent: stubPlanningAgent(
+          workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
+        ),
+      }),
     });
 
     const output = result.output.join('\n');

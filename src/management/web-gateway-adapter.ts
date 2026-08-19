@@ -16,6 +16,7 @@ export interface WebGatewayAdapterDeps {
   gateway: ClientGateway;
   journal: EventJournal;
   subscriptions: GatewaySubscriptions;
+  attachClient?: (accountId: string, conversationId: string) => Promise<() => void>;
 }
 
 export class WebGatewayAdapter {
@@ -39,5 +40,10 @@ export class WebGatewayAdapter {
     listener: (event: GatewayEventEnvelope) => void,
   ): () => void {
     return this.deps.subscriptions.subscribe({ accountId, conversationId, listener });
+  }
+
+  attachClient(accountId: string, conversationId: string): Promise<() => void> {
+    return this.deps.attachClient?.(accountId, conversationId)
+      ?? Promise.resolve(() => undefined);
   }
 }

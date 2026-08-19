@@ -9,6 +9,25 @@ export interface StopInstanceForRestartResult {
   pid?: number;
 }
 
+export async function isInstanceRunning(
+  lockPath: string,
+  signalProcess: (pid: number, signal: NodeJS.Signals | 0) => boolean = process.kill.bind(process),
+): Promise<boolean> {
+  const holder = await readLockIfPresent(lockPath);
+  if (!holder) return false;
+
+  const pid = Number(holder.pid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`AnyFusion 运行锁中的 PID 无效: ${holder.pid}`);
+  }
+  try {
+    signalProcess(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
 interface StopInstanceForRestartOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;

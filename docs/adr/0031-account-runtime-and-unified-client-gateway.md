@@ -1,7 +1,8 @@
 # ADR-0031: Account Runtime And Unified Client Gateway
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Date**: 2026-08-18
+- **Implemented**: 2026-08-19
 - **Scope**: Client connectivity, account/runtime ownership, conversation identity, Gateway ingress/egress, and multi-surface session routing
 - **Amends**: ADR-0011, ADR-0015, ADR-0020, ADR-0022, ADR-0023
 - **Preserves**: ADR-0017, ADR-0018, ADR-0021, ADR-0024, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0030
@@ -11,9 +12,9 @@
 
 ## Context
 
-AnyFusion currently has one local composition process, one SQLite database and
-one Planner Host, but its client surfaces do not share one connectivity or
-runtime ownership model:
+Before this decision, AnyFusion had one local composition process, one SQLite
+database and one Planner Host, but its client surfaces did not share one
+connectivity or runtime ownership model:
 
 - the Unix Socket Gateway creates one `MetaclawSession` per connection;
 - Web owns a separate `WebSessionRuntime` and one globally active Web session;
@@ -341,6 +342,45 @@ storage, Planner, Kernel, Runtime and Gateway adapters.
 - the first release may expose only `local-default`, but all new contracts carry
   explicit Account and Conversation identity so future multi-account support
   does not require another control-plane rewrite.
+
+## Implementation Evidence
+
+The production composition was cut over on August 19, 2026:
+
+- `src/index.ts` activates `RuntimeRegistry -> AccountRuntime`, constructs one
+  `ConversationRegistry`, starts the shared Unix Gateway before foreground
+  selection, and routes Unix, Web, Feishu and script traffic through one
+  `ClientGateway`;
+- account data resolves under `accounts/local-default/`, including the SQLite
+  database, Planner sessions, Conversations, Gateway journal/admission state,
+  workspaces and attempts;
+- `ConversationSession` depends on narrow query, command, planning, permission
+  and execution facades; concrete repositories and shared execution services
+  remain composition-owned;
+- the vendored AnyFusion-Pi interactive process starts in Gateway client-only
+  mode before model, tool or local semantic runtime creation;
+- Planner semantics remain server-side RPC, with proposal submission through
+  the registered Conversation and Planner Host boundary;
+- Web, Feishu and Unix adapters can coexist in one Server process; native TUI
+  and script are foreground clients of the same composition rather than
+  alternate Runtime architectures;
+- clean install and native update/rollback switch account-scoped database,
+  configuration, SecretStore and generated-runtime authority; legacy global
+  paths are retained only as one-time migration/rollback evidence;
+- Gateway journal append and replay enforce recursive sensitive-field
+  sanitization, cycle/depth rejection and a 64 KiB event-payload limit;
+- expired replay cursors reset to a compacted current/terminal snapshot rather
+  than returning partial retained history or a transport error;
+- account migration uses SQLite online backup, verified staging manifests and
+  crash-recoverable activation, then archives legacy roots out of writable
+  authority;
+- account periodic recovery, cancellation retries and connection attachment
+  lifecycles are fenced and drained by AccountRuntime shutdown;
+- `npm run smoke:gateway` exercises production Gateway admission, replay,
+  recovery, surface composition and scripted-client boundaries without an
+  external model Provider;
+- architecture tests reject production `MetaclawSession` constructors,
+  client-owned Runtime services, and native-TUI direct Conversation calls.
 
 ## Rejected Alternatives
 

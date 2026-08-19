@@ -11,11 +11,15 @@ describe('account-scoped paths', () => {
     expect(paths.root).toBe(base);
     expect(paths.accountJson).toBe(`${base}/account.json`);
     expect(paths.database).toBe(`${base}/data/anyfusion.db`);
+    expect(paths.databaseRevisions).toBe(`${base}/data/database-revisions`);
+    expect(paths.backups).toBe(`${base}/data/backups`);
     expect(paths.config).toBe(`${base}/config`);
     expect(paths.configActive).toBe(`${base}/config/active`);
     expect(paths.configRevisions).toBe(`${base}/config/revisions`);
     expect(paths.secrets).toBe(`${base}/secrets`);
     expect(paths.generated).toBe(`${base}/generated`);
+    expect(paths.generatedAgentRuntime).toBe(`${base}/generated/agent-runtime`);
+    expect(paths.generatedCurrent).toBe(`${base}/generated/current`);
     expect(paths.plannerSessions).toBe(`${base}/planner/sessions`);
     expect(paths.conversations).toBe(`${base}/conversations`);
     expect(paths.workspaceStore).toBe(`${base}/workspace-store`);

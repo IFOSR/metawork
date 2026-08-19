@@ -28,4 +28,61 @@ describe('IdempotentCommandAdmission', () => {
     expect(receipt.status).toBe('rejected');
     expect(receipt.reason).toBe('busy');
   });
+
+  it('single-flights concurrent submissions with the same identity', async () => {
+    let submits = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const admission = new IdempotentCommandAdmission({
+      submit: async (conversationId, requestId, idempotencyKey) => {
+        submits += 1;
+        await gate;
+        return { conversationId, requestId, idempotencyKey, status: 'accepted' as const };
+      },
+    });
+
+    const first = admission.admit('req_1', 'idem_1', 'conv_1', {
+      kind: 'user_message',
+      text: 'hello',
+      attachments: [],
+    });
+    const duplicate = admission.admit('req_2', 'idem_1', 'conv_1', {
+      kind: 'user_message',
+      text: 'hello',
+      attachments: [],
+    });
+    release();
+
+    expect((await first).status).toBe('accepted');
+    expect((await duplicate).status).toBe('duplicate');
+    expect(submits).toBe(1);
+  });
+
+  it('rejects reuse of an idempotency key for a different command', async () => {
+    const admission = new IdempotentCommandAdmission({
+      submit: async (_conversationId, requestId, idempotencyKey) => ({
+        requestId,
+        idempotencyKey,
+        status: 'accepted' as const,
+      }),
+    });
+    await admission.admit('req_1', 'idem_1', 'conv_1', {
+      kind: 'user_message',
+      text: 'first',
+      attachments: [],
+    });
+
+    const conflict = await admission.admit('req_2', 'idem_1', 'conv_1', {
+      kind: 'user_message',
+      text: 'different',
+      attachments: [],
+    });
+
+    expect(conflict).toMatchObject({
+      status: 'rejected',
+      reason: 'idempotency_conflict',
+    });
+  });
 });

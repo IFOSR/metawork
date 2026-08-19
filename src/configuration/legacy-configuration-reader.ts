@@ -68,6 +68,18 @@ export interface LegacyConfigurationReaderOptions {
   inspectGit?: (path: string) => Promise<LegacyRepositoryStatus>;
 }
 
+export async function readLegacyProviderEnvironment(
+  configHome: string,
+): Promise<Record<string, string>> {
+  const path = join(configHome, 'provider.env');
+  const conflicts: LegacyConflict[] = [];
+  const values = parseEnv(await readFile(path, 'utf8'), path, conflicts);
+  if (conflicts.length > 0) {
+    throw new Error(conflicts.map(conflict => conflict.message).join('; '));
+  }
+  return values;
+}
+
 interface ParsedSource {
   source: LegacySourceHash;
   value: unknown;

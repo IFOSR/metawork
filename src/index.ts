@@ -35,7 +35,6 @@ import { resolveAccountPaths } from './account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { buildAccountRuntimeComposition } from './account/account-runtime-composition.js';
 import { RuntimeRegistry } from './account/runtime-registry.js';
-import { AccountRuntimeFactory } from './account/account-runtime-factory.js';
 import { ConversationRegistry } from './session/conversation-registry.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
@@ -46,21 +45,29 @@ import { resolveGatewaySocketPath } from './gateway/gateway-paths.js';
 import { MarkdownPreviewServer } from './integrations/markdown-preview.js';
 import { runGatewaySetup } from './gateway/setup.js';
 import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
+import { FeishuGatewayAdapter } from './gateway/feishu-gateway-adapter.js';
+import { FeishuGatewaySessionPort } from './gateway/feishu-gateway-session-port.js';
+import { ClientGateway } from './gateway/client-gateway.js';
+import { BindingConversationResolver } from './gateway/conversation-resolver.js';
+import { ConversationBindingRepository } from './session/conversation-binding-repository.js';
+import { FileEventJournal } from './gateway/file-event-journal.js';
+import { GatewaySubscriptions } from './gateway/gateway-subscriptions.js';
+import { ConversationGatewayRuntime } from './gateway/conversation-gateway-runtime.js';
+import { FileCommandAdmissionStore } from './gateway/command-admission-store.js';
+import { ScriptedGatewaySession } from './gateway/scripted-gateway-session.js';
+import { WebGatewayAdapter } from './management/web-gateway-adapter.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
 import { ConversationSession } from './session/conversation-session.js';
 import { SessionPersistenceService } from './session/session-persistence-service.js';
 import { SessionPresentationService } from './session/session-presentation-service.js';
 import { SessionStateRepo } from './storage/session-state-repo.js';
+import { PlannerProposalRepo } from './storage/planner-proposal-repo.js';
 import { InteractionTraceStream } from './session/interaction-trace-stream.js';
 import { PlanningContextBuilder } from './planning/planning-context-builder.js';
 import { CommandReadServices } from './commands/command-read-services.js';
 import { createDefaultCommandCatalog } from './commands/command-tree.js';
-import { buildAccountKernelExecutionServices } from './account/account-kernel-execution-services.js';
 import { ConversationInputMailbox } from './session/conversation-input-mailbox.js';
-import { KernelExecutorStatusProjector } from './execution/kernel-executor-status-projector.js';
-import { VerificationAndDeliveryService } from './delivery/verification-and-delivery-service.js';
-import type { WebSessionRuntimeSession } from './management/web-session-runtime.js';
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
@@ -82,7 +89,9 @@ import { WebAuthService } from './management/web-auth.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
 import { FileWebSessionStore } from './storage/file-web-session-store.js';
 import { WebSessionCatalog } from './management/web-session-catalog.js';
-import { WebSessionRuntime } from './management/web-session-runtime.js';
+import { WebGatewaySessionRuntime } from './management/web-gateway-session-runtime.js';
+import type { ManagementWebSessionRuntime } from './management/web-session-runtime-types.js';
+import { resolveServerSurface } from './session/server-application.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -122,31 +131,25 @@ async function activateConfiguration(
   return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
 }
 
-async function runWebMode(options: {
+async function startWebMode(options: {
   port: number;
   noOpen: boolean;
   runningRevisionId: string;
-  sessionFactory: (sessionId: string) => WebSessionRuntimeSession;
+  sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
-}): Promise<void> {
+}): Promise<ManagementServer> {
   const webAuth = new WebAuthService();
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
-  const sessionRuntime = new WebSessionRuntime({
-    catalog: new WebSessionCatalog(new FileWebSessionStore()),
-    sessionFactory: options.sessionFactory,
-    executionQuery: options.executionQuery,
-  });
   const managementServer = new ManagementServer({
     port: options.port,
     webDistDir,
     token: webAuth.manualAccessToken,
     webAuth,
     runningRevisionId: options.runningRevisionId,
-    sessionFactory: options.sessionFactory,
-    sessionRuntime,
+    sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
   });
@@ -161,13 +164,13 @@ async function runWebMode(options: {
   if (!options.noOpen) {
     openBrowser(presentation.browserUrl);
   }
-  // 永久等待；进程由 SIGINT/SIGTERM 或外部终止。
-  await new Promise<never>(() => {});
+  return managementServer;
 }
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
   const paths = resolveAnyFusionPaths();
+  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const applicationRoot = existsSync(paths.appCurrent)
     ? paths.appCurrent
     : resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -215,7 +218,7 @@ async function main() {
 
   if (cliArgs.gatewayCommand === 'doctor') {
     const configurationRepository = new FileConfigurationRepository(
-      dirname(paths.configurationRevisions),
+      accountPaths.config,
     );
     await configurationRepository.initialize();
     const recovery = await configurationRepository.recover();
@@ -243,7 +246,7 @@ async function main() {
   const adminCommand = parseAdminArgs(process.argv.slice(2));
   if (adminCommand) {
     const configurationRepository = new FileConfigurationRepository(
-      dirname(paths.configurationRevisions),
+      accountPaths.config,
     );
     await configurationRepository.initialize();
     const recovery = await configurationRepository.recover();
@@ -252,7 +255,7 @@ async function main() {
     }
     const activeSnapshot = await configurationRepository.getActiveSnapshot();
     const secretStore = createProductionSecretStore({
-      secretsRoot: paths.secrets,
+      secretsRoot: accountPaths.secrets,
       env: process.env,
       references: Object.values(activeSnapshot.config.providers)
         .map(provider => provider.apiKeyRef),
@@ -260,7 +263,7 @@ async function main() {
     await prepareProductionSecretStore(secretStore);
     const configurationService = new ConfigurationService({
       repository: configurationRepository,
-      renderer: new AgentRuntimeRenderer(paths.generatedAgentRuntime),
+      renderer: new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime')),
       probe: createProductionConfigurationProbe({
         releaseRoot: applicationRoot,
         secretStore,
@@ -297,7 +300,6 @@ async function main() {
   // the transactional installer rather than ordinary runtime startup.
 
   // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
-  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   await new AccountLayoutMigrator({ paths }).migrate();
 
   const configurationRepository = new FileConfigurationRepository(accountPaths.config);
@@ -310,6 +312,7 @@ async function main() {
   const config = buildApplicationConfig(migratedSnapshot);
   const markdownPreviewConfig = config.integrations?.markdown_preview;
   const markdownPreviewServer = markdownPreviewConfig?.enabled
+    && process.env.METACLAW_DISABLE_MARKDOWN_PREVIEW !== '1'
     ? new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())
     : null;
   if (markdownPreviewServer && markdownPreviewConfig) {
@@ -390,9 +393,12 @@ async function main() {
   const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
   const plannerSupervisor = new PlannerProcessSupervisor({
     socketPath: plannerHostSocketPath,
+    gatewaySocketPath,
     configurationRevision: stagedConfiguration.snapshot.revisionId,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
     generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
+    databasePath: accountPaths.database,
+    configurationRoot: accountPaths.config,
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: {
@@ -413,6 +419,7 @@ async function main() {
     contextRecaller,
     notifier,
     workspaceRoot: accountPaths.workspaceStore,
+    attemptsRoot: accountPaths.attempts,
     sourceRoot: process.cwd(),
     sessionId,
     stagedConfiguration,
@@ -421,27 +428,31 @@ async function main() {
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     plannerSupervisor,
     getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
+    blockedRecheckEnabled: config.orchestration.blocked_recheck_enabled !== false,
+    blockedRecheckIntervalMs: Math.max(
+      config.orchestration.blocked_recheck_interval ?? 60,
+      5,
+    ) * 1000,
   });
   const accountRegistry = new RuntimeRegistry({
-    factory: new AccountRuntimeFactory({
-      buildKernelCoordinator: () => accountRuntimeComposition.runtimePort.kernelCoordinator,
-      buildKernelServices: () => accountRuntimeComposition.runtimePort.kernelServices,
-      buildRepositories: () => accountRuntimeComposition.runtimePort.repositories,
-      buildWorkspaceServices: () => accountRuntimeComposition.runtimePort.workspaceServices,
-      buildExecutionServices: () => accountRuntimeComposition.runtimePort.executionServices!,
-      buildPlannerServices: () => accountRuntimeComposition.runtimePort.plannerServices!,
-      buildTaskServices: () => accountRuntimeComposition.runtimePort.taskServices!,
-      buildCoordinatorServices: () => accountRuntimeComposition.runtimePort.coordinatorServices!,
-      buildRuntimeExecutionServices: () => accountRuntimeComposition.runtimePort.runtimeExecutionServices!,
-      recoverDurableStartup: async () => undefined,
-    }),
+    // The composition helper has already bound all account-scoped services to
+    // the account data root. Registry activation owns lifecycle/recovery; it
+    // must not construct a second service graph for the same account.
+    factory: {
+      create: () => accountRuntimeComposition.accountRuntime,
+    },
   });
+  const activatedAccountRuntime = await accountRegistry.getOrActivate({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    authorized: true,
+  });
+  const runtimePort = activatedAccountRuntime.getConversationPort();
+  const conversationRegistry = new ConversationRegistry();
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
   const buildConversationSession = (conversationId: string): ConversationSession => {
-    const port = accountRuntimeComposition.runtimePort;
-    const runtimeExecution = port.runtimeExecutionServices!;
+    const port = runtimePort;
     const persistenceService = new SessionPersistenceService(db);
     const presentation = new SessionPresentationService();
     const sessionStateRepo = new SessionStateRepo(db);
@@ -456,7 +467,7 @@ async function main() {
       getPlannerConfiguration: () => stagedConfiguration.planner,
     });
     const commandCatalog = createDefaultCommandCatalog();
-    const commandReadServices = new CommandReadServices(db, port.executionServices!.executionRuntime, {
+    const commandReadServices = new CommandReadServices(db, accountRuntimeComposition.executionRuntime, {
       getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
     });
 
@@ -478,45 +489,16 @@ async function main() {
       memoryEngine,
       orchestration,
       config,
+      plannerProposalRepo: new PlannerProposalRepo(db),
+      dispose: async () => unregisterPlannerHost(),
     });
+    const unregisterPlannerHost = plannerHost.registerSession(conversationId, conversation);
 
-    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(
-      port.repositories.kernelExecutorStatusRepo,
-    );
-    const kernelExecutionServices = buildAccountKernelExecutionServices({
-      db,
+    const binder = accountRuntimeComposition.conversationExecutionBinder;
+    const kernelExecutionServices = binder.bind({
       sessionId: conversationId,
-      sourceRoot: process.cwd(),
-      orchestration,
-      notifier,
-      maxConcurrentAttempts: config.orchestration.max_concurrent_attempts,
-      getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
-      taskRuntimeService: port.taskServices!.taskRuntimeService,
-      agentClassService: port.taskServices!.agentClassService,
-      workGraphRuntimeService: port.repositories.workGraphRuntimeService,
-      subtaskRepo: port.repositories.subtaskRepo,
-      workGraphRevisionRepo: port.repositories.workGraphRevisionRepo,
-      effectOutboxRepo: port.repositories.effectOutboxRepo,
-      attemptReceiptRepo: port.repositories.attemptReceiptRepo,
-      taskEventRepo: port.repositories.taskEventRepo,
-      workUnitClaimService: port.coordinatorServices!.workUnitClaimService,
-      attemptRunner: runtimeExecution.attemptRunner,
-      controlKernel: port.kernelServices.controlKernel,
-      kernelWorkflowRepo: port.kernelServices.kernelWorkflowRepo,
-      dispatchItemRepo: runtimeExecution.dispatchItemRepo,
-      publicationRepo: runtimeExecution.publicationRepo,
-      generationReplanRepo: runtimeExecution.generationReplanRepo,
-      cancellationCoordinator: runtimeExecution.cancellationCoordinator,
-      executionProgressService: port.repositories.executionProgressService,
-      verificationAndDeliveryService: new VerificationAndDeliveryService(),
       persistenceService,
-      kernelExecutorStatusProjector,
       presentation,
-      workspaceStore: port.workspaceServices.workspaceStore,
-      workspaceRepository: port.workspaceServices.workspaceRepository,
-      resourceLeaseService: runtimeExecution.resourceLeaseService,
-      memoryContextService: port.plannerServices!.memoryContextService,
-      executionRuntime: port.executionServices!.executionRuntime,
       ...conversation.getKernelExecutionCallbacks(),
     });
 
@@ -526,35 +508,229 @@ async function main() {
 
     return conversation;
   };
-  if (cliArgs.scriptPath) {
+  const conversationBindings = new ConversationBindingRepository(
+    resolve(accountPaths.gateway, 'conversation-bindings.json'),
+  );
+  await conversationBindings.initialize();
+  const eventJournal = new FileEventJournal(resolve(accountPaths.gateway, 'events'));
+  const webSessionCatalog = new WebSessionCatalog(
+    new FileWebSessionStore(resolve(accountPaths.conversations, 'web')),
+  );
+  const knownConversationIds = new Set<string>([sessionId]);
+  const rememberConversation = (accountId: string, conversationId: string): void => {
+    if (accountId === LOCAL_DEFAULT_ACCOUNT_ID) knownConversationIds.add(conversationId);
+  };
+  const durableConversation = db.prepare(`
+    SELECT 1 AS owned
+    WHERE EXISTS (SELECT 1 FROM interactions WHERE session_id = ?)
+       OR EXISTS (SELECT 1 FROM planner_runs WHERE session_id = ?)
+       OR EXISTS (SELECT 1 FROM planner_proposal_turns WHERE session_id = ?)
+       OR EXISTS (SELECT 1 FROM kernel_events WHERE session_id = ?)
+       OR EXISTS (SELECT 1 FROM kernel_decisions WHERE session_id = ?)
+  `);
+  const authorizeConversationAttach = async (
+    accountId: string,
+    conversationId: string,
+  ): Promise<boolean> => {
+    if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return false;
+    if (knownConversationIds.has(conversationId)) return true;
+    if (conversationRegistry.getIfOpen(conversationId)) return true;
     try {
-      const result = await runScriptedSessionFile(cliArgs.scriptPath, {
-        taskEngine,
-        memoryEngine,
-        orchestration,
-        db,
-        config,
-        sessionId,
-        contextRecaller,
-        notifier,
-        plannerHost,
-        plannerSupervisor,
-        stagedConfiguration,
-        getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+      if (await webSessionCatalog.read(conversationId)) return true;
+      const owned = durableConversation.get(
+        conversationId,
+        conversationId,
+        conversationId,
+        conversationId,
+        conversationId,
+      ) as { owned: number } | undefined;
+      if (owned) return true;
+      return (await eventJournal.replay(accountId, conversationId)).lastSequence > 0;
+    } catch {
+      return false;
+    }
+  };
+  const conversationResolver = new BindingConversationResolver({
+    bindings: conversationBindings,
+    createId: () => {
+      const conversationId = `conv_${nanoid(12)}`;
+      rememberConversation(LOCAL_DEFAULT_ACCOUNT_ID, conversationId);
+      return conversationId;
+    },
+    verifyOwnership: authorizeConversationAttach,
+  });
+  const gatewaySubscriptions = new GatewaySubscriptions();
+  const conversationGatewayRuntime = new ConversationGatewayRuntime({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    registry: accountRegistry,
+    conversations: conversationRegistry,
+    conversationFactory: buildConversationSession,
+    journal: eventJournal,
+    subscriptions: gatewaySubscriptions,
+  });
+  const clientGateway = new ClientGateway({
+    authenticator: {
+      authenticate: async ({ transport, credential }) => {
+        if (transport === 'local') return { kind: 'local', id: 'local-installation' };
+        if (transport === 'web') return { kind: 'web', id: 'local-web-user' };
+        if (transport === 'feishu') {
+          const sender = credential as { tenantKey?: string; userId?: string } | undefined;
+          return sender?.tenantKey && sender.userId
+            ? { kind: 'feishu', id: `${sender.tenantKey}:${sender.userId}` }
+            : null;
+        }
+        return null;
+      },
+    },
+    accountResolver: {
+      resolve: async () => ({
+        status: 'authorized',
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      }),
+    },
+    conversationResolver,
+    commandAdmissionStore: new FileCommandAdmissionStore(
+      resolve(accountPaths.gateway, 'command-admissions'),
+    ),
+    activateAccount: accountId => conversationGatewayRuntime.activateAccount(accountId).then(() => undefined),
+    submitToConversation: (conversationId, requestId, idempotencyKey, command) =>
+      conversationGatewayRuntime.submit(conversationId, requestId, idempotencyKey, command),
+  });
+  const webGatewayAdapter = new WebGatewayAdapter({
+    gateway: clientGateway,
+    journal: eventJournal,
+    subscriptions: gatewaySubscriptions,
+    attachClient: (accountId, conversationId) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) {
+        throw new Error(`account runtime is unavailable: ${accountId}`);
+      }
+      return conversationGatewayRuntime.attachClient(conversationId);
+    },
+  });
+
+  const gatewayServer = new MetaclawGatewayServer({
+    socketPath: gatewaySocketPath,
+    gateway: clientGateway,
+    journal: eventJournal,
+    subscriptions: gatewaySubscriptions,
+    authorizeAttach: authorizeConversationAttach,
+    attachClient: (accountId, conversationId) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) {
+        throw new Error(`account runtime is unavailable: ${accountId}`);
+      }
+      return conversationGatewayRuntime.attachClient(conversationId);
+    },
+    onConversationCreated: rememberConversation,
+  });
+  const serverSurface = resolveServerSurface(cliArgs);
+  let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
+  let managementServer: ManagementServer | null = null;
+  const taskPoolReviewTimer = setInterval(() => {
+    void accountRuntimeComposition.accountRuntime.reviewTaskPoolOnTimer().catch((error: unknown) => {
+      console.error(`Account Runtime periodic review failed: ${(error as Error).message}`);
+    });
+  }, Math.max(config.orchestration.blocked_recheck_interval ?? 60, 5) * 1000);
+  taskPoolReviewTimer.unref?.();
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      clearInterval(taskPoolReviewTimer);
+      clientGateway.closeAdmission();
+      const errors: unknown[] = [];
+      const runShutdownStep = async (operation: () => Promise<void>): Promise<void> => {
+        try {
+          await operation();
+        } catch (error) {
+          errors.push(error);
+        }
+      };
+
+      await runShutdownStep(async () => {
+        await Promise.all([
+          managementServer?.stop() ?? Promise.resolve(),
+          gatewayFeishuBridge?.stop() ?? Promise.resolve(),
+          gatewayServer.stop(),
+          markdownPreviewServer?.stop() ?? Promise.resolve(),
+        ]);
       });
+      await runShutdownStep(() => clientGateway.drain());
+      conversationGatewayRuntime.closeAdmission();
+      await runShutdownStep(() => conversationGatewayRuntime.drain());
+      await runShutdownStep(() => conversationRegistry.closeAll());
+      await runShutdownStep(async () => {
+        await Promise.all([
+          plannerHost.stop(),
+          plannerSupervisor.stop(),
+        ]);
+      });
+      await runShutdownStep(() => accountRegistry.shutdown());
+      if (errors.length > 0) {
+        throw new AggregateError(errors, 'AnyFusion shutdown did not complete cleanly');
+      }
+    })();
+    return shutdownPromise;
+  };
+  process.once('exit', () => {
+    clearInterval(taskPoolReviewTimer);
+  });
+  const shutdownForSignal = (): void => {
+    void shutdown().then(
+      () => process.exit(0),
+      error => {
+        console.error(`AnyFusion shutdown failed: ${(error as Error).message}`);
+        process.exit(1);
+      },
+    );
+  };
+  process.once('SIGINT', () => {
+    shutdownForSignal();
+  });
+  process.once('SIGTERM', () => {
+    shutdownForSignal();
+  });
+
+  await gatewayServer.start();
+  if (serverSurface !== 'scripted' && serverSurface !== 'standby') {
+    const feishuPort = new FeishuGatewaySessionPort({
+      accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      tenantKey: config.gateway?.platforms?.feishu?.app_id ?? 'local-feishu-app',
+      adapter: new FeishuGatewayAdapter({ gateway: clientGateway }),
+      journal: eventJournal,
+      subscriptions: gatewaySubscriptions,
+      onSystemMessage: (...lines) => console.log(lines.join('\n')),
+      runtimePaths: {
+        pairing: resolve(accountPaths.gateway, 'feishu-pairings.json'),
+        audit: resolve(accountPaths.gateway, 'gateway-audit.jsonl'),
+        uploads: resolve(accountPaths.gateway, 'feishu-uploads'),
+        replies: resolve(accountPaths.gateway, 'feishu-replies'),
+        config: resolve(accountPaths.config, 'config.yaml'),
+      },
+    });
+    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, feishuPort);
+  }
+
+  if (serverSurface === 'scripted') {
+    try {
+      const result = await runScriptedSessionFile(
+        cliArgs.scriptPath!,
+        new ScriptedGatewaySession({
+          accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+          conversationId: sessionId,
+          gateway: clientGateway,
+          subscriptions: gatewaySubscriptions,
+        }),
+      );
       if (result.output.length > 0) {
         process.stdout.write(`${result.output.join('\n')}\n`);
       }
     } finally {
-      await Promise.all([
-        plannerHost.stop(),
-        plannerSupervisor.stop(),
-      ]);
+      await shutdown();
     }
     return;
   }
 
-  if (cliArgs.web) {
+  if (serverSurface === 'web') {
     const executionProjector = new ExecutionProjector({
       subtaskRepo: new SubtaskRepo(db),
       receiptRepo: new ExecutorAttemptReceiptRepo(db),
@@ -563,11 +739,15 @@ async function main() {
       attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
       dispatchItemRepo: new KernelDispatchItemRepo(db),
     });
-    await runWebMode({
+    managementServer = await startWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
-      sessionFactory: webSessionId => buildConversationSession(webSessionId),
+      sessionRuntime: new WebGatewaySessionRuntime({
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        catalog: webSessionCatalog,
+        gateway: webGatewayAdapter,
+      }),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({
           id: task.id,
@@ -628,123 +808,45 @@ async function main() {
         },
       },
     });
-    return;
-  }
-
-  const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
-  process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
-  if (process.env.METACLAW_STANDBY_TUI !== '1') {
-    const plannerTuiSession = buildConversationSession(sessionId);
-    plannerTuiSession.initialize({ showDashboard: false });
-    const nativeGatewayServer = new MetaclawGatewayServer({
-      socketPath: gatewaySocketPath,
-      conversationRegistry: new ConversationRegistry(),
-      conversationFactory: buildConversationSession,
-    });
-    await nativeGatewayServer.start();
-    const blockedRecheckTimer = setInterval(() => {
-      void plannerTuiSession.maybeReviewTaskPoolOnTimer().catch(error => {
-        plannerTuiSession.appendSystemMessage(`错误: ${(error as Error).message}`);
-      });
-    }, plannerTuiSession.getBlockedRecheckIntervalMs());
-    try {
-      await plannerSupervisor.startInteractive({
-        sessionId,
-        cwd: process.cwd(),
-      });
-    } finally {
-      clearInterval(blockedRecheckTimer);
-      await plannerTuiSession.dispose();
-      await Promise.all([
-        plannerHost.stop(),
-        plannerSupervisor.stop(),
-        nativeGatewayServer.stop(),
-        markdownPreviewServer?.stop() ?? Promise.resolve(),
-      ]);
-    }
-    return;
-  }
-
-  const gatewayServer = new MetaclawGatewayServer({
-    socketPath: gatewaySocketPath,
-    conversationRegistry: new ConversationRegistry(),
-    conversationFactory: buildConversationSession,
-  });
-
-  await gatewayServer.start();
-  let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
-  let gatewayBlockedRecheckTimer: NodeJS.Timeout | null = null;
-  let gatewaySession: ConversationSession | null = null;
-  if (cliArgs.gateway) {
-    const session = buildConversationSession(sessionId);
-    gatewaySession = session;
-    session.initialize({ showDashboard: false });
-    gatewayFeishuBridge = await startFeishuRuntimeBridge(config, session);
-    gatewayBlockedRecheckTimer = setInterval(() => {
-      void session.maybeReviewTaskPoolOnTimer().catch(error => {
-        session.appendSystemMessage(`错误: ${(error as Error).message}`);
-      });
-    }, session.getBlockedRecheckIntervalMs());
-  }
-  let shutdownPromise: Promise<void> | null = null;
-  const shutdown = (): Promise<void> => {
-    if (shutdownPromise) return shutdownPromise;
-    shutdownPromise = (async () => {
-      if (gatewayBlockedRecheckTimer) {
-        clearInterval(gatewayBlockedRecheckTimer);
-        gatewayBlockedRecheckTimer = null;
-      }
-      try {
-        await Promise.all([
-          gatewayFeishuBridge?.stop() ?? Promise.resolve(),
-          gatewayServer.stop(),
-          plannerHost.stop(),
-          plannerSupervisor.stop(),
-          markdownPreviewServer?.stop() ?? Promise.resolve(),
-        ]);
-      } finally {
-        await gatewaySession?.dispose();
-        gatewaySession = null;
-      }
-    })();
-    return shutdownPromise;
-  };
-  process.once('exit', () => {
-    if (gatewayBlockedRecheckTimer) clearInterval(gatewayBlockedRecheckTimer);
-    void gatewaySession?.dispose();
-    void gatewayFeishuBridge?.stop();
-    void markdownPreviewServer?.stop();
-    void gatewayServer.stop();
-    void plannerHost.stop();
-    void plannerSupervisor.stop();
-  });
-  process.once('SIGINT', () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.once('SIGTERM', () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-
-  if (cliArgs.gateway) {
     console.log(`Metaclaw Gateway listening: ${gatewaySocketPath}`);
     await new Promise(() => undefined);
     return;
   }
 
-  // 9. 启动 TUI
-  renderApp({
-    taskEngine,
-    memoryEngine,
-    orchestration,
-    db,
-    config,
-    sessionId,
-    contextRecaller,
-    notifier,
-    plannerHost,
-    plannerSupervisor,
-    stagedConfiguration,
-  });
+  if (serverSurface === 'gateway') {
+    console.log(`Metaclaw Gateway listening: ${gatewaySocketPath}`);
+    await new Promise(() => undefined);
+    return;
+  }
+
+  if (serverSurface === 'standby') {
+    // The source-preserved Ink fallback owns its legacy presentation lifecycle.
+    // The shared Gateway socket remains available for other clients.
+    renderApp({
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      db,
+      config,
+      sessionId,
+      contextRecaller,
+      notifier,
+      plannerHost,
+      plannerSupervisor,
+      stagedConfiguration,
+    });
+    return;
+  }
+
+  // 9. 启动默认 Gateway-only native TUI client.
+  try {
+    await plannerSupervisor.startInteractive({
+      sessionId,
+      cwd: process.cwd(),
+    });
+  } finally {
+    await shutdown();
+  }
 }
 
 main().catch((error) => {

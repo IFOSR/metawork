@@ -1,18 +1,27 @@
 import { existsSync, unlinkSync } from 'fs';
 import { createServer, type Server, type Socket } from 'net';
 import { nanoid } from 'nanoid';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
+import type { ClientGateway } from './client-gateway.js';
+import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
+import type { GatewayCommand } from './client-protocol.js';
+import type { EventJournal } from './event-journal.js';
+import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
-import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
-import { ConversationRegistry } from '../session/conversation-registry.js';
-import type { ConversationSession } from '../session/conversation-session.js';
-import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
+import {
+  parseGatewayClientMessage,
+  type GatewayServerMessage,
+} from './protocol.js';
 
 interface GatewayServerDeps {
   socketPath: string;
-  /** 账户级 Conversation 注册表：一个 Conversation 可被多个连接附着。 */
-  conversationRegistry: ConversationRegistry;
-  /** Conversation 工厂：由组合根注入（ADR-0031：传输层不得构造具体 Session）。 */
-  conversationFactory: (conversationId: string) => ConversationSession;
+  gateway: ClientGateway;
+  journal: EventJournal;
+  subscriptions: GatewaySubscriptions;
+  authorizeAttach(accountId: string, conversationId: string): Promise<boolean>;
+  attachClient?(accountId: string, conversationId: string): Promise<() => void>;
+  onConversationCreated?(accountId: string, conversationId: string): void;
+  accountId?: string;
 }
 
 export class MetaclawGatewayServer {
@@ -23,26 +32,18 @@ export class MetaclawGatewayServer {
   constructor(private readonly deps: GatewayServerDeps) {}
 
   async start(): Promise<void> {
-    if (this.server) {
-      return;
-    }
+    if (this.server) return;
     this.stopping = false;
-    if (existsSync(this.deps.socketPath)) {
-      unlinkSync(this.deps.socketPath);
-    }
-
+    if (existsSync(this.deps.socketPath)) unlinkSync(this.deps.socketPath);
     this.server = createServer(socket => {
       if (this.stopping) {
         socket.destroy();
         return;
       }
       this.sockets.add(socket);
-      socket.once('close', () => {
-        this.sockets.delete(socket);
-      });
-      void this.handleConnection(socket);
+      socket.once('close', () => this.sockets.delete(socket));
+      this.handleConnection(socket);
     });
-
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(this.deps.socketPath, () => {
@@ -53,76 +54,217 @@ export class MetaclawGatewayServer {
   }
 
   async stop(): Promise<void> {
-    if (!this.server) {
-      return;
-    }
+    if (!this.server) return;
     const server = this.server;
     this.server = null;
     this.stopping = true;
-    const closePromise = new Promise<void>((resolve, reject) => {
+    const closed = new Promise<void>((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());
     });
-    for (const socket of this.sockets) {
-      socket.destroy();
-    }
+    for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    // Conversation 生命周期由 AccountRuntime 管理；传输层只关闭 socket。
-    await closePromise;
-    if (existsSync(this.deps.socketPath)) {
-      unlinkSync(this.deps.socketPath);
-    }
+    await closed;
+    if (existsSync(this.deps.socketPath)) unlinkSync(this.deps.socketPath);
   }
 
-  private async handleConnection(socket: Socket): Promise<void> {
-    // ADR-0031：每个连接附着到一个持久 Conversation，断开只 detach，
-    // 不销毁 Conversation。
-    const conversationId = `conv_gateway_${nanoid(10)}`;
-    const conversation = await this.deps.conversationRegistry.getOrOpen(
-      conversationId,
-      async () => this.deps.conversationFactory(conversationId),
-    );
-    conversation.attachClient();
+  private handleConnection(socket: Socket): void {
+    const accountId = this.deps.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID;
+    let conversationId = `conv_gateway_${nanoid(10)}`;
+    let unsubscribe: (() => void) | null = null;
+    let latestAttachRequest = 0;
+    let activeAttachment: { readonly token: object; detachClient(): void } | null = null;
+    this.deps.onConversationCreated?.(accountId, conversationId);
 
     const send = (message: GatewayServerMessage) => {
-      if (!socket.destroyed) {
-        socket.write(encodeJsonLine(message));
+      if (!socket.destroyed) socket.write(encodeJsonLine(message));
+    };
+    const attach = async (
+      nextConversationId: string,
+      resumeFromSequence = 0,
+      authorize = true,
+    ) => {
+      const request = latestAttachRequest += 1;
+      if (authorize && !await this.deps.authorizeAttach(accountId, nextConversationId)) {
+        if (request === latestAttachRequest) {
+          throw new Error('conversation attach denied');
+        }
+        return;
       }
+      if (request !== latestAttachRequest) return;
+
+      const token = {};
+      const detachClient = await this.deps.attachClient?.(accountId, nextConversationId)
+        ?? (() => undefined);
+      if (request !== latestAttachRequest) {
+        detachClient();
+        return;
+      }
+      const buffered: GatewayEventEnvelope[] = [];
+      const deliveredEventIds = new Set<string>();
+      let replaying = true;
+      const sendAttachedEvent = (event: GatewayEventEnvelope) => {
+        if (deliveredEventIds.has(event.eventId)) return;
+        deliveredEventIds.add(event.eventId);
+        this.sendEvent(send, event);
+      };
+      const nextUnsubscribe = this.deps.subscriptions.subscribe({
+        accountId,
+        conversationId: nextConversationId,
+        listener: event => {
+          if (replaying) buffered.push(event);
+          else sendAttachedEvent(event);
+        },
+      });
+      activeAttachment?.detachClient();
+      unsubscribe?.();
+      unsubscribe = nextUnsubscribe;
+      conversationId = nextConversationId;
+      activeAttachment = { token, detachClient };
+
+      let replay: GatewayReplay;
+      try {
+        replay = await this.deps.journal.replay(
+          accountId,
+          nextConversationId,
+          resumeFromSequence,
+        );
+      } catch (error) {
+        if (activeAttachment?.token === token) {
+          nextUnsubscribe();
+          unsubscribe = null;
+          activeAttachment.detachClient();
+          activeAttachment = null;
+        }
+        throw error;
+      }
+      if (activeAttachment?.token !== token) {
+        nextUnsubscribe();
+        detachClient();
+        return;
+      }
+
+      for (const event of orderedUniqueReplayEvents(replay)) sendAttachedEvent(event);
+      replaying = false;
+      for (const event of orderedUniqueEvents(buffered)) {
+        if (event.sequence > replay.lastSequence) sendAttachedEvent(event);
+      }
+      send({ type: 'hello', sessionId: nextConversationId });
     };
 
-    const adapter = new SessionStreamAdapter(conversation, {
-      onOutput: lines => send({ type: 'output', lines }),
-      onExitRequested: () => socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage)),
+    void attach(conversationId, 0, false).catch(error => {
+      send({ type: 'error', message: (error as Error).message });
     });
-    adapter.attach();
-
-    let cleanedUp = false;
     const cleanup = () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      adapter.detach();
-      conversation.detachClient();
-      void this.deps.conversationRegistry.closeIdle(conversationId);
+      latestAttachRequest += 1;
+      activeAttachment?.detachClient();
+      activeAttachment = null;
+      unsubscribe?.();
+      unsubscribe = null;
     };
     socket.on('close', cleanup);
     socket.on('error', cleanup);
 
-    send({ type: 'hello', sessionId: conversationId });
-    conversation.initialize?.({ showDashboard: false });
-    conversation.appendSystemMessage?.(`→ Gateway session ${conversationId} 已连接`);
-
-    const parse = createJsonLineParser<GatewayClientMessage>((message) => {
+    const parse = createJsonLineParser<unknown>(input => {
+      const message = parseGatewayClientMessage(input);
+      if (!message) {
+        send({ type: 'error', message: 'invalid Gateway client message' });
+        return;
+      }
       if (message.type === 'close') {
         socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage));
         return;
       }
-      if (message.type !== 'input') {
+      if (message.type === 'attach') {
+        void attach(message.conversationId, message.resumeFromSequence).catch(error => {
+          send({ type: 'error', message: (error as Error).message });
+        });
         return;
       }
-      void adapter.submit(message.text).catch(error => {
+      if (message.type === 'command') {
+        const envelope = message.envelope;
+        void this.deps.gateway.handle(envelope, 'local').then(receipt => {
+          if ('kind' in receipt) {
+            send({ type: 'error', message: receipt.message, requestId: envelope.requestId });
+            return;
+          }
+          send({ type: 'receipt', receipt });
+        }).catch(error => {
+          send({
+            type: 'error',
+            message: (error as Error).message,
+            requestId: envelope.requestId,
+          });
+        });
+        return;
+      }
+      if (message.type !== 'input') return;
+      const selectedConversationId = message.conversationId ?? conversationId;
+      const command: GatewayCommand = message.text.startsWith('/')
+        ? { kind: 'slash_command', text: message.text }
+        : { kind: 'user_message', text: message.text, attachments: [] };
+      void this.deps.gateway.handle({
+        protocolVersion: 1,
+        requestId: message.requestId ?? `req_${nanoid(12)}`,
+        idempotencyKey: message.idempotencyKey ?? `idem_${nanoid(12)}`,
+        connectionId: `unix_${nanoid(8)}`,
+        conversation: { mode: 'attach', conversationId: selectedConversationId },
+        command,
+        clientCapabilities: ['trace_v1'],
+      }, 'local').then(receipt => {
+        if ('kind' in receipt || receipt.status === 'rejected') {
+          send({
+            type: 'error',
+            message: 'kind' in receipt ? receipt.message : receipt.reason ?? 'Gateway rejected input',
+          });
+        }
+      }).catch(error => {
         send({ type: 'error', message: (error as Error).message });
       });
+    }, {
+      onError: error => {
+        if (!socket.destroyed) {
+          socket.end(encodeJsonLine({
+            type: 'error',
+            message: error.message,
+          } satisfies GatewayServerMessage));
+        }
+      },
     });
-
     socket.on('data', parse);
   }
+
+  private sendEvent(
+    send: (message: GatewayServerMessage) => void,
+    event: GatewayEventEnvelope,
+  ): void {
+    send({ type: 'event', event });
+    if (event.kind === 'conversation_snapshot' || event.kind === 'final_answer') {
+      const projection = event.payload as { lines?: string[] };
+      if (projection.lines?.length) {
+        send({ type: 'output', lines: projection.lines, event });
+      }
+    } else if (event.kind === 'terminal_error') {
+      const error = event.payload as { message?: string };
+      send({
+        type: 'error',
+        message: error.message ?? 'Gateway execution failed',
+        event,
+      });
+    }
+  }
+}
+
+function orderedUniqueReplayEvents(replay: GatewayReplay): GatewayEventEnvelope[] {
+  return orderedUniqueEvents([...replay.snapshot, ...replay.deltas]);
+}
+
+function orderedUniqueEvents(events: GatewayEventEnvelope[]): GatewayEventEnvelope[] {
+  const seen = new Set<string>();
+  return [...events]
+    .sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId))
+    .filter(event => {
+      if (seen.has(event.eventId)) return false;
+      seen.add(event.eventId);
+      return true;
+    });
 }

@@ -29,7 +29,12 @@ export class GatewaySubscriptions {
         && subscription.conversationId !== event.conversationId) {
         continue;
       }
-      subscription.listener(event);
+      try {
+        subscription.listener(event);
+      } catch {
+        // One slow or faulty client must not change the durable publish result
+        // or prevent other authorized subscribers from receiving the event.
+      }
     }
   }
 }

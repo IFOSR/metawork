@@ -23,6 +23,7 @@ import type { AccountPlannerServices } from './account-planner-services.js';
 import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
+import type { AccountPermissionService } from './account-permission-service.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
@@ -34,7 +35,9 @@ export interface AccountRuntimeFactoryDeps {
   buildTaskServices?(accountId: string): AccountTaskServices;
   buildCoordinatorServices?(accountId: string): AccountCoordinatorServices;
   buildRuntimeExecutionServices?(accountId: string): AccountRuntimeExecutionServices;
+  buildPermissionService?(accountId: string): AccountPermissionService;
   recoverDurableStartup(accountId: string): Promise<void>;
+  reviewTaskPoolOnTimer?(accountId: string, nowMs: number): Promise<boolean>;
   dispose?(accountId: string): Promise<void>;
 }
 
@@ -73,7 +76,13 @@ export class AccountRuntimeFactory {
       runtimeExecutionServices: this.deps.buildRuntimeExecutionServices
         ? this.deps.buildRuntimeExecutionServices(accountId)
         : undefined,
+      permissionService: this.deps.buildPermissionService
+        ? this.deps.buildPermissionService(accountId)
+        : undefined,
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
+      reviewTaskPoolOnTimer: this.deps.reviewTaskPoolOnTimer
+        ? nowMs => this.deps.reviewTaskPoolOnTimer!(accountId, nowMs)
+        : undefined,
       dispose: this.deps.dispose
         ? () => this.deps.dispose!(accountId)
         : undefined,

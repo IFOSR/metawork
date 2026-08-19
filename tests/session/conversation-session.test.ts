@@ -3,6 +3,7 @@ import type { AccountKernelCoordinator } from '../../src/account/account-kernel-
 import { ConversationInputMailbox } from '../../src/session/conversation-input-mailbox.js';
 import { ConversationSession } from '../../src/session/conversation-session.js';
 import type { ConversationRuntimePort } from '../../src/session/conversation-runtime-port.js';
+import type { PlannerTuiPermissionRequest } from '../../src/session/session-types.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -17,15 +18,70 @@ function mockCoordinator(): AccountKernelCoordinator {
   };
 }
 
-function makePort(accountId: string): ConversationRuntimePort {
-  return { accountId, kernelCoordinator: mockCoordinator() } as unknown as ConversationRuntimePort;
+function makePort(
+  accountId: string,
+  overrides: Partial<ConversationRuntimePort> = {},
+): ConversationRuntimePort {
+  const base: ConversationRuntimePort = {
+    accountId,
+    planning: null,
+    permissions: null,
+    queries: {
+      findTask: () => null,
+      listTasks: () => [],
+      listTasksByStatus: () => [],
+      listSubtasks: () => [],
+      findSubtask: () => null,
+      findKernelEvent: () => null,
+      listKernelDecisionsBySession: () => [],
+      listKernelDecisionsByTask: () => [],
+      listCurrentKernelDecisions: () => [],
+      listExecutorStatuses: () => [],
+      listWorkGraphTaskIds: () => [],
+      findOldestPendingPermission: () => null,
+      listIntegratedPublications: () => [],
+      listRecoveryApplications: () => [],
+      findRecoveryApplication: () => null,
+      listRecoveryEffects: () => [],
+      findRecoveryEffect: () => null,
+      findActiveWorkGraphRevision: () => null,
+      listTaskEvidence: () => [],
+      listAttemptReceipts: () => [],
+    },
+    commands: {
+      submitKernel: mockCoordinator().submit,
+      materializeCompletedEvidence: () => undefined,
+      resolveRecoveryApplication: () => undefined,
+      resolveRecoveryEffect: () => undefined,
+      refreshExecutors: async input => ({
+        configurationRevision: 'revision-test',
+        trigger: input.trigger,
+        checked: [],
+        recovered: [],
+        stillError: [],
+        skipped: [],
+      }),
+    },
+    execution: null,
+  };
+  return {
+    ...base,
+    ...overrides,
+    queries: { ...base.queries, ...overrides.queries },
+    commands: { ...base.commands, ...overrides.commands },
+  };
 }
 
-function makeSession(conversationId: string, plannerSessionId: string, accountId = 'local-default') {
+function makeSession(
+  conversationId: string,
+  plannerSessionId: string,
+  accountId = 'local-default',
+  runtimePort = makePort(accountId),
+) {
   return new ConversationSession({
     conversationId,
     plannerSessionId,
-    runtimePort: makePort(accountId),
+    runtimePort,
     mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
   });
 }
@@ -71,4 +127,130 @@ describe('ConversationSession', () => {
     const receipt = session.submitCommand({ requestId: 'req_1', idempotencyKey: 'idem_1' });
     expect(receipt.status).toBe('accepted');
   });
+
+  it('projects only permission requests owned by its Planner session', () => {
+    const request = permissionRequest('permission_1');
+    const session = makeSession(
+      'conv_1',
+      'planner_1',
+      'local-default',
+      makePort('local-default', {
+        permissions: {
+          listForSession: sessionId => sessionId === 'planner_1' ? [request] : [],
+          resolve: async () => ({
+            status: 'resolved',
+            resolution: 'approve',
+            message: 'resolved',
+            recoveryTaskId: null,
+          }),
+        },
+      }),
+    );
+
+    expect(session.getPlannerTuiPermissionRequests()).toEqual([request]);
+  });
+
+  it('resolves Gateway permission commands through the account permission facade', async () => {
+    const resolutions: unknown[] = [];
+    const session = makeSession(
+      'conv_1',
+      'planner_1',
+      'local-default',
+      makePort('local-default', {
+        permissions: {
+          listForSession: () => [],
+          resolve: async input => {
+            resolutions.push(input);
+            return {
+              status: 'resolved',
+              resolution: input.resolution,
+              message: 'Permission resolution recorded.',
+              recoveryTaskId: null,
+            };
+          },
+        },
+      }),
+    );
+
+    await session.executeGatewayCommand({
+      kind: 'permission_resolution',
+      requestId: 'permission_1',
+      resolution: 'deny',
+    });
+
+    expect(resolutions).toEqual([{
+      sessionId: 'planner_1',
+      requestId: 'permission_1',
+      resolution: 'deny',
+      source: 'button',
+      plannerPlanId: null,
+    }]);
+  });
+
+  it('surfaces Planner transport failures instead of reporting a no-action fallback', async () => {
+    const session = new ConversationSession({
+      conversationId: 'conv_1',
+      plannerSessionId: 'planner_1',
+      runtimePort: makePort('local-default', {
+        queries: {
+          findOldestPendingPermission: () => null,
+        } as never,
+        planning: {
+          submit: async () => ({
+            status: 'transport_uncertain',
+            turnId: 'turn_1',
+            submissionId: 'submission_1',
+            retryableByReplay: true,
+            message: 'Planner unavailable: bridge disconnected',
+          }),
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      planningContextBuilder: {
+        build: ({ userInput }: { userInput: string }) => ({
+          userInput,
+          request: { sessionId: 'planner_1', source: 'session' },
+          pendingAuthorizationRequest: null,
+          configuration: {
+            revisionId: 'revision-test',
+            contentHash: 'hash',
+            models: [],
+            routingCatalog: {
+              configurationRevision: 'revision-test',
+              agentClasses: [],
+            },
+          },
+          timeoutMs: 1_000,
+        }),
+      } as never,
+    });
+
+    await session.submit('hello');
+
+    expect(session.getOutput().at(-1)).toBe('错误: Planner unavailable: bridge disconnected');
+    expect(session.getOutput()).not.toContain('-> ControlKernel did not produce a runtime action.');
+  });
 });
+
+function permissionRequest(permissionRequestId: string): PlannerTuiPermissionRequest {
+  return {
+    schemaVersion: 1,
+    permissionRequestId,
+    taskId: 'task_1',
+    taskTitle: 'Task 1',
+    generationId: 'generation_1',
+    subtaskId: 'subtask_1',
+    subtaskTitle: 'Subtask 1',
+    attemptId: 'attempt_1',
+    executorName: 'codex-cli',
+    permissionProfileId: 'workspace-engineering',
+    capability: 'external_object_operation',
+    resource: 'example',
+    operation: 'write',
+    reason: 'needed',
+    suggestedScope: 'once',
+    escalationReason: 'requires approval',
+    createdAt: '2026-08-19T00:00:00.000Z',
+    expiresAt: '2026-08-20T00:00:00.000Z',
+  };
+}

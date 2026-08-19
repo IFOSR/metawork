@@ -40,6 +40,7 @@ export interface AccountRuntimeExecutionServices {
 export function buildAccountRuntimeExecutionServices(deps: {
   db: Database.Database;
   sessionId: string;
+  getSessionId?: () => string;
   sourceRoot: string;
   taskRuntimeService: TaskRuntimeService;
   subtaskRepo: SubtaskRepo;
@@ -79,6 +80,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   const attemptRunner = new SubtaskAttemptRunner({
     db: deps.db,
     sessionId: deps.sessionId,
+    getSessionId: deps.getSessionId,
     taskRuntimeService: deps.taskRuntimeService,
     subtaskRepo: deps.subtaskRepo,
     workUnitClaimService: deps.workUnitClaimService,

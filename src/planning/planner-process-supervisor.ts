@@ -63,10 +63,13 @@ export interface PlannerProcessSupervisorDeps {
   args?: string[];
   interactiveArgs?: string[];
   socketPath?: string;
+  gatewaySocketPath?: string;
   schemaPath?: string;
   configurationRevision?: string;
   bindingFingerprint?: string;
   generatedRuntimeRoot?: string;
+  databasePath?: string;
+  configurationRoot?: string;
   runtimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
   expectedModel?: {
     provider: string;
@@ -591,11 +594,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           '--session', sessionPath,
         ]
       : mode === 'interactive'
-        ? withInteractiveSession(
+        ? withGatewayClient(
           this.deps.interactiveArgs
             ?? parsePlannerArgs(process.env.METACLAW_PLANNER_TUI_ARGS)
             ?? [],
-          join(sessionDir, `${sessionId}.interactive.jsonl`),
+          this.deps.gatewaySocketPath
+            ?? process.env.METACLAW_GATEWAY_SOCKET
+            ?? this.deps.socketPath
+            ?? process.env.METACLAW_PLANNER_HOST_SOCKET
+            ?? process.env.METACLAW_PLANNER_TUI_SOCKET
+            ?? join(plannerHome, 'gateway.sock'),
+          sessionId,
         )
         : [];
     const env = buildEnvFromFile(this.deps.envFile ?? process.env.METACLAW_PLANNER_ENV_FILE);
@@ -625,6 +634,12 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         ANYFUSION_PLANNER_SCHEMA_PATH: schemaPath,
         ANYFUSION_PLANNER_WORKSPACE: authorizedWorkspace,
         METACLAW_CONFIGURATION_REVISION: configurationRevision,
+        ...(this.deps.databasePath
+          ? { METACLAW_DB_PATH: this.deps.databasePath }
+          : {}),
+        ...(this.deps.configurationRoot
+          ? { ANYFUSION_ACCOUNT_CONFIG_ROOT: this.deps.configurationRoot }
+          : {}),
         ...buildPlannerMcpLaunchEnv(),
       },
     };
@@ -726,15 +741,24 @@ function parsePlannerArgs(value: string | undefined): string[] | undefined {
   return parsed;
 }
 
-function withInteractiveSession(args: string[], sessionPath: string): string[] {
+function withGatewayClient(args: string[], gatewaySocketPath: string, conversationId: string): string[] {
   const forbidden = new Set([
     '--no-session', '--session', '--session-id', '--session-dir',
     '--continue', '-c', '--resume', '-r',
   ]);
   if (args.some(arg => forbidden.has(arg))) {
-    throw new Error('Planner interactive args may not override the supervisor-owned session file');
+    throw new Error('Planner interactive args may not override client-only Conversation identity');
   }
-  return [...args, '--session', sessionPath];
+  if (!gatewaySocketPath.trim()) {
+    throw new Error('Planner interactive Gateway socket is unavailable');
+  }
+  return [
+    ...args,
+    '--gateway-socket',
+    gatewaySocketPath,
+    '--conversation-id',
+    conversationId,
+  ];
 }
 
 function extractPlannerProposalResult(value: unknown): PlannerProposalResult | null {

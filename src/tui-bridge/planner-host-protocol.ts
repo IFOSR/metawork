@@ -1,6 +1,6 @@
 import type { CommandCompletion } from '../commands/catalog.js';
 import type { PlannerProposalPurpose, PlannerProposalResult } from '../planning/planner-proposal.js';
-import type { PlannerTuiPermissionResolutionResult } from '../session/metaclaw-session.js';
+import type { PlannerTuiPermissionResolutionResult } from '../session/session-types.js';
 
 export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 2 as const;
 export const ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES = 1_048_576;

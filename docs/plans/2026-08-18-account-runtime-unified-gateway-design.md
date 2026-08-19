@@ -1,7 +1,8 @@
 # Account Runtime And Unified Gateway Design
 
-> Status: Approved
+> Status: Implemented
 > Design date: 2026-08-18
+> Implemented: 2026-08-19
 > Governing ADR: ADR-0031
 
 ## Goal
@@ -17,7 +18,17 @@ The design must preserve:
 - isolated AnyFusion-Pi Planner processes and trusted Executor boundaries;
 - durable Kernel decisions, recovery, Work Graph and publication behavior;
 - detailed streaming user-visible execution traces without hidden
-  chain-of-thought.
+chain-of-thought.
+
+## Implementation Outcome
+
+The selected AccountRuntime plus ConversationSession approach is the production
+topology as of August 19, 2026. Runtime-wide Kernel, Execution and recovery
+services are account-owned; Conversation mailboxes and Planner identity remain
+isolated; Web, Feishu and Unix clients submit through `ClientGateway`; and the
+native AnyFusion-Pi process is a Gateway-only UI while semantic Planner turns
+remain server-side RPC. The pre-cutover diagnosis below is retained as the
+historical input to this design.
 
 ## Current-State Diagnosis
 
@@ -636,6 +647,28 @@ The design is delivered only when:
 13. safe Planner/Kernel/Executor trace streaming remains available on every
     capable client.
 14. no hidden chain-of-thought or sensitive runtime payload crosses Gateway.
+
+## Delivered Outcome
+
+The design was implemented on August 19, 2026:
+
+- one production composition activates
+  `RuntimeRegistry -> AccountRuntime -> ConversationRegistry`;
+- one `ClientGateway` serves Unix, Web, Feishu, native TUI and scripted input;
+- Web, Feishu and Unix adapters may coexist while foreground selection changes
+  presentation only;
+- native AnyFusion-Pi branches into Gateway client mode before local semantic
+  model, tool or session construction; semantic Planner turns remain
+  Server-owned RPC;
+- account data, configuration, secrets, generated runtimes, Planner sessions,
+  workspaces, attempts, Gateway admission and event journals resolve under
+  `accounts/local-default`;
+- native install/update/rollback switch account-scoped immutable pointers, with
+  legacy global paths limited to one-time migration evidence;
+- Gateway events are ordered, replayable, recursively sanitized and capped at
+  64 KiB;
+- architecture, integration and `smoke:gateway` gates enforce the accepted
+  topology.
 
 ## Non-Goals
 

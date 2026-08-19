@@ -5,7 +5,6 @@
  * 按账户构造一次。会话通过 AccountRuntime 共享它们。
  */
 
-import { resolveAnyFusionPaths } from '../installation/paths.js';
 import {
   buildRuntimeConfigurationView,
   type RuntimePrivateConfigurationBinding,
@@ -37,9 +36,10 @@ export function buildAccountExecutionServices(deps: {
   probeCommand?: ProbeCommandRunner;
   attemptExecutionBackend: AttemptExecutionBackend;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
+  attemptsRoot: string;
 }): AccountExecutionServices {
   const runtimeConfiguration = buildRuntimeConfigurationView(deps.stagedConfiguration.snapshot);
-  const attemptsRoot = resolveAnyFusionPaths().attempts;
+  const attemptsRoot = deps.attemptsRoot;
   const driverRegistry = new HarnessDriverRegistry();
 
   const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {

@@ -1,7 +1,17 @@
 // Runs MetaClaw sessions from plain-text scripts, including task-id placeholder
 // substitution between submitted lines.
 import { readFileSync } from 'fs';
-import { MetaclawSession, type MetaclawSessionDeps } from './metaclaw-session.js';
+import type { SessionSnapshot } from './session-types.js';
+
+export interface ScriptedSessionPort {
+  initialize(options?: { showDashboard?: boolean }): void;
+  getSnapshot(): SessionSnapshot;
+  submit(
+    text: string,
+    options?: { awaitAsyncWork?: boolean },
+  ): Promise<{ exitRequested: boolean }>;
+  dispose(): Promise<void>;
+}
 
 export function parseScriptInputs(content: string): string[] {
   return content
@@ -39,47 +49,47 @@ export function resolveScriptPlaceholders(
 }
 
 export async function runScriptedSession(
-  input: { inputs: string[] } & MetaclawSessionDeps,
+  input: { inputs: string[]; session: ScriptedSessionPort },
 ): Promise<{ output: string[]; exitRequested: boolean }> {
-  const { inputs, ...deps } = input;
-  const session = new MetaclawSession(deps);
+  const { inputs, session } = input;
   session.initialize();
 
   let exitRequested = false;
   let lastTaskId: string | null = null;
-  for (const rawLine of inputs) {
-    const snapshotBeforeSubmit = session.getSnapshot();
-    const line = resolveScriptPlaceholders(rawLine, {
-      lastTaskId,
-      currentTaskId: snapshotBeforeSubmit.currentTaskId,
-    });
-    const result = await session.submit(line, { awaitAsyncWork: true });
-    const snapshotAfterSubmit = session.getSnapshot();
-    if (snapshotAfterSubmit.currentTaskId) {
-      lastTaskId = snapshotAfterSubmit.currentTaskId;
+  try {
+    for (const rawLine of inputs) {
+      const snapshotBeforeSubmit = session.getSnapshot();
+      const line = resolveScriptPlaceholders(rawLine, {
+        lastTaskId,
+        currentTaskId: snapshotBeforeSubmit.currentTaskId,
+      });
+      const result = await session.submit(line, { awaitAsyncWork: true });
+      const snapshotAfterSubmit = session.getSnapshot();
+      if (snapshotAfterSubmit.currentTaskId) {
+        lastTaskId = snapshotAfterSubmit.currentTaskId;
+      }
+      if (result.exitRequested) {
+        exitRequested = true;
+        break;
+      }
     }
-    if (result.exitRequested) {
-      exitRequested = true;
-      break;
-    }
-  }
 
-  await session.waitForAsyncWork();
-  const result = {
-    output: session.getSnapshot().output,
-    exitRequested,
-  };
-  await session.dispose();
-  return result;
+    return {
+      output: session.getSnapshot().output,
+      exitRequested,
+    };
+  } finally {
+    await session.dispose();
+  }
 }
 
 export async function runScriptedSessionFile(
   scriptPath: string,
-  deps: MetaclawSessionDeps,
+  session: ScriptedSessionPort,
 ): Promise<{ output: string[]; exitRequested: boolean }> {
   const content = readFileSync(scriptPath, 'utf-8');
   return runScriptedSession({
-    ...deps,
+    session,
     inputs: parseScriptInputs(content),
   });
 }

@@ -71,3 +71,21 @@ export interface GatewayReplay {
   readonly snapshot: GatewayEventEnvelope[];
   readonly deltas: GatewayEventEnvelope[];
 }
+
+export type GatewayWireClientMessage =
+  | { readonly type: 'command'; readonly envelope: GatewayCommandEnvelope }
+  | { readonly type: 'attach'; readonly conversationId: string; readonly resumeFromSequence?: number }
+  | { readonly type: 'close' };
+
+export type GatewayWireServerMessage =
+  | { readonly type: 'hello'; readonly sessionId: string }
+  | { readonly type: 'event'; readonly event: GatewayEventEnvelope }
+  | { readonly type: 'output'; readonly lines: string[]; readonly event: GatewayEventEnvelope }
+  | { readonly type: 'receipt'; readonly receipt: GatewayCommandReceipt }
+  | {
+      readonly type: 'error';
+      readonly message: string;
+      readonly requestId?: string;
+      readonly event?: GatewayEventEnvelope;
+    }
+  | { readonly type: 'exit' };

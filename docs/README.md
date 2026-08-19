@@ -10,6 +10,7 @@ This directory contains both current technical documentation and historical plan
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
+- [Account Runtime And Gateway Operations](current/account-runtime-and-gateway-operations.md): unified Server lifecycle, account data paths, Gateway replay, restart/recovery diagnostics, and the future App transport contract.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
@@ -51,9 +52,11 @@ replacing those semantics.
 - [Phase 6 final reliability closure](archive/plans/2026-07-28-phase-6-single-task-reliability-closure.md): SQLite v27 cancellation/replan facts, durable Task/Subtask cleanup, explicit partial acceptance and the strict completion gate.
 - [Executor error recovery refresh](archive/plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
 
-## Active Delivery
+## Completed Delivery
 
-- [Account Runtime and unified Gateway implementation plan](plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md): planned extraction of account-wide Runtime/Kernel ownership from `MetaclawSession`, account-isolated data migration, durable Conversations, versioned Gateway replay, and Web/Feishu/TUI cutover. The [approved design](plans/2026-08-18-account-runtime-unified-gateway-design.md) records the target topology and migration gates.
+- [Account Runtime and unified Gateway implementation plan](plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md): delivered account-wide Runtime/Kernel ownership, account-isolated install/update authority, durable Conversations, versioned Gateway replay, startup recovery, and Web/Feishu/TUI/Unix/script cutover. The [approved design](plans/2026-08-18-account-runtime-unified-gateway-design.md) records the implemented topology and migration gates.
+
+## Active Delivery
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.
 - [Revised MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): code closure for signed release trust, immutable revisions, schema 30-to-31 migration, Planner v8/Work Graph v7, generation-scoped bindings, Harness drivers and transactional rollback; native online daemon and release-infrastructure gates remain open.
 - [Conditionally approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, generation-scoped revision authority, Provider/Model health, signed transactional updates, isolated AgentClass runtimes, migration and acceptance criteria.

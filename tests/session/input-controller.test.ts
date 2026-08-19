@@ -64,4 +64,20 @@ describe('InputController', () => {
     expect(port.waitForAsyncWork).toHaveBeenCalledTimes(1);
     expect(result.exitRequested).toBe(false);
   });
+
+  it('rethrows a handled error when a structured transport requests terminal failure', async () => {
+    const error = new Error('planner failed');
+    const port = createPort({
+      handleNaturalLanguageInput: vi.fn().mockRejectedValue(error),
+    });
+    const controller = new InputController(port);
+
+    await expect(controller.submit('执行任务', {
+      awaitAsyncWork: true,
+      rethrowErrors: true,
+    })).rejects.toThrow('planner failed');
+
+    expect(port.handleSubmitError).toHaveBeenCalledWith(error);
+    expect(port.waitForAsyncWork).toHaveBeenCalledTimes(1);
+  });
 });

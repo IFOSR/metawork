@@ -16,6 +16,19 @@ export interface GatewaySession extends SessionStreamSource {
   dispose(): Promise<void>;
 }
 
+export interface WebSessionRuntimeSession {
+  initialize(options?: { showDashboard?: boolean }): Promise<void> | void;
+  subscribe(listener: (snapshot: import('./session-types.js').SessionSnapshot) => void): () => void;
+  getSnapshot(): import('./session-types.js').SessionSnapshot;
+  getSwitchingState?(): import('./session-types.js').SessionSwitchingState;
+  subscribeInteractionTrace(
+    listener: (trace: import('../management/interaction-trace.js').InteractionTrace | null) => void,
+  ): () => void;
+  getInteractionTrace(): import('../management/interaction-trace.js').InteractionTrace | null;
+  submit(text: string): Promise<{ exitRequested: boolean }>;
+  dispose(): Promise<void>;
+}
+
 export interface SessionStreamCallbacks {
   /**
    * 输出增量。`from` 是 `lines[0]` 在 session 完整输出中的绝对行号（稳定游标）：

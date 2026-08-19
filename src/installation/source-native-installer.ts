@@ -12,6 +12,8 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import Database from 'better-sqlite3';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
+import { resolveAccountPaths } from '../account/account-paths.js';
 import { ConfigurationCompiler } from '../configuration/configuration-compiler.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
 import { ConfigurationService } from '../configuration/configuration-service.js';
@@ -59,13 +61,14 @@ export class SourceNativeInstaller {
     assertSecretReference(input.provider.secretReference);
     const secretReference = input.provider.secretReference;
     const paths = this.dependencies.paths;
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const release = resolveReleasePaths(paths.root, input.releaseId);
     const configurationRevision = `install-${input.releaseId}`;
     const databaseRevision = join(
-      paths.databaseRevisions,
+      accountPaths.databaseRevisions,
       `${input.releaseId}-${configurationRevision}.db`,
     );
-    const repository = new FileConfigurationRepository(dirname(paths.configurationRevisions));
+    const repository = new FileConfigurationRepository(accountPaths.config);
     const service = new ConfigurationService({
       repository,
       createRevisionId: () => configurationRevision,
@@ -76,7 +79,12 @@ export class SourceNativeInstaller {
       }),
     });
 
-    await assertInstallTargetIsClean(paths, release.releaseRoot, configurationRevision);
+    await assertInstallTargetIsClean(
+      paths,
+      accountPaths,
+      release.releaseRoot,
+      configurationRevision,
+    );
     await assertLauncherAvailable(paths.launcher);
     const [codexDetected, piDetected] = await Promise.all([
       this.dependencies.detectCommand('codex'),
@@ -108,8 +116,8 @@ export class SourceNativeInstaller {
         throw new Error(`installation configuration probe failed: ${(probe.issues ?? []).join('; ')}`);
       }
 
-      const compiler = new ConfigurationCompiler(paths.generatedAgentRuntime);
-      await mkdir(paths.generatedAgentRuntime, { recursive: true, mode: 0o700 });
+      const compiler = new ConfigurationCompiler(accountPaths.generatedAgentRuntime);
+      await mkdir(accountPaths.generatedAgentRuntime, { recursive: true, mode: 0o700 });
       const compiledRuntime = await compiler.compile({
         revisionId: configurationRevision,
         contentHash: compiledConfiguration.contentHash,
@@ -121,15 +129,15 @@ export class SourceNativeInstaller {
       await installNativeLauncher(paths.launcher, paths.root);
       launcherInstalled = true;
       await replaceRelativeSymlink(
-        paths.generatedCurrent,
-        relative(dirname(paths.generatedCurrent), compiledRuntime.rootPath),
+        accountPaths.generatedCurrent,
+        relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
       );
-      switched.push(paths.generatedCurrent);
+      switched.push(accountPaths.generatedCurrent);
       await replaceRelativeSymlink(
-        paths.database,
-        relative(dirname(paths.database), databaseRevision),
+        accountPaths.database,
+        relative(dirname(accountPaths.database), databaseRevision),
       );
-      switched.push(paths.database);
+      switched.push(accountPaths.database);
       await replaceRelativeSymlink(
         paths.appCurrent,
         relative(dirname(paths.appCurrent), release.releaseRoot),
@@ -157,7 +165,7 @@ export class SourceNativeInstaller {
       for (const path of [
         compiledRuntimeRoot,
         databaseRevision,
-        join(paths.configurationRevisions, configurationRevision),
+        join(accountPaths.configRevisions, configurationRevision),
         release.releaseRoot,
       ]) {
         if (!path) continue;
@@ -368,15 +376,16 @@ async function replaceRelativeSymlink(path: string, target: string): Promise<voi
 
 async function assertInstallTargetIsClean(
   paths: AnyFusionPaths,
+  accountPaths: ReturnType<typeof resolveAccountPaths>,
   releaseRoot: string,
   configurationRevision: string,
 ): Promise<void> {
   for (const path of [
     paths.appCurrent,
-    paths.generatedCurrent,
-    paths.database,
+    accountPaths.generatedCurrent,
+    accountPaths.database,
     releaseRoot,
-    join(paths.configurationRevisions, configurationRevision),
+    join(accountPaths.configRevisions, configurationRevision),
   ]) {
     if (await lstat(path).then(() => true, () => false)) {
       throw new Error(`clean installation target already exists: ${path}`);

@@ -10,6 +10,7 @@
  */
 
 import { GATEWAY_PROTOCOL_VERSION } from './client-protocol.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export type GatewayEventKind =
   | 'conversation_snapshot'
@@ -44,6 +45,8 @@ export const TERMINAL_GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
 
 /** 单个事件 payload 的大小上限（字节），进入事件日志前必须通过该边界。 */
 export const MAX_GATEWAY_EVENT_PAYLOAD_BYTES = 64 * 1024;
+const MAX_GATEWAY_PAYLOAD_DEPTH = 10;
+const SENSITIVE_GATEWAY_PAYLOAD_KEY = /(?:^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|credential|authorization|private[_-]?key|connection[_-]?string|prompt|reasoning|thoughts?|raw[_-]?(?:response|output|stdout|stderr)|stdout|stderr|signature|content)(?:$|[_-])/iu;
 
 export interface GatewayEventEnvelope {
   readonly protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
@@ -74,4 +77,44 @@ export interface GatewayReplay {
 
 export function isTerminalGatewayEvent(kind: GatewayEventKind): boolean {
   return TERMINAL_GATEWAY_EVENT_KINDS.includes(kind);
+}
+
+export function sanitizeGatewayEventPayload(payload: unknown): unknown {
+  return sanitizePayloadValue(payload, 0, new WeakSet<object>());
+}
+
+export function gatewayEventPayloadBytes(payload: unknown): number {
+  return Buffer.byteLength(JSON.stringify(payload), 'utf8');
+}
+
+function sanitizePayloadValue(
+  value: unknown,
+  depth: number,
+  ancestors: WeakSet<object>,
+): unknown {
+  if (depth > MAX_GATEWAY_PAYLOAD_DEPTH) {
+    throw new Error('Gateway event payload exceeds the maximum nesting depth');
+  }
+  if (typeof value === 'string') return redactSensitiveText(value);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (value === undefined) return null;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value !== 'object') return redactSensitiveText(String(value));
+  if (ancestors.has(value)) throw new Error('Gateway event payload must not contain cycles');
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map(item => sanitizePayloadValue(item, depth + 1, ancestors));
+    }
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const normalizedKey = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2');
+      if (SENSITIVE_GATEWAY_PAYLOAD_KEY.test(normalizedKey)) continue;
+      sanitized[key] = sanitizePayloadValue(item, depth + 1, ancestors);
+    }
+    return sanitized;
+  } finally {
+    ancestors.delete(value);
+  }
 }

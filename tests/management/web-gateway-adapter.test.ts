@@ -102,7 +102,7 @@ describe('WebGatewayAdapter', () => {
     await journal.append(makeEvent('e2', 'final_answer'));
 
     const replay = await adapter.replay('local-default', 'conv_1');
-    expect(replay.deltas.map(event => event.eventId)).toEqual(['e1', 'e2']);
+    expect(replay.deltas.map(event => event.eventId)).toEqual(['e1']);
     expect(replay.snapshot.map(event => event.eventId)).toEqual(['e2']);
   });
 

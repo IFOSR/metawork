@@ -59,9 +59,26 @@ describe('unified server composition', () => {
   });
 
   it('has zero client-owned runtime instances in the composition model', () => {
-    // 架构表征：客户端通过 RuntimeRegistry 激活账户，绝不直接构造 runtime。
-    // Task 19 会用生产 import 扫描强化此断言为对真实源码的检查。
     expect(clientOwnedRuntimeConstructors()).toEqual([]);
+  });
+
+  it('asserts the actual production composition root activates the registry', () => {
+    const index = readFileSync(join(process.cwd(), 'src', 'index.ts'), 'utf8');
+    expect(index).toContain('accountRegistry.getOrActivate');
+    expect(index).toContain('new ConversationGatewayRuntime');
+    expect(index).toContain('new ClientGateway');
+    expect(index).toContain('resolveServerSurface');
+    expect(index).not.toContain('new MetaclawSession');
+  });
+
+  it('starts shared adapters before selecting the foreground client', () => {
+    const index = readFileSync(join(process.cwd(), 'src', 'index.ts'), 'utf8');
+    const sharedStart = index.indexOf('await gatewayServer.start()');
+    const foregroundSelection = index.indexOf("if (serverSurface === 'web')");
+
+    expect(sharedStart).toBeGreaterThan(0);
+    expect(foregroundSelection).toBeGreaterThan(sharedStart);
+    expect(index.slice(sharedStart, foregroundSelection)).toContain('startFeishuRuntimeBridge');
   });
 });
 

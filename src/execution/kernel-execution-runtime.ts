@@ -1,4 +1,5 @@
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
@@ -34,6 +35,7 @@ import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-rec
 import { buildDefaultResourceClaims } from '../resource/index.js';
 import { deriveRunnableFrontier } from '../work-graph/index.js';
 import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
+import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { AttemptSupervisor, type AttemptSupervisorContext } from './attempt-supervisor.js';
@@ -79,6 +81,7 @@ export interface PreparedKernelExecutionInput extends KernelExecutionRuntimeInpu
 
 export interface KernelExecutionRuntimeDeps {
   sessionId: string;
+  getSessionId?(): string;
   getConfigurationRevision(): string;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
@@ -100,6 +103,7 @@ export interface KernelExecutionRuntimeDeps {
       cycleId: string,
     ): Array<Extract<KernelEvent, { type: 'capacity_signal' }>>;
   };
+  kernelDecisionRepo?: Pick<KernelDecisionRepo, 'findById'>;
   dispatchItemRepo: KernelDispatchItemRepo;
   maxConcurrentAttempts: number;
   publicationWorker: WorkspacePublicationWorker;
@@ -140,6 +144,10 @@ export class KernelExecutionRuntime {
   private readonly taskEvents: TaskEventRecorder;
   private readonly attemptSupervisor: AttemptSupervisor;
   private readonly cancellationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly cancellationDrains = new Map<string, Promise<void>>();
+  private readonly decisionSession = new AsyncLocalStorage<string>();
+  private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
@@ -147,6 +155,22 @@ export class KernelExecutionRuntime {
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
     );
+  }
+
+  private get sessionId(): string {
+    return this.decisionSession.getStore()
+      ?? this.deps.getSessionId?.()
+      ?? this.deps.sessionId;
+  }
+
+  private withDecisionSession<T>(
+    decision: KernelDecision,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const sessionId = this.deps.kernelDecisionRepo?.findById(decision.id)?.sessionId;
+    return sessionId
+      ? this.decisionSession.run(sessionId, operation)
+      : operation();
   }
 
   async cancelTask(taskId: string, reason = 'explicit Task cancellation command'): Promise<CancellationReceipt> {
@@ -158,7 +182,7 @@ export class KernelExecutionRuntime {
       correlationId: taskId,
       causationId: null,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId,
       reason,
     });
@@ -177,7 +201,7 @@ export class KernelExecutionRuntime {
       correlationId: taskId,
       causationId: null,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId,
       targetSubtaskIds,
       reason,
@@ -193,13 +217,16 @@ export class KernelExecutionRuntime {
       correlationId: taskId,
       causationId: null,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId,
     });
   }
 
   async recoverCancellations(taskId?: string): Promise<void> {
-    await this.deps.cancellationCoordinator.recover(taskId);
+    await this.trackCancellationDrain(
+      taskId ? `recover:${taskId}` : 'recover:all',
+      () => this.deps.cancellationCoordinator.recover(taskId),
+    );
   }
 
   async executorRecovered(
@@ -219,7 +246,7 @@ export class KernelExecutionRuntime {
         correlationId: request.id,
         causationId: recoveryCheckId,
         occurredAt: new Date().toISOString(),
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         taskId: request.taskId,
         agentClassName,
         recoveryCheckId,
@@ -254,7 +281,7 @@ export class KernelExecutionRuntime {
             const result = this.deps.workGraphRuntimeService.apply({
               task: currentTask,
               userPrompt: currentRequest.deferredPlan?.requestText ?? currentTask.goal,
-              sessionId: this.deps.sessionId,
+              sessionId: this.sessionId,
               authorizedWorkGraph: decision.action.workGraph,
               authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
               authorization: {
@@ -304,7 +331,7 @@ export class KernelExecutionRuntime {
             receipt = this.deps.cancellationCoordinator.apply(
               decision as Parameters<TaskCancellationCoordinator['apply']>[0],
             );
-            void this.drainCancellation(event.taskId!);
+            void this.startCancellationDrain(event.taskId!);
             return null;
           }
           if (decision.action.type === 'accept_partial_result') {
@@ -415,11 +442,37 @@ export class KernelExecutionRuntime {
     }
   }
 
+  private startCancellationDrain(taskId: string): Promise<void> {
+    return this.trackCancellationDrain(
+      `drain:${taskId}`,
+      () => this.drainCancellation(taskId),
+    );
+  }
+
+  private trackCancellationDrain(
+    key: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    const active = this.cancellationDrains.get(key);
+    if (active) return active;
+    const drain = Promise.resolve()
+      .then(operation)
+      .finally(() => {
+        if (this.cancellationDrains.get(key) === drain) {
+          this.cancellationDrains.delete(key);
+        }
+      });
+    this.cancellationDrains.set(key, drain);
+    return drain;
+  }
+
   private scheduleCancellationRetry(taskId: string): void {
+    if (this.disposed) return;
     if (this.cancellationRetryTimers.has(taskId)) return;
     const timer = setTimeout(() => {
       this.cancellationRetryTimers.delete(taskId);
-      void this.drainCancellation(taskId);
+      void this.startCancellationDrain(taskId);
     }, 1_000);
     timer.unref?.();
     this.cancellationRetryTimers.set(taskId, timer);
@@ -430,6 +483,19 @@ export class KernelExecutionRuntime {
     if (!timer) return;
     clearTimeout(timer);
     this.cancellationRetryTimers.delete(taskId);
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    for (const timer of this.cancellationRetryTimers.values()) clearTimeout(timer);
+    this.cancellationRetryTimers.clear();
+    this.disposePromise = (async () => {
+      while (this.cancellationDrains.size > 0) {
+        await Promise.allSettled([...this.cancellationDrains.values()]);
+      }
+    })();
+    return this.disposePromise;
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
@@ -950,7 +1016,7 @@ export class KernelExecutionRuntime {
       const result = this.deps.workGraphRuntimeService.apply({
         task,
         userPrompt: input.request.userPrompt,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         authorizedWorkGraph: action.workGraph,
         authorizedBindingsBySubtask: action.authorizedBindingsBySubtask,
         authorization: {
@@ -991,7 +1057,7 @@ export class KernelExecutionRuntime {
       correlationId: decision.eventId,
       causationId: decision.id,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       ...event,
     } as KernelEvent;
   }
@@ -1162,7 +1228,7 @@ export class KernelExecutionRuntime {
       correlationId: item.decisionId,
       causationId: item.decisionId,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId: item.taskId,
       subtaskId: item.subtaskId,
       attemptId: item.attemptId,
@@ -1195,7 +1261,7 @@ export class KernelExecutionRuntime {
     const graph = this.deps.workGraphRuntimeService.apply({
       task,
       userPrompt: input.request.userPrompt,
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       authorizedWorkGraph: input.request.authorizedWorkGraph ?? null,
       authorizedBindingsBySubtask: input.request.authorizedBindingsBySubtask ?? null,
       authorization: input.request.workGraphAuthorization ?? null,
@@ -1241,7 +1307,7 @@ export class KernelExecutionRuntime {
       correlationId: request.kernelDecisionId ?? executionId,
       causationId: request.kernelDecisionId ?? null,
       occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId,
       reason: request.schedulingReason ?? 'authorized execution request',
     };
@@ -1304,15 +1370,17 @@ export class KernelExecutionRuntime {
       store: this.deps.kernelWorkflowStore,
       clock: { now: () => new Date().toISOString() },
       runtime: {
-        apply: decision => this.applyExecutionDecision({
-          decision,
-          executionId,
-          request,
-          progressTracker,
-          supervisorContext,
-          attemptFacts,
-          finishExecution,
-        }),
+        apply: decision => this.withDecisionSession(decision, () => (
+          this.applyExecutionDecision({
+            decision,
+            executionId,
+            request,
+            progressTracker,
+            supervisorContext,
+            attemptFacts,
+            finishExecution,
+          })
+        )),
       },
       acceptedEventTypes: [
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
@@ -1383,7 +1451,7 @@ export class KernelExecutionRuntime {
           correlationId: input.executionId,
           causationId: lastIntegrated?.publicationId ?? null,
           occurredAt: new Date().toISOString(),
-          sessionId: this.deps.sessionId,
+          sessionId: this.sessionId,
           taskId: input.taskId,
           reason: 'candidate publication released downstream frontier',
         });
@@ -1479,7 +1547,7 @@ export class KernelExecutionRuntime {
       correlationId: input.blockedDecisionId,
       causationId: input.blockedDecisionId,
       occurredAt: input.occurredAt,
-      sessionId: this.deps.sessionId,
+      sessionId: this.sessionId,
       taskId: task.id,
       subtaskId: subtask.id,
       wakeKind: 'capacity',
@@ -1534,7 +1602,7 @@ export class KernelExecutionRuntime {
       store: this.deps.kernelWorkflowStore,
       clock: { now: () => new Date().toISOString() },
       runtime: {
-        apply: async decision => {
+        apply: decision => this.withDecisionSession(decision, async () => {
           if (decision.action.type !== 'no_op') applied = true;
           return this.applyExecutionDecision({
             decision,
@@ -1545,7 +1613,7 @@ export class KernelExecutionRuntime {
             attemptFacts: [],
             finishExecution,
           });
-        },
+        }),
       },
       acceptedEventTypes: [
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
@@ -1667,7 +1735,7 @@ export class KernelExecutionRuntime {
       this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
       this.deps.persistenceService.recordInteraction({
         taskId: input.taskId,
-        sessionId: this.deps.sessionId,
+        sessionId: this.sessionId,
         userInput: input.request.userPrompt,
         systemOutput: cleanAggregate,
         executorUsed: input.subtasks.length === 1

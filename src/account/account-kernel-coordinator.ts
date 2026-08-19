@@ -49,6 +49,7 @@ export class AccountKernelCoordinator implements AccountKernelCoordinator {
   private workflow: DurableKernelWorkflow | null = null;
   private buildSnapshotRef: ((event: KernelEvent) => KernelSnapshot) | null = null;
   private runtimeRef: KernelRuntime | null = null;
+  private tail: Promise<void> = Promise.resolve();
 
   constructor(deps: AccountKernelCoordinatorDeps) {
     this.deps = deps;
@@ -58,15 +59,28 @@ export class AccountKernelCoordinator implements AccountKernelCoordinator {
     event: KernelEvent,
     context: AccountKernelCoordinatorSubmitContext,
   ): Promise<KernelWorkflowResult> {
-    this.buildSnapshotRef = context.buildSnapshot;
-    this.runtimeRef = context.runtime;
-    return this.ensureWorkflow().submit(event);
+    return this.enqueue(async () => {
+      this.bind(context);
+      return this.ensureWorkflow().submit(event);
+    });
   }
 
   recover(context: AccountKernelCoordinatorSubmitContext): Promise<KernelRecoveryReport> {
+    return this.enqueue(async () => {
+      this.bind(context);
+      return this.ensureWorkflow().recover();
+    });
+  }
+
+  private bind(context: AccountKernelCoordinatorSubmitContext): void {
     this.buildSnapshotRef = context.buildSnapshot;
     this.runtimeRef = context.runtime;
-    return this.ensureWorkflow().recover();
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation, operation);
+    this.tail = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private ensureWorkflow(): DurableKernelWorkflow {

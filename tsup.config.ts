@@ -9,6 +9,7 @@ export default defineConfig({
     'src/capability-request-cli.ts',
     'src/capability-use-cli.ts',
     'src/emit-pi-attempt-extension.ts',
+    'src/prepare-smoke-configuration.ts',
   ],
   format: ['esm'],
   target: 'node22',

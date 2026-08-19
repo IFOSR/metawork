@@ -11,7 +11,7 @@ import type {
   PlannerTuiPermissionResolutionResult,
   PlannerTuiSnapshot,
   SessionSnapshot,
-} from '../session/metaclaw-session.js';
+} from '../session/session-types.js';
 import {
   ANYFUSION_PLANNER_HOST_MAX_LINE_BYTES,
   ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION,
@@ -49,9 +49,8 @@ const SOCKET_PROBE_TIMEOUT_MS = 250;
  * Shared local Proposal Host for every AnyFusion-Pi surface.
  *
  * The host is an Application-Shell adapter only. It routes a runtime-bound
- * session/turn to MetaclawSession, which remains the sole validation and Kernel
- * authority. Snapshot and command capabilities are presentation adapters over
- * the same registered session.
+ * session/turn to ConversationSession, which retains proposal validation while
+ * account mutation is serialized by AccountKernelCoordinator.
  */
 export class PlannerHostBridge {
   private server: Server | null = null;

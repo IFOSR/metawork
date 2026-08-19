@@ -6,16 +6,27 @@ The vocabulary for how MetaClaw turns user intent into kernel-authorized task, s
 
 Phase 6 is complete at the single-Task boundary. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while up to four child attempts may run asynchronously inside the one admitted top-level Task. Every attempt owns a Task-generation/Subtask Git worktree that persists across retry, fallback, takeover and merge repair. The default backend runs the canonical Codex/Pi CLIs as child processes in those worktrees; the Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. ADR-0011 remains an intentional product boundary; multi-top-level-Task scheduling belongs to a future independent roadmap.
 
-`src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One live MetaClaw session maps to one persisted Pi session file. Non-interactive surfaces use `--mode rpc` over stdin/stdout JSONL and serialize writers per session; MetaClaw does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaClaw MCP tools. Pi also exposes only `read`, `grep`, `find` and `ls` against the directory where the user started AnyFusion; shell, edit and write remain disabled. MetaClaw remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission; there is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.
+`src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; AnyFusion does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only AnyFusion MCP tools. Pi also exposes only `read`, `grep`, `find` and `ls` against the directory where the user started AnyFusion; shell, edit and write remain disabled. AnyFusion remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission; there is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.
 
-The default local surface is the pinned `AnyFusion-Pi` fork vendored under `planner/AnyFusion-Pi` (checked into this repository, not a separate clone). Native macOS installation builds MetaClaw and Planner in separate dependency trees and runs them as isolated Node 22.19+ processes; the optional Linux container runtime preserves the same process boundary while sharing one image-level Node executable. `src/tui-bridge/` exposes AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket for both native TUI and RPC proposal tools. Both modes use one Planner bootstrap, fixed Skill, exact tool set and proposal path. MetaClaw injects an absolute Node command and compiled `planner-mcp.js` arguments; the Planner artifact carries no private Node runtime and never substitutes an uncontrolled executable. A missing fixed query tool fails before the first turn. A mid-turn MCP transport loss locks proposal submission and aborts that agent loop; the TUI remains alive and reconnects before the next turn. The TUI receives only Session projections, requests slash-command completion state from `MetaclawSession`, and may transport an explicit user-authored slash command; completion, validation, dynamic Task/Executor candidates and execution still come only from the existing `CommandCatalog`. Host Protocol v2 also advertises backward-compatible `executor_result` and `permission_request` capabilities. Executor results are passive persisted Planner context as described below. Permission requests are instead transient UI-only facts: the Session projects only current-session, applied, unresolved escalations inside the 24-hour validity window; Pi reviews them through a native Selector and submits only request ID plus approve/deny. Interactive Planner authorization proposals and shared `/permission` commands are rejected, while RPC, Feishu and Session Planner exact natural-language authorization remain supported. Permission arrival and resolution never enter the Pi branch or create a semantic turn. `MetaclawSession` reruns the v8 schema and semantic validation before emitting `plan_proposed` into `DurableKernelWorkflow`. The first accepted proposal locks the turn; rejected revisions remain open, identical submissions replay their persisted result, and a different post-acceptance submission conflicts. The bridge has no direct database, Kernel, scheduler or Executor dependency. Planner cannot synthesize privileged commands, edit, execute shell, mutate Task state, authorize work or publish Git changes. Executor attempts use trusted existing Codex/Pi CLI binaries with AnyFusion-only attempt homes in the worktree backend, or canonical Codex/Pi attempt images in Docker compatibility mode. The original Ink implementation under `src/tui/` remains intact as an explicitly unmaintained standby module selected with `METACLAW_STANDBY_TUI=1`.
+The default local surface is the pinned `AnyFusion-Pi` fork vendored under `planner/AnyFusion-Pi` (checked into this repository, not a separate clone). Native macOS installation builds MetaClaw and Planner in separate dependency trees and runs them as isolated Node 22.19+ processes; the optional Linux container runtime preserves the same process boundary while sharing one image-level Node executable. The interactive Pi process is a Gateway-only client: it starts with `--gateway-socket` plus a stable Conversation ID, submits versioned commands, renders ordered safe events, and never constructs or calls a local semantic runtime. Semantic Planning remains server-side. `src/tui-bridge/` exposes AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket only for controlled RPC Planner proposal tools. MetaClaw injects an absolute Node command and compiled `planner-mcp.js` arguments; the Planner artifact carries no private Node runtime and never substitutes an uncontrolled executable. A missing fixed query tool fails before the first turn. A mid-turn MCP transport loss locks proposal submission and aborts that agent loop; the Conversation remains attachable and a later turn reconnects through the controlled process boundary. Permission requests cross the Gateway as transient bounded facts; the client submits only request ID plus approve/deny as a versioned `permission_resolution` command. Permission arrival and resolution do not create a semantic Planner turn. `ConversationSession` reruns the v8 schema and semantic validation before emitting `plan_proposed` into `DurableKernelWorkflow`. The first accepted proposal locks the turn; rejected revisions remain open, identical submissions replay their persisted result, and a different post-acceptance submission conflicts. Neither Gateway clients nor the Planner Host bridge can directly access the database, Kernel, scheduler or Executor. Planner cannot synthesize privileged commands, edit, execute shell, mutate Task state, authorize work or publish Git changes. Executor attempts use trusted existing Codex/Pi CLI binaries with AnyFusion-only attempt homes in the worktree backend, or canonical Codex/Pi attempt images in Docker compatibility mode. The original Ink implementation under `src/tui/` remains intact as an explicitly unmaintained standby module selected with `METACLAW_STANDBY_TUI=1`; any future activation must remain Gateway-backed.
 
 Every composition mode, including `--script`, acquires the same `runtime.lock`.
+Native update/rollback acquires that same physical lock before migration or
+pointer switching. Account migration uses SQLite online backup so committed WAL
+data is included, activates a verified staging tree atomically, and moves legacy
+state into the rollback archive so it cannot remain a second write authority.
 Planner Host startup probes an existing Unix socket and refuses to replace a
 reachable listener; shutdown tracks the created socket device/inode and
 preserves a replacement path. Structured Planner `transport_uncertain` results
 retain their turn, submission, replay identity, concrete redacted message and
 partial tool audit instead of becoming a generic missing-acceptance warning.
+
+Account periodic recovery is owned by `AccountRuntime` and runs through a
+system binding resolved from durable Task/decision Conversation identity; it
+does not require or scan open Conversations. Gateway stale cursors reset to a
+bounded current/terminal snapshot and replay only events after that snapshot.
+Shutdown closes admission, drains attachments/commands/timers/cancellation
+retry work, then closes Planner, Executor and account storage.
 
 Web exposes a bounded `InteractionTrace` from query intake through Planner,
 Kernel authorization, exact authorized Executor bindings, execution progress,
@@ -31,22 +42,22 @@ record is updated. The trace is presentation-only and never includes raw
 prompts, raw stdout/stderr, credentials, sensitive field names or hidden
 chain-of-thought.
 
-Web now presents those facts through a persistent session workspace rather than
-a permanent chat/trace split. A file-backed Application-Shell projection under
-`~/.anyfusion/data/web-sessions/` stores bounded sanitized terminal turns.
-Historical sessions are browse-only until `WebSessionRuntime` passes the idle
-Planner/Task activation gate and recreates the one live `MetaclawSession` with
-the same stable Planner session ID. Conversation and Trajectory are two views
-of the same trace and execution projection; neither owns routing or execution.
+Web presents those facts through the unified Gateway-backed Conversation
+workspace. Historical Conversations retain stable Planner identity and bounded
+safe projections; attaching a Web client opens or resumes the corresponding
+`ConversationSession` without constructing a Web-owned Runtime. Conversation
+and Trajectory remain two views of the same trace and execution projection;
+neither owns routing or execution.
 
-## Accepted Account Runtime And Gateway Target
+## Account Runtime And Unified Gateway
 
-ADR-0031 is accepted on 2026-08-18 but is not yet implemented. The current
-mode-specific `MetaclawSession`, Web, Unix Socket Gateway and Feishu composition
-described above remains the executable baseline until the linked implementation
-plan reaches its release gate.
+ADR-0031 was implemented on 2026-08-19. Production startup constructs one
+`RuntimeRegistry`, one `AccountRuntime` for `local-default`, one
+`ConversationRegistry`, and one transport-neutral `ClientGateway`. Production
+client adapters do not construct `MetaclawSession`; that class remains only as
+a compatibility/test shell while its standby Ink source is preserved.
 
-The target ownership hierarchy is:
+The active ownership hierarchy is:
 
 ```text
 ServerProcess
@@ -57,16 +68,17 @@ ServerProcess
           -> ClientConnection
 ```
 
-TUI, Web conversation, Feishu and future App input must converge on one
-versioned Gateway command/event plane. The same authenticated Account shares
+TUI, Web conversation, Feishu and script/Unix clients use one versioned Gateway
+command/event plane; a future App targets the same contract. The same
+authenticated Account shares
 configuration, memory, Task, Kernel, Executor, recovery and durable account
 facts through one AccountRuntime. Conversations remain separate: each owns one
 stable Planner session, serialized input mailbox, safe trace and presentation
 state. Sharing an Account never implicitly merges Planner history.
 
 Runtime-wide KernelWorkflow, Execution Runtime, startup recovery, attempt,
-publication and timer services move out of `MetaclawSession` and become
-single-owner AccountRuntime services. One account-scoped Kernel coordinator is
+publication and timer services are single-owner AccountRuntime services. One
+account-scoped Kernel coordinator is
 the only Application-layer drainer of durable Kernel events and applications.
 ADR-0011 remains one active top-level Task per AccountRuntime.
 
@@ -103,13 +115,21 @@ durable activation journals. Until an online management transaction can prove
 admission closure and dispatch drain, the native updater fails closed when the
 Server is running and requires it to be stopped before pointer mutation.
 
-The target static configuration path is:
+Application releases and activation journals remain installation-global.
+Database, configuration, SecretStore and generated-runtime authority is
+account-scoped. Clean install writes directly to `local-default`; an existing
+legacy installation is migrated once before update/rollback, and later
+transactions never switch the legacy global database/configuration/generated
+pointers.
+
+The active static configuration path is:
 
 ```text
-~/.anyfusion/config/active
+~/.anyfusion/accounts/local-default/config/active
   -> one immutable revision directory
   -> config.yaml plus immutable Planner/Kernel/Runtime projections
-  -> revision-scoped generated Agent runtimes
+~/.anyfusion/accounts/local-default/generated/current
+  -> revision-scoped generated Agent runtime
 ```
 
 `ConfigurationService` belongs to the Application Shell. Planning may consume
@@ -172,7 +192,7 @@ shortcut.
 The durable security and state namespace accepted by ADR-0031. It owns
 configuration, memory, Tasks, Kernel facts, Executor runtime state, Planner
 sessions, Conversations and an isolated data root. This is a target contract
-until the ADR-0031 implementation plan reaches its release gate.
+implemented by the account-scoped production composition.
 _Avoid_: transport user ID, chat ID, browser cookie, client connection
 
 **AccountRuntime**:
@@ -205,7 +225,7 @@ _Avoid_: Conversation, Planner session, Account
 The sole accepted user-message connectivity plane under ADR-0031. It
 authenticates a Principal, resolves Account and Conversation identity, admits a
 versioned command and streams sanitized ordered events. The current
-mode-specific Gateway is not yet this completed target.
+production surfaces all use this Gateway contract.
 _Avoid_: semantic router, Runtime owner, Executor transport, shared Session
 
 **Task**:

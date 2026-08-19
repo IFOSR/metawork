@@ -10,11 +10,14 @@ import type { ConversationSession } from './conversation-session.js';
 export class ConversationRegistry {
   private readonly sessions = new Map<string, ConversationSession>();
   private readonly opening = new Map<string, Promise<ConversationSession>>();
+  private closing = false;
+  private reviewInFlight: Promise<boolean> | null = null;
 
   async getOrOpen(
     conversationId: string,
     open: () => Promise<ConversationSession>,
   ): Promise<ConversationSession> {
+    if (this.closing) throw new Error('Conversation registry is closing');
     const existing = this.sessions.get(conversationId);
     if (existing) return existing;
     const inFlight = this.opening.get(conversationId);
@@ -46,8 +49,30 @@ export class ConversationRegistry {
   }
 
   async closeAll(): Promise<void> {
+    if (this.closing && this.sessions.size === 0 && this.opening.size === 0) return;
+    this.closing = true;
+    await Promise.allSettled([...this.opening.values()]);
+    if (this.reviewInFlight) {
+      await Promise.allSettled([this.reviewInFlight]);
+    }
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     await Promise.all(sessions.map(session => session.dispose()));
+  }
+
+  reviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    if (this.closing) return Promise.resolve(false);
+    if (this.reviewInFlight) return this.reviewInFlight;
+    const review = (async () => {
+      let handled = false;
+      for (const session of this.sessions.values()) {
+        handled = await session.maybeReviewTaskPoolOnTimer(nowMs) || handled;
+      }
+      return handled;
+    })();
+    this.reviewInFlight = review;
+    return review.finally(() => {
+      if (this.reviewInFlight === review) this.reviewInFlight = null;
+    });
   }
 }

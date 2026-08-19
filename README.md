@@ -146,11 +146,15 @@ The installer:
 ~/.anyfusion/
 ├── app/current              # active release
 ├── app/releases/            # versioned releases
-├── config/active/           # active immutable configuration revision
-├── config/secrets/          # secrets (macOS: keychain; Linux: file, 0600)
-├── data/metaclaw.db         # durable runtime state
-├── data/planner-sessions/
-├── data/execution-workspaces/
+├── accounts/local-default/
+│   ├── config/              # active and immutable configuration revisions
+│   ├── secrets/             # secrets (macOS: keychain; Linux: file, 0600)
+│   ├── data/anyfusion.db    # durable account runtime state
+│   ├── planner/sessions/
+│   ├── conversations/
+│   ├── gateway/
+│   ├── workspace-store/
+│   └── attempts/
 └── upgrade-journals/
 ```
 
@@ -173,7 +177,7 @@ forced to the MetaWork repository or a fixed `/workspace`.
 
 ```bash
 anyfusion web
-anyfusion web restart          # restart the running instance into Web mode
+anyfusion web restart          # restart the unified Server with Web in foreground
 anyfusion web --port 9000 --no-open
 ```
 
@@ -250,6 +254,7 @@ extension contracts may change before the first stable version.
 | Resource | Purpose |
 | --- | --- |
 | [Current Technical Overview](docs/current/technical-overview.md) | Full runtime, deployment, configuration, and repository overview |
+| [Account Runtime Operations](docs/current/account-runtime-and-gateway-operations.md) | Unified Server lifecycle, account paths, Gateway replay, and diagnostics |
 | [Runtime Security](docs/current/phase-5-runtime-security.md) | Workspaces, resource leases, permission boundaries, and execution backends |
 | [Architecture Decisions](docs/adr/README.md) | Accepted decisions and authority matrix |
 | [Documentation Map](docs/README.md) | Current docs, plans, technical debt, and archives |
