@@ -43,6 +43,8 @@ import type {
   SessionKernelRuntimeCallbacks,
 } from '../account/account-kernel-execution-services.js';
 import type { SessionKernelRuntime } from './session-kernel-runtime.js';
+import type { SessionSnapshot, SessionSwitchingState } from './session-types.js';
+import type { InteractionTrace } from '../management/interaction-trace.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
   ConversationInputMailbox,
@@ -106,7 +108,7 @@ export class ConversationSession {
   private sessionKernelRuntime: SessionKernelRuntime | null = null;
   private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
   private readonly inputController: InputController;
-  private listeners = new Set<(snapshot: ConversationSessionSnapshot) => void>();
+  private listeners = new Set<(snapshot: SessionSnapshot) => void>();
   private attachedClients = 0;
 
   constructor(private readonly deps: ConversationSessionDeps) {
@@ -450,7 +452,7 @@ export class ConversationSession {
     this.notify();
   }
 
-  subscribe(listener: (snapshot: ConversationSessionSnapshot) => void): () => void {
+  subscribe(listener: (snapshot: SessionSnapshot) => void): () => void {
     this.listeners.add(listener);
     listener(this.getSnapshot());
     return () => {
@@ -458,10 +460,16 @@ export class ConversationSession {
     };
   }
 
-  getSnapshot(): ConversationSessionSnapshot {
+  getSnapshot(): SessionSnapshot {
+    const currentTask = this.currentTaskId
+      ? this.deps.runtimePort.taskServices?.taskRuntimeService.findTask(this.currentTaskId) ?? null
+      : null;
     return {
       output: [...this.output],
       currentTaskId: this.currentTaskId,
+      currentTask: currentTask
+        ? { id: currentTask.id, title: currentTask.title, status: currentTask.status }
+        : null,
       runtimeState: {
         ...this.runtimeState,
         readyTaskIds: [...this.runtimeState.readyTaskIds],
@@ -471,6 +479,24 @@ export class ConversationSession {
       plannerState: {
         status: this.activePlannerRuns > 0 ? 'running' : 'idle',
       },
+      latestGuidance: this.latestGuidance,
+    };
+  }
+
+  subscribeInteractionTrace(
+    listener: (trace: InteractionTrace | null) => void,
+  ): () => void {
+    return this.deps.interactionTraceStream?.subscribe(listener) ?? (() => undefined);
+  }
+
+  getInteractionTrace(): InteractionTrace | null {
+    return this.deps.interactionTraceStream?.getSnapshot() ?? null;
+  }
+
+  getSwitchingState(): SessionSwitchingState {
+    return {
+      plannerTurnActive: this.activePlannerRuns > 0,
+      taskRuntimeActive: this.runtimeState.runningTaskId !== null,
     };
   }
 

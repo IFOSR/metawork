@@ -3,7 +3,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { Socket } from 'node:net';
 import { extname, join, normalize, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
-import type { MetaclawSession } from '../session/metaclaw-session.js';
+import type { WebSessionRuntimeSession } from './web-session-runtime.js';
 import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
@@ -91,7 +91,7 @@ export interface ManagementServerDeps {
   webAuth: WebAuthService;
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
-  sessionFactory: (sessionId: string) => MetaclawSession;
+  sessionFactory: (sessionId: string) => WebSessionRuntimeSession;
   sessionCatalog?: ManagementWebSessionCatalog;
   sessionRuntime?: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
@@ -113,7 +113,7 @@ export class ManagementServer {
   private server: Server | null = null;
   private readonly wsConnections = new Set<WebSocketConnection>();
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
-  private singletonSession: MetaclawSession | null = null;
+  private singletonSession: WebSessionRuntimeSession | null = null;
   private singletonSessionId: string | null = null;
   private lastTimelineJson: string | null = null;
   private lastTimeline: ExecutionTimeline | null = null;
@@ -316,7 +316,7 @@ export class ManagementServer {
   }
 
   /** 单例 session：第一个鉴权通过的连接创建，后续连接附着。 */
-  private ensureSession(): MetaclawSession {
+  private ensureSession(): WebSessionRuntimeSession {
     if (!this.singletonSession) {
       this.singletonSessionId ??= `sess_web_${nanoid(10)}`;
       this.singletonSession = this.deps.sessionFactory(this.singletonSessionId);

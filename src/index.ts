@@ -48,6 +48,19 @@ import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
 import { MetaclawSession } from './session/metaclaw-session.js';
+import { ConversationSession } from './session/conversation-session.js';
+import { SessionPersistenceService } from './session/session-persistence-service.js';
+import { SessionPresentationService } from './session/session-presentation-service.js';
+import { SessionStateRepo } from './storage/session-state-repo.js';
+import { InteractionTraceStream } from './session/interaction-trace-stream.js';
+import { PlanningContextBuilder } from './planning/planning-context-builder.js';
+import { CommandReadServices } from './commands/command-read-services.js';
+import { createDefaultCommandCatalog } from './commands/command-tree.js';
+import { buildAccountKernelExecutionServices } from './account/account-kernel-execution-services.js';
+import { ConversationInputMailbox } from './session/conversation-input-mailbox.js';
+import { KernelExecutorStatusProjector } from './execution/kernel-executor-status-projector.js';
+import { VerificationAndDeliveryService } from './delivery/verification-and-delivery-service.js';
+import type { WebSessionRuntimeSession } from './management/web-session-runtime.js';
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
@@ -113,7 +126,7 @@ async function runWebMode(options: {
   port: number;
   noOpen: boolean;
   runningRevisionId: string;
-  sessionFactory: (sessionId: string) => MetaclawSession;
+  sessionFactory: (sessionId: string) => WebSessionRuntimeSession;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
 }): Promise<void> {
@@ -448,6 +461,96 @@ async function main() {
     accountRuntimeExecutionServices: accountRuntimeComposition.runtimePort.runtimeExecutionServices,
     accountPlannerServices: accountRuntimeComposition.runtimePort.plannerServices,
   });
+
+  // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
+  // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
+  const buildConversationSession = (conversationId: string): ConversationSession => {
+    const port = accountRuntimeComposition.runtimePort;
+    const runtimeExecution = port.runtimeExecutionServices!;
+    const persistenceService = new SessionPersistenceService(db);
+    const presentation = new SessionPresentationService();
+    const sessionStateRepo = new SessionStateRepo(db);
+    const interactionTraceStream = new InteractionTraceStream(conversationId);
+    const planningContextBuilder = new PlanningContextBuilder({
+      sessionId: conversationId,
+      requestSource: 'session',
+      getTimeoutMs: () => {
+        const configured = Number(process.env.METACLAW_PLANNER_TIMEOUT_MS);
+        return Number.isFinite(configured) && configured > 0 ? configured : 180_000;
+      },
+      getPlannerConfiguration: () => stagedConfiguration.planner,
+    });
+    const commandCatalog = createDefaultCommandCatalog();
+    const commandReadServices = new CommandReadServices(db, port.executionServices!.executionRuntime, {
+      getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
+    });
+
+    const conversation = new ConversationSession({
+      conversationId,
+      plannerSessionId: conversationId,
+      runtimePort: port,
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      presentation,
+      sessionStateRepo,
+      persistenceService,
+      interactionTraceStream,
+      planningContextBuilder,
+      db,
+      kernelConfiguration: stagedConfiguration.kernel,
+      commandCatalog,
+      commandReadServices,
+      taskEngine,
+      memoryEngine,
+      orchestration,
+      config,
+    });
+
+    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(
+      port.repositories.kernelExecutorStatusRepo,
+    );
+    const kernelExecutionServices = buildAccountKernelExecutionServices({
+      db,
+      sessionId: conversationId,
+      sourceRoot: process.cwd(),
+      orchestration,
+      notifier,
+      maxConcurrentAttempts: config.orchestration.max_concurrent_attempts,
+      getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
+      taskRuntimeService: port.taskServices!.taskRuntimeService,
+      agentClassService: port.taskServices!.agentClassService,
+      workGraphRuntimeService: port.repositories.workGraphRuntimeService,
+      subtaskRepo: port.repositories.subtaskRepo,
+      workGraphRevisionRepo: port.repositories.workGraphRevisionRepo,
+      effectOutboxRepo: port.repositories.effectOutboxRepo,
+      attemptReceiptRepo: port.repositories.attemptReceiptRepo,
+      taskEventRepo: port.repositories.taskEventRepo,
+      workUnitClaimService: port.coordinatorServices!.workUnitClaimService,
+      attemptRunner: runtimeExecution.attemptRunner,
+      controlKernel: port.kernelServices.controlKernel,
+      kernelWorkflowRepo: port.kernelServices.kernelWorkflowRepo,
+      dispatchItemRepo: runtimeExecution.dispatchItemRepo,
+      publicationRepo: runtimeExecution.publicationRepo,
+      generationReplanRepo: runtimeExecution.generationReplanRepo,
+      cancellationCoordinator: runtimeExecution.cancellationCoordinator,
+      executionProgressService: port.repositories.executionProgressService,
+      verificationAndDeliveryService: new VerificationAndDeliveryService(),
+      persistenceService,
+      kernelExecutorStatusProjector,
+      presentation,
+      workspaceStore: port.workspaceServices.workspaceStore,
+      workspaceRepository: port.workspaceServices.workspaceRepository,
+      resourceLeaseService: runtimeExecution.resourceLeaseService,
+      memoryContextService: port.plannerServices!.memoryContextService,
+      executionRuntime: port.executionServices!.executionRuntime,
+      ...conversation.getKernelExecutionCallbacks(),
+    });
+
+    conversation.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
+    conversation.bindSessionKernelRuntime(kernelExecutionServices.sessionKernelRuntime);
+    conversation.bindTaskExecutionApplicationService(kernelExecutionServices.taskExecutionApplicationService);
+
+    return conversation;
+  };
   if (cliArgs.scriptPath) {
     try {
       const result = await runScriptedSessionFile(cliArgs.scriptPath, {
@@ -489,7 +592,7 @@ async function main() {
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
-      sessionFactory: webSessionId => buildSession(webSessionId),
+      sessionFactory: webSessionId => buildConversationSession(webSessionId),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({
           id: task.id,
@@ -572,7 +675,7 @@ async function main() {
       plannerSupervisor,
       stagedConfiguration,
       getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-      sessionFactory: buildSession,
+      sessionFactory: buildConversationSession,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -612,7 +715,7 @@ async function main() {
     plannerSupervisor,
     stagedConfiguration,
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-    sessionFactory: buildSession,
+    sessionFactory: buildConversationSession,
   });
 
   await gatewayServer.start();
