@@ -1,9 +1,8 @@
 import type { Config } from '../core/types.js';
-import type { MetaclawSession } from '../session/metaclaw-session.js';
-import { createFeishuBridge, type FeishuBridge } from '../integrations/feishu-app.js';
+import { createFeishuBridge, type FeishuBridge, type FeishuSessionPort } from '../integrations/feishu-app.js';
 import { resolveFeishuGatewayConfig } from './feishu-config.js';
 
-type CreateFeishuBridge = (config: Config, session: MetaclawSession) => FeishuBridge | null;
+type CreateFeishuBridge = (config: Config, session: FeishuSessionPort) => FeishuBridge | null;
 
 export interface StartedFeishuRuntimeBridge {
   bridge: FeishuBridge;
@@ -12,7 +11,7 @@ export interface StartedFeishuRuntimeBridge {
 
 export async function startFeishuRuntimeBridge(
   config: Config,
-  session: MetaclawSession,
+  session: FeishuSessionPort,
   createBridge: CreateFeishuBridge = createFeishuBridge,
 ): Promise<StartedFeishuRuntimeBridge | null> {
   let bridge: FeishuBridge | null = null;

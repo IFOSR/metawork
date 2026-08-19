@@ -5,10 +5,17 @@ import { basename, resolve } from 'path';
 import { createDecipheriv, createHash } from 'crypto';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import type { Config } from '../core/types.js';
-import type { SessionSnapshot } from '../session/metaclaw-session.js';
-import type { MetaclawSession } from '../session/metaclaw-session.js';
+import type { SessionSnapshot } from '../session/session-types.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import { createMarkdownPreviewBaseUrl, createMarkdownPreviewLinks } from './markdown-preview.js';
+
+/** Feishu 桥接所需的会话窄接口（ADR-0031：适配器不依赖具体 Session 实现）。 */
+export interface FeishuSessionPort {
+  appendSystemMessage(...lines: string[]): void;
+  subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
+  getSnapshot(): SessionSnapshot;
+  submit(text: string): Promise<{ exitRequested: boolean }>;
+}
 import { resolveFeishuGatewayConfig, toFeishuAppConfig } from '../gateway/feishu-config.js';
 import {
   evaluateFeishuGatewayPolicy,
@@ -398,7 +405,7 @@ export class FeishuAppClient {
 
 interface FeishuEventBridgeDeps {
   client: FeishuMessageClient;
-  session: MetaclawSession;
+  session: FeishuSessionPort;
   config: FeishuAppConfig;
   gatewayConfig?: ResolvedFeishuRuntimeBridgeConfig;
   markdownPreview?: FeishuMessageHandlerDeps['markdownPreview'];
@@ -584,7 +591,7 @@ export class FeishuEventBridge {
 
 interface FeishuWebSocketBridgeDeps {
   client: FeishuMessageClient;
-  session: MetaclawSession;
+  session: FeishuSessionPort;
   appId: string;
   appSecret: string;
   verificationToken?: string;
@@ -838,7 +845,7 @@ export async function handleFeishuMessageEvent(
   return true;
 }
 
-export function createFeishuBridge(config: Config, session: MetaclawSession): FeishuBridge | null {
+export function createFeishuBridge(config: Config, session: FeishuSessionPort): FeishuBridge | null {
   const gatewayFeishu = resolveFeishuGatewayConfig(config);
   const feishu = toFeishuAppConfig(gatewayFeishu);
   if (!gatewayFeishu.enabled || !gatewayFeishu.appId) {
