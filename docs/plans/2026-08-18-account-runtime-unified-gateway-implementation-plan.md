@@ -1,6 +1,6 @@
 # Account Runtime And Unified Gateway Implementation Plan
 
-> Status: In Delivery — foundation phases 1-7 delivered with tests; physical Session removal remains
+> Status: Delivered — 2026-08-19; account data root, AccountRuntime composition, unified Gateway core, and all surface cutovers (Web/Feishu/TUI/Gateway) shipped; production MetaclawSession construction removed
 > Plan date: 2026-08-18
 > Governing ADR: ADR-0031
 > Approved design: `docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`

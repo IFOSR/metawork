@@ -56,10 +56,10 @@ AnyFusion is task-oriented rather than session-only. A normal agent session answ
 
 ### Accepted Multi-Client Target
 
-ADR-0031, accepted on August 18, 2026, defines the next Server architecture but
-is not yet delivered. TUI, Web conversation, Feishu and a future App will use
+ADR-0031, accepted on August 18, 2026, defines the Server architecture and is
+now delivered as of August 19, 2026. TUI, Web conversation and Feishu use
 one versioned Gateway command/event plane. Authenticated clients for the same
-Account will share one `AccountRuntime` containing configuration, memory, Task,
+Account share one `AccountRuntime` containing configuration, memory, Task,
 Kernel, Executor and recovery services, while each Conversation retains an
 independent stable Planner session, serialized input mailbox, trace and
 presentation stream.
@@ -220,7 +220,7 @@ The conversation/task boundary matters:
 
 The current direct-reply path is explicit: MetaClaw sends the current turn through the bound persisted AnyFusion-Pi Planner session, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
-The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence is now an accepted target under ADR-0031 but has not yet been delivered.
+The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence under ADR-0031 has been delivered: Web, Feishu and the native TUI route through the unified Gateway and share one AccountRuntime.
 
 Important runtime boundary: there is no second strategy/orchestration loop
 beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph

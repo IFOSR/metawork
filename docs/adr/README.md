@@ -40,9 +40,10 @@ release gate is complete:
   configuration, generated-runtime, and database upgrade transaction.
 
 ADR-0031 governs the accepted AccountRuntime and unified client Gateway target.
-The implementation plan's foundation phases — characterization, contracts,
-account storage and migration, AccountRuntime ownership, Conversation runtime,
-unified Gateway core, and surface adapters — are delivered with focused tests.
+The implementation plan — characterization, contracts, account storage and
+migration, AccountRuntime ownership, Conversation runtime, unified Gateway core,
+and surface adapters — is delivered with focused tests, and production surfaces
+route through the unified Gateway.
 The runtime-wide service extraction from MetaclawSession into account-scoped
 factories is complete across nine service clusters (Kernel, repositories,
 workspace, execution, task, coordinator, runtime-execution, kernel-execution,

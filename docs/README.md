@@ -34,7 +34,7 @@ Key recent ADRs:
 - [ADR-0024: Resource Partition, Sandbox And Runtime Elevation](adr/0024-resource-partition-sandbox-and-runtime-elevation.md): Phase 5 resource identities, Docker attempts, persistent workspaces, leases and structured permission elevation.
 - [ADR-0025: Single-Task Concurrency And Git Publication](adr/0025-single-task-concurrency-and-git-publication.md): Phase 6 runnable frontier, batch dispatch, asynchronous attempts, Git-backed workspaces and publication.
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
-- [ADR-0031: Account Runtime And Unified Client Gateway](adr/0031-account-runtime-and-unified-client-gateway.md): accepted target for account-scoped Runtime ownership, conversation isolation, one Gateway command/event plane, and TUI/Web/Feishu/App convergence.
+- [ADR-0031: Account Runtime And Unified Client Gateway](adr/0031-account-runtime-and-unified-client-gateway.md): delivered account-scoped Runtime ownership, conversation isolation, one Gateway command/event plane, and TUI/Web/Feishu convergence.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
