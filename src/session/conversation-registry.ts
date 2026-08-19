@@ -44,4 +44,10 @@ export class ConversationRegistry {
     await session.dispose();
     return 'closed';
   }
+
+  async closeAll(): Promise<void> {
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    await Promise.all(sessions.map(session => session.dispose()));
+  }
 }

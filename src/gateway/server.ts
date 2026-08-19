@@ -1,42 +1,23 @@
 import { existsSync, unlinkSync } from 'fs';
 import { createServer, type Server, type Socket } from 'net';
 import { nanoid } from 'nanoid';
-import type Database from 'better-sqlite3';
-import type { Config } from '../core/types.js';
-import type { TaskEngine } from '../task/task-engine.js';
-import type { MemoryEngine } from '../memory/memory-engine.js';
-import type { OrchestrationEngine } from '../guidance/orchestration.js';
-import type { ContextRecaller } from '../memory/context-recaller.js';
-import type { NotificationService } from '../notifications/types.js';
-import type { MetaclawSessionDeps, PlannerHostRegistrar } from '../session/metaclaw-session.js';
-import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
-import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
-import { SessionStreamAdapter, type GatewaySession } from '../session/session-transport-adapter.js';
+import { SessionStreamAdapter } from '../session/session-transport-adapter.js';
+import { ConversationRegistry } from '../session/conversation-registry.js';
+import type { ConversationSession } from '../session/conversation-session.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
 interface GatewayServerDeps {
   socketPath: string;
-  taskEngine: TaskEngine;
-  memoryEngine: MemoryEngine;
-  orchestration: OrchestrationEngine;
-  db: Database.Database;
-  config: Config;
-  contextRecaller: ContextRecaller;
-  notifier: NotificationService;
-  workspaceRoot: string;
-  plannerHost?: PlannerHostRegistrar;
-  plannerSupervisor?: PlannerProcessController;
-  stagedConfiguration?: StagedLegacyConfiguration;
-  getRuntimeBinding: NonNullable<MetaclawSessionDeps['getRuntimeBinding']>;
-  /** 会话工厂：由组合根注入（ADR-0031：传输层不得构造具体 Session）。 */
-  sessionFactory: (sessionId: string) => GatewaySession;
+  /** 账户级 Conversation 注册表：一个 Conversation 可被多个连接附着。 */
+  conversationRegistry: ConversationRegistry;
+  /** Conversation 工厂：由组合根注入（ADR-0031：传输层不得构造具体 Session）。 */
+  conversationFactory: (conversationId: string) => ConversationSession;
 }
 
 export class MetaclawGatewayServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
-  private readonly sessions = new Set<GatewaySession>();
   private stopping = false;
 
   constructor(private readonly deps: GatewayServerDeps) {}
@@ -85,8 +66,7 @@ export class MetaclawGatewayServer {
       socket.destroy();
     }
     this.sockets.clear();
-    await Promise.all([...this.sessions].map(session => session.dispose()));
-    this.sessions.clear();
+    // Conversation 生命周期由 AccountRuntime 管理；传输层只关闭 socket。
     await closePromise;
     if (existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
@@ -94,9 +74,14 @@ export class MetaclawGatewayServer {
   }
 
   private async handleConnection(socket: Socket): Promise<void> {
-    const sessionId = `sess_gateway_${nanoid(10)}`;
-    const session: GatewaySession = this.deps.sessionFactory(sessionId);
-    this.sessions.add(session);
+    // ADR-0031：每个连接附着到一个持久 Conversation，断开只 detach，
+    // 不销毁 Conversation。
+    const conversationId = `conv_gateway_${nanoid(10)}`;
+    const conversation = await this.deps.conversationRegistry.getOrOpen(
+      conversationId,
+      async () => this.deps.conversationFactory(conversationId),
+    );
+    conversation.attachClient();
 
     const send = (message: GatewayServerMessage) => {
       if (!socket.destroyed) {
@@ -104,7 +89,7 @@ export class MetaclawGatewayServer {
       }
     };
 
-    const adapter = new SessionStreamAdapter(session, {
+    const adapter = new SessionStreamAdapter(conversation, {
       onOutput: lines => send({ type: 'output', lines }),
       onExitRequested: () => socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage)),
     });
@@ -115,14 +100,15 @@ export class MetaclawGatewayServer {
       if (cleanedUp) return;
       cleanedUp = true;
       adapter.detach();
-      void session.dispose().finally(() => this.sessions.delete(session));
+      conversation.detachClient();
+      void this.deps.conversationRegistry.closeIdle(conversationId);
     };
     socket.on('close', cleanup);
     socket.on('error', cleanup);
 
-    send({ type: 'hello', sessionId });
-    session.initialize?.({ showDashboard: false });
-    session.appendSystemMessage?.(`→ Gateway session ${sessionId} 已连接`);
+    send({ type: 'hello', sessionId: conversationId });
+    conversation.initialize?.({ showDashboard: false });
+    conversation.appendSystemMessage?.(`→ Gateway session ${conversationId} 已连接`);
 
     const parse = createJsonLineParser<GatewayClientMessage>((message) => {
       if (message.type === 'close') {

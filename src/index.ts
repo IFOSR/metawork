@@ -36,6 +36,7 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { buildAccountRuntimeComposition } from './account/account-runtime-composition.js';
 import { RuntimeRegistry } from './account/runtime-registry.js';
 import { AccountRuntimeFactory } from './account/account-runtime-factory.js';
+import { ConversationRegistry } from './session/conversation-registry.js';
 import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
 import { nanoid } from 'nanoid';
@@ -663,19 +664,8 @@ async function main() {
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
       socketPath: gatewaySocketPath,
-      taskEngine,
-      memoryEngine,
-      orchestration,
-      db,
-      config,
-      contextRecaller,
-      notifier,
-      workspaceRoot: process.cwd(),
-      plannerHost,
-      plannerSupervisor,
-      stagedConfiguration,
-      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-      sessionFactory: buildConversationSession,
+      conversationRegistry: new ConversationRegistry(),
+      conversationFactory: buildConversationSession,
     });
     await nativeGatewayServer.start();
     const blockedRecheckTimer = setInterval(() => {
@@ -703,19 +693,8 @@ async function main() {
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
-    taskEngine,
-    memoryEngine,
-    orchestration,
-    db,
-    config,
-    contextRecaller,
-    notifier,
-    workspaceRoot: process.cwd(),
-    plannerHost,
-    plannerSupervisor,
-    stagedConfiguration,
-    getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-    sessionFactory: buildConversationSession,
+    conversationRegistry: new ConversationRegistry(),
+    conversationFactory: buildConversationSession,
   });
 
   await gatewayServer.start();
