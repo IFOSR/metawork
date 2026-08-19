@@ -104,6 +104,10 @@ export class ConversationSession {
   private latestGuidance: GuidanceState | null = null;
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
+  private blockedRecheckInFlight = false;
+  private lastBlockedRecheckAt: number | null = null;
+  private lastTaskPoolWatchdogFingerprint: string | null = null;
+  private lastTaskPoolWatchdogReminderAt: number | null = null;
   private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
   private sessionKernelRuntime: SessionKernelRuntime | null = null;
   private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
@@ -937,6 +941,83 @@ export class ConversationSession {
       .filter(active => active.taskId === taskId)
       .map(active => active.name);
     return names.length > 0 ? names.join('、') : null;
+  }
+
+  getBlockedRecheckIntervalMs(): number {
+    const seconds = this.deps.config?.orchestration.blocked_recheck_interval ?? 60;
+    return Math.max(seconds, 5) * 1000;
+  }
+
+  async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
+    for (const task of taskRuntimeService?.listTasksByStatus('blocked') ?? []) {
+      if (await this.kernelExecutionRuntime?.recoverDue(task.id, 'timer durable recovery drain')) return true;
+    }
+    if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
+      return true;
+    }
+    this.refreshRuntimeState();
+    return this.maybeEmitTaskPoolWatchdogReminder(nowMs);
+  }
+
+  private async maybeReconcileBlockedTasksOnTimer(nowMs = Date.now()): Promise<boolean> {
+    if (this.blockedRecheckInFlight) return false;
+    const orchestrationConfig = this.deps.config?.orchestration;
+    if (orchestrationConfig?.blocked_recheck_enabled === false) return false;
+    const intervalMs = Math.max(orchestrationConfig?.blocked_recheck_interval ?? 60, 5) * 1000;
+    if (this.lastBlockedRecheckAt !== null && nowMs - this.lastBlockedRecheckAt < intervalMs) {
+      return false;
+    }
+    const candidates = this.deps.runtimePort.kernelServices.kernelDecisionRepo.listCurrentByAction('wait_for_capacity');
+    if (candidates.length === 0) {
+      this.lastBlockedRecheckAt = nowMs;
+      return false;
+    }
+    this.lastBlockedRecheckAt = nowMs;
+    this.blockedRecheckInFlight = true;
+    try {
+      const target = candidates[0];
+      if (!target?.taskId || !target.subtaskId) return false;
+      return await this.kernelExecutionRuntime!.recheckCapacity({
+        taskId: target.taskId,
+        subtaskId: target.subtaskId,
+        blockedDecisionId: target.id,
+        blockedAt: target.createdAt,
+        recheckAfterMs: intervalMs,
+        occurredAt: new Date(nowMs).toISOString(),
+      });
+    } finally {
+      this.blockedRecheckInFlight = false;
+      this.refreshRuntimeState();
+    }
+  }
+
+  private maybeEmitTaskPoolWatchdogReminder(nowMs: number): boolean {
+    if (!this.deps.config?.orchestration.reminder_enabled) return false;
+    const taskRuntimeService = this.deps.runtimePort.taskServices?.taskRuntimeService;
+    const blockedTasks = taskRuntimeService?.listTasks().filter(task => task.status === 'blocked') ?? [];
+    const parkedTasks = taskRuntimeService?.listTasks().filter(task => task.status === 'parked') ?? [];
+    if (blockedTasks.length === 0 && parkedTasks.length === 0) return false;
+    const fingerprint = [
+      ...blockedTasks.map(task => `b:${task.id}:${this.getWaitingBlockReason(task)}`),
+      ...parkedTasks.map(task => `p:${task.id}:${task.lastInterruptionReason}:${task.snapshots.at(-1)?.nextStep ?? ''}`),
+    ].join('|');
+    const throttleMs = (this.deps.config?.orchestration.reminder_throttle ?? 0) * 1000;
+    if (
+      this.lastTaskPoolWatchdogFingerprint === fingerprint
+      && this.lastTaskPoolWatchdogReminderAt !== null
+      && nowMs - this.lastTaskPoolWatchdogReminderAt < throttleMs
+    ) {
+      return false;
+    }
+    this.lastTaskPoolWatchdogFingerprint = fingerprint;
+    this.lastTaskPoolWatchdogReminderAt = nowMs;
+    this.appendOutput(...this.deps.presentation!.formatTaskPoolWatchdogReminder({
+      blockedTasks,
+      parkedTasks,
+      getWaitingBlockReason: task => this.getWaitingBlockReason(task),
+    }));
+    return true;
   }
 
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void {

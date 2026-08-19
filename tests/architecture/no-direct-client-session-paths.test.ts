@@ -63,11 +63,11 @@ describe('no direct client session paths', () => {
     expect(sessionSource).toContain('buildAccountKernelExecutionServices');
   });
 
-  it('reduces production constructors to the composition root and scripted adapter', () => {
-    // 客户端适配器（gateway/management/integrations/tui-bridge）不再构造
-    // MetaclawSession；只剩组合根（index.ts 的会话工厂）与脚本适配器保留构造。
+  it('reduces production constructors to the scripted adapter only', () => {
+    // 生产组合根（index.ts）已不再构造 MetaclawSession，所有表面（Web/Feishu/
+    // TUI/Gateway）通过 ConversationSession；仅脚本适配器保留构造。
     const constructors = metaclawSessionConstructorSites();
-    expect(constructors).toEqual(['index.ts', 'session/scripted-session.ts']);
+    expect(constructors).toEqual(['session/scripted-session.ts']);
   });
 
   it('has zero client adapter constructors', () => {

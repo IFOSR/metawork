@@ -48,7 +48,6 @@ import { runGatewaySetup } from './gateway/setup.js';
 import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
-import { MetaclawSession } from './session/metaclaw-session.js';
 import { ConversationSession } from './session/conversation-session.js';
 import { SessionPersistenceService } from './session/session-persistence-service.js';
 import { SessionPresentationService } from './session/session-presentation-service.js';
@@ -438,31 +437,6 @@ async function main() {
     }),
   });
 
-  // ADR-0031: 所有表面通过同一会话工厂构造会话，注入 AccountRuntime 服务。
-  const buildSession = (targetSessionId: string) => new MetaclawSession({
-    taskEngine,
-    memoryEngine,
-    orchestration,
-    db,
-    config,
-    sessionId: targetSessionId,
-    contextRecaller,
-    notifier,
-    plannerHost,
-    plannerSupervisor,
-    stagedConfiguration,
-    getRuntimeBinding: runtimeBindings.getRuntimeBinding,
-    kernelCoordinator: accountRuntimeComposition.runtimePort.kernelCoordinator,
-    kernelServices: accountRuntimeComposition.runtimePort.kernelServices,
-    accountRepositories: accountRuntimeComposition.runtimePort.repositories,
-    accountWorkspaceServices: accountRuntimeComposition.runtimePort.workspaceServices,
-    accountExecutionServices: accountRuntimeComposition.runtimePort.executionServices,
-    accountTaskServices: accountRuntimeComposition.runtimePort.taskServices,
-    accountCoordinatorServices: accountRuntimeComposition.runtimePort.coordinatorServices,
-    accountRuntimeExecutionServices: accountRuntimeComposition.runtimePort.runtimeExecutionServices,
-    accountPlannerServices: accountRuntimeComposition.runtimePort.plannerServices,
-  });
-
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
   const buildConversationSession = (conversationId: string): ConversationSession => {
@@ -660,7 +634,7 @@ async function main() {
   const plannerTuiCommand = process.env.METACLAW_PLANNER_TUI_COMMAND?.trim() ?? 'anyfusion-planner';
   process.env.METACLAW_PLANNER_TUI_COMMAND = plannerTuiCommand;
   if (process.env.METACLAW_STANDBY_TUI !== '1') {
-    const plannerTuiSession = buildSession(sessionId);
+    const plannerTuiSession = buildConversationSession(sessionId);
     plannerTuiSession.initialize({ showDashboard: false });
     const nativeGatewayServer = new MetaclawGatewayServer({
       socketPath: gatewaySocketPath,
@@ -700,9 +674,9 @@ async function main() {
   await gatewayServer.start();
   let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
   let gatewayBlockedRecheckTimer: NodeJS.Timeout | null = null;
-  let gatewaySession: MetaclawSession | null = null;
+  let gatewaySession: ConversationSession | null = null;
   if (cliArgs.gateway) {
-    const session = buildSession(sessionId);
+    const session = buildConversationSession(sessionId);
     gatewaySession = session;
     session.initialize({ showDashboard: false });
     gatewayFeishuBridge = await startFeishuRuntimeBridge(config, session);
