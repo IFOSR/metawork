@@ -167,6 +167,7 @@ anyfusion
 
 ```bash
 anyfusion web
+anyfusion web start           # 显式启动 Web（等价于 anyfusion web）
 anyfusion web restart          # 重启统一 Server，并以前台 Web 作为交互界面
 anyfusion web --port 9000 --no-open
 ```
@@ -179,7 +180,7 @@ fragment 自动完成浏览器认证，随后立即换发为 HttpOnly、SameSite
 
 ```text
 anyfusion                                   # 原生 TUI
-anyfusion web [restart] [--port <端口>] [--no-open]
+anyfusion web [start|restart] [--port <端口>] [--no-open]
 anyfusion --script <文件>                   # 脚本化会话
 anyfusion --gateway                         # 本地 Gateway
 anyfusion --connect                         # 接入正在运行的 Gateway
@@ -228,8 +229,8 @@ Subtask，最多并行运行四个相互独立的 attempt。
 | Planner contract | PlanningAgentPlan v8 |
 | Work Graph contract | v7 |
 | Kernel contract | v5 |
-| Completion contract | v3 |
-| Persistence | SQLite schema v31 |
+| Completion contract | v4 |
+| Persistence | SQLite schema v32 |
 | Canonical Executor | Codex CLI 与 Pi Agent |
 
 当前版本不是稳定生产版本。安装、配置与扩展契约在首个稳定版本前仍可能调整。

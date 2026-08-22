@@ -11,10 +11,17 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8788',
         changeOrigin: true,
+        configure: proxy => {
+          proxy.on('proxyReq', request => {
+            request.setHeader('origin', 'http://127.0.0.1:8788');
+          });
+        },
       },
       '/ws': {
         target: 'ws://127.0.0.1:8788',
         ws: true,
+        changeOrigin: true,
+        rewriteWsOrigin: true,
       },
     },
   },

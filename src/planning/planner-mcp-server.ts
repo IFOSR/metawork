@@ -325,7 +325,6 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
 export async function runPlannerMcpServer(): Promise<void> {
   const home = process.env.METACLAW_HOME;
   const sessionId = process.env.METACLAW_PLANNER_SESSION_ID;
-  if (!home) throw new Error('METACLAW_HOME is required');
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
   const paths = resolvePlannerMcpRuntimePaths({
     home,
@@ -347,12 +346,17 @@ export async function runPlannerMcpServer(): Promise<void> {
 }
 
 export function resolvePlannerMcpRuntimePaths(input: {
-  home: string;
+  home?: string;
   databasePath?: string;
   configurationRoot?: string;
 }): { databasePath: string; configurationRoot: string } {
+  const explicitDatabasePath = input.databasePath?.trim();
+  const home = input.home?.trim();
+  if (!explicitDatabasePath && !home) {
+    throw new Error('METACLAW_HOME is required when METACLAW_DB_PATH is missing');
+  }
   return {
-    databasePath: input.databasePath?.trim() || join(input.home, 'metaclaw.db'),
+    databasePath: explicitDatabasePath || join(home!, 'metaclaw.db'),
     configurationRoot: input.configurationRoot?.trim()
       || dirname(resolveAnyFusionPaths().configurationRevisions),
   };

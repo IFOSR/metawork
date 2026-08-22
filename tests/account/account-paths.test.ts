@@ -24,6 +24,7 @@ describe('account-scoped paths', () => {
     expect(paths.conversations).toBe(`${base}/conversations`);
     expect(paths.workspaceStore).toBe(`${base}/workspace-store`);
     expect(paths.attempts).toBe(`${base}/attempts`);
+    expect(paths.results).toBe(`${base}/data/results`);
     expect(paths.gateway).toBe(`${base}/gateway`);
   });
 

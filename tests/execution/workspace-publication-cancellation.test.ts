@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspacePublicationWorker } from '../../src/execution/workspace-publication-worker.js';
@@ -9,6 +12,8 @@ import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
+import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 
 const configurationRevision = 'configuration-revision-publication';
 const publicationBinding: AuthorizedExecutorBinding = {
@@ -21,6 +26,208 @@ const publicationBinding: AuthorizedExecutorBinding = {
 };
 
 describe('WorkspacePublicationWorker cancellation fence', () => {
+  it('publishes one edge-scoped ResultReference without copying the upstream body', async () => {
+    const resultRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-results-'));
+    try {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      runMigrations(db);
+      const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-result-reference');
+      const taskRuntime = new TaskRuntimeService({
+        taskEngine,
+        taskRepo: new TaskRepo(db),
+      });
+      const task = taskEngine.create({
+        id: 'task-publication-reference',
+        title: 'Publication reference',
+        goal: 'Publish an authorized result reference',
+      });
+      taskEngine.transition(task.id, 'ready');
+      taskEngine.transition(task.id, 'running');
+      insertConfigurationRevision(db, configurationRevision);
+      activateGraphRevision(
+        db,
+        task.id,
+        'generation-publication-reference',
+        configurationRevision,
+      );
+      const subtasks = new SubtaskRepo(db);
+      subtasks.upsert({
+        id: 'source-publication-reference',
+        taskId: task.id,
+        graphRevision: 1,
+        generationId: 'generation-publication-reference',
+        title: 'Source',
+        goal: 'Produce the upstream result',
+        status: 'awaiting_integration',
+        dependencies: [],
+        contextRefs: [],
+        requiredCapabilities: ['workspace-engineering'],
+        executorBindings: [publicationBinding],
+        deliveryKind: 'report',
+        acceptance: [],
+        riskLevel: 'low',
+        result: '',
+        artifacts: [],
+        verification: { warnings: [], completionSchemaVersion: null },
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      subtasks.upsert({
+        id: 'target-publication-reference',
+        taskId: task.id,
+        graphRevision: 1,
+        generationId: 'generation-publication-reference',
+        title: 'Target',
+        goal: 'Consume the upstream result',
+        status: 'ready',
+        dependencies: [{
+          fromSubtaskId: 'source-publication-reference',
+          requiredItems: [{ key: 'summary', type: 'text', description: 'Upstream summary' }],
+        }],
+        contextRefs: [],
+        requiredCapabilities: ['workspace-engineering'],
+        executorBindings: [publicationBinding],
+        deliveryKind: 'report',
+        acceptance: [],
+        riskLevel: 'low',
+        result: '',
+        artifacts: [],
+        verification: { warnings: [], completionSchemaVersion: null },
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const fullBody = `complete upstream body ${'x'.repeat(20_000)}`;
+      const result = new ResultObjectRepo(db, resultRoot).putObject({
+        resultId: 'result-source-safe',
+        accountId: 'local-default',
+        taskId: task.id,
+        generationId: 'generation-publication-reference',
+        sourceSubtaskId: 'source-publication-reference',
+        attemptId: 'attempt-source-reference',
+        kind: 'safe_projection',
+        mediaType: 'text/markdown',
+        content: fullBody,
+        completeness: 'complete',
+        retentionClass: 'task',
+      });
+      const publications = new WorkspacePublicationRepo(db);
+      publications.insertCandidate({
+        id: 'publication-result-reference',
+        taskId: task.id,
+        generationId: 'generation-publication-reference',
+        subtaskId: 'source-publication-reference',
+        sourceAttemptId: 'attempt-source-reference',
+        agentClassName: 'codex-cli',
+        candidateCommit: 'candidate-commit',
+        completion: {
+          body: fullBody,
+          artifacts: [],
+          warnings: [],
+          handoffs: [{
+            toSubtaskId: 'target-publication-reference',
+            items: [{ key: 'summary', type: 'text', value: fullBody }],
+          }],
+          completionSchemaVersion: 4,
+        },
+        topologyLayer: 0,
+        firstDispatchOrder: 0,
+        createdAt: now,
+      });
+      const worker = new WorkspacePublicationWorker({
+        db,
+        sessionId: 'session-publication-reference',
+        accountId: 'local-default',
+        resultRoot,
+        sourceRoot: '/tmp/source',
+        workspaceStore: { rootPath: '/tmp/workspace-publication-test' } as never,
+        workspaceRepository: {
+          findByIdentity: vi.fn().mockReturnValue(null),
+        } as never,
+        subtaskRepo: subtasks,
+        attemptReceiptRepo: {
+          findByAttemptId: vi.fn().mockReturnValue({
+            attemptId: 'attempt-source-reference',
+            taskId: task.id,
+            subtaskId: 'source-publication-reference',
+            generationId: 'generation-publication-reference',
+            workUnitId: 'work-unit-source',
+            configurationRevision,
+            authorizedBinding: publicationBinding,
+            bindingFingerprint: 'binding-fingerprint-publication',
+            parsing: {
+              resultObjects: {
+                rawOutputId: 'result-source-raw',
+                businessResultId: 'result-source-business',
+                safeProjectionId: result.resultId,
+              },
+            },
+          }),
+        } as never,
+        resourceLeaseService: {
+          claim: vi.fn().mockReturnValue({ type: 'claimed', leases: [] }),
+          release: vi.fn(),
+        } as never,
+        dispatchItemRepo: {
+          listByTask: vi.fn().mockReturnValue([]),
+        } as never,
+        taskRuntimeService: taskRuntime,
+      });
+      Object.defineProperty(worker, 'git', {
+        value: {
+          ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
+          describeCandidate: vi.fn().mockResolvedValue({
+            changedPaths: [],
+            filePolicy: {},
+          }),
+          mergeCandidate: vi.fn().mockResolvedValue({
+            type: 'integrated',
+            baseCommit: 'base',
+            oursCommit: 'ours',
+            theirsCommit: 'theirs',
+            integrationCommit: 'integration-commit',
+            filePolicy: {},
+          }),
+        },
+      });
+
+      const outcomes = await worker.drain(task.id, 'generation-publication-reference');
+
+      expect(outcomes).toEqual([expect.objectContaining({
+        type: 'integrated',
+        resultId: result.resultId,
+      })]);
+      const handoff = new SubtaskHandoffRepo(db).listIncoming(
+        task.id,
+        'target-publication-reference',
+      )[0]!;
+      expect(handoff.resultReference).toMatchObject({
+        resultId: result.resultId,
+        sourceSubtaskId: 'source-publication-reference',
+        targetSubtaskId: 'target-publication-reference',
+        requiredItems: ['summary'],
+        contentHash: result.contentHash,
+        byteLength: result.byteLength,
+      });
+      expect(handoff.items).toEqual([expect.objectContaining({
+        key: 'summary',
+        type: 'result_reference',
+        referenceId: handoff.resultReference!.referenceId,
+      })]);
+      const stored = db.prepare(`
+        SELECT items_json FROM subtask_handoffs
+        WHERE task_id = ? AND to_subtask_id = ?
+      `).get(task.id, 'target-publication-reference') as { items_json: string };
+      expect(stored.items_json).not.toContain(fullBody);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM result_references').get())
+        .toEqual({ count: 1 });
+    } finally {
+      rmSync(resultRoot, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an observed integration commit as audit only when cancellation wins before publication', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
@@ -91,6 +298,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     const worker = new WorkspacePublicationWorker({
       db,
       sessionId: 'session-publication-cancel',
+      resultRoot: '/tmp/workspace-publication-cancel-results',
       sourceRoot: '/tmp/source',
       workspaceStore: { rootPath: '/tmp/workspace-publication-test' } as never,
       workspaceRepository: {
@@ -252,6 +460,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     const worker = new WorkspacePublicationWorker({
       db,
       sessionId: 'session-publication-conflict',
+      resultRoot: '/tmp/workspace-publication-conflict-results',
       sourceRoot: '/tmp/source',
       workspaceStore: { rootPath: '/tmp/workspace-publication-test' } as never,
       workspaceRepository: {

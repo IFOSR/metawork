@@ -135,4 +135,32 @@ describe('Web Cookie authentication', () => {
 
     expect(setTimeoutSpy).not.toHaveBeenCalled();
   });
+
+  it('reports the server-side reason when the WebSocket handshake is rejected', async () => {
+    const onError = vi.fn();
+    const setTimeoutSpy = vi.fn(() => 1);
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: '127.0.0.1:5173' },
+      setTimeout: setTimeoutSpy,
+      clearTimeout: vi.fn(),
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ok: false,
+      reason: 'forbidden_origin',
+      message: 'WebSocket Origin 与服务端端口不匹配。',
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })));
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const client = new WsClient({ onError });
+
+    client.connect();
+    FakeWebSocket.instances[0]!.onclose?.();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(
+      'WebSocket Origin 与服务端端口不匹配。',
+    ));
+
+    expect(setTimeoutSpy).toHaveBeenCalled();
+  });
 });

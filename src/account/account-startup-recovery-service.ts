@@ -21,6 +21,7 @@ import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
@@ -291,7 +292,15 @@ export class AccountStartupRecoveryService {
         executorStatuses: this.deps.repositories.kernelExecutorStatusRepo
           .list(event.configurationRevision),
         v5WorkGraphTaskIds: this.deps.repositories.subtaskRepo.listTaskIds(),
-        eligibleContextRefKeys: [],
+        eligibleContextRefKeys: buildEligibleContextRefKeys({
+          db: this.deps.db,
+          sessionId: event.sessionId,
+          refs: event.proposal.workGraph?.subtasks.flatMap(subtask => subtask.contextRefs) ?? [],
+          targetTask: event.proposal.task.taskId
+            ? this.deps.taskServices.taskRuntimeService.findTask(event.proposal.task.taskId)
+            : null,
+          userInput: event.requestText,
+        }),
         pendingAuthorizationRequest: (() => {
           const pending = this.deps.workspaceServices.permissionRepository.findOldestPending();
           return pending
@@ -389,6 +398,8 @@ export class AccountStartupRecoveryService {
       presentation: new SessionPresentationService(),
       kernelExecutionCallbacks: {
         appendOutput: () => undefined,
+        recordResultDelivery: () => undefined,
+        appendExecutionTrace: () => undefined,
         refreshRuntimeState: () => undefined,
         appendTaskQueueSnapshot: () => undefined,
         setFocusContext: () => undefined,

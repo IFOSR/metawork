@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 
 function input(): ExecutorInput {
   return {
@@ -22,7 +23,7 @@ function input(): ExecutorInput {
       outOfScopeSiblings: [{ id: 'internal-sibling-id', title: 'B' }],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'internal-execution-id', taskId: 'internal-task-id', subtaskId: 'internal-subtask-id', attemptId: 'internal-attempt-id', workUnitId: 'internal-work-unit-id' },
-      completionContract: { marker: '<!-- metaclaw:completion:v2 -->' as const, schemaVersion: 2 as const },
+      completionContract: { marker: COMPLETION_MARKER_V4, schemaVersion: 4 as const },
       evidenceTools: { availability: 'unavailable' as const, reason: 'unit test' },
     },
   };
@@ -40,7 +41,7 @@ describe('Subtask execution prompt layering', () => {
     const prompt = buildExecutorContextPrompt(input());
     expect(prompt).toContain('selected evidence only');
     expect(prompt).toContain('"title": "B"');
-    expect(prompt).toContain('<!-- metaclaw:completion:v2 -->');
+    expect(prompt).toContain(COMPLETION_MARKER_V4);
     expect(prompt).not.toContain('internal-downstream-id');
     expect(prompt).not.toContain('internal-evidence-id');
     expect(prompt).not.toContain('internal-sibling-id');
@@ -48,9 +49,56 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('executionContextBundle');
   });
 
+  it('renders ResultReference metadata without copying the upstream body', () => {
+    const referenceInput = input();
+    referenceInput.context.incomingHandoffs = [{
+      taskId: 'internal-task-id',
+      fromSubtaskId: 'source-subtask',
+      toSubtaskId: 'internal-subtask-id',
+      attemptId: 'source-attempt',
+      items: [{
+        key: 'summary',
+        type: 'result_reference',
+        referenceId: 'reference-source-target',
+        summary: 'Authorized upstream result for summary',
+      }],
+      resultReference: {
+        referenceId: 'reference-source-target',
+        resultId: 'result-source',
+        accountId: 'local-default',
+        taskId: 'internal-task-id',
+        generationId: 'generation-1',
+        sourceSubtaskId: 'source-subtask',
+        targetSubtaskId: 'internal-subtask-id',
+        edgeKey: 'source->target',
+        requiredItems: ['summary'],
+        readScope: {
+          kind: 'direct_dependency',
+          offset: 0,
+          length: 100,
+          summaryHash: 'sha256:summary',
+        },
+        contentHash: 'sha256:body',
+        byteLength: 100,
+        mediaType: 'text/markdown',
+        completeness: 'complete',
+        createdAt: '2026-08-21T00:00:00.000Z',
+      },
+      completionSchemaVersion: 4,
+      createdAt: '2026-08-21T00:00:00.000Z',
+    }];
+
+    const prompt = buildExecutorContextPrompt(referenceInput);
+
+    expect(prompt).toContain('reference-source-target');
+    expect(prompt).toContain('result_reference_get');
+    expect(prompt).toContain('Authorized upstream result for summary');
+    expect(prompt).not.toContain('full upstream body');
+  });
+
   it('renders an identity-free completion report while Runtime owns all authoritative identities and keys', () => {
     const prompt = buildExecutorContextPrompt(input());
-    expect(prompt).toContain('{"evidence":["<concise evidence that the work and checks succeeded>"],"noChangeReason":null}');
+    expect(prompt).toContain('{"evidence":["<evidence that the work and checks succeeded>"],"noChangeReason":null}');
     expect(prompt).toContain('Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities');
     for (const internalValue of [
       'internal-task-id',

@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import type { AccountRuntimeHandle } from '../account/account-runtime-ports.js';
 import type { RuntimeRegistry } from '../account/runtime-registry.js';
 import type { ConversationRegistry } from '../session/conversation-registry.js';
@@ -15,6 +16,7 @@ import {
 } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export interface ConversationGatewayRuntimeDeps {
   readonly accountId: string;
@@ -270,6 +272,7 @@ export class ConversationGatewayRuntime {
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const turnId = this.id('turn');
     const before = conversation.getOutput().length;
+    const beforeResultDeliveries = conversation.getResultDeliveries().length;
     accountRuntime?.beginWork();
     try {
       await this.publish(
@@ -281,15 +284,34 @@ export class ConversationGatewayRuntime {
       );
       await conversation.executeGatewayCommand(
         mailboxCommand.command,
-        { awaitAsyncWork: true, rethrowErrors: true },
+        {
+          awaitAsyncWork: true,
+          rethrowErrors: true,
+          interactionTurnId: turnId,
+        },
       );
-      const lines = conversation.getOutput().slice(before);
+      const lines = assistantOutputLines(
+        conversation.getOutput().slice(before),
+        mailboxCommand.command,
+      );
+      const projectedResult = conversation.getResultDeliveries()
+        .slice(beforeResultDeliveries)
+        .at(-1);
+      const result = await this.publishResultDelivery(
+        conversation.conversationId,
+        mailboxCommand.requestId,
+        turnId,
+        projectedResult?.content ?? lines.join('\n'),
+        projectedResult?.certification ?? 'certified',
+        projectedResult?.completeness ?? 'complete',
+        projectedResult?.resultId,
+      );
       await this.publish(
         conversation.conversationId,
         mailboxCommand.requestId,
         turnId,
         'final_answer',
-        boundedFinalAnswerPayload(lines),
+        finalAnswerPayload(projectedResult ? [] : lines, result),
       );
       completion?.resolve({ status: 'completed' });
     } catch (error) {
@@ -390,6 +412,82 @@ export class ConversationGatewayRuntime {
     return appended;
   }
 
+  private async publishResultDelivery(
+    conversationId: string,
+    requestId: string,
+    turnId: string,
+    content: string,
+    certification: 'certified' | 'uncertified',
+    completeness: 'complete' | 'partial' | 'incomplete',
+    persistedResultId?: string,
+  ): Promise<ResultDeliveryMetadata> {
+    // The journal applies the same redaction before persistence. Hash the
+    // projected content so clients can verify exactly what they receive.
+    const deliveryContent = redactSensitiveText(content);
+    const bytes = Buffer.from(deliveryContent, 'utf8');
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const resultId = persistedResultId ?? `result_${contentHash.slice('sha256:'.length)}`;
+    const metadata: ResultDeliveryMetadata = {
+      resultId,
+      contentHash,
+      byteLength: bytes.byteLength,
+      mediaType: 'text/markdown',
+      completeness,
+      certification,
+    };
+    const events: Array<{ kind: GatewayEventKind; payload: unknown }> = [{
+      kind: 'result_delivery_available',
+      payload: metadata,
+    }];
+    for (const chunk of splitResultChunks(bytes)) {
+      events.push({
+        kind: 'result_chunk',
+        payload: {
+          resultId,
+          offset: chunk.offset,
+          chunk: chunk.content,
+          byteLength: chunk.byteLength,
+        },
+      });
+    }
+    events.push({
+      kind: 'result_completed',
+      payload: metadata,
+    });
+    await this.publishMany(
+      conversationId,
+      requestId,
+      turnId,
+      events,
+    );
+    return metadata;
+  }
+
+  private async publishMany(
+    conversationId: string,
+    requestId: string | null,
+    turnId: string | null,
+    events: Array<{ kind: GatewayEventKind; payload: unknown }>,
+  ): Promise<GatewayEventEnvelope[]> {
+    const envelopes = events.map(event => ({
+      protocolVersion: 1 as const,
+      eventId: this.id('event'),
+      sequence: 0,
+      accountId: this.deps.accountId,
+      conversationId,
+      requestId,
+      turnId,
+      kind: event.kind,
+      payload: event.payload,
+      occurredAt: this.now(),
+    }));
+    const appended = this.deps.journal.appendBatch
+      ? await this.deps.journal.appendBatch(envelopes)
+      : await appendSequentially(this.deps.journal, envelopes);
+    for (const event of appended) this.deps.subscriptions.publish(event);
+    return appended;
+  }
+
   private id(prefix: string): string {
     return this.deps.createId?.(prefix) ?? `${prefix}_${nanoid(12)}`;
   }
@@ -401,6 +499,14 @@ export class ConversationGatewayRuntime {
   private completionKey(conversationId: string, idempotencyKey: string): string {
     return `${conversationId}\0${idempotencyKey}`;
   }
+}
+
+function assistantOutputLines(lines: string[], command: GatewayCommand): string[] {
+  if (command.kind !== 'user_message' && command.kind !== 'slash_command') return lines;
+  const remaining = [...lines];
+  if (remaining[0] === '') remaining.shift();
+  if (remaining[0] === `> ${command.text.trim()}`) remaining.shift();
+  return remaining;
 }
 
 function deferredCompletion(): PendingCompletion {
@@ -419,46 +525,56 @@ function deferredSignal(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve };
 }
 
-function boundedFinalAnswerPayload(lines: string[]): {
-  lines: string[];
-  truncated?: true;
-  originalBytes?: number;
-} {
-  const full = { lines: lines.flatMap(splitGatewayLines) };
-  if (payloadFits(full)) return full;
-
-  const answer = lines.join('\n');
-  const originalBytes = gatewayEventPayloadBytes({ lines });
-  const marker = '[Answer truncated to the Gateway event size limit.]';
-  let lower = 0;
-  let upper = Math.min(Buffer.byteLength(answer, 'utf8'), MAX_GATEWAY_EVENT_PAYLOAD_BYTES);
-  let bounded = truncatedPayload(answer, lower, marker, originalBytes);
-
-  while (lower <= upper) {
-    const middle = Math.floor((lower + upper) / 2);
-    const candidate = truncatedPayload(answer, middle, marker, originalBytes);
-    if (payloadFits(candidate)) {
-      bounded = candidate;
-      lower = middle + 1;
-    } else {
-      upper = middle - 1;
-    }
-  }
-  return bounded;
+interface ResultDeliveryMetadata {
+  resultId: string;
+  contentHash: string;
+  byteLength: number;
+  mediaType: 'text/markdown';
+  completeness: 'complete' | 'partial' | 'incomplete';
+  certification: 'certified' | 'uncertified';
 }
 
-function truncatedPayload(
-  answer: string,
-  maxAnswerBytes: number,
-  marker: string,
-  originalBytes: number,
-): { lines: string[]; truncated: true; originalBytes: number } {
-  const prefix = truncateUtf8(answer, maxAnswerBytes);
-  return {
-    lines: [...(prefix ? prefix.split('\n').flatMap(splitGatewayLines) : []), marker],
-    truncated: true,
-    originalBytes,
+function finalAnswerPayload(lines: string[], result: ResultDeliveryMetadata): {
+  lines: string[];
+  resultId: string;
+  contentHash: string;
+  byteLength: number;
+} {
+  const full = { lines: lines.flatMap(splitGatewayLines) };
+  const metadata = {
+    resultId: result.resultId,
+    contentHash: result.contentHash,
+    byteLength: result.byteLength,
   };
+  if (payloadFits({ ...full, ...metadata })) {
+    return { ...full, ...metadata };
+  }
+  return { lines: [], ...metadata };
+}
+
+function splitResultChunks(
+  bytes: Buffer,
+  maxChunkBytes = 32 * 1024,
+): Array<{ offset: number; byteLength: number; content: string }> {
+  const chunks: Array<{ offset: number; byteLength: number; content: string }> = [];
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    let end = Math.min(offset + maxChunkBytes, bytes.byteLength);
+    while (end > offset && end < bytes.byteLength && (bytes[end]! & 0xc0) === 0x80) {
+      end -= 1;
+    }
+    if (end === offset) end = Math.min(offset + maxChunkBytes, bytes.byteLength);
+    chunks.push({
+      offset,
+      byteLength: end - offset,
+      content: bytes.subarray(offset, end).toString('utf8'),
+    });
+    offset = end;
+  }
+  if (chunks.length === 0) {
+    chunks.push({ offset: 0, byteLength: 0, content: '' });
+  }
+  return chunks;
 }
 
 function splitGatewayLines(line: string): string[] {
@@ -477,14 +593,6 @@ function splitGatewayLines(line: string): string[] {
     start = end;
   }
   return chunks;
-}
-
-function truncateUtf8(value: string, maxBytes: number): string {
-  const bytes = Buffer.from(value, 'utf8');
-  if (bytes.length <= maxBytes) return value;
-  let end = Math.max(0, maxBytes);
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
-  return bytes.subarray(0, end).toString('utf8');
 }
 
 function payloadFits(payload: unknown): boolean {
@@ -530,4 +638,13 @@ function duplicateReceipt(
         idempotencyKey,
         status: 'duplicate',
       };
+}
+
+async function appendSequentially(
+  journal: EventJournal,
+  events: GatewayEventEnvelope[],
+): Promise<GatewayEventEnvelope[]> {
+  const appended: GatewayEventEnvelope[] = [];
+  for (const event of events) appended.push(await journal.append(event));
+  return appended;
 }

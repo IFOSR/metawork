@@ -28,3 +28,7 @@ export {
   type WorkGraphViolation,
   type WorkGraphViolationCode,
 } from './validation.js';
+export {
+  buildEligibleContextRefKeys,
+  isEligibleInteractionRef,
+} from './context-ref-eligibility.js';

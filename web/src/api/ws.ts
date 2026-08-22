@@ -15,6 +15,44 @@ export interface WsHandlers {
   onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
   onActiveSessionChanged?: (sessionId: string) => void;
   onConversationSnapshot?: (turn: ConversationTurnProjection) => void;
+  onTurnStarted?: (
+    requestId: string,
+    turnId: string,
+    userInput: string,
+    startedAt: string,
+  ) => void;
+  onFinalAnswer?: (
+    requestId: string,
+    turnId: string,
+    lines: string[],
+    completedAt: string,
+  ) => void;
+  onTerminalError?: (
+    requestId: string,
+    turnId: string,
+    message: string,
+    completedAt: string,
+  ) => void;
+  onResultDeliveryAvailable?: (
+    requestId: string,
+    turnId: string,
+    resultId: string,
+    certification: 'certified' | 'uncertified',
+  ) => void;
+  onResultChunk?: (
+    requestId: string,
+    turnId: string,
+    resultId: string,
+    offset: number,
+    chunk: string,
+  ) => void;
+  onResultCompleted?: (
+    requestId: string,
+    turnId: string,
+    resultId: string,
+    content: string,
+    certification: 'certified' | 'uncertified',
+  ) => void;
   onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
@@ -28,6 +66,7 @@ export class WsClient {
   private socket: WebSocket | null = null;
   private reconnectTimer: number | null = null;
   private closedByUser = false;
+  private diagnosticInFlight = false;
 
   constructor(private readonly handlers: WsHandlers) {}
 
@@ -62,6 +101,56 @@ export class WsClient {
         case 'conversation_snapshot':
           this.handlers.onConversationSnapshot?.(message.turn);
           break;
+        case 'turn_started':
+          this.handlers.onTurnStarted?.(
+            message.requestId,
+            message.turnId,
+            message.userInput,
+            message.startedAt,
+          );
+          break;
+        case 'final_answer':
+          this.handlers.onFinalAnswer?.(
+            message.requestId,
+            message.turnId,
+            message.lines,
+            message.completedAt,
+          );
+          break;
+        case 'terminal_error':
+          this.handlers.onTerminalError?.(
+            message.requestId,
+            message.turnId,
+            message.message,
+            message.completedAt,
+          );
+          break;
+        case 'result_delivery_available':
+          this.handlers.onResultDeliveryAvailable?.(
+            message.requestId,
+            message.turnId,
+            message.resultId,
+            message.certification,
+          );
+          break;
+        case 'result_chunk':
+          this.handlers.onResultChunk?.(
+            message.requestId,
+            message.turnId,
+            message.resultId,
+            message.offset,
+            message.chunk,
+          );
+          break;
+        case 'result_completed':
+          this.handlers.onResultCompleted?.(
+            message.requestId,
+            message.turnId,
+            message.resultId,
+            message.content,
+            message.certification,
+          );
+          break;
         case 'output':
           this.handlers.onOutput?.(message.lines, message.from);
           break;
@@ -88,7 +177,7 @@ export class WsClient {
       if (this.socket === socket) this.socket = null;
       this.handlers.onStatusChange?.(false);
       if (!this.closedByUser) {
-        void this.reconnectIfAuthorized();
+        void this.reportConnectionFailure().then(() => this.reconnectIfAuthorized());
       }
     };
 
@@ -97,9 +186,10 @@ export class WsClient {
     };
   }
 
-  sendInput(text: string): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+  sendInput(text: string): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify({ type: 'input', text } satisfies ClientMessage));
+    return true;
   }
 
   close(): void {
@@ -126,6 +216,7 @@ export class WsClient {
   }
 
   private async reconnectIfAuthorized(): Promise<void> {
+    if (this.closedByUser) return;
     try {
       const response = await fetch('/api/auth/session', {
         credentials: 'same-origin',
@@ -139,6 +230,31 @@ export class WsClient {
       // A stopped/restarting local server is retryable; only an explicit 401 logs out.
     }
     this.scheduleReconnect();
+  }
+
+  private async reportConnectionFailure(): Promise<void> {
+    if (this.diagnosticInFlight) return;
+    this.diagnosticInFlight = true;
+    try {
+      const response = await fetch('/api/ws/diagnostics', {
+        credentials: 'same-origin',
+      });
+      const body = await response.json().catch(() => null) as {
+        message?: string;
+      } | null;
+      if (response.status === 401) {
+        this.closedByUser = true;
+        this.handlers.onUnauthorized?.();
+        return;
+      }
+      if (body?.message && !response.ok) {
+        this.handlers.onError?.(body.message);
+      }
+    } catch {
+      // A stopped/restarting local server is retryable and has no diagnostic response.
+    } finally {
+      this.diagnosticInFlight = false;
+    }
   }
 
   private rejectAuthentication(): void {

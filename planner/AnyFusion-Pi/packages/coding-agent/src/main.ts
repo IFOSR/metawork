@@ -9,7 +9,11 @@ import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
 import { createAnyFusionPlannerBootstrap } from "./anyfusion/planner-bootstrap.ts";
-import { applyPlannerResourcePolicy, validatePlannerInvocation } from "./anyfusion/planner-policy.ts";
+import {
+	applyPlannerResourcePolicy,
+	buildPlannerProviderTimeoutOverrides,
+	validatePlannerInvocation,
+} from "./anyfusion/planner-policy.ts";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
@@ -528,7 +532,9 @@ export async function main(args: string[], _options?: MainOptions) {
 	}
 
 	const parsed = parseArgs(args);
-	applyPlannerResourcePolicy(parsed);
+	applyPlannerResourcePolicy(parsed, {
+		semanticRpc: Boolean(process.env.ANYFUSION_PLANNER_TURN_PURPOSE),
+	});
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
 			const color = d.type === "error" ? chalk.red : chalk.yellow;
@@ -654,6 +660,12 @@ export async function main(args: string[], _options?: MainOptions) {
 				parsed.projectTrustOverride ??
 				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		if (appMode === "rpc" && process.env.ANYFUSION_PLANNER_TURN_PURPOSE) {
+			const timeoutOverrides = buildPlannerProviderTimeoutOverrides(
+				process.env.ANYFUSION_PLANNER_RPC_TIMEOUT_MS,
+			);
+			if (timeoutOverrides) runtimeSettingsManager.applyOverrides(timeoutOverrides);
+		}
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,

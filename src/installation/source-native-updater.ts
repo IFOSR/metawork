@@ -18,7 +18,7 @@ import { ConfigurationService } from '../configuration/configuration-service.js'
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import type { SecretStore } from '../configuration/secret-store.js';
-import { runMigrations } from '../storage/migrations.js';
+import { CURRENT_SCHEMA_VERSION, runMigrations } from '../storage/migrations.js';
 import { DatabaseUpgradeTransaction } from './database-upgrade-transaction.js';
 import type { AnyFusionPaths } from './paths.js';
 import { resolveReleasePaths } from './paths.js';
@@ -77,7 +77,7 @@ export class SourceNativeUpdater {
 
       await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
       const sourceSchema = readSchemaVersion(accountPaths.database);
-      if (sourceSchema !== 30 && sourceSchema !== 31) {
+      if (sourceSchema !== 30 && sourceSchema !== 31 && sourceSchema !== CURRENT_SCHEMA_VERSION) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
       const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
@@ -101,7 +101,7 @@ export class SourceNativeUpdater {
         backupPath: backupDatabase,
         clonePath: candidateDatabase,
         expectedSourceSchema: sourceSchema,
-        expectedTargetSchema: 31,
+        expectedTargetSchema: CURRENT_SCHEMA_VERSION,
         sentinelTables: ['schema_version'],
       });
       await chmod(candidateDatabase, 0o600);
@@ -322,7 +322,7 @@ function verifyActiveDatabase(path: string): void {
     const version = db.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     } | undefined;
-    if (version?.version !== 31) {
+    if (version?.version !== CURRENT_SCHEMA_VERSION) {
       throw new Error(`candidate database schema mismatch: ${version?.version ?? 'missing'}`);
     }
     const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
@@ -343,7 +343,11 @@ function verifyCompatibleDatabase(path: string): void {
     const version = db.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     } | undefined;
-    if (version?.version !== 30 && version?.version !== 31) {
+    if (
+      version?.version !== 30
+      && version?.version !== 31
+      && version?.version !== CURRENT_SCHEMA_VERSION
+    ) {
       throw new Error(`rollback database schema is incompatible: ${version?.version ?? 'missing'}`);
     }
     const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;

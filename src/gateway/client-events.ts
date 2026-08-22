@@ -20,6 +20,9 @@ export type GatewayEventKind =
   | 'execution_delta'
   | 'permission_request'
   | 'artifact'
+  | 'result_delivery_available'
+  | 'result_chunk'
+  | 'result_completed'
   | 'final_answer'
   | 'terminal_error'
   | 'delivery_status';
@@ -32,12 +35,16 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'execution_delta',
   'permission_request',
   'artifact',
+  'result_delivery_available',
+  'result_chunk',
+  'result_completed',
   'final_answer',
   'terminal_error',
   'delivery_status',
 ];
 
 export const TERMINAL_GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
+  'result_completed',
   'final_answer',
   'terminal_error',
   'delivery_status',
@@ -47,6 +54,7 @@ export const TERMINAL_GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
 export const MAX_GATEWAY_EVENT_PAYLOAD_BYTES = 64 * 1024;
 const MAX_GATEWAY_PAYLOAD_DEPTH = 10;
 const SENSITIVE_GATEWAY_PAYLOAD_KEY = /(?:^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|credential|authorization|private[_-]?key|connection[_-]?string|prompt|reasoning|thoughts?|raw[_-]?(?:response|output|stdout|stderr)|stdout|stderr|signature|content)(?:$|[_-])/iu;
+const SAFE_GATEWAY_PAYLOAD_KEYS = new Set(['contentHash']);
 
 export interface GatewayEventEnvelope {
   readonly protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
@@ -110,7 +118,10 @@ function sanitizePayloadValue(
     const sanitized: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
       const normalizedKey = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2');
-      if (SENSITIVE_GATEWAY_PAYLOAD_KEY.test(normalizedKey)) continue;
+      if (
+        !SAFE_GATEWAY_PAYLOAD_KEYS.has(key)
+        && SENSITIVE_GATEWAY_PAYLOAD_KEY.test(normalizedKey)
+      ) continue;
       sanitized[key] = sanitizePayloadValue(item, depth + 1, ancestors);
     }
     return sanitized;

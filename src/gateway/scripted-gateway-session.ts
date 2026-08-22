@@ -6,6 +6,7 @@ import type { ClientGateway } from './client-gateway.js';
 import type { GatewayEventEnvelope } from './client-events.js';
 import type { GatewayCommand } from './client-protocol.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import { ResultStreamAssembler } from './result-stream-assembler.js';
 
 export interface ScriptedGatewaySessionDeps {
   readonly accountId: string;
@@ -43,6 +44,7 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
   private readonly output: string[] = [];
   private readonly seenEventIds = new Set<string>();
   private readonly pending = new Map<string, PendingTerminal>();
+  private readonly resultAssembler = new ResultStreamAssembler();
   private currentTaskId: string | null = null;
   private runtimeState: RuntimeState = { ...EMPTY_RUNTIME_STATE };
   private plannerState: SessionSnapshot['plannerState'] = { status: 'idle' };
@@ -122,11 +124,28 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
       terminal.reject(new Error('Scripted Gateway client disposed before command completion'));
       this.pending.delete(requestId);
     }
+    this.resultAssembler.clear();
   }
 
   private consume(event: GatewayEventEnvelope): void {
     if (this.seenEventIds.has(event.eventId)) return;
     this.seenEventIds.add(event.eventId);
+    if (
+      event.kind === 'result_delivery_available'
+      || event.kind === 'result_chunk'
+      || event.kind === 'result_completed'
+    ) {
+      try {
+        this.resultAssembler.consume(event);
+      } catch (error) {
+        if (event.requestId) {
+          const terminal = this.pending.get(event.requestId);
+          this.clearPending(event.requestId);
+          terminal?.reject(error as Error);
+        }
+      }
+      return;
+    }
 
     if (event.kind === 'conversation_snapshot') {
       const payload = asRecord(event.payload);
@@ -158,7 +177,12 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
     const terminal = this.pending.get(event.requestId);
     if (!terminal) return;
     if (event.kind === 'final_answer') {
-      this.appendTerminalFallback(stringArray(asRecord(event.payload).lines));
+      const payload = asRecord(event.payload);
+      const resultId = stringValue(payload.resultId);
+      const completed = resultId ? this.resultAssembler.find(resultId) : null;
+      this.appendTerminalFallback(
+        completed ? completed.content.split('\n') : stringArray(payload.lines),
+      );
       this.clearPending(event.requestId);
       terminal.resolve();
     } else if (event.kind === 'terminal_error') {

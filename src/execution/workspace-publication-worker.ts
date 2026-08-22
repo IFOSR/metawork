@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -14,6 +14,8 @@ import type { WorkspaceStore } from './workspace-store.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
+import { ResultObjectRepo } from '../storage/result-object-repo.js';
+import type { PersistedSubtaskHandoffItem } from '../storage/subtask-handoff-repo.js';
 
 export interface IntegratedWorkspacePublication {
   type: 'integrated';
@@ -23,6 +25,7 @@ export interface IntegratedWorkspacePublication {
   sourceAttemptId: string;
   agentClassName: string;
   integrationCommit: string;
+  resultId: string | null;
   output: string;
   warnings: string[];
 }
@@ -49,6 +52,8 @@ export interface WorkspacePublicationWorkerDeps {
   db: Database.Database;
   sessionId: string;
   getSessionId?(): string;
+  accountId?: string;
+  resultRoot: string;
   sourceRoot: string;
   workspaceStore: WorkspaceStore;
   workspaceRepository: WorkspaceRepositoryPort;
@@ -68,6 +73,7 @@ export class WorkspacePublicationWorker {
   private readonly publications: WorkspacePublicationRepo;
   private readonly handoffs: SubtaskHandoffRepo;
   private readonly git: ManagedGitWorkspaceService;
+  private readonly results: ResultObjectRepo;
   private readonly reconciledGenerations = new Set<string>();
   private readonly activeDrains = new Map<string, Promise<WorkspacePublicationOutcome[]>>();
 
@@ -75,6 +81,10 @@ export class WorkspacePublicationWorker {
     this.publications = new WorkspacePublicationRepo(deps.db);
     this.handoffs = new SubtaskHandoffRepo(deps.db);
     this.git = new ManagedGitWorkspaceService(deps.workspaceStore);
+    this.results = new ResultObjectRepo(
+      deps.db,
+      deps.resultRoot,
+    );
   }
 
   private get sessionId(): string {
@@ -203,6 +213,7 @@ export class WorkspacePublicationWorker {
       );
       return null;
     }
+    const safeProjection = this.findSafeProjection(publication, sourceReceipt);
     const leaseToken = `publication_${randomUUID()}`;
     const publicationAttemptId = `publication:${publication.id}`;
     const lease = this.deps.resourceLeaseService.claim({
@@ -385,12 +396,63 @@ export class WorkspacePublicationWorker {
           createdAt: now,
         });
         for (const handoff of publication.originalCompletion.handoffs) {
+          if (!safeProjection) {
+            throw new Error(
+              `safe projection is required for handoff publication: ${publication.sourceAttemptId}`,
+            );
+          }
+          const summary = handoff.items.map(item => (
+            item.type === 'text'
+              ? { key: item.key, type: item.type, summary: `Authorized upstream result for ${item.key}` }
+              : { key: item.key, type: item.type, paths: item.paths }
+          ));
+          const summaryHash = `sha256:${createHash('sha256')
+            .update(JSON.stringify(summary))
+            .digest('hex')}`;
+          const referenceId = resultReferenceId({
+            accountId: this.deps.accountId ?? 'local-default',
+            taskId: publication.taskId,
+            generationId: publication.generationId,
+            sourceSubtaskId: publication.subtaskId,
+            targetSubtaskId: handoff.toSubtaskId,
+            attemptId: publication.sourceAttemptId,
+            resultId: safeProjection.resultId,
+          });
+          const reference = this.results.createReference({
+            referenceId,
+            resultId: safeProjection.resultId,
+            accountId: this.deps.accountId ?? 'local-default',
+            taskId: publication.taskId,
+            generationId: publication.generationId,
+            sourceSubtaskId: publication.subtaskId,
+            targetSubtaskId: handoff.toSubtaskId,
+            edgeKey: `${publication.subtaskId}->${handoff.toSubtaskId}`,
+            requiredItems: handoff.items.map(item => item.key),
+            readScope: {
+              kind: 'direct_dependency',
+              offset: 0,
+              length: safeProjection.byteLength,
+              summaryHash,
+            },
+            createdAt: now,
+          });
+          const items: PersistedSubtaskHandoffItem[] = handoff.items.map(item => (
+            item.type === 'text'
+              ? {
+                  key: item.key,
+                  type: 'result_reference',
+                  referenceId,
+                  summary: `Authorized upstream result for ${item.key}`,
+                }
+              : { key: item.key, type: 'artifact', paths: [...item.paths] }
+          ));
           this.handoffs.insert({
             taskId: publication.taskId,
             fromSubtaskId: publication.subtaskId,
             toSubtaskId: handoff.toSubtaskId,
             attemptId: publication.sourceAttemptId,
-            items: handoff.items,
+            items,
+            resultReference: reference,
             completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
             createdAt: now,
           });
@@ -430,6 +492,7 @@ export class WorkspacePublicationWorker {
         sourceAttemptId: publication.sourceAttemptId,
         agentClassName: publication.agentClassName,
         integrationCommit: merged.integrationCommit,
+        resultId: safeProjection?.resultId ?? null,
         output: publication.originalCompletion.body,
         warnings: publication.originalCompletion.warnings,
       };
@@ -444,6 +507,52 @@ export class WorkspacePublicationWorker {
       this.deps.resourceLeaseService.release(publicationAttemptId, leaseToken);
     }
   }
+
+  private findSafeProjection(
+    publication: WorkspacePublicationRecord,
+    receipt: import('../storage/executor-attempt-receipt-repo.js').ExecutorAttemptReceipt,
+  ) {
+    const resultObjects = receipt.parsing?.resultObjects as {
+      safeProjectionId?: string | null;
+    } | null | undefined;
+    const result = resultObjects?.safeProjectionId
+      ? this.results.findObject(resultObjects.safeProjectionId)
+      : this.results.findObjectByAttempt({
+          accountId: this.deps.accountId ?? 'local-default',
+          taskId: publication.taskId,
+          attemptId: publication.sourceAttemptId,
+          kind: 'safe_projection',
+        });
+    if (!result) return null;
+    if (
+      result.accountId !== (this.deps.accountId ?? 'local-default')
+      || result.taskId !== publication.taskId
+      || result.generationId !== publication.generationId
+      || result.sourceSubtaskId !== publication.subtaskId
+      || result.attemptId !== publication.sourceAttemptId
+    ) {
+      throw new Error(
+        `safe projection identity mismatch for handoff publication: ${publication.sourceAttemptId}`,
+      );
+    }
+    return result;
+  }
+}
+
+function resultReferenceId(input: {
+  accountId: string;
+  taskId: string;
+  generationId: string;
+  sourceSubtaskId: string;
+  targetSubtaskId: string;
+  attemptId: string;
+  resultId: string;
+}): string {
+  const hash = createHash('sha256')
+    .update(JSON.stringify(input))
+    .digest('hex')
+    .slice(0, 32);
+  return `result_reference_${hash}`;
 }
 
 function deriveTopologyLayers(

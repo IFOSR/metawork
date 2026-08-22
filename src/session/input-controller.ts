@@ -3,6 +3,7 @@
 export interface InputControllerSubmitOptions {
   awaitAsyncWork?: boolean;
   rethrowErrors?: boolean;
+  interactionTurnId?: string;
 }
 
 export interface InputControllerSubmitResult {

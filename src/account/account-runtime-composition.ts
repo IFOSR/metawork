@@ -62,6 +62,8 @@ export function buildAccountRuntimeComposition(deps: {
   notifier: NotificationService;
   workspaceRoot: string;
   attemptsRoot: string;
+  resultsRoot: string;
+  generatedRuntimeRoot: string;
   sourceRoot: string;
   sessionId: string;
   stagedConfiguration: StagedLegacyConfiguration;
@@ -96,6 +98,7 @@ export function buildAccountRuntimeComposition(deps: {
     attemptExecutionBackend: taskServices.attemptExecutionBackend,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     attemptsRoot: deps.attemptsRoot,
+    generatedRuntimeRoot: deps.generatedRuntimeRoot,
   });
   const coordinatorServices = buildAccountCoordinatorServices({
     db: deps.db,
@@ -108,6 +111,8 @@ export function buildAccountRuntimeComposition(deps: {
     db: deps.db,
     sessionId: deps.sessionId,
     getSessionId: () => conversationExecutionBinder.currentSessionId() ?? deps.sessionId,
+    accountId: deps.accountId,
+    resultRoot: deps.resultsRoot,
     sourceRoot: deps.sourceRoot,
     taskRuntimeService: taskServices.taskRuntimeService,
     subtaskRepo: repositories.subtaskRepo,
@@ -145,6 +150,8 @@ export function buildAccountRuntimeComposition(deps: {
     db: deps.db,
     sessionId: deps.sessionId,
     getSessionId: () => conversationExecutionBinder.currentSessionId() ?? deps.sessionId,
+    accountId: deps.accountId,
+    resultRoot: deps.resultsRoot,
     sourceRoot: deps.sourceRoot,
     orchestration: deps.orchestration,
     notifier: deps.notifier,

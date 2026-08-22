@@ -41,6 +41,7 @@ import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { ExecutionRuntime } from '../execution/execution-runtime.js';
+import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -56,6 +57,8 @@ export function buildAccountKernelExecutionServices(deps: {
   db: Database.Database;
   sessionId: string;
   getSessionId?: () => string;
+  accountId?: string;
+  resultRoot: string;
   sourceRoot: string;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
@@ -105,6 +108,11 @@ export function buildAccountKernelExecutionServices(deps: {
     workGraphRevisionRepo: deps.workGraphRevisionRepo,
     effectOutboxRepo: deps.effectOutboxRepo,
     attemptReceiptRepo: deps.attemptReceiptRepo,
+    historicalResultUpgrader: new HistoricalResultUpgrader({
+      db: deps.db,
+      accountId: deps.accountId ?? 'local-default',
+      resultRoot: deps.resultRoot,
+    }),
     subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
     taskEventRepo: deps.taskEventRepo,
     workUnitClaimService: deps.workUnitClaimService,
@@ -118,6 +126,8 @@ export function buildAccountKernelExecutionServices(deps: {
       db: deps.db,
       sessionId: deps.sessionId,
       getSessionId: deps.getSessionId,
+      accountId: deps.accountId,
+      resultRoot: deps.resultRoot,
       sourceRoot: deps.sourceRoot,
       workspaceStore: deps.workspaceStore,
       workspaceRepository: deps.workspaceRepository,

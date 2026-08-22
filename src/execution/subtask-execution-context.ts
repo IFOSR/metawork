@@ -13,8 +13,12 @@ import {
   TaskExecutionEvidenceRepo,
 } from './execution-evidence-port.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
-import { COMPLETION_MARKER_V3 } from './completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from './completion-protocol.js';
 import type { ExecutionEvidenceToolBinding } from './execution-evidence-tool-server.js';
+import { ResultObjectRepo } from '../storage/result-object-repo.js';
+import {
+  ScopedExecutionResultReferencePort,
+} from './execution-result-reference-port.js';
 
 export interface SelectedExecutionEvidence {
   ref: ContextRef;
@@ -34,7 +38,7 @@ export interface SubtaskExecutionContext {
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
   completionContract:
-    | { marker: typeof COMPLETION_MARKER_V3; schemaVersion: 3 }
+    | { marker: typeof COMPLETION_MARKER_V4; schemaVersion: 4 }
     | {
         marker: '---METACLAW-MERGE-REPAIR---';
         protocol: 'metaclaw:merge-repair:v1';
@@ -58,11 +62,23 @@ export class SubtaskExecutionContextBuilder {
   private readonly handoffRepo: SubtaskHandoffRepo;
   private readonly preferenceRepo: PreferenceRepo;
 
-  constructor(private readonly db: Database.Database) {
+  private readonly resultObjectRepo: ResultObjectRepo;
+
+  constructor(
+    private readonly db: Database.Database,
+    options: { accountId?: string; resultRoot: string },
+  ) {
     this.evidenceRepo = new TaskExecutionEvidenceRepo(db);
     this.handoffRepo = new SubtaskHandoffRepo(db);
     this.preferenceRepo = new PreferenceRepo(db);
+    this.resultObjectRepo = new ResultObjectRepo(
+      db,
+      options.resultRoot,
+    );
+    this.accountId = options.accountId ?? 'local-default';
   }
+
+  private readonly accountId: string;
 
   build(input: {
     executionId: string;
@@ -78,7 +94,11 @@ export class SubtaskExecutionContextBuilder {
     completionContractOverride?: SubtaskExecutionContext['completionContract'];
     recovery?: SubtaskExecutionContext['recovery'];
     evidenceToolBinding?: ExecutionEvidenceToolBinding;
-  }): { context: SubtaskExecutionContext; evidenceCapability: ScopedExecutionEvidencePort } {
+  }): {
+    context: SubtaskExecutionContext;
+    evidenceCapability: ScopedExecutionEvidencePort;
+    resultReferenceCapability: ScopedExecutionResultReferencePort;
+  } {
     this.syncTaskEvidenceCatalog(input.task);
     const incomingHandoffs = this.handoffRepo.listIncoming(input.task.id, input.subtask.id);
     assertIncomingHandoffsComplete(input.subtask, incomingHandoffs);
@@ -100,8 +120,20 @@ export class SubtaskExecutionContextBuilder {
         exactEvidenceIds,
       },
     );
+    const resultReferenceCapability = new ScopedExecutionResultReferencePort(
+      this.resultObjectRepo,
+      new TaskEventRepo(this.db),
+      {
+        accountId: this.accountId,
+        taskId: input.task.id,
+        generationId: input.subtask.generationId,
+        subtaskId: input.subtask.id,
+        attemptId: input.attemptId,
+      },
+    );
     return {
       evidenceCapability,
+      resultReferenceCapability,
       context: {
         taskBackground: {
           id: input.task.id,
@@ -132,7 +164,7 @@ export class SubtaskExecutionContextBuilder {
           workUnitId: input.workUnitId,
         },
         completionContract: input.completionContractOverride
-          ?? { marker: COMPLETION_MARKER_V3, schemaVersion: 3 },
+          ?? { marker: COMPLETION_MARKER_V4, schemaVersion: 4 },
         recovery: input.recovery,
         evidenceTools: input.evidenceToolsAvailable
           ? {

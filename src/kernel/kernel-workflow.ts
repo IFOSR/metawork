@@ -264,6 +264,7 @@ function appendEventBindings(
     case 'capacity_signal':
     case 'execution_outcome':
     case 'handoff_contract_failed':
+    case 'execution_result_observed':
     case 'merge_conflict_observed':
       entries.push({
         binding: event.authorizedBinding,

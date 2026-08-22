@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const CURRENT_SCHEMA_VERSION = 31;
+export const CURRENT_SCHEMA_VERSION = 32;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -412,6 +412,51 @@ CREATE TABLE executor_attempt_receipts (
           FOREIGN KEY (work_unit_id) REFERENCES work_units(id),
           FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
         );
+
+CREATE TABLE result_objects (
+          result_id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          generation_id TEXT NOT NULL,
+          source_subtask_id TEXT NOT NULL,
+          attempt_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('raw_attempt_output', 'business_result', 'safe_projection')),
+          content_hash TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          media_type TEXT NOT NULL,
+          storage_uri TEXT NOT NULL,
+          completeness TEXT NOT NULL CHECK(completeness IN ('complete', 'partial', 'incomplete')),
+          retention_class TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES tasks(id),
+          FOREIGN KEY (source_subtask_id) REFERENCES subtasks(id)
+        );
+
+CREATE TABLE result_references (
+          reference_id TEXT PRIMARY KEY,
+          result_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          generation_id TEXT NOT NULL,
+          source_subtask_id TEXT NOT NULL,
+          target_subtask_id TEXT NOT NULL,
+          edge_key TEXT NOT NULL,
+          required_items_json TEXT NOT NULL DEFAULT '[]',
+          read_scope_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (result_id) REFERENCES result_objects(result_id),
+          FOREIGN KEY (task_id) REFERENCES tasks(id),
+          FOREIGN KEY (source_subtask_id) REFERENCES subtasks(id),
+          FOREIGN KEY (target_subtask_id) REFERENCES subtasks(id),
+          UNIQUE(result_id, source_subtask_id, target_subtask_id, edge_key)
+        );
+
+CREATE INDEX idx_result_objects_attempt
+          ON result_objects(account_id, task_id, attempt_id, created_at);
+CREATE INDEX idx_result_objects_task
+          ON result_objects(account_id, task_id, generation_id, created_at);
+CREATE INDEX idx_result_references_target
+          ON result_references(account_id, task_id, target_subtask_id, created_at);
 
 CREATE TABLE task_execution_evidence (
           id TEXT PRIMARY KEY,
@@ -1081,6 +1126,26 @@ CREATE TRIGGER executor_attempt_receipts_immutable_update
 CREATE TRIGGER executor_attempt_receipts_immutable_delete
         BEFORE DELETE ON executor_attempt_receipts BEGIN
           SELECT RAISE(ABORT, 'executor_attempt_receipts are immutable');
+      END;
+
+CREATE TRIGGER result_objects_immutable_update
+        BEFORE UPDATE ON result_objects BEGIN
+          SELECT RAISE(ABORT, 'result_objects are immutable');
+        END;
+
+CREATE TRIGGER result_objects_immutable_delete
+        BEFORE DELETE ON result_objects BEGIN
+          SELECT RAISE(ABORT, 'result_objects are immutable');
+        END;
+
+CREATE TRIGGER result_references_immutable_update
+        BEFORE UPDATE ON result_references BEGIN
+          SELECT RAISE(ABORT, 'result_references are immutable');
+        END;
+
+CREATE TRIGGER result_references_immutable_delete
+        BEFORE DELETE ON result_references BEGIN
+          SELECT RAISE(ABORT, 'result_references are immutable');
         END;
 
 CREATE TRIGGER workspace_checkpoints_immutable_update
@@ -1168,7 +1233,7 @@ export function createSchema30MigrationContext(
 }
 
 /**
- * Creates schema 31 or applies the sole supported pre-release upgrade.
+ * Creates schema 32 or applies the supported pre-release upgrades.
  */
 export function runMigrations(
   db: Database.Database,
@@ -1181,6 +1246,10 @@ export function runMigrations(
     if (versions.length === 1 && versions[0]?.version === CURRENT_SCHEMA_VERSION) {
       return;
     }
+    if (versions.length === 1 && versions[0]?.version === 31) {
+      migrateSchema31To32(db);
+      return;
+    }
     if (versions.length === 1 && versions[0]?.version === 30) {
       if (
         !migrationContext
@@ -1189,6 +1258,7 @@ export function runMigrations(
         throw new Error('schema 30 to 31 migration requires sealed context');
       }
       migrateSchema30To31(db, migrationContext);
+      migrateSchema31To32(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1325,6 +1395,78 @@ function migrateSchema30To31(
   } finally {
     if (foreignKeysEnabled) db.pragma('foreign_keys = ON');
   }
+}
+
+function migrateSchema31To32(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS result_objects (
+        result_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        generation_id TEXT NOT NULL,
+        source_subtask_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('raw_attempt_output', 'business_result', 'safe_projection')),
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        media_type TEXT NOT NULL,
+        storage_uri TEXT NOT NULL,
+        completeness TEXT NOT NULL CHECK(completeness IN ('complete', 'partial', 'incomplete')),
+        retention_class TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (source_subtask_id) REFERENCES subtasks(id)
+      );
+      CREATE TABLE IF NOT EXISTS result_references (
+        reference_id TEXT PRIMARY KEY,
+        result_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        generation_id TEXT NOT NULL,
+        source_subtask_id TEXT NOT NULL,
+        target_subtask_id TEXT NOT NULL,
+        edge_key TEXT NOT NULL,
+        required_items_json TEXT NOT NULL DEFAULT '[]',
+        read_scope_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (result_id) REFERENCES result_objects(result_id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (source_subtask_id) REFERENCES subtasks(id),
+        FOREIGN KEY (target_subtask_id) REFERENCES subtasks(id),
+        UNIQUE(result_id, source_subtask_id, target_subtask_id, edge_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_result_objects_attempt
+        ON result_objects(account_id, task_id, attempt_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_result_objects_task
+        ON result_objects(account_id, task_id, generation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_result_references_target
+        ON result_references(account_id, task_id, target_subtask_id, created_at);
+      CREATE TRIGGER IF NOT EXISTS result_objects_immutable_update
+        BEFORE UPDATE ON result_objects BEGIN
+          SELECT RAISE(ABORT, 'result_objects are immutable');
+        END;
+      CREATE TRIGGER IF NOT EXISTS result_objects_immutable_delete
+        BEFORE DELETE ON result_objects BEGIN
+          SELECT RAISE(ABORT, 'result_objects are immutable');
+        END;
+      CREATE TRIGGER IF NOT EXISTS result_references_immutable_update
+        BEFORE UPDATE ON result_references BEGIN
+          SELECT RAISE(ABORT, 'result_references are immutable');
+        END;
+      CREATE TRIGGER IF NOT EXISTS result_references_immutable_delete
+        BEFORE DELETE ON result_references BEGIN
+          SELECT RAISE(ABORT, 'result_references are immutable');
+        END;
+    `);
+    const updated = db.prepare(
+      'UPDATE schema_version SET version = 32 WHERE version = 31',
+    ).run();
+    if (updated.changes !== 1) {
+      throw new Error('schema version changed during 31 to 32 migration');
+    }
+  });
+  migrate();
 }
 
 interface RecoverableJsonColumn {

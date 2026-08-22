@@ -6,6 +6,7 @@ import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-ke
 
 export type ExecutorAttemptTerminalState =
   | 'completed'
+  | 'uncertified_result'
   | 'contract_blocked'
   | 'executor_failed'
   | 'heartbeat_lost'

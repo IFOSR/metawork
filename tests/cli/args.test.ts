@@ -49,6 +49,14 @@ describe('parseCliArgs', () => {
     });
   });
 
+  it('parses Web service start mode as an explicit alias for the default Web surface', () => {
+    expect(parseCliArgs(['web', 'start', '--no-open'])).toEqual({
+      web: true,
+      webCommand: 'start',
+      webNoOpen: true,
+    });
+  });
+
   it('parses gateway subcommands without breaking legacy gateway flags', () => {
     expect(parseCliArgs(['gateway', 'setup'])).toEqual({
       gateway: false,

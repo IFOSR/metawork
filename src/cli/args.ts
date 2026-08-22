@@ -4,7 +4,7 @@ export interface CliArgs {
   gateway?: boolean;
   connect?: boolean;
   web?: boolean;
-  webCommand?: 'restart';
+  webCommand?: 'start' | 'restart';
   webPort?: number;
   webNoOpen?: boolean;
   gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
@@ -58,7 +58,7 @@ export function formatCliHelp(): string {
     '',
     '用法:',
     '  anyfusion',
-    '  anyfusion web [restart] [--port <端口>] [--no-open]',
+    '  anyfusion web [start|restart] [--port <端口>] [--no-open]',
     '  anyfusion --script <脚本文件>',
     '  anyfusion --gateway',
     '  anyfusion --connect',
@@ -90,8 +90,8 @@ function parseWebArgs(argv: string[]): CliArgs {
       result.webNoOpen = true;
       continue;
     }
-    if (arg === 'restart') {
-      result.webCommand = 'restart';
+    if (arg === 'start' || arg === 'restart') {
+      result.webCommand = arg;
       continue;
     }
     throw new Error(`未知 web 参数: ${arg}`);

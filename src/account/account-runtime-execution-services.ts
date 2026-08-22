@@ -55,6 +55,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
   kernelWorkflowRepo: KernelWorkflowRepo;
   workspaceRepository: SqliteWorkspaceRepository;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
+  accountId?: string;
+  resultRoot: string;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
   const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
@@ -94,6 +96,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
     workspaceRepository: deps.workspaceRepository,
     sourceRoot: deps.sourceRoot,
     controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
+    accountId: deps.accountId,
+    resultRoot: deps.resultRoot,
   });
 
   return {

@@ -2,9 +2,9 @@
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 
-> 当前实现基线（2026-08-17）：PlanningAgentPlan v8、Work Graph
-> v7、Kernel event/snapshot/decision contract v5、Completion Protocol v3，
-> 以及支持唯一事务式 30→31 迁移路径的 SQLite schema v31。`KernelWorkflow` 串行完成
+> 当前实现基线（2026-08-21）：PlanningAgentPlan v8、Work Graph
+> v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
+> 以及支持事务式 30→31→32 升级路径的 SQLite schema v32。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
 > 属于未来独立路线图。
@@ -24,7 +24,7 @@ Planner 提案 -> ControlKernel 决策 -> Runtime 应用
 revision、deferred recovery、decision、dispatch、attempt 和 receipt 都继续引用
 该 revision。Provider/Model health 是带 revision identity 的 Kernel 投影，
 Runtime 与 Adapter 只上报事实，不决定 fallback。Permission Profile 语义仍由
-Resource/Kernel 的代码契约拥有。数据库只允许一次 v30→v31 事务迁移，并与
+Resource/Kernel 的代码契约拥有。数据库采用 v30→v31→v32 事务升级，并与
 release 验签、关闭 Task admission、dispatch quiesce、数据库备份、candidate
 health check 和 rollback 协调。A2A 实现移入独立后续路线图。
 
@@ -107,7 +107,7 @@ flowchart LR
   Batch --> Attempt[AttemptSupervisor<br/>最多四个 attempt]
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>canonical Codex / Pi execution backend]
-  Executors --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate commit]
+  Executors --> Verify[Completion Protocol v4<br/>result-first assessment、delta 与 receipt]
   Verify --> Publish[Git publication gate<br/>稳定顺序集成]
   Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
@@ -125,7 +125,7 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；AnyFusion 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。Planner 只允许通过 `read`、`grep`、`find` 和 `ls` 读取其进程工作目录。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
+AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；AnyFusion 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
 本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → DurableKernelWorkflow → ControlKernel`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
 
@@ -178,7 +178,7 @@ flowchart LR
   Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
-  Run --> Verify[Completion Protocol v3<br/>delta、receipt 与 candidate]
+  Run --> Verify[Completion Protocol v4<br/>result objects、delta 与 candidate]
   Verify --> Publish[Git publication gate]
   Publish --> Done{是否集成？}
   Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
@@ -853,9 +853,9 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v3 的模型侧严格 JSON 只允许 `evidence` 与可空 `noChangeReason`，或受控 `failure`；模型提供的身份和 artifacts 会被拒绝。Runtime 在校验前计算一次权威 workspace delta：`report` 必须零变化，`edit` 的有变化/零变化分别要求空原因/非空原因；新增和修改文件由 Runtime 生成 artifacts，删除只保留在 delta/evidence。delta 截断或不确定时 fail-closed，随后 Runtime 根据绑定 Subtask 与 outgoing contract 生成权威内部 envelope 并执行预算和直接边汇总校验。
+`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；路径逃逸、未授权写入、秘密暴露和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v31，且只支持事务式 30→31 原生升级路径；普通运行时遇到 schema 30 会拒绝启动，而不是原地迁移。当前 schema 包含持久化 Planner proposal turn/submission 与 accepted-turn lock，并包含 durable workflow、graph revision、resource/workspace/permission/执行后端、dispatch/publication/merge audit、cancellation cleanup、lease revocation、generation replan request、deferred availability proposal、bounded Executor recovery checks 和 `full | partial_accepted` completion kind。物理表/字段/事件名 `attempt_sandboxes`、`sandbox_container_id`、`sandbox_lost` 仅作为持久兼容名称保留，不再代表当前 TypeScript 抽象。下游只有在直接依赖 publication 成功后才进入 frontier，并合并其完整 Git ancestry；integration branch 不会隐式成为 sibling 基线。Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts。文本允许 Git 三方合并；二进制路径独占且不自动合并。冲突由原 AgentClass 最多修三次，再独立 conflict replan 一次，仍失败则 park。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v32，支持事务式 30→31→32 升级路径，unsupported older schema 会拒绝启动。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences 和结果分块交付事实。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

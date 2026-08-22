@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   runMigrations,
   type Schema30MigrationContext,
@@ -11,6 +13,7 @@ export function createDatabase(
   dbPath: string,
   _migrationContext?: Schema30MigrationContext,
 ): Database.Database {
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');

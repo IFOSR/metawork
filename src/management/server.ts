@@ -146,19 +146,23 @@ export class ManagementServer {
       return;
     }
     if (request.url !== '/ws') {
+      this.logWebSocketRejection(request, 'invalid_path');
       socket.destroy();
       return;
     }
     if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      this.logWebSocketRejection(request, 'forbidden_origin');
       this.rejectUpgrade(socket, 403, 'Forbidden');
       return;
     }
     if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+      this.logWebSocketRejection(request, 'unauthorized');
       this.rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
     const key = request.headers['sec-websocket-key'];
     if (!key) {
+      this.logWebSocketRejection(request, 'missing_websocket_key');
       socket.destroy();
       return;
     }
@@ -271,6 +275,16 @@ export class ManagementServer {
       }
       response.writeHead(204);
       response.end();
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/ws/diagnostics') {
+      const diagnostic = this.getWebSocketDiagnostic(request);
+      this.sendJson(response, diagnostic.status, {
+        ok: diagnostic.ok,
+        reason: diagnostic.reason,
+        message: diagnostic.message,
+      });
       return;
     }
 
@@ -452,6 +466,40 @@ export class ManagementServer {
     );
   }
 
+  private getWebSocketDiagnostic(request: IncomingMessage): WebSocketDiagnostic {
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      return {
+        ok: false,
+        status: 403,
+        reason: 'forbidden_origin',
+        message: 'WebSocket Origin 与服务端端口不匹配。',
+      };
+    }
+    if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+      return {
+        ok: false,
+        status: 401,
+        reason: 'unauthorized',
+        message: 'Web 会话 Cookie 无效或已过期。',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      reason: 'ready',
+      message: 'WebSocket 可以连接。',
+    };
+  }
+
+  private logWebSocketRejection(request: IncomingMessage, reason: string): void {
+    console.warn('[AnyFusion Web] WebSocket 握手拒绝', {
+      path: request.url ?? '/',
+      origin: request.headers.origin ?? null,
+      hasSessionCookie: this.deps.webAuth.hasSession(request.headers.cookie),
+      reason,
+    });
+  }
+
   private withRuntimeRevision(result: ActivateResult): ActivateResult {
     const activeRevisionId = result.ok
       ? result.revisionId ?? this.deps.runningRevisionId
@@ -487,6 +535,13 @@ interface RequestBody {
   providerRef?: string;
   apiKey?: string;
   title?: string;
+}
+
+interface WebSocketDiagnostic {
+  ok: boolean;
+  status: number;
+  reason: 'ready' | 'forbidden_origin' | 'unauthorized';
+  message: string;
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

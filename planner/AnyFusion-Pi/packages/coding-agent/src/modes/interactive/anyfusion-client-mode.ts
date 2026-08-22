@@ -6,6 +6,7 @@ import {
 	Text,
 	TUI,
 } from "@earendil-works/pi-tui";
+import { createHash } from "node:crypto";
 import { GatewayClient } from "../../anyfusion/gateway-client.ts";
 import type {
 	ConversationSelection,
@@ -113,6 +114,13 @@ class TerminalClientView implements AnyFusionClientModeView {
 	private readonly transcriptText = new Text("", 1, 0);
 	private readonly traceText = new Text("", 1, 0);
 	private readonly statusText = new Text("", 1, 0);
+	private readonly results = new Map<string, {
+		startLine: number;
+		content: string;
+		contentHash: string;
+		byteLength: number;
+		certification: "certified" | "uncertified";
+	}>();
 
 	constructor(
 		ui: TUI,
@@ -165,7 +173,20 @@ class TerminalClientView implements AnyFusionClientModeView {
 	}
 
 	appendGatewayEvent(event: GatewayEventEnvelope): void {
+		if (
+			event.kind === "result_delivery_available"
+			|| event.kind === "result_chunk"
+			|| event.kind === "result_completed"
+		) {
+			this.consumeResultEvent(event);
+			return;
+		}
 		const lines = formatGatewayEvent(event);
+		if (event.kind === "final_answer") {
+			const payload = isRecord(event.payload) ? event.payload : {};
+			const resultId = typeof payload.resultId === "string" ? payload.resultId : null;
+			if (resultId && this.results.has(resultId)) return;
+		}
 		if (event.kind === "conversation_snapshot" || event.kind === "final_answer") {
 			this.transcript.push(...lines);
 			this.refreshTranscript();
@@ -184,8 +205,63 @@ class TerminalClientView implements AnyFusionClientModeView {
 	}
 
 	private refreshTranscript(): void {
-		this.transcript.splice(0, Math.max(0, this.transcript.length - 240));
 		this.transcriptText.setText(this.transcript.join("\n"));
+		this.ui.requestRender();
+	}
+
+	private consumeResultEvent(event: GatewayEventEnvelope): void {
+		const payload = isRecord(event.payload) ? event.payload : {};
+		const resultId = typeof payload.resultId === "string" ? payload.resultId : null;
+		if (!resultId) return;
+		if (event.kind === "result_delivery_available") {
+			if (
+				typeof payload.contentHash !== "string"
+				|| typeof payload.byteLength !== "number"
+				|| (payload.certification !== "certified" && payload.certification !== "uncertified")
+			) return;
+			this.results.set(resultId, {
+				startLine: this.transcript.length,
+				content: "",
+				contentHash: payload.contentHash,
+				byteLength: payload.byteLength,
+				certification: payload.certification,
+			});
+			this.trace.push(theme.fg(
+				payload.certification === "uncertified" ? "warning" : "muted",
+				payload.certification === "uncertified"
+					? "结果开始返回 · 完成认证待处理"
+					: "结果开始返回",
+			));
+			this.traceText.setText(this.trace.join("\n"));
+			this.ui.requestRender();
+			return;
+		}
+		const result = this.results.get(resultId);
+		if (!result) return;
+		if (event.kind === "result_chunk") {
+			if (typeof payload.offset !== "number" || typeof payload.chunk !== "string") return;
+			result.content = appendUtf8Chunk(result.content, payload.offset, payload.chunk);
+			this.transcript.splice(
+				result.startLine,
+				this.transcript.length - result.startLine,
+				...result.content.split("\n"),
+			);
+			this.refreshTranscript();
+			return;
+		}
+		const bytes = Buffer.from(result.content, "utf8");
+		const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+		if (bytes.byteLength !== result.byteLength || hash !== result.contentHash) {
+			this.showError(`Result verification failed: ${resultId}`);
+			return;
+		}
+		this.trace.push(theme.fg(
+			result.certification === "uncertified" ? "warning" : "success",
+			result.certification === "uncertified"
+				? "结果已完整返回 · 完成认证待处理"
+				: "结果已完整返回",
+		));
+		this.traceText.setText(this.trace.join("\n"));
 		this.ui.requestRender();
 	}
 }
@@ -280,6 +356,13 @@ function formatGatewayEvent(event: GatewayEventEnvelope): string[] {
 		`${theme.fg("accent", event.kind.replaceAll("_", " "))}`
 			+ `${event.turnId ? theme.fg("dim", ` · ${event.turnId}`) : ""}`,
 	];
+}
+
+function appendUtf8Chunk(current: string, offset: number, chunk: string): string {
+	const bytes = Buffer.from(current, "utf8");
+	if (offset === bytes.byteLength) return current + chunk;
+	if (offset > bytes.byteLength) return current;
+	return bytes.subarray(0, offset).toString("utf8") + chunk;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -78,6 +78,22 @@ describe('PlannerDataReader', () => {
     });
   });
 
+  it('does not require a legacy home when both account-scoped paths are explicit', () => {
+    expect(resolvePlannerMcpRuntimePaths({
+      databasePath: '/accounts/local-default/data/anyfusion.db',
+      configurationRoot: '/accounts/local-default/config',
+    })).toEqual({
+      databasePath: '/accounts/local-default/data/anyfusion.db',
+      configurationRoot: '/accounts/local-default/config',
+    });
+  });
+
+  it('requires a legacy home only when the database path needs fallback resolution', () => {
+    expect(() => resolvePlannerMcpRuntimePaths({
+      configurationRoot: '/accounts/local-default/config',
+    })).toThrow('METACLAW_HOME is required when METACLAW_DB_PATH is missing');
+  });
+
   it('bounds task search results and truncates summaries', () => {
     const { taskEngine, taskRepo, reader } = createHarness();
     for (let index = 0; index < 25; index += 1) {

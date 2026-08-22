@@ -4,6 +4,7 @@ import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import { ResultStreamAssembler } from './result-stream-assembler.js';
 
 export interface FeishuGatewaySessionPortDeps {
   readonly accountId: string;
@@ -93,6 +94,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     let timeout: NodeJS.Timeout | null = null;
     let settled = false;
     const seenEventIds = new Set<string>();
+    const resultAssembler = new ResultStreamAssembler();
     let resolvePromise!: (lines: string[]) => void;
     let rejectPromise!: (error: Error) => void;
     const cleanup = () => {
@@ -105,6 +107,20 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       if (settled || event.requestId !== requestId) return null;
       if (seenEventIds.has(event.eventId)) return null;
       seenEventIds.add(event.eventId);
+      if (
+        event.kind === 'result_delivery_available'
+        || event.kind === 'result_chunk'
+        || event.kind === 'result_completed'
+      ) {
+        try {
+          resultAssembler.consume(event);
+        } catch (error) {
+          settled = true;
+          cleanup();
+          rejectPromise(error as Error);
+        }
+        return null;
+      }
       if (event.kind === 'trace_delta') {
         const payload = event.payload as { events?: Array<{ title?: string; summary?: string }> };
         for (const item of payload.events ?? []) {
@@ -119,7 +135,11 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         return null;
       }
       if (event.kind === 'final_answer') {
-        const lines = (event.payload as { lines?: string[] }).lines ?? [];
+        const payload = event.payload as { lines?: string[]; resultId?: string };
+        const completed = payload.resultId
+          ? resultAssembler.find(payload.resultId)
+          : null;
+        const lines = completed ? completed.content.split('\n') : payload.lines ?? [];
         settled = true;
         cleanup();
         resolvePromise(lines);

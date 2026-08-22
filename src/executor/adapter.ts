@@ -10,6 +10,7 @@ import type { ParsedSkillUsageEvent } from './skill-usage-event-parser.js';
 export interface ExecutorInput {
   context: SubtaskExecutionContext;
   onProgress?: (event: ExecutorProgressEvent) => void;
+  onRawOutput?: (chunk: string | Uint8Array, stream: 'stdout' | 'stderr') => void;
   recovery?: {
     mode: 'native_session' | 'recovery_packet' | 'fresh';
     continuationToken: string | null;

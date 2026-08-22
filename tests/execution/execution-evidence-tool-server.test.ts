@@ -7,6 +7,7 @@ import {
   TaskExecutionEvidenceRepo,
 } from '../../src/execution/execution-evidence-port.js';
 import { ExecutionEvidenceToolServer } from '../../src/execution/execution-evidence-tool-server.js';
+import type { ExecutionResultReferencePort } from '../../src/execution/execution-result-reference-port.js';
 
 const servers: ExecutionEvidenceToolServer[] = [];
 
@@ -52,5 +53,65 @@ describe('ExecutionEvidenceToolServer', () => {
     expect(db.prepare(`SELECT event_type FROM task_events`).all()).toEqual([
       { event_type: 'executor_evidence_accessed' },
     ]);
+  });
+
+  it('exposes authorized ResultReference reads through the same attempt-scoped JSON server', async () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const evidenceRepo = new TaskExecutionEvidenceRepo(db);
+    const evidencePort = new ScopedExecutionEvidencePort(
+      evidenceRepo,
+      new TaskEventRepo(db),
+      {
+        taskId: 'task_tools',
+        subtaskId: 'subtask_tools',
+        attemptId: 'attempt_tools',
+        exactEvidenceIds: new Set(),
+      },
+    );
+    const resultPort: ExecutionResultReferencePort = {
+      list: () => ({
+        items: [{
+          referenceId: 'reference_upstream',
+          sourceSubtaskId: 'source',
+          requiredItems: ['summary'],
+          contentHash: 'sha256:body',
+          byteLength: 13,
+          mediaType: 'text/markdown',
+          completeness: 'complete',
+        }],
+      }),
+      get: input => ({
+        referenceId: input.referenceId,
+        content: 'upstream body',
+        offset: 0,
+        nextOffset: null,
+        contentHash: 'sha256:body',
+        complete: true,
+      }),
+      revoke: () => undefined,
+    };
+    const server = new ExecutionEvidenceToolServer(evidencePort, resultPort);
+    servers.push(server);
+    const binding = await server.start();
+
+    const response = await fetch(binding.jsonUrl, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${binding.bearerToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        operation: 'result_reference_get',
+        input: { referenceId: 'reference_upstream', offset: 0 },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      referenceId: 'reference_upstream',
+      content: 'upstream body',
+      complete: true,
+    });
   });
 });

@@ -92,6 +92,7 @@ import { WebSessionCatalog } from './management/web-session-catalog.js';
 import { WebGatewaySessionRuntime } from './management/web-gateway-session-runtime.js';
 import type { ManagementWebSessionRuntime } from './management/web-session-runtime-types.js';
 import { resolveServerSurface } from './session/server-application.js';
+import { ensureActiveConfigurationRevision } from './storage/active-configuration-revision.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -366,6 +367,10 @@ async function main() {
     secretStore,
   });
   const db = createDatabase(accountPaths.database);
+  ensureActiveConfigurationRevision(db, {
+    revisionId: migratedSnapshot.revisionId,
+    contentHash: migratedSnapshot.contentHash,
+  });
 
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
@@ -399,6 +404,7 @@ async function main() {
     generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
     databasePath: accountPaths.database,
     configurationRoot: accountPaths.config,
+    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: {
@@ -420,6 +426,8 @@ async function main() {
     notifier,
     workspaceRoot: accountPaths.workspaceStore,
     attemptsRoot: accountPaths.attempts,
+    resultsRoot: accountPaths.results,
+    generatedRuntimeRoot: accountPaths.generatedAgentRuntime,
     sourceRoot: process.cwd(),
     sessionId,
     stagedConfiguration,

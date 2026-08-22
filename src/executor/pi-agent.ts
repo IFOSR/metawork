@@ -287,11 +287,32 @@ const evidenceGetTool = defineTool({
   async execute(_toolCallId, params) { return callEvidence("get", params); },
 });
 
+const resultReferenceListTool = defineTool({
+  name: "result_reference_list",
+  label: "Upstream Result References",
+  description: "List full upstream results authorized for this direct dependency edge and attempt.",
+  parameters: Type.Object({}),
+  async execute(_toolCallId, params) { return callEvidence("result_reference_list", params); },
+});
+
+const resultReferenceGetTool = defineTool({
+  name: "result_reference_get",
+  label: "Upstream Result Get",
+  description: "Read one authorized upstream ResultReference in bounded UTF-8 chunks.",
+  parameters: Type.Object({
+    referenceId: Type.String(),
+    offset: Type.Optional(Type.Number()),
+  }),
+  async execute(_toolCallId, params) { return callEvidence("result_reference_get", params); },
+});
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool(webSearchTool);
   pi.registerTool(webFetchTool);
   pi.registerTool(evidenceListTool);
   pi.registerTool(evidenceSearchTool);
   pi.registerTool(evidenceGetTool);
+  pi.registerTool(resultReferenceListTool);
+  pi.registerTool(resultReferenceGetTool);
 }
 `;

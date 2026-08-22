@@ -49,6 +49,9 @@ export interface ConversationRuntimePort {
     listSubtasks(taskId: string): Subtask[];
     findSubtask(subtaskId: string): Subtask | null;
     findKernelEvent(eventId: string): KernelEvent | null;
+    findKernelApplicationByDecisionId(
+      decisionId: string,
+    ): KernelDecisionApplicationRecord | null;
     listKernelDecisionsBySession(sessionId: string): RevisionedKernelDecisionLedgerRecord[];
     listKernelDecisionsByTask(taskId: string): RevisionedKernelDecisionLedgerRecord[];
     listCurrentKernelDecisions(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[];

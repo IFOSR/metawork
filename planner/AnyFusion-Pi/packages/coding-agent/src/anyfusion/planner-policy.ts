@@ -47,6 +47,40 @@ const DENIED_FLAGS = new Set([
 	"--no-approve",
 ]);
 
+export function buildPlannerProviderTimeoutOverrides(outerTimeoutValue: string | undefined): {
+	httpIdleTimeoutMs: number;
+	websocketConnectTimeoutMs: number;
+	retry: {
+		enabled: false;
+		maxRetries: 0;
+		provider: {
+			timeoutMs: number;
+			maxRetries: 0;
+			maxRetryDelayMs: number;
+		};
+	};
+} | undefined {
+	const parsedTimeout = Number(outerTimeoutValue);
+	if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) return undefined;
+
+	const outerTimeoutMs = Math.floor(parsedTimeout);
+	const reserveMs = Math.min(30_000, Math.max(250, Math.floor(outerTimeoutMs / 6)));
+	const providerTimeoutMs = Math.max(1, Math.min(150_000, outerTimeoutMs - reserveMs));
+	return {
+		httpIdleTimeoutMs: providerTimeoutMs,
+		websocketConnectTimeoutMs: Math.min(30_000, providerTimeoutMs),
+		retry: {
+			enabled: false,
+			maxRetries: 0,
+			provider: {
+				timeoutMs: providerTimeoutMs,
+				maxRetries: 0,
+				maxRetryDelayMs: 1_000,
+			},
+		},
+	};
+}
+
 /**
  * Validate the public CLI boundary before Pi handles package/config commands.
  * AnyFusion owns provider credentials, model selection, and package lifecycle.
@@ -78,10 +112,15 @@ export function applyPlannerResourcePolicy(parsed: {
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;
-}): void {
+}, options: {
+	semanticRpc?: boolean;
+} = {}): void {
+	const activeTools = options.semanticRpc
+		? [PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES]
+		: PLANNER_ACTIVE_TOOL_NAMES;
 	parsed.noTools = false;
-	parsed.noBuiltinTools = false;
-	parsed.tools = [...PLANNER_ACTIVE_TOOL_NAMES];
+	parsed.noBuiltinTools = options.semanticRpc === true;
+	parsed.tools = [...activeTools];
 	parsed.excludeTools = ["bash", "edit", "write"];
 	parsed.noExtensions = true;
 	parsed.noSkills = true;

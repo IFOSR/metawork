@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
 import {
   resolveCurrentRuntimeHome,
@@ -26,6 +27,9 @@ import {
 } from './planner-audit-contract.js';
 
 const MAX_RPC_LINE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_PROCESSING_CYCLES = 8;
+const DEFAULT_MAX_NON_PROPOSAL_TOOL_CALLS = 12;
+const DEFAULT_PROGRESS_HEARTBEAT_MS = 30_000;
 const SENSITIVE_PROGRESS_FIELD =
   /(?:^|[_-])(secret|token|password|passwd|credential|authorization|private[_-]?key|api[_-]?key|prompt|conversation|content|reasoning|thoughts?|signature)(?:$|[_-])/iu;
 
@@ -76,6 +80,9 @@ export interface PlannerProcessSupervisorDeps {
     modelId: string;
   };
   shutdownGraceMs?: number;
+  progressHeartbeatMs?: number;
+  maxProcessingCycles?: number;
+  maxNonProposalToolCalls?: number;
   ensureSessionDir?: (path: string) => Promise<void>;
 }
 
@@ -259,6 +266,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       purpose,
       context.request.source,
       context.configuration?.revisionId ?? this.deps.configurationRevision,
+      context.timeoutMs,
     );
     if (context.configuration?.revisionId && !this.deps.expectedModel) {
       throw new Error(
@@ -292,6 +300,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let progressSequence = 0;
       let turn = 0;
       let modelStreamTurn = 0;
+      let modelOutputReceived = true;
+      let modelWaitingSince = startedAt;
+      let nonProposalToolCalls = 0;
+      const maxProcessingCycles = positiveIntegerOrDefault(
+        this.deps.maxProcessingCycles,
+        DEFAULT_MAX_PROCESSING_CYCLES,
+      );
+      const maxNonProposalToolCalls = positiveIntegerOrDefault(
+        this.deps.maxNonProposalToolCalls,
+        DEFAULT_MAX_NON_PROPOSAL_TOOL_CALLS,
+      );
       const reportProgress = (progress: PlannerRunProgressPayload) => {
         if (!onProgress) return;
         progressSequence += 1;
@@ -310,9 +329,22 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       const timer = setTimeout(() => {
         fail(new Error(`AnyFusion Planner RPC timed out after ${context.timeoutMs}ms`));
       }, context.timeoutMs);
+      const heartbeatMs = positiveIntegerOrDefault(
+        this.deps.progressHeartbeatMs,
+        DEFAULT_PROGRESS_HEARTBEAT_MS,
+      );
+      const progressHeartbeat = setInterval(() => {
+        if (settled || turn === 0 || modelOutputReceived) return;
+        reportProgress({
+          kind: 'model_waiting',
+          turn,
+          idleMs: Date.now() - modelWaitingSince,
+        });
+      }, heartbeatMs);
 
       const cleanup = () => {
         clearTimeout(timer);
+        clearInterval(progressHeartbeat);
         proc.stdout?.removeAllListeners();
         proc.stderr?.removeAllListeners();
       };
@@ -338,6 +370,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       };
       const acceptLine = (line: string) => {
         if (!line.trim()) return;
+        if (settled) return;
         let event: Record<string, unknown>;
         try {
           const parsed: unknown = JSON.parse(line);
@@ -398,6 +431,15 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         }
         if (event.type === 'turn_start') {
           turn += 1;
+          if (turn > maxProcessingCycles) {
+            fail(new Error(
+              `Planner did not submit a proposal within ${maxProcessingCycles} processing cycles; `
+              + 'stop workspace inspection and decide from authoritative MCP facts.',
+            ));
+            return;
+          }
+          modelOutputReceived = false;
+          modelWaitingSince = Date.now();
           reportProgress({ kind: 'turn_started', turn });
           return;
         }
@@ -409,9 +451,23 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             modelStreamTurn = turn;
             reportProgress({ kind: 'model_stream_started', turn });
           }
+          if (event.type === 'message_update') {
+            modelOutputReceived = true;
+          }
           return;
         }
         if (event.type === 'tool_execution_start') {
+          modelOutputReceived = true;
+          if (event.toolName !== 'submit_planning_proposal') {
+            nonProposalToolCalls += 1;
+            if (nonProposalToolCalls > maxNonProposalToolCalls) {
+              fail(new Error(
+                `Planner did not submit a proposal within ${maxNonProposalToolCalls} `
+                + 'non-proposal tool calls; stop querying and submit the bounded decision.',
+              ));
+              return;
+            }
+          }
           const toolCallId = String(event.toolCallId ?? toolStarts.size + 1);
           toolStarts.set(toolCallId, event);
           const toolSequence = toolSequences.size + 1;
@@ -450,10 +506,27 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           if (toolName === 'submit_planning_proposal') {
             const proposalResult = extractPlannerProposalResult(event.result);
             if (proposalResult) terminalProposalResult = proposalResult;
+            if (proposalResult?.status === 'transport_uncertain') {
+              const result: PlannerRunResult = {
+                proposalResult,
+                submittedPlan,
+                toolCalls,
+                threadId: sessionPath,
+                durationMs: Date.now() - startedAt,
+              };
+              settled = true;
+              cleanup();
+              void this.terminateProcess(proc).then(
+                () => resolve(result),
+                () => resolve(result),
+              );
+              return;
+            }
           }
           return;
         }
         if (event.type === 'agent_end') {
+          modelOutputReceived = true;
           if (terminalProposalResult) {
             reportProgress({ kind: 'agent_completed' });
             pendingResult = {
@@ -539,6 +612,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     requestSource = 'session',
     configurationRevision = this.deps.configurationRevision
       ?? process.env.METACLAW_CONFIGURATION_REVISION,
+    rpcTimeoutMs?: number,
   ): Promise<{
     command: string;
     args: string[];
@@ -629,6 +703,9 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         METACLAW_PLANNER_SESSION_ID: sessionId,
         ANYFUSION_PLANNER_REQUEST_SOURCE: requestSource,
         ANYFUSION_PLANNER_TURN_PURPOSE: purpose,
+        ...(mode === 'rpc' && Number.isFinite(rpcTimeoutMs) && rpcTimeoutMs! > 0
+          ? { ANYFUSION_PLANNER_RPC_TIMEOUT_MS: String(Math.floor(rpcTimeoutMs!)) }
+          : {}),
         ANYFUSION_BRIDGE_SOCKET: socketPath,
         METACLAW_PLANNER_TUI_SOCKET: socketPath,
         ANYFUSION_PLANNER_SCHEMA_PATH: schemaPath,
@@ -646,11 +723,13 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }
 
   private resolveCommand(): string {
-    // Task 10 removes these compatibility fallbacks after release activation
-    // provides the pinned Planner command directly.
+    // Native launchers provide the pinned command. Direct source-tree starts
+    // must use the vendored Planner too; falling back to PATH hides a broken
+    // installation behind an opaque ENOENT.
     return this.deps.command
       ?? process.env.METACLAW_PLANNER_COMMAND
       ?? process.env.METACLAW_PLANNER_TUI_COMMAND
+      ?? findVendoredPlannerCommand()
       ?? 'anyfusion-planner';
   }
 
@@ -723,6 +802,27 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     })();
     await tracked.stopPromise;
   }
+}
+
+function findVendoredPlannerCommand(): string | null {
+  const relative = join(
+    'planner',
+    'AnyFusion-Pi',
+    'packages',
+    'coding-agent',
+    'dist',
+    'cli.js',
+  );
+  const candidates = [
+    resolve(process.cwd(), relative),
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../', relative),
+    resolve(dirname(fileURLToPath(import.meta.url)), '../', relative),
+  ];
+  return candidates.find(candidate => existsSync(candidate)) ?? null;
+}
+
+function positiveIntegerOrDefault(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && value! > 0 ? value! : fallback;
 }
 
 let defaultPlannerProcessSupervisor: PlannerProcessSupervisor | null = null;

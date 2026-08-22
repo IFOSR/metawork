@@ -30,7 +30,11 @@ Selected evidence previews are stable-sorted and fairly budgeted: at most 4,000 
 
 Every Executor response ends with one final `<!-- metaclaw:completion:v1 -->` marker followed by a strict JSON envelope. The envelope identifies the Subtask, acceptance evidence, artifacts, and exact outgoing handoff deliveries. Runtime validates contract equality, size limits, and artifact containment under Task target paths. It persists normalized handoffs and removes the envelope from every user-visible, memory, interaction, and delivery path.
 
-The strict budgets are: 128 KiB UTF-8 for the envelope; one to four acceptance evidence strings per key, 1,000 characters each and 12,000 total; 4,000 characters per text item; 12,000 text characters and 20 artifact paths per edge; 24,000 text characters and 40 artifact paths across all outgoing edges and across all incoming edges of one downstream node; 40 top-level artifacts; and 1,024 characters per path. Artifacts must exist and remain within Task `targetPaths` after realpath resolution; symlink escape is rejected and a handoff artifact must also appear in the top-level artifact set. No limit is satisfied by truncation.
+Historical v1 used strict envelope, evidence, text and artifact budgets. ADR-0032
+removes those limits as business-result rejection rules; physical capacities are
+now handled by Result Objects, references and chunked transport. Artifact
+containment under Task `targetPaths` and symlink-escape rejection remain active
+safety rules.
 
 The original v1 protocol used the stable blocking codes `completion_malformed`, `completion_subtask_mismatch`, `completion_acceptance_mismatch`, `completion_handoff_mismatch`, `completion_budget_exceeded`, `completion_artifact_invalid`, `completion_artifact_required`, and `completion_patch_evidence_missing`. Analysis source/limitation and review-verdict heuristics produced warnings only. That phase performed deterministic contract validation and did not claim independent semantic certification.
 
@@ -44,7 +48,12 @@ SQLite schema v22 renames the previous production table to read-only `subtasks_v
 
 ### Phase boundaries
 
-Phase 2 stays serial. Phase 3 introduces a `handoff_contract_failed` Kernel event carrying attempt, Subtask, WorkUnit, authorized completion contract, and all violations; it may authorize exactly one same-AgentClass correction attempt with precise trailer feedback. A second failure blocks without fallback or backoff. Phase 4 owns general retry/fallback/backoff/circuit-breaker state. Phase 5 introduces partition leases and a versioned `workspace_state` handoff rather than reserving an untyped placeholder now.
+Historically, Phase 3 introduced a `handoff_contract_failed` Kernel event and
+treated a second correction failure as blocking. ADR-0032 supersedes that
+result-suppression behavior: correction is metadata-only and failure leaves a
+safe body deliverable but uncertified under ordinary Kernel recovery authority.
+Phase 4 owns general retry/fallback/backoff/circuit-breaker state. Phase 5
+introduces partition leases and a versioned `workspace_state` handoff.
 
 ### Phase 5 amendment (2026-07-22)
 
@@ -64,3 +73,21 @@ After a successful Executor response and before completion validation, Runtime c
 - Executor Adapters become transport-only and consume the same Subtask context semantics.
 - Completion formatting is now a strict execution contract; malformed output is a deterministic blocked result rather than best-effort text.
 - Storage gains v3 audit, normalized handoff, attempt receipt, and attempt-aware WorkUnit projections.
+
+### Result-first delivery amendment (2026-08-21, ADR-0032)
+
+The Completion Protocol v4 replaces the previous all-or-nothing completion gate
+for new attempts. A safe business body may be delivered as `partial` and
+`uncertified` when the marker, trailer or evidence metadata is malformed or
+incomplete. Physical handoff and frame capacities are handled through Result
+Objects, edge-scoped references and chunking rather than business rejection.
+Such a result cannot certify the Subtask,
+publish downstream handoffs or move the Subtask to `done` until Runtime facts
+are sufficient and Kernel authorizes the transition.
+
+Evidence count, evidence length, metadata frame size and handoff transport
+capacity are no longer business-result rejection rules. Runtime may normalize
+metadata deterministically, preserve the raw audit reference, and mark audit
+metadata incomplete. Workspace/path containment and authorization remain
+fail-closed; uncertain workspace delta blocks file publication only when a safe
+text result can still be independently delivered.

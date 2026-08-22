@@ -33,7 +33,19 @@ export class FileEventJournal implements EventJournal {
   constructor(private readonly rootDir: string) {}
 
   async append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope> {
-    const key = `${event.accountId}\0${event.conversationId}`;
+    return (await this.appendBatch([event]))[0]!;
+  }
+
+  async appendBatch(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]> {
+    if (events.length === 0) return [];
+    const first = events[0]!;
+    if (events.some(event =>
+      event.accountId !== first.accountId
+      || event.conversationId !== first.conversationId
+    )) {
+      throw new Error('Gateway event batch must target one account and conversation');
+    }
+    const key = `${first.accountId}\0${first.conversationId}`;
     const previous = this.appendTails.get(key) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>(resolve => {
@@ -43,7 +55,7 @@ export class FileEventJournal implements EventJournal {
     this.appendTails.set(key, tail);
     await previous;
     try {
-      return await this.appendSerial(event);
+      return await this.appendBatchSerial(events);
     } finally {
       release();
       if (this.appendTails.get(key) === tail) {
@@ -52,22 +64,37 @@ export class FileEventJournal implements EventJournal {
     }
   }
 
-  private async appendSerial(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope> {
-    const file = await this.read(event.accountId, event.conversationId);
-    const existing = file.events.find(item => item.eventId === event.eventId);
-    if (existing) return existing;
-
-    assertPayloadSize(event.payload);
-    const payload = sanitizeGatewayEventPayload(event.payload);
-    assertPayloadSize(payload);
-    const sequence = file.lastSequence + 1;
-    const appended = { ...event, sequence, payload };
-    file.events.push(appended);
-    if (file.events.length > MAX_EVENTS_PER_CONVERSATION) {
-      file.events = file.events.slice(-MAX_EVENTS_PER_CONVERSATION);
+  private async appendBatchSerial(
+    events: GatewayEventEnvelope[],
+  ): Promise<GatewayEventEnvelope[]> {
+    const first = events[0]!;
+    const file = await this.read(first.accountId, first.conversationId);
+    const byId = new Map(file.events.map(event => [event.eventId, event]));
+    const appended: GatewayEventEnvelope[] = [];
+    let changed = false;
+    for (const event of events) {
+      const existing = byId.get(event.eventId);
+      if (existing) {
+        appended.push(existing);
+        continue;
+      }
+      assertPayloadSize(event.payload);
+      const payload = sanitizeGatewayEventPayload(event.payload);
+      assertPayloadSize(payload);
+      const stored = {
+        ...event,
+        sequence: file.lastSequence + 1,
+        payload,
+      };
+      file.lastSequence = stored.sequence;
+      file.events.push(stored);
+      byId.set(stored.eventId, stored);
+      appended.push(stored);
+      changed = true;
     }
-    file.lastSequence = sequence;
-    await this.write(file, event.accountId, event.conversationId);
+    if (!changed) return appended;
+    file.events = compactEvents(file.events);
+    await this.write(file, first.accountId, first.conversationId);
     return appended;
   }
 
@@ -171,11 +198,48 @@ function boundHistoricalPayload(payload: unknown): unknown {
 
 function buildReplaySnapshot(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
   const snapshot = events.filter(event => isTerminalGatewayEvent(event.kind));
+  snapshot.push(...latestResultEvents(events));
   const conversationSnapshot = buildConversationSnapshot(events);
   if (conversationSnapshot) snapshot.push(conversationSnapshot);
   const taskProjection = findLast(events, event => event.kind === 'task_projection');
   if (taskProjection) snapshot.push(taskProjection);
   return uniqueEvents(snapshot).sort((left, right) => left.sequence - right.sequence);
+}
+
+function compactEvents(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
+  if (events.length <= MAX_EVENTS_PER_CONVERSATION) return [...events];
+  const resultEvents = latestResultEvents(events);
+  const resultEventIds = new Set(resultEvents.map(event => event.eventId));
+  const retained = events
+    .filter(event => !resultEventIds.has(event.eventId))
+    .slice(-MAX_EVENTS_PER_CONVERSATION);
+  return [...retained, ...resultEvents]
+    .sort((left, right) => left.sequence - right.sequence);
+}
+
+function latestResultEvents(
+  events: readonly GatewayEventEnvelope[],
+): GatewayEventEnvelope[] {
+  const latestResultId = findLast(events, event => (
+    event.kind === 'result_completed'
+    || event.kind === 'result_chunk'
+    || event.kind === 'result_delivery_available'
+  ));
+  const resultId = latestResultId ? resultIdFrom(latestResultId) : null;
+  if (!resultId) return [];
+  return events.filter(event =>
+    (
+      event.kind === 'result_completed'
+      || event.kind === 'result_chunk'
+      || event.kind === 'result_delivery_available'
+    )
+    && resultIdFrom(event) === resultId
+  );
+}
+
+function resultIdFrom(event: GatewayEventEnvelope): string | null {
+  if (!isRecord(event.payload)) return null;
+  return typeof event.payload.resultId === 'string' ? event.payload.resultId : null;
 }
 
 function isCompactedSnapshotSource(event: GatewayEventEnvelope): boolean {

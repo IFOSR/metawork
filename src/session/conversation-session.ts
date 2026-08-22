@@ -43,8 +43,7 @@ import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-valid
 import type Database from 'better-sqlite3';
 import type { KernelConfigurationView } from '../configuration/index.js';
 import { generateInteractionId } from '../utils/id.js';
-import { contextRefKey } from '../work-graph/index.js';
-import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
+import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
   KernelExecutionRuntimeCallbacks,
@@ -55,6 +54,8 @@ import type { SessionKernelRuntime } from './session-kernel-runtime.js';
 import type { SessionSnapshot, SessionSwitchingState } from './session-types.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
+import type { PlannerRunProgress } from '../planning/planner-progress.js';
+import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import {
   ConversationInputMailbox,
   type MailboxCommand,
@@ -77,6 +78,13 @@ export interface ConversationSessionSnapshot {
   readonly currentTaskId: string | null;
   readonly runtimeState: RuntimeState;
   readonly plannerState: { readonly status: 'idle' | 'running' };
+}
+
+export interface ConversationResultDelivery {
+  readonly resultId: string;
+  readonly content: string;
+  readonly completeness: 'complete' | 'partial' | 'incomplete';
+  readonly certification: 'certified' | 'uncertified';
 }
 
 export interface ConversationSessionDeps {
@@ -132,6 +140,7 @@ export class ConversationSession {
   private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
   private readonly inputController: InputController;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
+  private resultDeliveries: ConversationResultDelivery[] = [];
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
 
@@ -180,6 +189,14 @@ export class ConversationSession {
 
   getOutput(): readonly string[] {
     return [...this.output];
+  }
+
+  recordResultDelivery(delivery: ConversationResultDelivery): void {
+    this.resultDeliveries.push({ ...delivery });
+  }
+
+  getResultDeliveries(): readonly ConversationResultDelivery[] {
+    return this.resultDeliveries.map(delivery => ({ ...delivery }));
   }
 
   setCurrentTaskId(taskId: string | null): void {
@@ -269,15 +286,52 @@ export class ConversationSession {
 
   recordKernelDecisionTrace(decision: KernelDecision): void {
     this.deps.interactionTraceStream?.append({
-      phase: 'kernel',
+      phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision',
       status: 'completed',
-      title: 'Kernel decision',
+      title: `Kernel decision: ${decision.action.type}`,
       summary: decision.reason,
-      details: {},
-      eventKey: 'kernel_decision',
-    } as never);
+      details: {
+        decisionId: decision.id,
+        action: decision.action.type,
+        eventId: decision.eventId,
+        configurationRevision: decision.configurationRevision,
+      },
+      eventKey: decision.id,
+      taskId: 'taskId' in decision.action && typeof decision.action.taskId === 'string'
+        ? decision.action.taskId
+        : null,
+    });
+    if (decision.action.type !== 'authorize_task_plan') return;
+    const action = decision.action;
+    for (const subtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
+      const bindings = action.authorizedBindingsBySubtask[subtaskId] ?? [];
+      bindings.forEach((binding, fallbackOrder) => {
+        this.deps.interactionTraceStream?.append({
+          phase: 'routing',
+          actor: 'kernel',
+          kind: 'executor_routed',
+          status: 'completed',
+          title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
+          summary: `${binding.agentClassRef} via ${binding.harnessRef} using ${binding.providerRef}/${binding.modelRef}`,
+          details: {
+            subtaskId,
+            fallbackOrder,
+            routingRole: fallbackOrder === 0 ? 'primary' : 'fallback',
+            authorizedBinding: binding,
+          },
+          eventKey: `${decision.id}:${subtaskId}:${fallbackOrder}`,
+          taskId: action.taskId,
+        });
+      });
+    }
+  }
+
+  appendExecutionTrace(input: ExecutionTraceAppendInput): void {
+    const current = this.deps.interactionTraceStream?.getSnapshot();
+    if (!current || current.status !== 'running') return;
+    this.deps.interactionTraceStream?.append(input);
   }
 
   async cancelTask(taskId: string, reason: string): Promise<void> {
@@ -323,7 +377,10 @@ export class ConversationSession {
       kernelConfiguration: this.deps.kernelConfiguration,
       executorStatuses: port.queries.listExecutorStatuses(event.configurationRevision),
       v5WorkGraphTaskIds: port.queries.listWorkGraphTaskIds(),
-      eligibleContextRefKeys: [],
+      eligibleContextRefKeys: this.buildEligibleContextRefKeys(
+        event.proposal as PlanningAgentPlan,
+        event.requestText,
+      ),
       pendingAuthorizationRequest: (() => {
         const pending = port.queries.findOldestPendingPermission();
         return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
@@ -345,9 +402,42 @@ export class ConversationSession {
     if (!planningAgent) return false;
     const context = this.buildPlanningContext(userInput);
     if (!context) return false;
-    const result = await planningAgent.submit(context, {
-      submit: async plan => this.submitValidatedPlannerProposal(userInput, plan, context),
+    this.appendTrace({
+      phase: 'planning',
+      actor: 'planner',
+      kind: 'planner_started',
+      status: 'running',
+      title: 'Planner started',
+      summary: 'Parsing the request and preparing a structured proposal.',
+      details: { configurationRevision: context.configuration.revisionId },
+      eventKey: 'planner',
     });
+    this.activePlannerRuns += 1;
+    this.notify();
+    let result: PlannerProposalResult;
+    try {
+      result = await planningAgent.submit(context, {
+        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan, context),
+        onProgress: progress => this.recordPlannerProgressTrace(progress),
+      });
+    } catch (error) {
+      this.appendTrace({
+        phase: 'planning',
+        actor: 'planner',
+        kind: 'planner_failed',
+        status: 'failed',
+        title: 'Planner failed',
+        summary: (error as Error).message,
+        details: {},
+        eventKey: 'planner_failed',
+        traceStatus: 'failed',
+      });
+      throw error;
+    } finally {
+      this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.notify();
+    }
+    this.recordPlannerProposalTerminalTrace(result);
     if (result.status === 'transport_uncertain' || result.status === 'conflict') {
       throw new Error(result.message);
     }
@@ -399,6 +489,18 @@ export class ConversationSession {
         submissionId: eventId,
         retryableByReplay: true,
         message: 'Kernel application did not produce an authoritative decision.',
+      };
+    }
+    const application = port.queries.findKernelApplicationByDecisionId(decision.id);
+    if (application?.status !== 'applied') {
+      return {
+        status: 'transport_uncertain',
+        turnId: event.correlationId,
+        submissionId: eventId,
+        retryableByReplay: true,
+        message: application?.errorSummary
+          ? `Kernel application is uncertain: ${application.errorSummary}`
+          : 'Kernel application did not reach the applied state.',
       };
     }
     if (decision.action.type === 'reject_request') {
@@ -893,7 +995,162 @@ export class ConversationSession {
     text: string,
     options: InputControllerSubmitOptions = {},
   ): Promise<{ exitRequested: boolean }> {
+    const userInput = text.trim();
+    if (userInput && !userInput.startsWith('/')) {
+      this.deps.interactionTraceStream?.beginTurn({
+        turnId: options.interactionTurnId ?? `turn_${generateInteractionId()}`,
+        userInput,
+      });
+    }
     return this.inputController.submit(text, options);
+  }
+
+  private appendTrace(
+    input: Parameters<InteractionTraceStream['append']>[0],
+  ): void {
+    if (!this.deps.interactionTraceStream?.getSnapshot()) return;
+    this.deps.interactionTraceStream.append(input);
+  }
+
+  private recordPlannerProgressTrace(progress: PlannerRunProgress): void {
+    const current = this.deps.interactionTraceStream?.getSnapshot();
+    if (!current || current.status !== 'running') return;
+    const details = {
+      progressSequence: progress.sequence,
+      elapsedMs: progress.elapsedMs,
+    };
+    const eventKey = `rpc:${progress.sequence}`;
+    const common = {
+      phase: 'planning' as const,
+      actor: 'planner' as const,
+      status: 'running' as const,
+      details,
+      eventKey,
+    };
+    switch (progress.kind) {
+      case 'process_started':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_process_started',
+          title: 'Planner process started',
+          summary: 'The isolated Planner RPC process is running.',
+        });
+        return;
+      case 'prompt_accepted':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_prompt_accepted',
+          title: 'Planner accepted the request',
+          summary: 'The request entered the Planner agent loop.',
+        });
+        return;
+      case 'agent_started':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_agent_started',
+          title: 'Planner agent loop started',
+          summary: 'Planner is preparing the next structured action.',
+        });
+        return;
+      case 'turn_started':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_turn_started',
+          title: `Planner processing cycle ${progress.turn}`,
+          summary: 'Planner is evaluating context and the next tool action.',
+          details: { ...details, turn: progress.turn },
+        });
+        return;
+      case 'model_stream_started':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_model_stream_started',
+          title: 'Planner model response started',
+          summary: 'The model is generating a structured action.',
+          details: { ...details, turn: progress.turn },
+        });
+        return;
+      case 'model_waiting':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_model_waiting',
+          title: 'Planner is waiting for the model',
+          summary: 'The Planner request is still active, but no model output has arrived yet.',
+          details: {
+            ...details,
+            turn: progress.turn,
+            idleMs: progress.idleMs,
+          },
+        });
+        return;
+      case 'tool_started':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_tool_started',
+          title: `Planner tool started: ${progress.toolName}`,
+          summary: `Planner started ${progress.toolName}.`,
+          details: {
+            ...details,
+            toolSequence: progress.toolSequence,
+            toolName: progress.toolName,
+            argumentFields: progress.argumentFields,
+          },
+        });
+        return;
+      case 'tool_completed':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_tool_completed',
+          status: progress.status,
+          title: `Planner tool ${progress.status}: ${progress.toolName}`,
+          summary: `Planner ${progress.status} ${progress.toolName}.`,
+          details: {
+            ...details,
+            toolSequence: progress.toolSequence,
+            toolName: progress.toolName,
+            argumentFields: progress.argumentFields,
+            resultFields: progress.resultFields,
+          },
+        });
+        return;
+      case 'agent_completed':
+        this.appendTrace({
+          ...common,
+          kind: 'planner_agent_completed',
+          status: 'completed',
+          title: 'Planner handoff confirmed',
+          summary: 'Planner completed the structured proposal handoff.',
+        });
+    }
+  }
+
+  private recordPlannerProposalTerminalTrace(result: PlannerProposalResult): void {
+    const current = this.deps.interactionTraceStream?.getSnapshot();
+    if (!current || current.status !== 'running') return;
+    if (result.status === 'accepted') return;
+    const status = result.status === 'rejected' ? 'failed' : 'blocked';
+    this.appendTrace({
+      phase: 'planning',
+      actor: 'planner',
+      kind: result.status === 'transport_uncertain'
+        ? 'proposal_transport_uncertain'
+        : result.status === 'conflict'
+          ? 'proposal_conflict'
+          : 'proposal_rejected',
+      status,
+      title: result.status === 'transport_uncertain'
+        ? 'Planner handoff blocked'
+        : result.status === 'conflict'
+          ? 'Planner proposal conflict'
+          : 'Planner proposal rejected',
+      summary: result.status === 'rejected' ? result.issues.join('; ') : result.message,
+      details: {
+        plannerTurnId: result.turnId,
+        submissionId: result.submissionId,
+      },
+      eventKey: result.submissionId,
+      traceStatus: status,
+    });
   }
 
   private async handleCommand(input: string): Promise<boolean> {
@@ -1122,46 +1379,15 @@ export class ConversationSession {
   }
 
   private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
-    const refs = (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs);
-    const targetTask = plan.task.taskId
-      ? this.deps.runtimePort.queries.findTask(plan.task.taskId)
-      : null;
-    const eligible = new Set<string>();
-    const db = this.deps.db;
-    for (const ref of refs) {
-      if (ref.kind === 'current_user_input') {
-        eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (ref.kind === 'task_resource') {
-        if (targetTask?.resources.includes(ref.locator) || (!targetTask && userInput.includes(ref.locator))) {
-          eligible.add(contextRefKey(ref));
-        }
-        continue;
-      }
-      if (ref.kind === 'preference') {
-        const row = db?.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
-        if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (ref.kind === 'task_evidence') {
-        const row = db?.prepare(`
-          SELECT id FROM task_execution_evidence WHERE id = ? AND task_id = ? AND kind = 'task_evidence'
-        `).get(ref.evidenceId, targetTask?.id ?? '') as { id: string } | undefined;
-        if (row) eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (db && isEligibleInteractionRef({
-        db,
-        sessionId: this.deps.plannerSessionId,
-        ref,
-        targetTaskId: targetTask?.id ?? null,
-        userInput,
-      })) {
-        eligible.add(contextRefKey(ref));
-      }
-    }
-    return [...eligible];
+    return buildEligibleContextRefKeys({
+      db: this.deps.db ?? null,
+      sessionId: this.deps.plannerSessionId,
+      refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
+      targetTask: plan.task.taskId
+        ? this.deps.runtimePort.queries.findTask(plan.task.taskId)
+        : null,
+      userInput,
+    });
   }
 
   private async requestKernelReplan(
@@ -1385,6 +1611,8 @@ export class ConversationSession {
     return {
       kernelExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        recordResultDelivery: delivery => this.recordResultDelivery(delivery),
+        appendExecutionTrace: input => this.appendExecutionTrace(input),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
         setFocusContext: focus => this.setFocusContext(focus),

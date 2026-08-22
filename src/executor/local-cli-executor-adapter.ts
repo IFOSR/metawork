@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure } from './error-utils.js';
@@ -12,6 +13,7 @@ const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
   onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
+  onRawChunk?: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void;
 }
 
 export interface LocalCliChildProcessResult {
@@ -29,6 +31,8 @@ export interface LocalCliExecutorAdapterDependencies {
   agentClassId: string;
   driver: HarnessDriver;
   runtimeBinding: RuntimePrivateConfigurationBinding;
+  authorizedBinding: AuthorizedExecutorBinding;
+  modelId: string;
   attemptsRoot: string;
   processRunner?: LocalCliChildProcessRunner;
 }
@@ -55,6 +59,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
   readonly supportsContinuation = false;
   private readonly driver: HarnessDriver;
   private readonly runtimeBinding: RuntimePrivateConfigurationBinding;
+  private readonly authorizedBinding: AuthorizedExecutorBinding;
+  private readonly modelId: string;
   private readonly attemptsRoot: string;
   private readonly processRunner: LocalCliChildProcessRunner;
 
@@ -62,6 +68,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
     this.name = dependencies.agentClassId;
     this.driver = dependencies.driver;
     this.runtimeBinding = dependencies.runtimeBinding;
+    this.authorizedBinding = dependencies.authorizedBinding;
+    this.modelId = dependencies.modelId;
     this.attemptsRoot = dependencies.attemptsRoot;
     this.processRunner = dependencies.processRunner ?? new SpawnLocalCliChildProcessRunner();
   }
@@ -90,6 +98,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         prompt: buildExecutorContextPrompt(input),
         cwd: executionBinding.workspacePath,
         runtimeHomePath: runtimeHome.homePath,
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
       });
       let streamedOutput: string | null = null;
       const rawResult = await this.processRunner.run({
@@ -101,6 +111,9 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ...this.runtimeBinding.environment,
           ...runtimeHome.environment,
           ...launch.environment,
+          METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
+          METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
+          METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
         },
         onLine: (line, stream) => {
           const resultLine = this.driver.parseResultLine?.({ line, stream });
@@ -110,6 +123,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           const progress = this.driver.parseProgressLine?.({ line, stream });
           if (progress) input.onProgress?.(progress);
         },
+        onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
       });
       const result = this.driver.parseResult(streamedOutput === null
         ? rawResult
@@ -125,7 +139,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       }
       return {
         success: false,
-        output: '',
+        output: result.output,
         error: result.error,
         failure: normalizeExecutorFailure(result.error),
         exitCode,
@@ -200,6 +214,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let stderrLineBuffer = '';
       let settled = false;
       const appendStdout = (chunk: Buffer | string) => {
+        input.onRawChunk?.(chunk, 'stdout');
         stdout = appendBoundedTail(stdout, chunk);
         stdoutLineBuffer = emitCompleteLines(
           stdoutLineBuffer,
@@ -208,6 +223,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         );
       };
       const appendStderr = (chunk: Buffer | string) => {
+        input.onRawChunk?.(chunk, 'stderr');
         stderr = appendBoundedTail(stderr, chunk);
         stderrLineBuffer = emitCompleteLines(
           stderrLineBuffer,

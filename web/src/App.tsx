@@ -6,6 +6,7 @@ import type {
   WebSessionMetadata,
   WebSessionRecord,
 } from './api/session-types';
+import type { ExecutionTimeline, InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
 import { establishWebSession, exchangeWebCredential } from './auth';
 import { ConversationView } from './components/ConversationView';
@@ -34,6 +35,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
+  const activeConversationRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -68,15 +70,18 @@ export function App() {
     };
     const ws = new WsClient({
       onHello: sessionId => {
+        activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setBrowsedSessionId(current => current ?? sessionId);
         loadRecord(sessionId);
       },
       onSessionCatalog: (sessionId, nextSessions) => {
+        activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
       },
       onActiveSessionChanged: sessionId => {
+        activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setBrowsedSessionId(sessionId);
         setLiveTurn(null);
@@ -84,6 +89,83 @@ export function App() {
         loadRecord(sessionId);
       },
       onConversationSnapshot: turn => setLiveTurn(turn),
+      onTurnStarted: (_requestId, turnId, userInput, startedAt) => {
+        setLiveTurn({
+          id: turnId,
+          sessionId: activeConversationRef.current ?? 'active',
+          userInput,
+          status: 'running',
+          finalAnswer: null,
+          taskId: null,
+          startedAt,
+          completedAt: null,
+          traceEvents: [],
+          executionTimeline: null,
+          artifactRefs: [],
+        });
+      },
+      onTraceSnapshot: trace => {
+        setLiveTurn(current => mergeTraceSnapshot(current, trace));
+      },
+      onTraceDelta: (turnId, _fromSequence, events) => {
+        setLiveTurn(current => mergeTraceDelta(current, turnId, events));
+      },
+      onExecution: (taskId, timeline) => {
+        setLiveTurn(current => current
+          ? { ...current, taskId, executionTimeline: timeline }
+          : current);
+      },
+      onFinalAnswer: (_requestId, turnId, lines, completedAt) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            status: 'completed',
+            finalAnswer: lines.join('\n'),
+            completedAt,
+          }
+          : current);
+      },
+      onResultDeliveryAvailable: (_requestId, turnId, _resultId, certification) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            finalAnswer: certification === 'uncertified'
+              ? '结果正在流式返回，任务完成认证待处理。\n\n'
+              : '',
+          }
+          : current);
+      },
+      onResultChunk: (_requestId, turnId, _resultId, offset, chunk) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            finalAnswer: appendUtf8Chunk(current.finalAnswer ?? '', offset, chunk),
+          }
+          : current);
+      },
+      onResultCompleted: (_requestId, turnId, _resultId, content, _certification) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            finalAnswer: content,
+          }
+          : current);
+      },
+      onTerminalError: (_requestId, turnId, message, completedAt) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            status: 'failed',
+            finalAnswer: message,
+            completedAt,
+          }
+          : current);
+      },
+      onOutput: lines => {
+        if (lines.some(line => line.startsWith('错误:'))) {
+          setActivationNotice(lines.join('\n'));
+        }
+      },
       onError: message => setActivationNotice(`执行错误：${message}`),
       onUnauthorized: handleUnauthorized,
       onStatusChange: setConnected,
@@ -93,6 +175,7 @@ export function App() {
     void Promise.all([http.getSessions(), http.getConfig()])
       .then(([catalog, config]) => {
         setSessions(catalog.sessions);
+        activeConversationRef.current = catalog.activeSessionId;
         setActiveSessionId(catalog.activeSessionId);
         setBrowsedSessionId(current => current ?? catalog.activeSessionId);
         setRevisionId(config.runningRevisionId);
@@ -125,6 +208,7 @@ export function App() {
     const result = await httpRef.current.activateSession(sessionId);
     setActivationNotice(activationMessage(result));
     if (result.state === 'active') {
+      activeConversationRef.current = sessionId;
       setActiveSessionId(sessionId);
       setBrowsedSessionId(sessionId);
       setLiveTurn(null);
@@ -143,6 +227,7 @@ export function App() {
     setSelectedRecord(result.session);
     setActivationNotice(activationMessage(result.activation));
     if (result.activation.state === 'active') {
+      activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);
       setLiveTurn(null);
     }
@@ -177,6 +262,12 @@ export function App() {
   const latestTurn = turns.at(-1) ?? null;
   const readOnly = Boolean(selectedId && selectedId !== activeSessionId);
   const running = Boolean(selectedId === activeSessionId && liveTurn?.status === 'running');
+  const composerDisabled = readOnly || !connected;
+  const composerBlockedReason = readOnly
+    ? '当前为历史只读视图。点击左侧“继续此会话”通过安全激活门。'
+    : !connected
+      ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
+      : activationNotice;
 
   return (
     <>
@@ -190,9 +281,9 @@ export function App() {
         connected={connected}
         revisionId={revisionId}
         draft={draft}
-        composerDisabled={readOnly}
+        composerDisabled={composerDisabled}
         running={running}
-        blockedReason={readOnly ? '当前为历史只读视图。点击左侧“继续此会话”通过安全激活门。' : activationNotice}
+        blockedReason={composerBlockedReason}
         onSearch={setSearch}
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
@@ -201,7 +292,11 @@ export function App() {
         onTabChange={setTab}
         onDraftChange={setDraft}
         onSend={text => {
-          wsRef.current?.sendInput(text);
+          const sent = wsRef.current?.sendInput(text) ?? false;
+          if (!sent) {
+            setActivationNotice('WebSocket 尚未连接，消息仍保留在输入框中。');
+            return;
+          }
           setDraft('');
           setActivationNotice(null);
         }}
@@ -215,6 +310,44 @@ export function App() {
       )}
     </>
   );
+}
+
+function appendUtf8Chunk(current: string, offset: number, chunk: string): string {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const bytes = encoder.encode(current);
+  if (offset === bytes.byteLength) return current + chunk;
+  if (offset > bytes.byteLength) return current;
+  return decoder.decode(bytes.slice(0, offset)) + chunk;
+}
+
+function mergeTraceSnapshot(
+  current: ConversationTurnProjection | null,
+  trace: InteractionTrace,
+): ConversationTurnProjection | null {
+  if (!current || current.id !== trace.turnId) return current;
+  return {
+    ...current,
+    taskId: trace.taskId,
+    status: trace.status,
+    startedAt: trace.startedAt,
+    completedAt: trace.completedAt,
+    traceEvents: trace.events,
+  };
+}
+
+function mergeTraceDelta(
+  current: ConversationTurnProjection | null,
+  turnId: string,
+  events: InteractionTraceEvent[],
+): ConversationTurnProjection | null {
+  if (!current || current.id !== turnId) return current;
+  const byId = new Map(current.traceEvents.map(event => [event.id, event]));
+  for (const event of events) byId.set(event.id, event);
+  return {
+    ...current,
+    traceEvents: [...byId.values()].sort((left, right) => left.sequence - right.sequence),
+  };
 }
 
 function activationMessage(result: WebSessionActivationResult): string | null {

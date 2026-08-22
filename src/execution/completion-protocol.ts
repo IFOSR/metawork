@@ -5,8 +5,8 @@ import type { Subtask } from '../core/types.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
 import { parseWorkspaceDelta, type WorkspaceDelta } from './workspace-change-tracker.js';
 
-export const COMPLETION_MARKER_V3 = '<!-- metaclaw:completion:v3 -->';
-const MAX_REPORT_BYTES = 128 * 1024;
+export const COMPLETION_MARKER_V4 = '<!-- metaclaw:completion:v4 -->';
+export const COMPLETION_MARKER_V3 = COMPLETION_MARKER_V4;
 
 const TextItemSchema = z.object({
   key: z.string(),
@@ -24,7 +24,7 @@ const FailureSchema = z.object({
   summary: z.string().trim().min(1).max(320),
 }).strict();
 const CompletedEnvelopeSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   status: z.literal('completed'),
   subtaskId: z.string(),
   acceptanceEvidence: z.array(z.object({
@@ -38,22 +38,25 @@ const CompletedEnvelopeSchema = z.object({
   }).strict()),
 }).strict();
 const FailedEnvelopeSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   status: z.literal('failed'),
   subtaskId: z.string(),
   failure: FailureSchema,
 }).strict();
 const CompletionEnvelopeSchema = z.discriminatedUnion('status', [CompletedEnvelopeSchema, FailedEnvelopeSchema]);
 const CompletedReportSchema = z.object({
-  evidence: z.array(z.string().trim().min(1).max(1_000)).min(1).max(4),
-  noChangeReason: z.string().trim().min(1).max(1_000).nullable(),
+  evidence: z.array(z.string().trim().min(1)).min(1),
+  noChangeReason: z.string().trim().min(1).nullable(),
 }).strict();
 const FailedReportSchema = z.object({ failure: FailureSchema }).strict();
 const CompletionReportSchema = z.union([CompletedReportSchema, FailedReportSchema]);
 
-export type CompletionEnvelopeV3 = z.infer<typeof CompletionEnvelopeSchema>;
-export type CompletedEnvelopeV3 = z.infer<typeof CompletedEnvelopeSchema>;
-export type CompletionHandoffV3 = CompletedEnvelopeV3['handoffs'][number];
+export type CompletionEnvelopeV4 = z.infer<typeof CompletionEnvelopeSchema>;
+export type CompletedEnvelopeV4 = z.infer<typeof CompletedEnvelopeSchema>;
+export type CompletionHandoffV4 = CompletedEnvelopeV4['handoffs'][number];
+export type CompletionEnvelopeV3 = CompletionEnvelopeV4;
+export type CompletedEnvelopeV3 = CompletedEnvelopeV4;
+export type CompletionHandoffV3 = CompletionHandoffV4;
 type CompletionReport = z.infer<typeof CompletionReportSchema>;
 type CompletedReport = z.infer<typeof CompletedReportSchema>;
 type FailedReport = z.infer<typeof FailedReportSchema>;
@@ -76,19 +79,39 @@ export interface CompletionContractViolation {
   message: string;
 }
 
+export interface CompletionAssessment {
+  result: {
+    kind: 'complete' | 'partial' | 'failure' | 'none';
+  };
+  deliverability: {
+    status: 'deliverable' | 'quarantined';
+    violations: CompletionContractViolation[];
+  };
+  certification: {
+    status: 'certified' | 'uncertified';
+    violations: CompletionContractViolation[];
+  };
+  safety: {
+    status: 'safe' | 'safety_blocked';
+    violations: CompletionContractViolation[];
+  };
+}
+
 export type CompletionProtocolResult =
   | {
     ok: true;
     body: string;
-    envelope: CompletionEnvelopeV3;
+    envelope: CompletionEnvelopeV3 | null;
     normalizedArtifacts: string[];
     warnings: string[];
+    assessment: CompletionAssessment;
   }
   | {
     ok: false;
     body: string | null;
     envelope: CompletionEnvelopeV3 | null;
     violations: CompletionContractViolation[];
+    assessment: CompletionAssessment;
   };
 
 export interface OutgoingHandoffContract {
@@ -102,11 +125,16 @@ export interface IncomingHandoffUsage {
 }
 
 type ParsedCompletionReportResult =
-  | { ok: true; body: string; report: CompletionReport }
+  | {
+    ok: true;
+    body: string;
+    report: CompletionReport | null;
+    violations: CompletionContractViolation[];
+  }
   | Extract<CompletionProtocolResult, { ok: false }>;
 type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
 
-/** Parses, strips and deterministically verifies the exact v3 completion trailer. */
+/** Parses, strips and deterministically assesses the v4 completion trailer. */
 export function validateCompletionProtocol(input: {
   rawResponse: string;
   subtask: Subtask;
@@ -118,32 +146,60 @@ export function validateCompletionProtocol(input: {
   const parsed = parseCompletion(input.rawResponse);
   if (!parsed.ok) return parsed;
 
-  const violations: CompletionContractViolation[] = [];
+  const violations: CompletionContractViolation[] = [...parsed.violations];
   const { body } = parsed;
-  if ('failure' in parsed.report) {
-    const envelope = materializeCompletionEnvelope(parsed.report, input.subtask, input.outgoingHandoffs, []);
-    return { ok: true, body, envelope, normalizedArtifacts: [], warnings: [] };
-  }
-  const workspaceDelta = parseWorkspaceDelta(input.workspaceDelta);
-  if (!workspaceDelta) {
+  const metadataViolations = [...parsed.violations];
+  const safetyViolations: CompletionContractViolation[] = [];
+  const certificationViolations: CompletionContractViolation[] = [...parsed.violations];
+  const assessmentBase = {
+    result: { kind: 'partial' as const },
+    deliverability: { status: 'deliverable' as const, violations: [] },
+    certification: { status: 'uncertified' as const, violations: certificationViolations },
+    safety: { status: 'safe' as const, violations: safetyViolations },
+  };
+  if (!parsed.report) {
     return {
-      ok: false,
+      ok: true,
       body,
       envelope: null,
-      violations: [contractViolation(
-        'completion_workspace_delta_uncertain',
-        'workspaceDelta',
-        'workspace delta is missing or malformed',
-      )],
+      normalizedArtifacts: [],
+      warnings: metadataViolations.map(formatViolation),
+      assessment: assessmentBase,
     };
   }
-  const normalizedArtifacts = validateWorkspaceDelivery(
-    input.subtask,
-    parsed.report.noChangeReason,
-    workspaceDelta,
-    input.workspaceRoot,
-    violations,
-  );
+  if ('failure' in parsed.report) {
+    const envelope = materializeCompletionEnvelope(parsed.report, input.subtask, input.outgoingHandoffs, []);
+    return {
+      ok: true,
+      body,
+      envelope,
+      normalizedArtifacts: [],
+      warnings: [],
+      assessment: {
+        ...assessmentBase,
+        result: { kind: 'failure' },
+        certification: { status: 'certified', violations: [] },
+      },
+    };
+  }
+  const workspaceDelta = parseWorkspaceDelta(input.workspaceDelta);
+  const normalizedArtifacts = workspaceDelta
+    ? validateWorkspaceDelivery(
+      input.subtask,
+      parsed.report.noChangeReason,
+      workspaceDelta,
+      input.workspaceRoot,
+      violations,
+    )
+    : [];
+  if (!workspaceDelta) {
+    const deltaViolation = contractViolation(
+      'completion_workspace_delta_uncertain',
+      'workspaceDelta',
+      'workspace delta is missing or malformed',
+    );
+    violations.push(deltaViolation);
+  }
   const envelope = materializeCompletionEnvelope(
     parsed.report,
     input.subtask,
@@ -154,56 +210,104 @@ export function validateCompletionProtocol(input: {
     violations.push(contractViolation('completion_subtask_mismatch', 'subtaskId', `expected ${input.subtask.id}, received ${envelope.subtaskId}`));
   }
   if (envelope.status !== 'completed') {
-    return { ok: true, body, envelope, normalizedArtifacts, warnings: [] };
+    return {
+      ok: true,
+      body,
+      envelope,
+      normalizedArtifacts,
+      warnings: [],
+      assessment: {
+        ...assessmentBase,
+        result: { kind: 'failure' },
+        certification: { status: 'certified', violations: [] },
+      },
+    };
   }
   validateAcceptance(input.subtask, envelope, violations);
   validateHandoffs(input.outgoingHandoffs, envelope, violations);
-  validateBudgets(envelope, violations, input.incomingUsageByTarget);
 
-  if (violations.length > 0) {
-    return { ok: false, body, envelope, violations: violations.sort(compareViolation) };
+  const sortedViolations = violations.sort(compareViolation);
+  const safety = sortedViolations.filter(isSafetyViolation);
+  const certification = sortedViolations.filter(item => !isSafetyViolation(item));
+  if (safety.length > 0) {
+    return {
+      ok: false,
+      body: null,
+      envelope,
+      violations: sortedViolations,
+      assessment: {
+        result: { kind: 'none' },
+        deliverability: { status: 'quarantined', violations: safety },
+        certification: { status: 'uncertified', violations: certification },
+        safety: { status: 'safety_blocked', violations: safety },
+      },
+    };
   }
   return {
     ok: true,
     body,
     envelope,
     normalizedArtifacts,
-    warnings: [],
+    warnings: certification.map(formatViolation),
+    assessment: {
+      result: { kind: certification.length > 0 ? 'partial' : 'complete' },
+      deliverability: { status: 'deliverable', violations: [] },
+      certification: {
+        status: certification.length > 0 ? 'uncertified' : 'certified',
+        violations: certification,
+      },
+      safety: { status: 'safe', violations: [] },
+    },
   };
 }
 
 function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
-  const markerMatches = [...rawResponse.matchAll(new RegExp(COMPLETION_MARKER_V3.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
-  if (markerMatches.length !== 1) {
-    return failure('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`);
+  const marker = COMPLETION_MARKER_V4;
+  const markerMatches = [...rawResponse.matchAll(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
+  const markerIndex = markerMatches.length > 0 ? markerMatches[0]!.index! : -1;
+  const body = (markerIndex >= 0 ? rawResponse.slice(0, markerIndex) : rawResponse).trim();
+  if (!body) {
+    return failure('completion_malformed', 'body', 'completion body must be non-empty');
   }
-  const markerIndex = markerMatches[0]!.index!;
-  const body = rawResponse.slice(0, markerIndex).trim();
-  const rawReport = rawResponse.slice(markerIndex + COMPLETION_MARKER_V3.length).trimStart();
-  if (!body) return failure('completion_malformed', 'body', 'completion body must be non-empty');
-  if (!rawReport || Buffer.byteLength(rawReport, 'utf8') > MAX_REPORT_BYTES) {
-    return failure('completion_budget_exceeded', 'report', 'completion report is empty or exceeds 128 KiB');
+  if (markerMatches.length === 0) {
+    return {
+      ok: true,
+      body,
+      report: null,
+      violations: [contractViolation('completion_malformed', 'marker', 'completion marker is missing')],
+    };
+  }
+  const rawReport = rawResponse.slice(markerIndex + marker.length).trimStart();
+  const violations: CompletionContractViolation[] = [];
+  if (markerMatches.length !== 1) {
+    violations.push(contractViolation('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`));
+  }
+  if (!rawReport) {
+    violations.push(contractViolation('completion_malformed', 'report', 'completion report is empty'));
+    return { ok: true, body, report: null, violations };
   }
   let candidate: unknown;
   try {
     candidate = JSON.parse(rawReport);
   } catch (error) {
-    return failure('completion_malformed', 'report', `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`);
+    violations.push(contractViolation('completion_malformed', 'report', `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`));
+    return { ok: true, body, report: null, violations };
   }
   const report = CompletionReportSchema.safeParse(candidate);
   if (!report.success) {
+    violations.push(...report.error.issues.map(issue => contractViolation(
+      'completion_malformed',
+      issue.path.join('.') || 'report',
+      issue.message,
+    )));
     return {
-      ok: false,
+      ok: true,
       body,
-      envelope: null,
-      violations: report.error.issues.map(issue => contractViolation(
-        'completion_malformed',
-        issue.path.join('.') || 'report',
-        issue.message,
-      )),
+      report: null,
+      violations,
     };
   }
-  return { ok: true, body, report: report.data };
+  return { ok: true, body, report: report.data, violations };
 }
 
 function materializeCompletionEnvelope(
@@ -226,7 +330,7 @@ function materializeCompletionEnvelope(
 ): CompletionEnvelopeV3 {
   if ('failure' in report) {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       status: 'failed',
       subtaskId: subtask.id,
       failure: report.failure,
@@ -234,7 +338,7 @@ function materializeCompletionEnvelope(
   }
   const evidence = [...report.evidence];
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     status: 'completed',
     subtaskId: subtask.id,
     acceptanceEvidence: subtask.acceptance.map(item => ({ key: item.key, evidence: [...evidence] })),
@@ -258,12 +362,9 @@ function validateAcceptance(
   for (const [index, item] of envelope.acceptanceEvidence.entries()) {
     if (actual.has(item.key)) violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.key`, `duplicate acceptance key ${item.key}`));
     actual.add(item.key);
-    if (item.evidence.length < 1 || item.evidence.length > 4) {
-      violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence`, 'acceptance evidence must contain 1 to 4 entries'));
-    }
     for (const [evidenceIndex, evidence] of item.evidence.entries()) {
-      if (!evidence.trim() || evidence.length > 1_000) {
-        violations.push(contractViolation('completion_budget_exceeded', `acceptanceEvidence.${index}.evidence.${evidenceIndex}`, 'evidence must contain 1 to 1000 characters'));
+      if (!evidence.trim()) {
+        violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence.${evidenceIndex}`, 'evidence must be non-empty'));
       }
     }
   }
@@ -302,46 +403,6 @@ function validateHandoffs(
   if (!sameSet(new Set(expectedByTarget.keys()), seenTargets)) {
     violations.push(contractViolation('completion_handoff_mismatch', 'handoffs', 'handoff targets must exactly match authorized outgoing edges'));
   }
-}
-
-function validateBudgets(
-  envelope: CompletedEnvelopeV3,
-  violations: CompletionContractViolation[],
-  incomingUsageByTarget: ReadonlyMap<string, IncomingHandoffUsage> | undefined,
-): void {
-  let totalText = 0;
-  let totalHandoffArtifacts = 0;
-  for (const [handoffIndex, handoff] of envelope.handoffs.entries()) {
-    let edgeText = 0;
-    let edgeArtifacts = 0;
-    for (const [itemIndex, item] of handoff.items.entries()) {
-      if (item.type === 'text') {
-        edgeText += item.value.length;
-        totalText += item.value.length;
-        if (!item.value.trim() || item.value.length > 4_000) {
-          violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}.items.${itemIndex}.value`, 'text handoff item must contain 1 to 4000 characters'));
-        }
-      } else {
-        edgeArtifacts += item.paths.length;
-        totalHandoffArtifacts += item.paths.length;
-        if (item.paths.length < 1 || item.paths.length > 20) {
-          violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}.items.${itemIndex}.paths`, 'artifact handoff item must contain 1 to 20 paths'));
-        }
-      }
-    }
-    if (edgeText > 12_000) violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}`, 'edge text exceeds 12000 characters'));
-    if (edgeArtifacts > 20) violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}`, 'edge artifact paths exceed 20'));
-    const existingIncoming = incomingUsageByTarget?.get(handoff.toSubtaskId);
-    if ((existingIncoming?.textCharacters ?? 0) + edgeText > 24_000) {
-      violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}.toSubtaskId`, `all incoming handoff text for ${handoff.toSubtaskId} exceeds 24000 characters`));
-    }
-    if ((existingIncoming?.artifactPaths ?? 0) + edgeArtifacts > 40) {
-      violations.push(contractViolation('completion_budget_exceeded', `handoffs.${handoffIndex}.toSubtaskId`, `all incoming handoff artifact paths for ${handoff.toSubtaskId} exceed 40`));
-    }
-  }
-  if (totalText > 24_000) violations.push(contractViolation('completion_budget_exceeded', 'handoffs', 'all outgoing handoff text exceeds 24000 characters'));
-  if (totalHandoffArtifacts > 40) violations.push(contractViolation('completion_budget_exceeded', 'handoffs', 'all outgoing handoff artifact paths exceed 40'));
-  if (envelope.artifacts.length > 40) violations.push(contractViolation('completion_budget_exceeded', 'artifacts', 'node artifacts exceed 40 paths'));
 }
 
 function validateWorkspaceDelivery(
@@ -436,11 +497,32 @@ function sameMap(left: Map<string, string>, right: Map<string, string>): boolean
 }
 
 function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolFailure {
-  return { ok: false, body: null, envelope: null, violations: [contractViolation(code, path, message)] };
+  const violation = contractViolation(code, path, message);
+  return {
+    ok: false,
+    body: null,
+    envelope: null,
+    violations: [violation],
+    assessment: {
+      result: { kind: 'none' },
+      deliverability: { status: 'quarantined', violations: [violation] },
+      certification: { status: 'uncertified', violations: [violation] },
+      safety: { status: 'safe', violations: [] },
+    },
+  };
 }
 
 function contractViolation(code: CompletionContractErrorCode, path: string, message: string): CompletionContractViolation {
   return { code, path, message };
+}
+
+function formatViolation(violation: CompletionContractViolation): string {
+  return `${violation.code}:${violation.path}:${violation.message}`;
+}
+
+function isSafetyViolation(violation: CompletionContractViolation): boolean {
+  return violation.code === 'completion_artifact_invalid'
+    || violation.code === 'completion_report_workspace_changed';
 }
 
 function compareViolation(left: CompletionContractViolation, right: CompletionContractViolation): number {

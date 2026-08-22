@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { validateCompletionProtocol, COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { validateCompletionProtocol, COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 import type { Subtask } from '../../src/core/types.js';
 import type { WorkspaceDelta, WorkspaceDeltaEntry } from '../../src/execution/workspace-change-tracker.js';
 
@@ -23,7 +23,7 @@ function subtask(overrides: Partial<Subtask> = {}): Subtask {
 }
 
 function response(report: Record<string, unknown>, body = 'Completed cleanly.'): string {
-  return `${body}\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify(report)}`;
+  return `${body}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify(report)}`;
 }
 
 function report(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -68,7 +68,7 @@ afterEach(() => {
   for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true });
 });
 
-describe('Completion Protocol v3', () => {
+describe('Completion Protocol result-first assessment', () => {
   it('injects authoritative identities, acceptance keys, and handoff identities', () => {
     const current = subtask({
       id: 'bound-subtask',
@@ -90,7 +90,7 @@ describe('Completion Protocol v3', () => {
     expect(result).toMatchObject({
       ok: true,
       envelope: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         status: 'completed',
         subtaskId: 'bound-subtask',
         acceptanceEvidence: [
@@ -105,17 +105,18 @@ describe('Completion Protocol v3', () => {
     });
   });
 
-  it('strips one strict terminal report and rejects legacy or forged fields', () => {
+  it('delivers the body when the terminal metadata is malformed or contains forged fields', () => {
     expect(validate({}).ok).toBe(true);
-    expect(validate({ rawResponse: `${response(report())}\n${COMPLETION_MARKER_V3}` }).ok).toBe(false);
-    expect(validate({ rawResponse: `${response(report())}\ntrailing` }).ok).toBe(false);
+    expect(validate({ rawResponse: `${response(report())}\n${COMPLETION_MARKER_V4}` }).ok).toBe(true);
+    expect(validate({ rawResponse: `${response(report())}\ntrailing` }).ok).toBe(true);
     for (const payload of [
       { ...report(), schemaVersion: 2, status: 'completed', subtaskId: 'task_a' },
       { ...report(), workUnitId: 'forged', acceptanceEvidence: [{ key: 'done', evidence: ['forged'] }] },
       { ...report(), artifacts: ['/workspace/forged'] },
     ]) {
       const result = validate({ rawResponse: response(payload) });
-      expect(result.ok ? [] : result.violations.map(item => item.code)).toContain('completion_malformed');
+      expect(result.ok).toBe(true);
+      expect(result.assessment.certification.status).toBe('uncertified');
     }
   });
 
@@ -128,14 +129,14 @@ describe('Completion Protocol v3', () => {
     });
     expect(failed).toMatchObject({
       ok: true,
-      envelope: { schemaVersion: 3, status: 'failed', failure: { kind: 'capability_mismatch' } },
+      envelope: { schemaVersion: 4, status: 'failed', failure: { kind: 'capability_mismatch' } },
     });
     expect(validate({ rawResponse: response({
       failure: { kind: 'network', code: 'network', summary: 'network down' },
-    }) }).ok).toBe(false);
+    }) }).ok).toBe(true);
   });
 
-  it('enforces aggregate incoming handoff budgets', () => {
+  it('does not turn aggregate handoff size into a completion rejection rule', () => {
     const outgoingHandoffs = [{
       toSubtaskId: 'task_b',
       requiredItems: [{ key: 'summary', type: 'text' as const, description: 'summary' }],
@@ -147,9 +148,12 @@ describe('Completion Protocol v3', () => {
       outgoingHandoffs,
       incomingUsageByTarget: new Map([['task_b', { textCharacters: 21_000, artifactPaths: 0 }]]),
     });
-    expect(result.ok ? [] : result.violations).toContainEqual(expect.objectContaining({
-      code: 'completion_budget_exceeded', path: 'handoffs.0.toSubtaskId',
-    }));
+    expect(result).toMatchObject({
+      ok: true,
+      assessment: {
+        certification: { status: 'certified', violations: [] },
+      },
+    });
   });
 
   it.each([
@@ -164,7 +168,7 @@ describe('Completion Protocol v3', () => {
 
   it('requires report noChangeReason to be null', () => {
     const result = validate({ rawResponse: response(report({ noChangeReason: 'nothing needed' })) });
-    expect(result.ok ? [] : result.violations.map(item => item.code))
+    expect(result.assessment.certification.violations.map(item => item.code))
       .toContain('completion_no_change_reason_mismatch');
   });
 
@@ -210,7 +214,7 @@ describe('Completion Protocol v3', () => {
   it('allows a zero-delta edit only with a non-empty no-change reason', () => {
     const current = subtask({ deliveryKind: 'edit' });
     const rejected = validate({ current });
-    expect(rejected.ok ? [] : rejected.violations.map(item => item.code))
+    expect(rejected.assessment.certification.violations.map(item => item.code))
       .toContain('completion_no_change_reason_mismatch');
     expect(validate({
       current,
@@ -227,15 +231,62 @@ describe('Completion Protocol v3', () => {
       workspaceDelta: delta([{ path: 'changed.md', beforeHash: null, afterHash: 'hash' }]),
       rawResponse: response(report({ noChangeReason: 'not applicable' })),
     });
-    expect(result.ok ? [] : result.violations.map(item => item.code))
+    expect(result.assessment.certification.violations.map(item => item.code))
       .toContain('completion_no_change_reason_mismatch');
   });
 
   it('fails closed for missing, malformed, or truncated workspace deltas', () => {
     for (const workspaceDelta of [null, {}, delta([], { baselineTruncated: true }), delta([], { finalTruncated: true })]) {
       const result = validate({ workspaceDelta });
-      expect(result.ok ? [] : result.violations.map(item => item.code))
+      expect(result.assessment.certification.violations.map(item => item.code))
         .toContain('completion_workspace_delta_uncertain');
     }
+  });
+
+  it('certifies a safe report when evidence exceeds former count and length limits', () => {
+    const result = validate({
+      rawResponse: response(report({
+        evidence: ['one', 'two', 'three', 'four', 'five', 'x'.repeat(8_000)],
+      })),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      body: 'Completed cleanly.',
+      assessment: {
+        certification: { status: 'certified', violations: [] },
+      },
+    });
+  });
+
+  it('delivers a safe body when the completion marker is missing', () => {
+    const result = validate({
+      rawResponse: 'Completed without the internal completion trailer.',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      body: 'Completed without the internal completion trailer.',
+    });
+  });
+
+  it('delivers a safe report body when the metadata trailer is invalid', () => {
+    const result = validate({
+      rawResponse: `Completed with invalid metadata.\n\n${COMPLETION_MARKER_V4}\n{"evidence": [}`,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      body: 'Completed with invalid metadata.',
+    });
+  });
+
+  it('does not suppress a safe report body when workspace facts are unavailable', () => {
+    const result = validate({ workspaceDelta: null });
+
+    expect(result).toMatchObject({
+      ok: true,
+      body: 'Completed cleanly.',
+    });
   });
 });

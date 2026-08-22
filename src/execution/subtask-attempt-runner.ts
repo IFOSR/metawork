@@ -13,12 +13,14 @@ import {
   type ExecutorAttemptReceiptInsert,
 } from '../storage/executor-attempt-receipt-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
+import type { PersistedSubtaskHandoffItem } from '../storage/subtask-handoff-repo.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { ExecutionMode } from './types.js';
 import type { ExecutionRuntime } from './execution-runtime.js';
 import {
-  COMPLETION_MARKER_V3,
+  COMPLETION_MARKER_V4,
   validateCompletionProtocol,
+  type CompletionAssessment,
   type CompletionContractViolation,
   type CompletionHandoffV3,
 } from './completion-protocol.js';
@@ -68,6 +70,12 @@ import {
 import { AttemptTerminalService } from './attempt-terminal-service.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import {
+  ResultObjectRepo,
+  type ResultObjectWriter,
+} from '../storage/result-object-repo.js';
+import type { ScopedExecutionResultReferencePort } from './execution-result-reference-port.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -79,7 +87,21 @@ export interface AuthorizedAttemptIdentity {
 export type SubtaskAttemptOutcome =
   | { outcome: 'completed'; attemptId: string; output: string; artifacts: string[]; warnings: string[]; executorName: string; durationMs: number }
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
-  | { outcome: 'contract_failed'; attemptId: string; workUnitId: string; agentClassName: string; responseBytes: number; receiptCount: number; completionContract: unknown; violations: CompletionContractViolation[] }
+  | {
+      outcome: 'contract_failed';
+      attemptId: string;
+      workUnitId: string;
+      agentClassName: string;
+      responseBytes: number;
+      receiptCount: number;
+      completionContract: unknown;
+      violations: CompletionContractViolation[];
+      output?: string;
+      resultId?: string;
+      deliverability: CompletionAssessment['deliverability']['status'];
+      certification: CompletionAssessment['certification']['status'];
+      safety: CompletionAssessment['safety']['status'];
+    }
   | { outcome: 'executor_failed'; attemptId: string; error: string; failure: KernelFailure }
   | { outcome: 'partition_conflict'; attemptId: string; claims: ResourceClaim[]; conflictingLeaseIds: string[] }
   | { outcome: 'cancelled_or_stale'; attemptId: string; reason: string };
@@ -101,6 +123,8 @@ export interface SubtaskAttemptRunnerDeps {
   workspaceRepository: WorkspaceRepositoryPort;
   sourceRoot: string;
   controlNetwork: string;
+  accountId?: string;
+  resultRoot: string;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -113,9 +137,13 @@ export class SubtaskAttemptRunner {
   private readonly dispatchItemRepo: KernelDispatchItemRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly terminalService: AttemptTerminalService;
+  private readonly resultObjectRepo: ResultObjectRepo;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
-    this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db);
+    this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db, {
+      accountId: deps.accountId,
+      resultRoot: deps.resultRoot,
+    });
     this.receiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
     this.attemptRuntimeRepo = new ExecutorAttemptRuntimeRepo(deps.db);
@@ -123,6 +151,10 @@ export class SubtaskAttemptRunner {
     this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     this.terminalService = new AttemptTerminalService(deps.db);
+    this.resultObjectRepo = new ResultObjectRepo(
+      deps.db,
+      deps.resultRoot,
+    );
   }
 
   private get sessionId(): string {
@@ -285,8 +317,21 @@ export class SubtaskAttemptRunner {
 
     const startedAt = new Date().toISOString();
     let rawResponse = '';
+    const rawResultWriter = this.resultObjectRepo.createWriter({
+      resultId: `result_${attemptId}_raw`,
+      accountId: this.deps.accountId ?? 'local-default',
+      taskId: task.id,
+      generationId: subtask.generationId,
+      sourceSubtaskId: subtask.id,
+      attemptId,
+      kind: 'raw_attempt_output',
+      mediaType: 'application/x-anyfusion-harness-stream',
+      retentionClass: 'task',
+      createdAt: startedAt,
+    });
     let evidenceCapability: { revoke(): void } | null = null;
     let evidenceToolServer: ExecutionEvidenceToolServer | null = null;
+    let resultReferenceCapability: ScopedExecutionResultReferencePort | null = null;
     let workspaceBaseline: WorkspaceState | null = null;
     let workspaceDelta: WorkspaceDelta | null = null;
     let workspace: WorkspaceHandle | null = null;
@@ -479,10 +524,13 @@ export class SubtaskAttemptRunner {
         },
       });
       evidenceCapability = built.evidenceCapability;
+      resultReferenceCapability = built.resultReferenceCapability;
       if (evidenceToolsAvailable) {
-        evidenceToolServer = new ExecutionEvidenceToolServer(built.evidenceCapability, {
-          advertisedHost: attemptControlHost,
-        });
+        evidenceToolServer = new ExecutionEvidenceToolServer(
+          built.evidenceCapability,
+          built.resultReferenceCapability,
+          { advertisedHost: attemptControlHost },
+        );
         built.context.evidenceTools.binding = await evidenceToolServer.start();
       }
       const capabilityContext = {
@@ -577,6 +625,7 @@ export class SubtaskAttemptRunner {
               attemptId, token, new Date().toISOString(),
             ),
           },
+          onRawOutput: chunk => rawResultWriter.append(chunk),
         },
         onProgress: (event, executor) => {
           const safeText = formatExecutorProgress(event.text);
@@ -590,6 +639,17 @@ export class SubtaskAttemptRunner {
         },
       });
       rawResponse = execution.output;
+      if (workspaceBaseline && workspace) {
+        workspaceDelta = deriveWorkspaceDelta(
+          workspaceBaseline,
+          captureWorkspaceState(workspace.filesPath),
+        );
+        this.attemptRuntimeRepo.recordWorkspaceDelta(
+          attemptId,
+          workspaceDelta,
+          new Date().toISOString(),
+        );
+      }
       if (execution.status !== 'success') {
         const error = execution.error ?? 'Executor failed without an error message';
         const pendingPermission = this.deps.permissionRepository.findPendingForTask(task.id);
@@ -601,12 +661,77 @@ export class SubtaskAttemptRunner {
               summary: `permission request ${pendingPermission.request.id} requires Planner or user review`,
             }
           : execution.failure;
+        const partialCompletion = execution.output.trim()
+          ? validateCompletionProtocol({
+              rawResponse: execution.output,
+              subtask,
+              outgoingHandoffs: [],
+              workspaceRoot: workspace?.filesPath ?? this.deps.sourceRoot,
+              workspaceDelta,
+            })
+          : null;
+        if (
+          partialCompletion?.ok
+          && partialCompletion.body
+          && partialCompletion.assessment.deliverability.status === 'deliverable'
+          && partialCompletion.assessment.safety.status === 'safe'
+        ) {
+          const partialAssessment: CompletionAssessment = {
+            ...partialCompletion.assessment,
+            result: { kind: 'partial' },
+            certification: {
+              status: 'uncertified',
+              violations: partialCompletion.assessment.certification.violations,
+            },
+          };
+          const resultObjects = this.persistAttemptResults({
+            attemptId,
+            taskId: task.id,
+            generationId: subtask.generationId,
+            subtaskId: subtask.id,
+            rawResponse,
+            body: partialCompletion.body,
+            completeness: 'partial',
+            rawResultWriter,
+          });
+          const partialOutcome = this.landContractFailure({
+            attemptId,
+            executionId: input.executionId,
+            taskId: task.id,
+            subtaskId: subtask.id,
+            workUnitId: claim.workUnit.id,
+            agentClassName,
+            startedAt,
+            rawResponse,
+            completionSchemaVersion: 4,
+            violations: partialCompletion.assessment.certification.violations,
+            errorCode: executionFailure?.code ?? 'executor_partial_result',
+            errorDetail: error,
+            completionContract: built.context.completionContract,
+            terminalState: 'uncertified_result',
+            output: this.readResultObject(resultObjects.safeProjectionId, partialCompletion.body),
+            assessment: partialAssessment,
+            resultObjects,
+          });
+          claim.markWaiting('partial business result delivered; completion certification pending');
+          return partialOutcome;
+        }
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
           errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
           failure: executionFailure,
+          resultObjects: this.persistAttemptResults({
+            attemptId,
+            taskId: task.id,
+            generationId: subtask.generationId,
+            subtaskId: subtask.id,
+            rawResponse,
+            body: null,
+            completeness: 'incomplete',
+            rawResultWriter,
+          }),
         });
         if (mergeRepair) {
           this.publicationRepo.recordRepairFailure(
@@ -623,16 +748,6 @@ export class SubtaskAttemptRunner {
               failure: executionFailure ?? { kind: 'unknown', scope: 'attempt', code: 'executor_failed', summary: error },
             };
       }
-
-      workspaceDelta = deriveWorkspaceDelta(
-        workspaceBaseline,
-        captureWorkspaceState(workspace.filesPath),
-      );
-      this.attemptRuntimeRepo.recordWorkspaceDelta(
-        attemptId,
-        workspaceDelta,
-        new Date().toISOString(),
-      );
 
       if (mergeRepair) {
         const report = parseMergeRepairReport(rawResponse);
@@ -735,6 +850,19 @@ export class SubtaskAttemptRunner {
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
         ])),
       });
+      const resultObjects = this.persistAttemptResults({
+        attemptId,
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        rawResponse,
+        body: completion.body,
+        completeness: completion.assessment.result.kind === 'complete' ? 'complete' : 'partial',
+        rawResultWriter,
+      });
+      const safeBody = completion.body === null
+        ? null
+        : this.readResultObject(resultObjects.safeProjectionId, completion.body);
       if (!completion.ok) {
         const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
         const contractOutcome = this.landContractFailure({
@@ -751,8 +879,40 @@ export class SubtaskAttemptRunner {
           errorCode: completion.violations[0]?.code ?? 'completion_malformed',
           errorDetail: detail,
           completionContract: built.context.completionContract,
+          assessment: completion.assessment,
+          resultObjects,
         });
         claim.markFailed(detail);
+        return contractOutcome;
+      }
+      if (
+        completion.assessment.certification.status === 'uncertified'
+        || completion.envelope === null
+      ) {
+        const violations = completion.assessment.certification.violations;
+        const detail = violations.map(item =>
+          `${item.code}:${item.path}:${item.message}`).join('; ')
+          || 'completion metadata is incomplete';
+        const contractOutcome = this.landContractFailure({
+          attemptId,
+          executionId: input.executionId,
+          taskId: task.id,
+          subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id,
+          agentClassName,
+          startedAt,
+          rawResponse,
+          completionSchemaVersion: completion.envelope?.schemaVersion ?? 4,
+          violations,
+          errorCode: violations[0]?.code ?? 'completion_malformed',
+          errorDetail: detail,
+          completionContract: built.context.completionContract,
+          terminalState: 'uncertified_result',
+          output: safeBody ?? undefined,
+          assessment: completion.assessment,
+          resultObjects,
+        });
+        claim.markWaiting('business result delivered; completion certification pending');
         return contractOutcome;
       }
       if (completion.envelope.status === 'failed') {
@@ -760,9 +920,10 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 3,
+          terminalState: 'executor_failed', rawResponse, completionSchemaVersion: 4,
           errorCode: failure.code, errorDetail: failure.summary,
           failure: { ...failure, scope: 'task' },
+          resultObjects,
         });
         claim.markFailed(failure.summary);
         return {
@@ -786,6 +947,7 @@ export class SubtaskAttemptRunner {
           rawResponse,
           errorCode: 'attempt_stale',
           errorDetail: detail,
+          resultObjects,
         });
         if (this.isAttemptClaimCurrent(attemptId, claim.workUnit.id)) {
           claim.markFailed(detail);
@@ -800,11 +962,11 @@ export class SubtaskAttemptRunner {
       );
       const dispatchItem = this.dispatchItemRepo.find(attemptId);
       const publicationCompletion: WorkspacePublicationCompletion = {
-        body: completion.body,
+        body: safeBody ?? '',
         artifacts: completion.normalizedArtifacts,
         warnings: completion.warnings,
         handoffs: completedEnvelope.handoffs,
-        completionSchemaVersion: 3,
+        completionSchemaVersion: 4,
       };
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${attemptId}`);
@@ -820,8 +982,9 @@ export class SubtaskAttemptRunner {
           startedAt,
           terminalState: 'completed',
           rawResponse,
-          completionSchemaVersion: 3,
+          completionSchemaVersion: 4,
           warnings: completion.warnings,
+          resultObjects,
         }, completedAt),
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
@@ -895,7 +1058,7 @@ export class SubtaskAttemptRunner {
       return {
         outcome: 'completed',
         attemptId,
-        output: completion.body,
+        output: safeBody ?? '',
         artifacts: completion.normalizedArtifacts,
         warnings: completion.warnings,
         executorName: execution.executorName,
@@ -915,6 +1078,16 @@ export class SubtaskAttemptRunner {
           attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'executor_failed', rawResponse, errorCode: 'attempt_exception', errorDetail: message,
+          resultObjects: this.persistAttemptResults({
+            attemptId,
+            taskId: task.id,
+            generationId: subtask.generationId,
+            subtaskId: subtask.id,
+            rawResponse,
+            body: null,
+            completeness: 'incomplete',
+            rawResultWriter,
+          }),
         });
       }
       claim.markFailed(message);
@@ -957,6 +1130,7 @@ export class SubtaskAttemptRunner {
         }
       }
       evidenceCapability?.revoke();
+      resultReferenceCapability?.revoke();
       await evidenceToolServer?.close();
       await capabilityToolServer?.close();
       if (this.hasSealedTerminal(attemptId)) {
@@ -1013,7 +1187,14 @@ export class SubtaskAttemptRunner {
       claim.startAttempt();
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
-      const prompt = buildCorrectionPrompt(source.rawResponse, input.violations);
+      const sourceResult = this.readCorrectionSourceResult(source);
+      const prompt = buildCorrectionPrompt({
+        resultId: sourceResult.safe.resultId,
+        contentHash: sourceResult.safe.contentHash,
+        byteLength: sourceResult.safe.byteLength,
+        workspaceChanged: sourceRuntime.workspaceDelta?.changed === true,
+        violations: input.violations,
+      });
       const result = await this.deps.executionRuntime.runResponseOnly(
         dispatch.authorizedBinding,
         prompt,
@@ -1043,8 +1224,12 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       }, this.deps.sourceRoot);
+      const correctionMarkerIndex = result.output.indexOf(COMPLETION_MARKER_V4);
+      const correctedMetadata = correctionMarkerIndex >= 0
+        ? result.output.slice(correctionMarkerIndex)
+        : result.output;
       const completion = validateCompletionProtocol({
-        rawResponse: result.output,
+        rawResponse: `${sourceResult.body}\n\n${correctedMetadata}`,
         subtask,
         outgoingHandoffs,
         workspaceRoot: gitWorkspace.filesPath,
@@ -1054,6 +1239,25 @@ export class SubtaskAttemptRunner {
           summarizeHandoffUsage(this.handoffRepo.listIncoming(task.id, contract.toSubtaskId)),
         ])),
       });
+      const correctionRaw = this.resultObjectRepo.putObject({
+        resultId: `result_${input.attemptId}_raw`,
+        accountId: this.deps.accountId ?? 'local-default',
+        taskId: task.id,
+        generationId: subtask.generationId,
+        sourceSubtaskId: subtask.id,
+        attemptId: input.attemptId,
+        kind: 'raw_attempt_output',
+        mediaType: 'text/plain',
+        content: result.output,
+        completeness: 'complete',
+        retentionClass: 'task',
+      });
+      const resultObjects = {
+        rawOutputId: correctionRaw.resultId,
+        businessResultId: sourceResult.business.resultId,
+        safeProjectionId: sourceResult.safe.resultId,
+      };
+      const safeBody = sourceResult.body;
       if (!completion.ok) {
         const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
         const contractOutcome = this.landContractFailure({
@@ -1070,8 +1274,40 @@ export class SubtaskAttemptRunner {
           errorCode: completion.violations[0]?.code ?? 'completion_malformed',
           errorDetail: detail,
           completionContract: input.completionContract,
+          assessment: completion.assessment,
+          resultObjects,
         });
         claim.markFailed(detail);
+        return contractOutcome;
+      }
+      if (
+        completion.assessment.certification.status === 'uncertified'
+        || completion.envelope === null
+      ) {
+        const violations = completion.assessment.certification.violations;
+        const detail = violations.map(item =>
+          `${item.code}:${item.path}:${item.message}`).join('; ')
+          || 'completion metadata is incomplete';
+        const contractOutcome = this.landContractFailure({
+          attemptId: input.attemptId,
+          executionId: input.executionId,
+          taskId: task.id,
+          subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id,
+          agentClassName,
+          startedAt,
+          rawResponse: result.output,
+          completionSchemaVersion: completion.envelope?.schemaVersion ?? 4,
+          violations,
+          errorCode: violations[0]?.code ?? 'completion_malformed',
+          errorDetail: detail,
+          completionContract: input.completionContract,
+          terminalState: 'uncertified_result',
+          output: safeBody ?? undefined,
+          assessment: completion.assessment,
+          resultObjects,
+        });
+        claim.markWaiting('business result delivered; completion certification pending');
         return contractOutcome;
       }
       if (completion.envelope.status === 'failed') {
@@ -1079,7 +1315,7 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 3,
+          terminalState: 'executor_failed', rawResponse: result.output, completionSchemaVersion: 4,
           errorCode: failure.code, errorDetail: failure.summary,
         });
         claim.markFailed(failure.summary);
@@ -1102,7 +1338,10 @@ export class SubtaskAttemptRunner {
         receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 3, warnings: completion.warnings,
+          terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 4, warnings: completion.warnings,
+          resultObjects,
+          assessment: completion.assessment,
+          completionContract: input.completionContract,
         }, completedAt),
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
@@ -1116,11 +1355,11 @@ export class SubtaskAttemptRunner {
           agentClassName,
           candidateCommit: managedCommit.commit,
           completion: {
-            body: completion.body,
+            body: safeBody ?? '',
             artifacts: completion.normalizedArtifacts,
             warnings: completion.warnings,
             handoffs: completedEnvelope.handoffs,
-            completionSchemaVersion: 3,
+            completionSchemaVersion: 4,
           },
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
           firstDispatchOrder: dispatchItem.batchOrder,
@@ -1168,7 +1407,7 @@ export class SubtaskAttemptRunner {
         });
       }
       return {
-        outcome: 'completed', attemptId: input.attemptId, output: completion.body,
+        outcome: 'completed', attemptId: input.attemptId, output: safeBody ?? '',
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
         executorName: agentClassName, durationMs: result.durationMs,
       };
@@ -1248,46 +1487,56 @@ export class SubtaskAttemptRunner {
     errorCode: string;
     errorDetail: string;
     completionContract: unknown;
+    terminalState?: 'contract_blocked' | 'uncertified_result';
+    output?: string;
+    assessment: CompletionAssessment;
+    resultObjects?: AttemptResultObjects;
   }): Extract<SubtaskAttemptOutcome, { outcome: 'contract_failed' }> {
     const dispatch = this.dispatchItemRepo.find(input.attemptId);
     if (!dispatch) {
       throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
     }
     const now = new Date().toISOString();
+    const terminalState = input.terminalState ?? 'contract_blocked';
     const receiptCount = this.receiptRepo.countByTerminal(
       input.taskId,
       input.subtaskId,
-      'contract_blocked',
+      terminalState,
     ) + 1;
     const responseBytes = Buffer.byteLength(input.rawResponse, 'utf8');
+    const event = {
+      schemaVersion: 5 as const,
+      configurationRevision: dispatch.configurationRevision,
+      type: 'execution_result_observed' as const,
+      id: `event_${dispatch.attemptId}_execution_result_observed`,
+      correlationId: dispatch.decisionId,
+      causationId: dispatch.decisionId,
+      occurredAt: now,
+      sessionId: this.sessionId,
+      taskId: dispatch.taskId,
+      subtaskId: dispatch.subtaskId,
+      attemptId: dispatch.attemptId,
+      workUnitId: input.workUnitId,
+      authorizedBinding: dispatch.authorizedBinding,
+      bindingFingerprint: dispatch.bindingFingerprint,
+      contract: input.completionContract,
+      violations: input.violations,
+      receiptCount,
+      responseBytes,
+      resultId: input.resultObjects?.safeProjectionId ?? null,
+      deliverability: input.assessment.deliverability.status,
+      certification: input.assessment.certification.status,
+      safety: input.assessment.safety.status,
+    };
     this.terminalService.land({
       receipt: buildReceipt({
         ...input,
-        terminalState: 'contract_blocked',
+        terminalState,
       }, now),
       expectedSubtaskStatus: 'running',
       nextSubtaskStatus: 'awaiting_decision',
       subtaskError: input.errorDetail,
-      event: {
-        schemaVersion: 5,
-        configurationRevision: dispatch.configurationRevision,
-        type: 'handoff_contract_failed',
-        id: `event_${dispatch.attemptId}_handoff_contract_failed`,
-        correlationId: dispatch.decisionId,
-        causationId: dispatch.decisionId,
-        occurredAt: now,
-        sessionId: this.sessionId,
-        taskId: dispatch.taskId,
-        subtaskId: dispatch.subtaskId,
-        attemptId: dispatch.attemptId,
-        workUnitId: input.workUnitId,
-        authorizedBinding: dispatch.authorizedBinding,
-        bindingFingerprint: dispatch.bindingFingerprint,
-        contract: input.completionContract as never,
-        violations: input.violations,
-        receiptCount,
-        responseBytes,
-      },
+      event,
       now,
     });
     return {
@@ -1299,7 +1548,100 @@ export class SubtaskAttemptRunner {
       receiptCount,
       completionContract: input.completionContract,
       violations: input.violations,
+      output: input.output,
+      resultId: input.resultObjects?.safeProjectionId ?? undefined,
+      deliverability: input.assessment.deliverability.status,
+      certification: input.assessment.certification.status,
+      safety: input.assessment.safety.status,
     };
+  }
+
+  private persistAttemptResults(input: {
+    attemptId: string;
+    taskId: string;
+    generationId: string;
+    subtaskId: string;
+    rawResponse: string;
+    body: string | null;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    rawResultWriter?: ResultObjectWriter;
+  }): AttemptResultObjects {
+    const common = {
+      accountId: this.deps.accountId ?? 'local-default',
+      taskId: input.taskId,
+      generationId: input.generationId,
+      sourceSubtaskId: input.subtaskId,
+      attemptId: input.attemptId,
+      retentionClass: 'task',
+    };
+    const raw = input.rawResultWriter
+      ? (() => {
+          if (input.rawResultWriter.byteLength === 0 && input.rawResponse) {
+            input.rawResultWriter.append(input.rawResponse);
+          }
+          return input.rawResultWriter.finalize(input.completeness);
+        })()
+      : this.resultObjectRepo.putObject({
+          ...common,
+          resultId: `result_${input.attemptId}_raw`,
+          kind: 'raw_attempt_output',
+          mediaType: 'text/plain',
+          content: input.rawResponse,
+          completeness: input.completeness,
+        });
+    if (input.body === null) {
+      return { rawOutputId: raw.resultId, businessResultId: null, safeProjectionId: null };
+    }
+    const business = this.resultObjectRepo.putObject({
+      ...common,
+      resultId: `result_${input.attemptId}_business`,
+      kind: 'business_result',
+      mediaType: 'text/markdown',
+      content: input.body,
+      completeness: input.completeness,
+    });
+    const safe = this.resultObjectRepo.putObject({
+      ...common,
+      resultId: `result_${input.attemptId}_safe`,
+      kind: 'safe_projection',
+      mediaType: 'text/markdown',
+      content: redactSensitiveText(input.body),
+      completeness: input.completeness,
+    });
+    return {
+      rawOutputId: raw.resultId,
+      businessResultId: business.resultId,
+      safeProjectionId: safe.resultId,
+    };
+  }
+
+  private readCorrectionSourceResult(receipt: ExecutorAttemptReceipt): {
+    body: string;
+    business: NonNullable<ReturnType<ResultObjectRepo['findObject']>>;
+    safe: NonNullable<ReturnType<ResultObjectRepo['findObject']>>;
+  } {
+    const refs = receipt.parsing.resultObjects as AttemptResultObjects | null | undefined;
+    const business = refs?.businessResultId
+      ? this.resultObjectRepo.findObject(refs.businessResultId)
+      : null;
+    const safe = refs?.safeProjectionId
+      ? this.resultObjectRepo.findObject(refs.safeProjectionId)
+      : null;
+    if (!business || !safe) {
+      throw new Error(`correction source has no persisted business result: ${receipt.attemptId}`);
+    }
+    return {
+      body: this.resultObjectRepo.readRange(safe.resultId, 0, safe.byteLength).content,
+      business,
+      safe,
+    };
+  }
+
+  private readResultObject(resultId: string | null, fallback: string): string {
+    if (!resultId) return fallback;
+    const object = this.resultObjectRepo.findObject(resultId);
+    if (!object) return fallback;
+    return this.resultObjectRepo.readRange(resultId, 0, object.byteLength).content;
   }
 
   private persistNonSuccess(input: {
@@ -1316,6 +1658,7 @@ export class SubtaskAttemptRunner {
     errorCode: string;
     errorDetail: string;
     failure?: KernelFailure | null;
+    resultObjects?: AttemptResultObjects;
   }): void {
     const dispatch = this.dispatchItemRepo.find(input.attemptId);
     if (!dispatch) {
@@ -1364,7 +1707,7 @@ export class SubtaskAttemptRunner {
   }
 }
 
-function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV3['items'] }>): {
+function summarizeHandoffUsage(handoffs: Array<{ items: PersistedSubtaskHandoffItem[] }>): {
   textCharacters: number;
   artifactPaths: number;
 } {
@@ -1373,7 +1716,7 @@ function summarizeHandoffUsage(handoffs: Array<{ items: CompletionHandoffV3['ite
   for (const handoff of handoffs) {
     for (const item of handoff.items) {
       if (item.type === 'text') textCharacters += item.value.length;
-      else artifactPaths += item.paths.length;
+      else if (item.type === 'artifact') artifactPaths += item.paths.length;
     }
   }
   return { textCharacters, artifactPaths };
@@ -1512,6 +1855,10 @@ function buildReceipt(input: {
   errorCode?: string | null;
   errorDetail?: string | null;
   failure?: KernelFailure | null;
+  resultObjects?: AttemptResultObjects;
+  assessment?: CompletionAssessment;
+  completionContract?: unknown;
+  responseBytes?: number;
 }, completedAt = new Date().toISOString()): ExecutorAttemptReceiptInsert {
   return {
     attemptId: input.attemptId,
@@ -1523,9 +1870,15 @@ function buildReceipt(input: {
     startedAt: input.startedAt,
     completedAt,
     terminalState: input.terminalState,
-    rawResponse: input.rawResponse,
+    rawResponse: input.resultObjects ? '' : input.rawResponse,
     completionSchemaVersion: input.completionSchemaVersion ?? null,
-    parsing: { completionMarker: input.completionSchemaVersion ? 'parsed' : 'unavailable' },
+    parsing: {
+      completionMarker: input.completionSchemaVersion ? 'parsed' : 'unavailable',
+      resultObjects: input.resultObjects ?? null,
+      completionAssessment: input.assessment ?? null,
+      completionContract: input.completionContract ?? null,
+      responseBytes: input.responseBytes ?? Buffer.byteLength(input.rawResponse, 'utf8'),
+    },
     verification: { warnings: input.warnings ?? [], violations: input.violations ?? [] },
     errorCode: input.errorCode ?? null,
     errorDetail: input.errorDetail ?? null,
@@ -1533,20 +1886,32 @@ function buildReceipt(input: {
   };
 }
 
-function buildCorrectionPrompt(
-  rawResponse: string,
-  violations: CompletionContractViolation[],
-): string {
-  const guidance = [...new Set(violations.map(violation => correctionGuidance(violation.code)))];
+interface AttemptResultObjects {
+  rawOutputId: string;
+  businessResultId: string | null;
+  safeProjectionId: string | null;
+}
+
+function buildCorrectionPrompt(input: {
+  resultId: string;
+  contentHash: string;
+  byteLength: number;
+  workspaceChanged: boolean;
+  violations: CompletionContractViolation[];
+}): string {
+  const guidance = [...new Set(input.violations.map(violation => correctionGuidance(violation.code)))];
   return [
-    'Correct only the final response format. Do not execute the task, use tools, inspect files, or change the workspace.',
-    'Return non-empty Markdown followed by exactly one completion trailer.',
-    `Trailer marker: ${COMPLETION_MARKER_V3}`,
-    'Successful report schema: {"evidence":["<concise evidence>"],"noChangeReason":null}',
+    'Repair only completion metadata. Do not execute the task, use tools, inspect files, change the workspace, or rewrite the business result.',
+    'The immutable business result is not included in this prompt. Return exactly one completion trailer and no business body.',
+    `Immutable result reference: ${input.resultId}`,
+    `Immutable result hash: ${input.contentHash}`,
+    `Immutable result bytes: ${input.byteLength}`,
+    `Workspace changed: ${String(input.workspaceChanged)}`,
+    `Trailer marker: ${COMPLETION_MARKER_V4}`,
+    'Successful report schema: {"evidence":["<evidence>"],"noChangeReason":null}',
     'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
     'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
     `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
-    `Original response:\n${rawResponse}`,
   ].join('\n\n');
 }
 
@@ -1561,7 +1926,7 @@ function correctionGuidance(code: CompletionContractViolation['code']): string {
     case 'completion_workspace_delta_uncertain':
       return 'The workspace delta is not authoritative and cannot be repaired in the response; return a structured failure.';
     case 'completion_budget_exceeded':
-      return 'Keep evidence concise: one to four entries, at most 1000 characters each.';
+      return 'Return valid metadata without changing or shortening the original business result.';
     default:
       return 'Return exactly one strict identity-free report matching one of the schemas above.';
   }

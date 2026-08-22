@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ import {
   MAX_GATEWAY_EVENT_PAYLOAD_BYTES,
   type GatewayEventEnvelope,
 } from '../../src/gateway/client-events.js';
+import { redactSensitiveText } from '../../src/utils/redact-sensitive-text.js';
 import { ConversationGatewayRuntime } from '../../src/gateway/conversation-gateway-runtime.js';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
@@ -129,9 +131,34 @@ describe('ConversationGatewayRuntime', () => {
     expect(events.at(-1)?.payload).toEqual({ message: 'planner failed' });
   });
 
-  it('publishes an oversized final answer as a bounded successful terminal event', async () => {
+  it('passes the Gateway turn identity into Conversation execution', async () => {
+    const fixture = createFixture();
+    const events = fixture.capture('conv_1');
+
+    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
+    await waitFor(() => events.some(event => event.kind === 'final_answer'));
+
+    const started = events.find(event => event.kind === 'turn_started');
+    expect(fixture.turnIds).toEqual([started?.turnId]);
+  });
+
+  it('publishes only assistant output in the final answer payload', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      session.output.push('', `> ${commandText(command)}`, 'answer only');
+    });
+    const events = fixture.capture('conv_1');
+
+    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
+    await waitFor(() => events.some(event => event.kind === 'final_answer'));
+
+    expect(events.find(event => event.kind === 'final_answer')?.payload)
+      .toMatchObject({ lines: ['answer only'] });
+  });
+
+  it('publishes an oversized final answer as replayable bounded result chunks', async () => {
+    const answer = `开头\n${'x'.repeat(MAX_GATEWAY_EVENT_PAYLOAD_BYTES * 2)}\n结尾`;
     const fixture = createFixture(async (_conversationId, _command, session) => {
-      session.output.push('x'.repeat(MAX_GATEWAY_EVENT_PAYLOAD_BYTES * 2));
+      session.output.push(answer);
     });
     const events = fixture.capture('conv_1');
 
@@ -145,11 +172,104 @@ describe('ConversationGatewayRuntime', () => {
     await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
     const finalAnswer = events.find(event => event.kind === 'final_answer');
     expect(finalAnswer).toBeDefined();
-    expect(gatewayEventPayloadBytes(finalAnswer?.payload)).toBeLessThanOrEqual(
-      MAX_GATEWAY_EVENT_PAYLOAD_BYTES,
-    );
-    expect(finalAnswer?.payload).toMatchObject({ truncated: true });
+    const available = events.find(event => event.kind === 'result_delivery_available');
+    const chunks = events.filter(event => event.kind === 'result_chunk');
+    const completed = events.find(event => event.kind === 'result_completed');
+    expect(available?.payload).toMatchObject({
+      certification: 'certified',
+      completeness: 'complete',
+    });
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(completed?.payload).toMatchObject({
+      resultId: (available?.payload as { resultId?: string }).resultId,
+      contentHash: (available?.payload as { contentHash?: string }).contentHash,
+    });
+    expect(chunks.map(event => (event.payload as { chunk: string }).chunk).join(''))
+      .toBe(answer);
+    expect(events.every(event =>
+      gatewayEventPayloadBytes(event.payload) <= MAX_GATEWAY_EVENT_PAYLOAD_BYTES
+    )).toBe(true);
+    expect(finalAnswer?.payload).not.toHaveProperty('truncated');
     expect(events.some(event => event.kind === 'terminal_error')).toBe(false);
+
+    const replay = await fixture.journal.replay('local-default', 'conv_1', 0);
+    const replayedChunks = [...replay.snapshot, ...replay.deltas]
+      .filter(event => event.kind === 'result_chunk')
+      .sort((left, right) => left.sequence - right.sequence);
+    expect(replayedChunks.map(event =>
+      (event.payload as { chunk: string }).chunk
+    ).join('')).toBe(answer);
+  });
+
+  it('uses the structured Conversation result projection instead of parsing status text', async () => {
+    const fixture = createFixture(async (_conversationId, _command, session) => {
+      session.output.push('safe business body', '', 'localized certification status');
+      session.recordResultDelivery({
+        resultId: 'result_persisted_safe',
+        content: 'safe business body',
+        completeness: 'partial',
+        certification: 'uncertified',
+      });
+    });
+    const events = fixture.capture('conv_1');
+
+    const receipt = await fixture.runtime.submit(
+      'conv_1',
+      'req_1',
+      'idem_1',
+      userMessage('structured result'),
+    );
+
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    expect(events.find(event => event.kind === 'result_delivery_available')?.payload)
+      .toMatchObject({
+        resultId: 'result_persisted_safe',
+        completeness: 'partial',
+        certification: 'uncertified',
+      });
+    expect(events.filter(event => event.kind === 'result_chunk')
+      .map(event => (event.payload as { chunk: string }).chunk)
+      .join('')).toBe('safe business body');
+    expect(events.find(event => event.kind === 'final_answer')?.payload)
+      .toMatchObject({ lines: [], resultId: 'result_persisted_safe' });
+  });
+
+  it('hashes the same redacted result content that the Gateway journal stores', async () => {
+    const unsafeContent = 'Report\napi_key=secret-value';
+    const safeContent = redactSensitiveText(unsafeContent);
+    const fixture = createFixture(async (_conversationId, _command, session) => {
+      session.recordResultDelivery({
+        resultId: 'result_redacted_hash',
+        content: unsafeContent,
+        completeness: 'complete',
+        certification: 'certified',
+      });
+    });
+    const events = fixture.capture('conv_1');
+    const assembler = new (await import('../../src/gateway/result-stream-assembler.js')).ResultStreamAssembler();
+
+    const receipt = await fixture.runtime.submit(
+      'conv_1',
+      'req_1',
+      'idem_1',
+      userMessage('redacted result'),
+    );
+
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    const completed = events.find(event => event.kind === 'result_completed')!;
+    for (const event of events.filter(event => (
+      ['result_delivery_available', 'result_chunk', 'result_completed'].includes(event.kind)
+    ))) {
+      assembler.consume(event);
+    }
+    expect(assembler.find('result_redacted_hash')).toMatchObject({
+      resultId: 'result_redacted_hash',
+      content: safeContent,
+    });
+    expect(completed.payload).toMatchObject({
+      contentHash: hash(safeContent),
+      byteLength: Buffer.byteLength(safeContent, 'utf8'),
+    });
   });
 
   it('exposes terminal completion for an accepted mailbox command', async () => {
@@ -384,11 +504,13 @@ function createFixture(
     session = new FakeConversationSession(
       conversationId,
       command => operation(conversationId, command, session),
+      fixture.turnIds,
     );
     return session as unknown as ConversationSession;
   };
   const fixture = {
     executions: [] as string[],
+    turnIds: [] as Array<string | null>,
     journal,
     subscriptions,
     registry: {
@@ -434,11 +556,18 @@ function createFixture(
 
 class FakeConversationSession {
   readonly output: string[] = [];
+  readonly resultDeliveries: Array<{
+    resultId: string;
+    content: string;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    certification: 'certified' | 'uncertified';
+  }> = [];
   private readonly mailbox: ConversationInputMailbox;
 
   constructor(
     readonly conversationId: string,
     private readonly execute: (command: GatewayCommand) => Promise<void>,
+    private readonly turnIds: Array<string | null> = [],
   ) {
     this.mailbox = new ConversationInputMailbox({ execute: async () => undefined });
   }
@@ -451,12 +580,24 @@ class FakeConversationSession {
     return this.mailbox.submit(command);
   }
 
-  async executeGatewayCommand(command: GatewayCommand): Promise<void> {
+  async executeGatewayCommand(
+    command: GatewayCommand,
+    options: { interactionTurnId?: string } = {},
+  ): Promise<void> {
+    this.turnIds.push(options.interactionTurnId ?? null);
     await this.execute(command);
   }
 
   getOutput(): string[] {
     return [...this.output];
+  }
+
+  recordResultDelivery(delivery: FakeConversationSession['resultDeliveries'][number]): void {
+    this.resultDeliveries.push(delivery);
+  }
+
+  getResultDeliveries(): FakeConversationSession['resultDeliveries'] {
+    return [...this.resultDeliveries];
   }
 
   subscribe(): () => void {
@@ -478,6 +619,10 @@ function userMessage(text: string): GatewayCommand {
 
 function commandText(command: GatewayCommand): string {
   return 'text' in command ? command.text : command.kind;
+}
+
+function hash(content: string): string {
+  return `sha256:${createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex')}`;
 }
 
 function deferred<T>() {

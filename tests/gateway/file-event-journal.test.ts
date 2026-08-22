@@ -82,6 +82,53 @@ describe('FileEventJournal', () => {
     );
   });
 
+  it('appends one result stream in a batch and preserves every chunk beyond retention', async () => {
+    const journal = await makeJournal();
+    const resultId = 'result_large';
+    const events: GatewayEventEnvelope[] = [
+      {
+        ...makeEvent('result_available', 'result_delivery_available'),
+        payload: {
+          resultId,
+          contentHash: 'sha256:test',
+          byteLength: 250,
+          completeness: 'complete',
+          certification: 'certified',
+        },
+      },
+      ...Array.from({ length: 250 }, (_, index) => ({
+        ...makeEvent(`result_chunk_${index}`, 'result_chunk'),
+        payload: {
+          resultId,
+          offset: index,
+          chunk: 'x',
+          byteLength: 1,
+        },
+      })),
+      {
+        ...makeEvent('result_completed', 'result_completed'),
+        payload: {
+          resultId,
+          contentHash: 'sha256:test',
+          byteLength: 250,
+          completeness: 'complete',
+          certification: 'certified',
+        },
+      },
+    ];
+
+    const appended = await journal.appendBatch(events);
+    const replay = await journal.replay('local-default', 'conv_1', 0);
+    const resultEvents = [...replay.snapshot, ...replay.deltas]
+      .filter(event => resultIdFrom(event) === resultId);
+
+    expect(appended).toHaveLength(events.length);
+    expect(resultEvents.filter(event => event.kind === 'result_chunk')).toHaveLength(250);
+    expect(resultEvents.map(event => event.sequence)).toEqual(
+      Array.from({ length: events.length }, (_, index) => index + 1),
+    );
+  });
+
   it('ignores duplicate event ids', async () => {
     const journal = await makeJournal();
     await journal.append(makeEvent('e1', 'turn_started'));
@@ -296,3 +343,8 @@ describe('FileEventJournal', () => {
     expect(replay.deltas[0]?.sequence).toBe(2);
   });
 });
+
+function resultIdFrom(event: GatewayEventEnvelope): string | null {
+  const payload = event.payload as { resultId?: unknown };
+  return typeof payload.resultId === 'string' ? payload.resultId : null;
+}

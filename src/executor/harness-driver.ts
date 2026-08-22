@@ -24,12 +24,14 @@ export interface HarnessProgressEvent {
 
 export type HarnessExecutorResult =
   | { success: true; output: string }
-  | { success: false; output: ''; error: string };
+  | { success: false; output: string; error: string };
 
 export interface HarnessLaunchInput {
   prompt: string;
   cwd: string;
   runtimeHomePath: string;
+  providerRef?: string;
+  modelId?: string;
 }
 
 export interface HarnessLaunchSpec {
@@ -99,7 +101,7 @@ export function normalizeHarnessResult(input: HarnessResultInput): HarnessExecut
   if (input.exitCode === 0) return { success: true, output };
   return {
     success: false,
-    output: '',
+    output: input.streamedOutput?.trim() ?? '',
     error: redactSensitiveText(input.stderr.trim() || `process exited with code ${input.exitCode ?? 'unknown'}`),
   };
 }

@@ -4,6 +4,7 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import type { SessionPersistenceService } from '../session/session-persistence-service.js';
+import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { GuidanceProposal, Subtask, Suggestion } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -47,6 +48,10 @@ import type {
   WorkspacePublicationWorker,
   WorkspacePublicationOutcome,
 } from './workspace-publication-worker.js';
+import type { HistoricalResultUpgrader } from './historical-result-upgrader.js';
+import { formatExecutorProgress } from '../executor/error-utils.js';
+import type { ExecutorAdapter, ExecutorProgressEvent } from '../executor/adapter.js';
+import type { ExecutionTraceAppendInput } from './execution-trace.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -58,6 +63,8 @@ interface DispatchStableFacts {
   correctionSupportedAgentClasses: string[];
   nativeContinuationAgentClasses: string[];
 }
+
+const DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS = 10_000;
 
 function defaultResourceGrant(taskId: string, generationId: string, subtaskId: string) {
   return buildDefaultResourceClaims({
@@ -92,6 +99,7 @@ export interface KernelExecutionRuntimeDeps {
   workGraphRevisionRepo: WorkGraphRevisionRepo;
   effectOutboxRepo: KernelEffectOutboxRepo;
   attemptReceiptRepo: ExecutorAttemptReceiptRepo;
+  historicalResultUpgrader?: Pick<HistoricalResultUpgrader, 'upgrade'>;
   subtaskHandoffRepo: SubtaskHandoffRepo;
   taskEventRepo: TaskEventRepo;
   workUnitClaimService: WorkUnitClaimService;
@@ -106,6 +114,7 @@ export interface KernelExecutionRuntimeDeps {
   kernelDecisionRepo?: Pick<KernelDecisionRepo, 'findById'>;
   dispatchItemRepo: KernelDispatchItemRepo;
   maxConcurrentAttempts: number;
+  executionTraceHeartbeatMs?: number;
   publicationWorker: WorkspacePublicationWorker;
   publicationRepo: WorkspacePublicationRepo;
   generationReplanRepo: GenerationReplanRequestRepo;
@@ -117,6 +126,8 @@ export interface KernelExecutionRuntimeDeps {
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
+    recordResultDelivery(delivery: ConversationResultDelivery): void;
+    appendExecutionTrace(input: ExecutionTraceAppendInput): void;
     refreshRuntimeState(): void;
     appendTaskQueueSnapshot(trigger: string): void;
     setFocusContext(focus: FocusContext | null): void;
@@ -161,6 +172,17 @@ export class KernelExecutionRuntime {
     return this.decisionSession.getStore()
       ?? this.deps.getSessionId?.()
       ?? this.deps.sessionId;
+  }
+
+  private appendExecutionTrace(input: ExecutionTraceAppendInput): void {
+    // Observability must never turn a successful authorized attempt into an
+    // Executor failure if a client has disconnected or a presentation adapter
+    // rejects an update.
+    try {
+      this.deps.callbacks.appendExecutionTrace(input);
+    } catch {
+      // The durable execution path remains authoritative.
+    }
   }
 
   private withDecisionSession<T>(
@@ -729,6 +751,22 @@ export class KernelExecutionRuntime {
   }): Promise<KernelEvent | null> {
     const { decision } = input;
     const action = decision.action;
+    this.appendExecutionTrace({
+      phase: 'authorization',
+      actor: 'kernel',
+      kind: 'kernel_decision_applied',
+      status: 'completed',
+      title: `Kernel applied ${action.type}`,
+      summary: decision.reason,
+      details: {
+        decisionId: decision.id,
+        action: action.type,
+        eventId: decision.eventId,
+        configurationRevision: decision.configurationRevision,
+      },
+      eventKey: `${decision.id}:applied`,
+      taskId: 'taskId' in action ? action.taskId : null,
+    });
     if (action.type === 'dispatch_batch') {
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
@@ -751,6 +789,26 @@ export class KernelExecutionRuntime {
         input.supervisorContext,
         new Date().toISOString(),
       );
+      this.appendExecutionTrace({
+        phase: 'routing',
+        actor: 'kernel',
+        kind: 'executor_dispatch_authorized',
+        status: 'completed',
+        title: 'Kernel authorized Executor dispatch',
+        summary: `Kernel authorized ${action.items.length} Executor attempt(s).`,
+        details: {
+          decisionId: decision.id,
+          taskId: action.taskId,
+          attemptCount: action.items.length,
+          executors: action.items.map(item => ({
+            subtaskId: item.subtaskId,
+            attemptId: item.attemptId,
+            executorName: item.authorizedBinding.agentClassRef,
+          })),
+        },
+        eventKey: `${decision.id}:dispatch`,
+        taskId: action.taskId,
+      });
       return null;
     }
     if (action.type === 'probe_capacity') {
@@ -1070,8 +1128,66 @@ export class KernelExecutionRuntime {
   }): Promise<KernelEvent> {
     const { item } = input;
     const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(item.attemptId);
+    if (
+      existingReceipt?.terminalState === 'contract_blocked'
+      && this.deps.historicalResultUpgrader
+    ) {
+      const upgraded = this.deps.historicalResultUpgrader.upgrade(existingReceipt);
+      if (upgraded) {
+        this.deps.callbacks.recordResultDelivery(upgraded);
+        this.deps.callbacks.appendOutput(
+          upgraded.content,
+          '',
+          '结果已返回，任务完成认证待处理。',
+        );
+        return this.eventFromDispatchItem(item, {
+          type: 'execution_result_observed',
+          workUnitId: existingReceipt.workUnitId,
+          authorizedBinding: existingReceipt.authorizedBinding,
+          bindingFingerprint: existingReceipt.bindingFingerprint,
+          contract: existingReceipt.parsing.completionContract ?? {},
+          violations: existingReceipt.verification.violations,
+          receiptCount: 1,
+          responseBytes: Buffer.byteLength(existingReceipt.rawResponse, 'utf8'),
+          resultId: upgraded.resultId,
+          deliverability: 'deliverable',
+          certification: 'uncertified',
+          safety: 'safe',
+        });
+      }
+    }
     if (existingReceipt && existingReceipt.terminalState !== 'contract_blocked') {
       this.projectPersistedReceipt(existingReceipt);
+      if (existingReceipt.terminalState === 'uncertified_result') {
+        const parsing = existingReceipt.parsing as {
+          completionContract?: unknown;
+          completionAssessment?: {
+            deliverability?: { status?: 'deliverable' | 'quarantined' };
+            certification?: { status?: 'certified' | 'uncertified' };
+            safety?: { status?: 'safe' | 'safety_blocked' };
+          } | null;
+          responseBytes?: number;
+          resultObjects?: { safeProjectionId?: string | null } | null;
+        };
+        return this.eventFromDispatchItem(item, {
+          type: 'execution_result_observed',
+          workUnitId: existingReceipt.workUnitId,
+          authorizedBinding: existingReceipt.authorizedBinding,
+          bindingFingerprint: existingReceipt.bindingFingerprint,
+          contract: parsing.completionContract ?? {},
+          violations: existingReceipt.verification.violations,
+          receiptCount: this.deps.attemptReceiptRepo.countByTerminal(
+            existingReceipt.taskId,
+            existingReceipt.subtaskId,
+            'uncertified_result',
+          ),
+          responseBytes: parsing.responseBytes ?? 0,
+          resultId: parsing.resultObjects?.safeProjectionId ?? null,
+          deliverability: parsing.completionAssessment?.deliverability?.status ?? 'deliverable',
+          certification: parsing.completionAssessment?.certification?.status ?? 'uncertified',
+          safety: parsing.completionAssessment?.safety?.status ?? 'safe',
+        });
+      }
       return this.eventFromDispatchItem(item, {
         type: 'execution_outcome',
         terminalKind: existingReceipt.terminalState === 'completed' ? 'completed' : 'failed',
@@ -1109,46 +1225,190 @@ export class KernelExecutionRuntime {
       item.attemptId,
       item.authorizedBinding.agentClassRef,
     );
+    const acceptanceCriteria = subtask.acceptance.map(criterion => ({
+      key: criterion.key,
+      description: criterion.description,
+      requiredEvidence: criterion.requiredEvidence,
+    }));
+    const bindingDetails = {
+      executorName: item.authorizedBinding.agentClassRef,
+      harnessRef: item.authorizedBinding.harnessRef,
+      providerRef: item.authorizedBinding.providerRef,
+      modelRef: item.authorizedBinding.modelRef,
+      permissionProfileRef: item.authorizedBinding.permissionProfileRef,
+      configurationRevision: item.configurationRevision,
+    };
+    this.appendExecutionTrace({
+      phase: 'execution',
+      actor: 'kernel',
+      kind: 'executor_dispatch_started',
+      status: 'running',
+      title: 'Executor dispatch started',
+      summary: `Kernel started ${item.authorizedBinding.agentClassRef} for "${subtask.title}".`,
+      details: {
+        taskId: item.taskId,
+        subtaskId: item.subtaskId,
+        subtaskTitle: subtask.title,
+        subtaskGoal: subtask.goal,
+        deliveryKind: subtask.deliveryKind,
+        requiredCapabilities: subtask.requiredCapabilities,
+        acceptanceCriteria,
+        attemptId: item.attemptId,
+        attemptKind: item.attemptKind,
+        recoveryMode: item.recoveryMode,
+        ...bindingDetails,
+      },
+      eventKey: `${item.attemptId}:dispatch_started`,
+      taskId: item.taskId,
+    });
+    this.appendExecutionTrace({
+      phase: 'execution',
+      actor: 'runtime',
+      kind: 'subtask_execution_started',
+      status: 'running',
+      title: `Executing Subtask: ${subtask.title}`,
+      summary: `${subtask.goal} Delivery: ${subtask.deliveryKind}.`,
+      details: {
+        taskId: item.taskId,
+        subtaskId: item.subtaskId,
+        subtaskTitle: subtask.title,
+        subtaskGoal: subtask.goal,
+        deliveryKind: subtask.deliveryKind,
+        requiredCapabilities: subtask.requiredCapabilities,
+        acceptanceCriteria,
+        attemptId: item.attemptId,
+        attemptKind: item.attemptKind,
+        recoveryMode: item.recoveryMode,
+        ...bindingDetails,
+      },
+      eventKey: `${item.attemptId}:subtask_started`,
+      taskId: item.taskId,
+    });
     this.deps.callbacks.appendOutput(
       ...this.deps.presentation.formatExecutorDispatch(
         item.authorizedBinding.agentClassRef,
       ),
     );
 
-    const outcome = item.attemptKind === 'contract_correction'
-      && item.attemptPayload?.protocol === 'completion-correction-v2'
-      && item.sourceAttemptId
-      ? await this.deps.attemptRunner.runCorrection({
-          attemptId: item.attemptId,
-          sourceAttemptId: item.sourceAttemptId,
-          executionId: input.executionId,
+    const startedAtMs = Date.now();
+    let lastProgressAtMs = startedAtMs;
+    let lastProgressKind = 'dispatch_started';
+    let progressSequence = 0;
+    const onProgress = (event: ExecutorProgressEvent, executor: ExecutorAdapter): void => {
+      input.progressTracker.onProgress(event, executor);
+      const safeText = formatExecutorProgress(event.text);
+      if (!safeText) return;
+      lastProgressAtMs = Date.now();
+      lastProgressKind = event.kind;
+      progressSequence += 1;
+      this.appendExecutionTrace({
+        phase: 'execution',
+        actor: 'executor',
+        kind: 'executor_progress',
+        status: 'running',
+        title: `Executor progress: ${event.kind}`,
+        summary: safeText,
+        details: {
           taskId: item.taskId,
           subtaskId: item.subtaskId,
-          authorizedBinding: item.authorizedBinding,
-          bindingFingerprint: item.bindingFingerprint,
-          completionContract: item.attemptPayload.completionContract,
-          violations: item.attemptPayload.violations as Parameters<
-            SubtaskAttemptRunner['runCorrection']
-          >[0]['violations'],
-        })
-      : await this.deps.attemptRunner.run({
           attemptId: item.attemptId,
-          executionId: input.executionId,
-          taskId: item.taskId,
-          subtaskId: item.subtaskId,
-          authorizedBinding: item.authorizedBinding,
-          bindingFingerprint: item.bindingFingerprint,
-          executionMode: input.request.executionMode,
-          attemptKind: item.attemptKind,
-          attemptPayload: item.attemptPayload,
-          sourceAttemptId: item.sourceAttemptId,
-          recoveryMode: item.recoveryMode,
-          defaultResourceGrant: item.resourceGrant,
-          onProgress: input.progressTracker.onProgress,
-        });
-    this.deps.callbacks.clearRunningExecutorName(item.taskId, item.attemptId);
+          executorName: executor.name,
+          progressKind: event.kind,
+          progressSequence,
+        },
+        eventKey: `${item.attemptId}:progress:${progressSequence}`,
+        taskId: item.taskId,
+      });
+    };
+    const heartbeatMs = this.deps.executionTraceHeartbeatMs
+      ?? DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS;
+    let heartbeatSequence = 0;
+    const heartbeat = heartbeatMs > 0
+      ? setInterval(() => {
+          const nowMs = Date.now();
+          if (nowMs - lastProgressAtMs < heartbeatMs) return;
+          heartbeatSequence += 1;
+          this.appendExecutionTrace({
+            phase: 'execution',
+            actor: 'runtime',
+            kind: 'executor_heartbeat',
+            status: 'running',
+            title: `Executor still running: ${subtask.title}`,
+            summary: 'Executor is still running; no new public Harness event has arrived yet.',
+            details: {
+              taskId: item.taskId,
+              subtaskId: item.subtaskId,
+              subtaskTitle: subtask.title,
+              attemptId: item.attemptId,
+              executorName: item.authorizedBinding.agentClassRef,
+              elapsedMs: nowMs - startedAtMs,
+              silentForMs: nowMs - lastProgressAtMs,
+              lastProgressAt: new Date(lastProgressAtMs).toISOString(),
+              lastProgressKind,
+              heartbeatSequence,
+            },
+            eventKey: `${item.attemptId}:heartbeat:${heartbeatSequence}`,
+            taskId: item.taskId,
+          });
+        }, heartbeatMs)
+      : null;
+    heartbeat?.unref();
+    let outcome: SubtaskAttemptOutcome;
+    try {
+      outcome = item.attemptKind === 'contract_correction'
+        && item.attemptPayload?.protocol === 'completion-correction-v2'
+        && item.sourceAttemptId
+        ? await this.deps.attemptRunner.runCorrection({
+            attemptId: item.attemptId,
+            sourceAttemptId: item.sourceAttemptId,
+            executionId: input.executionId,
+            taskId: item.taskId,
+            subtaskId: item.subtaskId,
+            authorizedBinding: item.authorizedBinding,
+            bindingFingerprint: item.bindingFingerprint,
+            completionContract: item.attemptPayload.completionContract,
+            violations: item.attemptPayload.violations as Parameters<
+              SubtaskAttemptRunner['runCorrection']
+            >[0]['violations'],
+          })
+        : await this.deps.attemptRunner.run({
+            attemptId: item.attemptId,
+            executionId: input.executionId,
+            taskId: item.taskId,
+            subtaskId: item.subtaskId,
+            authorizedBinding: item.authorizedBinding,
+            bindingFingerprint: item.bindingFingerprint,
+            executionMode: input.request.executionMode,
+            attemptKind: item.attemptKind,
+            attemptPayload: item.attemptPayload,
+            sourceAttemptId: item.sourceAttemptId,
+            recoveryMode: item.recoveryMode,
+            defaultResourceGrant: item.resourceGrant,
+            onProgress,
+          });
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      this.deps.callbacks.clearRunningExecutorName(item.taskId, item.attemptId);
+    }
+    this.appendExecutorOutcomeTrace(item, outcome);
 
     if (outcome.outcome === 'capacity_unavailable') {
+      this.appendExecutionTrace({
+        phase: 'routing',
+        actor: 'kernel',
+        kind: 'executor_capacity_unavailable',
+        status: 'blocked',
+        title: 'Executor capacity unavailable',
+        summary: `No capacity is currently available for ${item.authorizedBinding.agentClassRef}.`,
+        details: {
+          taskId: item.taskId,
+          subtaskId: item.subtaskId,
+          attemptId: item.attemptId,
+          executorName: item.authorizedBinding.agentClassRef,
+        },
+        eventKey: `${item.attemptId}:capacity`,
+        taskId: item.taskId,
+      });
       return this.eventFromDispatchItem(item, {
         type: 'capacity_signal',
         authorizedBinding: item.authorizedBinding,
@@ -1160,6 +1420,22 @@ export class KernelExecutionRuntime {
       });
     }
     if (outcome.outcome === 'partition_conflict') {
+      this.appendExecutionTrace({
+        phase: 'authorization',
+        actor: 'kernel',
+        kind: 'kernel_waiting_for_partition',
+        status: 'blocked',
+        title: 'Kernel is waiting for a resource partition',
+        summary: 'Execution is paused until the conflicting resource leases are released.',
+        details: {
+          taskId: item.taskId,
+          subtaskId: item.subtaskId,
+          attemptId: item.attemptId,
+          conflictingLeaseCount: outcome.conflictingLeaseIds.length,
+        },
+        eventKey: `${item.attemptId}:partition`,
+        taskId: item.taskId,
+      });
       return this.eventFromDispatchItem(item, {
         type: 'partition_conflict_observed',
         claims: outcome.claims,
@@ -1189,8 +1465,25 @@ export class KernelExecutionRuntime {
     }
     this.projectExecutorOutcome(item.authorizedBinding, outcome);
     if (outcome.outcome === 'contract_failed') {
+      if (outcome.output) {
+        if (outcome.resultId && outcome.deliverability === 'deliverable') {
+          this.deps.callbacks.recordResultDelivery({
+            resultId: outcome.resultId,
+            content: outcome.output,
+            completeness: 'partial',
+            certification: outcome.certification,
+          });
+        }
+        this.deps.callbacks.appendOutput(
+          outcome.output,
+          '',
+          outcome.certification === 'uncertified'
+            ? '结果已返回，任务完成认证待处理。'
+            : '结果已返回。',
+        );
+      }
       return this.eventFromDispatchItem(item, {
-        type: 'handoff_contract_failed',
+        type: 'execution_result_observed',
         workUnitId: outcome.workUnitId,
         authorizedBinding: item.authorizedBinding,
         bindingFingerprint: item.bindingFingerprint,
@@ -1198,6 +1491,10 @@ export class KernelExecutionRuntime {
         violations: outcome.violations,
         receiptCount: outcome.receiptCount,
         responseBytes: outcome.responseBytes,
+        resultId: outcome.resultId ?? null,
+        deliverability: outcome.deliverability,
+        certification: outcome.certification,
+        safety: outcome.safety,
       });
     }
     return this.eventFromDispatchItem(item, {
@@ -1353,7 +1650,10 @@ export class KernelExecutionRuntime {
           attemptFacts,
           event.type === 'execution_outcome'
             ? event.terminalKind === 'failed' ? event.subtaskId : null
-            : event.type === 'handoff_contract_failed' ? event.subtaskId : null,
+            : event.type === 'handoff_contract_failed'
+              || event.type === 'execution_result_observed'
+              ? event.subtaskId
+              : null,
           event.type === 'capacity_signal'
             ? this.capacityProbeFacts(event)
             : {},
@@ -1384,7 +1684,8 @@ export class KernelExecutionRuntime {
       },
       acceptedEventTypes: [
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
-        'handoff_contract_failed', 'timer_tick', 'plan_proposed',
+        'handoff_contract_failed', 'execution_result_observed',
+        'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
         'generation_quiescence_observed',
       ],
@@ -1470,12 +1771,86 @@ export class KernelExecutionRuntime {
       warnings: outcome.warnings,
       integrationCommit: outcome.integrationCommit,
     });
+    this.appendExecutionTrace({
+      phase: 'delivery',
+      actor: 'runtime',
+      kind: 'publication_integrated',
+      status: 'completed',
+      title: 'Publication integrated',
+      summary: `Subtask ${outcome.subtaskId} was integrated into the task workspace.`,
+      details: {
+        taskId: outcome.taskId,
+        subtaskId: outcome.subtaskId,
+        attemptId: outcome.sourceAttemptId,
+        executorName: outcome.agentClassName,
+        integrationCommit: outcome.integrationCommit,
+        artifactCount: 0,
+        resultId: outcome.resultId ?? null,
+      },
+      eventKey: `${outcome.publicationId}:integrated`,
+      taskId: outcome.taskId,
+    });
+    if (outcome.resultId) {
+      this.deps.callbacks.recordResultDelivery({
+        resultId: outcome.resultId,
+        content: outcome.output,
+        completeness: 'complete',
+        certification: 'certified',
+      });
+    }
     this.deps.callbacks.appendOutput(this.deps.presentation.formatExecutorFinalResult({
       executorName: outcome.agentClassName,
       taskId: outcome.taskId,
       subtaskId: outcome.subtaskId,
       output: outcome.output,
     }));
+  }
+
+  private appendExecutorOutcomeTrace(
+    item: KernelDispatchItemRecord,
+    outcome: SubtaskAttemptOutcome,
+  ): void {
+    const isCompleted = outcome.outcome === 'completed';
+    const isContractResult = outcome.outcome === 'contract_failed';
+    const status = isCompleted || isContractResult
+      ? outcome.outcome === 'contract_failed' && outcome.safety === 'safety_blocked'
+        ? 'blocked'
+        : 'completed'
+      : outcome.outcome === 'cancelled_or_stale'
+        ? 'blocked'
+        : 'failed';
+    this.appendExecutionTrace({
+      phase: 'verification',
+      actor: 'executor',
+      kind: 'executor_result_observed',
+      status,
+      title: isCompleted ? 'Executor result observed' : 'Executor attempt settled',
+      summary: isCompleted
+        ? 'Executor completed the authorized attempt; Runtime is verifying the result.'
+        : isContractResult
+          ? 'Executor returned a result that Runtime is certifying for delivery.'
+          : outcome.outcome === 'executor_failed'
+            ? 'Executor failed; Kernel will decide recovery or retry.'
+            : 'Executor attempt became stale or was cancelled.',
+      details: {
+        taskId: item.taskId,
+        subtaskId: item.subtaskId,
+        attemptId: item.attemptId,
+        executorName: item.authorizedBinding.agentClassRef,
+        outcome: outcome.outcome,
+        ...(isContractResult ? {
+          deliverability: outcome.deliverability,
+          certification: outcome.certification,
+          safety: outcome.safety,
+          resultId: outcome.resultId ?? null,
+        } : {}),
+        ...(outcome.outcome === 'executor_failed' ? {
+          failureCode: outcome.failure.code,
+        } : {}),
+      },
+      eventKey: `${item.attemptId}:result`,
+      taskId: item.taskId,
+    });
   }
 
   private async recoverExpiredAttempts(workflow: KernelWorkflow, attemptFacts: KernelAttemptFact[]): Promise<void> {
@@ -1617,7 +1992,8 @@ export class KernelExecutionRuntime {
       },
       acceptedEventTypes: [
         'dispatch_requested', 'capacity_signal', 'execution_outcome',
-        'handoff_contract_failed', 'timer_tick', 'plan_proposed',
+        'handoff_contract_failed', 'execution_result_observed',
+        'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
         'generation_quiescence_observed',
       ],
@@ -1771,6 +2147,24 @@ export class KernelExecutionRuntime {
       return effectId;
     }, () => new Date().toISOString());
     if (deliveryMessage) this.deps.callbacks.appendOutput(deliveryMessage);
+    this.appendExecutionTrace({
+      phase: 'delivery',
+      actor: 'runtime',
+      kind: 'delivery_completed',
+      status: 'completed',
+      title: 'Final answer delivered',
+      summary: 'The verified Executor result was delivered to the Conversation.',
+      details: {
+        taskId: input.taskId,
+        completionKind,
+        subtaskCount: input.subtasks.length,
+        artifactCount: artifacts.length,
+        warningCount: warnings.length,
+      },
+      eventKey: `${effectId}:delivered`,
+      taskId: input.taskId,
+      traceStatus: 'completed',
+    });
 
     await input.finishExecution(completionLines);
   }
@@ -1791,6 +2185,7 @@ export class KernelExecutionRuntime {
   }
 
   private projectPersistedReceipt(receipt: import('../storage/executor-attempt-receipt-repo.js').ExecutorAttemptReceipt): void {
+    if (receipt.terminalState === 'uncertified_result') return;
     this.deps.kernelExecutorStatusProjector.recordExecutionOutcome({
       agentClassName: receipt.agentClassName,
       configurationRevision: receipt.configurationRevision,

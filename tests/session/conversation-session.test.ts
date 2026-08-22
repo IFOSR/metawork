@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
 import { ConversationInputMailbox } from '../../src/session/conversation-input-mailbox.js';
 import { ConversationSession } from '../../src/session/conversation-session.js';
+import { InteractionTraceStream } from '../../src/session/interaction-trace-stream.js';
 import type { ConversationRuntimePort } from '../../src/session/conversation-runtime-port.js';
 import type { PlannerTuiPermissionRequest } from '../../src/session/session-types.js';
 
@@ -33,6 +34,7 @@ function makePort(
       listSubtasks: () => [],
       findSubtask: () => null,
       findKernelEvent: () => null,
+      findKernelApplicationByDecisionId: () => null,
       listKernelDecisionsBySession: () => [],
       listKernelDecisionsByTask: () => [],
       listCurrentKernelDecisions: () => [],
@@ -87,6 +89,44 @@ function makeSession(
 }
 
 describe('ConversationSession', () => {
+  it('qualifies the current user input for initial Work Graph admission', () => {
+    const session = new ConversationSession({
+      conversationId: 'conv_context_ref',
+      plannerSessionId: 'planner_context_ref',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      planningContextBuilder: {
+        getPlannerConfiguration: () => ({ revisionId: 'revision-test' }),
+      } as never,
+      kernelConfiguration: { revisionId: 'revision-test' } as never,
+    });
+
+    const snapshot = session.buildPlanAdmissionSnapshot({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      type: 'plan_proposed',
+      id: 'plan_event_context_ref',
+      correlationId: 'plan_context_ref',
+      causationId: null,
+      occurredAt: '2026-08-20T00:00:00.000Z',
+      sessionId: 'planner_context_ref',
+      proposal: {
+        task: { taskId: null },
+        workGraph: {
+          subtasks: [{
+            contextRefs: [{ kind: 'current_user_input' }],
+          }],
+        },
+      },
+      requestText: '分析昨晚黄金期货上涨的原因',
+      generationId: 'generation_context_ref',
+      proposalSource: 'initial',
+      targetGraphRevision: 1,
+    } as never);
+
+    expect(snapshot?.eligibleContextRefKeys).toEqual(['current_user_input']);
+  });
+
   it('keeps a stable planner session id for a stable conversation id', () => {
     const session = makeSession('conv_1', 'planner_1');
     expect(session.conversationId).toBe('conv_1');
@@ -188,6 +228,7 @@ describe('ConversationSession', () => {
   });
 
   it('surfaces Planner transport failures instead of reporting a no-action fallback', async () => {
+    const trace = new InteractionTraceStream('planner_1');
     const session = new ConversationSession({
       conversationId: 'conv_1',
       plannerSessionId: 'planner_1',
@@ -196,16 +237,31 @@ describe('ConversationSession', () => {
           findOldestPendingPermission: () => null,
         } as never,
         planning: {
-          submit: async () => ({
-            status: 'transport_uncertain',
-            turnId: 'turn_1',
-            submissionId: 'submission_1',
-            retryableByReplay: true,
-            message: 'Planner unavailable: bridge disconnected',
-          }),
+          submit: async (_context, submitter) => {
+            submitter.onProgress?.({
+              kind: 'process_started',
+              sequence: 1,
+              elapsedMs: 5,
+            });
+            submitter.onProgress?.({
+              kind: 'model_waiting',
+              turn: 1,
+              idleMs: 15_000,
+              sequence: 2,
+              elapsedMs: 15_000,
+            });
+            return {
+              status: 'transport_uncertain',
+              turnId: 'turn_1',
+              submissionId: 'submission_1',
+              retryableByReplay: true,
+              message: 'Planner unavailable: bridge disconnected',
+            };
+          },
         } as never,
       }),
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
       planningContextBuilder: {
         build: ({ userInput }: { userInput: string }) => ({
           userInput,
@@ -225,10 +281,21 @@ describe('ConversationSession', () => {
       } as never,
     });
 
-    await session.submit('hello');
+    await session.submitUserInput('hello', { interactionTurnId: 'gateway_turn_1' });
 
     expect(session.getOutput().at(-1)).toBe('错误: Planner unavailable: bridge disconnected');
     expect(session.getOutput()).not.toContain('-> ControlKernel did not produce a runtime action.');
+    expect(session.getInteractionTrace()).toMatchObject({
+      turnId: 'gateway_turn_1',
+      status: 'blocked',
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: 'query_received' }),
+        expect.objectContaining({ kind: 'planner_started' }),
+        expect.objectContaining({ kind: 'planner_process_started' }),
+        expect.objectContaining({ kind: 'planner_model_waiting' }),
+        expect.objectContaining({ kind: 'proposal_transport_uncertain' }),
+      ]),
+    });
   });
 });
 

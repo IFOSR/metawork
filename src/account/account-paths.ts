@@ -30,6 +30,7 @@ export interface AccountPaths {
   readonly conversations: string;
   readonly workspaceStore: string;
   readonly attempts: string;
+  readonly results: string;
   readonly gateway: string;
 }
 
@@ -62,6 +63,7 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     conversations: resolve(root, 'conversations'),
     workspaceStore: resolve(root, 'workspace-store'),
     attempts: resolve(root, 'attempts'),
+    results: resolve(data, 'results'),
     gateway: resolve(root, 'gateway'),
   };
 }

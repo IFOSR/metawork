@@ -4,6 +4,7 @@ export type PlannerRunProgressPayload =
   | { kind: 'agent_started' }
   | { kind: 'turn_started'; turn: number }
   | { kind: 'model_stream_started'; turn: number }
+  | { kind: 'model_waiting'; turn: number; idleMs: number }
   | ({ kind: 'tool_started' } & PlannerToolProgress)
   | ({ kind: 'tool_completed' } & PlannerToolProgress & {
       status: 'completed' | 'failed';

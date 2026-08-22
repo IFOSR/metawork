@@ -492,6 +492,56 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('explains a WebSocket origin mismatch through the diagnostic endpoint', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port);
+    await server.start();
+
+    try {
+      const cookie = await exchangeToken(port, 'manual-token');
+      const response = await fetch(`http://127.0.0.1:${port}/api/ws/diagnostics`, {
+        headers: {
+          cookie,
+          origin: 'http://127.0.0.1:5173',
+        },
+      });
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        reason: 'forbidden_origin',
+        message: 'WebSocket Origin 与服务端端口不匹配。',
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('reports an authenticated WebSocket as ready for the current origin', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port);
+    await server.start();
+
+    try {
+      const cookie = await exchangeToken(port, 'manual-token');
+      const response = await fetch(`http://127.0.0.1:${port}/api/ws/diagnostics`, {
+        headers: {
+          cookie,
+          origin: `http://127.0.0.1:${port}`,
+        },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        ok: true,
+        reason: 'ready',
+        message: 'WebSocket 可以连接。',
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('distinguishes the running revision from the next-start active revision', async () => {
     const port = await reservePort();
     const server = createManagementServer(port);

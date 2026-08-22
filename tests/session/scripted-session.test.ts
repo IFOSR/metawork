@@ -321,7 +321,7 @@ describe('scripted session', () => {
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 
-  it('does not write a fallback Feishu Markdown artifact from undeliverable executor output', async () => {
+  it('delivers safe uncertified output without synthesizing a fallback Feishu Markdown artifact', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -361,11 +361,14 @@ describe('scripted session', () => {
       ),
     });
 
-    const blockedTask = taskEngine.list().find(task => task.status === 'blocked');
-    expect(blockedTask).toBeTruthy();
-    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
-    expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
-    expect(result.output.join('\n')).toContain('response-only correction is unavailable or already exhausted');
-    expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
+    const runningTask = taskEngine.list().find(task => task.status === 'running');
+    expect(runningTask).toBeTruthy();
+    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', runningTask!.id, 'feishu-document.md');
+    expect(runningTask?.artifacts).not.toContain(fallbackArtifact);
+    const output = result.output.join('\n');
+    expect(output).toContain('磊哥，我已开始调研');
+    expect(output).toContain('结果已返回，任务完成认证待处理。');
+    expect(output).not.toContain('response-only correction is unavailable or already exhausted');
+    expect(output).not.toContain('已记录 1 个任务产物');
   });
 });

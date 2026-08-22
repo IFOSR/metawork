@@ -15,6 +15,19 @@ afterEach(() => {
 });
 
 describe('runtime database opening', () => {
+  it('creates the database parent directory during first startup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'anyfusion-runtime-db-empty-'));
+    cleanup.push(root);
+    const databasePath = join(root, 'accounts', 'local-default', 'data', 'anyfusion.db');
+
+    const db = createDatabase(databasePath);
+    try {
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 32 });
+    } finally {
+      db.close();
+    }
+  });
+
   it('refuses to migrate an active schema-30 database during ordinary startup', () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-runtime-db-'));
     cleanup.push(root);

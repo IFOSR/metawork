@@ -1,7 +1,10 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { isEligibleInteractionRef } from '../../src/session/assistant-reference-eligibility.js';
+import {
+  buildEligibleContextRefKeys,
+  isEligibleInteractionRef,
+} from '../../src/session/assistant-reference-eligibility.js';
 
 function insertInteraction(
   db: Database.Database,
@@ -15,6 +18,31 @@ function insertInteraction(
 }
 
 describe('assistant interaction reference eligibility', () => {
+  it('qualifies current input and confirmed references for Kernel admission', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO preferences (
+        id, type, scope, subject, content, status, confirmed_at, created_at, updated_at
+      ) VALUES ('preference_1', 'user', 'global', 'user', 'confirmed', 'confirmed', ?, ?, ?)
+    `).run(
+      '2026-08-20T00:00:00.000Z',
+      '2026-08-20T00:00:00.000Z',
+      '2026-08-20T00:00:00.000Z',
+    );
+
+    expect(buildEligibleContextRefKeys({
+      db,
+      sessionId: 'session_current',
+      refs: [
+        { kind: 'current_user_input' },
+        { kind: 'preference', preferenceId: 'preference_1' },
+      ],
+      targetTask: null,
+      userInput: '当前请求',
+    })).toEqual(['current_user_input', 'preference:preference_1']);
+  });
+
   it('prefers a stable ID, accepts one recent unambiguous quote, and rejects ambiguous or cross-session refs', () => {
     const db = new Database(':memory:');
     runMigrations(db);

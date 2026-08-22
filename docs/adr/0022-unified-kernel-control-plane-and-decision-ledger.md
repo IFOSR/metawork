@@ -28,7 +28,13 @@ Subtasks use a lifecycle distinct from top-level Tasks and add `awaiting_decisio
 
 Pre-attempt capacity failure creates no attempt receipt. The Kernel may authorize sequential probes of the remaining already-authorized AgentClasses. Exhaustion yields a ledger-backed capacity block. Timer ticks may only recheck that capacity block; execution failures and lost heartbeats do not auto-recover in Phase 3.
 
-The first completion-contract failure may authorize one response-only correction on the same AgentClass. Correction receives only the original response, full contract, all structured violations and exact trailer format, under a bounded input size and an enforceable no-tools/read-only profile. It does not re-execute the Subtask. A second failure, unsupported profile or oversized input blocks deterministically.
+The first completion-contract failure may authorize one response-only metadata
+correction on the same AgentClass. Correction receives only the original
+response, structured violations and exact trailer format under a bounded
+no-tools/read-only profile. It does not re-execute the business Subtask. If
+correction is unavailable or fails, a safe result remains deliverable and
+uncertified while Kernel retains ordinary recovery/decision authority; metadata
+failure alone does not create a permanent block.
 
 The existing multi-Task queue, priority/preemption and parked auto-resume production policies are removed. ADR-0011's single-active top-level Task constraint remains. Multi-Task scheduling is deferred to a future independent roadmap; it is not part of Phase 6's final scope (ADR-0026).
 
@@ -46,3 +52,19 @@ All current strategic behavior becomes testable through the single Kernel Interf
 
 Durable event inbox/outbox, unapplied-decision recovery, generic apply idempotency and failure recovery are explicitly deferred to Phase 4. Partition/lease enforcement remains Phase 5. Multi-Task scheduling and concurrency remain Phase 6.
 
+### Result-first delivery amendment (2026-08-21, ADR-0032)
+
+Runtime may persist and publish a safe `ResultObject` projection before the
+Subtask is certified. It submits a normalized `execution_result_observed` fact
+to the same `KernelWorkflow`; it does not submit a new strategic route.
+`ControlKernel` remains the only authority for `awaiting_decision`, completion,
+recovery, retry, replan, manual acceptance and downstream release.
+
+Gateway `result_delivery_available`, `result_chunk` and `result_completed`
+events are presentation facts. They must carry the certification state and
+cannot mutate Kernel or Task state. A safe `uncertified` result is therefore
+visible to the user while the Subtask remains under Kernel control.
+
+Response-only correction is best-effort metadata repair. Its failure cannot
+discard a safe body or independently create a permanent block. Security,
+authorization and unsafe workspace facts remain fail-closed.

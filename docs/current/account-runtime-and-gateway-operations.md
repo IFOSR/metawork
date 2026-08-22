@@ -16,6 +16,7 @@ Start or restart the Web foreground surface:
 
 ```bash
 anyfusion web
+anyfusion web start
 anyfusion web restart
 ```
 

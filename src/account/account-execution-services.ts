@@ -37,6 +37,7 @@ export function buildAccountExecutionServices(deps: {
   attemptExecutionBackend: AttemptExecutionBackend;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
   attemptsRoot: string;
+  generatedRuntimeRoot?: string;
 }): AccountExecutionServices {
   const runtimeConfiguration = buildRuntimeConfigurationView(deps.stagedConfiguration.snapshot);
   const attemptsRoot = deps.attemptsRoot;
@@ -49,6 +50,8 @@ export function buildAccountExecutionServices(deps: {
           agentClassId: input.authorizedBinding.agentClassRef,
           driver: input.driver,
           runtimeBinding: input.runtimeBinding,
+          authorizedBinding: input.authorizedBinding,
+          modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
           attemptsRoot,
         });
       }
@@ -56,6 +59,8 @@ export function buildAccountExecutionServices(deps: {
         agentClassId: input.authorizedBinding.agentClassRef,
         driver: input.driver,
         runtimeBinding: input.runtimeBinding,
+        authorizedBinding: input.authorizedBinding,
+        modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
         attemptsRoot,
         imageRef: containerCompatibilityImage(input.driver.id),
         backend: deps.attemptExecutionBackend,
@@ -73,8 +78,14 @@ export function buildAccountExecutionServices(deps: {
   const probeCommand = deps.probeCommand ?? (process.env.NODE_ENV === 'test'
     ? async () => ({ code: 0, stdout: 'test-harness', stderr: '' })
     : undefined);
-  registerLocalDriver(new CodexCliDriver({ probeCommand }));
-  registerLocalDriver(new PiCliDriver({ probeCommand }));
+  registerLocalDriver(new CodexCliDriver({
+    probeCommand,
+    generatedRuntimeRoot: deps.generatedRuntimeRoot,
+  }));
+  registerLocalDriver(new PiCliDriver({
+    probeCommand,
+    generatedRuntimeRoot: deps.generatedRuntimeRoot,
+  }));
 
   const executorRegistry = new ExecutorRegistry({
     driverRegistry,

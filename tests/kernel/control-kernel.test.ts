@@ -642,16 +642,20 @@ describe('ControlKernel', () => {
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
-  it('authorizes exactly one response-only correction and then fails closed', () => {
+  it('authorizes one metadata correction and then keeps a safe result awaiting decision', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
-      type: 'handoff_contract_failed',
+      type: 'execution_result_observed',
       attemptId: 'attempt_1',
       workUnitId: 'wu_1',
       authorizedBinding: codexBinding,
       bindingFingerprint: codexFingerprint,
       contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
       receiptCount: 1, responseBytes: 100,
+      resultId: 'result_attempt_1_safe',
+      deliverability: 'deliverable',
+      certification: 'uncertified',
+      safety: 'safe',
     });
     expect(kernel.decide(first, dispatchSnapshot([], 'awaiting_decision')).action).toMatchObject({
       type: 'dispatch_batch',
@@ -662,8 +666,62 @@ describe('ControlKernel', () => {
       })],
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
-      type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1',
+      type: 'no_op',
     });
+  });
+
+  it('blocks only a quarantined result with a real safety violation', () => {
+    const event = runtimeEvent({
+      type: 'execution_result_observed',
+      attemptId: 'attempt_unsafe',
+      workUnitId: 'wu_1',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      contract: { schemaVersion: 4 },
+      violations: [{
+        code: 'completion_report_workspace_changed',
+        path: 'workspaceDelta',
+        message: 'report changed the workspace',
+      }],
+      receiptCount: 1,
+      responseBytes: 100,
+      resultId: null,
+      deliverability: 'quarantined',
+      certification: 'uncertified',
+      safety: 'safety_blocked',
+    });
+
+    expect(new ControlKernel().decide(
+      event,
+      dispatchSnapshot([], 'awaiting_decision'),
+    ).action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+    });
+  });
+
+  it('does not permanently block when a metadata correction attempt fails', () => {
+    const event = runtimeEvent({
+      type: 'execution_outcome',
+      attemptId: 'attempt_correction',
+      terminalKind: 'failed',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'contract_correction',
+      sourceAttemptId: 'attempt_primary',
+      failure: {
+        kind: 'adapter',
+        scope: 'attempt',
+        code: 'correction_unavailable',
+        summary: 'metadata correction failed',
+      },
+    });
+
+    expect(new ControlKernel().decide(
+      event,
+      dispatchSnapshot([], 'awaiting_decision'),
+    ).action).toEqual({ type: 'no_op' });
   });
 
   it('keeps merge repair on the original AgentClass for three attempts, then requests one conflict replan', () => {

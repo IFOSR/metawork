@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
 import type { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
@@ -99,6 +100,201 @@ describe('WebGatewaySessionRuntime', () => {
 
     expect(calls).toEqual(['attach-start', 'detach-client']);
     expect(() => runtime.activeSessionId).toThrow('not initialized');
+  });
+
+  it('projects live turn lifecycle events with the pending user input', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let submittedRequestId = '';
+    const projected: unknown[] = [];
+    const gateway = {
+      attachClient: async () => () => undefined,
+      subscribe: (
+        _accountId: string,
+        _conversationId: string,
+        next: (event: GatewayEventEnvelope) => void,
+      ) => {
+        listener = next;
+        return () => undefined;
+      },
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+      submit: async (envelope: { requestId: string }) => {
+        submittedRequestId = envelope.requestId;
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_1',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        };
+      },
+    } as unknown as WebGatewayAdapter;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway,
+      createId: prefix => `${prefix}_1`,
+    });
+    runtime.subscribe(event => projected.push(event));
+
+    await runtime.initialize();
+    await runtime.submit('回答这个问题');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_1',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_1',
+      kind: 'final_answer',
+      payload: { lines: ['这是最终答案'] },
+    });
+
+    expect(projected).toEqual([
+      {
+        type: 'turn_started',
+        requestId: submittedRequestId,
+        turnId: 'turn_1',
+        userInput: '回答这个问题',
+        startedAt: '2026-08-19T00:00:00.000Z',
+      },
+      {
+        type: 'final_answer',
+        requestId: submittedRequestId,
+        turnId: 'turn_1',
+        lines: ['这是最终答案'],
+        completedAt: '2026-08-19T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('streams and reassembles result chunks before the terminal answer', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    const projected: unknown[] = [];
+    const gateway = {
+      attachClient: async () => () => undefined,
+      subscribe: (
+        _accountId: string,
+        _conversationId: string,
+        next: (event: GatewayEventEnvelope) => void,
+      ) => {
+        listener = next;
+        return () => undefined;
+      },
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+    } as unknown as WebGatewayAdapter;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway,
+    });
+    runtime.subscribe(event => projected.push(event));
+    await runtime.initialize();
+
+    const content = '第一段\n第二段';
+    const bytes = Buffer.from(content, 'utf8');
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const base = {
+      ...outputEvent('event_result', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+    };
+    listener!({
+      ...base,
+      eventId: 'event_available',
+      sequence: 1,
+      kind: 'result_delivery_available',
+      payload: {
+        resultId: 'result_1',
+        contentHash,
+        byteLength: bytes.byteLength,
+        mediaType: 'text/markdown',
+        completeness: 'complete',
+        certification: 'uncertified',
+      },
+    });
+    listener!({
+      ...base,
+      eventId: 'event_chunk_1',
+      sequence: 2,
+      kind: 'result_chunk',
+      payload: {
+        resultId: 'result_1',
+        offset: 0,
+        chunk: '第一段\n',
+        byteLength: Buffer.byteLength('第一段\n'),
+      },
+    });
+    listener!({
+      ...base,
+      eventId: 'event_chunk_2',
+      sequence: 3,
+      kind: 'result_chunk',
+      payload: {
+        resultId: 'result_1',
+        offset: Buffer.byteLength('第一段\n'),
+        chunk: '第二段',
+        byteLength: Buffer.byteLength('第二段'),
+      },
+    });
+    listener!({
+      ...base,
+      eventId: 'event_completed',
+      sequence: 4,
+      kind: 'result_completed',
+      payload: {
+        resultId: 'result_1',
+        contentHash,
+        byteLength: bytes.byteLength,
+        mediaType: 'text/markdown',
+        completeness: 'complete',
+        certification: 'uncertified',
+      },
+    });
+    listener!({
+      ...base,
+      eventId: 'event_final',
+      sequence: 5,
+      kind: 'final_answer',
+      payload: {
+        resultId: 'result_1',
+        contentHash,
+        byteLength: bytes.byteLength,
+        lines: [],
+      },
+    });
+
+    expect(projected).toEqual([
+      expect.objectContaining({
+        type: 'result_delivery_available',
+        resultId: 'result_1',
+        certification: 'uncertified',
+      }),
+      expect.objectContaining({
+        type: 'result_chunk',
+        resultId: 'result_1',
+        offset: 0,
+        chunk: '第一段\n',
+      }),
+      expect.objectContaining({
+        type: 'result_chunk',
+        resultId: 'result_1',
+        offset: Buffer.byteLength('第一段\n'),
+        chunk: '第二段',
+      }),
+      expect.objectContaining({
+        type: 'result_completed',
+        resultId: 'result_1',
+        content,
+        certification: 'uncertified',
+      }),
+      expect.objectContaining({
+        type: 'final_answer',
+        lines: ['第一段', '第二段'],
+      }),
+    ]);
   });
 });
 

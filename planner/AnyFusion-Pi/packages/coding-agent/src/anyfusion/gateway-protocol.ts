@@ -15,6 +15,9 @@ export type GatewayEventKind =
   | 'execution_delta'
   | 'permission_request'
   | 'artifact'
+  | 'result_delivery_available'
+  | 'result_chunk'
+  | 'result_completed'
   | 'final_answer'
   | 'terminal_error'
   | 'delivery_status';

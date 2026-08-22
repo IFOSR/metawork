@@ -28,6 +28,15 @@ type AttemptTerminalEvent =
       authorizedBinding?: AuthorizedExecutorBinding;
       bindingFingerprint?: string;
       agentClassName?: string;
+    })
+  | (Omit<
+      Extract<KernelEvent, { type: 'execution_result_observed' }>,
+      'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
+    > & {
+      configurationRevision?: string;
+      authorizedBinding?: AuthorizedExecutorBinding;
+      bindingFingerprint?: string;
+      agentClassName?: string;
     });
 
 export interface AttemptTerminalLanding {
@@ -207,7 +216,7 @@ function materializeTerminalEvent(
   event: AttemptTerminalEvent,
   dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
 ): Extract<KernelEvent, {
-  type: 'execution_outcome' | 'handoff_contract_failed';
+  type: 'execution_outcome' | 'handoff_contract_failed' | 'execution_result_observed';
 }> {
   const {
     agentClassName: _agentClassName,

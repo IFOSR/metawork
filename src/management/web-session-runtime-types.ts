@@ -27,6 +27,56 @@ export type WebSessionRuntimeEvent =
   }
   | { type: 'output'; from: number; lines: string[] }
   | {
+    type: 'turn_started';
+    requestId: string;
+    turnId: string;
+    userInput: string;
+    startedAt: string;
+  }
+  | {
+    type: 'final_answer';
+    requestId: string;
+    turnId: string;
+    lines: string[];
+    completedAt: string;
+  }
+  | {
+    type: 'terminal_error';
+    requestId: string;
+    turnId: string;
+    message: string;
+    completedAt: string;
+  }
+  | {
+    type: 'result_delivery_available';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    contentHash: string;
+    byteLength: number;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    certification: 'certified' | 'uncertified';
+  }
+  | {
+    type: 'result_chunk';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    offset: number;
+    chunk: string;
+  }
+  | {
+    type: 'result_completed';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    content: string;
+    contentHash: string;
+    byteLength: number;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    certification: 'certified' | 'uncertified';
+  }
+  | {
     type: 'trace_delta';
     turnId: string;
     fromSequence: number;

@@ -96,6 +96,10 @@ describe('account layout migration', () => {
     expect(record?.accountId).toBe(LOCAL_DEFAULT_ACCOUNT_ID);
     expect(record?.migratedAt).toBeTruthy();
 
+    // Runtime-owned account state changes after activation; the migration
+    // manifest is transaction evidence, not a permanent immutable-tree seal.
+    await writeFile(join(accountPaths.gateway, 'runtime-event.json'), '{}', 'utf8');
+
     // 重复迁移幂等
     const second = await migrator.migrate();
     expect(second.outcome).toBe('already_migrated');
@@ -151,6 +155,41 @@ describe('account layout migration', () => {
     expect((await lstat(join(archiveRoot, 'data', 'metaclaw.db'))).isFile()).toBe(true);
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
     expect(await readdir(accountPaths.plannerSessions)).toContain('s.jsonl');
+  });
+
+  it('repairs a migrated account created before layout manifests existed', async () => {
+    const installRoot = await makeInstallRoot();
+    const paths = resolveAnyFusionPaths(undefined, installRoot);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    const repository = new FileAccountRepository(paths.accountsRoot);
+
+    await mkdir(accountPaths.root, { recursive: true });
+    await writeFile(
+      accountPaths.accountJson,
+      JSON.stringify({
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        schemaVersion: 1,
+        migratedAt: '2026-08-19T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+    await writeFile(join(accountPaths.root, 'state.txt'), 'authoritative account state', 'utf8');
+    await mkdir(paths.data, { recursive: true });
+    await writeFile(paths.database, 'legacy database placeholder', 'utf8');
+
+    const result = await new AccountLayoutMigrator({ paths }).migrate();
+
+    expect(result.outcome).toBe('already_migrated');
+    expect(await lstat(join(accountPaths.root, 'account-layout-manifest.json'))).toBeTruthy();
+    expect(await lstat(join(
+      installRoot,
+      'legacy-account-layout',
+      LOCAL_DEFAULT_ACCOUNT_ID,
+      'data',
+      'metaclaw.db',
+    ))).toBeTruthy();
+    await expect(lstat(paths.database)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await repository.load(LOCAL_DEFAULT_ACCOUNT_ID))?.migratedAt).toBeTruthy();
   });
 
   it('backs up committed WAL data into the account database before archiving legacy state', async () => {

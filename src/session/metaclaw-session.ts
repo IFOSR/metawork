@@ -141,8 +141,11 @@ import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
+import { resolveAccountPaths } from '../account/account-paths.js';
 import type { InteractionTrace, InteractionTraceStatus } from '../management/interaction-trace.js';
 import { InteractionTraceStream } from './interaction-trace-stream.js';
+import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import type { PlannerRunProgress } from '../planning/planner-progress.js';
 
 export interface PlannerHostRegistrar {
@@ -160,6 +163,7 @@ export interface MetaclawSessionDeps {
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
   sourceRoot?: string;
+  resultsRoot?: string;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
@@ -499,12 +503,15 @@ export class MetaclawSession {
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
     const sourceRoot = deps.sourceRoot
-      ?? (process.env.NODE_ENV === 'test'
-        ? resolve(process.cwd(), 'tests', 'fixtures', 'workspace-source')
+      ?? (process.env.NODE_ENV === 'test' && process.env.ANYFUSION_TEST_WORKSPACE_SOURCE
+        ? resolve(process.env.ANYFUSION_TEST_WORKSPACE_SOURCE)
         : process.cwd());
+    const resultsRoot = deps.resultsRoot
+      ?? resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID).results;
     const runtimeExecutionServices = deps.accountRuntimeExecutionServices ?? buildAccountRuntimeExecutionServices({
       db: deps.db,
       sessionId: deps.sessionId,
+      resultRoot: resultsRoot,
       sourceRoot,
       taskRuntimeService: this.taskRuntimeService,
       subtaskRepo: this.subtaskRepo,
@@ -529,6 +536,7 @@ export class MetaclawSession {
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
       db: deps.db,
       sessionId: deps.sessionId,
+      resultRoot: resultsRoot,
       sourceRoot,
       orchestration: deps.orchestration,
       notifier: this.notifier,
@@ -563,6 +571,8 @@ export class MetaclawSession {
       executionRuntime: this.executionRuntime,
       kernelExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        recordResultDelivery: () => undefined,
+        appendExecutionTrace: input => this.appendExecutionTrace(input),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         appendTaskQueueSnapshot: trigger => this.appendTaskQueueSnapshot(trigger),
         setFocusContext: focus => this.setFocusContext(focus),
@@ -1711,6 +1721,22 @@ export class MetaclawSession {
           eventKey,
         });
         return;
+      case 'model_waiting':
+        this.interactionTraceStream.append({
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_model_waiting',
+          status: 'running',
+          title: 'Planner is waiting for the model',
+          summary: 'The Planner request is still active, but no model output has arrived yet.',
+          details: {
+            ...baseDetails,
+            turn: progress.turn,
+            idleMs: progress.idleMs,
+          },
+          eventKey,
+        });
+        return;
       case 'tool_started':
         this.interactionTraceStream.append({
           phase: 'planning',
@@ -2795,6 +2821,12 @@ export class MetaclawSession {
       lastEvent: `Kernel dispatched ${name} for ${taskId}/${subtaskId}/${attemptId}`,
     };
     this.refreshRuntimeState();
+  }
+
+  private appendExecutionTrace(input: ExecutionTraceAppendInput): void {
+    const current = this.interactionTraceStream.getSnapshot();
+    if (!current || current.status !== 'running') return;
+    this.interactionTraceStream.append(input);
   }
 
   private clearRunningExecutorName(taskId: string, attemptId?: string): void {

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { PreferenceRepo } from '../../src/storage/preference-repo.js';
@@ -772,7 +774,7 @@ describe('natural-language planning/kernel path', () => {
   });
 
   it('authorizes a durable task, dispatches the executor, and audits the decision', async () => {
-    const harness = createSession('sess_durable', plan());
+    const harness = createSession('sess_durable', plan(), () => ({ body: 'done' }));
 
     await harness.session.submit('实现一个普通功能', { awaitAsyncWork: true });
 
@@ -784,6 +786,84 @@ describe('natural-language planning/kernel path', () => {
     expect(audits.some(audit => audit.action === 'authorize_task_plan')).toBe(true);
     expect(audits.some(audit => audit.action === 'dispatch_batch')).toBe(true);
     expect(audits.some(audit => audit.action === 'complete_task')).toBe(true);
+    expect(harness.session.getInteractionTrace()?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: 'kernel',
+        phase: 'execution',
+        kind: 'executor_dispatch_started',
+        details: expect.objectContaining({
+          subtaskTitle: '实现一个普通功能',
+          subtaskGoal: '实现一个普通功能',
+          deliveryKind: 'edit',
+        }),
+      }),
+      expect.objectContaining({
+        actor: 'runtime',
+        phase: 'execution',
+        kind: 'subtask_execution_started',
+        summary: expect.stringContaining('实现一个普通功能'),
+      }),
+      expect.objectContaining({
+        actor: 'executor',
+        phase: 'execution',
+        kind: 'executor_progress',
+        summary: expect.stringContaining('container execution'),
+      }),
+      expect.objectContaining({
+        actor: 'executor',
+        phase: 'verification',
+        kind: 'executor_result_observed',
+      }),
+      expect.objectContaining({
+        actor: 'runtime',
+        phase: 'delivery',
+        kind: 'publication_integrated',
+      }),
+    ]));
+  });
+
+  it('streams Executor progress while the attempt is still running', async () => {
+    let releaseExecutor!: (exitCode: number) => void;
+    const executorFinished = new Promise<number>(resolve => {
+      releaseExecutor = resolve;
+    });
+    const harness = createSession('sess_streamed_executor', plan(), () => ({
+      body: 'streamed executor result',
+      wait: executorFinished,
+    }));
+    const snapshots: string[][] = [];
+    const unsubscribe = harness.session.subscribeInteractionTrace(trace => {
+      snapshots.push(trace?.events.map(event => event.kind) ?? []);
+    });
+
+    const submitPromise = harness.session.submit(
+      '等待执行器流式进度',
+      { awaitAsyncWork: true },
+    );
+    const deadline = Date.now() + 20_000;
+    while (
+      !snapshots.some(snapshot => snapshot.includes('executor_progress'))
+      && Date.now() < deadline
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    expect(
+      snapshots.some(snapshot => snapshot.includes('executor_progress')),
+      JSON.stringify(snapshots),
+    ).toBe(true);
+    expect(harness.session.getInteractionTrace()).toMatchObject({ status: 'running' });
+    expect(harness.session.getInteractionTrace()?.events).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'publication_integrated' })]),
+    );
+
+    releaseExecutor(0);
+    await submitPromise;
+    unsubscribe();
+    expect(
+      harness.session.getInteractionTrace(),
+      JSON.stringify(harness.session.getInteractionTrace()?.events.map(event => event.kind)),
+    ).toMatchObject({ status: 'completed' });
   });
 
   it('runs independent frontier items concurrently and publishes them in stable dispatch order', async () => {
@@ -934,6 +1014,10 @@ describe('natural-language planning/kernel path', () => {
       { subtask_id: 'subtask_a' },
       { subtask_id: 'subtask_b' },
     ]);
+    expect(existsSync(join(
+      process.env.ANYFUSION_TEST_WORKSPACE_SOURCE!,
+      '.anyfusion-results',
+    ))).toBe(false);
   }, 180_000);
 
   it('routes exhausted task failure through one Kernel-authorized replan revision', async () => {

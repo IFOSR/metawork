@@ -119,6 +119,56 @@ export type ServerMessage =
     }
   | { type: 'active_session_changed'; sessionId: string }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
+  | {
+    type: 'turn_started';
+    requestId: string;
+    turnId: string;
+    userInput: string;
+    startedAt: string;
+  }
+  | {
+    type: 'final_answer';
+    requestId: string;
+    turnId: string;
+    lines: string[];
+    completedAt: string;
+  }
+  | {
+    type: 'terminal_error';
+    requestId: string;
+    turnId: string;
+    message: string;
+    completedAt: string;
+  }
+  | {
+    type: 'result_delivery_available';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    contentHash: string;
+    byteLength: number;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    certification: 'certified' | 'uncertified';
+  }
+  | {
+    type: 'result_chunk';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    offset: number;
+    chunk: string;
+  }
+  | {
+    type: 'result_completed';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    content: string;
+    contentHash: string;
+    byteLength: number;
+    completeness: 'complete' | 'partial' | 'incomplete';
+    certification: 'certified' | 'uncertified';
+  }
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }

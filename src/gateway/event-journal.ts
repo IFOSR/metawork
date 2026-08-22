@@ -9,5 +9,6 @@ import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
 
 export interface EventJournal {
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope>;
+  appendBatch?(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]>;
   replay(accountId: string, conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
 }

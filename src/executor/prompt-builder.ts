@@ -10,7 +10,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '- The Task goal below is background only. It is not an instruction to execute the whole Task.',
     '- Execute only currentSubtask.goal.',
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
-    '- Dependency data is available only through incomingHandoffs.',
+    '- Dependency data is available only through incomingHandoffs. Use result_reference_get to read an authorized full upstream result when the edge summary is insufficient.',
     '- Work only within the default authorized workspace boundary. If an operation outside it is required, call request_capability with one exact resource and operation; never work around a denial.',
     '- A granted request returns a grantId. Every broker-mediated use must call use_capability with that grantId and the exact operation payload so Runtime can enforce TTL, call, and byte budgets. A grant never permits direct access.',
     '- Finish with non-empty Markdown followed by exactly one completion marker and strict JSON until EOF.',
@@ -31,7 +31,21 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     JSON.stringify(context.incomingHandoffs.map(handoff => ({
       items: handoff.items.map(item => item.type === 'text'
         ? { type: item.type, value: item.value }
-        : { type: item.type, paths: item.paths }),
+        : item.type === 'artifact'
+          ? { type: item.type, paths: item.paths }
+          : {
+              type: item.type,
+              referenceId: item.referenceId,
+              summary: item.summary,
+            }),
+      resultReference: handoff.resultReference ? {
+        referenceId: handoff.resultReference.referenceId,
+        requiredItems: handoff.resultReference.requiredItems,
+        contentHash: handoff.resultReference.contentHash,
+        byteLength: handoff.resultReference.byteLength,
+        mediaType: handoff.resultReference.mediaType,
+        completeness: handoff.resultReference.completeness,
+      } : null,
     })), null, 2),
     '',
     'Outgoing handoff requirements (do not infer downstream goals):',
@@ -65,7 +79,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     'Completion protocol:',
     context.completionContract.marker,
     JSON.stringify({
-      evidence: ['<concise evidence that the work and checks succeeded>'],
+      evidence: ['<evidence that the work and checks succeeded>'],
       noChangeReason: null,
     }),
     'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',

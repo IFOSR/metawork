@@ -38,6 +38,10 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).not.toContain("preferredAgentClassList");
 		expect(prompt).toContain("Their arrival is not a semantic turn");
 		expect(prompt).toContain("only when the current user explicitly asks");
+		expect(prompt).toContain("Never inspect MetaClaw source code, tests, or ADRs to infer Runtime");
+		expect(prompt).toContain("Once the required authoritative facts are available, stop querying");
+		expect(prompt).toContain("Topical overlap with an existing Task is not explicit task-control intent");
+		expect(prompt).toContain("ask one clarification instead of resuming, recovering, or clearing it");
 		expect(prompt).not.toContain("ANYFUSION_PLANNER_CATALOG_JSON");
 		expect(prompt).not.toContain('"name": "codex-cli"');
 	});

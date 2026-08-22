@@ -1,4 +1,5 @@
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
 import {
   DEFAULT_ATTEMPT_EXECUTION_LIMITS,
@@ -15,6 +16,8 @@ export interface ContainerCompatibilityAdapterDependencies {
   agentClassId: string;
   driver: HarnessDriver;
   runtimeBinding: RuntimePrivateConfigurationBinding;
+  authorizedBinding: AuthorizedExecutorBinding;
+  modelId: string;
   attemptsRoot: string;
   imageRef: string;
   backend: AttemptExecutionBackend;
@@ -29,6 +32,8 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
   readonly supportsContinuation = false;
   private readonly driver: HarnessDriver;
   private readonly runtimeBinding: RuntimePrivateConfigurationBinding;
+  private readonly authorizedBinding: AuthorizedExecutorBinding;
+  private readonly modelId: string;
   private readonly attemptsRoot: string;
   private readonly imageRef: string;
   private readonly backend: AttemptExecutionBackend;
@@ -42,6 +47,8 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
     this.name = dependencies.agentClassId;
     this.driver = dependencies.driver;
     this.runtimeBinding = dependencies.runtimeBinding;
+    this.authorizedBinding = dependencies.authorizedBinding;
+    this.modelId = dependencies.modelId;
     this.attemptsRoot = dependencies.attemptsRoot;
     this.imageRef = dependencies.imageRef;
     this.backend = dependencies.backend;
@@ -78,6 +85,8 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         prompt: buildExecutorContextPrompt(containerExecutorInput(input)),
         cwd: '/workspace',
         runtimeHomePath: '/runtime-home',
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
       });
       const resolvedImageId = await this.backend.resolveImage(this.imageRef);
       const record = await this.backend.create({
@@ -191,7 +200,7 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
       }
       return {
         success: false,
-        output: '',
+        output: parsed.output,
         error: parsed.error,
         failure: normalizeExecutorFailure(parsed.error),
         exitCode,

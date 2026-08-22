@@ -36,6 +36,7 @@ Key recent ADRs:
 - [ADR-0025: Single-Task Concurrency And Git Publication](adr/0025-single-task-concurrency-and-git-publication.md): Phase 6 runnable frontier, batch dispatch, asynchronous attempts, Git-backed workspaces and publication.
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
 - [ADR-0031: Account Runtime And Unified Client Gateway](adr/0031-account-runtime-and-unified-client-gateway.md): delivered account-scoped Runtime ownership, conversation isolation, one Gateway command/event plane, and TUI/Web/Feishu convergence.
+- [ADR-0032: Result-First Delivery And Completion Certification](adr/0032-result-first-delivery-and-completion-certification.md): Completion Protocol v4, immutable Result Objects, authorized ResultReferences, chunked delivery, and safe partial-result recovery.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
@@ -55,6 +56,7 @@ replacing those semantics.
 ## Completed Delivery
 
 - [Account Runtime and unified Gateway implementation plan](plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md): delivered account-wide Runtime/Kernel ownership, account-isolated install/update authority, durable Conversations, versioned Gateway replay, startup recovery, and Web/Feishu/TUI/Unix/script cutover. The [approved design](plans/2026-08-18-account-runtime-unified-gateway-design.md) records the implemented topology and migration gates.
+- [Completion Protocol result-first delivery](plans/2026-08-20-completion-protocol-result-first-design.md): delivered Completion Protocol v4, immutable Result Objects, authorized ResultReferences, chunked replay, Kernel uncertified-result recovery, historical result upgrades, and complete safe Harness-result delivery. Real Web/API E2E and the full release validation gate passed.
 
 ## Active Delivery
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.

@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import type { ExecutionEvidencePort } from './execution-evidence-port.js';
+import type { ExecutionResultReferencePort } from './execution-result-reference-port.js';
 
 export interface ExecutionEvidenceToolBinding {
   mcpUrl: string;
@@ -20,6 +21,7 @@ export class ExecutionEvidenceToolServer {
 
   constructor(
     private readonly port: ExecutionEvidencePort,
+    private readonly resultReferencePort?: ExecutionResultReferencePort,
     private readonly options: { bindHost?: string; advertisedHost?: string } = {},
   ) {
     this.mcp.registerTool('evidence_list', {
@@ -34,6 +36,19 @@ export class ExecutionEvidenceToolServer {
       description: 'Read an authorized evidence item in bounded chunks.',
       inputSchema: { evidenceId: z.string(), offset: z.number().int().optional() },
     }, input => toolResult(this.port.get(input)));
+    if (this.resultReferencePort) {
+      this.mcp.registerTool('result_reference_list', {
+        description: 'List full upstream results authorized for this direct dependency edge and attempt.',
+        inputSchema: {},
+      }, () => toolResult(this.resultReferencePort!.list()));
+      this.mcp.registerTool('result_reference_get', {
+        description: 'Read one authorized upstream ResultReference in bounded UTF-8 chunks.',
+        inputSchema: {
+          referenceId: z.string(),
+          offset: z.number().int().optional(),
+        },
+      }, input => toolResult(this.resultReferencePort!.get(input)));
+    }
   }
 
   async start(): Promise<ExecutionEvidenceToolBinding> {
@@ -82,6 +97,13 @@ export class ExecutionEvidenceToolServer {
           ? this.port.search({ query: String(input.query ?? ''), cursor: optionalString(input.cursor), limit: optionalNumber(input.limit) })
           : operation === 'get'
             ? this.port.get({ evidenceId: String(input.evidenceId ?? ''), offset: optionalNumber(input.offset) })
+            : operation === 'result_reference_list' && this.resultReferencePort
+              ? this.resultReferencePort.list()
+              : operation === 'result_reference_get' && this.resultReferencePort
+                ? this.resultReferencePort.get({
+                    referenceId: String(input.referenceId ?? ''),
+                    offset: optionalNumber(input.offset),
+                  })
             : null;
       if (result === null) throw new Error('unknown_evidence_operation');
       sendJson(response, 200, result);

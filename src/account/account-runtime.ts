@@ -177,6 +177,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
         listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId),
         findSubtask: subtaskId => this.deps.repositories.subtaskRepo.findById(subtaskId),
         findKernelEvent: eventId => this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId),
+        findKernelApplicationByDecisionId: decisionId => (
+          this.deps.kernelServices.kernelWorkflowRepo.findApplicationByDecisionId(decisionId)
+        ),
         listKernelDecisionsBySession: sessionId => (
           this.deps.kernelServices.kernelDecisionRepo.listBySession(sessionId)
         ),

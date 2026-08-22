@@ -177,6 +177,7 @@ forced to the MetaWork repository or a fixed `/workspace`.
 
 ```bash
 anyfusion web
+anyfusion web start           # explicit alias for starting Web
 anyfusion web restart          # restart the unified Server with Web in foreground
 anyfusion web --port 9000 --no-open
 ```
@@ -190,7 +191,7 @@ forwarding, or manual browser startup.
 
 ```text
 anyfusion                                   # native TUI
-anyfusion web [restart] [--port <p>] [--no-open]
+anyfusion web [start|restart] [--port <p>] [--no-open]
 anyfusion --script <file>                   # scripted session
 anyfusion --gateway                         # local gateway
 anyfusion --connect                         # attach to a running gateway
@@ -242,8 +243,8 @@ concurrently.
 | Planner contract | PlanningAgentPlan v8 |
 | Work Graph contract | v7 |
 | Kernel contract | v5 |
-| Completion contract | v3 |
-| Persistence | SQLite schema v31 |
+| Completion contract | v4 |
+| Persistence | SQLite schema v32 |
 | Canonical Executors | Codex CLI and Pi Agent |
 
 This is not a stable production release. Installation, configuration, and

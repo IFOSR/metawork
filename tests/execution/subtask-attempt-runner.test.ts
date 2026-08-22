@@ -8,7 +8,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
 import { SubtaskAttemptRunner } from '../../src/execution/subtask-attempt-runner.js';
-import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
+import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
 import { builtinCodexAgentClass, builtinPiAgentClass } from '../support/builtin-agent-classes.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -26,6 +26,7 @@ import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 import type { AttemptExecutionBackend } from '../../src/execution/attempt-execution-backend.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -144,6 +145,7 @@ function setup(rawResponse: string) {
     pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), remove: vi.fn(), listManaged: vi.fn(),
   } as unknown as AttemptExecutionBackend;
   const fixtureRoot = `/tmp/metaclaw-phase2-attempt-runner/${randomUUID()}`;
+  const resultRoot = join(fixtureRoot, 'results');
   const sourceRoot = join(fixtureRoot, 'source');
   mkdirSync(sourceRoot, { recursive: true });
   writeFileSync(join(sourceRoot, 'README.md'), 'fixture\n');
@@ -164,6 +166,8 @@ function setup(rawResponse: string) {
     permissionRepository: new SqlitePermissionRepository(db),
     kernelWorkflowStore: new KernelWorkflowRepo(db),
     workspaceRepository: new SqliteWorkspaceRepository(db),
+    accountId: 'local-default',
+    resultRoot,
     sourceRoot,
     controlNetwork: 'metaclaw-control',
   });
@@ -249,6 +253,7 @@ function setup(rawResponse: string) {
     executionRuntime,
     dispatchItems,
     workflow: new KernelWorkflowRepo(db),
+    resultObjectRepo: new ResultObjectRepo(db, resultRoot),
     a,
     b,
     defaultResourceGrant,
@@ -299,7 +304,7 @@ function authorizeRunningAttempt(
 }
 
 function validResponse(): string {
-  return `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+  return `A completed.\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
     evidence: ['verified A'],
     noChangeReason: null,
   })}`;
@@ -319,7 +324,16 @@ describe('SubtaskAttemptRunner', () => {
       result: '',
     });
     expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
-      .toMatchObject({ terminal_state: 'completed', raw_response: validResponse() });
+      .toMatchObject({ terminal_state: 'completed', raw_response: '' });
+    expect(setupResult.db.prepare(`
+      SELECT kind, completeness
+      FROM result_objects
+      ORDER BY kind
+    `).all()).toEqual([
+      { kind: 'business_result', completeness: 'complete' },
+      { kind: 'raw_attempt_output', completeness: 'complete' },
+      { kind: 'safe_projection', completeness: 'complete' },
+    ]);
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get())
       .toEqual({ count: 0 });
     expect(setupResult.db.prepare(`
@@ -347,30 +361,136 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
-  it('blocks malformed completion without exposing it as a successful Subtask result', async () => {
+  it('persists and returns a safe result when completion metadata is missing', async () => {
     const setupResult = setup('plain response without envelope');
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(outcome.outcome).toBe('contract_failed');
+    expect(outcome).toMatchObject({
+      outcome: 'contract_failed',
+      output: 'plain response without envelope',
+      resultId: 'result_attempt_1_safe',
+    });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
-    expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
-      .toEqual({ terminal_state: 'contract_blocked', raw_response: 'plain response without envelope' });
+    expect(setupResult.db.prepare(`
+      SELECT terminal_state, raw_response, parsing_json
+      FROM executor_attempt_receipts
+    `).get()).toMatchObject({
+      terminal_state: 'uncertified_result',
+      raw_response: '',
+      parsing_json: expect.stringContaining('"safeProjectionId":"result_attempt_1_safe"'),
+    });
+    expect(setupResult.db.prepare(`
+      SELECT result_id, kind, completeness
+      FROM result_objects
+      ORDER BY result_id
+    `).all()).toEqual([
+      { result_id: 'result_attempt_1_business', kind: 'business_result', completeness: 'partial' },
+      { result_id: 'result_attempt_1_raw', kind: 'raw_attempt_output', completeness: 'partial' },
+      { result_id: 'result_attempt_1_safe', kind: 'safe_projection', completeness: 'partial' },
+    ]);
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
     expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'running' });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
-      state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+      state: 'idle', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
     expect(setupResult.db.prepare(`
       SELECT event_type, state, attempt_id FROM work_unit_events
-      WHERE work_unit_id = 'executor-codex' AND event_type IN ('failed', 'released')
+      WHERE work_unit_id = 'executor-codex' AND event_type IN ('waiting', 'released')
       ORDER BY rowid
     `).all()).toEqual([
-      { event_type: 'failed', state: 'failed', attempt_id: outcome.attemptId },
-      { event_type: 'released', state: 'failed', attempt_id: outcome.attemptId },
+      { event_type: 'waiting', state: 'waiting', attempt_id: outcome.attemptId },
+      { event_type: 'released', state: 'idle', attempt_id: outcome.attemptId },
     ]);
+  });
+
+  it('persists the streamed raw Harness output separately from the normalized business result', async () => {
+    const setupResult = setup(validResponse());
+    const rawHarnessOutput = [
+      '{"type":"agent_start"}\n',
+      '{"type":"tool_execution_end","toolName":"web_search"}\n',
+      '{"type":"message_end","message":{"role":"assistant"}}\n',
+    ].join('');
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      input.executorInput.onRawOutput?.(rawHarnessOutput, 'stdout');
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_1',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: validResponse(),
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+
+    await setupResult.runner.run({
+      attemptId: 'attempt_streamed_raw',
+      executionId: 'exec_1',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    const raw = setupResult.resultObjectRepo.findObject('result_attempt_streamed_raw_raw');
+    const business = setupResult.resultObjectRepo.findObject('result_attempt_streamed_raw_business');
+    expect(raw).not.toBeNull();
+    expect(business).not.toBeNull();
+    expect(setupResult.resultObjectRepo.readRange(
+      raw!.resultId,
+      0,
+      raw!.byteLength,
+    ).content).toBe(rawHarnessOutput);
+    expect(setupResult.resultObjectRepo.readRange(
+      business!.resultId,
+      0,
+      business!.byteLength,
+    ).content).toBe('A completed.');
+  });
+
+  it('delivers and persists a redacted safe projection while retaining the business result', async () => {
+    const response = `Sensitive report\n\ntoken=secret-value\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+      evidence: ['verified report'],
+      noChangeReason: null,
+    })}`;
+    const setupResult = setup(response);
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_secret_projection',
+      executionId: 'exec_1',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: 'completed',
+      output: 'Sensitive report\n\ntoken=[REDACTED]',
+    });
+    const business = setupResult.resultObjectRepo.findObject(
+      'result_attempt_secret_projection_business',
+    )!;
+    const safe = setupResult.resultObjectRepo.findObject(
+      'result_attempt_secret_projection_safe',
+    )!;
+    expect(setupResult.resultObjectRepo.readRange(
+      business.resultId,
+      0,
+      business.byteLength,
+    ).content).toContain('token=secret-value');
+    expect(setupResult.resultObjectRepo.readRange(
+      safe.resultId,
+      0,
+      safe.byteLength,
+    ).content).toBe('Sensitive report\n\ntoken=[REDACTED]');
   });
 
   it('terminates a stale attempt without leaving its Subtask running or releasing its WorkUnit as idle', async () => {
@@ -457,8 +577,8 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
-  it('blocks a handoff that would exceed the downstream aggregate budget', async () => {
-    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V3}\n${JSON.stringify({
+  it('does not reject completion because evidence or existing handoffs are large', async () => {
+    const rawResponse = `A completed.\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
       evidence: [
         'x'.repeat(1_000),
         'x'.repeat(1_000),
@@ -492,12 +612,72 @@ describe('SubtaskAttemptRunner', () => {
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(outcome).toMatchObject({ outcome: 'contract_failed' });
-    expect(outcome.outcome === 'contract_failed' ? outcome.violations : []).toContainEqual(expect.objectContaining({
-      code: 'completion_budget_exceeded',
-      path: 'handoffs.0.toSubtaskId',
-    }));
+    expect(outcome).toMatchObject({
+      outcome: 'completed',
+      output: 'A completed.',
+    });
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 1 });
+    expect(setupResult.db.prepare(`
+      SELECT status FROM workspace_publications WHERE source_attempt_id = 'attempt_1'
+    `).get()).toEqual({ status: 'pending' });
+  });
+
+  it('delivers a safe partial Executor result after a failed attempt without certifying it', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.executionRuntime.run.mockResolvedValueOnce({
+      taskId: 'task_phase2',
+      executionId: 'exec_partial',
+      status: 'failed',
+      executorName: 'codex-cli',
+      output: 'PARTIAL_RESULT_FROM_HARNESS',
+      error: 'Executor timed out after producing a partial answer',
+      failure: {
+        kind: 'timeout',
+        scope: 'attempt',
+        code: 'executor_timeout',
+        summary: 'Executor timed out after producing a partial answer',
+      },
+      artifacts: [],
+      subtaskResults: [],
+      durationMs: 10,
+    });
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_partial',
+      executionId: 'exec_partial',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: 'contract_failed',
+      output: 'PARTIAL_RESULT_FROM_HARNESS',
+    });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'awaiting_decision',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT terminal_state, raw_response, parsing_json
+      FROM executor_attempt_receipts WHERE attempt_id = 'attempt_partial'
+    `).get()).toMatchObject({
+      terminal_state: 'uncertified_result',
+      raw_response: '',
+    });
+    const parsing = JSON.parse((setupResult.db.prepare(`
+      SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_partial'
+    `).get() as { parsing_json: string }).parsing_json) as {
+      resultObjects: { businessResultId: string; safeProjectionId: string };
+      completionAssessment: { result: { kind: string } };
+    };
+    expect(parsing.completionAssessment.result.kind).toBe('partial');
+    expect(setupResult.resultObjectRepo.readRange(
+      parsing.resultObjects.safeProjectionId,
+      0,
+      setupResult.resultObjectRepo.findObject(parsing.resultObjects.safeProjectionId)!.byteLength,
+    ).content).toBe('PARTIAL_RESULT_FROM_HARNESS');
   });
 
   it('persists an executor failure and releases the exact attempt claim when execution throws', async () => {
@@ -575,6 +755,7 @@ describe('SubtaskAttemptRunner', () => {
       permissionRepository: new SqlitePermissionRepository(setupResult.db),
       kernelWorkflowStore: new KernelWorkflowRepo(setupResult.db),
       workspaceRepository: new SqliteWorkspaceRepository(setupResult.db),
+      resultRoot: `/tmp/metaclaw-heartbeat-results-${randomUUID()}`,
       sourceRoot: '/tmp/metaclaw-heartbeat-source',
       controlNetwork: 'metaclaw-control',
     });
@@ -688,8 +869,9 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ state: 'idle' });
   });
 
-  it('stages only a corrected response from one isolated response-only attempt', async () => {
-    const setupResult = setup('first malformed response');
+  it('uses correction only for metadata and preserves the original safe business result', async () => {
+    const originalBody = 'ORIGINAL_RESULT_BODY';
+    const setupResult = setup(originalBody);
     const first = await setupResult.runner.run({
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
@@ -698,7 +880,13 @@ describe('SubtaskAttemptRunner', () => {
     if (first.outcome !== 'contract_failed') return;
     setupResult.workUnitRepo.updateState('executor-codex', 'idle');
     setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
-      success: true, output: validResponse(), exitCode: 0, durationMs: 5,
+      success: true,
+      output: `REWRITTEN_BODY_MUST_BE_IGNORED\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+        evidence: ['metadata repaired'],
+        noChangeReason: null,
+      })}`,
+      exitCode: 0,
+      durationMs: 5,
     });
 
     const corrected = await setupResult.runner.runCorrection({
@@ -707,23 +895,36 @@ describe('SubtaskAttemptRunner', () => {
       completionContract: first.completionContract, violations: first.violations,
     });
 
-    expect(corrected).toMatchObject({ outcome: 'completed', output: 'A completed.' });
+    expect(corrected).toMatchObject({ outcome: 'completed', output: originalBody });
     expect(setupResult.executionRuntime.runResponseOnly).toHaveBeenCalledTimes(1);
     const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
-    expect(correctionPrompt).toContain('first malformed response');
-    expect(correctionPrompt).toContain('{"evidence":["<concise evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).not.toContain(originalBody);
+    expect(correctionPrompt).not.toContain('REWRITTEN_BODY_MUST_BE_IGNORED');
+    expect(correctionPrompt).toContain('{"evidence":["<evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).not.toContain('concise evidence');
     expect(correctionPrompt).not.toContain('Completion contract:');
     expect(correctionPrompt).not.toContain('task_phase2_a');
     expect(correctionPrompt).not.toContain('acceptanceEvidence');
     expect(setupResult.db.prepare(`
       SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
     `).all()).toEqual(expect.arrayContaining([
-      { attempt_id: 'attempt_primary', terminal_state: 'contract_blocked', raw_response: 'first malformed response' },
-      { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: validResponse() },
+      { attempt_id: 'attempt_primary', terminal_state: 'uncertified_result', raw_response: '' },
+      { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: '' },
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
       status: 'awaiting_integration',
       result: '',
+    });
+    const correctionReceipt = setupResult.db.prepare(`
+      SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_correction'
+    `).get() as { parsing_json: string };
+    const correctionObjects = JSON.parse(correctionReceipt.parsing_json).resultObjects as {
+      businessResultId: string;
+      safeProjectionId: string;
+    };
+    expect(correctionObjects).toMatchObject({
+      businessResultId: 'result_attempt_primary_business',
+      safeProjectionId: 'result_attempt_primary_safe',
     });
     expect(setupResult.db.prepare(`
       SELECT source_attempt_id, status FROM workspace_publications

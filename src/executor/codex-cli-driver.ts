@@ -4,7 +4,10 @@ import { chmod, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveAnyFusionPaths } from '../installation/paths.js';
-import { resolveCurrentRuntimeHome } from '../configuration/agent-runtime-renderer.js';
+import {
+  resolveCurrentRuntimeHome,
+  resolveRevisionRuntimeHome,
+} from '../configuration/agent-runtime-renderer.js';
 import { buildCodexNonInteractiveArgs } from './codex-args.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
 import type {
@@ -32,20 +35,21 @@ const execFileAsync = promisify(execFile);
 export class CodexCliDriver implements HarnessDriver {
   readonly id = 'codex-cli';
   private readonly runProbe: ProbeCommandRunner;
-  private readonly homeTemplateDir?: string;
+  private readonly explicitHomeTemplateDir?: string;
+  private readonly generatedRuntimeRoot?: string;
+  private readonly fallbackHomeTemplateDir?: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
+    generatedRuntimeRoot?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
-    // 优先级：显式依赖 > 当前 generated agent-runtime > legacy 环境变量。
-    // generated agent-runtime 由配置激活时渲染并切换 current 指针，是 executor
-    // 应使用的权威 home；legacy 环境变量仅作为未渲染时的兜底。
-    this.homeTemplateDir = emptyToUndefined(
-      dependencies.homeTemplateDir
-        ?? resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'codex')
-        ?? process.env.METACLAW_EXECUTOR_CODEX_HOME,
+    this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
+    this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
+    this.fallbackHomeTemplateDir = emptyToUndefined(
+      resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'codex')
+      ?? process.env.METACLAW_EXECUTOR_CODEX_HOME,
     );
   }
 
@@ -69,7 +73,7 @@ export class CodexCliDriver implements HarnessDriver {
         ...input.environment,
       },
     });
-    await this.seedProviderConfig(homePath);
+    await this.seedProviderConfig(homePath, input.revisionId);
     return home;
   }
 
@@ -158,9 +162,21 @@ export class CodexCliDriver implements HarnessDriver {
     return null;
   }
 
-  private async seedProviderConfig(homePath: string): Promise<void> {
-    if (!this.homeTemplateDir) return;
-    const source = join(this.homeTemplateDir, 'config.toml');
+  private async seedProviderConfig(homePath: string, revisionId: string): Promise<void> {
+    const revisionHome = this.generatedRuntimeRoot
+      ? resolveRevisionRuntimeHome(this.generatedRuntimeRoot, revisionId, 'codex')
+      : undefined;
+    if (this.generatedRuntimeRoot && !revisionHome) {
+      throw new Error(
+        `Codex executor runtime home is missing for configuration revision ${revisionId}: `
+        + join(this.generatedRuntimeRoot, revisionId, 'codex'),
+      );
+    }
+    const templateDir = this.explicitHomeTemplateDir
+      ?? revisionHome
+      ?? this.fallbackHomeTemplateDir;
+    if (!templateDir) return;
+    const source = join(templateDir, 'config.toml');
     if (!existsSync(source)) {
       throw new Error(`Codex executor home template is missing config.toml: ${source}`);
     }

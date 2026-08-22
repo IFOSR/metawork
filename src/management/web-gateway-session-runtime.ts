@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import type { GatewayEventEnvelope, GatewayReplay } from '../gateway/client-events.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
 import type { InteractionTraceEvent } from './interaction-trace.js';
@@ -25,6 +26,8 @@ export interface WebGatewaySessionRuntimeDeps {
 export class WebGatewaySessionRuntime {
   private readonly listeners = new Set<(event: WebSessionRuntimeEvent) => void>();
   private readonly pendingInputs = new Map<string, string>();
+  private readonly resultAssemblies = new Map<string, ResultAssembly>();
+  private readonly completedResults = new Map<string, string>();
   private unsubscribe: (() => void) | null = null;
   private detachClient: (() => void) | null = null;
   private replayEvents: WebSessionRuntimeEvent[] = [];
@@ -66,6 +69,8 @@ export class WebGatewaySessionRuntime {
     this._activeSessionId = null;
     this.replayEvents = [];
     this.pendingInputs.clear();
+    this.resultAssemblies.clear();
+    this.completedResults.clear();
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
     return this.disposePromise;
   }
@@ -158,6 +163,8 @@ export class WebGatewaySessionRuntime {
     this.detachClient?.();
     this._activeSessionId = sessionId;
     this.replayEvents = [];
+    this.resultAssemblies.clear();
+    this.completedResults.clear();
     const buffered: GatewayEventEnvelope[] = [];
     let replaying = true;
     const unsubscribe = this.deps.gateway.subscribe(
@@ -210,22 +217,33 @@ export class WebGatewaySessionRuntime {
   }
 
   private consume(event: GatewayEventEnvelope, replay: boolean): void {
-    const mapped = mapGatewayEvent(event);
+    const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
+    const resultEvent = this.consumeResultEvent(event);
+    if (resultEvent) {
+      if (replay) this.replayEvents.push(resultEvent);
+      else this.emit(resultEvent);
+    }
+    const mapped = mapGatewayEvent(
+      event,
+      userInput,
+      resultIdFromPayload(event.payload)
+        ? this.completedResults.get(resultIdFromPayload(event.payload)!) ?? null
+        : null,
+    );
     if (mapped) {
       if (replay) this.replayEvents.push(mapped);
       else this.emit(mapped);
     }
     if (event.kind === 'final_answer' && event.requestId) {
-      const userInput = this.pendingInputs.get(event.requestId);
       this.pendingInputs.delete(event.requestId);
       if (userInput) {
-        const payload = event.payload as { lines?: string[] };
+        const lines = mapped?.type === 'final_answer' ? mapped.lines : [];
         void this.deps.catalog.appendTurn(event.conversationId, {
           id: event.turnId ?? this.id('turn'),
           sessionId: event.conversationId,
           userInput,
           status: 'completed',
-          finalAnswer: payload.lines?.join('\n') ?? null,
+          finalAnswer: lines.join('\n'),
           taskId: null,
           startedAt: event.occurredAt,
           completedAt: event.occurredAt,
@@ -235,6 +253,67 @@ export class WebGatewaySessionRuntime {
         });
       }
     }
+    if (event.kind === 'terminal_error' && event.requestId) {
+      this.pendingInputs.delete(event.requestId);
+    }
+  }
+
+  private consumeResultEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
+    if (!event.requestId || !event.turnId) return null;
+    const payload = asRecord(event.payload);
+    const resultId = stringValue(payload.resultId);
+    if (!resultId) return null;
+    if (event.kind === 'result_delivery_available') {
+      const metadata = resultMetadata(payload);
+      if (!metadata) return null;
+      this.resultAssemblies.set(resultId, { ...metadata, chunks: new Map() });
+      return {
+        type: 'result_delivery_available',
+        requestId: event.requestId,
+        turnId: event.turnId,
+        resultId,
+        ...metadata,
+      };
+    }
+    if (event.kind === 'result_chunk') {
+      const offset = nonNegativeInteger(payload.offset);
+      const chunk = stringValue(payload.chunk);
+      if (offset === null || chunk === null) return null;
+      const assembly = this.resultAssemblies.get(resultId);
+      if (assembly) assembly.chunks.set(offset, chunk);
+      return {
+        type: 'result_chunk',
+        requestId: event.requestId,
+        turnId: event.turnId,
+        resultId,
+        offset,
+        chunk,
+      };
+    }
+    if (event.kind === 'result_completed') {
+      const metadata = resultMetadata(payload);
+      const assembly = this.resultAssemblies.get(resultId);
+      if (!metadata || !assembly) return null;
+      const content = [...assembly.chunks.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, chunk]) => chunk)
+        .join('');
+      const bytes = Buffer.from(content, 'utf8');
+      const hash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      if (bytes.byteLength !== metadata.byteLength || hash !== metadata.contentHash) {
+        return null;
+      }
+      this.completedResults.set(resultId, content);
+      return {
+        type: 'result_completed',
+        requestId: event.requestId,
+        turnId: event.turnId,
+        resultId,
+        content,
+        ...metadata,
+      };
+    }
+    return null;
   }
 
   private emit(event: WebSessionRuntimeEvent): void {
@@ -270,7 +349,21 @@ function orderedUniqueEvents(events: GatewayEventEnvelope[]): GatewayEventEnvelo
     });
 }
 
-function mapGatewayEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
+function mapGatewayEvent(
+  event: GatewayEventEnvelope,
+  userInput?: string,
+  completedResult: string | null = null,
+): WebSessionRuntimeEvent | null {
+  if (event.kind === 'turn_started') {
+    if (!event.requestId || !event.turnId || !userInput) return null;
+    return {
+      type: 'turn_started',
+      requestId: event.requestId,
+      turnId: event.turnId,
+      userInput,
+      startedAt: event.occurredAt,
+    };
+  }
   if (event.kind === 'conversation_snapshot') {
     const payload = event.payload as { from?: number; lines?: string[] };
     return {
@@ -290,7 +383,76 @@ function mapGatewayEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | 
   }
   if (event.kind === 'terminal_error') {
     const payload = event.payload as { message?: string };
-    return { type: 'output', from: 0, lines: [`错误: ${payload.message ?? 'Gateway execution failed'}`] };
+    if (!event.requestId || !event.turnId) return null;
+    return {
+      type: 'terminal_error',
+      requestId: event.requestId,
+      turnId: event.turnId,
+      message: payload.message ?? 'Gateway execution failed',
+      completedAt: event.occurredAt,
+    };
+  }
+  if (event.kind === 'final_answer') {
+    const payload = event.payload as { lines?: string[] };
+    if (!event.requestId || !event.turnId) return null;
+    return {
+      type: 'final_answer',
+      requestId: event.requestId,
+      turnId: event.turnId,
+      lines: payload.lines && payload.lines.length > 0
+        ? payload.lines
+        : completedResult?.split('\n') ?? [],
+      completedAt: event.occurredAt,
+    };
   }
   return null;
+}
+
+interface ResultAssembly {
+  contentHash: string;
+  byteLength: number;
+  completeness: 'complete' | 'partial' | 'incomplete';
+  certification: 'certified' | 'uncertified';
+  chunks: Map<number, string>;
+}
+
+function resultMetadata(payload: Record<string, unknown>): Omit<ResultAssembly, 'chunks'> | null {
+  const contentHash = stringValue(payload.contentHash);
+  const byteLength = nonNegativeInteger(payload.byteLength);
+  const completeness = payload.completeness;
+  const certification = payload.certification;
+  if (
+    !contentHash
+    || byteLength === null
+    || !['complete', 'partial', 'incomplete'].includes(String(completeness))
+    || !['certified', 'uncertified'].includes(String(certification))
+  ) {
+    return null;
+  }
+  return {
+    contentHash,
+    byteLength,
+    completeness: completeness as ResultAssembly['completeness'],
+    certification: certification as ResultAssembly['certification'],
+  };
+}
+
+function resultIdFromPayload(payload: unknown): string | null {
+  return stringValue(asRecord(payload).resultId);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
 }

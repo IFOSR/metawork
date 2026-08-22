@@ -50,7 +50,7 @@ As of 2026-07-15, the Planner received confirmed global memory up to `top_k_pref
 
 ## Amendment: bounded read-only file access for the Planner
 
-The Planner may read explicitly selected repository file bodies when answering or planning, but it does not receive arbitrary shell access. The AnyFusion-Pi fork exposes the built-in read-only `read` capability and disables `bash`, `edit`, `write`, `grep`, `find` and `ls` tool entrypoints. Repository reads therefore remain an information capability rather than an execution capability. Task, Kernel, Executor, storage and Git mutation remain outside the Planner process.
+The interactive client-only Planner may read explicitly selected repository file bodies when answering workspace questions, but it does not receive arbitrary shell access. Semantic RPC mode disables the built-in repository readers so Runtime, Kernel, validation, recovery, scheduling and Executor semantics cannot be reverse-engineered from source. The AnyFusion-Pi fork disables `bash`, `edit` and `write` in every mode. Repository reads, where enabled for the interactive client, remain an information capability rather than an execution capability. Task, Kernel, Executor, storage and Git mutation remain outside the Planner process.
 
 ## Amendment: tool-mediated runtime diagnostics
 
@@ -105,11 +105,28 @@ prompt. Dynamic facts are not serialized into that prompt: the Planner receives
 only seven allowlisted read-only MetaClaw MCP tools (`search_tasks`,
 `get_task_context`, `get_current_session_context`, `get_planning_context`,
 `get_runtime_state`, `list_executor_status`, and `get_executor_diagnostics`) and
-four Pi-native repository readers (`read`, `grep`, `find`, and `ls`) rooted at
-the Planner process working directory. Native launch uses the directory where
+four Pi-native repository readers (`read`, `grep`, `find`, and `ls`) are available
+only to the interactive client-only mode and are rooted at the Planner process
+working directory. Semantic RPC mode disables them. Native launch uses the directory where
 the user starts AnyFusion; container launch may still use `/workspace`. Extra
 MCP tools and external Skills, extensions, MCP configuration, prompt templates,
 model controls, package installation, and updates remain unavailable.
+
+Pi-native repository readers may answer user questions about workspace content,
+but they are not an authority for MetaClaw Runtime, Kernel, validation,
+recovery, scheduling or Executor semantics. Those facts come only from the
+seven MetaClaw MCP queries and the live proposal schema. Once the required
+authoritative facts are available, Planner must submit a proposal rather than
+continue inspecting the workspace. The process supervisor fails closed after
+eight processing cycles or twelve non-proposal tool calls without a submission,
+independently from the wall-clock RPC timeout.
+
+Task-control intent is explicit in the current user turn. Topic overlap with an
+existing Task, a blocked or parked Task, or pressure from the single-active-Task
+gate does not authorize Planner to resume, recover, clear, cancel or repurpose
+that Task. If newly requested schedulable work conflicts with an active Task,
+Planner must ask one clarification unless the current turn explicitly requests
+the applicable control operation.
 
 MetaClaw injects the shared image's absolute Node executable and compiled
 Planner MCP entry path. The Planner artifact carries no private Node runtime and

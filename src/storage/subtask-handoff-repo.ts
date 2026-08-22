@@ -1,12 +1,23 @@
 import type Database from 'better-sqlite3';
-import type { CompletionHandoffV3 } from '../execution/completion-protocol.js';
+import type { CompletionHandoffV4 } from '../execution/completion-protocol.js';
+import type { ResultReferenceRecord } from './result-object-repo.js';
+
+export type PersistedSubtaskHandoffItem =
+  | CompletionHandoffV4['items'][number]
+  | {
+      key: string;
+      type: 'result_reference';
+      referenceId: string;
+      summary: string;
+    };
 
 export interface PersistedSubtaskHandoff {
   taskId: string;
   fromSubtaskId: string;
   toSubtaskId: string;
   attemptId: string;
-  items: CompletionHandoffV3['items'];
+  items: PersistedSubtaskHandoffItem[];
+  resultReference?: ResultReferenceRecord | null;
   completionSchemaVersion: number;
   createdAt: string;
 }
@@ -35,7 +46,13 @@ export class SubtaskHandoffRepo {
       handoff.fromSubtaskId,
       handoff.toSubtaskId,
       handoff.attemptId,
-      JSON.stringify(handoff.items),
+      JSON.stringify(handoff.resultReference
+        ? {
+            schemaVersion: 4,
+            items: handoff.items,
+            resultReference: handoff.resultReference,
+          }
+        : handoff.items),
       handoff.completionSchemaVersion,
       handoff.createdAt,
     );
@@ -60,12 +77,20 @@ export class SubtaskHandoffRepo {
 }
 
 function rowToHandoff(row: HandoffRow): PersistedSubtaskHandoff {
+  const stored = JSON.parse(row.items_json) as
+    | PersistedSubtaskHandoffItem[]
+    | {
+        schemaVersion: 4;
+        items: PersistedSubtaskHandoffItem[];
+        resultReference: ResultReferenceRecord;
+      };
   return {
     taskId: row.task_id,
     fromSubtaskId: row.from_subtask_id,
     toSubtaskId: row.to_subtask_id,
     attemptId: row.attempt_id,
-    items: JSON.parse(row.items_json) as CompletionHandoffV3['items'],
+    items: Array.isArray(stored) ? stored : stored.items,
+    resultReference: Array.isArray(stored) ? null : stored.resultReference,
     completionSchemaVersion: row.completion_schema_version,
     createdAt: row.created_at,
   };

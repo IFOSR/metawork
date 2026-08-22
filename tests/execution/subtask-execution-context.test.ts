@@ -4,6 +4,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
+import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import type { Subtask, Task } from '../../src/core/types.js';
 import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
 
@@ -20,7 +21,7 @@ function node(id: string, title: string, dependencies: Subtask['dependencies'] =
 }
 
 describe('SubtaskExecutionContextBuilder', () => {
-  it('injects only direct immutable handoffs and exposes siblings by identity, not goal', () => {
+  it('injects only direct immutable result references and exposes siblings by identity, not goal', () => {
     const db = new Database(':memory:');
     runMigrations(db);
     db.prepare(`
@@ -37,10 +38,47 @@ describe('SubtaskExecutionContextBuilder', () => {
     const c = node('c', 'C', [{ fromSubtaskId: 'b', requiredItems: [{ key: 'summary', type: 'text', description: 'B summary' }] }]);
     const repo = new SubtaskRepo(db);
     [a, b, c].forEach(subtask => repo.upsert(subtask));
+    const resultRepo = new ResultObjectRepo(db, '/tmp/metawork-context-results');
+    const result = resultRepo.putObject({
+      resultId: 'result_attempt_a_safe',
+      accountId: 'local-default',
+      taskId: 'task_context',
+      generationId: 'generation_context',
+      sourceSubtaskId: 'a',
+      attemptId: 'attempt_a',
+      kind: 'safe_projection',
+      mediaType: 'text/markdown',
+      content: 'full upstream body that must not be copied into the prompt',
+      completeness: 'complete',
+      retentionClass: 'task',
+    });
+    const reference = resultRepo.createReference({
+      referenceId: 'reference_a_to_b',
+      resultId: result.resultId,
+      accountId: 'local-default',
+      taskId: 'task_context',
+      generationId: 'generation_context',
+      sourceSubtaskId: 'a',
+      targetSubtaskId: 'b',
+      edgeKey: 'a->b',
+      requiredItems: ['summary'],
+      readScope: {
+        kind: 'direct_dependency',
+        offset: 0,
+        length: result.byteLength,
+        summaryHash: 'sha256:summary',
+      },
+    });
     new SubtaskHandoffRepo(db).insert({
       taskId: 'task_context', fromSubtaskId: 'a', toSubtaskId: 'b', attemptId: 'attempt_a',
-      items: [{ key: 'summary', type: 'text', value: 'normalized A delivery' }],
-      completionSchemaVersion: 1, createdAt: '2026-07-17T00:00:01.000Z',
+      items: [{
+        key: 'summary',
+        type: 'result_reference',
+        referenceId: reference.referenceId,
+        summary: 'Authorized upstream result for summary',
+      }],
+      resultReference: reference,
+      completionSchemaVersion: 4, createdAt: '2026-07-17T00:00:01.000Z',
     });
     const task: Task = {
       id: 'task_context', title: 'Task background', goal: 'top-level background only', status: 'running', summary: '',
@@ -50,7 +88,10 @@ describe('SubtaskExecutionContextBuilder', () => {
       createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
     };
 
-    const built = new SubtaskExecutionContextBuilder(db).build({
+    const built = new SubtaskExecutionContextBuilder(db, {
+      accountId: 'local-default',
+      resultRoot: '/tmp/metawork-context-results',
+    }).build({
       executionId: 'exec', task, subtask: b, allSubtasks: [a, b, c], attemptId: 'attempt_b',
       workUnitId: 'wu', sessionId: 'session',
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
@@ -58,7 +99,24 @@ describe('SubtaskExecutionContextBuilder', () => {
     });
 
     expect(built.context.incomingHandoffs).toHaveLength(1);
-    expect(built.context.incomingHandoffs[0]!.items).toEqual([{ key: 'summary', type: 'text', value: 'normalized A delivery' }]);
+    expect(built.context.incomingHandoffs[0]!.items).toEqual([{
+      key: 'summary',
+      type: 'result_reference',
+      referenceId: 'reference_a_to_b',
+      summary: 'Authorized upstream result for summary',
+    }]);
+    expect(built.context.incomingHandoffs[0]!.resultReference).toMatchObject({
+      referenceId: 'reference_a_to_b',
+      contentHash: result.contentHash,
+      byteLength: result.byteLength,
+    });
+    expect(built.resultReferenceCapability.list().items).toEqual([
+      expect.objectContaining({ referenceId: 'reference_a_to_b' }),
+    ]);
+    expect(built.resultReferenceCapability.get({
+      referenceId: 'reference_a_to_b',
+      offset: 0,
+    }).content).toBe('full upstream body that must not be copied into the prompt');
     expect(built.context.outgoingHandoffRequirements).toEqual([{
       toSubtaskId: 'c', requiredItems: [{ key: 'summary', type: 'text', description: 'B summary' }],
     }]);

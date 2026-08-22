@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import type {
   AttemptExecutionBackend,
@@ -19,6 +20,8 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'arbitrary-agent-class',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
       backend,
@@ -43,6 +46,8 @@ describe('ContainerCompatibilityAdapter', () => {
       prompt: expect.stringContaining('Working directory: /workspace'),
       cwd: '/workspace',
       runtimeHomePath: '/runtime-home',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
     });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
@@ -88,6 +93,8 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'codex-cli',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:custom',
       backend,
@@ -116,6 +123,8 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'pi-agent',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
       backend,
@@ -152,6 +161,8 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'shared-agent-class',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
       backend,
@@ -177,6 +188,8 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'agent-class-with-no-name-contract',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
       backend,
@@ -194,6 +207,17 @@ function runtimeBinding(): RuntimePrivateConfigurationBinding {
   return {
     revisionId: 'revision-10',
     bindingFingerprint: 'binding-fingerprint',
+  };
+}
+
+function authorizedBinding(): AuthorizedExecutorBinding {
+  return {
+    agentClassRef: 'pi-agent',
+    harnessRef: 'pi-cli',
+    providerRef: 'deepseek',
+    modelRef: 'deepseek-deepseek-v4-pro',
+    permissionProfileRef: 'public-web-research',
+    configurationRevision: 'revision-10',
   };
 }
 

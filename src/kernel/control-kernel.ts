@@ -124,6 +124,20 @@ export type KernelEvent =
       responseBytes: number;
     })
   | (KernelEventEnvelope & {
+      type: 'execution_result_observed';
+      workUnitId: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
+      contract: unknown;
+      violations: Array<{ code: string; path: string; message: string }>;
+      receiptCount: number;
+      responseBytes: number;
+      resultId: string | null;
+      deliverability: 'deliverable' | 'quarantined';
+      certification: 'certified' | 'uncertified';
+      safety: 'safe' | 'safety_blocked';
+    })
+  | (KernelEventEnvelope & {
       type: 'timer_tick';
       wakeKind: 'capacity' | 'retry' | 'availability';
       sourceDecisionId: string;
@@ -534,6 +548,8 @@ export class ControlKernel {
         return this.decideOutcome(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'handoff_contract_failed':
         return this.decideContractFailure(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
+      case 'execution_result_observed':
+        return this.decideExecutionResult(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'timer_tick':
         return this.decideTimer(event, snapshot as Extract<KernelSnapshot, { type: 'timer' }>);
       case 'recovery_resolution_requested':
@@ -852,7 +868,7 @@ export class ControlKernel {
       return decision(event, { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null }, 'failure facts are incomplete');
     }
     if (event.attemptKind === 'contract_correction') {
-      return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'response-only correction failed and cannot enter ordinary recovery');
+      return decision(event, { type: 'no_op' }, 'metadata correction failed; safe result remains awaiting decision');
     }
     if (failure.code === 'startup_orphaned_work') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
@@ -1052,6 +1068,55 @@ export class ControlKernel {
         violations: event.violations,
       },
     ), 'one response-only contract correction authorized');
+  }
+
+  private decideExecutionResult(
+    event: Extract<KernelEvent, { type: 'execution_result_observed' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  ): KernelDecision {
+    if (!event.taskId || !event.subtaskId) {
+      return decision(
+        event,
+        { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null },
+        'execution result identity is incomplete',
+      );
+    }
+    if (event.safety === 'safety_blocked' || event.deliverability === 'quarantined') {
+      return decision(
+        event,
+        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId },
+        'execution result is quarantined by a safety boundary',
+      );
+    }
+    if (event.certification === 'certified') {
+      return this.decideDispatch(event, snapshot);
+    }
+    if (
+      event.receiptCount !== 1
+      || event.responseBytes > MAX_CORRECTION_INPUT_BYTES
+      || !snapshot.correctionSupportedAgentClasses.includes(event.authorizedBinding.agentClassRef)
+    ) {
+      return decision(
+        event,
+        { type: 'no_op' },
+        'safe result remains awaiting decision because metadata correction is unavailable or exhausted',
+      );
+    }
+    return decision(event, singleDispatchBatch(
+      event,
+      event.taskId,
+      event.subtaskId,
+      event.authorizedBinding,
+      'contract_correction',
+      event.attemptId ?? null,
+      'fresh',
+      resourceGrantForSubtask(snapshot, event.subtaskId),
+      {
+        protocol: 'completion-correction-v2',
+        completionContract: event.contract,
+        violations: event.violations,
+      },
+    ), 'one response-only metadata correction authorized');
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {

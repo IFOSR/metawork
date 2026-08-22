@@ -25,6 +25,9 @@ describe('Web workspace shell', () => {
     expect(composer).toContain('<textarea');
     expect(app).toContain('activeSessionId');
     expect(app).toContain('browsedSessionId');
+    expect(app).toContain('onTurnStarted');
+    expect(app).toContain('onFinalAnswer');
+    expect(app).toContain('onTraceDelta');
     expect(styles).toContain('@media (max-width: 860px)');
     expect(styles).toContain('.workspace-sidebar');
   });

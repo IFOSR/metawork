@@ -10,6 +10,187 @@ const NOW = '2026-08-13T00:00:00.000Z';
 const AGENT_CLASS = 'codex-engineering';
 
 describe('KernelExecutionRuntime executor recovery', () => {
+  it('streams presentation-only heartbeats while an Executor is silent', async () => {
+    let releaseAttempt!: () => void;
+    const attemptReleased = new Promise<void>(resolve => {
+      releaseAttempt = resolve;
+    });
+    const appendExecutionTrace = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      executionTraceHeartbeatMs: 5,
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn().mockReturnValue(null),
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-live',
+          taskId: 'task-live',
+          title: 'Research current AI news',
+          goal: 'Collect and summarize the ten most important AI developments',
+          deliveryKind: 'report',
+          requiredCapabilities: ['public-web-research'],
+          acceptance: [{
+            key: 'coverage',
+            description: 'Cover ten material developments.',
+            requiredEvidence: ['source-backed summary'],
+          }],
+        }),
+      },
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({
+          id: 'task-live',
+          status: 'running',
+        }),
+        attachResource: vi.fn(),
+      },
+      attemptRunner: {
+        run: vi.fn(async () => {
+          await attemptReleased;
+          return {
+            outcome: 'capacity_unavailable',
+            attemptId: 'attempt-live',
+            agentClassName: AGENT_CLASS,
+          };
+        }),
+      },
+      presentation: {
+        formatExecutorDispatch: vi.fn().mockReturnValue([]),
+      },
+      callbacks: {
+        appendExecutionTrace,
+        appendOutput: vi.fn(),
+        setRunningExecutorName: vi.fn(),
+        clearRunningExecutorName: vi.fn(),
+      },
+      kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const running = (runtime as unknown as {
+      runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
+    }).runDispatchItem({
+      item: {
+        ...historicalDispatch(),
+        attemptId: 'attempt-live',
+        taskId: 'task-live',
+        subtaskId: 'subtask-live',
+        authorizedBinding: binding('revision-a'),
+        status: 'running',
+      },
+      executionId: 'execution-live',
+      request: {},
+      progressTracker: { onProgress: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(appendExecutionTrace).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'executor_heartbeat',
+        status: 'running',
+        details: expect.objectContaining({
+          subtaskId: 'subtask-live',
+          attemptId: 'attempt-live',
+          lastProgressKind: 'dispatch_started',
+        }),
+      }));
+    });
+
+    releaseAttempt();
+    await running;
+    const heartbeatCount = appendExecutionTrace.mock.calls.filter(
+      ([event]) => event.kind === 'executor_heartbeat',
+    ).length;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(appendExecutionTrace.mock.calls.filter(
+      ([event]) => event.kind === 'executor_heartbeat',
+    )).toHaveLength(heartbeatCount);
+  });
+
+  it('does not project a safe uncertified receipt as an Executor health failure', () => {
+    const recordExecutionOutcome = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      kernelExecutorStatusProjector: { recordExecutionOutcome },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    (runtime as unknown as {
+      projectPersistedReceipt(receipt: Record<string, unknown>): void;
+    }).projectPersistedReceipt({
+      attemptId: 'attempt-uncertified',
+      agentClassName: AGENT_CLASS,
+      configurationRevision: 'revision-a',
+      terminalState: 'uncertified_result',
+      failure: null,
+      completedAt: NOW,
+    });
+
+    expect(recordExecutionOutcome).not.toHaveBeenCalled();
+  });
+
+  it('delivers an upgraded historical result without re-running the Harness', async () => {
+    const recordResultDelivery = vi.fn();
+    const appendOutput = vi.fn();
+    const runAttempt = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn().mockReturnValue({
+          ...historicalReceipt(),
+          terminalState: 'contract_blocked',
+        }),
+      },
+      historicalResultUpgrader: {
+        upgrade: vi.fn().mockReturnValue({
+          resultId: 'result_attempt-historical_safe',
+          content: 'Recovered historical body',
+          completeness: 'partial',
+          certification: 'uncertified',
+        }),
+      },
+      attemptRunner: { run: runAttempt },
+      callbacks: {
+        recordResultDelivery,
+        appendOutput,
+      },
+      kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const event = await (runtime as unknown as {
+      runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
+    }).runDispatchItem({
+      item: historicalDispatch(),
+      executionId: 'execution-recovery',
+      request: {},
+      progressTracker: {},
+    });
+
+    expect(runAttempt).not.toHaveBeenCalled();
+    expect(recordResultDelivery).toHaveBeenCalledWith({
+      resultId: 'result_attempt-historical_safe',
+      content: 'Recovered historical body',
+      completeness: 'partial',
+      certification: 'uncertified',
+    });
+    expect(appendOutput).toHaveBeenCalledWith(
+      'Recovered historical body',
+      '',
+      '结果已返回，任务完成认证待处理。',
+    );
+    expect(event).toMatchObject({
+      type: 'execution_result_observed',
+      attemptId: 'attempt-historical',
+      resultId: 'result_attempt-historical_safe',
+      deliverability: 'deliverable',
+      certification: 'uncertified',
+      safety: 'safe',
+    });
+  });
+
   it('resolves only waiting requests pinned to the recovered configuration revision', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
@@ -122,6 +303,68 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }]);
   });
 });
+
+function historicalReceipt() {
+  return {
+    attemptId: 'attempt-historical',
+    executionId: 'execution-historical',
+    taskId: 'task-historical',
+    subtaskId: 'subtask-historical',
+    graphRevision: 1,
+    generationId: 'generation-historical',
+    attemptKind: 'primary' as const,
+    sourceAttemptId: null,
+    failure: null,
+    recoveryMode: 'fresh' as const,
+    workUnitId: 'work-unit-historical',
+    agentClassName: AGENT_CLASS,
+    configurationRevision: 'revision-a',
+    authorizedBinding: binding('revision-a'),
+    bindingFingerprint: 'sha256:historical-binding',
+    startedAt: NOW,
+    completedAt: NOW,
+    terminalState: 'contract_blocked' as const,
+    rawResponse: 'historical body',
+    completionSchemaVersion: 3,
+    parsing: { completionContract: { protocol: 'v3' } },
+    verification: {
+      warnings: [],
+      violations: [{
+        code: 'completion_malformed' as const,
+        path: 'report',
+        message: 'historical metadata failure',
+      }],
+    },
+    errorCode: 'completion_malformed',
+    errorDetail: 'historical metadata failure',
+  };
+}
+
+function historicalDispatch() {
+  return {
+    attemptId: 'attempt-historical',
+    decisionId: 'decision-historical',
+    batchOrder: 0,
+    taskId: 'task-historical',
+    generationId: 'generation-historical',
+    subtaskId: 'subtask-historical',
+    agentClassName: AGENT_CLASS,
+    authorizedBinding: binding('revision-a'),
+    bindingFingerprint: 'sha256:historical-binding',
+    configurationRevision: 'revision-a',
+    attemptKind: 'primary' as const,
+    sourceAttemptId: null,
+    recoveryMode: 'fresh' as const,
+    attemptPayload: null,
+    defaultResourceGrant: [],
+    status: 'terminal' as const,
+    backendExecutionId: null,
+    errorDetail: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    terminalAt: NOW,
+  };
+}
 
 function waitingRequest(id: string, taskId: string, configurationRevision: string) {
   const authorizedBinding = binding(configurationRevision);

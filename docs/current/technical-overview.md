@@ -6,9 +6,9 @@ AnyFusion is a local AI Task OS for agentic work. It turns natural-language requ
 
 It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-08-17): PlanningAgentPlan v8, Work
-> Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v3,
-> and SQLite schema v31 with one transactional 30→31 migration path.
+> Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
+> Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
+> and SQLite schema v32 with transactional 30→31→32 upgrade support.
 
 > ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
 > Plane, generation-scoped AgentClass/Model/Harness binding, future
@@ -41,7 +41,7 @@ implementation is deferred to a separate roadmap.
 - Exposes historical tasks through a local SQLite FTS index that the PlanningAgent queries explicitly.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
-- Validates every Subtask through Completion Protocol v3 against one authoritative workspace delta, persists clean results and immutable direct-edge handoffs, and blocks contract failures without implicit retry.
+- Validates every Subtask through Completion Protocol v4, persists immutable Result Objects and direct-edge references, and separates safe result delivery from completion certification.
 - Binds each Conversation to one persisted AnyFusion-Pi Planner session; AnyFusion-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
@@ -107,7 +107,7 @@ flowchart LR
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
   Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
-  Executors --> Verify[Completion Protocol v3<br/>evidence, no-change reason,<br/>authoritative workspace delta]
+  Executors --> Verify[Completion Protocol v4<br/>result-first assessment,<br/>authoritative workspace delta]
   Verify --> Publication[Git publication gate<br/>stable integration order]
   Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
@@ -120,7 +120,7 @@ flowchart LR
 
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
-The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; AnyFusion does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only AnyFusion MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Repository inspection is limited to Pi-native `read`, `grep`, `find` and `ls` rooted at the Planner process working directory; `bash`, `edit` and `write` remain disabled. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by AnyFusion. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
+The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; AnyFusion does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only AnyFusion MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by AnyFusion. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
 Planner provider/model activation is revision-pinned at the process boundary.
 The supervisor selects `generated/agent-runtime/<configurationRevision>/planner`
@@ -131,6 +131,20 @@ configuration change, but if Pi restores a provider/model different from the
 authorized Planner binding, the supervisor terminates the process before any
 user prompt reaches a model. Native launchers therefore do not set a static
 Planner home or runtime provider env file.
+
+Repository readers may inspect user-requested workspace content, but they may
+not be used to reverse-engineer MetaClaw Runtime, Kernel, validation, recovery,
+scheduling or Executor semantics. Those facts remain MCP/schema-authoritative.
+The supervisor also enforces a convergence budget of eight processing cycles
+and twelve non-proposal tool calls; exceeding either budget without submitting
+a proposal produces an immediate terminal error instead of consuming the full
+RPC timeout.
+
+Task-control proposals also require explicit current-turn user intent. Topic
+overlap, a blocked or parked Task, and single-active-Task admission pressure do
+not authorize implicit resume, recovery, clearing, cancellation or repurposing;
+Planner asks one clarification when that conflict prevents newly requested
+schedulable work.
 
 The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same vendored application but have different trusted roles. The TUI is a client-only process connected to the versioned Unix Gateway protocol. It renders replay/live `turn_started`, `trace_delta`, `task_projection`, execution, permission, artifact, final and terminal events; raw input, slash commands, permission decisions and cancellation requests enter `ClientGateway`. The controlled RPC runner alone connects to `PlannerHostBridge` for proposal submission. `ConversationSession` reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating Kernel events. Neither client mode nor the bridge can write the database or directly call Kernel, scheduling, Execution or Executor APIs.
 
@@ -186,7 +200,7 @@ flowchart LR
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
   Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v3<br/>delta, receipt and candidate commit]
+  Run --> Verify[Completion Protocol v4<br/>result objects, delta and candidate commit]
   Verify --> Integrate[Git publication gate<br/>deterministic order]
   Integrate --> Done{Integrated?}
   Done -->|yes| Result[Atomically publish result,<br/>handoffs, artifacts and done]
@@ -862,11 +876,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v31 and supports only the transactional 30→31 native upgrade path; ordinary runtime startup refuses schema 30 rather than migrating it in place. The schema includes persisted Planner proposal turns/submissions and accepted-turn locks alongside the durable inbox/application/outbox and graph revisions, resource/workspace/permission/execution-backend records, dispatch items, candidate publications, immutable merge attempts, cancellation cleanup, lease revocation, coalesced generation replan, deferred availability proposals, bounded Executor recovery checks and explicit partial completion facts. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives their immutable handoffs and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v32 and supports transactional 30→31→32 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects and direct-edge ResultReferences. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 
-Every Executor response must end with Completion Protocol v3. The model-facing strict JSON report contains only `evidence` and nullable `noChangeReason`, or a controlled `failure`; identity fields and model-authored artifacts are rejected. After Executor success and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires an empty delta and null reason; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files, excludes deletions from the artifact list, reuses the source attempt delta for response-only correction, and fails closed on truncated or indeterminate delta. It then materializes the internal acceptance/handoff envelope, strips the machine report and checks budgets and direct-edge aggregate limits. Success persists the terminal receipt and candidate commit, then enters `awaiting_integration`. The publication worker merges candidates into a MetaClaw-managed integration branch in stable topology/authorization/ID order and only then atomically publishes normalized handoffs, clean body, artifacts, workspace state and `done`. Text may use Git three-way merge; binary paths require exclusive publication leases and never auto-merge. Conflicts return to the original AgentClass for three scoped repairs, then one independent conflict replan, then park. User repositories and branches are never mutated or pushed.
+Every Executor response is assessed by Completion Protocol v4 on result deliverability, completion certification and safety disposition. A safe body may be delivered as `partial` and `uncertified` when metadata is missing or malformed, or when a physical transport boundary requires chunking; it cannot certify the Subtask or release downstream work. Runtime stores raw stream, business body and safe projection as immutable Result Objects, streams the safe projection through `result_delivery_available` / `result_chunk` / `result_completed`, and uses edge-scoped ResultReferences for authorized downstream reads. Workspace containment, permission and secret boundaries remain fail-closed. Certified results persist the terminal receipt and candidate commit, then enter `awaiting_integration`; publication later atomically publishes authorized handoffs, artifacts, workspace state and `done`. Correction repairs metadata only and never discards a safe body or repeats the business task.
 
 The retired `ExecutionStrategyPlanner`, `ExecutionPolicy`, `MultiExecutorOrchestrator`, and `AgenticLoopController` implementations have been removed. They were no longer connected to the production path after work-graph and work-unit dispatch became authoritative. `ExecutionAggregator` remains available to the verification pipeline for structured multi-result evidence checks.
 

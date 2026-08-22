@@ -83,9 +83,11 @@ export class AccountLayoutMigrator {
 
     const existing = await repository.load(this.accountId);
     if (existing?.migratedAt) {
+      // The manifest seals the migration staging tree. Account data is mutable
+      // after activation, so ordinary startup must not compare the live tree
+      // against that historical migration snapshot.
+      await this.ensureManifest(accountPaths.root);
       if (await this.hasLegacyState(paths)) {
-        const manifest = await this.readManifest(accountPaths.root);
-        await this.verifyManifest(accountPaths.root, manifest);
         await this.archiveLegacyState(paths);
       }
       return { outcome: 'already_migrated', accountId: this.accountId };
@@ -421,7 +423,10 @@ async function collectManifest(root: string): Promise<LayoutManifest> {
 
   async function walk(current: string, relativePath: string): Promise<void> {
     const names = (await readdir(current, { withFileTypes: true }))
-      .filter(entry => !(relativePath === '' && entry.name === LAYOUT_MANIFEST_NAME))
+      .filter(entry => (
+        relativePath !== ''
+        || (entry.name !== LAYOUT_MANIFEST_NAME && entry.name !== 'account.json')
+      ))
       .sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of names) {
       const entryPath = join(current, entry.name);

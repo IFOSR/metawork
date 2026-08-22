@@ -13,8 +13,8 @@ import { GATEWAY_PROTOCOL_VERSION } from '../../src/gateway/client-protocol.js';
 describe('gateway event protocol', () => {
   it('exports a complete event kind contract', () => {
     expect(GATEWAY_PROTOCOL_VERSION).toBe(1);
-    expect(GATEWAY_EVENT_KINDS).toHaveLength(10);
-    expect(new Set(GATEWAY_EVENT_KINDS).size).toBe(10);
+    expect(GATEWAY_EVENT_KINDS).toHaveLength(13);
+    expect(new Set(GATEWAY_EVENT_KINDS).size).toBe(13);
   });
 
   it('identifies terminal event kinds', () => {

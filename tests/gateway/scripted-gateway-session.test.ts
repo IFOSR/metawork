@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
 import { ScriptedGatewaySession } from '../../src/gateway/scripted-gateway-session.js';
@@ -117,5 +118,90 @@ describe('ScriptedGatewaySession', () => {
 
     await expect(runScriptedSession({ inputs: ['hello'], session }))
       .rejects.toThrow('planner unavailable');
+  });
+
+  it('reassembles a large UTF-8 result from bounded Gateway chunks', async () => {
+    const subscriptions = new GatewaySubscriptions();
+    const answer = `开头-${'内容'.repeat(40_000)}-结尾`;
+    const first = answer.slice(0, 45_001);
+    const second = answer.slice(45_001);
+    const contentHash = `sha256:${createHash('sha256')
+      .update(Buffer.from(answer))
+      .digest('hex')}`;
+    const session = new ScriptedGatewaySession({
+      accountId: 'local-default',
+      conversationId: 'conv_script',
+      subscriptions,
+      gateway: {
+        handle: async envelope => {
+          const common = {
+            protocolVersion: 1 as const,
+            accountId: 'local-default',
+            conversationId: 'conv_script',
+            requestId: envelope.requestId,
+            turnId: `turn_${envelope.requestId}`,
+            occurredAt: '2026-08-21T00:00:00.000Z',
+          };
+          subscriptions.publish({
+            ...common,
+            eventId: 'event_available',
+            sequence: 1,
+            kind: 'result_delivery_available',
+            payload: {
+              resultId: 'result_large',
+              contentHash,
+              byteLength: Buffer.byteLength(answer),
+              completeness: 'complete',
+              certification: 'certified',
+            },
+          });
+          for (const [index, chunk] of [first, second].entries()) {
+            subscriptions.publish({
+              ...common,
+              eventId: `event_chunk_${index}`,
+              sequence: index + 2,
+              kind: 'result_chunk',
+              payload: {
+                resultId: 'result_large',
+                offset: index === 0 ? 0 : Buffer.byteLength(first),
+                chunk,
+                byteLength: Buffer.byteLength(chunk),
+              },
+            });
+          }
+          subscriptions.publish({
+            ...common,
+            eventId: 'event_completed',
+            sequence: 4,
+            kind: 'result_completed',
+            payload: {
+              resultId: 'result_large',
+              contentHash,
+              byteLength: Buffer.byteLength(answer),
+              completeness: 'complete',
+              certification: 'certified',
+            },
+          });
+          subscriptions.publish({
+            ...common,
+            eventId: 'event_final',
+            sequence: 5,
+            kind: 'final_answer',
+            payload: { resultId: 'result_large', lines: [] },
+          });
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted',
+            conversationId: 'conv_script',
+          };
+        },
+      },
+      createId: prefix => `${prefix}_large`,
+    });
+
+    const result = await runScriptedSession({ inputs: ['large answer'], session });
+
+    expect(result.output).toEqual([answer]);
   });
 });

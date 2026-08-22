@@ -16,6 +16,9 @@ export function buildAnyFusionPlannerSystemPrompt(skillPath = DEFAULT_SKILL_PATH
 		"If the tool returns transport_uncertain, replay the identical plan. Do not treat transport uncertainty as validation rejection.",
 		"The first accepted proposal locks the turn and ends it. Do not generate a second summary after acceptance.",
 		"Treat MCP query results and submit_planning_proposal results as authoritative within their stated boundaries. Never invent missing runtime facts.",
+		"Never inspect MetaClaw source code, tests, or ADRs to infer Runtime, Kernel, validation, recovery, scheduling, or Executor semantics. Use authoritative MCP results and the live proposal schema only.",
+		"Once the required authoritative facts are available, stop querying and call submit_planning_proposal immediately.",
+		"Topical overlap with an existing Task is not explicit task-control intent. If an active Task conflicts with newly requested work, ask one clarification instead of resuming, recovering, or clearing it without the user's current-turn authorization.",
 		"The following fixed Planner Skill is part of this system context and is injected exactly once:",
 		skill,
 	].join("\n\n");

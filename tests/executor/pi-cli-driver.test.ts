@@ -11,11 +11,21 @@ describe('PiCliDriver', () => {
       prompt: 'research current information',
       cwd: '/workspace/task',
       runtimeHomePath: '/attempt/home',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
     });
 
     expect(launch).toEqual({
       command: 'pi',
-      args: ['--mode', 'json', 'research current information'],
+      args: [
+        '--mode',
+        'json',
+        '--provider',
+        'deepseek',
+        '--model',
+        'deepseek-v4-pro',
+        'research current information',
+      ],
       cwd: '/workspace/task',
       environment: {
         HOME: '/attempt/home',
@@ -30,6 +40,81 @@ describe('PiCliDriver', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 1, stdout: '', stderr: 'token=sk-secret' }))
       .toEqual({ success: false, output: '', error: 'token=[REDACTED]' });
+  });
+
+  it('fails closed when Pi reports a structured model error with exit code zero', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const stdout = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'OpenAI API error (401): invalid_authentication_error token=sk-secret',
+        },
+      }),
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [{
+          role: 'assistant',
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'OpenAI API error (401): invalid_authentication_error token=sk-secret',
+        }],
+        willRetry: false,
+      }),
+    ].join('\n');
+
+    expect(driver.parseResult({ exitCode: 0, stdout, stderr: '' })).toEqual({
+      success: false,
+      output: '',
+      error: 'OpenAI API error (401): invalid_authentication_error token=[REDACTED]',
+    });
+  });
+
+  it('preserves a final assistant body when Pi fails after producing partial output', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const stdout = [
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Partial answer before timeout' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [{
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Partial answer before timeout' }],
+          stopReason: 'error',
+          errorMessage: 'request timed out',
+        }],
+      }),
+    ].join('\n');
+
+    expect(driver.parseResult({ exitCode: 1, stdout, stderr: '' })).toEqual({
+      success: false,
+      output: 'Partial answer before timeout',
+      error: 'request timed out',
+    });
+  });
+
+  it('fails closed when Pi exits zero without a final assistant answer', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const stdout = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'agent_end', messages: [], willRetry: false }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ].join('\n');
+
+    expect(driver.parseResult({ exitCode: 0, stdout, stderr: '' })).toEqual({
+      success: false,
+      output: '',
+      error: 'Pi executor exited without a final assistant response',
+    });
   });
 
   it('extracts the final assistant answer and only exposes safe lifecycle progress', () => {
@@ -86,6 +171,40 @@ describe('PiCliDriver', () => {
     })).toEqual({
       kind: 'skill',
       text: 'Executor started tool: web_search',
+    });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_start',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'must not appear' }],
+        },
+      }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor model response stream started',
+    });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'turn_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'must not appear' }],
+        },
+        toolResults: [{ content: 'must not appear' }],
+      }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor processing cycle completed',
+    });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'agent_settled', secret: 'must not appear' }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor process settled',
     });
   });
 
@@ -191,6 +310,55 @@ describe('PiCliDriver', () => {
       const agentDir = join(home.homePath, '.pi', 'agent');
       expect(await readFile(join(agentDir, 'models.json'), 'utf8')).toContain('generated');
       expect(await readFile(join(agentDir, 'settings.json'), 'utf8')).toContain('generated');
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes the exact authorized revision instead of a legacy Pi home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-revision-'));
+    const generatedRoot = join(root, 'generated', 'agent-runtime');
+    const revisionDir = join(generatedRoot, 'revision-authorized', 'pi-home');
+    const legacyDir = join(root, 'legacy-pi-home');
+    try {
+      await mkdir(join(revisionDir, '.pi', 'agent'), { recursive: true });
+      await writeFile(
+        join(revisionDir, '.pi', 'agent', 'models.json'),
+        '{"providers":{"deepseek":{}}}\n',
+      );
+      await writeFile(
+        join(revisionDir, '.pi', 'agent', 'settings.json'),
+        '{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-pro"}\n',
+      );
+      await mkdir(join(legacyDir, '.pi', 'agent'), { recursive: true });
+      await writeFile(
+        join(legacyDir, '.pi', 'agent', 'models.json'),
+        '{"providers":{"kimi":{}}}\n',
+      );
+      await writeFile(
+        join(legacyDir, '.pi', 'agent', 'settings.json'),
+        '{"defaultProvider":"kimi","defaultModel":"k3"}\n',
+      );
+      vi.stubEnv('METACLAW_EXECUTOR_PI_HOME', legacyDir);
+
+      const driver = new PiCliDriver({
+        probeCommand: vi.fn(),
+        generatedRuntimeRoot: generatedRoot,
+      });
+      const home = await driver.materializeHome({
+        attemptId: 'attempt-1',
+        revisionId: 'revision-authorized',
+        agentClassId: 'pi-agent',
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+
+      const agentDir = join(home.homePath, '.pi', 'agent');
+      expect(await readFile(join(agentDir, 'models.json'), 'utf8')).toContain('deepseek');
+      expect(await readFile(join(agentDir, 'settings.json'), 'utf8')).toContain('deepseek-v4-pro');
+      expect(await readFile(join(agentDir, 'settings.json'), 'utf8')).not.toContain('kimi');
     } finally {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });

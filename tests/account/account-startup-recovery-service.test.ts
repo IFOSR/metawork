@@ -182,6 +182,8 @@ function createFixture(name: string, coordinator?: AccountKernelCoordinator) {
     notifier: { notifyTaskCompleted: async () => undefined },
     workspaceRoot: join(root, 'workspaces'),
     attemptsRoot: join(root, 'attempts'),
+    resultsRoot: join(root, 'results'),
+    generatedRuntimeRoot: join(root, 'generated', 'agent-runtime'),
     sourceRoot: root,
     sessionId: 'bootstrap-session',
     stagedConfiguration: staged,

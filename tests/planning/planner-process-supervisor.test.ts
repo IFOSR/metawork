@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { PlannerProcessSupervisor } from '../../src/planning/planner-process-supervisor.js';
@@ -93,6 +93,27 @@ function completeRpcTurn(
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('uses the vendored Planner CLI for direct source-tree starts', async () => {
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn(() => child as never);
+    const supervisor = new PlannerProcessSupervisor({
+      plannerHome: join(tmpdir(), `planner-home-vendored-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-vendored-${process.pid}`),
+      spawn: spawn as never,
+    });
+
+    await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-vendored', source: 'gateway' },
+    } as never, 'kernel');
+
+    expect(spawn.mock.calls[0]?.[0]).toBe(resolve(
+      process.cwd(),
+      'planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js',
+    ));
+  });
+
   it('uses the revision-pinned Planner runtime instead of a legacy environment override', async () => {
     const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-revision-'));
     const generatedRoot = join(root, 'generated');
@@ -133,6 +154,7 @@ describe('PlannerProcessSupervisor', () => {
         expect.objectContaining({
           env: expect.objectContaining({
             ANYFUSION_PLANNER_HOME: revisionHome,
+            ANYFUSION_PLANNER_RPC_TIMEOUT_MS: '1000',
           }),
         }),
       );
@@ -452,6 +474,117 @@ describe('PlannerProcessSupervisor', () => {
     expect(JSON.stringify(progress)).not.toContain('"secret"');
   });
 
+  it('streams bounded model-wait heartbeats before the RPC deadline', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      child.stdout.write(`${JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        success: true,
+        id: request.id,
+      })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'agent_start' })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'turn_start' })}\n`);
+      child.stdout.write(`${JSON.stringify({
+        type: 'message_start',
+        message: { role: 'assistant', content: [] },
+      })}\n`);
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-heartbeat-${process.pid}`),
+      spawn: (() => child as never) as never,
+      progressHeartbeatMs: 10,
+      shutdownGraceMs: 10,
+    });
+    const progress: Array<Record<string, unknown>> = [];
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 80,
+      request: { sessionId: 'session-heartbeat', source: 'gateway' },
+    } as never, 'kernel', event => progress.push(event as unknown as Record<string, unknown>)))
+      .rejects.toThrow('AnyFusion Planner RPC timed out after 80ms');
+
+    expect(progress).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'model_waiting',
+        turn: 1,
+        idleMs: expect.any(Number),
+      }),
+    ]));
+  });
+
+  it('terminates a Planner turn that exceeds the processing-cycle convergence budget', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      child.stdout.write(`${JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        success: true,
+        id: request.id,
+      })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'agent_start' })}\n`);
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        child.stdout.write(`${JSON.stringify({ type: 'turn_start' })}\n`);
+      }
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-cycle-budget-${process.pid}`),
+      spawn: (() => child as never) as never,
+      maxProcessingCycles: 2,
+      shutdownGraceMs: 10,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-cycle-budget', source: 'gateway' },
+    } as never, 'kernel')).rejects.toThrow(
+      'Planner did not submit a proposal within 2 processing cycles',
+    );
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it('terminates a Planner turn that exceeds the non-proposal tool budget', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      child.stdout.write(`${JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        success: true,
+        id: request.id,
+      })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'agent_start' })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: 'turn_start' })}\n`);
+      for (let tool = 0; tool < 3; tool += 1) {
+        child.stdout.write(`${JSON.stringify({
+          type: 'tool_execution_start',
+          toolCallId: `tool-${tool}`,
+          toolName: 'read',
+          args: { path: `/workspace/file-${tool}.ts` },
+        })}\n`);
+      }
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-tool-budget-${process.pid}`),
+      spawn: (() => child as never) as never,
+      maxNonProposalToolCalls: 2,
+      shutdownGraceMs: 10,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-tool-budget', source: 'gateway' },
+    } as never, 'kernel')).rejects.toThrow(
+      'Planner did not submit a proposal within 2 non-proposal tool calls',
+    );
+    expect(child.kill).toHaveBeenCalled();
+  });
+
   it('returns a structured transport uncertainty instead of replacing it with a generic error', async () => {
     const child = fakeProcess();
     child.stdin.on('data', chunk => {
@@ -508,6 +641,60 @@ describe('PlannerProcessSupervisor', () => {
         status: 'failed',
       }],
     });
+  });
+
+  it('stops the Pi RPC turn immediately after transport uncertainty', async () => {
+    const child = fakeProcess();
+    let agentEndWritten = false;
+    child.stdin.on('data', chunk => {
+      const request = JSON.parse(chunk.toString().trim()) as { id: string };
+      const result = {
+        status: 'transport_uncertain',
+        turnId: 'turn-fast-fail',
+        submissionId: 'submission-fast-fail',
+        retryableByReplay: true,
+        message: 'kernel persistence failed',
+      };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: request.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-fast-fail',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-fast-fail', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-fast-fail',
+          toolName: 'submit_planning_proposal',
+          result: { details: result },
+          isError: true,
+        },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+      setTimeout(() => {
+        agentEndWritten = true;
+        child.stdout.write(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`);
+      }, 100);
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-fast-fail-${process.pid}`),
+      spawn: (() => child as never) as never,
+    });
+
+    const result = await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-fast-fail', source: 'gateway' },
+    } as never, 'kernel');
+
+    expect(result.proposalResult).toMatchObject({
+      status: 'transport_uncertain',
+      message: 'kernel persistence failed',
+    });
+    expect(agentEndWritten).toBe(false);
   });
 
   it('attaches partial tool calls when a turn ends without a structured proposal result', async () => {

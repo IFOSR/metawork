@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
+import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
 import type {
@@ -28,6 +29,8 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       processRunner,
     });
@@ -46,16 +49,21 @@ describe('LocalCliExecutorAdapter', () => {
       prompt: expect.stringContaining('Operative goal: Implement the selected slice'),
       cwd: '/workspace/attempt-1',
       runtimeHomePath: '/runtime/attempts/attempt-1/home',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
     });
     expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
       command: 'selected-driver-command',
       args: ['--execute'],
       cwd: '/workspace/attempt-1',
-      environment: {
+      environment: expect.objectContaining({
         DRIVER_HOME: 'materialized',
         DRIVER_LAUNCH: 'selected',
-      },
+        METACLAW_EVIDENCE_MCP_URL: 'http://127.0.0.1:31000/mcp',
+        METACLAW_EVIDENCE_JSON_URL: 'http://127.0.0.1:31000/evidence',
+        METACLAW_EVIDENCE_TOKEN: 'evidence-token',
+      }),
     }));
     expect(driver.parseResult).toHaveBeenCalledWith({
       exitCode: 0,
@@ -79,6 +87,8 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'implementation-alpha',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       processRunner,
     });
@@ -119,6 +129,8 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'arbitrary-agent-class',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       processRunner,
     });
@@ -158,6 +170,8 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       processRunner,
     });
@@ -195,6 +209,8 @@ describe('LocalCliExecutorAdapter', () => {
       agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       processRunner,
     });
@@ -267,6 +283,26 @@ describe('LocalCliExecutorAdapter', () => {
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(16 * 1024 * 1024);
     expect(result.stdout.endsWith(finalEvent)).toBe(true);
   });
+
+  it('streams the complete raw child output independently from the bounded diagnostic tail', async () => {
+    const prefix = 'x'.repeat(16 * 1024 * 1024);
+    const finalEvent = '{"type":"message_end","message":{"role":"assistant"}}\n';
+    const spawnProcess = vi.fn(() => streamingChildProcess([prefix, finalEvent]));
+    const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess });
+    const rawChunks: string[] = [];
+
+    const result = await runner.run({
+      attemptId: 'attempt-complete-raw-stream',
+      command: 'pi',
+      args: [],
+      cwd: '/workspace/attempt-complete-raw-stream',
+      environment: {},
+      onRawChunk: chunk => rawChunks.push(Buffer.from(chunk).toString('utf8')),
+    });
+
+    expect(rawChunks.join('')).toBe(`${prefix}${finalEvent}`);
+    expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(16 * 1024 * 1024);
+  });
 });
 
 function completedChildProcess() {
@@ -314,6 +350,17 @@ function runtimeBinding(): RuntimePrivateConfigurationBinding {
   return {
     revisionId: 'revision-10',
     bindingFingerprint: 'binding-fingerprint',
+  };
+}
+
+function authorizedBinding(): AuthorizedExecutorBinding {
+  return {
+    agentClassRef: 'quality-beta',
+    harnessRef: 'pi-cli',
+    providerRef: 'deepseek',
+    modelRef: 'deepseek-deepseek-v4-pro',
+    permissionProfileRef: 'public-web-research',
+    configurationRevision: 'revision-10',
   };
 }
 
@@ -379,8 +426,13 @@ function executorInput(attemptId: string): ExecutorInput {
         schemaVersion: 3,
       },
       evidenceTools: {
-        availability: 'unavailable',
+        availability: 'available',
         reason: 'unit test',
+        binding: {
+          mcpUrl: 'http://127.0.0.1:31000/mcp',
+          jsonUrl: 'http://127.0.0.1:31000/evidence',
+          bearerToken: 'evidence-token',
+        },
       },
     },
     executionBinding: {
