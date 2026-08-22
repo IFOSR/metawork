@@ -9,6 +9,8 @@ export function SessionSidebar({
   onNewSession,
   onSelect,
   onContinue,
+  onDeleteSession,
+  onClearSessions,
   onSettings,
 }: {
   sessions: WebSessionMetadata[];
@@ -19,13 +21,15 @@ export function SessionSidebar({
   onNewSession: () => void;
   onSelect: (sessionId: string) => void;
   onContinue: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onClearSessions: () => void;
   onSettings: () => void;
 }) {
   return (
     <aside className="workspace-sidebar">
       <div className="sidebar-brand">
-        <span className="brand-mark">AF</span>
-        <div><strong>AnyFusion</strong><small>Agent runtime</small></div>
+        <span className="brand-mark">MW</span>
+        <div><strong>MetaWork</strong><small>Agent runtime</small></div>
       </div>
       <button className="new-session-button" onClick={onNewSession}>
         <span>＋</span> 新建会话
@@ -39,7 +43,17 @@ export function SessionSidebar({
         />
       </label>
       <div className="session-section-label">
-        <span>会话</span><small>{sessions.length}</small>
+        <span>会话</span>
+        <small>{sessions.length}</small>
+        {sessions.length > 0 && (
+          <button
+            className="clear-sessions"
+            title="清空除当前会话外的全部历史"
+            onClick={onClearSessions}
+          >
+            清空
+          </button>
+        )}
       </div>
       <div className="session-list">
         {sessions.map(session => {
@@ -69,6 +83,27 @@ export function SessionSidebar({
                   }}
                 >
                   继续此会话
+                </span>
+              )}
+              {!active && (
+                <span
+                  className="delete-session"
+                  role="button"
+                  aria-label={`删除会话 ${session.title}`}
+                  tabIndex={0}
+                  onClick={event => {
+                    event.stopPropagation();
+                    onDeleteSession(session.id);
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onDeleteSession(session.id);
+                    }
+                  }}
+                >
+                  ✕
                 </span>
               )}
             </button>

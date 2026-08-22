@@ -185,6 +185,12 @@ describe('ManagementServer WebSocket authentication', () => {
       async activateSession() {
         return { state: 'active', sessionId: 'session_live' };
       },
+      async deleteSession() {
+        return 'not_found';
+      },
+      async clearAllSessions() {
+        return { deleted: 0 };
+      },
       subscribe(listener) {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -258,6 +264,12 @@ describe('ManagementServer WebSocket authentication', () => {
           reason: 'planner_turn_active',
         };
       },
+      async deleteSession() {
+        return 'not_found';
+      },
+      async clearAllSessions() {
+        return { deleted: 0 };
+      },
       subscribe() {
         return () => {};
       },
@@ -308,6 +320,65 @@ describe('ManagementServer WebSocket authentication', () => {
         sessionId: 'session_history',
         reason: 'planner_turn_active',
       });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('hard-deletes a session and clears all non-active sessions over HTTP', async () => {
+    const port = await reservePort();
+    const deletedIds: string[] = [];
+    const cleared: Array<string | undefined> = [];
+    const sessionRuntime = createSessionRuntime({
+      activeSessionId: 'session_live',
+      deleteSession: async sessionId => {
+        deletedIds.push(sessionId);
+        if (sessionId === 'session_active') return 'active';
+        if (sessionId === 'session_missing') return 'not_found';
+        return 'deleted';
+      },
+      clearAllSessions: async () => {
+        cleared.push('live');
+        return { deleted: 3 };
+      },
+    });
+    const server = createManagementServer(port, { sessionRuntime });
+    await server.start();
+
+    try {
+      const headers = { authorization: 'Bearer manual-token' };
+
+      const deleted = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_done`,
+        { method: 'DELETE', headers },
+      );
+      expect(deleted.status).toBe(204);
+      expect(deletedIds).toEqual(['session_done']);
+
+      const active = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_active`,
+        { method: 'DELETE', headers },
+      );
+      expect(active.status).toBe(409);
+
+      const missing = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_missing`,
+        { method: 'DELETE', headers },
+      );
+      expect(missing.status).toBe(404);
+
+      const unauthenticated = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/session_done`,
+        { method: 'DELETE' },
+      );
+      expect(unauthenticated.status).toBe(401);
+
+      const clear = await fetch(`http://127.0.0.1:${port}/api/sessions/clear-all`, {
+        method: 'POST',
+        headers,
+      });
+      expect(clear.status).toBe(200);
+      expect(await clear.json()).toEqual({ deleted: 3 });
     } finally {
       await server.stop();
     }
@@ -767,6 +838,12 @@ function createSessionRuntime(
     },
     async activateSession(sessionId) {
       return { state: 'active', sessionId };
+    },
+    async deleteSession() {
+      return 'not_found';
+    },
+    async clearAllSessions() {
+      return { deleted: 0 };
     },
     subscribe() {
       return () => {};

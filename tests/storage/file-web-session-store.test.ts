@@ -122,4 +122,69 @@ describe('FileWebSessionStore', () => {
       'Invalid Web session ID',
     );
   });
+
+  it('hard-deletes a session file and its catalog entry', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+    const record = makeRecord();
+    await store.writeSession(record);
+    await store.writeCatalog({
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [record.session],
+    });
+
+    expect(await store.deleteSession(record.session.id)).toBe(true);
+    expect(await store.readSession(record.session.id)).toBeNull();
+    expect(await store.readCatalog()).toEqual({
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [],
+    });
+    expect(await readdir(store.sessionsDir)).toEqual([]);
+    expect(await readdir(store.quarantineDir)).toEqual([
+      expect.stringMatching(/^session_1\.\d+\.deleted\.json$/u),
+    ]);
+  });
+
+  it('reports false when deleting a missing session without touching the catalog', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+
+    expect(await store.deleteSession('missing')).toBe(false);
+    expect(await store.readCatalog()).toEqual({
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [],
+    });
+  });
+
+  it('rejects invalid ids on delete without escaping the directory', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+
+    await expect(store.deleteSession('../outside')).rejects.toThrow('Invalid Web session ID');
+  });
+
+  it('deletes all sessions except the preserved one and returns the deleted count', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+    const keep = makeRecord('session_keep');
+    const dropA = makeRecord('session_a');
+    const dropB = makeRecord('session_b');
+    await store.writeSession(keep);
+    await store.writeSession(dropA);
+    await store.writeSession(dropB);
+    await store.writeCatalog({
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [keep.session, dropA.session, dropB.session],
+    });
+
+    expect(await store.deleteAllSessions('session_keep')).toBe(2);
+    expect((await store.readCatalog()).sessions.map(session => session.id)).toEqual([
+      'session_keep',
+    ]);
+    expect(await readdir(store.sessionsDir)).toEqual(['session_keep.json']);
+  });
 });

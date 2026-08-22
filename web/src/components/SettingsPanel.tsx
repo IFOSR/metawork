@@ -144,7 +144,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
           </p>
           {revisionId && runningRevisionId && revisionId !== runningRevisionId && (
             <div className="result-banner result-ok">
-              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}，请重启 AnyFusion 后生效。
+              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}，请重启 MetaWork 后生效。
             </div>
           )}
 
@@ -167,7 +167,7 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
                 <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>
                   {result.ok
                     ? result.restartRequired
-                      ? `配置已激活为 ${result.activeRevisionId}；当前仍运行 ${result.runningRevisionId}，请重启 AnyFusion 后生效。`
+                      ? `配置已激活为 ${result.activeRevisionId}；当前仍运行 ${result.runningRevisionId}，请重启 MetaWork 后生效。`
                       : `配置已激活并生效：${result.activeRevisionId}`
                     : `激活失败（${result.code ?? 'unknown'}）`}
                   {result.issues && result.issues.length > 0 && (

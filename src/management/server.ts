@@ -329,6 +329,12 @@ export class ManagementServer {
       return;
     }
 
+    // 注意：必须在通配的 /api/sessions/:id 之前匹配。
+    if (request.method === 'POST' && url.pathname === '/api/sessions/clear-all') {
+      this.sendJson(response, 200, await this.deps.sessionRuntime.clearAllSessions());
+      return;
+    }
+
     const sessionActivateMatch = /^\/api\/sessions\/([^/]+)\/activate$/u.exec(url.pathname);
     if (request.method === 'POST' && sessionActivateMatch) {
       this.sendJson(
@@ -342,6 +348,22 @@ export class ManagementServer {
     }
 
     const sessionMatch = /^\/api\/sessions\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'DELETE' && sessionMatch) {
+      const outcome = await this.deps.sessionRuntime.deleteSession(
+        decodeURIComponent(sessionMatch[1]!),
+      );
+      if (outcome === 'active') {
+        this.sendJson(response, 409, { error: 'session is active; switch away before deleting' });
+        return;
+      }
+      if (outcome === 'not_found') {
+        this.sendJson(response, 404, { error: 'session not found' });
+        return;
+      }
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     if (request.method === 'GET' && sessionMatch) {
       const record = await this.deps.sessionRuntime.readSession(
         decodeURIComponent(sessionMatch[1]!),

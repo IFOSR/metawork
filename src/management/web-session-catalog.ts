@@ -128,6 +128,18 @@ export class WebSessionCatalog {
     return updated;
   }
 
+  /** 硬删除会话：文件移入 quarantine，catalog 同步移除。返回是否存在过。 */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    await this.ensureInitialized();
+    return this.store.deleteSession(sessionId);
+  }
+
+  /** 批量硬删除（保留 exceptId），返回删除数量。 */
+  async clearAll(exceptId?: string): Promise<number> {
+    await this.ensureInitialized();
+    return this.store.deleteAllSessions(exceptId);
+  }
+
   async archive(sessionId: string): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
     const record = await this.store.readSession(sessionId);

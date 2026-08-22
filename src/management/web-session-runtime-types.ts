@@ -15,6 +15,8 @@ export interface WebSessionRuntimeCatalog {
   search(query: string): Promise<WebSessionMetadata[]>;
   read(sessionId: string): Promise<WebSessionRecord | null>;
   setActive(sessionId: string): Promise<WebSessionRecord | null>;
+  deleteSession(sessionId: string): Promise<boolean>;
+  clearAll(exceptId?: string): Promise<number>;
   appendTurn(sessionId: string, turn: import('./web-session-types.js').ConversationTurn): Promise<unknown>;
 }
 
@@ -94,6 +96,10 @@ export interface ManagementWebSessionRuntime {
   readSession(sessionId: string): Promise<WebSessionRecord | null>;
   createSession(title?: string): Promise<WebSessionCreationResult>;
   activateSession(sessionId: string): Promise<WebSessionActivationResult>;
+  /** 硬删除历史会话；活跃会话拒绝删除。 */
+  deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;
+  /** 清空除活跃外的全部会话，返回删除数量。 */
+  clearAllSessions(): Promise<{ deleted: number }>;
   subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void;
   getReplayEvents(): WebSessionRuntimeEvent[];
 }

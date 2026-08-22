@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  access,
   mkdir,
   open,
   readFile,
@@ -87,6 +88,36 @@ export class FileWebSessionStore {
     await atomicWriteJson(path, record);
   }
 
+  /** 硬删除：会话文件移入 quarantine（可恢复），再从 catalog 移除条目。 */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const path = this.sessionPath(sessionId);
+    const existedFile = await exists(path);
+    if (existedFile) {
+      await this.moveToQuarantine(path, sessionId, 'deleted');
+    }
+
+    const catalog = await this.readCatalog();
+    const remaining = catalog.sessions.filter(session => session.id !== sessionId);
+    if (remaining.length === catalog.sessions.length && !existedFile) {
+      return false;
+    }
+    if (remaining.length !== catalog.sessions.length) {
+      await this.writeCatalog({ ...catalog, sessions: remaining });
+    }
+    return true;
+  }
+
+  /** 批量硬删除，保留 exceptId 指向的会话，返回删除数量。 */
+  async deleteAllSessions(exceptId?: string): Promise<number> {
+    const catalog = await this.readCatalog();
+    let deleted = 0;
+    for (const session of catalog.sessions) {
+      if (exceptId !== undefined && session.id === exceptId) continue;
+      if (await this.deleteSession(session.id)) deleted += 1;
+    }
+    return deleted;
+  }
+
   private sessionPath(sessionId: string): string {
     if (!SESSION_ID_PATTERN.test(sessionId)) {
       throw new Error(`Invalid Web session ID: ${sessionId}`);
@@ -99,16 +130,33 @@ export class FileWebSessionStore {
   }
 
   private async quarantine(path: string, sessionId: string): Promise<void> {
+    await this.moveToQuarantine(path, sessionId, 'invalid');
+  }
+
+  private async moveToQuarantine(
+    path: string,
+    sessionId: string,
+    reason: 'invalid' | 'deleted',
+  ): Promise<void> {
     await mkdir(this.quarantineDir, { recursive: true, mode: 0o700 });
     const destination = join(
       this.quarantineDir,
-      `${sessionId}.${Date.now()}.invalid.json`,
+      `${sessionId}.${Date.now()}.${reason}.json`,
     );
     try {
       await rename(path, destination);
     } catch (error) {
       if (!isMissingFile(error)) throw error;
     }
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

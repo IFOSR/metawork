@@ -29,6 +29,7 @@ export class HttpClient {
       if (response.status === 401) this.onUnauthorized?.();
       throw new Error(`HTTP ${response.status}: ${body}`);
     }
+    if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
   }
 
@@ -71,6 +72,16 @@ export class HttpClient {
     return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, {
       method: 'POST',
     });
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request<void>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  clearSessions(): Promise<{ deleted: number }> {
+    return this.request('/api/sessions/clear-all', { method: 'POST' });
   }
 
   activate(baseRevisionId: string, config: Record<string, unknown>): Promise<ActivateResult> {

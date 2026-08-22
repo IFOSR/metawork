@@ -1041,6 +1041,8 @@ select {
 
 .session-section-label {
   display: flex;
+  align-items: center;
+  gap: 6px;
   justify-content: space-between;
   padding: 0 8px 8px;
   color: #707c72;
@@ -1048,6 +1050,23 @@ select {
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.clear-sessions {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  color: #707c72;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.clear-sessions:hover {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .session-list {
@@ -1120,6 +1139,32 @@ select {
   margin-top: 6px;
   color: var(--accent);
   font-size: 10px;
+}
+
+.delete-session {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #738076;
+  background: transparent;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-row:hover .delete-session {
+  display: inline-flex;
+}
+
+.delete-session:hover {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
 }
 
 .sidebar-empty {

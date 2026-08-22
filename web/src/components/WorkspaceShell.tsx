@@ -22,6 +22,8 @@ export function WorkspaceShell({
   onNewSession,
   onSelectSession,
   onContinueSession,
+  onDeleteSession,
+  onClearSessions,
   onSettings,
   onTabChange,
   onDraftChange,
@@ -44,6 +46,8 @@ export function WorkspaceShell({
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
   onContinueSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onClearSessions: () => void;
   onSettings: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
   onDraftChange: (value: string) => void;
@@ -60,6 +64,8 @@ export function WorkspaceShell({
         onNewSession={onNewSession}
         onSelect={onSelectSession}
         onContinue={onContinueSession}
+        onDeleteSession={onDeleteSession}
+        onClearSessions={onClearSessions}
         onSettings={onSettings}
       />
       <main className="workspace-main">

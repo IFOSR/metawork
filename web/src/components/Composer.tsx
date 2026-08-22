@@ -38,7 +38,7 @@ export function Composer({
               submit();
             }
           }}
-          placeholder={disabled ? '激活此历史会话后才能继续' : '描述目标，AnyFusion 会展示完整执行过程…'}
+          placeholder={disabled ? '激活此历史会话后才能继续' : '描述目标，MetaWork 会展示完整执行过程…'}
           rows={2}
         />
         <div className="composer-footer">

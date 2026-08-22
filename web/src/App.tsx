@@ -6,7 +6,7 @@ import type {
   WebSessionMetadata,
   WebSessionRecord,
 } from './api/session-types';
-import type { ExecutionTimeline, InteractionTrace, InteractionTraceEvent } from './api/types';
+import type { InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
 import { establishWebSession, exchangeWebCredential } from './auth';
 import { ConversationView } from './components/ConversationView';
@@ -233,6 +233,36 @@ export function App() {
     }
   };
 
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!httpRef.current) return;
+    try {
+      await httpRef.current.deleteSession(sessionId);
+      setSessions(current => current.filter(session => session.id !== sessionId));
+      if (browsedSessionId === sessionId) {
+        setBrowsedSessionId(null);
+        setSelectedRecord(null);
+      }
+      setActivationNotice(null);
+    } catch (error) {
+      setActivationNotice(`删除失败：${(error as Error).message}`);
+    }
+  };
+
+  const handleClearSessions = async () => {
+    if (!httpRef.current) return;
+    try {
+      const result = await httpRef.current.clearSessions();
+      setSessions(current => current.filter(session => session.id === activeSessionId));
+      if (browsedSessionId && browsedSessionId !== activeSessionId) {
+        setBrowsedSessionId(null);
+        setSelectedRecord(null);
+      }
+      setActivationNotice(result.deleted > 0 ? `已清空 ${result.deleted} 个历史会话。` : null);
+    } catch (error) {
+      setActivationNotice(`清空失败：${(error as Error).message}`);
+    }
+  };
+
   const handleAuth = async (token: string): Promise<boolean> => {
     try {
       const ok = await exchangeWebCredential(token);
@@ -246,7 +276,7 @@ export function App() {
   };
 
   if (authenticated === null) {
-    return <div className="token-gate"><div className="token-gate-card">正在连接 AnyFusion…</div></div>;
+    return <div className="token-gate"><div className="token-gate-card">正在连接 MetaWork…</div></div>;
   }
   if (!authenticated) return <TokenGate error={authError} onAuth={handleAuth} />;
 
@@ -288,6 +318,8 @@ export function App() {
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
         onContinueSession={sessionId => void handleActivation(sessionId)}
+        onDeleteSession={sessionId => void handleDeleteSession(sessionId)}
+        onClearSessions={() => void handleClearSessions()}
         onSettings={() => setSettingsOpen(true)}
         onTabChange={setTab}
         onDraftChange={setDraft}

@@ -129,6 +129,32 @@ export class WebGatewaySessionRuntime {
     return { state: 'active', sessionId };
   }
 
+  async deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'> {
+    if (sessionId === this._activeSessionId) return 'active';
+    const deleted = await this.deps.catalog.deleteSession(sessionId);
+    if (!deleted) return 'not_found';
+    if (this._activeSessionId) {
+      this.emit({
+        type: 'session_catalog',
+        activeSessionId: this._activeSessionId,
+        sessions: await this.deps.catalog.list(),
+      });
+    }
+    return 'deleted';
+  }
+
+  async clearAllSessions(): Promise<{ deleted: number }> {
+    const deleted = await this.deps.catalog.clearAll(this._activeSessionId ?? undefined);
+    if (this._activeSessionId) {
+      this.emit({
+        type: 'session_catalog',
+        activeSessionId: this._activeSessionId,
+        sessions: await this.deps.catalog.list(),
+      });
+    }
+    return { deleted };
+  }
+
   subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
