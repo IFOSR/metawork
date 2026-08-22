@@ -1,6 +1,15 @@
 # Web 工作台四项优化实施计划
 
-> **For Claude:** 按任务顺序执行；每个任务先写失败测试（如适用），实现后跑测试与 lint，本地提交（**禁止推送远程**）。
+> **状态：已全部交付（2026-08-22，本机验证通过，未推送远程）**
+>
+> 交付提交：
+> - `2d186e6` feat: rename web brand to MetaWork and add hard session deletion（M1）
+> - M2 登录提交（feat: add username/password login for web workspace）
+> - M3 附件提交（feat: end-to-end attachment pipeline for web conversations）
+>
+> 验证：`npm run lint` 通过；全仓 vitest 套件分域全部通过（session/planning/kernel/execution/executor/management/storage/web 等，仅 Docker-only 集成用例按预期跳过）；`web/dist` 已重建。
+>
+> 已知 MVP 边界：图片附件在 Planner 侧以路径引用降级（无视觉通道）；Executor 沙箱内通过绝对路径读取附件原文，attempt 工作区物理复制留作后续增强。
 
 **Goal:** 为 Web 工作台交付 Logo 更名、会话硬删除/清空、账密登录、附件上传四项能力。
 
