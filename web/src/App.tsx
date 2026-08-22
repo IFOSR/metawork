@@ -8,7 +8,7 @@ import type {
 } from './api/session-types';
 import type { InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
-import { establishWebSession, exchangeWebCredential } from './auth';
+import { establishWebSession, exchangeWebCredential, loginWithPassword } from './auth';
 import { ConversationView } from './components/ConversationView';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
@@ -275,10 +275,22 @@ export function App() {
     }
   };
 
+  const handleLogin = async (username: string, password: string): Promise<boolean> => {
+    try {
+      const ok = await loginWithPassword(username, password);
+      setAuthError(ok ? null : '用户名或密码错误，或尝试次数过多，请稍后再试。');
+      if (ok) setAuthenticated(true);
+      return ok;
+    } catch (error) {
+      setAuthError((error as Error).message);
+      return false;
+    }
+  };
+
   if (authenticated === null) {
     return <div className="token-gate"><div className="token-gate-card">正在连接 MetaWork…</div></div>;
   }
-  if (!authenticated) return <TokenGate error={authError} onAuth={handleAuth} />;
+  if (!authenticated) return <TokenGate error={authError} onLogin={handleLogin} onTokenAuth={handleAuth} />;
 
   const selectedId = browsedSessionId ?? activeSessionId;
   const selectedMetadata = sessions.find(session => session.id === selectedId)

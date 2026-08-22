@@ -7,6 +7,10 @@ import {
   type ManagementWebSessionRuntime,
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
+import {
+  resolveLoginCredentials,
+  type LoginCredentials,
+} from '../../src/management/login-credentials.js';
 import type { WebSessionRecord } from '../../src/management/web-session-types.js';
 
 function metadataFixture(id: string, active: boolean) {
@@ -379,6 +383,75 @@ describe('ManagementServer WebSocket authentication', () => {
       });
       expect(clear.status).toBe(200);
       expect(await clear.json()).toEqual({ deleted: 3 });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('logs in with username and password, locks after repeated failures', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      loginCredentials: resolveLoginCredentials({
+        ANYFUSION_WEB_USERNAME: 'admin',
+        ANYFUSION_WEB_PASSWORD: 'test-password',
+      }),
+    });
+    await server.start();
+
+    try {
+      const loginUrl = `http://127.0.0.1:${port}/api/auth/login`;
+      const login = (username: string, password: string) => fetch(loginUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${port}`,
+        },
+        body: JSON.stringify({ username, password }),
+      });
+
+      const bad = await login('admin', 'wrong');
+      expect(bad.status).toBe(401);
+
+      const missing = await login('admin', '');
+      expect(missing.status).toBe(400);
+
+      const ok = await login('admin', 'test-password');
+      expect(ok.status).toBe(204);
+      const cookie = ok.headers.get('set-cookie')!.split(';', 1)[0]!;
+      expect(cookie).toContain('anyfusion_web_session=');
+
+      // 会话 cookie 可访问受保护端点。
+      const guarded = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        headers: { cookie },
+      });
+      expect(guarded.status).toBe(200);
+
+      // 连续失败 5 次后锁定（第 6 次即使密码正确也 429）。
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await login('admin', 'wrong');
+      }
+      const locked = await login('admin', 'test-password');
+      expect(locked.status).toBe(429);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('returns 503 when password login credentials are not configured', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, { loginCredentials: undefined });
+    await server.start();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${port}`,
+        },
+        body: JSON.stringify({ username: 'admin', password: 'whatever' }),
+      });
+      expect(response.status).toBe(503);
     } finally {
       await server.stop();
     }
@@ -784,6 +857,7 @@ interface ManagementServerTestOverrides {
   readonly sessionRuntime?: ManagementWebSessionRuntime;
   readonly executionQuery?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown };
   readonly configQuery?: Partial<ConfigQuery>;
+  readonly loginCredentials?: LoginCredentials;
 }
 
 function createManagementServer(
@@ -803,6 +877,12 @@ function createManagementServer(
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
+    loginCredentials: 'loginCredentials' in overrides
+      ? overrides.loginCredentials
+      : resolveLoginCredentials({
+        ANYFUSION_WEB_USERNAME: 'admin',
+        ANYFUSION_WEB_PASSWORD: 'test-password',
+      }),
     executionQuery: overrides.executionQuery ?? {
       listTasks: () => [],
       projectTimeline: () => null,

@@ -86,6 +86,7 @@ import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
 import { WebAuthService } from './management/web-auth.js';
+import { resolveLoginCredentials } from './management/login-credentials.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
 import { FileWebSessionStore } from './storage/file-web-session-store.js';
 import { WebSessionCatalog } from './management/web-session-catalog.js';
@@ -141,6 +142,12 @@ async function startWebMode(options: {
   configQuery: ConfigQuery;
 }): Promise<ManagementServer> {
   const webAuth = new WebAuthService();
+  const loginCredentials = resolveLoginCredentials(process.env);
+  if (loginCredentials.generated && loginCredentials.password) {
+    process.stdout.write(
+      `MetaWork Web 登录账号：${loginCredentials.username} / ${loginCredentials.password}\n`,
+    );
+  }
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
@@ -153,6 +160,7 @@ async function startWebMode(options: {
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
+    loginCredentials,
   });
   await managementServer.start();
   const presentation = buildWebStartupPresentation(

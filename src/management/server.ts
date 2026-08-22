@@ -5,6 +5,9 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
+import { verifyLogin } from './login-credentials.js';
+import { LoginThrottle } from './web-auth.js';
+import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
 import type {
   ManagementWebSessionRuntime,
@@ -65,6 +68,9 @@ export interface ManagementServerDeps {
   sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
+  /** 账密登录凭据；未提供时登录端点返回 503。 */
+  loginCredentials?: LoginCredentials;
+  loginThrottle?: LoginThrottle;
 }
 
 const MIME: Record<string, string> = {
@@ -218,6 +224,38 @@ export class ManagementServer {
     }
   }
 
+  private async handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.deps.loginCredentials) {
+      this.sendJson(response, 503, { error: 'password login disabled' });
+      return;
+    }
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      this.sendJson(response, 403, { error: 'forbidden_origin' });
+      return;
+    }
+    const throttle = this.deps.loginThrottle ??= new LoginThrottle();
+    const clientKey = clientAddressOf(request);
+    if (throttle.isLocked(clientKey)) {
+      this.sendJson(response, 429, { error: 'too many attempts; try again later' });
+      return;
+    }
+    const body = await readRequestBody(request);
+    const username = typeof body.username === 'string' ? body.username : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!username || !password) {
+      this.sendJson(response, 400, { error: 'username and password are required' });
+      return;
+    }
+    if (!verifyLogin(username, password, this.deps.loginCredentials)) {
+      throttle.registerFailure(clientKey);
+      this.sendJson(response, 401, { error: 'invalid username or password' });
+      return;
+    }
+    throttle.registerSuccess(clientKey);
+    response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.sessionCookie() });
+    response.end();
+  }
+
   private isAllowedWebSocketOrigin(origin: string | undefined): boolean {
     if (!origin) return true;
     try {
@@ -265,6 +303,11 @@ export class ManagementServer {
       }
       response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.sessionCookie() });
       response.end();
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/auth/login') {
+      await this.handleLogin(request, response);
       return;
     }
 
@@ -551,6 +594,8 @@ export class ManagementServer {
 
 interface RequestBody {
   token?: string;
+  username?: string;
+  password?: string;
   baseRevisionId?: string;
   config?: unknown;
   targetRevisionId?: string;
@@ -564,6 +609,10 @@ interface WebSocketDiagnostic {
   status: number;
   reason: 'ready' | 'forbidden_origin' | 'unauthorized';
   message: string;
+}
+
+function clientAddressOf(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? 'unknown';
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

@@ -578,7 +578,8 @@ body {
   color: var(--text-dim);
 }
 
-.token-gate-card input[type='password'] {
+.token-gate-card input[type='password'],
+.token-gate-card input[type='text'] {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -586,8 +587,22 @@ body {
   color: var(--text);
   outline: none;
 }
-.token-gate-card input[type='password']:focus {
+.token-gate-card input[type='password']:focus,
+.token-gate-card input[type='text']:focus {
   border-color: var(--accent);
+}
+
+.login-mode-switch {
+  padding: 4px;
+  border: 0;
+  color: var(--text-dim);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.login-mode-switch:hover {
+  color: var(--accent);
 }
 
 .trust-row {
