@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { WebSessionMetadata } from '../api/session-types';
+import type { AttachmentMetadata, WebSessionMetadata } from '../api/session-types';
 import { Composer } from './Composer';
 import { SessionSidebar } from './SessionSidebar';
 import { WorkspaceHeader, type WorkspaceTab } from './WorkspaceHeader';
@@ -28,6 +28,10 @@ export function WorkspaceShell({
   onTabChange,
   onDraftChange,
   onSend,
+  attachments,
+  uploadError,
+  onFilesSelected,
+  onRemoveAttachment,
 }: {
   sessions: WebSessionMetadata[];
   activeSessionId: string | null;
@@ -51,7 +55,11 @@ export function WorkspaceShell({
   onSettings: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
   onDraftChange: (value: string) => void;
-  onSend: (value: string) => void;
+  onSend: (value: string, attachments: Array<{ attachmentId: string }>) => void;
+  attachments: Array<{ metadata: AttachmentMetadata }>;
+  uploadError?: string | null;
+  onFilesSelected: (files: File[]) => void;
+  onRemoveAttachment: (attachmentId: string) => void;
 }) {
   return (
     <div className="workspace-shell">
@@ -84,6 +92,10 @@ export function WorkspaceShell({
           blockedReason={blockedReason}
           onDraftChange={onDraftChange}
           onSend={onSend}
+          attachments={attachments}
+          uploadError={uploadError}
+          onFilesSelected={onFilesSelected}
+          onRemoveAttachment={onRemoveAttachment}
         />
       </main>
     </div>

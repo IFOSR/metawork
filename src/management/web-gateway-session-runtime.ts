@@ -10,6 +10,28 @@ import type {
   WebSessionMetadata,
   WebSessionRecord,
 } from './web-session-types.js';
+import type { FileAttachmentStore } from '../storage/file-attachment-store.js';
+
+const MAX_ATTACHMENTS_PER_MESSAGE = 32;
+const MAX_ENRICHMENT_BYTES = 16 * 1024;
+const EXCERPT_MAX_LINES = 64;
+
+function formatByteSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildTextExcerpt(bytes: Buffer, maxBytes: number): string | null {
+  const text = bytes.toString('utf8');
+  if (!text.trim()) return null;
+  const lines = text.split('\n').slice(0, EXCERPT_MAX_LINES);
+  let excerpt = lines.join('\n');
+  while (Buffer.byteLength(excerpt, 'utf8') > maxBytes && excerpt.length > 0) {
+    excerpt = excerpt.slice(0, Math.floor(excerpt.length / 2));
+  }
+  return excerpt.length < text.length ? `${excerpt}\n…（已截断）` : excerpt;
+}
 import type {
   WebSessionRuntimeCatalog,
   WebSessionRuntimeEvent,
@@ -19,6 +41,8 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly accountId: string;
   readonly catalog: WebSessionRuntimeCatalog;
   readonly gateway: WebGatewayAdapter;
+  /** 会话附件存储；提供后用户消息可携带附件并自动增强 Planner 提示。 */
+  readonly attachments?: FileAttachmentStore;
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
 }
@@ -75,12 +99,16 @@ export class WebGatewaySessionRuntime {
     return this.disposePromise;
   }
 
-  async submit(text: string): Promise<void> {
+  async submit(
+    text: string,
+    attachments: Array<{ attachmentId: string; kind: string }> = [],
+  ): Promise<void> {
     const requestId = this.id('req');
+    const effectiveText = await this.enrichWithAttachments(text, attachments);
     this.pendingInputs.set(requestId, text);
-    const command: GatewayCommand = text.startsWith('/')
-      ? { kind: 'slash_command', text }
-      : { kind: 'user_message', text, attachments: [] };
+    const command: GatewayCommand = effectiveText.startsWith('/')
+      ? { kind: 'slash_command', text: effectiveText }
+      : { kind: 'user_message', text: effectiveText, attachments: [] };
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 1,
       requestId,
@@ -96,10 +124,44 @@ export class WebGatewaySessionRuntime {
     }
   }
 
+  /** 将已上传附件解析为 Planner 提示增强块；无附件或未配置存储时返回原文。 */
+  private async enrichWithAttachments(
+    text: string,
+    attachments: Array<{ attachmentId: string; kind: string }>,
+  ): Promise<string> {
+    const store = this.deps.attachments;
+    if (!store || attachments.length === 0) return text;
+    const sections: string[] = [];
+    let budget = MAX_ENRICHMENT_BYTES;
+    for (const reference of attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)) {
+      const resolved = await store.readAttachment(this.activeSessionId, reference.attachmentId);
+      if (!resolved) continue;
+      const { metadata } = resolved;
+      const sizeLabel = formatByteSize(metadata.size);
+      const header = `${sections.length + 1}. ${metadata.name} (${metadata.mime}, ${sizeLabel}) — 路径: ${resolved.path}`;
+      let section = header;
+      if (metadata.kind === 'text') {
+        const excerpt = buildTextExcerpt(resolved.bytes, Math.max(1_000, budget));
+        if (excerpt) section = `${header}\n   文本摘录（前 64 行）:\n${excerpt}`;
+      }
+      // 图片：MVP 阶段 Planner 无视觉通道，降级为路径引用；
+      // Executor 在工作区可通过该路径读取原图。
+      sections.push(section);
+      budget -= Buffer.byteLength(section, 'utf8');
+      if (budget <= 0) break;
+    }
+    if (sections.length === 0) return text;
+    return [
+      text,
+      '---',
+      `[附件] ${sections.length} 个文件随本消息提交；请结合以下内容理解意图，并让 Executor 通过上述路径读取完整原文：`,
+      ...sections,
+    ].join('\n');
+  }
+
   listSessions(query = ''): Promise<WebSessionMetadata[]> {
     return query.trim() ? this.deps.catalog.search(query) : this.deps.catalog.list();
   }
-
   readSession(sessionId: string): Promise<WebSessionRecord | null> {
     return this.deps.catalog.read(sessionId);
   }

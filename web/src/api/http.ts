@@ -6,6 +6,7 @@ import type {
   TaskSummary,
 } from './types';
 import type {
+  AttachmentMetadata,
   WebSessionActivationResult,
   WebSessionCreationResult,
   WebSessionMetadata,
@@ -82,6 +83,26 @@ export class HttpClient {
 
   clearSessions(): Promise<{ deleted: number }> {
     return this.request('/api/sessions/clear-all', { method: 'POST' });
+  }
+
+  async uploadAttachment(
+    sessionId: string,
+    name: string,
+    bytes: Uint8Array,
+  ): Promise<AttachmentMetadata> {
+    const params = new URLSearchParams({ sessionId, name });
+    const response = await fetch(`/api/attachments?${params.toString()}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes as unknown as BodyInit,
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      if (response.status === 401) this.onUnauthorized?.();
+      throw new Error(`HTTP ${response.status}: ${body}`);
+    }
+    return response.json() as Promise<AttachmentMetadata>;
   }
 
   activate(baseRevisionId: string, config: Record<string, unknown>): Promise<ActivateResult> {

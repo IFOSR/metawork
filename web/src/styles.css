@@ -1686,6 +1686,65 @@ select {
   margin-top: 7px;
 }
 
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-actions .attach-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.composer-actions .attach-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.attachment-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.attachment-chip button {
+  padding: 0 2px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.attachment-chip button:hover {
+  color: #ff6b6b;
+}
+
+.attachment-error {
+  color: #ff6b6b;
+  font-size: 11px;
+}
+
+.composer-wrap[data-dragging] .composer {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
 .composer-footer span {
   color: #667168;
   font-family: 'SFMono-Regular', Consolas, monospace;

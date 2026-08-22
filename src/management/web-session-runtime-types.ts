@@ -91,7 +91,7 @@ export interface ManagementWebSessionRuntime {
   readonly activeSessionId: string;
   initialize(): Promise<void>;
   dispose(): Promise<void>;
-  submit(text: string): Promise<void>;
+  submit(text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
   listSessions(query?: string): Promise<WebSessionMetadata[]>;
   readSession(sessionId: string): Promise<WebSessionRecord | null>;
   createSession(title?: string): Promise<WebSessionCreationResult>;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HttpClient } from './api/http';
 import type {
+  AttachmentMetadata,
   ConversationTurnProjection,
   WebSessionActivationResult,
   WebSessionMetadata,
@@ -33,6 +34,8 @@ export function App() {
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const activeConversationRef = useRef<string | null>(null);
@@ -248,6 +251,31 @@ export function App() {
     }
   };
 
+  const handleFilesSelected = async (files: File[]) => {
+    if (!httpRef.current || !activeSessionId) {
+      setUploadError('当前没有活跃会话，无法上传附件。');
+      return;
+    }
+    setUploadError(null);
+    for (const file of files) {
+      if (pendingAttachments.length >= 32) {
+        setUploadError('单条消息最多 32 个附件。');
+        break;
+      }
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const metadata = await httpRef.current.uploadAttachment(
+          activeSessionId,
+          file.name,
+          bytes,
+        );
+        setPendingAttachments(current => [...current, metadata]);
+      } catch (error) {
+        setUploadError(`上传 ${file.name} 失败：${(error as Error).message}`);
+      }
+    }
+  };
+
   const handleClearSessions = async () => {
     if (!httpRef.current) return;
     try {
@@ -335,15 +363,21 @@ export function App() {
         onSettings={() => setSettingsOpen(true)}
         onTabChange={setTab}
         onDraftChange={setDraft}
-        onSend={text => {
-          const sent = wsRef.current?.sendInput(text) ?? false;
+        onSend={(text, attachments) => {
+          const sent = (wsRef.current?.sendInput(text, attachments) ?? false);
           if (!sent) {
             setActivationNotice('WebSocket 尚未连接，消息仍保留在输入框中。');
             return;
           }
           setDraft('');
+          setPendingAttachments([]);
           setActivationNotice(null);
         }}
+        attachments={pendingAttachments.map(metadata => ({ metadata }))}
+        uploadError={uploadError}
+        onFilesSelected={files => void handleFilesSelected(files)}
+        onRemoveAttachment={attachmentId => setPendingAttachments(current =>
+          current.filter(entry => entry.attachmentId !== attachmentId))}
       >
         {tab === 'conversation'
           ? <ConversationView turns={turns} />

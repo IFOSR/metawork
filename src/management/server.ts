@@ -9,6 +9,11 @@ import { verifyLogin } from './login-credentials.js';
 import { LoginThrottle } from './web-auth.js';
 import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
+import {
+  AttachmentTooLargeError,
+  AttachmentTypeError,
+  FileAttachmentStore,
+} from '../storage/file-attachment-store.js';
 import type {
   ManagementWebSessionRuntime,
 } from './web-session-runtime-types.js';
@@ -66,6 +71,8 @@ export interface ManagementServerDeps {
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
   sessionRuntime: ManagementWebSessionRuntime;
+  /** 会话附件存储；未提供时上传端点返回 503。 */
+  attachmentStore?: FileAttachmentStore;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   /** 账密登录凭据；未提供时登录端点返回 503。 */
@@ -182,9 +189,9 @@ export class ManagementServer {
 
     ws = new WebSocketConnection(socket, {
       onMessage: text => {
-        let message: { type?: string; text?: string };
+        let message: { type?: string; text?: string; attachments?: Array<{ attachmentId?: unknown }> };
         try {
-          message = JSON.parse(text) as { type?: string; text?: string };
+          message = JSON.parse(text) as typeof message;
         } catch {
           ws.close();
           return;
@@ -195,7 +202,10 @@ export class ManagementServer {
           return;
         }
         if (message.type === 'input' && message.text) {
-          void this.deps.sessionRuntime.submit(message.text).catch(error => {
+          const attachments = (message.attachments ?? [])
+            .filter(entry => typeof entry?.attachmentId === 'string')
+            .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
+          void this.deps.sessionRuntime.submit(message.text, attachments).catch(error => {
             ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
           });
         }
@@ -221,6 +231,44 @@ export class ManagementServer {
     const text = JSON.stringify(message);
     for (const ws of this.authenticatedWsConnections) {
       ws.send(text);
+    }
+  }
+
+  private async handleAttachmentUpload(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    const store = this.deps.attachmentStore;
+    if (!store) {
+      this.sendJson(response, 503, { error: 'attachment uploads disabled' });
+      return;
+    }
+    const sessionId = url.searchParams.get('sessionId') ?? '';
+    const name = url.searchParams.get('name') ?? '';
+    if (!sessionId || !name) {
+      this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
+      return;
+    }
+    const maxBytes = FileAttachmentStore.MAX_IMAGE_BYTES + 1;
+    const bytes = await readRawBody(request, maxBytes);
+    if (bytes === null) {
+      this.sendJson(response, 413, { error: 'attachment too large' });
+      return;
+    }
+    try {
+      const metadata = await store.saveAttachment({ sessionId, name, bytes });
+      this.sendJson(response, 201, metadata);
+    } catch (error) {
+      if (error instanceof AttachmentTooLargeError) {
+        this.sendJson(response, 413, { error: error.message });
+        return;
+      }
+      if (error instanceof AttachmentTypeError) {
+        this.sendJson(response, 415, { error: error.message });
+        return;
+      }
+      throw error;
     }
   }
 
@@ -346,6 +394,11 @@ export class ManagementServer {
       || Boolean(provided && tokenMatches(this.deps.token, provided));
     if (!authenticated) {
       this.sendJson(response, 401, { error: 'unauthorized' });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/attachments') {
+      await this.handleAttachmentUpload(request, response, url);
       return;
     }
 
@@ -613,6 +666,34 @@ interface WebSocketDiagnostic {
 
 function clientAddressOf(request: IncomingMessage): string {
   return request.socket.remoteAddress ?? 'unknown';
+}
+
+function readRawBody(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer | null> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let overflow = false;
+    request.on('data', (chunk: Buffer) => {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        overflow = true;
+        request.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => {
+      if (!overflow) resolve(Buffer.concat(chunks));
+    });
+    request.on('error', error => {
+      if (overflow) resolve(null);
+      else reject(error as Error);
+    });
+  });
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

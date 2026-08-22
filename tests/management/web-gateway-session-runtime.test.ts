@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
 import type { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
+import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 import { WebGatewaySessionRuntime } from '../../src/management/web-gateway-session-runtime.js';
 import type { WebSessionRuntimeCatalog } from '../../src/management/web-session-runtime-types.js';
 import type { WebSessionRecord } from '../../src/management/web-session-types.js';
@@ -100,6 +104,66 @@ describe('WebGatewaySessionRuntime', () => {
 
     expect(calls).toEqual(['attach-start', 'detach-client']);
     expect(() => runtime.activeSessionId).toThrow('not initialized');
+  });
+
+  it('enriches submitted user input with resolved attachment context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-runtime-attachments-'));
+    try {
+      const store = new FileAttachmentStore(join(root, 'attachments'));
+      await store.initialize();
+      const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const image = await store.saveAttachment({
+        sessionId: 'conv_1',
+        name: 'chart.png',
+        bytes: pngMagic,
+      });
+      const doc = await store.saveAttachment({
+        sessionId: 'conv_1',
+        name: 'notes.md',
+        bytes: Buffer.from('# 标题\n第一行内容', 'utf8'),
+      });
+
+      let capturedText = '';
+      const gateway = {
+        attachClient: async () => () => undefined,
+        subscribe: () => () => undefined,
+        replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+        submit: async (envelope: {
+          requestId: string;
+          command?: { text?: string };
+        }) => {
+          capturedText = envelope.command?.text ?? '';
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: 'idem_1',
+            status: 'accepted' as const,
+            conversationId: 'conv_1',
+          };
+        },
+      } as unknown as WebGatewayAdapter;
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: catalogFixture(),
+        gateway,
+        attachments: store,
+        createId: prefix => `${prefix}_1`,
+      });
+
+      await runtime.initialize();
+      await runtime.submit('分析这些材料', [
+        { attachmentId: image.attachmentId, kind: 'file' },
+        { attachmentId: doc.attachmentId, kind: 'file' },
+      ]);
+      await runtime.dispose();
+
+      expect(capturedText.startsWith('分析这些材料')).toBe(true);
+      expect(capturedText).toContain('[附件] 2 个文件');
+      expect(capturedText).toContain('chart.png (image/png');
+      expect(capturedText).toContain('notes.md (text/markdown');
+      expect(capturedText).toContain('第一行内容');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('projects live turn lifecycle events with the pending user input', async () => {

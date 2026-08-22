@@ -89,6 +89,7 @@ import { WebAuthService } from './management/web-auth.js';
 import { resolveLoginCredentials } from './management/login-credentials.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
 import { FileWebSessionStore } from './storage/file-web-session-store.js';
+import { FileAttachmentStore } from './storage/file-attachment-store.js';
 import { WebSessionCatalog } from './management/web-session-catalog.js';
 import { WebGatewaySessionRuntime } from './management/web-gateway-session-runtime.js';
 import type { ManagementWebSessionRuntime } from './management/web-session-runtime-types.js';
@@ -140,6 +141,7 @@ async function startWebMode(options: {
   sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
+  attachmentStore?: FileAttachmentStore;
 }): Promise<ManagementServer> {
   const webAuth = new WebAuthService();
   const loginCredentials = resolveLoginCredentials(process.env);
@@ -532,6 +534,10 @@ async function main() {
   const webSessionCatalog = new WebSessionCatalog(
     new FileWebSessionStore(resolve(accountPaths.conversations, 'web')),
   );
+  const webAttachmentStore = new FileAttachmentStore(
+    resolve(accountPaths.conversations, 'web-attachments'),
+  );
+  await webAttachmentStore.initialize();
   const knownConversationIds = new Set<string>([sessionId]);
   const rememberConversation = (accountId: string, conversationId: string): void => {
     if (accountId === LOCAL_DEFAULT_ACCOUNT_ID) knownConversationIds.add(conversationId);
@@ -759,10 +765,12 @@ async function main() {
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
+      attachmentStore: webAttachmentStore,
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
         gateway: webGatewayAdapter,
+        attachments: webAttachmentStore,
       }),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({

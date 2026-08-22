@@ -182,5 +182,5 @@ export type ServerMessage =
   | { type: 'error'; message: string };
 
 export type ClientMessage =
-  | { type: 'input'; text: string }
+  | { type: 'input'; text: string; attachments?: Array<{ attachmentId: string }> }
   | { type: 'close' };

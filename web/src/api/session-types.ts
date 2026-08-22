@@ -63,3 +63,14 @@ export interface WebSessionCreationResult {
   session: WebSessionRecord;
   activation: WebSessionActivationResult;
 }
+
+export interface AttachmentMetadata {
+  attachmentId: string;
+  sessionId: string;
+  name: string;
+  mime: string;
+  kind: 'image' | 'text';
+  size: number;
+  sha256: string;
+  createdAt: string;
+}

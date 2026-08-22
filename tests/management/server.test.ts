@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createConnection, createServer, type Socket } from 'node:net';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ManagementServer,
@@ -7,6 +10,7 @@ import {
   type ManagementWebSessionRuntime,
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
+import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 import {
   resolveLoginCredentials,
   type LoginCredentials,
@@ -457,6 +461,67 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('uploads session attachments over authenticated binary POST', async () => {
+    const port = await reservePort();
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-attachment-upload-'));
+    const store = new FileAttachmentStore(join(root, 'attachments'));
+    await store.initialize();
+    const server = createManagementServer(port, { attachmentStore: store });
+    await server.start();
+
+    const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    try {
+      const headers = { authorization: 'Bearer manual-token' };
+
+      const uploaded = await fetch(
+        `http://127.0.0.1:${port}/api/attachments?sessionId=sess_web_abc&name=chart.png`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/octet-stream' },
+          body: PNG_MAGIC,
+        },
+      );
+      expect(uploaded.status).toBe(201);
+      const meta = await uploaded.json() as {
+        attachmentId: string;
+        kind: string;
+        mime: string;
+        sessionId: string;
+      };
+      expect(meta.kind).toBe('image');
+      expect(meta.mime).toBe('image/png');
+      expect(meta.sessionId).toBe('sess_web_abc');
+
+      const unauthenticated = await fetch(
+        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=a.png`,
+        { method: 'POST', body: PNG_MAGIC },
+      );
+      expect(unauthenticated.status).toBe(401);
+
+      const missingParams = await fetch(
+        `http://127.0.0.1:${port}/api/attachments`,
+        { method: 'POST', headers },
+      );
+      expect(missingParams.status).toBe(400);
+
+      const badType = await fetch(
+        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=virus.exe`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/octet-stream' },
+          body: Buffer.from([0x4d, 0x5a, 0x90, 0x00]),
+        },
+      );
+      expect(badType.status).toBe(415);
+
+      const listed = await store.listAttachments('sess_web_abc');
+      expect(listed).toHaveLength(1);
+    } finally {
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('replays trace events on connect and streams ordered deltas while a turn is running', async () => {
     const port = await reservePort();
     const firstEvent = {
@@ -858,6 +923,7 @@ interface ManagementServerTestOverrides {
   readonly executionQuery?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown };
   readonly configQuery?: Partial<ConfigQuery>;
   readonly loginCredentials?: LoginCredentials;
+  readonly attachmentStore?: FileAttachmentStore;
 }
 
 function createManagementServer(
@@ -877,6 +943,7 @@ function createManagementServer(
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
+    attachmentStore: overrides.attachmentStore,
     loginCredentials: 'loginCredentials' in overrides
       ? overrides.loginCredentials
       : resolveLoginCredentials({

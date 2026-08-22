@@ -186,9 +186,9 @@ export class WsClient {
     };
   }
 
-  sendInput(text: string): boolean {
+  sendInput(text: string, attachments?: Array<{ attachmentId: string }>): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify({ type: 'input', text } satisfies ClientMessage));
+    this.socket.send(JSON.stringify({ type: 'input', text, attachments } satisfies ClientMessage));
     return true;
   }
 
