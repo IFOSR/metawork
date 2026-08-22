@@ -118,4 +118,16 @@ export class HttpClient {
       body: JSON.stringify({ providerRef, apiKey }),
     });
   }
+
+  getSecretStatus(providers: string[]): Promise<Record<string, boolean>> {
+    const params = new URLSearchParams({ providers: providers.join(',') });
+    return this.request<Record<string, boolean>>(`/api/config/secrets/status?${params.toString()}`);
+  }
+
+  verifySecret(providerRef: string): Promise<{ configured: boolean; valid: boolean | null; detail?: string }> {
+    return this.request('/api/config/secrets/verify', {
+      method: 'POST',
+      body: JSON.stringify({ providerRef }),
+    });
+  }
 }

@@ -699,6 +699,26 @@ body {
   margin-bottom: 8px;
 }
 
+.secret-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #707c72;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.secret-badge.secret-ok {
+  color: #6fd08c;
+}
+
+.secret-badge.secret-missing {
+  color: #ff9d9d;
+  background: rgba(255, 107, 107, 0.12);
+}
+
 .form-card-title {
   font-weight: 600;
 }

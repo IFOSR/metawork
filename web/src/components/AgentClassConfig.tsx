@@ -12,16 +12,34 @@ export interface AgentClassConfigDraft {
   modelId: string;
 }
 
+export type SecretState = 'unknown' | 'missing' | 'valid' | 'invalid';
+
 interface AgentClassConfigProps {
   agentClassRef: string;
   kind: string;
   draft: AgentClassConfigDraft;
+  /** 当前选中 provider 的密钥状态；unknown 表示检查中或无法判断。 */
+  secretState: SecretState;
   onChange: (draft: AgentClassConfigDraft) => void;
 }
 
-export function AgentClassConfig({ agentClassRef, kind, draft, onChange }: AgentClassConfigProps) {
+export function AgentClassConfig({
+  agentClassRef,
+  kind,
+  draft,
+  secretState,
+  onChange,
+}: AgentClassConfigProps) {
   const preset = presetProvider(draft.providerKey);
   const isOther = draft.providerKey === OTHER_PROVIDER_KEY;
+  const providerRef = isOther
+    ? draft.providerName.replace(/[^a-zA-Z0-9-]/g, '-') || '（未命名）'
+    : draft.providerKey;
+  const badgeText = secretState === 'valid' ? '有效 ✓'
+    : secretState === 'invalid' ? '无效，请重填'
+    : secretState === 'missing' ? '未配置，必填'
+    : '检查中…';
+  const needsKey = secretState === 'missing' || secretState === 'invalid';
 
   const selectProvider = (key: string) => {
     if (key === OTHER_PROVIDER_KEY) {
@@ -85,18 +103,27 @@ export function AgentClassConfig({ agentClassRef, kind, draft, onChange }: Agent
               placeholder="https://api.example.com/v1"
             />
           </div>
-          <div className="form-field">
-            <span className="field-label">API Key</span>
-            <input
-              className="text-input"
-              type="password"
-              value={draft.apiKey}
-              onChange={event => onChange({ ...draft, apiKey: event.target.value })}
-              placeholder="sk-..."
-            />
-          </div>
         </>
       )}
+
+      <div className="form-field">
+        <span className="field-label">
+          API Key
+          <span className={`secret-badge${needsKey ? ' secret-missing' : ''}${secretState === 'valid' ? ' secret-ok' : ''}`}>{badgeText}</span>
+        </span>
+        <input
+          className="text-input"
+          type="password"
+          value={draft.apiKey}
+          onChange={event => onChange({ ...draft, apiKey: event.target.value })}
+          placeholder={secretState === 'valid'
+            ? `已配置且有效，留空保持现有 Key（${providerRef}）`
+            : needsKey
+              ? `请填写 ${providerRef} 的 API Key（激活前必须）`
+              : `API Key（${providerRef}）`}
+          autoComplete="off"
+        />
+      </div>
     </div>
   );
 }

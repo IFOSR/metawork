@@ -59,6 +59,10 @@ export interface ConfigQuery {
   activate(baseRevisionId: string, config: unknown): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
   writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
+  /** 查询各 provider 的 secret 是否已配置。 */
+  getSecretStatus(providerRefs: string[]): Promise<Record<string, boolean>>;
+  /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
+  verifySecret(providerRef: string): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
 }
 
 export type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
@@ -534,6 +538,26 @@ export class ManagementServer {
         200,
         this.withRuntimeRevision(await this.deps.configQuery.rollback(body.targetRevisionId)),
       );
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/secrets/status') {
+      const refs = (url.searchParams.get('providers') ?? '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean)
+        .slice(0, 64);
+      this.sendJson(response, 200, await this.deps.configQuery.getSecretStatus(refs));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/secrets/verify') {
+      const body = await readRequestBody(request);
+      if (!body.providerRef) {
+        this.sendJson(response, 400, { error: 'providerRef is required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.verifySecret(body.providerRef));
       return;
     }
 

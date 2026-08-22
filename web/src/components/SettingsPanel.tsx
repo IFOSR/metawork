@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { ActivateResult } from '../api/types';
-import { AgentClassConfig, type AgentClassConfigDraft } from './AgentClassConfig';
+import { AgentClassConfig, type AgentClassConfigDraft, type SecretState } from './AgentClassConfig';
 import {
   OTHER_PROVIDER_KEY,
   presetProvider,
@@ -52,6 +52,52 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
   const [result, setResult] = useState<ActivateResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [secretStates, setSecretStates] = useState<Record<string, SecretState>>({});
+
+  // 收集 draft 中引用的全部 provider：先查存在性，再对已配置的做真实 API 校验。
+  useEffect(() => {
+    if (!http || !draft) return;
+    const providerRefs = new Set<string>();
+    for (const entry of Object.values(draft)) {
+      const preset = presetProvider(entry.providerKey);
+      providerRefs.add(preset ? preset.key : sanitizeRef(entry.providerName));
+    }
+    if (providerRefs.size === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const existence = await http.getSecretStatus([...providerRefs]);
+        const next: Record<string, SecretState> = {};
+        for (const ref of providerRefs) {
+          next[ref] = existence[ref] ? 'unknown' : 'missing';
+        }
+        setSecretStates(current => ({ ...current, ...next }));
+        // 对已存在的密钥逐个验证有效性（调 Provider /models）。
+        await Promise.all([...providerRefs].map(async ref => {
+          if (next[ref] !== 'unknown') return;
+          try {
+            const verification = await http.verifySecret(ref);
+            if (cancelled) return;
+            setSecretStates(current => ({
+              ...current,
+              [ref]: verification.valid === true ? 'valid'
+                : verification.valid === false ? 'invalid'
+                : 'unknown',
+            }));
+          } catch {
+            if (!cancelled) {
+              setSecretStates(current => ({ ...current, [ref]: 'unknown' }));
+            }
+          }
+        }));
+      } catch {
+        if (!cancelled) setSecretStates({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [http, draft]);
 
   useEffect(() => {
     if (!http) return;
@@ -65,6 +111,20 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
 
   const activate = async () => {
     if (!http || !revisionId || !draft) return;
+    // 前置校验：secret 缺失/无效且未填写新 Key 的 provider 直接拦截，避免激活失败。
+    const missing: string[] = [];
+    for (const entry of Object.values(draft)) {
+      const preset = presetProvider(entry.providerKey);
+      const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
+      const state = secretStates[providerRef];
+      if (!entry.apiKey && (state === 'missing' || state === 'invalid')) missing.push(providerRef);
+    }
+    if (missing.length > 0) {
+      setResult(null);
+      setLoadError(`以下 Provider 的 API Key 缺失或无效，请在对应卡片填写后再激活：${missing.join('、')}`);
+      return;
+    }
+    setLoadError(null);
     setLoading(true);
     setResult(null);
     try {
@@ -81,9 +141,10 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
         const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
         const baseUrl = preset ? preset.baseUrl : entry.baseUrl;
 
-        // 写凭证（Other 且用户输入了 key；预设 provider 的 key 已在安装期/SecretStore 就位）。
-        if (entry.providerKey === OTHER_PROVIDER_KEY && entry.apiKey) {
-          await http.writeSecret(providerRef, entry.apiKey);
+        // 任何 provider 输入了新 Key 都写入 SecretStore（覆盖旧值）。
+        if (entry.apiKey) {
+          await http.writeSecret(providerRef, entry.apiKey.trim());
+          setSecretStates(current => ({ ...current, [providerRef]: 'valid' }));
         }
 
         providers[providerRef] = {
@@ -153,15 +214,20 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
 
           {draft && (
             <div className="form-section">
-              {Object.entries(draft).map(([ref, entry]) => (
-                <AgentClassConfig
-                  key={ref}
-                  agentClassRef={ref}
-                  kind={ref === 'planner' ? 'planner' : 'executor'}
-                  draft={entry}
-                  onChange={next => setDraft(prev => prev ? { ...prev, [ref]: next } : prev)}
-                />
-              ))}
+              {Object.entries(draft).map(([ref, entry]) => {
+                const preset = presetProvider(entry.providerKey);
+                const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
+                return (
+                  <AgentClassConfig
+                    key={ref}
+                    agentClassRef={ref}
+                    kind={ref === 'planner' ? 'planner' : 'executor'}
+                    draft={entry}
+                    secretState={secretStates[providerRef] ?? 'unknown'}
+                    onChange={next => setDraft(prev => prev ? { ...prev, [ref]: next } : prev)}
+                  />
+                );
+              })}
 
               {result && (
                 <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>

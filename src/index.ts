@@ -163,6 +163,7 @@ async function startWebMode(options: {
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
     loginCredentials,
+    attachmentStore: options.attachmentStore,
   });
   await managementServer.start();
   const presentation = buildWebStartupPresentation(
@@ -830,6 +831,56 @@ async function main() {
             : `keychain:anyfusion/providers/${providerRef}` as const;
           await secretStore.put(reference, apiKey);
           return { apiKeyRef: reference };
+        },
+        getSecretStatus: async providerRefs => {
+          const status: Record<string, boolean> = {};
+          for (const providerRef of providerRefs) {
+            const reference = secretStore instanceof FileSecretStore
+              ? `file-secret:anyfusion/providers/${providerRef}` as const
+              : `keychain:anyfusion/providers/${providerRef}` as const;
+            try {
+              status[providerRef] = (await secretStore.get(reference)).trim().length > 0;
+            } catch {
+              status[providerRef] = false;
+            }
+          }
+          return status;
+        },
+        verifySecret: async providerRef => {
+          const reference = secretStore instanceof FileSecretStore
+            ? `file-secret:anyfusion/providers/${providerRef}` as const
+            : `keychain:anyfusion/providers/${providerRef}` as const;
+          let apiKey: string;
+          try {
+            apiKey = (await secretStore.get(reference)).trim();
+          } catch {
+            return { configured: false, valid: null };
+          }
+          if (!apiKey) return { configured: false, valid: null };
+          let baseUrl = '';
+          try {
+            const active = await configurationService.getActiveSnapshot();
+            const config = active.config as { providers?: Record<string, { baseUrl?: string }> };
+            baseUrl = String(config.providers?.[providerRef]?.baseUrl ?? '');
+          } catch {
+            baseUrl = '';
+          }
+          if (!baseUrl) return { configured: true, valid: null, detail: 'provider baseUrl unknown' };
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8_000);
+            const response = await fetch(`${baseUrl.replace(/\/+$/u, '')}/models`, {
+              headers: { Authorization: `Bearer ${apiKey}` },
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+            if (response.status === 401 || response.status === 403) {
+              return { configured: true, valid: false, detail: `HTTP ${response.status}` };
+            }
+            return { configured: true, valid: response.ok, detail: response.ok ? undefined : `HTTP ${response.status}` };
+          } catch (error) {
+            return { configured: true, valid: null, detail: `network: ${(error as Error).message.slice(0, 120)}` };
+          }
         },
       },
     });
