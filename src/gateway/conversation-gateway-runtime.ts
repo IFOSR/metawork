@@ -16,6 +16,8 @@ import {
 } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import type { FileAttachmentStore } from '../storage/file-attachment-store.js';
+import type { PlannerImageAttachment } from '../planning/planning-types.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export interface ConversationGatewayRuntimeDeps {
@@ -25,6 +27,8 @@ export interface ConversationGatewayRuntimeDeps {
   readonly conversationFactory: (conversationId: string) => ConversationSession;
   readonly journal: EventJournal;
   readonly subscriptions: GatewaySubscriptions;
+  /** 会话附件存储；提供后 user_message 的附件引用会解析为 Planner 多模态图片。 */
+  readonly attachments?: FileAttachmentStore;
   readonly now?: () => string;
   readonly createId?: (prefix: string) => string;
 }
@@ -282,12 +286,17 @@ export class ConversationGatewayRuntime {
         'turn_started',
         { commandKind: mailboxCommand.command.kind },
       );
+      const images = await this.resolvePlannerImages(
+        conversation.conversationId,
+        mailboxCommand.command,
+      );
       await conversation.executeGatewayCommand(
         mailboxCommand.command,
         {
           awaitAsyncWork: true,
           rethrowErrors: true,
           interactionTurnId: turnId,
+          ...(images && images.length > 0 ? { images } : {}),
         },
       );
       const lines = assistantOutputLines(
@@ -486,6 +495,32 @@ export class ConversationGatewayRuntime {
       : await appendSequentially(this.deps.journal, envelopes);
     for (const event of appended) this.deps.subscriptions.publish(event);
     return appended;
+  }
+
+  /** 把 user_message 携带的图片附件引用解析为 Planner 多模态 images。 */
+  private async resolvePlannerImages(
+    conversationId: string,
+    command: GatewayCommand,
+  ): Promise<PlannerImageAttachment[] | undefined> {
+    const store = this.deps.attachments;
+    if (!store || command.kind !== 'user_message' || command.attachments.length === 0) {
+      return undefined;
+    }
+    const images: PlannerImageAttachment[] = [];
+    for (const reference of command.attachments) {
+      try {
+        const resolved = await store.readAttachment(conversationId, reference.attachmentId);
+        if (!resolved || resolved.metadata.kind !== 'image') continue;
+        images.push({
+          name: resolved.metadata.name,
+          mimeType: resolved.metadata.mime,
+          data: resolved.bytes.toString('base64'),
+        });
+      } catch {
+        // 单个附件解析失败不阻塞消息；文本清单中仍有路径可循。
+      }
+    }
+    return images.length > 0 ? images : undefined;
   }
 
   private id(prefix: string): string {

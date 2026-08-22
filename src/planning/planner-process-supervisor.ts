@@ -366,7 +366,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         );
       };
       const sendPrompt = () => {
-        proc.stdin?.write(`${JSON.stringify({ id: requestId, type: 'prompt', message: prompt })}\n`);
+        const images = context.images?.map(image => ({
+          type: 'image' as const,
+          data: image.data,
+          mimeType: image.mimeType,
+        }));
+        proc.stdin?.write(`${JSON.stringify({
+          id: requestId,
+          type: 'prompt',
+          message: prompt,
+          ...(images && images.length > 0 ? { images } : {}),
+        })}\n`);
       };
       const acceptLine = (line: string) => {
         if (!line.trim()) return;

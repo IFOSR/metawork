@@ -22,6 +22,7 @@ import {
 } from '../../src/session/conversation-input-mailbox.js';
 import { ConversationRegistry } from '../../src/session/conversation-registry.js';
 import type { ConversationSession } from '../../src/session/conversation-session.js';
+import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 
 const roots: string[] = [];
 
@@ -556,6 +557,7 @@ function createFixture(
 
 class FakeConversationSession {
   readonly output: string[] = [];
+  readonly lastExecuteOptions: Array<Record<string, unknown>> = [];
   readonly resultDeliveries: Array<{
     resultId: string;
     content: string;
@@ -582,8 +584,9 @@ class FakeConversationSession {
 
   async executeGatewayCommand(
     command: GatewayCommand,
-    options: { interactionTurnId?: string } = {},
+    options: { interactionTurnId?: string; images?: unknown } = {},
   ): Promise<void> {
+    this.lastExecuteOptions.push({ ...options });
     this.turnIds.push(options.interactionTurnId ?? null);
     await this.execute(command);
   }
@@ -616,6 +619,79 @@ class FakeConversationSession {
 function userMessage(text: string): GatewayCommand {
   return { kind: 'user_message', text, attachments: [] };
 }
+
+it('resolves image attachment refs into planner multimodal images', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'anyfusion-gw-attachments-'));
+  try {
+    const store = new FileAttachmentStore(join(root, 'attachments'));
+    await store.initialize();
+    const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const image = await store.saveAttachment({
+      sessionId: 'conv_1',
+      name: 'chart.png',
+      bytes: pngMagic,
+    });
+    const doc = await store.saveAttachment({
+      sessionId: 'conv_1',
+      name: 'notes.md',
+      bytes: Buffer.from('text content', 'utf8'),
+    });
+
+    const root2 = mkdtempSync(join(tmpdir(), 'anyfusion-gw-attachments-sessions-'));
+    roots.push(root2);
+    const journal = new FileEventJournal(root2);
+    const subscriptions = new GatewaySubscriptions();
+    const conversations = new ConversationRegistry();
+    const createdSessions: FakeConversationSession[] = [];
+    const turnIds: Array<string | null> = [];
+    const runtime = new ConversationGatewayRuntime({
+      accountId: 'local-default',
+      registry: {
+        getOrActivate: async () => ({ accountId: 'local-default' }) as AccountRuntimeHandle,
+        getIfLoaded: () => null,
+      } as unknown as RuntimeRegistry,
+      conversations,
+      conversationFactory: conversationId => {
+        let session!: FakeConversationSession;
+        session = new FakeConversationSession(
+          conversationId,
+          async (command, session_) => {
+            void command;
+            void session_;
+          },
+          turnIds,
+        );
+        createdSessions.push(session);
+        return session as unknown as ConversationSession;
+      },
+      journal,
+      subscriptions,
+      attachments: store,
+      createId: prefix => `${prefix}_${Math.random().toString(36).slice(2)}`,
+    });
+
+    const receipt = await runtime.submit('conv_1', 'req_1', 'idem_1', {
+      kind: 'user_message',
+      text: '看图分析',
+      attachments: [
+        { attachmentId: image.attachmentId, kind: 'image' },
+        { attachmentId: doc.attachmentId, kind: 'text' },
+        { attachmentId: 'att_missing', kind: 'image' },
+      ],
+    });
+    if ('completion' in receipt) await receipt.completion;
+
+    // 图片被解析为多模态 images（文本附件不进入 images），缺失引用被忽略。
+    expect(createdSessions).toHaveLength(1);
+    const options = createdSessions[0]!.lastExecuteOptions.at(-1) ?? {};
+    const images = options.images as Array<{ name: string; mimeType: string; data: string }>;
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({ name: 'chart.png', mimeType: 'image/png' });
+    expect(Buffer.from(images[0]!.data, 'base64').subarray(0, 8)).toEqual(pngMagic);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function commandText(command: GatewayCommand): string {
   return 'text' in command ? command.text : command.kind;

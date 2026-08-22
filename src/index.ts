@@ -589,6 +589,7 @@ async function main() {
     conversationFactory: buildConversationSession,
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
+    attachments: webAttachmentStore,
   });
   const clientGateway = new ClientGateway({
     authenticator: {

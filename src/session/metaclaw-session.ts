@@ -72,7 +72,11 @@ import {
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
-import type { PlanningAgentPlan, PlanningContext } from '../planning/planning-types.js';
+import type {
+  PlanningAgentPlan,
+  PlanningContext,
+  PlannerImageAttachment,
+} from '../planning/planning-types.js';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -498,7 +502,8 @@ export class MetaclawSession {
     this.inputController = new InputController({
       appendUserInput: (input: string) => this.appendUserInput(input),
       handleCommand: (input: string) => this.handleCommand(input),
-      handleNaturalLanguageInput: (input: string) => this.handleNaturalLanguageInput(input),
+      handleNaturalLanguageInput: (input: string, images?: PlannerImageAttachment[]) =>
+        this.handleNaturalLanguageInput(input, images),
       waitForAsyncWork: () => this.waitForAsyncWork(),
       handleSubmitError: (error: unknown) => this.appendOutput(`错误: ${(error as Error).message}`),
     });
@@ -1489,10 +1494,11 @@ export class MetaclawSession {
     }
   }
 
-  private buildPlanningContext(userInput: string): PlanningContext {
+  private buildPlanningContext(userInput: string, images?: PlannerImageAttachment[]): PlanningContext {
     const pendingPermission = this.permissionRepository.findOldestPending();
     return this.planningContextBuilder.build({
       userInput,
+      images,
       pendingAuthorizationRequest: pendingPermission ? {
         requestId: pendingPermission.request.id,
         taskId: pendingPermission.request.taskId,
@@ -1587,7 +1593,10 @@ export class MetaclawSession {
     };
   }
 
-  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+  private async handlePlanningKernelDecision(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+  ): Promise<boolean> {
     const turnId = `turn_${generateInteractionId()}`;
     this.interactionTraceStream.beginTurn({ turnId, userInput });
     this.interactionTraceStream.append({
@@ -1603,7 +1612,7 @@ export class MetaclawSession {
       eventKey: 'planner',
     });
     this.appendOutput('【MetaClaw｜理解用户请求】');
-    const context = this.buildPlanningContext(userInput);
+    const context = this.buildPlanningContext(userInput, images);
     this.activePlannerRuns += 1;
     this.notify();
     let result: PlannerProposalResult;
@@ -2479,8 +2488,11 @@ export class MetaclawSession {
     };
   }
 
-  private async handleNaturalLanguageInput(userInput: string): Promise<void> {
-    if (await this.handlePlanningKernelDecision(userInput)) {
+  private async handleNaturalLanguageInput(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+  ): Promise<void> {
+    if (await this.handlePlanningKernelDecision(userInput, images)) {
       return;
     }
 

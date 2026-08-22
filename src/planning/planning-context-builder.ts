@@ -16,10 +16,12 @@ export class PlanningContextBuilder {
 
   build(input: {
     userInput: string;
+    images?: PlanningContext['images'];
     pendingAuthorizationRequest?: PlanningContext['pendingAuthorizationRequest'];
   }): PlanningContext {
     return {
       userInput: input.userInput,
+      ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
       request: {
         sessionId: this.deps.sessionId,
         source: this.deps.requestSource,

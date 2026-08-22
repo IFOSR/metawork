@@ -144,8 +144,8 @@ export class WebGatewaySessionRuntime {
         const excerpt = buildTextExcerpt(resolved.bytes, Math.max(1_000, budget));
         if (excerpt) section = `${header}\n   文本摘录（前 64 行）:\n${excerpt}`;
       }
-      // 图片：MVP 阶段 Planner 无视觉通道，降级为路径引用；
-      // Executor 在工作区可通过该路径读取原图。
+      // 图片：内容已随消息以多模态 images 通道原生提供给 Planner；
+      // 此处保留路径，供 Executor 在工作区读取原图。
       sections.push(section);
       budget -= Buffer.byteLength(section, 'utf8');
       if (budget <= 0) break;

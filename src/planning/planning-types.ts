@@ -61,8 +61,19 @@ export interface PlanningAgentPlan {
   source: string;
 }
 
+/** 随用户输入提交给 Planner 的多模态图片（base64，Pi RPC images 协议）。 */
+export interface PlannerImageAttachment {
+  /** 原始文件名，供 Planner 在提案中引用。 */
+  name: string;
+  mimeType: string;
+  /** base64 编码的图片内容。 */
+  data: string;
+}
+
 export interface PlanningContext {
   userInput: string;
+  /** 多模态图片附件；Planner 进程以 RPC images 通道原生消费。 */
+  images?: PlannerImageAttachment[];
   request: {
     sessionId: string;
     source: string;
