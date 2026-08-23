@@ -108,7 +108,7 @@ export class WebGatewaySessionRuntime {
     this.pendingInputs.set(requestId, text);
     const command: GatewayCommand = effectiveText.startsWith('/')
       ? { kind: 'slash_command', text: effectiveText }
-      : { kind: 'user_message', text: effectiveText, attachments: [] };
+      : { kind: 'user_message', text: effectiveText, attachments };
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 1,
       requestId,

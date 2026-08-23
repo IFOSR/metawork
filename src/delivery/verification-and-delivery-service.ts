@@ -269,7 +269,7 @@ export class VerificationAndDeliveryService {
     }
     const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
     const lines = [
-      'MetaClaw 后台任务已完成',
+      'MetaWork 后台任务已完成',
       '',
       `任务：#${input.taskId} ${input.title}`,
       `恢复方式：${formatExecutionModeText(input.executionMode)}`,
@@ -440,7 +440,7 @@ function formatBlockedRecoveryCompletedText(input: TaskCompletionDeliveryInput):
   const summary = input.summary.trim() || firstNonEmptyLine(input.output) || '任务已完成';
   const recoveryTrigger = input.recoveryTrigger;
   const lines = [
-    'MetaClaw 旧阻塞任务已完成',
+    'MetaWork 旧阻塞任务已完成',
     '',
     `任务：#${input.taskId} ${input.title}`,
     `触发方式：${formatRecoveryTriggerText(recoveryTrigger, input.origin)}`,

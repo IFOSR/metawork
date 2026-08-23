@@ -1,4 +1,5 @@
 import type { InteractionTraceEvent } from '../api/types';
+import { MarkdownContent } from './MarkdownContent';
 
 const ACTOR: Record<InteractionTraceEvent['actor'], string> = {
   user: 'USER',
@@ -26,6 +27,9 @@ export function ExecutionStep({
         </span>
         <time>{formatTime(event.occurredAt)}</time>
       </summary>
+      <div className="step-body">
+        <MarkdownContent value={event.summary} />
+      </div>
       {Object.keys(event.details).length > 0 && (
         <dl className="step-details">
           {Object.entries(event.details).map(([key, value]) => (

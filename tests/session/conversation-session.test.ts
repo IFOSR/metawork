@@ -5,6 +5,7 @@ import { ConversationSession } from '../../src/session/conversation-session.js';
 import { InteractionTraceStream } from '../../src/session/interaction-trace-stream.js';
 import type { ConversationRuntimePort } from '../../src/session/conversation-runtime-port.js';
 import type { PlannerTuiPermissionRequest } from '../../src/session/session-types.js';
+import type { PlanningContext } from '../../src/planning/planning-types.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -296,6 +297,63 @@ describe('ConversationSession', () => {
         expect.objectContaining({ kind: 'proposal_transport_uncertain' }),
       ]),
     });
+  });
+
+  it('passes Gateway image attachments into the Planner context', async () => {
+    let receivedContext: PlanningContext | null = null;
+    const session = new ConversationSession({
+      conversationId: 'conv_images',
+      plannerSessionId: 'planner_images',
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async (context) => {
+            receivedContext = context;
+            return {
+              status: 'transport_uncertain',
+              turnId: 'turn_images',
+              submissionId: 'submission_images',
+              retryableByReplay: true,
+              message: 'stop after context capture',
+            };
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      planningContextBuilder: {
+        build: (input: {
+          userInput: string;
+          images?: PlanningContext['images'];
+        }) => ({
+          userInput: input.userInput,
+          images: input.images,
+          request: { sessionId: 'planner_images', source: 'gateway' },
+          pendingAuthorizationRequest: null,
+          configuration: {
+            revisionId: 'revision-test',
+            contentHash: 'hash',
+            models: [],
+            routingCatalog: {
+              configurationRevision: 'revision-test',
+              agentClasses: [],
+            },
+          },
+          timeoutMs: 1_000,
+        }),
+      } as never,
+    });
+
+    const images = [{
+      name: 'screenshot.jpg',
+      mimeType: 'image/jpeg',
+      data: 'base64-image-data',
+    }];
+
+    await session.executeGatewayCommand(
+      { kind: 'user_message', text: '请分析这张图' },
+      { images, rethrowErrors: false },
+    );
+
+    expect(receivedContext?.images).toEqual(images);
   });
 });
 

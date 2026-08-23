@@ -28,7 +28,7 @@ import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import type { PlanningContext } from '../planning/planning-types.js';
+import type { PlannerImageAttachment, PlanningContext } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
 import {
   createPlannerProposalSubmissionId,
@@ -151,7 +151,7 @@ export class ConversationSession {
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
       handleCommand: input => this.handleCommand(input),
-      handleNaturalLanguageInput: input => this.handleNaturalLanguageInput(input),
+      handleNaturalLanguageInput: (input, images) => this.handleNaturalLanguageInput(input, images),
       waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
       handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
     });
@@ -290,13 +290,20 @@ export class ConversationSession {
       actor: 'kernel',
       kind: 'kernel_decision',
       status: 'completed',
-      title: `Kernel decision: ${decision.action.type}`,
-      summary: decision.reason,
+      title: decision.action.type === 'request_clarification'
+        ? '需要补充信息'
+        : `Kernel decision: ${decision.action.type}`,
+      summary: decision.action.type === 'request_clarification'
+        ? decision.action.question
+        : decision.reason,
       details: {
         decisionId: decision.id,
         action: decision.action.type,
         eventId: decision.eventId,
         configurationRevision: decision.configurationRevision,
+        ...(decision.action.type === 'request_clarification'
+          ? { question: decision.action.question }
+          : {}),
       },
       eventKey: decision.id,
       taskId: 'taskId' in decision.action && typeof decision.action.taskId === 'string'
@@ -338,11 +345,15 @@ export class ConversationSession {
     await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
   }
 
-  buildPlanningContext(userInput: string): PlanningContext | null {
+  buildPlanningContext(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+  ): PlanningContext | null {
     if (!this.deps.planningContextBuilder) return null;
     const pendingPermission = this.deps.runtimePort.queries.findOldestPendingPermission();
     return this.deps.planningContextBuilder.build({
       userInput,
+      ...(images && images.length > 0 ? { images } : {}),
       pendingAuthorizationRequest: pendingPermission
         ? {
             requestId: pendingPermission.request.id,
@@ -388,8 +399,11 @@ export class ConversationSession {
     };
   }
 
-  async handleNaturalLanguageInput(userInput: string): Promise<void> {
-    const handled = await this.handlePlanningKernelDecision(userInput);
+  async handleNaturalLanguageInput(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+  ): Promise<void> {
+    const handled = await this.handlePlanningKernelDecision(userInput, images);
     if (handled) return;
     this.appendOutput(
       '-> ControlKernel did not produce a runtime action.',
@@ -397,10 +411,13 @@ export class ConversationSession {
     );
   }
 
-  private async handlePlanningKernelDecision(userInput: string): Promise<boolean> {
+  private async handlePlanningKernelDecision(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+  ): Promise<boolean> {
     const planningAgent = this.deps.runtimePort.planning;
     if (!planningAgent) return false;
-    const context = this.buildPlanningContext(userInput);
+    const context = this.buildPlanningContext(userInput, images);
     if (!context) return false;
     this.appendTrace({
       phase: 'planning',

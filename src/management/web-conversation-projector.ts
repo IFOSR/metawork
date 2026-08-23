@@ -230,6 +230,9 @@ function isAnswerLine(line: string, userInput: string): boolean {
   if (!normalized) return false;
   if (normalized === `> ${userInput}`) return false;
   if (normalized.startsWith('【MetaClaw｜')) return false;
+  if (normalized.startsWith('【MetaWork｜')) return false;
+  if (normalized.startsWith('MetaClaw:')) return false;
+  if (normalized.startsWith('MetaWork:')) return false;
   if (/^【Executor: .+｜派发准备】$/u.test(normalized)) return false;
   if (/^→ Executor: .+ 将处理该任务$/u.test(normalized)) return false;
   if (/^【Executor: .+｜最终结果｜#[^】]+】/u.test(normalized)) return false;

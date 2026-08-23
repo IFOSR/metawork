@@ -62,7 +62,10 @@ export interface ConfigQuery {
   /** 查询各 provider 的 secret 是否已配置。 */
   getSecretStatus(providerRefs: string[]): Promise<Record<string, boolean>>;
   /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
-  verifySecret(providerRef: string): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
+  verifySecret(
+    providerRef: string,
+    baseUrl?: string,
+  ): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
 }
 
 export type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
@@ -557,7 +560,11 @@ export class ManagementServer {
         this.sendJson(response, 400, { error: 'providerRef is required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.verifySecret(body.providerRef));
+      this.sendJson(
+        response,
+        200,
+        await this.deps.configQuery.verifySecret(body.providerRef, body.baseUrl),
+      );
       return;
     }
 
@@ -677,6 +684,7 @@ interface RequestBody {
   config?: unknown;
   targetRevisionId?: string;
   providerRef?: string;
+  baseUrl?: string;
   apiKey?: string;
   title?: string;
 }

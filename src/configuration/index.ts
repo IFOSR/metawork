@@ -79,6 +79,12 @@ export {
 } from './production-runtime-bindings.js';
 export { createProductionSecretStore } from './production-secret-store.js';
 export { createProductionConfigurationProbe } from './production-configuration-probe.js';
+export {
+  importLocalAgentCredentials,
+  importLocalAgentCredentialsForRefs,
+  type LocalAgentCredentialImportInput,
+  type LocalAgentCredentialImportResult,
+} from './local-agent-credentials.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   PlannerRuntimeEnvironmentResolverInput,

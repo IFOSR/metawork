@@ -1489,12 +1489,92 @@ select {
 }
 
 .step-copy small {
+  display: -webkit-box;
   overflow: hidden;
   margin-top: 3px;
   color: var(--text-dim);
   font-size: 11px;
   line-height: 1.45;
-  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.step-body {
+  margin: 0 10px 10px 94px;
+  padding: 9px 11px;
+  border-top: 1px solid #2b332c;
+  border-left: 2px solid #3e5845;
+  background: rgba(17, 21, 17, 0.68);
+}
+
+.step-body .markdown-content,
+.event-summary .markdown-content,
+.clarification-card .markdown-content {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.step-body .markdown-content > :first-child,
+.event-summary .markdown-content > :first-child,
+.clarification-card .markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.step-body .markdown-content > :last-child,
+.event-summary .markdown-content > :last-child,
+.clarification-card .markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.event-summary {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #2b352d;
+  border-radius: 8px;
+  background: rgba(18, 23, 19, 0.7);
+}
+
+.clarification-card {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid #75623a;
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(74, 59, 28, 0.42), rgba(25, 28, 20, 0.8));
+}
+
+.clarification-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #e2c37b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.step-body .markdown-content p,
+.event-summary .markdown-content p,
+.clarification-card .markdown-content p {
+  margin: 0.35em 0;
+}
+
+.step-body .markdown-content ul,
+.step-body .markdown-content ol,
+.event-summary .markdown-content ul,
+.event-summary .markdown-content ol,
+.clarification-card .markdown-content ul,
+.clarification-card .markdown-content ol {
+  margin: 0.45em 0;
+  padding-left: 1.35em;
+}
+
+.step-body .markdown-content blockquote,
+.event-summary .markdown-content blockquote,
+.clarification-card .markdown-content blockquote {
+  margin: 0.6em 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+  color: var(--text-dim);
 }
 
 .execution-step time {

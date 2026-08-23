@@ -124,15 +124,20 @@ describe('WebGatewaySessionRuntime', () => {
       });
 
       let capturedText = '';
+      let capturedAttachments: Array<{ attachmentId: string; kind: string }> = [];
       const gateway = {
         attachClient: async () => () => undefined,
         subscribe: () => () => undefined,
         replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
         submit: async (envelope: {
           requestId: string;
-          command?: { text?: string };
+          command?: {
+            text?: string;
+            attachments?: Array<{ attachmentId: string; kind: string }>;
+          };
         }) => {
           capturedText = envelope.command?.text ?? '';
+          capturedAttachments = envelope.command?.attachments ?? [];
           return {
             requestId: envelope.requestId,
             idempotencyKey: 'idem_1',
@@ -161,6 +166,10 @@ describe('WebGatewaySessionRuntime', () => {
       expect(capturedText).toContain('chart.png (image/png');
       expect(capturedText).toContain('notes.md (text/markdown');
       expect(capturedText).toContain('第一行内容');
+      expect(capturedAttachments).toEqual([
+        { attachmentId: image.attachmentId, kind: 'file' },
+        { attachmentId: doc.attachmentId, kind: 'file' },
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

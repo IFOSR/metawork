@@ -124,10 +124,13 @@ export class HttpClient {
     return this.request<Record<string, boolean>>(`/api/config/secrets/status?${params.toString()}`);
   }
 
-  verifySecret(providerRef: string): Promise<{ configured: boolean; valid: boolean | null; detail?: string }> {
+  verifySecret(
+    providerRef: string,
+    baseUrl?: string,
+  ): Promise<{ configured: boolean; valid: boolean | null; detail?: string }> {
     return this.request('/api/config/secrets/verify', {
       method: 'POST',
-      body: JSON.stringify({ providerRef }),
+      body: JSON.stringify({ providerRef, baseUrl }),
     });
   }
 }

@@ -350,6 +350,85 @@ describe('PlannerProcessSupervisor', () => {
     ]);
   });
 
+  it('accepts RPC message events that echo an image larger than 1 MiB', async () => {
+    const child = fakeProcess();
+    child.stdin.on('data', chunk => {
+      const command = JSON.parse(chunk.toString().trim()) as {
+        id: string;
+        type: string;
+      };
+      if (command.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: command.id,
+          data: { model: { provider: 'deepseek', id: 'deepseek-v4-pro' } },
+        })}\n`);
+        return;
+      }
+      if (command.type !== 'prompt') return;
+
+      const echoedImage = Buffer.alloc(900 * 1024, 0x5a).toString('base64');
+      child.stdout.write(`${JSON.stringify({
+        type: 'message_start',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请分析图片' },
+            { type: 'image', data: echoedImage, mimeType: 'image/jpeg' },
+          ],
+        },
+      })}\n`);
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: command.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-large-image',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-large-image', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-large-image',
+          toolName: 'submit_planning_proposal',
+          result: {
+            details: {
+              status: 'accepted',
+              turnId: 'turn-large-image',
+              submissionId: 'submission-large-image',
+              planId: 'plan-large-image',
+              outcome: 'proposal_validated',
+              displayText: 'validated',
+              taskId: null,
+              kernel: null,
+            },
+          },
+          isError: false,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-large-image-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-large-image-${process.pid}`),
+      expectedModel: { provider: 'deepseek', modelId: 'deepseek-v4-pro' },
+      spawn: (() => child as never) as never,
+    });
+
+    await expect(supervisor.run('请分析图片', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-large-image', source: 'gateway' },
+    } as never, 'kernel')).resolves.toMatchObject({
+      submittedPlan: { id: 'plan-large-image' },
+    });
+  });
+
   it('fails closed when the exact revision Planner home is unavailable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-missing-revision-'));
     const spawn = vi.fn();

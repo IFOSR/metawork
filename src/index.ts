@@ -1,8 +1,9 @@
 // CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
-import { dirname, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { mkdirSync, existsSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+import { homedir } from 'os';
 import { createDatabase } from './storage/database.js';
 import { TaskRepo } from './storage/task-repo.js';
 import { PreferenceRepo } from './storage/preference-repo.js';
@@ -26,9 +27,12 @@ import {
   createProductionRuntimeBindings,
   createProductionSecretStore,
   resolvePlannerRuntimeEnvironment,
+  importLocalAgentCredentials,
+  importLocalAgentCredentialsForRefs,
 } from './configuration/index.js';
 import { prepareProductionSecretStore } from './configuration/production-secret-store.js';
 import { FileSecretStore } from './configuration/file-secret-store.js';
+import type { SecretReference, SecretStore } from './configuration/secret-store.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { resolveAccountPaths } from './account/account-paths.js';
@@ -99,6 +103,31 @@ import { ensureActiveConfigurationRevision } from './storage/active-configuratio
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
   return { ok: false, code: result.code, activeRevisionId: result.activeRevisionId };
+}
+
+const LOCAL_AGENT_PROVIDER_REFS = ['code-cli', 'kimi', 'deepseek'] as const;
+
+function localAgentCredentialSources() {
+  return {
+    codexHomes: [join(homedir(), '.config', 'anyfusion', 'codex')],
+    piHomes: [join(homedir(), '.config', 'anyfusion', 'pi-home', '.pi')],
+    plannerHomes: [join(homedir(), '.config', 'anyfusion', 'planner')],
+  };
+}
+
+async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<void> {
+  const scheme = secretStore instanceof FileSecretStore ? 'file-secret' : 'keychain';
+  const providers: Record<string, SecretReference> = Object.fromEntries(
+    LOCAL_AGENT_PROVIDER_REFS.map(providerRef => [
+      providerRef,
+      `${scheme}:anyfusion/providers/${providerRef}` as SecretReference,
+    ]),
+  );
+  await importLocalAgentCredentialsForRefs({
+    ...localAgentCredentialSources(),
+    providers,
+    secretStore,
+  });
 }
 
 function openBrowser(url: string): void {
@@ -273,6 +302,12 @@ async function main() {
         .map(provider => provider.apiKeyRef),
     });
     await prepareProductionSecretStore(secretStore);
+    await preheatLocalAgentCredentials(secretStore);
+    await importLocalAgentCredentials({
+      ...localAgentCredentialSources(),
+      providers: activeSnapshot.config.providers,
+      secretStore,
+    });
     const configurationService = new ConfigurationService({
       repository: configurationRepository,
       renderer: new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime')),
@@ -348,6 +383,12 @@ async function main() {
       .map(provider => provider.apiKeyRef),
   });
   await prepareProductionSecretStore(secretStore);
+  await preheatLocalAgentCredentials(secretStore);
+  await importLocalAgentCredentials({
+    ...localAgentCredentialSources(),
+    providers: migratedSnapshot.config.providers,
+    secretStore,
+  });
   const renderer = new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime'));
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   const configurationService = new ConfigurationService({
@@ -833,6 +874,17 @@ async function main() {
           return { apiKeyRef: reference };
         },
         getSecretStatus: async providerRefs => {
+          const references = Object.fromEntries(providerRefs.map(providerRef => [
+            providerRef,
+            secretStore instanceof FileSecretStore
+              ? `file-secret:anyfusion/providers/${providerRef}` as const
+              : `keychain:anyfusion/providers/${providerRef}` as const,
+          ]));
+          await importLocalAgentCredentialsForRefs({
+            ...localAgentCredentialSources(),
+            providers: references,
+            secretStore,
+          });
           const status: Record<string, boolean> = {};
           for (const providerRef of providerRefs) {
             const reference = secretStore instanceof FileSecretStore
@@ -846,7 +898,7 @@ async function main() {
           }
           return status;
         },
-        verifySecret: async providerRef => {
+        verifySecret: async (providerRef, requestedBaseUrl) => {
           const reference = secretStore instanceof FileSecretStore
             ? `file-secret:anyfusion/providers/${providerRef}` as const
             : `keychain:anyfusion/providers/${providerRef}` as const;
@@ -857,11 +909,13 @@ async function main() {
             return { configured: false, valid: null };
           }
           if (!apiKey) return { configured: false, valid: null };
-          let baseUrl = '';
+          let baseUrl = requestedBaseUrl?.trim() ?? '';
           try {
-            const active = await configurationService.getActiveSnapshot();
-            const config = active.config as { providers?: Record<string, { baseUrl?: string }> };
-            baseUrl = String(config.providers?.[providerRef]?.baseUrl ?? '');
+            if (!baseUrl) {
+              const active = await configurationService.getActiveSnapshot();
+              const config = active.config as { providers?: Record<string, { baseUrl?: string }> };
+              baseUrl = String(config.providers?.[providerRef]?.baseUrl ?? '');
+            }
           } catch {
             baseUrl = '';
           }

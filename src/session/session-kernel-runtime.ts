@@ -55,7 +55,11 @@ export class SessionKernelRuntime {
         this.deps.callbacks.refreshRuntimeState();
         return null;
       case 'request_clarification':
-        this.deps.callbacks.appendOutput(`MetaClaw: ${decision.action.question}`);
+        this.deps.callbacks.appendOutput(
+          '## 需要补充信息',
+          '',
+          decision.action.question,
+        );
         this.deps.callbacks.refreshRuntimeState();
         return null;
       case 'deliver_direct_reply':

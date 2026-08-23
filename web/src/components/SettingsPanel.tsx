@@ -7,6 +7,10 @@ import {
   presetProvider,
   presetProviderByBaseUrl,
 } from '../preset-providers';
+import {
+  deriveSecretStates,
+  resolveProviderSecretReference,
+} from './provider-secret-state';
 
 interface SettingsPanelProps {
   http: HttpClient | null;
@@ -54,42 +58,35 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [secretStates, setSecretStates] = useState<Record<string, SecretState>>({});
 
-  // 收集 draft 中引用的全部 provider：先查存在性，再对已配置的做真实 API 校验。
+  // 收集 draft 中引用的全部 Provider；本机凭据存在即可复用，不用重复填写。
   useEffect(() => {
     if (!http || !draft) return;
-    const providerRefs = new Set<string>();
-    for (const entry of Object.values(draft)) {
+    const draftEntries = Object.entries(draft);
+    const providerRefsByAgent: Record<string, string> = {};
+    for (const [agentClassRef, entry] of draftEntries) {
       const preset = presetProvider(entry.providerKey);
-      providerRefs.add(preset ? preset.key : sanitizeRef(entry.providerName));
+      providerRefsByAgent[agentClassRef] = preset ? preset.key : sanitizeRef(entry.providerName);
     }
+    const providerRefs = new Set(Object.values(providerRefsByAgent));
     if (providerRefs.size === 0) return;
     let cancelled = false;
     void (async () => {
       try {
         const existence = await http.getSecretStatus([...providerRefs]);
+        if (cancelled) return;
+        const projected = deriveSecretStates(
+          draftEntries.map(([agentClassRef]) => agentClassRef),
+          providerRefsByAgent,
+          existence,
+        );
         const next: Record<string, SecretState> = {};
-        for (const ref of providerRefs) {
-          next[ref] = existence[ref] ? 'unknown' : 'missing';
+        for (const providerRef of providerRefs) {
+          const agentClassRef = draftEntries.find(
+            ([ref]) => providerRefsByAgent[ref] === providerRef,
+          )?.[0];
+          next[providerRef] = agentClassRef ? projected[agentClassRef] ?? 'unknown' : 'unknown';
         }
         setSecretStates(current => ({ ...current, ...next }));
-        // 对已存在的密钥逐个验证有效性（调 Provider /models）。
-        await Promise.all([...providerRefs].map(async ref => {
-          if (next[ref] !== 'unknown') return;
-          try {
-            const verification = await http.verifySecret(ref);
-            if (cancelled) return;
-            setSecretStates(current => ({
-              ...current,
-              [ref]: verification.valid === true ? 'valid'
-                : verification.valid === false ? 'invalid'
-                : 'unknown',
-            }));
-          } catch {
-            if (!cancelled) {
-              setSecretStates(current => ({ ...current, [ref]: 'unknown' }));
-            }
-          }
-        }));
       } catch {
         if (!cancelled) setSecretStates({});
       }
@@ -111,17 +108,17 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
 
   const activate = async () => {
     if (!http || !revisionId || !draft) return;
-    // 前置校验：secret 缺失/无效且未填写新 Key 的 provider 直接拦截，避免激活失败。
+    // 只有确实没有 SecretStore 凭据时才要求填写；网络探测不是激活前置条件。
     const missing: string[] = [];
     for (const entry of Object.values(draft)) {
       const preset = presetProvider(entry.providerKey);
       const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
       const state = secretStates[providerRef];
-      if (!entry.apiKey && (state === 'missing' || state === 'invalid')) missing.push(providerRef);
+      if (!entry.apiKey && state === 'missing') missing.push(providerRef);
     }
     if (missing.length > 0) {
       setResult(null);
-      setLoadError(`以下 Provider 的 API Key 缺失或无效，请在对应卡片填写后再激活：${missing.join('、')}`);
+      setLoadError(`以下 Provider 的 API Key 缺失，请在对应卡片填写后再激活：${missing.join('、')}`);
       return;
     }
     setLoadError(null);
@@ -131,6 +128,14 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
       const original = await http.getConfig();
       const originalConfig = original.config as Record<string, unknown>;
       const originalAgentClasses = (originalConfig.agentClasses ?? {}) as Record<string, Record<string, unknown>>;
+      const originalProviders = (originalConfig.providers ?? {}) as Record<string, {
+        baseUrl?: string;
+        apiKeyRef?: string;
+      }>;
+      const knownSecretReferences = Object.values(originalProviders)
+        .map(provider => provider.apiKeyRef)
+        .filter((reference): reference is string => typeof reference === 'string');
+      const writtenSecretReferences: Record<string, string> = {};
 
       const providers: Record<string, Record<string, unknown>> = {};
       const models: Record<string, Record<string, unknown>> = {};
@@ -143,14 +148,22 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
 
         // 任何 provider 输入了新 Key 都写入 SecretStore（覆盖旧值）。
         if (entry.apiKey) {
-          await http.writeSecret(providerRef, entry.apiKey.trim());
-          setSecretStates(current => ({ ...current, [providerRef]: 'valid' }));
+          const secret = await http.writeSecret(providerRef, entry.apiKey.trim());
+          writtenSecretReferences[providerRef] = secret.apiKeyRef;
+          setSecretStates(current => ({ ...current, [providerRef]: 'configured' }));
         }
 
+        const apiKeyRef = resolveProviderSecretReference(
+          providerRef,
+          baseUrl,
+          originalProviders,
+          writtenSecretReferences,
+          knownSecretReferences,
+        );
         providers[providerRef] = {
           protocol: 'openai-compatible',
           baseUrl,
-          apiKeyRef: `file-secret:anyfusion/providers/${providerRef}`,
+          apiKeyRef,
           region: 'international',
           enabled: true,
         };

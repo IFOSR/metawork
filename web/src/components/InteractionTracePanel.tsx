@@ -4,6 +4,7 @@ import type {
   InteractionTrace,
   InteractionTraceEvent,
 } from '../api/types';
+import { MarkdownContent } from './MarkdownContent';
 
 const PHASE_LABEL: Record<InteractionTraceEvent['phase'], string> = {
   intake: '接收',
@@ -103,7 +104,16 @@ export function InteractionTracePanel({
                     <time>{formatTime(event.occurredAt)}</time>
                   </div>
                   <h3>{event.title}</h3>
-                  <p>{event.summary}</p>
+                  <div className={event.kind === 'kernel_decision'
+                    && event.details.action === 'request_clarification'
+                    ? 'clarification-card'
+                    : 'event-summary'}>
+                    {event.kind === 'kernel_decision'
+                      && event.details.action === 'request_clarification' && (
+                        <span className="clarification-label">需要补充信息</span>
+                      )}
+                    <MarkdownContent value={event.summary} />
+                  </div>
                   {event.id === activeEventId && (
                     <span className="event-elapsed">
                       当前阶段 {formatDuration(nowMs - Date.parse(event.occurredAt))}
@@ -150,17 +160,31 @@ function DetailGrid({ details }: { details: Record<string, unknown> }) {
   return (
     <dl className="detail-grid">
       {authorizedBinding !== undefined && (
-        <><dt>authorizedBinding</dt><dd>{formatValue(authorizedBinding)}</dd></>
+        <div><dt>授权绑定</dt><dd>{formatValue(authorizedBinding)}</dd></div>
       )}
       {Object.entries(details).filter(([key]) => key !== 'authorizedBinding').map(([key, value]) => (
-        <div key={key}><dt>{key}</dt><dd>{formatValue(value)}</dd></div>
+        <div key={key}><dt>{formatKey(key)}</dt><dd>{formatValue(value)}</dd></div>
       ))}
     </dl>
   );
 }
 
 function formatValue(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value);
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatKey(key: string): string {
+  return ({
+    decisionId: '决策 ID',
+    action: '动作',
+    eventId: '事件 ID',
+    configurationRevision: '配置 revision',
+    question: '澄清问题',
+    subtaskId: 'Subtask ID',
+    fallbackOrder: '回退顺序',
+    routingRole: '路由角色',
+  } as Record<string, string>)[key] ?? key;
 }
 
 function formatTime(value: string): string {
