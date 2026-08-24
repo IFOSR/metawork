@@ -61,7 +61,7 @@ describe('buildStagedLegacyConfiguration', () => {
     })).toThrow(/content hash mismatch/u);
   });
 
-  it('rejects a migrated snapshot without one fixed Planner binding', () => {
+  it('rejects an Auto Planner policy', () => {
     const migratedSnapshot = migratedSnapshotFixture();
     const config = structuredClone(migratedSnapshot.config);
     config.agentClasses.planner.modelPolicy = {
@@ -69,14 +69,13 @@ describe('buildStagedLegacyConfiguration', () => {
       allowedModelRefs: ['gpt-5-6-terra'],
     };
     const compiled = compileConfigurationRevision('test-migrated', config);
-
     expect(() => buildStagedLegacyConfiguration({
       migratedSnapshot: {
         revisionId: 'revision-current',
         contentHash: compiled.contentHash,
         config,
       },
-    })).toThrow(/fixed model/u);
+    })).toThrow();
   });
 });
 

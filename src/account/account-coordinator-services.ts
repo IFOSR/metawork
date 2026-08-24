@@ -55,7 +55,7 @@ export function buildAccountCoordinatorServices(deps: {
     statusProjector: kernelExecutorStatusProjector,
     getConfigurationRevision: deps.getConfigurationRevision,
     probe: (name, configurationRevision, previousFailure) => {
-      const binding = deps.executorRegistry.bindingForAgentClass(name, configurationRevision);
+      const binding = deps.executorRegistry.probeBindingForAgentClass(name, configurationRevision);
       return binding
         ? deps.executionRuntime.probeExecutor(binding, previousFailure)
         : Promise.resolve({

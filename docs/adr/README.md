@@ -62,10 +62,15 @@ ADR-0032 governs result-first delivery and completion certification. It
 separates safe business-result delivery from completion metadata, Kernel
 certification, authorized downstream handoffs and safety disposition.
 
+ADR-0033 governs hot Provider/Model activation, AccountRuntime activation
+admission, concrete Planner/Executor Auto routing, configuration completion,
+and read-only Work Graph routing presentation.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, completion facts, and read-only DAG projection |
 | Account Runtime and unified client Gateway | [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | Account/Conversation/connection cardinality, account-scoped Runtime and Kernel ownership, client Gateway ingress/egress, identity mapping and account data isolation |
 | Result-first delivery and completion certification | [ADR-0032](0032-result-first-delivery-and-completion-certification.md) | Safe result delivery, Completion Protocol v4, Result Objects, edge-scoped references, partial results and completion certification separation |
 | Revisioned Configuration Control Plane | [ADR-0027](0027-configuration-control-plane-and-revision-authority.md) | Static configuration authority, immutable revision layout, generation-scoped revision pinning, projections, activation and one-way cutover |

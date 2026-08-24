@@ -70,14 +70,14 @@ function snapshot(): ConfigurationSnapshot {
       },
     },
     agentClasses: {
-      'planner-default': {
+      planner: {
         kind: 'planner',
         harnessRef: 'planner-process',
         modelPolicy: {
           mode: 'fixed',
           modelRef: 'planner',
         },
-        generatedRuntimeRef: 'planner-default',
+        generatedRuntimeRef: 'planner',
         enabled: true,
       },
       'codex-engineering': {
@@ -137,6 +137,7 @@ describe('configuration projections', () => {
     expect(view.routingCatalog.agentClasses.map(agentClass => agentClass.id)).toEqual([
       'codex-engineering',
     ]);
+    expect(view.planner?.modelPolicy).toEqual({ mode: 'fixed', modelRef: 'planner' });
     expect(view.models.map(model => model.id)).toEqual(['engineering', 'planner']);
     expect(serialized).not.toMatch(unsafeProjectionKeyPattern);
     expect(serialized).not.toMatch(hostPathPattern);

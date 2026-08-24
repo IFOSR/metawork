@@ -5,15 +5,17 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
+import type { WorkGraphPresentationProjection } from './work-graph-presentation-projector.js';
+import {
+  MAX_ATTACHMENT_IMAGE_BYTES,
+  type GatewayAttachmentStore,
+} from '../gateway/attachment-store-port.js';
+import type { ConfigurationRuntimeState } from '../configuration/configuration-runtime-coordinator.js';
+import type { ConfigurationCompletionResult } from '../configuration/configuration-completion-service.js';
 import { verifyLogin } from './login-credentials.js';
 import { LoginThrottle } from './web-auth.js';
 import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
-import {
-  AttachmentTooLargeError,
-  AttachmentTypeError,
-  FileAttachmentStore,
-} from '../storage/file-attachment-store.js';
 import type {
   ManagementWebSessionRuntime,
 } from './web-session-runtime-types.js';
@@ -28,6 +30,7 @@ export interface TaskSummary {
 export interface ExecutionQuery {
   listTasks(): TaskSummary[];
   projectTimeline(taskId: string): ExecutionTimeline | null;
+  projectWorkGraph?(taskId: string): WorkGraphPresentationProjection | null;
 }
 
 export interface ConfigSnapshotResponse {
@@ -35,6 +38,7 @@ export interface ConfigSnapshotResponse {
   runningRevisionId?: string;
   contentHash: string;
   config: unknown;
+  runtime?: ConfigurationRuntimeState;
 }
 
 export interface RevisionSummary {
@@ -56,7 +60,11 @@ export interface ConfigQuery {
   getActive(): Promise<ConfigSnapshotResponse>;
   listRevisions(): Promise<RevisionSummary[]>;
   getSnapshot(revisionId: string): Promise<ConfigSnapshotResponse | null>;
-  activate(baseRevisionId: string, config: unknown): Promise<ActivateResult>;
+  activate(
+    baseRevisionId: string,
+    config: unknown,
+    secrets?: Record<string, string>,
+  ): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
   writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
   /** 查询各 provider 的 secret 是否已配置。 */
@@ -66,6 +74,12 @@ export interface ConfigQuery {
     providerRef: string,
     baseUrl?: string,
   ): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
+  getCompletion?(): Promise<ConfigurationCompletionResult>;
+}
+
+export interface ConfigurationRuntimeStatusSource {
+  getState(): ConfigurationRuntimeState;
+  subscribe?(listener: (event: unknown) => void): () => void;
 }
 
 export type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
@@ -79,9 +93,10 @@ export interface ManagementServerDeps {
   webSocketAuthTimeoutMs?: number;
   sessionRuntime: ManagementWebSessionRuntime;
   /** 会话附件存储；未提供时上传端点返回 503。 */
-  attachmentStore?: FileAttachmentStore;
+  attachmentStore?: GatewayAttachmentStore;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
+  configurationRuntime?: ConfigurationRuntimeStatusSource;
   /** 账密登录凭据；未提供时登录端点返回 503。 */
   loginCredentials?: LoginCredentials;
   loginThrottle?: LoginThrottle;
@@ -103,6 +118,7 @@ export class ManagementServer {
   private readonly wsConnections = new Set<WebSocketConnection>();
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
   private sessionRuntimeUnsubscribe: (() => void) | null = null;
+  private configurationRuntimeUnsubscribe: (() => void) | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
 
@@ -115,6 +131,9 @@ export class ManagementServer {
     this.sessionRuntimeUnsubscribe = this.deps.sessionRuntime.subscribe(event => {
       this.broadcast(event);
     });
+    this.configurationRuntimeUnsubscribe = this.deps.configurationRuntime?.subscribe?.(
+      event => this.broadcast(event),
+    ) ?? null;
     const server = createServer((request, response) => {
       void this.handleRequest(request, response);
     });
@@ -149,6 +168,8 @@ export class ManagementServer {
     this.authenticatedWsConnections.clear();
     this.sessionRuntimeUnsubscribe?.();
     this.sessionRuntimeUnsubscribe = null;
+    this.configurationRuntimeUnsubscribe?.();
+    this.configurationRuntimeUnsubscribe = null;
     this.stopPromise = Promise.all([
       closeServer,
       this.deps.sessionRuntime.dispose(),
@@ -257,7 +278,7 @@ export class ManagementServer {
       this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
       return;
     }
-    const maxBytes = FileAttachmentStore.MAX_IMAGE_BYTES + 1;
+    const maxBytes = MAX_ATTACHMENT_IMAGE_BYTES + 1;
     const bytes = await readRawBody(request, maxBytes);
     if (bytes === null) {
       this.sendJson(response, 413, { error: 'attachment too large' });
@@ -267,15 +288,11 @@ export class ManagementServer {
       const metadata = await store.saveAttachment({ sessionId, name, bytes });
       this.sendJson(response, 201, metadata);
     } catch (error) {
-      if (error instanceof AttachmentTooLargeError) {
-        this.sendJson(response, 413, { error: error.message });
-        return;
-      }
-      if (error instanceof AttachmentTypeError) {
-        this.sendJson(response, 415, { error: error.message });
-        return;
-      }
-      throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /too large|size limit/iu.test(message)
+        ? 413
+        : /type|mime|image|text/iu.test(message) ? 415 : 400;
+      this.sendJson(response, status, { error: message });
     }
   }
 
@@ -490,11 +507,44 @@ export class ManagementServer {
       return;
     }
 
+    const workGraphMatch = /^\/api\/execution\/tasks\/([^/]+)\/work-graph$/u.exec(url.pathname);
+    if (request.method === 'GET' && workGraphMatch) {
+      const projection = this.deps.executionQuery.projectWorkGraph?.(
+        decodeURIComponent(workGraphMatch[1]!),
+      );
+      if (!projection) {
+        this.sendJson(response, 404, { error: 'work graph not found' });
+        return;
+      }
+      this.sendJson(response, 200, projection);
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/config') {
       this.sendJson(response, 200, {
         ...await this.deps.configQuery.getActive(),
         runningRevisionId: this.deps.runningRevisionId,
+        ...(this.deps.configurationRuntime?.getState() ?? {}),
       });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/activation-status') {
+      const runtime = this.deps.configurationRuntime?.getState();
+      if (!runtime) {
+        this.sendJson(response, 503, { error: 'configuration runtime status unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, runtime);
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/completion') {
+      if (!this.deps.configQuery.getCompletion) {
+        this.sendJson(response, 503, { error: 'configuration completion unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.getCompletion());
       return;
     }
 
@@ -520,13 +570,19 @@ export class ManagementServer {
         this.sendJson(response, 400, { error: 'baseRevisionId and config are required' });
         return;
       }
-      this.sendJson(
-        response,
-        200,
-        this.withRuntimeRevision(
-          await this.deps.configQuery.activate(body.baseRevisionId, body.config),
-        ),
+      const secrets = isRecord(body.secrets)
+        ? Object.fromEntries(Object.entries(body.secrets).filter(
+          ([providerRef, value]) => isSafeProviderRef(providerRef) && typeof value === 'string',
+        ))
+        : undefined;
+      const result = this.withRuntimeRevision(
+        await this.deps.configQuery.activate(body.baseRevisionId, body.config, secrets),
       );
+      const status = result.code === 'runtime_busy' || result.code === 'restart_required'
+        || result.code === 'revision_conflict' ? 409
+          : result.code === 'invalid_configuration' ? 422
+            : 200;
+      this.sendJson(response, status, result);
       return;
     }
 
@@ -650,14 +706,16 @@ export class ManagementServer {
   }
 
   private withRuntimeRevision(result: ActivateResult): ActivateResult {
+    const runtime = this.deps.configurationRuntime?.getState();
     const activeRevisionId = result.ok
-      ? result.revisionId ?? this.deps.runningRevisionId
-      : result.activeRevisionId ?? this.deps.runningRevisionId;
+      ? result.revisionId ?? runtime?.activeRevisionId ?? this.deps.runningRevisionId
+      : result.activeRevisionId ?? runtime?.activeRevisionId ?? this.deps.runningRevisionId;
+    const runtimeRevisionId = runtime?.runtimeRevisionId ?? this.deps.runningRevisionId;
     return {
       ...result,
       activeRevisionId,
-      runningRevisionId: this.deps.runningRevisionId,
-      restartRequired: activeRevisionId !== this.deps.runningRevisionId,
+      runningRevisionId: runtimeRevisionId,
+      restartRequired: result.restartRequired ?? activeRevisionId !== runtimeRevisionId,
     };
   }
 
@@ -686,7 +744,16 @@ interface RequestBody {
   providerRef?: string;
   baseUrl?: string;
   apiKey?: string;
+  secrets?: Record<string, string>;
   title?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSafeProviderRef(value: string): boolean {
+  return /^[a-z][a-z0-9-]{0,63}$/u.test(value);
 }
 
 interface WebSocketDiagnostic {

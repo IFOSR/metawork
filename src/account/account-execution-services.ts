@@ -33,13 +33,23 @@ export interface AccountExecutionServices {
 export function buildAccountExecutionServices(deps: {
   stagedConfiguration: StagedLegacyConfiguration;
   getRuntimeBinding: RuntimeBindingResolver;
+  getRuntimeConfiguration?: (
+    revisionId: string,
+  ) => ReturnType<typeof buildRuntimeConfigurationView> | null;
+  getActiveRuntimeConfiguration?: () => ReturnType<typeof buildRuntimeConfigurationView>;
   probeCommand?: ProbeCommandRunner;
   attemptExecutionBackend: AttemptExecutionBackend;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
   attemptsRoot: string;
   generatedRuntimeRoot?: string;
 }): AccountExecutionServices {
-  const runtimeConfiguration = buildRuntimeConfigurationView(deps.stagedConfiguration.snapshot);
+  const initialRuntimeConfiguration = buildRuntimeConfigurationView(deps.stagedConfiguration.snapshot);
+  const getRuntimeConfiguration = deps.getRuntimeConfiguration
+    ?? (revisionId => revisionId === initialRuntimeConfiguration.revisionId
+      ? initialRuntimeConfiguration
+      : null);
+  const getActiveRuntimeConfiguration = deps.getActiveRuntimeConfiguration
+    ?? (() => initialRuntimeConfiguration);
   const attemptsRoot = deps.attemptsRoot;
   const driverRegistry = new HarnessDriverRegistry();
 
@@ -89,12 +99,8 @@ export function buildAccountExecutionServices(deps: {
 
   const executorRegistry = new ExecutorRegistry({
     driverRegistry,
-    getRuntimeConfiguration: revisionId => (
-      revisionId === runtimeConfiguration.revisionId
-        ? runtimeConfiguration
-        : null
-    ),
-    getActiveRuntimeConfiguration: () => runtimeConfiguration,
+    getRuntimeConfiguration,
+    getActiveRuntimeConfiguration,
     getRuntimeBinding: deps.getRuntimeBinding,
   });
   const executionRuntime = new ExecutionRuntime(executorRegistry);

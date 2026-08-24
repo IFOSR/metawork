@@ -174,6 +174,21 @@ export class FileConfigurationRepository {
     await syncDirectory(this.rootPath);
   }
 
+  /**
+   * Restores an already-persisted revision through the same journaled pointer
+   * cutover used by normal activation. No revision contents are rewritten.
+   */
+  async restoreActiveRevision(
+    revisionId: string,
+    expectedActiveRevisionId: string | null,
+  ): Promise<void> {
+    await this.activateRevision(
+      revisionId,
+      expectedActiveRevisionId,
+      `rollback-${randomUUID()}`,
+    );
+  }
+
   async recover(): Promise<ConfigurationRecoveryResult> {
     const journal = await this.journal.read();
     const activeRevisionId = await this.readActiveRevisionId();

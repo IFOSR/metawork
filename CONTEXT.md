@@ -109,7 +109,7 @@ See `docs/adr/0031-account-runtime-and-unified-client-gateway.md`,
 
 Executor path invariant: the Planner-projected `workingDirectory` and `targetPaths` identify the task-owned Git worktree, while each Executor also needs a private runtime home for provider configuration, tools, and sessions. These are separate path contracts. A future Executor registration entry must declare or derive both contracts and must let the adapter materialize them before process launch; it must never rely on a CLI's implicit `HOME` discovery. For Pi, the adapter must set `HOME`, `PI_CODING_AGENT_DIR`, and `PI_CODING_AGENT_SESSION_DIR` and pre-create the session directory. For Codex, the adapter must set an isolated `CODEX_HOME` containing the rewritten provider config. The child process `cwd` remains the Planner-assigned worktree. Startup should fail with a path-specific diagnostic if either the worktree or private runtime home is missing. On native and worktree-container launches the drivers seed that private home from the operator-managed templates (`METACLAW_EXECUTOR_CODEX_HOME`, `METACLAW_EXECUTOR_PI_HOME`) and inject provider credentials from the assigned env files (`METACLAW_CODEX_EXECUTOR_ENV_FILE`, `METACLAW_PI_EXECUTOR_ENV_FILE`); the host environment whitelist never forwards `OPENAI_*` on its own.
 
-The unreleased product uses SQLite schema version 32. Fresh databases start at v32; schema 30 and 31 are upgraded transactionally on a verified clone while unsupported older schemas are refused. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 adds immutable Result Objects and edge-scoped ResultReferences to the persisted Planner, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation, recovery and completion facts. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
+The unreleased product uses SQLite schema version 33. Fresh databases start at v33; schema 30, 31, and 32 are upgraded transactionally on a verified clone while unsupported older schemas are refused. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
@@ -125,6 +125,30 @@ The current implementation uses PlanningAgentPlan v8, Work Graph v7, Kernel wire
 v5 and SQLite schema v32. ADR-0027 through ADR-0030 govern the configuration
 and release baseline; ADR-0032 governs Completion Protocol v4 and result-first
 delivery.
+
+ADR-0033 adds the delivered hot-activation and Auto-routing invariant:
+AccountRuntime accepts Provider/Model/AgentClass policy changes only while the
+activation gate is idle, and the backend rechecks the gate while holding one
+activation mutex. A successful activation updates the next Planner turn and
+new generation/attempt only; existing generations retain their immutable
+configuration revision and concrete binding. Auto is never persisted as an
+executable binding: Planner and ControlKernel resolve a concrete
+Provider/Model/AgentClass/Harness/Permission Profile/revision tuple before
+execution. `WorkGraphPresentationProjector` and Web Work Graph panels are
+presentation-only projections of validated graph and durable runtime facts;
+they cannot schedule, cancel, retry, fallback, mutate bindings, or access
+storage directly.
+
+The active settings contract is Provider-first. Models added to a Provider
+catalog form the global candidate source; the settings page does not expose a
+separate user-editable Model Facts resource. Planner is fixed-only and must be
+manually assigned one catalog model. Codex Executor Auto projects GPT-family
+models across enabled Providers, while Pi Executor Auto projects all enabled
+Provider models; both policies are narrowed by the user's allowed pool before
+`AutoModelResolver` produces a concrete binding. Provider/model deletion is
+allowed only while idle, removes deleted references from Auto pools, and leaves
+deleted Fixed references empty until the user repairs them. Invalid drafts never
+activate, and busy activation returns `runtime_busy`.
 Native install/update/rollback uses one `~/.anyfusion` root, immutable
 configuration/generated/application revisions, revisioned database files and
 durable activation journals. Until an online management transaction can prove
@@ -181,7 +205,7 @@ retry, fallback and recovery decisions. Permission rule grammar remains
 code-owned by Resource/Kernel policy under ADR-0024; configuration can reference
 only registered profiles and bounded parameters.
 
-The delivered database change is one transactional schema 30-to-31-to-32 migration
+The delivered database change is one transactional schema 30-to-31-to-32-to-33 migration
 covering all new tables, columns, foreign keys, indexes and recoverable v7/v6
 payload conversion. The native updater uses an exclusive update lock, WAL
 checkpoint, verified database backup, cloned migration, immutable staging,

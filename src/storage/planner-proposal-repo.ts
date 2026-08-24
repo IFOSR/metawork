@@ -10,14 +10,16 @@ export interface PlannerProposalSubmissionRecord {
   planFingerprint: string;
   planId: string | null;
   eventId: string | null;
+  configurationRevision: string | null;
   status: 'submitting' | 'uncertain' | 'accepted' | 'rejected';
   result: FinalProposalResult | null;
 }
 
 export type PlannerProposalReservation =
   | { kind: 'reserved' }
+  | { kind: 'retry'; eventId: string | null; configurationRevision?: string | null }
   | { kind: 'replay'; result: FinalProposalResult }
-  | { kind: 'in_flight'; eventId: string | null; status: 'submitting' | 'uncertain' }
+  | { kind: 'in_flight'; eventId: string | null; status: 'submitting' }
   | { kind: 'conflict'; acceptedSubmissionId: string | null };
 
 interface TurnRow {
@@ -32,6 +34,7 @@ interface SubmissionRow {
   plan_fingerprint: string;
   plan_id: string | null;
   event_id: string | null;
+  configuration_revision: string | null;
   status: PlannerProposalSubmissionRecord['status'];
   result_json: string | null;
 }
@@ -62,6 +65,7 @@ export class PlannerProposalRepo {
     planFingerprint: string;
     planId: string | null;
     eventId: string | null;
+    configurationRevision?: string | null;
   }): PlannerProposalReservation {
     return this.db.transaction(() => {
       const turn = this.findTurn(input.sessionId, input.turnId);
@@ -80,7 +84,25 @@ export class PlannerProposalRepo {
           return { kind: 'conflict', acceptedSubmissionId: turn.accepted_submission_id } as const;
         }
         if (existing.result) return { kind: 'replay', result: existing.result } as const;
-        if (existing.status !== 'submitting' && existing.status !== 'uncertain') {
+        if (existing.status === 'uncertain') {
+          const updated = this.db.prepare(`
+            UPDATE planner_proposal_submissions
+            SET status = 'submitting', updated_at = ?
+            WHERE session_id = ? AND turn_id = ? AND submission_id = ?
+              AND status = 'uncertain' AND result_json IS NULL
+          `).run(new Date().toISOString(), input.sessionId, input.turnId, input.submissionId);
+          if (updated.changes !== 1) {
+            return { kind: 'in_flight', eventId: existing.eventId, status: 'submitting' } as const;
+          }
+          return {
+            kind: 'retry',
+            eventId: existing.eventId,
+            ...(existing.configurationRevision
+              ? { configurationRevision: existing.configurationRevision }
+              : {}),
+          } as const;
+        }
+        if (existing.status !== 'submitting') {
           throw new Error(`Planner proposal ${existing.submissionId} has terminal status without a result`);
         }
         return { kind: 'in_flight', eventId: existing.eventId, status: existing.status } as const;
@@ -93,11 +115,11 @@ export class PlannerProposalRepo {
       this.db.prepare(`
         INSERT INTO planner_proposal_submissions (
           session_id, turn_id, submission_id, plan_fingerprint, plan_id, event_id,
-          status, result_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'submitting', NULL, ?, ?)
+          configuration_revision, status, result_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'submitting', NULL, ?, ?)
       `).run(
         input.sessionId, input.turnId, input.submissionId, input.planFingerprint,
-        input.planId, input.eventId, now, now,
+        input.planId, input.eventId, input.configurationRevision ?? null, now, now,
       );
       return { kind: 'reserved' } as const;
     })();
@@ -178,6 +200,7 @@ export class PlannerProposalRepo {
       planFingerprint: row.plan_fingerprint,
       planId: row.plan_id,
       eventId: row.event_id,
+      configurationRevision: row.configuration_revision,
       status: row.status,
       result: row.result_json ? JSON.parse(row.result_json) as FinalProposalResult : null,
     };

@@ -1,5 +1,12 @@
 # MetaWork Configuration And Intelligent Routing Implementation Plan
 
+> **Amendment:** The original plan below described Planner Auto and a broader
+> model-facts configuration surface. The approved implementation is narrowed by
+> [Provider Catalog And Planner/Executor Routing Design](2026-08-23-provider-catalog-planner-fixed-executor-auto-routing-design.md):
+> Provider catalog is the user-facing candidate source, Planner is fixed-only,
+> Codex/Pi are the only Executor Auto policies in this phase, and Executor
+> hot-plug/new Executor lifecycle remains deferred.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 在不重启 MetaWork 的前提下安全激活 Provider/Model 配置，并以 Planner/Executor Auto 路由、DAG 可视化和最少用户输入完成端到端的高性价比任务执行。
@@ -10,13 +17,13 @@
 
 ---
 
-**Status:** Proposed
+**Status:** Implemented
 
 **Plan date:** 2026-08-23
 
-**Completion date:** Not implemented
+**Completion date:** 2026-08-23
 
-**Scope:** 本文只沉淀设计和实施计划。本轮不修改实现、不提交 Git、不推送 GitHub。
+**Scope:** 本文同时记录本方案的实施与验证结果。本轮未提交 Git 或推送 GitHub。
 
 ## 1. Context And Constraints
 
@@ -49,7 +56,7 @@
 - Provider `baseUrl`
 - Provider SecretStore reference
 - Model ID 和 Model metadata
-- Planner/Executor 的 `fixed` 或 `auto` 策略
+- Planner fixed policy and Codex/Pi Executor `fixed` or `auto` policies
 - Auto 候选范围、成本/质量/延迟目标
 - AgentClass 的模型路由策略
 
@@ -656,7 +663,8 @@ InteractionTrace 增加结构化 `routing` 阶段：
 - 绕过 Web 直接调用激活 API 仍然被后端阻止。
 - 现有 Task 和 generation 不会被新配置偷偷修改。
 - 新 Planner turn 和新 Executor attempt 使用新 revision。
-- Planner Auto 可以在图片输入前选择 vision-capable Model。
+- Planner fixed selection remains explicit; Executor Auto selects only from its
+  system-projected and user-allowed candidates.
 - Executor Auto 只在授权候选集合中选择 concrete binding。
 - fixed 模式不受 Auto 覆盖。
 - DAG 显示 Subtask、依赖、并行层、能力和分派逻辑。
@@ -678,4 +686,80 @@ InteractionTrace 增加结构化 `routing` 阶段：
 - `docs/current/technical-overview.md` 中的配置生命周期、路由和 Web projection
 - `docs/README.md` 中的计划状态
 
-完成时将本计划的 `Status`、完成日期、已交付行为、验证命令和 closing commit 补齐。当前仅保存设计，不标记完成。
+本方案已完成：新增 AccountRuntime 配置激活 gate/coordinator、revision-aware
+Planner fixed-only binding、Codex/Pi Executor Auto candidate projection、配置补全
+服务、管理 API 状态/409 合同、Work Graph routing projection、桌面/移动端
+只读展示和跨层 E2E 测试。后续补充了可回滚 SecretStore 暂存、pointer/live
+consumer 失败恢复、三层 Provider/Model/AgentClass 设置页、自定义 Provider/Model
+入口，以及真实 completion HTTP projection。
+
+2026-08-23 的桌面设置工作台 UX 复核进一步交付：
+
+- 设置从 480px 窄抽屉改为桌面宽工作台，禁止横向溢出。
+- 默认界面不再展示配置或运行时 revision；revision 只在“高级诊断”中按需显示。
+- Provider 卡片合并 immutable configuration、completion 和 Code CLI/Kimi/DeepSeek
+  受控 preset 模型目录，并允许把已知模型加入 Model catalog。
+- 已知 Provider 的模型字段使用目录下拉框；只有没有目录的自定义 Provider
+  才允许手动填写 Model ID，并标记为需要确认。
+- AgentClass 不再绑定一个 Provider/Model 别名。Auto 保存允许模型池、默认偏好
+  和质量/成本/延迟目标；Fixed 只保存一个 Model reference，Provider 由模型事实解析。
+- Harness/AgentClass 卡片分开显示系统定义的适用范围、避用范围、routing
+  capability 和 affordance，以及用户可编辑的模型路由偏好。
+- 每个模型候选直接显示基线能力匹配或排除原因；实际执行仍由 Planner 提案、
+  ControlKernel 授权和 `AutoModelResolver` 解析 concrete binding。
+- 新增真实 Headless Chrome E2E，使用生产 Web 构建验证布局、Provider 模型下拉、
+  Auto 多模型池、候选排除解释和高级诊断折叠。
+- 将 Executor 流式进度集成测试的观察窗口从 20 秒调整为 45 秒；生产路径仍在
+  容器创建后同步发布 `executor_progress`，调整只用于覆盖全量回归高负载下的
+  Kernel 调度等待时间，避免边界时序误报。
+
+验证命令如下：
+
+```text
+npm run lint
+npm run build
+cd web && npm run build
+npm test -- --run
+RUN_BROWSER_E2E=1 npm test -- tests/e2e/settings-workbench-browser.test.ts
+git diff --check
+
+Browser E2E: 1 test passed
+Full suite: 321 test files passed, 5 skipped
+Full suite: 1446 tests passed, 16 skipped
+```
+
+Closing commit: not created in this working session; the implementation remains
+in the shared working tree for review.
+
+2026-08-24 reliability closure：
+
+- AccountRuntime 热激活在切换配置后，将新 revision 登记到运行时数据库，再刷新
+  Planner 和 Runtime consumer，消除新 revision 写入 durable Kernel inbox 时的
+  `FOREIGN KEY constraint failed`。
+- 相同 Planner submission 在 `transport_uncertain` 后可使用稳定 submission/event
+  identity 重放；并发重放由 `uncertain -> submitting` 事务状态转换收敛，已完成
+  proposal 仍按持久化终态 replay。
+- Kernel application uncertainty 不由 proposal replay 自动重试，仍要求显式
+  recovery 决策，防止用户输出和外部副作用重复。
+- SQLite schema v33 为 Planner proposal 持久化 `configuration_revision`，
+  新建 proposal 的 replay 使用原始 revision pin；schema 30/31/32 可事务式升级，
+  旧 event 已丢失的历史 proposal 保留兼容回退。
+- rollback 到已有 immutable revision 时保留其原始 source metadata，不触发
+  revision identity mismatch。
+
+最终验证：
+
+```text
+npm run lint
+npm run build
+cd web && npm run build
+RUN_BROWSER_E2E=1 npm test -- tests/e2e/settings-workbench-browser.test.ts
+npm test
+git diff --check
+
+Browser E2E: 1 test passed
+Full suite: 323 test files passed, 5 skipped
+Full suite: 1465 tests passed, 16 skipped
+```
+
+Closing commit: not created; changes remain in the shared working tree.

@@ -7,7 +7,7 @@ import type {
   WebSessionMetadata,
   WebSessionRecord,
 } from './api/session-types';
-import type { InteractionTrace, InteractionTraceEvent } from './api/types';
+import type { ConfigurationRuntimeState, InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
 import { establishWebSession, exchangeWebCredential, loginWithPassword } from './auth';
 import { ConversationView } from './components/ConversationView';
@@ -32,8 +32,8 @@ export function App() {
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
-  const [revisionId, setRevisionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [configurationRuntime, setConfigurationRuntime] = useState<ConfigurationRuntimeState | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const httpRef = useRef<HttpClient | null>(null);
@@ -113,6 +113,7 @@ export function App() {
       onTraceDelta: (turnId, _fromSequence, events) => {
         setLiveTurn(current => mergeTraceDelta(current, turnId, events));
       },
+      onConfigurationRuntimeState: state => setConfigurationRuntime(state),
       onExecution: (taskId, timeline) => {
         setLiveTurn(current => current
           ? { ...current, taskId, executionTimeline: timeline }
@@ -181,7 +182,7 @@ export function App() {
         activeConversationRef.current = catalog.activeSessionId;
         setActiveSessionId(catalog.activeSessionId);
         setBrowsedSessionId(current => current ?? catalog.activeSessionId);
-        setRevisionId(config.runningRevisionId);
+        setConfigurationRuntime(config);
         loadRecord(catalog.activeSessionId);
       })
       .catch(() => undefined);
@@ -349,7 +350,6 @@ export function App() {
         title={selectedMetadata?.title ?? 'New session'}
         tab={tab}
         connected={connected}
-        revisionId={revisionId}
         draft={draft}
         composerDisabled={composerDisabled}
         running={running}
@@ -381,10 +381,14 @@ export function App() {
       >
         {tab === 'conversation'
           ? <ConversationView turns={turns} />
-          : <TrajectoryView turn={latestTurn} />}
+          : <TrajectoryView turn={latestTurn} http={httpRef.current} />}
       </WorkspaceShell>
       {settingsOpen && (
-        <SettingsPanel http={httpRef.current} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel
+          http={httpRef.current}
+          runtime={configurationRuntime}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </>
   );

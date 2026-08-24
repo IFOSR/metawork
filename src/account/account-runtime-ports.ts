@@ -24,6 +24,9 @@ import type {
   ExecutorRecoveryRefreshReport,
 } from '../execution/executor-recovery-refresh-service.js';
 import type { ExecutorRecoveryRefreshTrigger } from '../kernel/executor-status-projection.js';
+import type {
+  ConfigurationActivationStatusSnapshot,
+} from '../configuration/configuration-activation-gate.js';
 
 /** AccountRuntime 暴露给 Application Shell 的窄句柄。 */
 export interface AccountRuntimeHandle {
@@ -34,6 +37,7 @@ export interface AccountRuntimeHandle {
   detachClient(): void;
   beginWork(): void;
   endWork(): void;
+  getConfigurationActivationStatus?(): ConfigurationActivationStatusSnapshot;
   closeWhenIdle(): Promise<'closed' | 'busy'>;
 }
 

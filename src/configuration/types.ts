@@ -35,6 +35,9 @@ export interface ModelProfile {
   contextLimit?: number;
   costTier?: 'low' | 'medium' | 'high';
   latencyTier?: 'low' | 'medium' | 'high';
+  qualityTier?: 'low' | 'medium' | 'high';
+  costInputPerMillion?: number;
+  costOutputPerMillion?: number;
   enabled: boolean;
 }
 
@@ -98,7 +101,15 @@ export type ModelPolicy =
         enabled: boolean;
         order: string[];
       };
+      objective?: AutoModelObjective;
     };
+
+export type AutoModelObjective = Readonly<{
+  priority: 'balanced' | 'quality' | 'cost' | 'latency';
+  maxCostPerTurn?: number;
+  maxLatencyMs?: number;
+  minimumQualityTier?: 'low' | 'medium' | 'high';
+}>;
 
 export interface AgentClassDefinition {
   kind: HarnessKind;
@@ -158,15 +169,26 @@ export type ConfigurationSnapshot = Readonly<{
 
 export interface PlannerModelProfile {
   id: string;
+  providerRef: string;
   capabilities: ModelCapability[];
   reasoning: ModelReasoningLevel;
   region: string;
+  contextLimit?: number;
+  costTier?: 'low' | 'medium' | 'high';
+  latencyTier?: 'low' | 'medium' | 'high';
+  qualityTier?: 'low' | 'medium' | 'high';
+  costInputPerMillion?: number;
+  costOutputPerMillion?: number;
 }
 
 export type PlannerConfigurationView = Readonly<{
   revisionId: ConfigurationRevisionId;
   contentHash: string;
   models: PlannerModelProfile[];
+  planner?: Readonly<{
+    harnessRef: string;
+    modelPolicy: ModelPolicy;
+  }>;
   routingCatalog: ConfigurationRoutingCatalog;
 }>;
 
@@ -189,8 +211,18 @@ export type KernelConfigurationView = Readonly<{
   agentClasses: Record<string, KernelAgentClassConfiguration>;
   models: Record<string, {
     providerRef: string;
+    modelId: string;
     capabilities: ModelCapability[];
     reasoning: ModelReasoningLevel;
+    contextLimit?: number;
+    costTier?: 'low' | 'medium' | 'high';
+    latencyTier?: 'low' | 'medium' | 'high';
+    qualityTier?: 'low' | 'medium' | 'high';
+    costInputPerMillion?: number;
+    costOutputPerMillion?: number;
+    enabled: boolean;
+  }>;
+  providers: Record<string, {
     enabled: boolean;
   }>;
   permissionProfiles: Record<string, PermissionProfile>;

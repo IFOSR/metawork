@@ -90,6 +90,9 @@ const ModelProfileSchema = z.object({
   contextLimit: z.number().int().min(1_024).max(10_000_000).optional(),
   costTier: z.enum(['low', 'medium', 'high']).optional(),
   latencyTier: z.enum(['low', 'medium', 'high']).optional(),
+  qualityTier: z.enum(['low', 'medium', 'high']).optional(),
+  costInputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
+  costOutputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
   enabled: z.boolean(),
 }).strict();
 
@@ -141,6 +144,12 @@ const AutoModelPolicySchema = z.object({
   fallback: z.object({
     enabled: z.boolean(),
     order: uniqueArray(ReferenceIdSchema, 'fallback Model', 32),
+  }).strict().optional(),
+  objective: z.object({
+    priority: z.enum(['balanced', 'quality', 'cost', 'latency']),
+    maxCostPerTurn: z.number().finite().min(0).max(1_000_000).optional(),
+    maxLatencyMs: z.number().int().min(1).max(86_400_000).optional(),
+    minimumQualityTier: z.enum(['low', 'medium', 'high']).optional(),
   }).strict().optional(),
 }).strict().superRefine((policy, context) => {
   const allowed = new Set(policy.allowedModelRefs);
@@ -226,6 +235,13 @@ const AgentClassDefinitionSchema = z.object({
       }
     }
   } else {
+    if (agentClass.modelPolicy.mode !== 'fixed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['modelPolicy', 'mode'],
+        message: 'Planner AgentClass must use a fixed model policy',
+      });
+    }
     if (agentClass.permissionProfileRef) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -330,6 +346,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
         message: `enabled Model references disabled Provider: ${model.providerRef}`,
       });
     }
+
   }
 
   for (const [harnessRef, harness] of Object.entries(configuration.harnesses)) {

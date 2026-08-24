@@ -6,14 +6,14 @@ import {
 } from '../../src/storage/migrations.js';
 
 describe('current SQLite baseline', () => {
-  it('creates schema 32 without requiring migration context on a fresh database', () => {
+  it('creates schema 33 without requiring migration context on a fresh database', () => {
     const db = new Database(':memory:');
 
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 32 }]);
+      .toEqual([{ version: 33 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -62,6 +62,7 @@ describe('current SQLite baseline', () => {
       'planner_binding_json',
       'planner_binding_fingerprint',
     ]));
+    expect(columns(db, 'planner_proposal_submissions')).toContain('configuration_revision');
     expect(columns(db, 'kernel_decisions')).toEqual(expect.arrayContaining([
       'configuration_revision',
       'authorized_bindings_json',
@@ -217,7 +218,7 @@ describe('current SQLite baseline', () => {
     runMigrations(db, migrationContext());
     expect(() => runMigrations(db)).not.toThrow();
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 32 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 33 });
     expect(readJson(db, 'SELECT executor_bindings_json FROM subtasks WHERE id = ?', 'subtask'))
       .toEqual([{
         agentClassRef: 'codex-engineering',
@@ -395,7 +396,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 32',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 33',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

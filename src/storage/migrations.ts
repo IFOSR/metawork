@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export const CURRENT_SCHEMA_VERSION = 32;
+export const CURRENT_SCHEMA_VERSION = 33;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -278,6 +278,8 @@ CREATE TABLE planner_proposal_submissions (
         plan_fingerprint TEXT NOT NULL,
         plan_id TEXT,
         event_id TEXT,
+        configuration_revision TEXT
+          REFERENCES configuration_revisions(revision_id),
         status TEXT NOT NULL CHECK (status IN ('submitting', 'uncertain', 'accepted', 'rejected')),
         result_json TEXT,
         created_at TEXT NOT NULL,
@@ -1171,6 +1173,10 @@ function tableExists(db: Database.Database, table: string): boolean {
   return Boolean(row);
 }
 
+function columnsOf(db: Database.Database, table: string): string[] {
+  return (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(column => column.name);
+}
+
 export interface Schema30MigrationBinding {
   agentClassRef: string;
   harnessRef: string;
@@ -1233,7 +1239,7 @@ export function createSchema30MigrationContext(
 }
 
 /**
- * Creates schema 32 or applies the supported pre-release upgrades.
+ * Creates schema 33 or applies the supported pre-release upgrades.
  */
 export function runMigrations(
   db: Database.Database,
@@ -1248,6 +1254,11 @@ export function runMigrations(
     }
     if (versions.length === 1 && versions[0]?.version === 31) {
       migrateSchema31To32(db);
+      migrateSchema32To33(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 32) {
+      migrateSchema32To33(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1259,6 +1270,7 @@ export function runMigrations(
       }
       migrateSchema30To31(db, migrationContext);
       migrateSchema31To32(db);
+      migrateSchema32To33(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1465,6 +1477,31 @@ function migrateSchema31To32(db: Database.Database): void {
     if (updated.changes !== 1) {
       throw new Error('schema version changed during 31 to 32 migration');
     }
+  });
+  migrate();
+}
+
+function migrateSchema32To33(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    if (!columnsOf(db, 'planner_proposal_submissions').includes('configuration_revision')) {
+      db.exec(`
+        ALTER TABLE planner_proposal_submissions
+          ADD COLUMN configuration_revision TEXT
+            REFERENCES configuration_revisions(revision_id);
+      `);
+    }
+    db.exec(`
+      UPDATE planner_proposal_submissions
+      SET configuration_revision = (
+        SELECT configuration_revision
+        FROM kernel_events
+        WHERE kernel_events.id = planner_proposal_submissions.event_id
+      )
+      WHERE event_id IS NOT NULL AND configuration_revision IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_planner_proposal_submissions_revision
+        ON planner_proposal_submissions(configuration_revision, status);
+      UPDATE schema_version SET version = 33 WHERE version = 32;
+    `);
   });
   migrate();
 }

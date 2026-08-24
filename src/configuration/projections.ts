@@ -15,16 +15,32 @@ export function buildPlannerConfigurationView(
     .filter(([, model]) => model.enabled)
     .map(([id, model]) => ({
       id,
+      providerRef: model.providerRef,
       capabilities: [...model.capabilities].sort(),
       reasoning: model.reasoning,
       region: snapshot.config.providers[model.providerRef]!.region,
+      contextLimit: model.contextLimit,
+      costTier: model.costTier,
+      latencyTier: model.latencyTier,
+      qualityTier: model.qualityTier,
+      costInputPerMillion: model.costInputPerMillion,
+      costOutputPerMillion: model.costOutputPerMillion,
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
+  const planner = snapshot.config.agentClasses.planner;
 
   return deepFreeze({
     revisionId: snapshot.revisionId,
     contentHash: snapshot.contentHash,
     models,
+    // The schema guarantees Planner is fixed-only; executor Auto policies do
+    // not leak into the Planner projection.
+    ...(planner?.kind === 'planner' ? {
+      planner: {
+        harnessRef: planner.harnessRef,
+        modelPolicy: cloneModelPolicy(planner.modelPolicy),
+      },
+    } : {}),
     routingCatalog: buildConfigurationCatalog(snapshot),
   });
 }
@@ -56,8 +72,15 @@ export function buildKernelConfigurationView(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, model]) => [id, {
         providerRef: model.providerRef,
+        modelId: model.modelId,
         capabilities: [...model.capabilities].sort(),
         reasoning: model.reasoning,
+        contextLimit: model.contextLimit,
+        costTier: model.costTier,
+        latencyTier: model.latencyTier,
+        qualityTier: model.qualityTier,
+        costInputPerMillion: model.costInputPerMillion,
+        costOutputPerMillion: model.costOutputPerMillion,
         enabled: model.enabled,
       }]),
   );
@@ -66,12 +89,18 @@ export function buildKernelConfigurationView(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, profile]) => [id, clonePermissionProfile(profile)]),
   );
+  const providers = Object.fromEntries(
+    Object.entries(snapshot.config.providers)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, provider]) => [id, { enabled: provider.enabled }]),
+  );
 
   return deepFreeze({
     revisionId: snapshot.revisionId,
     contentHash: snapshot.contentHash,
     agentClasses,
     models,
+    providers,
     permissionProfiles,
     runtimePolicy: { ...snapshot.config.runtimePolicy },
   });

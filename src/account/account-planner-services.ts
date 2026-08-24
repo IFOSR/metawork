@@ -32,6 +32,10 @@ export function buildAccountPlannerServices(deps: {
   plannerBinding: RevisionedAgentBinding;
   plannerBindingFingerprint: string;
   plannerModelId: string;
+  getPlannerBinding?: () => {
+    plannerBinding: RevisionedAgentBinding;
+    plannerBindingFingerprint: string;
+  };
   plannerSupervisor?: PlannerProcessController;
   planningAgent?: PlanningAgent;
 }): AccountPlannerServices {
@@ -64,12 +68,16 @@ export function buildAccountPlannerServices(deps: {
     runner: plannerSupervisor!,
     audit: new PlannerRunRepo(deps.db),
     resolvePlannerAuditBinding: async configurationRevision => {
-      if (configurationRevision !== deps.plannerBinding.configurationRevision) {
+      const current = deps.getPlannerBinding?.() ?? {
+        plannerBinding: deps.plannerBinding,
+        plannerBindingFingerprint: deps.plannerBindingFingerprint,
+      };
+      if (configurationRevision !== current.plannerBinding.configurationRevision) {
         throw new Error(`Planner audit binding revision is unavailable: ${configurationRevision}`);
       }
       return {
-        plannerBinding: deps.plannerBinding,
-        plannerBindingFingerprint: deps.plannerBindingFingerprint,
+        plannerBinding: current.plannerBinding,
+        plannerBindingFingerprint: current.plannerBindingFingerprint,
       };
     },
   });

@@ -20,6 +20,10 @@ import type { AccountRuntimeExecutionServices } from './account-runtime-executio
 import type { AccountPlannerServices } from './account-planner-services.js';
 import type { AccountPermissionService } from './account-permission-service.js';
 import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-runtime-ports.js';
+import {
+  ConfigurationActivationGate,
+  type ConfigurationActivationStatusSnapshot,
+} from '../configuration/configuration-activation-gate.js';
 
 export interface AccountRuntimeDeps {
   readonly accountId: string;
@@ -33,6 +37,7 @@ export interface AccountRuntimeDeps {
   readonly runtimeExecutionServices?: AccountRuntimeExecutionServices;
   readonly plannerServices?: AccountPlannerServices;
   readonly permissionService?: AccountPermissionService;
+  readonly configurationActivationGate?: ConfigurationActivationGate;
   readonly recoverDurableStartup: () => Promise<void>;
   readonly reviewTaskPoolOnTimer?: (nowMs: number) => Promise<boolean>;
   readonly dispose?: () => Promise<void>;
@@ -46,8 +51,12 @@ export class AccountRuntime implements AccountRuntimeHandle {
   private attachedClients = 0;
   private activeWorkCount = 0;
   private periodicReview: Promise<boolean> | null = null;
+  private readonly configurationActivationGate: ConfigurationActivationGate;
 
-  constructor(private readonly deps: AccountRuntimeDeps) {}
+  constructor(private readonly deps: AccountRuntimeDeps) {
+    this.configurationActivationGate = deps.configurationActivationGate
+      ?? new ConfigurationActivationGate(() => this.getConfigurationActivationFacts());
+  }
 
   get accountId(): string {
     return this.deps.accountId;
@@ -129,8 +138,48 @@ export class AccountRuntime implements AccountRuntimeHandle {
     this.activeWorkCount = Math.max(0, this.activeWorkCount - 1);
   }
 
+  getConfigurationActivationStatus(): ConfigurationActivationStatusSnapshot {
+    return this.configurationActivationGate.getStatus();
+  }
+
+  async withConfigurationActivation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.configurationActivationGate.withActivation(operation);
+  }
+
   isBusy(): boolean {
     return this.attachedClients > 0 || this.activeWorkCount > 0;
+  }
+
+  getConfigurationActivationFacts() {
+    const taskRuntimeService = this.deps.taskServices?.taskRuntimeService;
+    const activeTasks = taskRuntimeService?.listTasksByStatus('running') ?? [];
+    const dispatchItems = this.deps.runtimeExecutionServices?.dispatchItemRepo.listBlocking() ?? [];
+    const activeDispatchItems = dispatchItems.filter(item => [
+      'pending_launch', 'launching', 'running', 'cancelling', 'uncertain',
+    ].includes(item.status));
+    const activeAttempts = this.deps.workspaceServices.attemptExecutionRepository.listActive();
+    const activeLeases = this.deps.runtimeExecutionServices?.resourceLeaseService.findActive() ?? [];
+    const publicationPending = this.deps.runtimeExecutionServices?.publicationRepo
+      .hasAnyBlockingResidue() ?? activeTasks.some(task => {
+        const generation = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
+        return this.deps.runtimeExecutionServices?.publicationRepo.hasBlockingResidue(
+          task.id,
+          generation?.generationId,
+        ) ?? false;
+      });
+    return {
+      activeTaskId: activeTasks[0]?.id ?? dispatchItems[0]?.taskId ?? null,
+      plannerTurnActive: this.activeWorkCount > 0,
+      activeAttemptCount: new Set([
+        ...activeDispatchItems.map(item => item.attemptId),
+        ...activeAttempts.map(attempt => attempt.attemptId),
+      ]).size,
+      activeLeaseCount: activeLeases.length,
+      publicationPending,
+      recoveryInProgress: Boolean(
+        (this.initialization && !this.initialized) || this.periodicReview,
+      ),
+    };
   }
 
   reviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {

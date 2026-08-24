@@ -100,6 +100,7 @@ export interface ConversationSessionDeps {
   readonly planningContextBuilder?: PlanningContextBuilder;
   readonly db?: Database.Database;
   readonly kernelConfiguration?: KernelConfigurationView;
+  readonly getKernelConfiguration?: () => KernelConfigurationView | undefined;
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
@@ -372,10 +373,12 @@ export class ConversationSession {
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> | null {
     const port = this.deps.runtimePort;
     const plannerConfiguration = this.deps.planningContextBuilder?.getPlannerConfiguration();
-    if (!plannerConfiguration || !this.deps.kernelConfiguration) return null;
+    const kernelConfiguration = this.deps.getKernelConfiguration?.()
+      ?? this.deps.kernelConfiguration;
+    if (!plannerConfiguration || !kernelConfiguration) return null;
     if (
       event.configurationRevision !== plannerConfiguration.revisionId
-      || event.configurationRevision !== this.deps.kernelConfiguration.revisionId
+      || event.configurationRevision !== kernelConfiguration.revisionId
     ) {
       throw new Error(`plan admission configuration revision mismatch: ${event.configurationRevision}`);
     }
@@ -385,7 +388,7 @@ export class ConversationSession {
       tasks: port.queries.listTasks().map(task => ({ id: task.id, status: task.status })),
       runningTaskId: this.kernelExecutionRuntime?.getSingleActiveTaskId() ?? null,
       plannerConfiguration,
-      kernelConfiguration: this.deps.kernelConfiguration,
+      kernelConfiguration,
       executorStatuses: port.queries.listExecutorStatuses(event.configurationRevision),
       v5WorkGraphTaskIds: port.queries.listWorkGraphTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(
@@ -478,7 +481,7 @@ export class ConversationSession {
 
     const event: KernelEvent = {
       schemaVersion: 5,
-      configurationRevision: context.configuration.revisionId,
+      configurationRevision: context?.configuration.revisionId ?? null,
       type: 'plan_proposed',
       id: eventId,
       correlationId: plan.id,
@@ -498,7 +501,10 @@ export class ConversationSession {
       )!,
       runtime: sessionKernelRuntime.forInput(userInput),
     });
-    const decision = result.decisions.find(item => item.eventId === eventId) ?? null;
+    const decision = result.decisions.find(item => item.eventId === eventId)
+      ?? port.queries.listKernelDecisionsBySession(this.deps.plannerSessionId)
+        .find(item => item.eventId === eventId)?.decision
+      ?? null;
     if (!decision) {
       return {
         status: 'transport_uncertain',
@@ -541,7 +547,7 @@ export class ConversationSession {
       submissionId: eventId,
       planId: plan.id,
       outcome: plannerOutcome(decision.action.type),
-      displayText: this.output.at(-1) ?? decision.reason,
+      displayText: plannerDecisionDisplayText(decision, this.output.at(-1)),
       taskId: plan.task.taskId
         ?? ('taskId' in decision.action && typeof decision.action.taskId === 'string'
           ? decision.action.taskId
@@ -744,7 +750,7 @@ export class ConversationSession {
         })),
       })),
       executorStatuses: port.queries.listExecutorStatuses(
-        this.deps.kernelConfiguration?.revisionId ?? '',
+        (this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration)?.revisionId ?? '',
       ),
     };
   }
@@ -911,6 +917,7 @@ export class ConversationSession {
       planFingerprint: plannerProposalFingerprint(submission.plan),
       planId,
       eventId,
+      configurationRevision: context?.configuration.revisionId ?? null,
     });
     if (reservation.kind === 'replay') return reservation.result;
     if (reservation.kind === 'conflict') {
@@ -1740,4 +1747,13 @@ function plannerOutcome(
     default:
       return 'no_action';
   }
+}
+
+function plannerDecisionDisplayText(
+  decision: KernelDecision,
+  latestOutput: string | undefined,
+): string {
+  if (decision.action.type === 'deliver_direct_reply') return decision.action.response;
+  if (decision.action.type === 'request_clarification') return decision.action.question;
+  return latestOutput ?? decision.reason;
 }

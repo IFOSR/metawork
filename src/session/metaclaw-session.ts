@@ -968,6 +968,7 @@ export class MetaclawSession {
       planFingerprint: plannerProposalFingerprint(submission.plan),
       planId,
       eventId,
+      configurationRevision: context.configuration.revisionId,
     });
     if (reservation.kind === 'replay') {
       this.recordPlannerProposalTerminalTrace(reservation.result);

@@ -70,6 +70,58 @@ describe('production runtime configuration bindings', () => {
       },
     });
   });
+
+  it('keeps old revision bindings while exposing an activated revision to new attempts', async () => {
+    const active = productionSnapshot();
+    const next = {
+      ...productionSnapshot(),
+      revisionId: 'revision-next',
+      config: {
+        ...productionSnapshot().config,
+        providers: {
+          provider: {
+            ...productionSnapshot().config.providers.provider,
+            baseUrl: 'https://next-provider.example/v1',
+          },
+        },
+        models: {
+          model: {
+            ...productionSnapshot().config.models.model,
+            modelId: 'gpt-next',
+          },
+        },
+      },
+    } satisfies ConfigurationSnapshot;
+    const bindings = createProductionRuntimeBindings({
+      snapshot: active,
+      secretStore: {
+        get: async () => 'secret-value',
+        put: async () => undefined,
+        delete: async () => undefined,
+      },
+      getSnapshot: async revisionId => revisionId === next.revisionId ? next : active,
+    });
+
+    bindings.updateSnapshot(next);
+
+    expect(bindings.getActiveRuntimeConfiguration().revisionId).toBe('revision-next');
+    expect(bindings.getRuntimeConfiguration(active.revisionId)?.revisionId).toBe(active.revisionId);
+    expect(bindings.getRuntimeConfiguration(next.revisionId)?.revisionId).toBe(next.revisionId);
+    await expect(bindings.getRuntimeBinding({
+      agentClassRef: 'codex-engineering',
+      harnessRef: 'codex-cli',
+      providerRef: 'provider',
+      modelRef: 'model',
+      permissionProfileRef: 'workspace-engineering',
+      configurationRevision: next.revisionId,
+    })).resolves.toMatchObject({
+      revisionId: 'revision-next',
+      environment: {
+        OPENAI_BASE_URL: 'https://next-provider.example/v1',
+        OPENAI_MODEL: 'gpt-next',
+      },
+    });
+  });
 });
 
 function productionSnapshot(): ConfigurationSnapshot {

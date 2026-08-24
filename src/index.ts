@@ -32,7 +32,11 @@ import {
 } from './configuration/index.js';
 import { prepareProductionSecretStore } from './configuration/production-secret-store.js';
 import { FileSecretStore } from './configuration/file-secret-store.js';
-import type { SecretReference, SecretStore } from './configuration/secret-store.js';
+import {
+  assertSecretReference,
+  type SecretReference,
+  type SecretStore,
+} from './configuration/secret-store.js';
 import { resolveAnyFusionPaths } from './installation/paths.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { resolveAccountPaths } from './account/account-paths.js';
@@ -75,6 +79,10 @@ import { ConversationInputMailbox } from './session/conversation-input-mailbox.j
 import { PlannerHostBridge } from './tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from './planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from './configuration/staged-legacy-configuration.js';
+import { buildPlannerInputProfile } from './planning/planner-input-profile.js';
+import { buildPlannerConfigurationView } from './configuration/projections.js';
+import { AutoModelResolver } from './routing/auto-model-resolver.js';
+import { authorizedExecutorBindingFingerprint } from './core/authorized-executor-binding.js';
 import { SubtaskRepo } from './storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from './storage/executor-attempt-receipt-repo.js';
 import { KernelDecisionRepo } from './storage/kernel-decision-repo.js';
@@ -89,6 +97,7 @@ import {
 import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
 import { ExecutionProjector } from './management/execution-projector.js';
+import { WorkGraphPresentationProjector } from './management/work-graph-presentation-projector.js';
 import { WebAuthService } from './management/web-auth.js';
 import { resolveLoginCredentials } from './management/login-credentials.js';
 import { requiresCompositionLock } from './installation/composition-runtime.js';
@@ -99,6 +108,14 @@ import { WebGatewaySessionRuntime } from './management/web-gateway-session-runti
 import type { ManagementWebSessionRuntime } from './management/web-session-runtime-types.js';
 import { resolveServerSurface } from './session/server-application.js';
 import { ensureActiveConfigurationRevision } from './storage/active-configuration-revision.js';
+import {
+  ConfigurationActivationGate,
+} from './configuration/configuration-activation-gate.js';
+import {
+  ConfigurationRuntimeCoordinator,
+} from './configuration/configuration-runtime-coordinator.js';
+import { ConfigurationCompletionService } from './configuration/configuration-completion-service.js';
+import { ConfigurationRevisionRepo } from './storage/configuration-revision-repo.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -170,6 +187,10 @@ async function startWebMode(options: {
   sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
+  configurationRuntime?: {
+    getState(): ReturnType<ConfigurationRuntimeCoordinator['getState']>;
+    subscribe(listener: (event: unknown) => void): () => void;
+  };
   attachmentStore?: FileAttachmentStore;
 }): Promise<ManagementServer> {
   const webAuth = new WebAuthService();
@@ -191,6 +212,7 @@ async function startWebMode(options: {
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
+    configurationRuntime: options.configurationRuntime,
     loginCredentials,
     attachmentStore: options.attachmentStore,
   });
@@ -391,10 +413,22 @@ async function main() {
   });
   const renderer = new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime'));
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
+  let accountRuntimeComposition: ReturnType<typeof buildAccountRuntimeComposition> | null = null;
+  const configurationActivationGate = new ConfigurationActivationGate(() => (
+    accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts() ?? {
+      activeTaskId: null,
+      plannerTurnActive: false,
+      activeAttemptCount: 0,
+      activeLeaseCount: 0,
+      publicationPending: false,
+      recoveryInProgress: false,
+    }
+  ));
   const configurationService = new ConfigurationService({
     repository: configurationRepository,
     secretStore,
     renderer,
+    activationGate: configurationActivationGate,
     probe: createProductionConfigurationProbe({
       releaseRoot: applicationRoot,
       secretStore,
@@ -419,6 +453,7 @@ async function main() {
     secretStore,
   });
   const db = createDatabase(accountPaths.database);
+  const configurationRevisionRepo = new ConfigurationRevisionRepo(db);
   ensureActiveConfigurationRevision(db, {
     revisionId: migratedSnapshot.revisionId,
     contentHash: migratedSnapshot.contentHash,
@@ -463,12 +498,75 @@ async function main() {
       provider: stagedConfiguration.plannerBinding.providerRef,
       modelId: plannerModel.modelId,
     },
+    resolvePlannerBinding: async context => {
+      const inputProfile = buildPlannerInputProfile(context);
+      const activeSnapshot = await configurationRepository.getActiveSnapshot();
+      const activePlanner = buildPlannerConfigurationView(activeSnapshot);
+      const plannerRouting = activePlanner.planner;
+      if (!plannerRouting) throw new Error('Planner routing policy is unavailable');
+      const resolution = AutoModelResolver.resolve({
+        configurationRevision: activeSnapshot.revisionId,
+        agentClassRef: 'planner',
+        harnessRef: plannerRouting.harnessRef,
+        permissionProfileRef: 'planner-none',
+        policy: plannerRouting.modelPolicy,
+        candidates: await Promise.all(activePlanner.models.map(async model => {
+          const provider = activeSnapshot.config.providers[model.providerRef];
+          let credentialAvailable = false;
+          if (provider) {
+            try {
+              assertSecretReference(provider.apiKeyRef);
+              credentialAvailable = (await secretStore.get(provider.apiKeyRef)).trim().length > 0;
+            } catch {
+              credentialAvailable = false;
+            }
+          }
+          return {
+            providerRef: model.providerRef,
+            modelRef: model.id,
+            modelId: activeSnapshot.config.models[model.id]?.modelId ?? model.id,
+            capabilities: model.capabilities,
+            contextLimit: model.contextLimit,
+            costInputPerMillion: model.costInputPerMillion,
+            costOutputPerMillion: model.costOutputPerMillion,
+            latencyTier: model.latencyTier,
+            qualityTier: model.qualityTier,
+            health: credentialAvailable ? 'healthy' as const : 'unavailable' as const,
+            available: credentialAvailable,
+            providerEnabled: provider?.enabled ?? false,
+            harnessCompatible: Boolean(
+              activeSnapshot.config.harnesses[plannerRouting.harnessRef]?.enabled,
+            ),
+          };
+        })),
+        requirements: inputProfile,
+      });
+      if (!resolution.binding) throw new Error('Planner Auto routing returned no binding');
+      const model = activeSnapshot.config.models[resolution.binding.modelRef];
+      if (!model) throw new Error(`Planner Model is unavailable: ${resolution.binding.modelRef}`);
+      const plannerBinding = {
+        ...resolution.binding,
+        permissionProfileRef: null,
+      };
+      return {
+        configurationRevision: resolution.binding.configurationRevision,
+        bindingFingerprint: authorizedExecutorBindingFingerprint(resolution.binding),
+        provider: resolution.binding.providerRef,
+        modelId: model.modelId,
+        runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
+          configuration: runtimeBindings.getRuntimeConfiguration(activeSnapshot.revisionId)
+            ?? runtimeBindings.getActiveRuntimeConfiguration(),
+          plannerBinding,
+          secretStore,
+        }),
+      };
+    },
   });
   await plannerHost.start();
 
   // ADR-0031: 组合根构造 RuntimeRegistry + AccountRuntime（local-default），
   // 会话工厂复用 AccountRuntime 的账户级服务簇。
-  const accountRuntimeComposition = buildAccountRuntimeComposition({
+  accountRuntimeComposition = buildAccountRuntimeComposition({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
     taskEngine,
@@ -485,7 +583,14 @@ async function main() {
     stagedConfiguration,
     plannerBinding: stagedConfiguration.plannerBinding,
     plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+    getPlannerBinding: () => ({
+      plannerBinding: stagedConfiguration.plannerBinding,
+      plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+    }),
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
+    getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
+    getActiveRuntimeConfiguration: runtimeBindings.getActiveRuntimeConfiguration,
+    configurationActivationGate,
     plannerSupervisor,
     getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
     blockedRecheckEnabled: config.orchestration.blocked_recheck_enabled !== false,
@@ -505,6 +610,115 @@ async function main() {
   const activatedAccountRuntime = await accountRegistry.getOrActivate({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     authorized: true,
+  });
+  const configurationRuntimeCoordinator = new ConfigurationRuntimeCoordinator({
+    service: configurationService,
+    gate: configurationActivationGate,
+    initialSnapshot: migratedSnapshot,
+    prepareConfig: async ({ config, secrets }) => {
+      let prepared = structuredClone(config) as AnyFusionConfigurationV2;
+      for (const [providerRef, apiKey] of Object.entries(secrets)) {
+        const reference = secretStore instanceof FileSecretStore
+          ? `file-secret:anyfusion/providers/${providerRef}` as const
+          : `keychain:anyfusion/providers/${providerRef}` as const;
+        const provider = prepared.providers[providerRef];
+        if (provider) provider.apiKeyRef = reference;
+      }
+      return prepared;
+    },
+    stageSecrets: async secrets => {
+      const previous = new Map<string, string | null>();
+      const references = new Map<string, SecretReference>();
+      for (const [providerRef, apiKey] of Object.entries(secrets)) {
+        const reference = secretStore instanceof FileSecretStore
+          ? `file-secret:anyfusion/providers/${providerRef}` as const
+          : `keychain:anyfusion/providers/${providerRef}` as const;
+        references.set(providerRef, reference);
+        try {
+          previous.set(providerRef, await secretStore.get(reference));
+        } catch {
+          previous.set(providerRef, null);
+        }
+      }
+      try {
+        for (const [providerRef, apiKey] of Object.entries(secrets)) {
+          await secretStore.put(references.get(providerRef)!, apiKey.trim());
+        }
+      } catch (error) {
+        for (const [providerRef, value] of previous) {
+          const reference = references.get(providerRef)!;
+          if (value === null) await secretStore.delete(reference);
+          else await secretStore.put(reference, value);
+        }
+        throw error;
+      }
+      return async () => {
+        for (const [providerRef, value] of previous) {
+          const reference = references.get(providerRef)!;
+          if (value === null) await secretStore.delete(reference);
+          else await secretStore.put(reference, value);
+        }
+      };
+    },
+    registerRevision: (snapshot, reason) => {
+      const existing = configurationRevisionRepo.find(snapshot.revisionId);
+      configurationRevisionRepo.ensure({
+        revisionId: snapshot.revisionId,
+        contentHash: snapshot.contentHash,
+        sourceKind: existing?.sourceKind ?? (reason === 'rollback' ? 'rollback' : 'native'),
+        importedAt: existing?.importedAt ?? new Date().toISOString(),
+      });
+    },
+    onActivated: async ({ snapshot, runtime }) => {
+      const nextStaged = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
+      const nextPlannerModel = snapshot.config.models[nextStaged.plannerBinding.modelRef];
+      if (!nextPlannerModel) {
+        throw new Error(`Planner Model is unavailable: ${nextStaged.plannerBinding.modelRef}`);
+      }
+      const runtimeEnvironment = await resolvePlannerRuntimeEnvironment({
+        configuration: runtime,
+        plannerBinding: nextStaged.plannerBinding,
+        secretStore,
+      });
+      await plannerSupervisor.refreshBinding({
+        configurationRevision: nextStaged.snapshot.revisionId,
+        bindingFingerprint: nextStaged.plannerBindingFingerprint,
+        provider: nextStaged.plannerBinding.providerRef,
+        modelId: nextPlannerModel.modelId,
+        runtimeEnvironment,
+      });
+      runtimeBindings.updateSnapshot(snapshot);
+      stagedConfiguration.snapshot = nextStaged.snapshot;
+      stagedConfiguration.planner = nextStaged.planner;
+      stagedConfiguration.kernel = nextStaged.kernel;
+      stagedConfiguration.plannerBinding = nextStaged.plannerBinding;
+      stagedConfiguration.plannerBindingFingerprint = nextStaged.plannerBindingFingerprint;
+    },
+    onActivationFailed: async ({ snapshot, runtime }) => {
+      const restored = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
+      const restoredModel = snapshot.config.models[restored.plannerBinding.modelRef];
+      if (!restoredModel) {
+        throw new Error(`Planner Model is unavailable after activation rollback: ${restored.plannerBinding.modelRef}`);
+      }
+      const runtimeEnvironment = await resolvePlannerRuntimeEnvironment({
+        configuration: runtime,
+        plannerBinding: restored.plannerBinding,
+        secretStore,
+      });
+      await plannerSupervisor.refreshBinding({
+        configurationRevision: restored.snapshot.revisionId,
+        bindingFingerprint: restored.plannerBindingFingerprint,
+        provider: restored.plannerBinding.providerRef,
+        modelId: restoredModel.modelId,
+        runtimeEnvironment,
+      });
+      runtimeBindings.updateSnapshot(snapshot);
+      stagedConfiguration.snapshot = restored.snapshot;
+      stagedConfiguration.planner = restored.planner;
+      stagedConfiguration.kernel = restored.kernel;
+      stagedConfiguration.plannerBinding = restored.plannerBinding;
+      stagedConfiguration.plannerBindingFingerprint = restored.plannerBindingFingerprint;
+    },
   });
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
@@ -542,7 +756,7 @@ async function main() {
       interactionTraceStream,
       planningContextBuilder,
       db,
-      kernelConfiguration: stagedConfiguration.kernel,
+      getKernelConfiguration: () => stagedConfiguration.kernel,
       commandCatalog,
       commandReadServices,
       taskEngine,
@@ -804,6 +1018,7 @@ async function main() {
       attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
       dispatchItemRepo: new KernelDispatchItemRepo(db),
     });
+    const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
@@ -825,6 +1040,67 @@ async function main() {
         projectTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;
+        },
+        projectWorkGraph: taskId => {
+          const task = taskRepo.findById(taskId);
+          if (!task) return null;
+          const subtasks = new SubtaskRepo(db).listByTask(taskId);
+          const decisions = new KernelDecisionRepo(db).listByTask(taskId);
+          const graphDecision = [...decisions].reverse().find(record => (
+            record.decision.action.type === 'authorize_task_plan'
+          ));
+          if (!graphDecision) return null;
+          const planAction = graphDecision.decision.action;
+          if (planAction.type !== 'authorize_task_plan') return null;
+          const graph = planAction.workGraph;
+          const dispatchItems = new KernelDispatchItemRepo(db).listByTask(taskId);
+          const receipts = new ExecutorAttemptReceiptRepo(db).listByTask(taskId);
+          const publications = new WorkspacePublicationRepo(db).listByTask(taskId);
+          const firstDispatchOrder = new Map<string, number>();
+          for (const item of dispatchItems) {
+            const current = firstDispatchOrder.get(item.subtaskId);
+            if (current === undefined || item.batchOrder < current) {
+              firstDispatchOrder.set(item.subtaskId, item.batchOrder);
+            }
+          }
+          const planDecisionFacts = Object.entries(
+            planAction.authorizedBindingsBySubtask,
+          ).map(([subtaskId, authorizedBindings]) => ({
+            taskId,
+            subtaskId,
+            action: graphDecision.action,
+            authorizedBindings,
+            routing: planAction.routing?.[subtaskId],
+          }));
+          return workGraphPresentationProjector.project({
+            graph,
+            subtasks: subtasks.map(subtask => ({
+              id: subtask.id,
+              status: subtask.status,
+              generationId: subtask.generationId,
+              firstDispatchOrder: firstDispatchOrder.get(subtask.id) ?? null,
+              hasPendingOrActiveAttempt: dispatchItems.some(item => (
+                item.subtaskId === subtask.id
+                && ['pending_launch', 'launching', 'running', 'cancelling', 'uncertain'].includes(item.status)
+              )),
+            })),
+            decisions: planDecisionFacts,
+            dispatchItems: dispatchItems.map(item => ({
+              subtaskId: item.subtaskId,
+              status: item.status,
+              authorizedBinding: item.authorizedBinding,
+            })),
+            receipts: receipts.map(receipt => ({
+              subtaskId: receipt.subtaskId,
+              attemptId: receipt.attemptId,
+              terminalState: receipt.terminalState,
+              authorizedBinding: receipt.authorizedBinding,
+            })),
+            publications: publications.map(publication => ({
+              subtaskId: publication.subtaskId,
+              status: publication.status,
+            })),
+          });
         },
       },
       configQuery: {
@@ -856,15 +1132,104 @@ async function main() {
             return null;
           }
         },
-        activate: async (baseRevisionId, nextConfig) =>
-          activateConfiguration(
-            configurationService,
-            nextConfig as AnyFusionConfigurationV2,
-            baseRevisionId,
-          ),
+        getCompletion: async () => {
+          const snapshot = await configurationService.getActiveSnapshot();
+          const providerCatalog = await Promise.all(
+            Object.entries(snapshot.config.providers).map(async ([providerRef, provider]) => {
+              let credentialAvailable = false;
+              try {
+                assertSecretReference(provider.apiKeyRef);
+                credentialAvailable = (await secretStore.get(provider.apiKeyRef)).trim().length > 0;
+              } catch {
+                credentialAvailable = false;
+              }
+              return {
+                providerRef,
+                baseUrl: provider.baseUrl,
+                credentialAvailable,
+                modelIds: Object.values(snapshot.config.models)
+                  .filter(model => model.providerRef === providerRef)
+                  .map(model => model.modelId),
+              };
+            }),
+          );
+          return new ConfigurationCompletionService({ providerCatalog }).complete({
+            providers: Object.fromEntries(
+              Object.entries(snapshot.config.providers).map(([providerRef, provider]) => [
+                providerRef,
+                {
+                  baseUrl: provider.baseUrl,
+                  credentialAvailable: providerCatalog
+                    .find(item => item.providerRef === providerRef)?.credentialAvailable ?? false,
+                },
+              ]),
+            ),
+            models: Object.fromEntries(
+              Object.entries(snapshot.config.models).map(([modelRef, model]) => [
+                modelRef,
+                {
+                  providerRef: model.providerRef,
+                  modelId: model.modelId,
+                  capabilities: model.capabilities,
+                  contextLimit: model.contextLimit,
+                  costInputPerMillion: model.costInputPerMillion,
+                  costOutputPerMillion: model.costOutputPerMillion,
+                  latencyTier: model.latencyTier,
+                  qualityTier: model.qualityTier,
+                },
+              ]),
+            ),
+            agentClasses: snapshot.config.agentClasses as unknown as Record<string, Record<string, unknown>>,
+          });
+        },
+        activate: async (baseRevisionId, nextConfig, secrets) => {
+          const result = await configurationRuntimeCoordinator.activate({
+            expectedRevisionId: baseRevisionId,
+            config: nextConfig as AnyFusionConfigurationV2,
+            secrets,
+          });
+          if (result.ok) {
+            return {
+              ok: true,
+              revisionId: result.snapshot.revisionId,
+              activeRevisionId: result.snapshot.revisionId,
+              runningRevisionId: result.snapshot.revisionId,
+              restartRequired: false,
+            };
+          }
+          return {
+            ok: false,
+            code: result.code,
+            activeRevisionId: result.activeRevisionId,
+            issues: result.issues,
+            restartRequired: result.code === 'restart_required',
+            restartPaths: result.restartPaths,
+          };
+        },
         rollback: async targetRevisionId => {
           const active = await configurationService.getActiveSnapshot();
-          return toMutationResult(await configurationService.rollback(targetRevisionId, active.revisionId));
+          const target = await configurationService.getSnapshot(targetRevisionId);
+          const result = await configurationRuntimeCoordinator.activate({
+            expectedRevisionId: active.revisionId,
+            config: target.config,
+            reason: 'rollback',
+          });
+          return result.ok
+            ? {
+              ok: true,
+              revisionId: result.snapshot.revisionId,
+              activeRevisionId: result.snapshot.revisionId,
+              runningRevisionId: result.snapshot.revisionId,
+              restartRequired: false,
+            }
+            : {
+              ok: false,
+              code: result.code,
+              activeRevisionId: result.activeRevisionId,
+              issues: result.issues,
+              restartRequired: result.code === 'restart_required',
+              restartPaths: result.restartPaths,
+            };
         },
         writeSecret: async (providerRef, apiKey) => {
           const reference = secretStore instanceof FileSecretStore
@@ -937,6 +1302,7 @@ async function main() {
           }
         },
       },
+      configurationRuntime: configurationRuntimeCoordinator,
     });
     console.log(`Metaclaw Gateway listening: ${gatewaySocketPath}`);
     await new Promise(() => undefined);

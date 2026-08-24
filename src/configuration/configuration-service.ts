@@ -26,6 +26,7 @@ import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-bin
 import type { SecretStore } from './secret-store.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { AgentRuntimeRenderer } from './agent-runtime-renderer.js';
+import type { ConfigurationActivationGate } from './configuration-activation-gate.js';
 
 export interface CompiledConfigurationRevision {
   contentHash: string;
@@ -66,6 +67,7 @@ export interface ConfigurationServiceDependencies {
     compiled: CompiledConfigurationRevision,
   ) => Promise<ConfigurationProbeResult>;
   audit?: ConfigurationRevisionAuditPort;
+  activationGate?: ConfigurationActivationGate;
 }
 
 export type ActivateDraftResult =
@@ -75,6 +77,11 @@ export type ActivateDraftResult =
       code: 'revision_conflict';
       activeRevisionId: string | null;
     };
+
+export interface ActivateDraftOptions {
+  /** Used only when an outer AccountRuntime coordinator owns the gate. */
+  allowNestedActivation?: boolean;
+}
 
 export class ConfigurationService implements ConfigurationServicePort {
   private readonly drafts = new Map<string, ConfigurationDraft>();
@@ -153,6 +160,21 @@ export class ConfigurationService implements ConfigurationServicePort {
     revisionId: string,
     expectedRevisionId: string | null,
     reason: 'activation' | 'rollback' = 'activation',
+    options: ActivateDraftOptions = {},
+  ): Promise<ActivateDraftResult> {
+    if (this.dependencies.activationGate) {
+      return this.dependencies.activationGate.withActivation(
+        () => this.activateDraftInternal(revisionId, expectedRevisionId, reason),
+        { allowNested: options.allowNestedActivation },
+      );
+    }
+    return this.activateDraftInternal(revisionId, expectedRevisionId, reason);
+  }
+
+  private async activateDraftInternal(
+    revisionId: string,
+    expectedRevisionId: string | null,
+    reason: 'activation' | 'rollback',
   ): Promise<ActivateDraftResult> {
     const draft = this.requireDraft(revisionId);
     if (!draft.config || !draft.compiled) {
@@ -169,6 +191,15 @@ export class ConfigurationService implements ConfigurationServicePort {
         code: 'revision_conflict',
         activeRevisionId: currentRevisionId,
       };
+    }
+
+    const candidateSnapshot = snapshotFor(
+      draft.revisionId,
+      draft.compiled.contentHash,
+      draft.config,
+    );
+    if (this.dependencies.renderer) {
+      await this.dependencies.renderer.render(candidateSnapshot, { activateCurrent: false });
     }
 
     await this.dependencies.repository.writeRevision({
@@ -194,7 +225,7 @@ export class ConfigurationService implements ConfigurationServicePort {
 
     const snapshot = await this.dependencies.repository.readSnapshot(revisionId);
     if (this.dependencies.renderer) {
-      await this.dependencies.renderer.render(snapshot);
+      await this.dependencies.renderer.activateCurrent(snapshot.revisionId);
     }
     await this.dependencies.audit?.recordActivation({
       revisionId,
@@ -217,6 +248,20 @@ export class ConfigurationService implements ConfigurationServicePort {
     const probe = await this.probeDraft(draft.revisionId);
     if (!probe.ok) throw new Error('rollback configuration probe failed');
     return this.activateDraft(draft.revisionId, expectedRevisionId, 'rollback');
+  }
+
+  async restoreActiveSnapshot(
+    revisionId: string,
+    expectedActiveRevisionId: string | null,
+  ): Promise<ConfigurationSnapshot> {
+    await this.dependencies.repository.restoreActiveRevision(
+      revisionId,
+      expectedActiveRevisionId,
+    );
+    if (this.dependencies.renderer) {
+      await this.dependencies.renderer.activateCurrent(revisionId);
+    }
+    return this.dependencies.repository.readSnapshot(revisionId);
   }
 
   async getActiveSnapshot(): Promise<ConfigurationSnapshot> {

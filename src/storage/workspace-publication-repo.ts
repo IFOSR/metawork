@@ -145,6 +145,14 @@ export class WorkspacePublicationRepo {
     return row ? rowToPublication(row) : null;
   }
 
+  listByTask(taskId: string): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM workspace_publications
+      WHERE task_id = ?
+      ORDER BY topology_layer ASC, first_dispatch_order ASC, subtask_id ASC, id ASC
+    `).all(taskId) as PublicationRow[]).map(rowToPublication);
+  }
+
   listIntegratedByTaskIds(taskIds: readonly string[]): WorkspacePublicationRecord[] {
     const uniqueTaskIds = [...new Set(taskIds.map(taskId => taskId.trim()).filter(Boolean))].sort();
     if (uniqueTaskIds.length === 0) return [];
@@ -339,6 +347,14 @@ export class WorkspacePublicationRepo {
         AND status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
       LIMIT 1
     `).get(taskId, ...(generationId ? [generationId] : [])));
+  }
+
+  hasAnyBlockingResidue(): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM workspace_publications
+      WHERE status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+      LIMIT 1
+    `).get());
   }
 
   countMergeAttempts(publicationId: string): number {

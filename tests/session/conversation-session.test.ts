@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
 import { ConversationInputMailbox } from '../../src/session/conversation-input-mailbox.js';
 import { ConversationSession } from '../../src/session/conversation-session.js';
@@ -6,6 +7,10 @@ import { InteractionTraceStream } from '../../src/session/interaction-trace-stre
 import type { ConversationRuntimePort } from '../../src/session/conversation-runtime-port.js';
 import type { PlannerTuiPermissionRequest } from '../../src/session/session-types.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
+import {
+  createPlannerProposalSubmissionId,
+  plannerProposalFingerprint,
+} from '../../src/planning/planner-proposal.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -354,6 +359,121 @@ describe('ConversationSession', () => {
     );
 
     expect(receivedContext?.images).toEqual(images);
+  });
+
+  it('reconstructs an accepted proposal from an already-applied Kernel decision after a completion crash', async () => {
+    const db = new (await import('better-sqlite3')).default(':memory:');
+    const { runMigrations } = await import('../../src/storage/migrations.js');
+    const { PlannerProposalRepo } = await import('../../src/storage/planner-proposal-repo.js');
+    runMigrations(db);
+    const proposalRepo = new PlannerProposalRepo(db);
+    const plan = {
+      schemaVersion: 8,
+      id: 'plan_replay_applied',
+      action: 'direct_reply',
+      confidence: 0.9,
+      reason: 'recover applied proposal',
+      clarificationQuestion: null,
+      response: { directReply: 'already delivered' },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+      risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+      authorizationResolution: null,
+      workGraph: null,
+      source: 'anyfusion-planner',
+    } as never;
+    const sessionId = 'planner_replay_applied';
+    const turnId = 'turn_replay_applied';
+    const submissionId = createPlannerProposalSubmissionId(sessionId, turnId, plan);
+    const eventId = `plan_event_${submissionId}`;
+    proposalRepo.ensureTurn(sessionId, turnId, 'recover');
+    proposalRepo.reserveSubmission({
+      sessionId,
+      turnId,
+      submissionId,
+      planFingerprint: plannerProposalFingerprint(plan),
+      planId: plan.id,
+      eventId,
+    });
+    proposalRepo.markUncertain(sessionId, turnId, submissionId);
+    const decision: KernelDecision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision_replay_applied',
+      eventId,
+      action: { type: 'deliver_direct_reply', response: 'already delivered' },
+      reason: 'direct reply authorized',
+    };
+    const apply = vi.fn(async () => null);
+    const replaySession = new ConversationSession({
+      conversationId: 'conversation_replay_applied',
+      plannerSessionId: sessionId,
+      runtimePort: makePort('local-default', {
+        planning: null,
+        queries: {
+          listKernelDecisionsBySession: () => [{
+            decision,
+            eventId,
+            configurationRevision: 'revision-test',
+          }] as never,
+          findKernelApplicationByDecisionId: () => ({
+            status: 'applied',
+          }) as never,
+        } as never,
+        commands: {
+          submitKernel: async () => ({ decisions: [], quiescent: true, pendingRecovery: 0 }),
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      plannerProposalRepo: proposalRepo,
+      planningContextBuilder: {
+        build: ({ userInput }: { userInput: string }) => ({
+          userInput,
+          request: { sessionId, source: 'session' },
+          pendingAuthorizationRequest: null,
+          configuration: {
+            revisionId: 'revision-test',
+            contentHash: 'hash',
+            models: [],
+            routingCatalog: { configurationRevision: 'revision-test', agentClasses: [] },
+          },
+          timeoutMs: 1_000,
+        }),
+        getPlannerConfiguration: () => ({
+          revisionId: 'revision-test',
+          contentHash: 'hash',
+          models: [],
+          routingCatalog: { configurationRevision: 'revision-test', agentClasses: [] },
+        }),
+      } as never,
+      sessionKernelRuntime: {
+        forInput: () => ({ apply }),
+      } as never,
+      db,
+    });
+    const result = replaySession.submitPlannerProposal({
+      sessionId,
+      turnId,
+      userInput: 'recover',
+      submissionId,
+      plan,
+    });
+
+    await expect(result).resolves.toMatchObject({
+      status: 'accepted',
+      outcome: 'direct_reply_delivered',
+      displayText: 'already delivered',
+    });
+    expect(apply).not.toHaveBeenCalled();
+    db.close();
   });
 });
 

@@ -51,6 +51,14 @@ export interface PlannerSupervisorRuntimeBinding {
   modelId: string;
 }
 
+export interface PlannerBindingResolution {
+  configurationRevision: string;
+  bindingFingerprint: string;
+  provider: string;
+  modelId: string;
+  runtimeEnvironment: Readonly<NodeJS.ProcessEnv>;
+}
+
 export interface PlannerProcessController extends PlannerRunner {
   readonly runtimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
   stop(): Promise<void>;
@@ -81,6 +89,9 @@ export interface PlannerProcessSupervisorDeps {
     provider: string;
     modelId: string;
   };
+  resolvePlannerBinding?: (
+    context: PlanningContext,
+  ) => Promise<PlannerBindingResolution> | PlannerBindingResolution;
   shutdownGraceMs?: number;
   progressHeartbeatMs?: number;
   maxProcessingCycles?: number;
@@ -101,7 +112,11 @@ interface TrackedPlannerProcess {
  * session are serialized so Gateway/Feishu cannot corrupt the Pi session file.
  */
 export class PlannerProcessSupervisor implements PlannerProcessController {
-  readonly runtimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
+  private activeRuntimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
+  private currentConfigurationRevision?: string;
+  private currentBindingFingerprint?: string;
+  private currentExpectedModel?: { provider: string; modelId: string };
+  private currentRuntimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
   private readonly sessionQueues = new Map<string, Promise<void>>();
   private readonly closedSessions = new Set<string>();
   private readonly activeProcesses = new Set<ChildProcess>();
@@ -109,19 +124,50 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   private stopping = false;
 
   constructor(private readonly deps: PlannerProcessSupervisorDeps = {}) {
+    this.currentConfigurationRevision = deps.configurationRevision;
+    this.currentBindingFingerprint = deps.bindingFingerprint;
+    this.currentExpectedModel = deps.expectedModel;
+    this.currentRuntimeEnvironment = deps.runtimeEnvironment;
     if (
       deps.configurationRevision
       && deps.bindingFingerprint
       && deps.expectedModel
       && hasCompleteRuntimeEnvironment(deps.runtimeEnvironment, deps.expectedModel)
     ) {
-      this.runtimeBinding = Object.freeze({
+      this.activeRuntimeBinding = Object.freeze({
         configurationRevision: deps.configurationRevision,
         bindingFingerprint: deps.bindingFingerprint,
         provider: deps.expectedModel.provider,
         modelId: deps.expectedModel.modelId,
       });
     }
+  }
+
+  get runtimeBinding(): Readonly<PlannerSupervisorRuntimeBinding> | undefined {
+    return this.activeRuntimeBinding;
+  }
+
+  async refreshBinding(input: {
+    configurationRevision: string;
+    bindingFingerprint: string;
+    provider: string;
+    modelId: string;
+    runtimeEnvironment: Readonly<NodeJS.ProcessEnv>;
+  }): Promise<void> {
+    if (!hasCompleteRuntimeEnvironment(input.runtimeEnvironment, input)) {
+      throw new Error(`Planner runtime environment is incomplete for revision ${input.configurationRevision}`);
+    }
+    await this.terminateProcesses([...this.activeProcesses]);
+    this.currentConfigurationRevision = input.configurationRevision;
+    this.currentBindingFingerprint = input.bindingFingerprint;
+    this.currentExpectedModel = { provider: input.provider, modelId: input.modelId };
+    this.currentRuntimeEnvironment = input.runtimeEnvironment;
+    this.activeRuntimeBinding = Object.freeze({
+      configurationRevision: input.configurationRevision,
+      bindingFingerprint: input.bindingFingerprint,
+      provider: input.provider,
+      modelId: input.modelId,
+    });
   }
 
   async run(
@@ -217,7 +263,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       'probe',
       'kernel',
       'session',
-      this.deps.configurationRevision,
+      this.currentConfigurationRevision,
     );
     this.assertSessionOpen('probe');
     const child = (this.deps.spawn ?? spawn)(launch.command, ['--version'], {
@@ -261,16 +307,27 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     onProgress?: PlannerRunProgressObserver,
   ): Promise<PlannerRunResult> {
     const startedAt = Date.now();
+    if (this.deps.resolvePlannerBinding) {
+      const resolved = await this.deps.resolvePlannerBinding(context);
+      if (
+        this.currentConfigurationRevision !== resolved.configurationRevision
+        || this.currentBindingFingerprint !== resolved.bindingFingerprint
+        || this.currentExpectedModel?.provider !== resolved.provider
+        || this.currentExpectedModel?.modelId !== resolved.modelId
+      ) {
+        await this.refreshBinding(resolved);
+      }
+    }
     const launch = await this.resolveLaunch(
       context.request.sessionId,
       cwdOverride,
       'rpc',
       purpose,
       context.request.source,
-      context.configuration?.revisionId ?? this.deps.configurationRevision,
+      context.configuration?.revisionId ?? this.currentConfigurationRevision,
       context.timeoutMs,
     );
-    if (context.configuration?.revisionId && !this.deps.expectedModel) {
+    if (context.configuration?.revisionId && !this.currentExpectedModel) {
       throw new Error(
         `Planner expected model binding is required for configuration revision `
         + context.configuration.revisionId,
@@ -292,7 +349,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let stderr = '';
       let settled = false;
       let promptAccepted = false;
-      let modelChecked = this.deps.expectedModel === undefined;
+      let modelChecked = this.currentExpectedModel === undefined;
       let pendingResult: PlannerRunResult | null = null;
       let terminalProposalResult: PlannerProposalResult | null = null;
       let submittedPlan: unknown;
@@ -411,7 +468,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             : null;
           const actualProvider = typeof model?.provider === 'string' ? model.provider : 'none';
           const actualModelId = typeof model?.id === 'string' ? model.id : 'none';
-          const expected = this.deps.expectedModel;
+          const expected = this.currentExpectedModel;
           if (
             !expected
             || actualProvider !== expected.provider
@@ -608,7 +665,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       });
 
       proc.stdin?.on('error', error => fail(error));
-      if (this.deps.expectedModel) {
+      if (this.currentExpectedModel) {
         proc.stdin?.write(`${JSON.stringify({ id: stateRequestId, type: 'get_state' })}\n`);
       } else {
         sendPrompt();
@@ -622,7 +679,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     mode: 'interactive' | 'rpc' | 'probe',
     purpose: PlannerProposalPurpose = 'kernel',
     requestSource = 'session',
-    configurationRevision = this.deps.configurationRevision
+    configurationRevision = this.currentConfigurationRevision
       ?? process.env.METACLAW_CONFIGURATION_REVISION,
     rpcTimeoutMs?: number,
   ): Promise<{
@@ -633,12 +690,12 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     sessionDir: string;
   }> {
     if (
-      this.deps.configurationRevision
+      this.currentConfigurationRevision
       && configurationRevision
-      && configurationRevision !== this.deps.configurationRevision
+      && configurationRevision !== this.currentConfigurationRevision
     ) {
       throw new Error(
-        `Planner supervisor revision mismatch: expected ${this.deps.configurationRevision}, `
+        `Planner supervisor revision mismatch: expected ${this.currentConfigurationRevision}, `
         + `received ${configurationRevision}`,
       );
     }
@@ -707,7 +764,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       sessionDir,
       env: {
         ...env,
-        ...this.deps.runtimeEnvironment,
+        ...this.currentRuntimeEnvironment,
         ANYFUSION_PLANNER_MODE: '1',
         ANYFUSION_PLANNER_HOME: plannerHome,
         ANYFUSION_PLANNER_SESSION_DIR: sessionDir,

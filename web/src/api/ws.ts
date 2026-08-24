@@ -4,6 +4,7 @@ import type {
   InteractionTrace,
   InteractionTraceEvent,
   ServerMessage,
+  ConfigurationRuntimeState,
 } from './types';
 import type {
   ConversationTurnProjection,
@@ -57,6 +58,7 @@ export interface WsHandlers {
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
   onTraceDelta?: (turnId: string, fromSequence: number, events: InteractionTraceEvent[]) => void;
+  onConfigurationRuntimeState?: (state: ConfigurationRuntimeState) => void;
   onError?: (message: string) => void;
   onUnauthorized?: () => void;
   onStatusChange?: (connected: boolean) => void;
@@ -162,6 +164,9 @@ export class WsClient {
           break;
         case 'trace_delta':
           this.handlers.onTraceDelta?.(message.turnId, message.fromSequence, message.events);
+          break;
+        case 'configuration_runtime_state':
+          this.handlers.onConfigurationRuntimeState?.(message.state);
           break;
         case 'error':
           if (message.message === 'unauthorized') {

@@ -16,7 +16,10 @@ const CURRENT_FILE = 'current';
 export class AgentRuntimeRenderer {
   constructor(private readonly generatedRoot: string) {}
 
-  async render(snapshot: ConfigurationSnapshot): Promise<string> {
+  async render(
+    snapshot: ConfigurationSnapshot,
+    options: { activateCurrent?: boolean } = {},
+  ): Promise<string> {
     const target = join(this.generatedRoot, snapshot.revisionId);
     const tmp = `${target}.tmp-${randomUUID()}`;
     await mkdir(tmp, { recursive: true });
@@ -26,12 +29,18 @@ export class AgentRuntimeRenderer {
       await this.renderPi(snapshot.config, tmp);
       await rm(target, { recursive: true, force: true });
       await rename(tmp, target);
-      await this.pointCurrent(snapshot.revisionId);
+      if (options.activateCurrent !== false) {
+        await this.pointCurrent(snapshot.revisionId);
+      }
     } catch (error) {
       await rm(tmp, { recursive: true, force: true });
       throw error;
     }
     return target;
+  }
+
+  async activateCurrent(revisionId: string): Promise<void> {
+    await this.pointCurrent(revisionId);
   }
 
   async currentRevisionId(): Promise<string | null> {

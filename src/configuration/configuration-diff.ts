@@ -6,6 +6,15 @@ export interface ConfigurationDiffEntry {
   after: unknown;
 }
 
+export type ConfigurationChangeClass = 'none' | 'hot' | 'restart_required';
+
+export interface ConfigurationDiffClassification {
+  classification: ConfigurationChangeClass;
+  restartRequired: boolean;
+  entries: ConfigurationDiffEntry[];
+  restartPaths: string[];
+}
+
 const SENSITIVE_KEY = /(?:api.?key|auth|credential|password|secret|token|private.?key)/iu;
 
 export function diffConfigurations(
@@ -15,6 +24,34 @@ export function diffConfigurations(
   const entries: ConfigurationDiffEntry[] = [];
   collectDiff(entries, '', before, after);
   return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function classifyConfigurationDiff(
+  before: unknown,
+  after: unknown,
+): ConfigurationDiffClassification {
+  const entries = diffConfigurations(before, after);
+  const restartPaths = entries
+    .filter(entry => !isHotPath(entry.path))
+    .map(entry => entry.path);
+  const classification: ConfigurationChangeClass = entries.length === 0
+    ? 'none'
+    : restartPaths.length > 0
+      ? 'restart_required'
+      : 'hot';
+  return {
+    classification,
+    restartRequired: restartPaths.length > 0,
+    entries,
+    restartPaths,
+  };
+}
+
+function isHotPath(path: string): boolean {
+  return path.startsWith('providers.')
+    || path.startsWith('models.')
+    || /^agentClasses\.[^.]+\.modelPolicy(?:\.|$)/u.test(path)
+    || /^agentClasses\.[^.]+\.enabled$/u.test(path);
 }
 
 function collectDiff(

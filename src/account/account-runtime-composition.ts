@@ -44,6 +44,7 @@ import { KernelExecutorStatusProjector } from '../execution/kernel-executor-stat
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { createSqliteAccountPermissionService } from './sqlite-account-permission-service.js';
 import { AccountStartupRecoveryService } from './account-startup-recovery-service.js';
+import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -69,9 +70,12 @@ export function buildAccountRuntimeComposition(deps: {
   stagedConfiguration: StagedLegacyConfiguration;
   plannerBinding: RevisionedAgentBinding;
   plannerBindingFingerprint: string;
+  getPlannerBinding?: Parameters<typeof buildAccountPlannerServices>[0]['getPlannerBinding'];
   getRuntimeBinding(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
+  getRuntimeConfiguration?: Parameters<typeof buildAccountExecutionServices>[0]['getRuntimeConfiguration'];
+  getActiveRuntimeConfiguration?: Parameters<typeof buildAccountExecutionServices>[0]['getActiveRuntimeConfiguration'];
   probeCommand?: ProbeCommandRunner;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerSupervisor?: PlannerProcessController;
@@ -81,6 +85,7 @@ export function buildAccountRuntimeComposition(deps: {
   blockedRecheckIntervalMs?: number;
   buildKernelCoordinator?(accountId: string): AccountKernelCoordinator;
   recoverDurableStartup?(accountId: string): Promise<void>;
+  configurationActivationGate?: ConfigurationActivationGate;
 }): AccountRuntimeComposition {
   const kernelServices = buildAccountKernelServices(deps.db);
   const repositories = buildAccountRepositories(deps.db);
@@ -94,6 +99,8 @@ export function buildAccountRuntimeComposition(deps: {
   const executionServices = buildAccountExecutionServices({
     stagedConfiguration: deps.stagedConfiguration,
     getRuntimeBinding: deps.getRuntimeBinding,
+    getRuntimeConfiguration: deps.getRuntimeConfiguration,
+    getActiveRuntimeConfiguration: deps.getActiveRuntimeConfiguration,
     probeCommand: deps.probeCommand,
     attemptExecutionBackend: taskServices.attemptExecutionBackend,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
@@ -141,6 +148,7 @@ export function buildAccountRuntimeComposition(deps: {
     plannerBinding: deps.plannerBinding,
     plannerBindingFingerprint: deps.plannerBindingFingerprint,
     plannerModelId: plannerModel.modelId,
+    getPlannerBinding: deps.getPlannerBinding,
     plannerSupervisor: deps.plannerSupervisor,
     planningAgent: deps.planningAgent,
   });
@@ -250,6 +258,7 @@ export function buildAccountRuntimeComposition(deps: {
     buildCoordinatorServices: () => coordinatorServices,
     buildRuntimeExecutionServices: () => runtimeExecutionServices,
     buildPermissionService: () => permissionService,
+    configurationActivationGate: deps.configurationActivationGate,
     recoverDurableStartup: deps.recoverDurableStartup
       ? () => deps.recoverDurableStartup!(deps.accountId)
       : () => startupRecovery.recover(),

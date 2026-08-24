@@ -791,6 +791,92 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('returns invalid configuration activation as a client-repairable error', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        activate: async () => ({
+          ok: false,
+          code: 'invalid_configuration',
+          activeRevisionId: 'revision-test',
+          issues: ['agentClasses.planner.modelPolicy.modelRef: no available Model'],
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/activate`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            config: { schemaVersion: 2 },
+          }),
+        },
+      );
+
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        code: 'invalid_configuration',
+        issues: ['agentClasses.planner.modelPolicy.modelRef: no available Model'],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('serves configuration completion as a separate catalog projection', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        getCompletion: async () => ({
+          providers: {
+            kimi: {
+              baseUrl: 'https://api.kimi.com/coding/v1',
+              credentialState: '已从本机 Agent 导入',
+              modelIds: ['k3'],
+            },
+          },
+          models: {
+            kimi_k3: {
+              providerRef: 'kimi',
+              modelId: 'k3',
+              capabilities: ['planning', 'structured-output'],
+              capabilityState: '已从 Provider 补全',
+            },
+          },
+          requiredFields: [],
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/config/completion`, {
+        headers: { authorization: 'Bearer manual-token' },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        providers: {
+          kimi: { credentialState: '已从本机 Agent 导入' },
+        },
+        models: {
+          kimi_k3: { capabilityState: '已从 Provider 补全' },
+        },
+        requiredFields: [],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('writes a provider secret and never echoes the plaintext back', async () => {
     const port = await reservePort();
     let storedApiKey = '';
@@ -912,6 +998,41 @@ describe('ManagementServer WebSocket authentication', () => {
       }
     } finally {
       client.close();
+      await server.stop();
+    }
+  });
+
+  it('serves the read-only Work Graph presentation projection separately from execution commands', async () => {
+    const port = await reservePort();
+    const projection = {
+      configurationRevision: 'revision-1',
+      generationId: 'generation-1',
+      nodes: [],
+      edges: [],
+      parallelGroups: [],
+      currentRunnableFrontier: [],
+    };
+    const server = createManagementServer(port, {
+      executionQuery: {
+        listTasks: () => [],
+        projectTimeline: () => null,
+        projectWorkGraph: taskId => taskId === 'task-graph' ? projection : null,
+      },
+    });
+    await server.start();
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/execution/tasks/task-graph/work-graph`,
+        { headers: { authorization: 'Bearer manual-token' } },
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual(projection);
+      const missing = await fetch(
+        `http://127.0.0.1:${port}/api/execution/tasks/missing/work-graph`,
+        { headers: { authorization: 'Bearer manual-token' } },
+      );
+      expect(missing.status).toBe(404);
+    } finally {
       await server.stop();
     }
   });

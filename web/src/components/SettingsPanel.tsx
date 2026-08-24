@@ -1,124 +1,309 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
-import type { ActivateResult } from '../api/types';
-import { AgentClassConfig, type AgentClassConfigDraft, type SecretState } from './AgentClassConfig';
+import type {
+  ActivateResult,
+  ConfigSnapshot,
+  ConfigurationCompletionResult,
+  ConfigurationRuntimeState,
+} from '../api/types';
 import {
-  OTHER_PROVIDER_KEY,
   presetProvider,
   presetProviderByBaseUrl,
 } from '../preset-providers';
+import { resolveProviderSecretReference } from './provider-secret-state';
 import {
-  deriveSecretStates,
-  resolveProviderSecretReference,
-} from './provider-secret-state';
+  AgentClassConfig,
+} from './AgentClassConfig';
+import {
+  buildProviderModelOptions,
+  invalidRoutingDrafts,
+  humanizeAgentClassRef,
+  humanizeProviderRef,
+  refsForModelIdentity,
+  removeModelRefsFromRoutingDraft,
+  ROUTING_CAPABILITY_CONTRACTS,
+  type AgentClassRoutingFacts,
+  type ConfigurationFieldState,
+  type SettingsModelEntry,
+  type SettingsProviderEntry,
+  type RoutingDraftMap,
+} from '../settings-model';
 
 interface SettingsPanelProps {
   http: HttpClient | null;
+  runtime: ConfigurationRuntimeState | null;
   onClose: () => void;
 }
 
-type DraftState = Record<string, AgentClassConfigDraft>;
+type ProviderDraft = SettingsProviderEntry & { apiKey: string };
+type ModelDraft = SettingsModelEntry;
+type CatalogDraft = {
+  providers: Record<string, ProviderDraft>;
+  models: Record<string, ModelDraft>;
+};
+type RoutingDraft = RoutingDraftMap;
+type RoutingFacts = Record<string, AgentClassRoutingFacts>;
 
-function sanitizeRef(value: string): string {
-  return value.replace(/[^a-zA-Z0-9-]/g, '-');
+type RawRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): RawRecord {
+  return value && typeof value === 'object' ? value as RawRecord : {};
 }
 
-function loadDraft(config: Record<string, unknown>): DraftState {
-  const agentClasses = (config.agentClasses ?? {}) as Record<string, Record<string, unknown>>;
-  const models = (config.models ?? {}) as Record<string, Record<string, unknown>>;
-  const providers = (config.providers ?? {}) as Record<string, Record<string, unknown>>;
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+}
 
-  const draft: DraftState = {};
-  for (const [ref, agentClass] of Object.entries(agentClasses)) {
-    const policy = agentClass.modelPolicy as { mode?: string; modelRef?: string; defaultModelRef?: string; allowedModelRefs?: string[] };
-    const modelRef = policy?.mode === 'fixed'
-      ? (policy.modelRef ?? '')
-      : (policy?.defaultModelRef ?? policy?.allowedModelRefs?.[0] ?? '');
-    const model = models[modelRef];
-    const provider = model ? providers[String(model.providerRef)] : undefined;
-    const preset = provider ? presetProviderByBaseUrl(String(provider.baseUrl ?? '')) : undefined;
+function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResult): CatalogDraft {
+  const rawProviders = asRecord(config.providers);
+  const rawModels = asRecord(config.models);
+  const completionProviders = completion?.providers ?? {};
+  const providers = Object.fromEntries(Object.entries(rawProviders).map(([providerRef, raw]) => {
+    const provider = asRecord(raw);
+    const completed = completionProviders[providerRef];
+    const baseUrl = String(provider.baseUrl ?? completed?.baseUrl ?? '');
+    const preset = presetProvider(providerRef) ?? presetProviderByBaseUrl(baseUrl);
+    return [
+      providerRef,
+      {
+        providerRef,
+        displayName: preset?.label ?? humanizeProviderRef(providerRef),
+        baseUrl,
+        modelIds: [...new Set([
+          ...(completed?.modelIds ?? []),
+          ...(preset?.models ?? []),
+        ])],
+        apiKey: '',
+        credentialState: completed?.credentialState ?? '需要确认',
+        enabled: provider.enabled !== false,
+      },
+    ];
+  }));
+  const models = Object.fromEntries(Object.entries(rawModels).map(([ref, raw]) => {
+    const model = asRecord(raw);
+    const capabilities = stringList(model.capabilities);
+    return [
+      ref,
+      {
+        ref,
+        providerRef: String(model.providerRef ?? ''),
+        modelId: String(model.modelId ?? ref),
+        capabilities,
+        capabilityState: capabilities.length > 0 ? '已自动发现' : '需要确认',
+        ...(typeof model.contextLimit === 'number' ? { contextLimit: model.contextLimit } : {}),
+        ...(typeof model.costInputPerMillion === 'number'
+          ? { costInputPerMillion: model.costInputPerMillion }
+          : {}),
+        ...(typeof model.costOutputPerMillion === 'number'
+          ? { costOutputPerMillion: model.costOutputPerMillion }
+          : {}),
+        ...(typeof model.latencyTier === 'string' ? { latencyTier: model.latencyTier } : {}),
+        ...(typeof model.qualityTier === 'string' ? { qualityTier: model.qualityTier } : {}),
+        ...(typeof model.reasoning === 'string' ? { reasoning: model.reasoning } : {}),
+        ...(typeof model.costTier === 'string' ? { costTier: model.costTier } : {}),
+        enabled: model.enabled !== false,
+      },
+    ];
+  }));
+  return { providers, models };
+}
 
-    draft[ref] = {
-      providerKey: preset ? preset.key : OTHER_PROVIDER_KEY,
-      providerName: preset ? '' : String(model?.providerRef ?? ''),
-      baseUrl: preset ? preset.baseUrl : String(provider?.baseUrl ?? ''),
-      apiKey: '',
-      modelId: String(model?.modelId ?? ''),
+function loadRoutingDraft(config: RawRecord): RoutingDraft {
+  const rawAgentClasses = asRecord(config.agentClasses);
+  const modelRefs = Object.keys(asRecord(config.models));
+  return Object.fromEntries(Object.entries(rawAgentClasses).map(([agentClassRef, raw]) => {
+    const agentClass = asRecord(raw);
+    const policy = asRecord(agentClass.modelPolicy);
+    const isPlanner = agentClass.kind === 'planner' || agentClassRef === 'planner';
+    const mode = isPlanner || policy.mode !== 'auto' ? 'fixed' : 'auto';
+    const allowedModelRefs = mode === 'auto'
+      ? stringList(policy.allowedModelRefs).filter(ref => modelRefs.includes(ref))
+      : [];
+    const modelRef = typeof policy.modelRef === 'string'
+      ? policy.modelRef
+      : typeof policy.defaultModelRef === 'string'
+        ? policy.defaultModelRef
+        : modelRefs[0] ?? '';
+    const fallback = asRecord(policy.objective);
+    return [
+      agentClassRef,
+      {
+        mode,
+        modelRef,
+        allowedModelRefs: allowedModelRefs.length > 0
+          ? allowedModelRefs
+          : modelRef ? [modelRef] : modelRefs.slice(0, 1),
+        defaultModelRef: typeof policy.defaultModelRef === 'string'
+          ? policy.defaultModelRef
+          : allowedModelRefs[0] ?? modelRefs[0] ?? '',
+        objective: fallback.priority === 'quality'
+          || fallback.priority === 'cost'
+          || fallback.priority === 'latency'
+          ? fallback.priority
+          : 'balanced',
+        minimumQualityTier: fallback.minimumQualityTier === 'high'
+          || fallback.minimumQualityTier === 'medium'
+          ? fallback.minimumQualityTier
+          : 'low',
+      },
+    ];
+  }));
+}
+
+function loadRoutingFacts(config: RawRecord): RoutingFacts {
+  const rawAgentClasses = asRecord(config.agentClasses);
+  const rawHarnesses = asRecord(config.harnesses);
+  return Object.fromEntries(Object.entries(rawAgentClasses).map(([agentClassRef, raw]) => {
+    const agentClass = asRecord(raw);
+    const harnessRef = String(agentClass.harnessRef ?? '');
+    const harness = asRecord(rawHarnesses[harnessRef]);
+    const baseFacts = {
+      kind: agentClass.kind === 'planner' ? 'planner' as const : 'executor' as const,
+      driverId: String(harness.driverId ?? '未声明'),
     };
-  }
-  return draft;
+    const primaryUseCases = stringList(agentClass.primaryUseCases);
+    const avoidUseCases = stringList(agentClass.avoidUseCases);
+    return [
+      agentClassRef,
+      {
+        agentClassRef,
+        displayName: humanizeAgentClassRef(agentClassRef),
+        kind: baseFacts.kind,
+        harnessRef,
+        harnessLabel: humanizeProviderRef(harnessRef),
+        transport: String(harness.transport ?? '未声明'),
+        driverId: baseFacts.driverId,
+        primaryUseCases,
+        avoidUseCases,
+        routingCapabilities: stringList(agentClass.routingCapabilities),
+        capabilityContracts: stringList(agentClass.routingCapabilities)
+          .map(capability => ROUTING_CAPABILITY_CONTRACTS[capability])
+          .filter((contract): contract is string => Boolean(contract)),
+        affordances: stringList(agentClass.plannerAffordances),
+      },
+    ];
+  }));
 }
 
-export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
+function fieldStateLabel(state: ConfigurationFieldState): string {
+  return state;
+}
+
+export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
+  const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [runningRevisionId, setRunningRevisionId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<DraftState | null>(null);
+  const [draft, setDraft] = useState<RoutingDraft | null>(null);
+  const [facts, setFacts] = useState<RoutingFacts | null>(null);
+  const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
+  const [newModelIds, setNewModelIds] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ActivateResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [secretStates, setSecretStates] = useState<Record<string, SecretState>>({});
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const secretStatusVersion = useRef(0);
 
-  // 收集 draft 中引用的全部 Provider；本机凭据存在即可复用，不用重复填写。
+  const applyConfigSnapshot = (snapshot: ConfigSnapshot) => {
+    const config = snapshot.config as RawRecord;
+    setRevisionId(snapshot.revisionId);
+    setRunningRevisionId(snapshot.runtimeRevisionId ?? snapshot.runningRevisionId);
+    setCatalog(loadCatalog(config));
+    setDraft(loadRoutingDraft(config));
+    setFacts(loadRoutingFacts(config));
+  };
+
   useEffect(() => {
-    if (!http || !draft) return;
-    const draftEntries = Object.entries(draft);
-    const providerRefsByAgent: Record<string, string> = {};
-    for (const [agentClassRef, entry] of draftEntries) {
-      const preset = presetProvider(entry.providerKey);
-      providerRefsByAgent[agentClassRef] = preset ? preset.key : sanitizeRef(entry.providerName);
-    }
-    const providerRefs = new Set(Object.values(providerRefsByAgent));
-    if (providerRefs.size === 0) return;
+    setActivationState(runtime);
+  }, [runtime]);
+
+  useEffect(() => {
+    if (!http) return;
     let cancelled = false;
-    void (async () => {
-      try {
-        const existence = await http.getSecretStatus([...providerRefs]);
-        if (cancelled) return;
-        const projected = deriveSecretStates(
-          draftEntries.map(([agentClassRef]) => agentClassRef),
-          providerRefsByAgent,
-          existence,
-        );
-        const next: Record<string, SecretState> = {};
-        for (const providerRef of providerRefs) {
-          const agentClassRef = draftEntries.find(
-            ([ref]) => providerRefsByAgent[ref] === providerRef,
-          )?.[0];
-          next[providerRef] = agentClassRef ? projected[agentClassRef] ?? 'unknown' : 'unknown';
+    const refresh = () => {
+      void http.getActivationStatus().then(state => {
+        if (!cancelled) setActivationState(state);
+      }).catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [http]);
+
+  useEffect(() => {
+    if (!http || !catalog) return;
+    const providerRefs = Object.keys(catalog.providers);
+    if (providerRefs.length === 0) return;
+    let cancelled = false;
+    const requestVersion = ++secretStatusVersion.current;
+    void http.getSecretStatus(providerRefs).then(existence => {
+      if (cancelled || requestVersion !== secretStatusVersion.current) return;
+      setCatalog(current => current
+        ? {
+          ...current,
+          providers: Object.fromEntries(Object.entries(current.providers).map(([ref, provider]) => [
+            ref,
+            {
+              ...provider,
+              credentialState: provider.apiKey
+                ? provider.credentialState
+                : existence[ref] ? '已自动发现' : '缺失',
+            },
+          ])),
         }
-        setSecretStates(current => ({ ...current, ...next }));
-      } catch {
-        if (!cancelled) setSecretStates({});
-      }
-    })();
+        : current);
+    }).catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [http, draft]);
+  }, [http, catalog ? Object.keys(catalog.providers).join(',') : '']);
 
   useEffect(() => {
     if (!http) return;
     void http.getConfig().then(snapshot => {
-      const config = snapshot.config as Record<string, unknown>;
-      setRevisionId(snapshot.revisionId);
-      setRunningRevisionId(snapshot.runningRevisionId);
-      setDraft(loadDraft(config));
+      applyConfigSnapshot(snapshot);
+      void http.getConfigurationCompletion().then(nextCompletion => {
+        setCatalog(current => {
+          if (!current) return current;
+          const providers = Object.fromEntries(Object.entries(current.providers).map(([ref, provider]) => [
+            ref,
+            {
+              ...provider,
+              modelIds: [...new Set([
+                ...provider.modelIds,
+                ...(nextCompletion.providers[ref]?.modelIds ?? []),
+              ])],
+              credentialState: nextCompletion.providers[ref]?.credentialState ?? provider.credentialState,
+            },
+          ]));
+          return { ...current, providers };
+        });
+      }).catch(() => undefined);
     }).catch(error => setLoadError((error as Error).message));
   }, [http]);
 
+  const draftValidationIssues = draft && catalog
+    ? invalidRoutingDrafts(draft, Object.values(catalog.models))
+    : [];
+  const editingDisabled = loading || activationState?.activationAllowed === false;
+
   const activate = async () => {
-    if (!http || !revisionId || !draft) return;
-    // 只有确实没有 SecretStore 凭据时才要求填写；网络探测不是激活前置条件。
-    const missing: string[] = [];
-    for (const entry of Object.values(draft)) {
-      const preset = presetProvider(entry.providerKey);
-      const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
-      const state = secretStates[providerRef];
-      if (!entry.apiKey && state === 'missing') missing.push(providerRef);
-    }
-    if (missing.length > 0) {
+    if (!http || !revisionId || !draft || !catalog || activationState?.activationAllowed === false) return;
+    const missingCredentials = Object.values(catalog.providers)
+      .filter(provider => provider.credentialState === '缺失' && !provider.apiKey)
+      .map(provider => provider.providerRef);
+    if (draftValidationIssues.length > 0) {
       setResult(null);
-      setLoadError(`以下 Provider 的 API Key 缺失，请在对应卡片填写后再激活：${missing.join('、')}`);
+      setLoadError(`以下路由配置需要重新选择可用模型：${draftValidationIssues.join('、')}`);
+      return;
+    }
+    if (missingCredentials.length > 0) {
+      setResult(null);
+      setLoadError(`以下 Provider 缺少凭据：${missingCredentials.join('、')}`);
       return;
     }
     setLoadError(null);
@@ -126,73 +311,118 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     setResult(null);
     try {
       const original = await http.getConfig();
-      const originalConfig = original.config as Record<string, unknown>;
-      const originalAgentClasses = (originalConfig.agentClasses ?? {}) as Record<string, Record<string, unknown>>;
-      const originalProviders = (originalConfig.providers ?? {}) as Record<string, {
-        baseUrl?: string;
-        apiKeyRef?: string;
-      }>;
+      const originalConfig = original.config as RawRecord;
+      const originalProviders = asRecord(originalConfig.providers);
+      const originalAgentClasses = asRecord(originalConfig.agentClasses);
       const knownSecretReferences = Object.values(originalProviders)
-        .map(provider => provider.apiKeyRef)
+        .map(provider => asRecord(provider).apiKeyRef)
         .filter((reference): reference is string => typeof reference === 'string');
-      const writtenSecretReferences: Record<string, string> = {};
+      const activationSecrets: Record<string, string> = {};
+      const providers: Record<string, RawRecord> = {};
+      const models: Record<string, RawRecord> = {};
+      const agentClasses: Record<string, RawRecord> = {};
 
-      const providers: Record<string, Record<string, unknown>> = {};
-      const models: Record<string, Record<string, unknown>> = {};
-      const agentClasses: Record<string, Record<string, unknown>> = {};
-
-      for (const [ref, entry] of Object.entries(draft)) {
-        const preset = presetProvider(entry.providerKey);
-        const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
-        const baseUrl = preset ? preset.baseUrl : entry.baseUrl;
-
-        // 任何 provider 输入了新 Key 都写入 SecretStore（覆盖旧值）。
-        if (entry.apiKey) {
-          const secret = await http.writeSecret(providerRef, entry.apiKey.trim());
-          writtenSecretReferences[providerRef] = secret.apiKeyRef;
-          setSecretStates(current => ({ ...current, [providerRef]: 'configured' }));
-        }
-
-        const apiKeyRef = resolveProviderSecretReference(
-          providerRef,
-          baseUrl,
-          originalProviders,
-          writtenSecretReferences,
-          knownSecretReferences,
-        );
-        providers[providerRef] = {
-          protocol: 'openai-compatible',
-          baseUrl,
-          apiKeyRef,
-          region: 'international',
-          enabled: true,
-        };
-
-        const modelRef = sanitizeRef(`${providerRef}-${entry.modelId}`);
-        models[modelRef] = {
-          modelId: entry.modelId,
-          providerRef,
-          capabilities: ref === 'planner' ? ['planning', 'structured-output'] : ['coding', 'tools'],
-          reasoning: 'high',
-          enabled: true,
-        };
-
-        agentClasses[ref] = {
-          ...(originalAgentClasses[ref] ?? {}),
-          modelPolicy: { mode: 'fixed', modelRef },
+      for (const provider of Object.values(catalog.providers)) {
+        if (provider.apiKey.trim()) activationSecrets[provider.providerRef] = provider.apiKey.trim();
+        const originalProvider = asRecord(originalProviders[provider.providerRef]);
+        providers[provider.providerRef] = {
+          ...originalProvider,
+          protocol: originalProvider.protocol ?? 'openai-compatible',
+          baseUrl: provider.baseUrl,
+          apiKeyRef: resolveProviderSecretReference(
+            provider.providerRef,
+            provider.baseUrl,
+            Object.fromEntries(Object.entries(originalProviders).map(([ref, value]) => [ref, {
+              baseUrl: asRecord(value).baseUrl as string | undefined,
+              apiKeyRef: asRecord(value).apiKeyRef as string | undefined,
+            }])),
+            {},
+            knownSecretReferences,
+          ),
+          region: originalProvider.region ?? 'international',
+          enabled: provider.enabled !== false,
         };
       }
 
-      const next = {
+      for (const model of Object.values(catalog.models)) {
+        const originalModel = asRecord(asRecord(originalConfig.models)[model.ref]);
+        const sameIdentity = originalModel.providerRef === model.providerRef
+          && originalModel.modelId === model.modelId;
+        models[model.ref] = {
+          ...(sameIdentity ? originalModel : {}),
+          modelId: model.modelId,
+          providerRef: model.providerRef,
+          capabilities: model.capabilities,
+          ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
+          ...(model.costInputPerMillion !== undefined
+            ? { costInputPerMillion: model.costInputPerMillion }
+            : {}),
+          ...(model.costOutputPerMillion !== undefined
+            ? { costOutputPerMillion: model.costOutputPerMillion }
+            : {}),
+          ...(model.latencyTier ? { latencyTier: model.latencyTier } : {}),
+          ...(model.qualityTier ? { qualityTier: model.qualityTier } : {}),
+          ...(model.costTier ? { costTier: model.costTier } : {}),
+          reasoning: model.reasoning ?? (sameIdentity ? originalModel.reasoning : undefined) ?? 'high',
+          enabled: model.enabled !== false,
+        };
+      }
+
+      for (const [ref, entry] of Object.entries(draft)) {
+        const current = asRecord(originalAgentClasses[ref]);
+        agentClasses[ref] = {
+          ...current,
+          modelPolicy: entry.mode === 'auto'
+            ? {
+              mode: 'auto',
+              allowedModelRefs: entry.allowedModelRefs,
+              defaultModelRef: entry.defaultModelRef || undefined,
+              fallback: { enabled: false, order: [] },
+              objective: {
+                priority: entry.objective,
+                minimumQualityTier: entry.minimumQualityTier,
+              },
+            }
+            : { mode: 'fixed', modelRef: entry.modelRef },
+        };
+      }
+
+      const response = await http.activate(revisionId, {
         ...originalConfig,
         providers,
         models,
         agentClasses,
-      };
-      const response = await http.activate(revisionId, next);
+      }, activationSecrets);
       setResult(response);
+      const revisionMismatch = response.issues?.some(issue => /revision mismatch|revision has changed/iu.test(issue));
+      if (!response.ok && (
+        response.code === 'revision_conflict'
+        || (response.code === 'activation_failed' && revisionMismatch)
+      )) {
+        try {
+          const latest = await http.getConfig();
+          applyConfigSnapshot(latest);
+          setLoadError(response.code === 'revision_conflict'
+            ? '配置已在其他窗口或进程中更新，已重新加载最新配置。请检查后再次激活。'
+            : '激活时发现运行时配置版本已变化，已回滚并重新加载当前配置。请检查后再次激活。');
+        } catch (reloadError) {
+          setLoadError(`激活使用的配置已失效，且最新配置加载失败：${(reloadError as Error).message}`);
+        }
+      }
       if (response.ok && response.revisionId) {
+        secretStatusVersion.current += 1;
         setRevisionId(response.revisionId);
+        setCatalog(current => current
+          ? {
+            ...current,
+            providers: Object.fromEntries(Object.entries(current.providers).map(([ref, provider]) => [
+              ref,
+              activationSecrets[ref]
+                ? { ...provider, apiKey: '', credentialState: '已自动发现' }
+                : provider,
+            ])),
+          }
+          : current);
       }
     } catch (error) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
@@ -201,77 +431,364 @@ export function SettingsPanel({ http, onClose }: SettingsPanelProps) {
     }
   };
 
+  const addProvider = () => {
+    setCatalog(current => {
+      if (!current) return current;
+      let index = Object.keys(current.providers).length + 1;
+      let providerRef = `custom-provider-${index}`;
+      while (current.providers[providerRef]) {
+        index += 1;
+        providerRef = `custom-provider-${index}`;
+      }
+      return {
+        ...current,
+        providers: {
+          ...current.providers,
+          [providerRef]: {
+            providerRef,
+            displayName: '自定义 Provider',
+            baseUrl: '',
+            modelIds: [],
+            apiKey: '',
+            credentialState: '缺失',
+          },
+        },
+      };
+    });
+  };
+
+  const removeProvider = (providerRef: string) => {
+    if (editingDisabled || !catalog) return;
+    const modelRefs = Object.values(catalog.models)
+      .filter(model => model.providerRef === providerRef)
+      .map(model => model.ref);
+    setCatalog(current => {
+      if (!current) return current;
+      const providers = { ...current.providers };
+      delete providers[providerRef];
+      const models = Object.fromEntries(
+        Object.entries(current.models).filter(([, model]) => model.providerRef !== providerRef),
+      );
+      return { providers, models };
+    });
+    setDraft(current => current ? removeModelRefsFromRoutingDraft(current, modelRefs) : current);
+  };
+
+  const removeProviderModel = (providerRef: string, modelId: string) => {
+    if (editingDisabled || !catalog) return;
+    const modelRefs = refsForModelIdentity(
+      Object.values(catalog.models),
+      providerRef,
+      modelId,
+    );
+    setCatalog(current => current
+      ? {
+        ...current,
+        models: Object.fromEntries(
+          Object.entries(current.models).filter(([, model]) => !modelRefs.includes(model.ref)),
+        ),
+      }
+      : current);
+    setDraft(current => current ? removeModelRefsFromRoutingDraft(current, modelRefs) : current);
+  };
+
+  const addKnownModel = (providerRef: string, modelId: string) => {
+    setCatalog(current => {
+      if (!current || Object.values(current.models).some(model => (
+        model.providerRef === providerRef && model.modelId === modelId
+      ))) return current;
+      let index = Object.keys(current.models).length + 1;
+      let ref = `${providerRef}-${index}`;
+      while (current.models[ref]) {
+        index += 1;
+        ref = `${providerRef}-${index}`;
+      }
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [ref]: {
+            ref,
+            providerRef,
+            modelId,
+            capabilities: [],
+            capabilityState: '需要确认',
+          },
+        },
+      };
+    });
+  };
+
+  const addCustomModel = (providerRef: string) => {
+    const modelId = (newModelIds[providerRef] ?? '').trim();
+    if (!modelId) {
+      setLoadError('请输入要加入 Provider 模型目录的 Model ID。');
+      return;
+    }
+    setCatalog(current => {
+      if (!current) return current;
+      if (Object.values(current.models).some(model => (
+        model.providerRef === providerRef && model.modelId === modelId
+      ))) return current;
+      let index = Object.keys(current.models).length + 1;
+      let ref = `custom-model-${index}`;
+      while (current.models[ref]) {
+        index += 1;
+        ref = `custom-model-${index}`;
+      }
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [ref]: {
+            ref,
+            providerRef,
+            modelId,
+            capabilities: [],
+            capabilityState: '需要确认',
+          },
+        },
+      };
+    });
+    setNewModelIds(current => ({ ...current, [providerRef]: '' }));
+  };
+
   return (
     <div className="drawer-backdrop" onClick={onClose}>
-      <div className="drawer" onClick={event => event.stopPropagation()}>
-        <div className="drawer-header">
-          <span className="drawer-title">
-            设置 · 运行 {runningRevisionId ?? '…'} · 配置 {revisionId ?? '…'}
-          </span>
-          <button className="ghost-button" onClick={onClose}>关闭</button>
-        </div>
-        <div className="drawer-body">
-          <p className="settings-note">
-            直接为 Planner 和每个 Executor 选择 Provider 与 Model（级联）。
-            预设 Code CLI / Kimi / DeepSeek，也可选 Other 自定义 baseUrl 与模型。
-            凭证由 SecretStore 托管，revision 只含引用；激活在下次启动时生效。
-          </p>
-          {revisionId && runningRevisionId && revisionId !== runningRevisionId && (
-            <div className="result-banner result-ok">
-              配置 revision {revisionId} 已就绪；当前仍运行 {runningRevisionId}，请重启 MetaWork 后生效。
+      <div className="drawer settings-workbench" onClick={event => event.stopPropagation()}>
+        <header className="drawer-header settings-header">
+          <div>
+            <div className="settings-eyebrow">CONFIGURATION WORKBENCH</div>
+            <h2>设置</h2>
+            <p>配置 Provider 模型目录，以及 Planner、Codex、Pi 的路由偏好。</p>
+          </div>
+          <div className="settings-header-actions">
+            <span className={`activation-pill activation-pill-${activationState?.activationStatus ?? 'idle'}`}>
+              {activationState?.activationStatus === 'busy' ? '运行中，暂不可激活'
+                : activationState?.activationStatus === 'activating' ? '正在激活'
+                  : '可热激活'}
+            </span>
+            <button className="ghost-button" onClick={onClose}>关闭</button>
+          </div>
+        </header>
+
+        <div className="drawer-body settings-body">
+          <div className="settings-intro">
+            <div>
+              <strong>路由不是 Provider 的固定别名。</strong>
+              <span>Provider 模型目录提供候选集；Planner 手动固定模型；Codex 和 Pi 的 Auto 只在用户允许的候选中选择。</span>
+            </div>
+            <button className="text-button" onClick={() => setDiagnosticsOpen(open => !open)}>
+              {diagnosticsOpen ? '收起高级诊断' : '查看高级诊断'}
+            </button>
+          </div>
+          {diagnosticsOpen && (
+            <div className="diagnostics-panel">
+              <span>当前配置 revision：<code>{revisionId ?? '加载中…'}</code></span>
+              <span>运行时 revision：<code>{runningRevisionId ?? '加载中…'}</code></span>
             </div>
           )}
 
+          {activationState && !activationState.activationAllowed && (
+            <div className="result-banner result-error">
+              当前不能激活：{activationState.blockingReasons?.map(reason => reason.message).join('；') || '运行时正在处理任务'}
+            </div>
+          )}
           {loadError && <div className="result-banner result-error">加载失败：{loadError}</div>}
           {!draft && !loadError && <div className="empty-hint">加载配置中…</div>}
 
-          {draft && (
-            <div className="form-section">
-              {Object.entries(draft).map(([ref, entry]) => {
-                const preset = presetProvider(entry.providerKey);
-                const providerRef = preset ? preset.key : sanitizeRef(entry.providerName);
-                return (
-                  <AgentClassConfig
-                    key={ref}
-                    agentClassRef={ref}
-                    kind={ref === 'planner' ? 'planner' : 'executor'}
-                    draft={entry}
-                    secretState={secretStates[providerRef] ?? 'unknown'}
-                    onChange={next => setDraft(prev => prev ? { ...prev, [ref]: next } : prev)}
-                  />
-                );
-              })}
-
-              {result && (
-                <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>
-                  {result.ok
-                    ? result.restartRequired
-                      ? `配置已激活为 ${result.activeRevisionId}；当前仍运行 ${result.runningRevisionId}，请重启 MetaWork 后生效。`
-                      : `配置已激活并生效：${result.activeRevisionId}`
-                    : `激活失败（${result.code ?? 'unknown'}）`}
-                  {result.issues && result.issues.length > 0 && (
-                    <ul className="issues">
-                      {result.issues.map((issue, index) => <li key={index}>{issue}</li>)}
-                    </ul>
-                  )}
-                  {result.code === 'revision_conflict' && (
-                    <div className="dim">配置已被其他操作更新，请关闭设置后重新打开再试。</div>
-                  )}
-                  {!result.ok && (
-                    <div className="dim">提示：若选择了 Other，请确认已填写 Provider 名、baseUrl 与 API Key。</div>
-                  )}
+          {draft && catalog && facts && (
+            <div className="settings-sections">
+              <section className="settings-section">
+                <div className="section-heading">
+                  <div>
+                    <div className="settings-eyebrow">01 / PROVIDER CATALOG</div>
+                    <h3>Provider</h3>
+                    <p>Provider 内加入的模型才会进入 Planner 和 Executor 的候选集。</p>
+                  </div>
+                  <button className="ghost-button" onClick={addProvider}>新增 Provider</button>
                 </div>
+                <div className="provider-grid">
+                  {Object.values(catalog.providers).map(provider => {
+                    const knownModels = buildProviderModelOptions(
+                      Object.values(catalog.providers),
+                      Object.values(catalog.models),
+                      provider.providerRef,
+                    );
+                    return (
+                      <article className="provider-card" key={provider.providerRef}>
+                        <div className="provider-card-heading">
+                          <div>
+                            <h4>{provider.displayName}</h4>
+                            <span className="mono">{provider.baseUrl || '尚未填写 Base URL'}</span>
+                          </div>
+                          <div className="provider-card-actions">
+                            <span className={`state-badge ${provider.credentialState === '缺失' ? 'state-badge-warning' : ''}`}>
+                              {fieldStateLabel(provider.credentialState)}
+                            </span>
+                            <button
+                              className="text-button danger-button"
+                              disabled={editingDisabled}
+                              onClick={() => removeProvider(provider.providerRef)}
+                            >
+                              删除 Provider
+                            </button>
+                          </div>
+                        </div>
+                        <div className="provider-stat">
+                          <strong>{knownModels.length}</strong>
+                          <span>个已知模型</span>
+                        </div>
+                        <label className="settings-field">
+                          <span>Base URL</span>
+                          <input
+                            className="text-input"
+                            value={provider.baseUrl}
+                            onChange={event => setCatalog(current => current ? {
+                              ...current,
+                              providers: {
+                                ...current.providers,
+                                [provider.providerRef]: { ...provider, baseUrl: event.target.value },
+                              },
+                            } : current)}
+                          />
+                        </label>
+                        {provider.credentialState === '缺失' ? (
+                          <label className="settings-field">
+                            <span>API Key</span>
+                            <input
+                              className="text-input"
+                              type="password"
+                              value={provider.apiKey}
+                              placeholder="仅在缺少凭据时填写"
+                              onChange={event => setCatalog(current => current ? {
+                                ...current,
+                                providers: {
+                                  ...current.providers,
+                                  [provider.providerRef]: { ...provider, apiKey: event.target.value },
+                                },
+                              } : current)}
+                              autoComplete="off"
+                            />
+                          </label>
+                        ) : (
+                          <div className="credential-summary">
+                            凭据已由 SecretStore / 本机配置提供，不重复展示 API Key。
+                          </div>
+                        )}
+                        {knownModels.length > 0 && (
+                          <div className="provider-model-list">
+                            <span className="fact-label">Provider 模型目录</span>
+                            {knownModels.map(option => (
+                              <div className="provider-model-line" key={option.modelId}>
+                                <span>{option.modelId}</span>
+                                {option.configured ? (
+                                  <button
+                                    className="text-button danger-button"
+                                    disabled={editingDisabled}
+                                    onClick={() => removeProviderModel(provider.providerRef, option.modelId)}
+                                  >
+                                    移除
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="text-button"
+                                    disabled={editingDisabled}
+                                    onClick={() => addKnownModel(provider.providerRef, option.modelId)}
+                                  >
+                                    加入候选
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {provider.modelIds.length === 0 && (
+                          <div className="provider-custom-model">
+                            <input
+                              className="text-input"
+                              value={newModelIds[provider.providerRef] ?? ''}
+                              placeholder="输入自定义 Model ID"
+                              onChange={event => setNewModelIds(current => ({
+                                ...current,
+                                [provider.providerRef]: event.target.value,
+                              }))}
+                              disabled={editingDisabled}
+                            />
+                            <button
+                              className="ghost-button"
+                              disabled={editingDisabled}
+                              onClick={() => addCustomModel(provider.providerRef)}
+                            >
+                              加入候选
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div className="section-heading">
+                  <div>
+                    <div className="settings-eyebrow">02 / AGENTCLASS ROUTING</div>
+                    <h3>路由策略</h3>
+                    <p>Planner 只能手动选择一个模型；Codex 和 Pi 可以使用 Fixed 或 Auto。</p>
+                  </div>
+                </div>
+                <p className="routing-section-note">Auto 只在当前 AgentClass 支持且用户勾选的候选模型中进行运行时选择。</p>
+                <div className="routing-stack">
+                  {Object.entries(draft).map(([ref, entry]) => {
+                    const agentFacts = facts[ref];
+                    if (!agentFacts) return null;
+                    return (
+                      <AgentClassConfig
+                        key={ref}
+                        facts={agentFacts}
+                        draft={entry}
+                        models={Object.values(catalog.models)}
+                        onChange={next => setDraft(current => current ? { ...current, [ref]: next } : current)}
+                      />
+                    );
+                  })}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {result && (
+            <div className={`result-banner ${result.ok ? 'result-ok' : 'result-error'}`}>
+              {result.ok
+                ? result.restartRequired
+                  ? `配置包含进程级变更，需要重启后生效：${result.restartPaths?.join('、') ?? ''}`
+                  : '配置已热激活。新任务和下一轮 Planner 将使用新配置。'
+                : `激活失败（${result.code ?? 'unknown'}）`}
+              {result.issues && result.issues.length > 0 && (
+                <ul className="issues">
+                  {result.issues.map((issue, index) => <li key={index}>{issue}</li>)}
+                </ul>
               )}
             </div>
           )}
         </div>
-        {draft && (
-          <div className="drawer-footer">
+
+        {(draft || loadError) && (
+          <footer className="drawer-footer">
             <button className="ghost-button" onClick={onClose}>取消</button>
-            <button className="primary-button" onClick={activate} disabled={loading}>
-              {loading ? '激活中…' : '激活（重启生效）'}
+            <button
+              className="primary-button"
+              onClick={activate}
+              disabled={
+                loading
+                || activationState?.activationAllowed === false
+                || draftValidationIssues.length > 0
+              }
+            >
+              {loading || activationState?.activationStatus === 'activating' ? '激活中…' : '保存并激活'}
             </button>
-          </div>
+          </footer>
         )}
       </div>
     </div>

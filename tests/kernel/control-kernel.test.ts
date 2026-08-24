@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
+import {
+  ControlKernel,
+  resolvePreferredModelRef,
+  type KernelEvent,
+  type KernelSnapshot,
+} from '../../src/kernel/control-kernel.js';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -102,12 +107,14 @@ const kernelConfiguration: KernelConfigurationView = {
   models: {
     'codex-model': {
       providerRef: 'openai',
+      modelId: 'gpt-5.6-sol',
       capabilities: ['coding', 'tools'],
       reasoning: 'high',
       enabled: true,
     },
     'pi-model': {
       providerRef: 'anthropic',
+      modelId: 'pi-model-id',
       capabilities: ['coding', 'tools'],
       reasoning: 'medium',
       enabled: true,
@@ -190,6 +197,16 @@ const snapshot: KernelSnapshot = {
 };
 
 describe('ControlKernel', () => {
+  it('uses an Auto AgentClass default as the resolver preference for agent-class-default', () => {
+    expect(resolvePreferredModelRef(
+      { mode: 'agent-class-default' },
+      {
+        mode: 'auto',
+        allowedModelRefs: ['cheap', 'preferred'],
+        defaultModelRef: 'preferred',
+      },
+    )).toBe('preferred');
+  });
   it('produces one deterministic action for a planning event', () => {
     const kernel = new ControlKernel();
 
@@ -238,6 +255,82 @@ describe('ControlKernel', () => {
     expect(new ControlKernel().decide(replanEvent, replanSnapshot).action).toMatchObject({
       type: 'authorize_task_plan', taskId: 'task_1', generationId: 'generation_1',
       graphRevision: 2, proposalSource: 'replan',
+    });
+  });
+
+  it('resolves Codex Auto against GPT models from a different Provider', () => {
+    const proposal = workGraphPlan({
+      goal: 'Implement the requested change',
+      capabilityClass: 'code_edit',
+    });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    proposal.workGraph!.subtasks[0]!.executorBindings[0]!.modelSelection = {
+      mode: 'agent-class-default',
+    };
+
+    const planner = structuredClone(plannerConfiguration);
+    planner.models.push({
+      id: 'codex-fast',
+      providerRef: 'secondary',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'high',
+      region: 'international',
+    });
+    const codexCatalog = planner.routingCatalog.agentClasses.find(
+      agentClass => agentClass.id === 'codex-cli',
+    )!;
+    codexCatalog.modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['codex-model', 'codex-fast'],
+      defaultModelRef: 'codex-fast',
+    };
+
+    const kernel = structuredClone(kernelConfiguration);
+    kernel.models['codex-model']!.costInputPerMillion = 10;
+    kernel.models['codex-model']!.costOutputPerMillion = 10;
+    kernel.models['codex-fast'] = {
+      providerRef: 'secondary',
+      modelId: 'gpt-5.6-fast',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'high',
+      costInputPerMillion: 1,
+      costOutputPerMillion: 1,
+      enabled: true,
+    };
+    kernel.agentClasses['codex-cli']!.modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['codex-model', 'codex-fast'],
+      defaultModelRef: 'codex-fast',
+    };
+
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_cross_provider_auto',
+      proposal,
+      generationId: 'generation_cross_provider',
+      targetGraphRevision: 1,
+    }, {
+      ...snapshot,
+      plannerConfiguration: planner,
+      kernelConfiguration: kernel,
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      authorizedBindingsBySubtask: {
+        subtask_execute: [{
+          providerRef: 'secondary',
+          modelRef: 'codex-fast',
+        }],
+      },
+      routing: {
+        subtask_execute: [{
+          binding: {
+            providerRef: 'secondary',
+            modelRef: 'codex-fast',
+          },
+        }],
+      },
     });
   });
 

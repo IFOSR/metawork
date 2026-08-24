@@ -8,7 +8,7 @@ It is built for teams who need agents to do more than answer the current turn. A
 
 > Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v32 with transactional 30→31→32 upgrade support.
+> and SQLite schema v33 with transactional 30→31→32→33 upgrade support.
 
 > ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
 > Plane, generation-scoped AgentClass/Model/Harness binding, future
@@ -623,13 +623,40 @@ may select different foreground presentation modes, but both use the same
 RuntimeRegistry, AccountRuntime, ConversationRegistry and ClientGateway
 composition rather than owning different Runtime architectures.
 
-The runtime configuration remains pinned to the revision loaded at process
-startup. Web settings activation still performs validate, compile, probe, and
-immutable repository activation, but the new active revision is reported as a
-next-start revision with `restartRequired: true`. Planner child processes and
-their MCP server receive the running revision explicitly, so a configuration
-activation cannot split Planner context from Kernel/Execution policy. Restart
-AnyFusion to apply the new revision.
+Configuration activation is AccountRuntime-scoped. Provider base URLs and
+credential references, the Provider model catalog, and Planner/Executor routing
+policies are hot-activatable while the activation gate is idle. The settings
+surface is Provider-first: catalog models form the candidate source, Planner is
+fixed-only, Codex Auto is limited to GPT-family models across enabled Providers,
+and Pi Auto may use all enabled Provider models. The gate
+rechecks Planner turns, running Tasks, blocking Dispatch/Attempt facts, child
+processes, leases, publication/merge work, recovery, and concurrent activation
+inside the backend transaction; connected clients and idle ready/parked/blocked
+Tasks do not block it. Application releases, schema, Harness/process
+artifacts, Permission Profile semantics, Planner RPC, and runtime directory
+protocol changes remain restart-required.
+
+`ConfigurationRuntimeCoordinator` validates, compiles, probes, renders and
+persists the immutable candidate before pointer cutover, then updates the live
+Planner/Kernel/Runtime views and broadcasts `configuration_runtime_state` and
+`configuration_activated`. Existing Work Graph generations and attempts remain
+pinned to their original revision. The next Planner turn resolves a concrete
+model from the new active revision before sending a prompt; a running child
+process is never rewritten. Executor Auto is resolved by ControlKernel into a
+complete concrete binding and Runtime only transports that binding. Deleting a
+Provider or model is allowed only while idle; Auto pools are cleaned
+automatically, while a Fixed reference is left invalid and must be repaired
+rather than silently replaced. The API returns `runtime_busy` for a busy gate
+and `invalid_configuration` for an unrepairable draft.
+
+Web settings exposes active/runtime revision, gate status, structured blocking
+reasons, and HTTP 409 responses for busy, revision-conflict, or
+restart-required activation. Work Graph presentation is a read-only projection
+of validated graph, Kernel decision, Dispatch, Attempt, Verification, and
+Publication facts. It renders dependency/handoff/artifact edges, parallel
+groups, runnable frontier, routing policy, concrete Provider/Model, estimated
+cost/latency, and rejected candidates; it cannot schedule, cancel, retry,
+fallback, mutate bindings, or access storage.
 
 The native launcher stores account-owned state under:
 
@@ -711,8 +738,9 @@ Local validation covers TypeScript lint/build, focused Planner RPC and host-prot
 Use the Web settings surface or the
 `anyfusion config|provider|model|planner|executor` administration commands.
 Configuration activation validates, compiles and probes an immutable
-account-scoped revision; the running Server applies it after restart. The active
-pointer is:
+account-scoped revision. Hot-safe catalog and routing changes apply without
+restarting the Server; process-level changes return `restart_required`. The
+active pointer is:
 
 ```text
 ~/.anyfusion/accounts/local-default/config/active
@@ -876,7 +904,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v32 and supports transactional 30→31→32 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects and direct-edge ResultReferences. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v33 and supports transactional 30→31→32→33 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, and Planner proposal configuration-revision pins for safe replay. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
 

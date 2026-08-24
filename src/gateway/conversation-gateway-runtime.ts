@@ -16,7 +16,7 @@ import {
 } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
-import type { FileAttachmentStore } from '../storage/file-attachment-store.js';
+import type { GatewayAttachmentStore } from './attachment-store-port.js';
 import type { PlannerImageAttachment } from '../planning/planning-types.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
@@ -28,7 +28,7 @@ export interface ConversationGatewayRuntimeDeps {
   readonly journal: EventJournal;
   readonly subscriptions: GatewaySubscriptions;
   /** 会话附件存储；提供后 user_message 的附件引用会解析为 Planner 多模态图片。 */
-  readonly attachments?: FileAttachmentStore;
+  readonly attachments?: GatewayAttachmentStore;
   readonly now?: () => string;
   readonly createId?: (prefix: string) => string;
 }

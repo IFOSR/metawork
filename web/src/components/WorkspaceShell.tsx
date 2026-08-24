@@ -12,7 +12,6 @@ export function WorkspaceShell({
   title,
   tab,
   connected,
-  revisionId,
   draft,
   composerDisabled,
   running,
@@ -40,7 +39,6 @@ export function WorkspaceShell({
   title: string;
   tab: WorkspaceTab;
   connected: boolean;
-  revisionId: string | null;
   draft: string;
   composerDisabled: boolean;
   running: boolean;
@@ -81,7 +79,6 @@ export function WorkspaceShell({
           title={title}
           tab={tab}
           connected={connected}
-          revisionId={revisionId}
           onTabChange={onTabChange}
         />
         <section className="workspace-canvas">{children}</section>

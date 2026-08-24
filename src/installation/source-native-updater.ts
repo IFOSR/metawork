@@ -77,7 +77,7 @@ export class SourceNativeUpdater {
 
       await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
       const sourceSchema = readSchemaVersion(accountPaths.database);
-      if (sourceSchema !== 30 && sourceSchema !== 31 && sourceSchema !== CURRENT_SCHEMA_VERSION) {
+      if (sourceSchema !== 30 && sourceSchema !== 31 && sourceSchema !== 32 && sourceSchema !== CURRENT_SCHEMA_VERSION) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
       const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
@@ -346,6 +346,7 @@ function verifyCompatibleDatabase(path: string): void {
     if (
       version?.version !== 30
       && version?.version !== 31
+      && version?.version !== 32
       && version?.version !== CURRENT_SCHEMA_VERSION
     ) {
       throw new Error(`rollback database schema is incompatible: ${version?.version ?? 'missing'}`);

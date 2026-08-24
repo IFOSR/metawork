@@ -189,6 +189,14 @@ export class KernelDispatchItemRepo {
     `).all(...(taskId ? [taskId] : [])) as DispatchItemRow[]).map(rowToDispatchItem);
   }
 
+  listBlocking(): KernelDispatchItemRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM kernel_dispatch_items
+      WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+      ORDER BY created_at ASC, attempt_id ASC
+    `).all() as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
   claimPending(attemptId: string, now: string): KernelDispatchItemRecord | null {
     const claim = this.db.transaction(() => {
       const current = this.find(attemptId);

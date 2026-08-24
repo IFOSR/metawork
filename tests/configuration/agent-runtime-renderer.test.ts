@@ -53,9 +53,8 @@ function makeConfig(): AnyFusionConfigurationV2 {
         kind: 'planner',
         harnessRef: 'anyfusion-planner',
         modelPolicy: {
-          mode: 'auto',
-          allowedModelRefs: ['model-a', 'model-b'],
-          defaultModelRef: 'model-a',
+          mode: 'fixed',
+          modelRef: 'model-a',
         },
         permissionProfileRef: null,
         routingCapabilities: [],

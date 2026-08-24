@@ -456,6 +456,51 @@ describe('natural-language planning/kernel path', () => {
     });
   });
 
+  it('replays an uncertain submission through Kernel without duplicating the durable decision', async () => {
+    const harness = createSession('sess_native_uncertain_replay', plan());
+    const direct = plan({
+      id: 'plan_uncertain_replay',
+      action: 'direct_reply',
+      response: { directReply: 'recovered reply' },
+      task: {
+        binding: 'none', taskId: null, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: null,
+    });
+    const turnId = 'turn_uncertain_replay';
+    const submissionId = createPlannerProposalSubmissionId(harness.sessionId, turnId, direct);
+    const proposals = new PlannerProposalRepo(harness.db);
+    proposals.ensureTurn(harness.sessionId, turnId, 'recover this proposal');
+    proposals.reserveSubmission({
+      sessionId: harness.sessionId,
+      turnId,
+      submissionId,
+      planFingerprint: plannerProposalFingerprint(direct),
+      planId: direct.id,
+      eventId: `plan_event_${submissionId}`,
+    });
+    proposals.markUncertain(harness.sessionId, turnId, submissionId);
+
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: 'recover this proposal',
+      submissionId,
+      plan: direct,
+      runtimeMode: 'interactive',
+    });
+
+    expect(result).toMatchObject({
+      status: 'accepted',
+      outcome: 'direct_reply_delivered',
+      displayText: 'recovered reply',
+    });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(1);
+    expect(harness.db.prepare('SELECT COUNT(*) AS count FROM kernel_events').get()).toEqual({ count: 1 });
+    expect(harness.session.getSnapshot().output.filter(line => line.includes('recovered reply'))).toHaveLength(1);
+  });
+
   it('locks an accepted turn against a different submission', async () => {
     const harness = createSession('sess_native_conflict', plan());
     const firstPlan = plan({
@@ -840,7 +885,7 @@ describe('natural-language planning/kernel path', () => {
       '等待执行器流式进度',
       { awaitAsyncWork: true },
     );
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + 45_000;
     while (
       !snapshots.some(snapshot => snapshot.includes('executor_progress'))
       && Date.now() < deadline

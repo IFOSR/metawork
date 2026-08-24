@@ -22,7 +22,13 @@ export const PRESET_PROVIDERS: PresetProvider[] = [
     key: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
-    models: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro'],
+    models: [
+      'deepseek-chat',
+      'deepseek-reasoner',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash-vision-exp',
+    ],
   },
 ];
 

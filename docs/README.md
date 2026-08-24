@@ -37,6 +37,7 @@ Key recent ADRs:
 - [ADR-0026: Phase 6 Single-Task Reliability Closure](adr/0026-phase-6-single-task-reliability-closure.md): final Phase 6 scope, reliable Task termination/recovery closure and deferral of multi-Task scheduling.
 - [ADR-0031: Account Runtime And Unified Client Gateway](adr/0031-account-runtime-and-unified-client-gateway.md): delivered account-scoped Runtime ownership, conversation isolation, one Gateway command/event plane, and TUI/Web/Feishu convergence.
 - [ADR-0032: Result-First Delivery And Completion Certification](adr/0032-result-first-delivery-and-completion-certification.md): Completion Protocol v4, immutable Result Objects, authorized ResultReferences, chunked delivery, and safe partial-result recovery.
+- [ADR-0033: Hot Configuration Activation And Auto Model Routing](adr/0033-hot-configuration-activation-and-auto-model-routing.md): AccountRuntime activation gate, concrete Planner/Executor Auto routing, safe completion, and read-only Work Graph presentation.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
@@ -59,7 +60,8 @@ replacing those semantics.
 - [Completion Protocol result-first delivery](plans/2026-08-20-completion-protocol-result-first-design.md): delivered Completion Protocol v4, immutable Result Objects, authorized ResultReferences, chunked replay, Kernel uncertified-result recovery, historical result upgrades, and complete safe Harness-result delivery. Real Web/API E2E and the full release validation gate passed.
 
 ## Active Delivery
-- [MetaWork 配置热激活、Auto 路由与 DAG 可视化设计](plans/2026-08-23-metawork-hot-activation-auto-routing-and-plan-visualization-design.md): proposed design for no-restart Provider/Model activation, Planner/Executor Auto selection, user-visible Work Graph routing, and minimal configuration input.
+- [MetaWork 配置热激活、Auto 路由与 DAG 可视化设计](plans/2026-08-23-metawork-hot-activation-auto-routing-and-plan-visualization-design.md): the original broad design is amended by the Provider-first settings plan; current behavior is documented in the revised Provider catalog, Planner fixed-only, and Codex/Pi routing plan.
+- [Provider Catalog And Planner/Executor Routing Design](plans/2026-08-23-provider-catalog-planner-fixed-executor-auto-routing-design.md): current approved desktop settings contract and deletion/activation semantics.
 - [Multi-provider and model configuration](plans/2026-08-16-multi-provider-model-configuration.md): wires the SecretStore and runtime binding into production, renders multi-provider agent configs per activated revision, and opens Provider/Model management in the settings UI while keeping Harness closed.
 - [Revised MetaWork Server upgrade implementation plan](plans/2026-08-11-metawork-server-upgrade-implementation-plan.md): code closure for signed release trust, immutable revisions, schema 30-to-31 migration, Planner v8/Work Graph v7, generation-scoped bindings, Harness drivers and transactional rollback; native online daemon and release-infrastructure gates remain open.
 - [Conditionally approved MetaWork Server upgrade design](plans/2026-08-07-metawork-server-upgrade-technical-design.md): one-command native Server installation, `~/.anyfusion` release/data layout, nested AnyFusion-Pi Planner, generation-scoped revision authority, Provider/Model health, signed transactional updates, isolated AgentClass runtimes, migration and acceptance criteria.

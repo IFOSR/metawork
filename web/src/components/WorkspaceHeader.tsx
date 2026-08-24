@@ -4,13 +4,11 @@ export function WorkspaceHeader({
   title,
   tab,
   connected,
-  revisionId,
   onTabChange,
 }: {
   title: string;
   tab: WorkspaceTab;
   connected: boolean;
-  revisionId: string | null;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
   return (
@@ -31,7 +29,6 @@ export function WorkspaceHeader({
         <span className="connection-state" data-connected={connected}>
           {connected ? 'LIVE' : 'OFFLINE'}
         </span>
-        <span>{revisionId ? `rev ${revisionId}` : 'rev …'}</span>
       </div>
     </header>
   );

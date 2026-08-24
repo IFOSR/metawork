@@ -4,6 +4,7 @@ import type {
   ResourceClaim,
   ResourceLeaseRepositoryPort,
 } from '../resource/index.js';
+import type { ResourceLeaseRecord } from '../resource/index.js';
 
 export class ResourceLeaseService {
   constructor(
@@ -81,5 +82,9 @@ export class ResourceLeaseService {
 
   releaseRevokedAttempt(attemptId: string, now = new Date().toISOString()): number {
     return this.repository.releaseRevokedAttempt?.(attemptId, now) ?? 0;
+  }
+
+  findActive(now = new Date().toISOString()): ResourceLeaseRecord[] {
+    return this.repository.findActive(now);
   }
 }

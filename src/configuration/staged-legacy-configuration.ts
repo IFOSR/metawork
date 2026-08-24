@@ -9,6 +9,8 @@ import {
 } from './index.js';
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
+import { AutoModelResolver } from '../routing/auto-model-resolver.js';
+import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 
 export interface StagedLegacyConfiguration {
   snapshot: ConfigurationSnapshot;
@@ -32,14 +34,23 @@ export function buildStagedLegacyConfiguration(input: {
   if (!planner || planner.kind !== 'planner') {
     throw new Error('staged configuration requires the Planner AgentClass');
   }
-  if (planner.modelPolicy.mode !== 'fixed') {
-    throw new Error('staged configuration requires a fixed model for the Planner AgentClass');
-  }
-  const modelRef = planner.modelPolicy.modelRef;
+  const modelCandidates = projectConfigurationCandidates(snapshot.config, 'planner');
+  const modelRef = AutoModelResolver.resolve({
+    configurationRevision: snapshot.revisionId,
+    agentClassRef: 'planner',
+    harnessRef: planner.harnessRef,
+    permissionProfileRef: planner.permissionProfileRef ?? 'planner-none',
+    policy: planner.modelPolicy,
+    candidates: modelCandidates,
+    requirements: {
+      requiredCapabilities: ['planning', 'structured-output'],
+      contextTokens: 1_024,
+      requiresStructuredOutput: true,
+    },
+  }).binding?.modelRef;
+  if (!modelRef) throw new Error('staged Planner fixed policy did not resolve a Model');
   const model = snapshot.config.models[modelRef];
-  if (!model) {
-    throw new Error(`staged Planner references missing Model: ${modelRef}`);
-  }
+  if (!model) throw new Error(`staged Planner references missing Model: ${modelRef}`);
   if (!snapshot.config.providers[model.providerRef]) {
     throw new Error(`staged Planner Model references missing Provider: ${model.providerRef}`);
   }

@@ -17,6 +17,11 @@ import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
 import { deriveAgentAvailability } from './agent-availability.js';
+import {
+  AutoModelResolver,
+  type RoutingResolutionAudit,
+} from '../routing/auto-model-resolver.js';
+import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import {
   evaluateCapabilityRequest,
@@ -381,6 +386,7 @@ export type KernelDecisionAction =
       generationId: string;
       graphRevision: number;
       proposalSource: 'initial' | 'replan' | 'conflict_replan';
+      routing?: Record<string, RoutingResolutionAudit[]>;
     }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
@@ -694,6 +700,7 @@ export class ControlKernel {
       generationId: event.generationId,
       graphRevision: event.targetGraphRevision,
       proposalSource: event.proposalSource,
+      routing: resolved.routing,
     }, 'work graph authorized');
   }
 
@@ -1407,6 +1414,7 @@ function resolveAuthorizedBindings(
 ): {
   ok: true;
   bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
+  routing: Record<string, RoutingResolutionAudit[]>;
 } | {
   ok: false;
   errors: string[];
@@ -1421,8 +1429,10 @@ function resolveAuthorizedBindings(
   }
   const errors: string[] = [];
   const bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]> = {};
+  const routing: Record<string, RoutingResolutionAudit[]> = {};
   for (const subtask of workGraph.subtasks) {
     const bindings: AuthorizedExecutorBinding[] = [];
+    routing[subtask.id] = [];
     for (const proposed of subtask.executorBindings) {
       const agentClass = configuration.agentClasses[proposed.agentClassRef];
       if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
@@ -1436,24 +1446,40 @@ function resolveAuthorizedBindings(
         errors.push(`subtask ${subtask.id} AgentClass has no valid permission profile: ${proposed.agentClassRef}`);
         continue;
       }
-      const modelRef = resolveModelRef(proposed, agentClass.modelPolicy);
-      if (!modelRef) {
-        errors.push(`subtask ${subtask.id} model selection is not authorized for AgentClass ${proposed.agentClassRef}`);
-        continue;
+      const modelSelection = proposed.modelSelection;
+      const preferredModelRef = resolvePreferredModelRef(modelSelection, agentClass.modelPolicy);
+      const requiredCapabilities = modelCapabilitiesForSubtask(subtask.requiredCapabilities);
+      const candidates = projectConfigurationCandidates(
+        configuration,
+        proposed.agentClassRef,
+        { mode: agentClass.modelPolicy.mode },
+      );
+      try {
+        const resolution = AutoModelResolver.resolve({
+          configurationRevision: configuration.revisionId,
+          agentClassRef: proposed.agentClassRef,
+          harnessRef: agentClass.harnessRef,
+          permissionProfileRef: agentClass.permissionProfileRef,
+          policy: agentClass.modelPolicy,
+          candidates,
+          preferredModelRef,
+          requirements: {
+            requiredCapabilities,
+            contextTokens: 1_024,
+          },
+        });
+        if (!resolution.binding) throw new Error('resolver returned no concrete binding');
+        bindings.push(resolution.binding);
+        routing[subtask.id]!.push({
+          agentClassRef: proposed.agentClassRef,
+          binding: resolution.binding,
+          rejectedCandidates: resolution.rejectedCandidates,
+          scoreBreakdown: resolution.scoreBreakdown,
+          policyVersion: resolution.policyVersion,
+        });
+      } catch (error) {
+        errors.push(`subtask ${subtask.id} model selection is not authorized for AgentClass ${proposed.agentClassRef}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const model = configuration.models[modelRef];
-      if (!model || !model.enabled) {
-        errors.push(`subtask ${subtask.id} Model is unavailable: ${modelRef}`);
-        continue;
-      }
-      bindings.push({
-        agentClassRef: proposed.agentClassRef,
-        harnessRef: agentClass.harnessRef,
-        providerRef: model.providerRef,
-        modelRef,
-        permissionProfileRef: agentClass.permissionProfileRef,
-        configurationRevision: configuration.revisionId,
-      });
     }
     if (bindings.length === 0) {
       errors.push(`subtask ${subtask.id} has no authorized executor binding`);
@@ -1462,7 +1488,19 @@ function resolveAuthorizedBindings(
   }
   return errors.length > 0
     ? { ok: false, errors: errors.sort() }
-    : { ok: true, bindingsBySubtask };
+    : { ok: true, bindingsBySubtask, routing };
+}
+
+function modelCapabilitiesForSubtask(
+  requiredCapabilities: readonly string[],
+): Array<'coding' | 'tools'> {
+  const capabilities = new Set<'coding' | 'tools'>();
+  if (requiredCapabilities.includes('workspace-engineering')) capabilities.add('coding');
+  if (requiredCapabilities.includes('workspace-engineering')
+    || requiredCapabilities.includes('current-web-research')) {
+    capabilities.add('tools');
+  }
+  return [...capabilities];
 }
 
 function resolveModelRef(
@@ -1483,6 +1521,17 @@ function resolveModelRef(
     return policy.defaultModelRef ?? null;
   }
   return null;
+}
+
+export function resolvePreferredModelRef(
+  modelSelection: WorkGraphProposal['subtasks'][number]['executorBindings'][number]['modelSelection'],
+  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
+): string | undefined {
+  if (modelSelection.mode === 'proposed') return modelSelection.modelRef;
+  if (modelSelection.mode === 'agent-class-default' && policy.mode === 'auto') {
+    return policy.defaultModelRef;
+  }
+  return undefined;
 }
 
 function bindingsForProposalSubtask(

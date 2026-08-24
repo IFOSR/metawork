@@ -17,6 +17,8 @@ import type {
   RuntimePrivateConfigurationBinding,
 } from '../configuration/types.js';
 import type { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
+import { AutoModelResolver } from '../routing/auto-model-resolver.js';
+import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -139,10 +141,8 @@ export class ExecutorRegistry {
       || agentClass.kind !== 'executor'
       || !agentClass.permissionProfileRef
     ) return null;
-    const modelRef = agentClass.modelPolicy.mode === 'fixed'
-      ? agentClass.modelPolicy.modelRef
-      : agentClass.modelPolicy.defaultModelRef
-        ?? agentClass.modelPolicy.allowedModelRefs[0];
+    if (agentClass.modelPolicy.mode !== 'fixed') return null;
+    const modelRef = agentClass.modelPolicy.modelRef;
     if (!modelRef) return null;
     const model = configuration.models[modelRef];
     if (!model?.enabled) return null;
@@ -154,6 +154,41 @@ export class ExecutorRegistry {
       permissionProfileRef: agentClass.permissionProfileRef,
       configurationRevision,
     };
+  }
+
+  /** Resolves one concrete candidate only for an availability probe. */
+  probeBindingForAgentClass(
+    name: string,
+    configurationRevision: string,
+  ): AuthorizedExecutorBinding | null {
+    const configuration = this.deps.getRuntimeConfiguration(configurationRevision);
+    const agentClass = configuration?.agentClasses[name];
+    if (
+      !configuration
+      || !agentClass
+      || !agentClass.enabled
+      || agentClass.kind !== 'executor'
+      || !agentClass.permissionProfileRef
+    ) return null;
+    if (agentClass.modelPolicy.mode === 'fixed') {
+      return this.bindingForAgentClass(name, configurationRevision);
+    }
+    const policy = agentClass.modelPolicy;
+    const candidates = projectConfigurationCandidates(configuration, name, { mode: policy.mode })
+      .filter(candidate => policy.allowedModelRefs.includes(candidate.modelRef));
+    try {
+      return AutoModelResolver.resolve({
+        configurationRevision,
+        agentClassRef: name,
+        harnessRef: agentClass.harnessRef,
+        permissionProfileRef: agentClass.permissionProfileRef,
+        policy,
+        candidates,
+        requirements: { requiredCapabilities: [], contextTokens: 1_024 },
+      }).binding;
+    } catch {
+      return null;
+    }
   }
 
   supportsContinuation(name: string, configurationRevision: string): boolean {

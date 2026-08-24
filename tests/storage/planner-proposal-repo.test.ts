@@ -79,4 +79,37 @@ describe('PlannerProposalRepo', () => {
       planFingerprint: 'different', planId: 'plan_1', eventId: 'event_1',
     })).toEqual({ kind: 'conflict', acceptedSubmissionId: null });
   });
+
+  it('allows an uncertain submission to be retried with the same event identity', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const repo = new PlannerProposalRepo(db);
+    db.prepare(`
+      INSERT INTO configuration_revisions (
+        revision_id, content_hash, source_kind, imported_at
+      ) VALUES ('revision_1', 'hash-revision-1', 'native', '2026-08-24T00:00:00.000Z')
+    `).run();
+    repo.ensureTurn('sess_1', 'turn_1', 'hello');
+    repo.reserveSubmission({
+      sessionId: 'sess_1', turnId: 'turn_1', submissionId: 'sub_1',
+      planFingerprint: 'fingerprint_1', planId: 'plan_1', eventId: 'event_1',
+      configurationRevision: 'revision_1',
+    });
+    repo.markUncertain('sess_1', 'turn_1', 'sub_1');
+
+    expect(repo.reserveSubmission({
+      sessionId: 'sess_1', turnId: 'turn_1', submissionId: 'sub_1',
+      planFingerprint: 'fingerprint_1', planId: 'plan_1', eventId: 'event_1',
+    })).toEqual({
+      kind: 'retry',
+      eventId: 'event_1',
+      configurationRevision: 'revision_1',
+    });
+    expect(repo.getSubmission('sess_1', 'turn_1', 'sub_1'))
+      .toMatchObject({ configurationRevision: 'revision_1' });
+    expect(repo.reserveSubmission({
+      sessionId: 'sess_1', turnId: 'turn_1', submissionId: 'sub_1',
+      planFingerprint: 'fingerprint_1', planId: 'plan_1', eventId: 'event_1',
+    })).toEqual({ kind: 'in_flight', eventId: 'event_1', status: 'submitting' });
+  });
 });

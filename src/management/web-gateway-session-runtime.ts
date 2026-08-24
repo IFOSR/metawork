@@ -10,7 +10,7 @@ import type {
   WebSessionMetadata,
   WebSessionRecord,
 } from './web-session-types.js';
-import type { FileAttachmentStore } from '../storage/file-attachment-store.js';
+import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
 const MAX_ENRICHMENT_BYTES = 16 * 1024;
@@ -42,7 +42,7 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly catalog: WebSessionRuntimeCatalog;
   readonly gateway: WebGatewayAdapter;
   /** 会话附件存储；提供后用户消息可携带附件并自动增强 Planner 提示。 */
-  readonly attachments?: FileAttachmentStore;
+  readonly attachments?: GatewayAttachmentStore;
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
 }

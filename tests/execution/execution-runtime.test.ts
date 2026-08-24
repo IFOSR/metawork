@@ -347,6 +347,24 @@ function createRunInput(
 }
 
 describe('ExecutorRegistry', () => {
+  it('does not expose an implicit Runtime binding for Auto AgentClasses', () => {
+    const configuration = createRuntimeConfiguration({
+      agentClasses: {
+        'implementation-alpha': {
+          ...runtimeAgentClass('model-engineering'),
+          modelPolicy: {
+            mode: 'auto',
+            allowedModelRefs: ['model-engineering', 'model-review'],
+            defaultModelRef: 'model-engineering',
+          },
+        },
+      },
+    });
+    const { registry } = createRegistry({ configuration });
+
+    expect(registry.bindingForAgentClass('implementation-alpha', revisionId)).toBeNull();
+  });
+
   it('creates distinct adapters and private bindings for two AgentClasses using the same driver', async () => {
     const harnessDriverRegistry = createHarnessDriverRegistry();
     const { registry, getRuntimeConfiguration, getRuntimeBinding } = createRegistry({

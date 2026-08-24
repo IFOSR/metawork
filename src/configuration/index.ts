@@ -23,6 +23,7 @@ export type {
   KernelAgentClassConfiguration,
   LocalCliHarnessDefinition,
   LocalProcessHarnessDefinition,
+  AutoModelObjective,
   ModelCapability,
   ModelPolicy,
   ModelProfile,
@@ -58,6 +59,7 @@ export {
 } from './configuration-validator.js';
 export {
   diffConfigurations,
+  classifyConfigurationDiff,
 } from './configuration-diff.js';
 export type { SecretReference, SecretStore } from './secret-store.js';
 export { FileSecretStore } from './file-secret-store.js';
@@ -85,6 +87,13 @@ export {
   type LocalAgentCredentialImportInput,
   type LocalAgentCredentialImportResult,
 } from './local-agent-credentials.js';
+export {
+  ConfigurationCompletionService,
+  type ConfigurationCompletionInput,
+  type ConfigurationCompletionPreset,
+  type ConfigurationCompletionProviderSource,
+  type ConfigurationCompletionResult,
+} from './configuration-completion-service.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   PlannerRuntimeEnvironmentResolverInput,

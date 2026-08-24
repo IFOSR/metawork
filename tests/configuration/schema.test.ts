@@ -70,9 +70,8 @@ function completeConfiguration() {
         kind: 'planner',
         harnessRef: 'planner-process',
         modelPolicy: {
-          mode: 'auto',
-          allowedModelRefs: ['planner'],
-          defaultModelRef: 'planner',
+          mode: 'fixed',
+          modelRef: 'planner',
         },
         generatedRuntimeRef: 'planner-default',
         enabled: true,
@@ -118,6 +117,69 @@ function completeConfiguration() {
 describe('AnyFusion configuration schema v2', () => {
   it('accepts the complete empty v2 document shape', () => {
     expect(AnyFusionConfigurationV2Schema.safeParse(minimalConfiguration()).success).toBe(true);
+  });
+
+  it('accepts Auto objectives for Executors and model economics metadata', () => {
+    const config = completeConfiguration();
+    const parsed = AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      models: {
+        ...config.models,
+        planner: {
+          ...config.models.planner,
+          contextLimit: 128_000,
+          costInputPerMillion: 1.25,
+          costOutputPerMillion: 5.5,
+          qualityTier: 'high',
+          latencyTier: 'low',
+        },
+      },
+      agentClasses: {
+        ...config.agentClasses,
+        'planner-default': {
+          ...config.agentClasses['planner-default'],
+          modelPolicy: {
+            mode: 'fixed',
+            modelRef: 'planner',
+          },
+        },
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          modelPolicy: {
+            mode: 'auto',
+            allowedModelRefs: ['engineering'],
+            defaultModelRef: 'engineering',
+            objective: {
+              priority: 'balanced',
+              maxCostPerTurn: 0.25,
+              maxLatencyMs: 15_000,
+              minimumQualityTier: 'medium',
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects Auto policy on Planner AgentClasses', () => {
+    const config = completeConfiguration();
+    const result = AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'planner-default': {
+          ...config.agentClasses['planner-default'],
+          modelPolicy: {
+            mode: 'auto',
+            allowedModelRefs: ['planner'],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('rejects unknown top-level and nested fields', () => {

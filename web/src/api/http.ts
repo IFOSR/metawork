@@ -3,7 +3,9 @@ import type {
   ConfigSnapshot,
   ExecutionTimeline,
   ExecutorSummary,
+  ConfigurationCompletionResult,
   TaskSummary,
+  WorkGraphPresentationProjection,
 } from './types';
 import type {
   AttachmentMetadata,
@@ -38,12 +40,26 @@ export class HttpClient {
     return this.request<ConfigSnapshot>('/api/config');
   }
 
+  getActivationStatus(): Promise<Pick<ConfigSnapshot, 'activationStatus' | 'activationAllowed' | 'blockingReasons' | 'activeTaskId' | 'activeAttemptCount' | 'plannerTurnActive' | 'hotActivationSupported' | 'restartRequired' | 'checkedAt'>> {
+    return this.request('/api/config/activation-status');
+  }
+
+  getConfigurationCompletion(): Promise<ConfigurationCompletionResult> {
+    return this.request('/api/config/completion');
+  }
+
   getTasks(): Promise<TaskSummary[]> {
     return this.request<TaskSummary[]>('/api/execution/tasks');
   }
 
   getTaskTimeline(taskId: string): Promise<ExecutionTimeline> {
     return this.request<ExecutionTimeline>(`/api/execution/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  getTaskWorkGraph(taskId: string): Promise<WorkGraphPresentationProjection> {
+    return this.request<WorkGraphPresentationProjection>(
+      `/api/execution/tasks/${encodeURIComponent(taskId)}/work-graph`,
+    );
   }
 
   getExecutors(): Promise<ExecutorSummary[]> {
@@ -105,11 +121,35 @@ export class HttpClient {
     return response.json() as Promise<AttachmentMetadata>;
   }
 
-  activate(baseRevisionId: string, config: Record<string, unknown>): Promise<ActivateResult> {
-    return this.request<ActivateResult>('/api/config/activate', {
+  activate(
+    baseRevisionId: string,
+    config: Record<string, unknown>,
+    secrets?: Record<string, string>,
+  ): Promise<ActivateResult> {
+    return this.requestActivation('/api/config/activate', {
       method: 'POST',
-      body: JSON.stringify({ baseRevisionId, config }),
+      body: JSON.stringify({ baseRevisionId, config, ...(secrets ? { secrets } : {}) }),
     });
+  }
+
+  private async requestActivation(
+    path: string,
+    init: RequestInit,
+  ): Promise<ActivateResult> {
+    const response = await fetch(path, {
+      ...init,
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init.headers ?? {}),
+      },
+    });
+    const body = await response.json() as ActivateResult;
+    if (!response.ok && response.status !== 409 && response.status !== 422) {
+      if (response.status === 401) this.onUnauthorized?.();
+      throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
+    }
+    return body;
   }
 
   writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }> {

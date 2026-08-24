@@ -24,6 +24,7 @@ import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountPermissionService } from './account-permission-service.js';
+import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
@@ -36,6 +37,7 @@ export interface AccountRuntimeFactoryDeps {
   buildCoordinatorServices?(accountId: string): AccountCoordinatorServices;
   buildRuntimeExecutionServices?(accountId: string): AccountRuntimeExecutionServices;
   buildPermissionService?(accountId: string): AccountPermissionService;
+  configurationActivationGate?: ConfigurationActivationGate;
   recoverDurableStartup(accountId: string): Promise<void>;
   reviewTaskPoolOnTimer?(accountId: string, nowMs: number): Promise<boolean>;
   dispose?(accountId: string): Promise<void>;
@@ -79,6 +81,7 @@ export class AccountRuntimeFactory {
       permissionService: this.deps.buildPermissionService
         ? this.deps.buildPermissionService(accountId)
         : undefined,
+      configurationActivationGate: this.deps.configurationActivationGate,
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
       reviewTaskPoolOnTimer: this.deps.reviewTaskPoolOnTimer
         ? nowMs => this.deps.reviewTaskPoolOnTimer!(accountId, nowMs)
