@@ -57,7 +57,7 @@ function makeProjector(overrides: Partial<ExecutionProjectorDeps> = {}): Executi
   return new ExecutionProjector({
     subtaskRepo: { listByTask: () => [] },
     receiptRepo: { listByTask: () => [] },
-    decisionRepo: { listByTask: () => [] },
+    decisionRepo: { listTimelineByTask: () => [] },
     publicationRepo: { listIntegratedByTaskIds: () => [], hasBlockingResidue: () => false },
     attemptRuntimeRepo: { find: () => null },
     dispatchItemRepo: { listByTask: () => [] },
@@ -100,7 +100,7 @@ describe('ExecutionProjector', () => {
   it('有 decisions 时 authorization done', () => {
     const timeline = makeProjector({
       decisionRepo: {
-        listByTask: () => [
+        listTimelineByTask: () => [
           { action: 'authorize', subtaskId: 'sub_1', taskId: 'task_1', reason: '材料齐全' },
         ],
       },
@@ -197,6 +197,51 @@ describe('ExecutionProjector', () => {
         { text: '正在整理四维度趋势数据' },
       ],
     });
+  });
+
+  it('bounds historical attempts and progress in the public execution timeline', () => {
+    const subtasks = [
+      makeSubtask({ id: 'sub_1', title: '生成报告', status: 'done' }),
+    ];
+    const dispatches = Array.from({ length: 25 }, (_, index) => ({
+      attemptId: `attempt_${index}`,
+      subtaskId: 'sub_1',
+      status: 'terminal',
+      authorizedBinding: { agentClassRef: 'codex-cli' },
+      createdAt: `2026-08-17T08:${String(index).padStart(2, '0')}:00.000Z`,
+      updatedAt: `2026-08-17T08:${String(index).padStart(2, '0')}:30.000Z`,
+    }));
+    const history = Array.from({ length: 75 }, (_, index) => ({
+      kind: 'status',
+      text: index === 74
+        ? 'Executor completed workspace command: cat /tmp/private.txt'
+        : `步骤 ${index}`,
+      occurredAt: `2026-08-17T09:${String(index % 60).padStart(2, '0')}:00.000Z`,
+    }));
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: { listByTask: () => dispatches },
+      attemptRuntimeRepo: {
+        find: () => ({
+          progress: {
+            kind: 'status',
+            text: 'Executor started workspace command: cat /tmp/private.txt',
+            history,
+          },
+        }),
+      },
+    }).project(makeTask({ status: 'done' }));
+
+    const attempts = timeline.stages[2].subtasks?.[0]?.attempts ?? [];
+    expect(attempts).toHaveLength(20);
+    expect(attempts[0]?.attemptId).toBe('attempt_5');
+    expect(attempts.at(-1)?.attemptId).toBe('attempt_24');
+    expect(attempts[0]?.progressHistory?.length).toBeLessThanOrEqual(50);
+    expect(attempts[0]?.progressHistory?.[0]?.text).toBe('步骤 25');
+    expect(attempts[0]?.progressHistory?.at(-1)?.text)
+      .toBe('Executor completed a workspace command');
+    expect(attempts[0]?.progress?.text).toBe('Executor started a workspace command');
+    expect(JSON.stringify(attempts)).not.toContain('/tmp/private.txt');
   });
 
   it('verification 阶段按 receipt violations 推导 failed', () => {

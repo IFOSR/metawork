@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -40,6 +40,7 @@ import type {
 import {
   captureWorkspaceState,
   deriveWorkspaceDelta,
+  parseWorkspaceState,
   type WorkspaceDelta,
   type WorkspaceState,
 } from './workspace-change-tracker.js';
@@ -69,13 +70,22 @@ import {
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
-import { formatExecutorProgress } from '../executor/error-utils.js';
+import {
+  formatExecutorProgress,
+  normalizeDependencyMaterializationFailure,
+} from '../executor/error-utils.js';
+import { kernelFailure } from '../core/kernel-failure.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import {
   ResultObjectRepo,
   type ResultObjectWriter,
 } from '../storage/result-object-repo.js';
 import type { ScopedExecutionResultReferencePort } from './execution-result-reference-port.js';
+import {
+  MERGE_REPAIR_MARKER,
+  MERGE_REPAIR_PROTOCOL,
+  parseMergeRepairReport,
+} from './merge-repair-protocol.js';
 
 export type ProgressCallback = (event: ExecutorProgressEvent, executor: ExecutorAdapter) => void;
 
@@ -435,7 +445,7 @@ export class SubtaskAttemptRunner {
         } : {},
         managedRepositoryUri: gitWorkspace ? pathToFileURL(gitWorkspace.repositoryPath).href : null,
         managedBranch: gitWorkspace?.branch ?? null,
-        headCommit: gitWorkspace?.baselineCommit ?? null,
+        headCommit: gitWorkspace?.headCommit ?? null,
         currentCheckpointId: null,
         status: 'active',
         cleanupAfter: null,
@@ -466,10 +476,19 @@ export class SubtaskAttemptRunner {
         objects: checkpointObjects(startCheckpoint),
       });
       const targetPath = workspace.filesPath;
-      workspaceBaseline = captureWorkspaceState(workspace.filesPath);
       const sourceRuntime = sourceAttemptId
         ? this.attemptRuntimeRepo.find(sourceAttemptId)
         : null;
+      const currentWorkspaceBaseline = captureWorkspaceState(workspace.filesPath);
+      workspaceBaseline = (
+        attemptKind === 'continuation' || attemptKind === 'fallback'
+          ? recoveryChainWorkspaceBaseline({
+              sourceRuntime,
+              workspaceRoot: workspace.filesPath,
+              findRuntime: sourceId => this.attemptRuntimeRepo.find(sourceId),
+            })
+          : null
+      ) ?? currentWorkspaceBaseline;
       const recoveryMode: KernelRecoveryMode = dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
         ? 'recovery_packet'
         : dispatch.recoveryMode;
@@ -513,8 +532,8 @@ export class SubtaskAttemptRunner {
           deliveryKind: 'edit',
         } : undefined,
         completionContractOverride: mergeRepair ? {
-          marker: '---METACLAW-MERGE-REPAIR---',
-          protocol: 'metaclaw:merge-repair:v1',
+          marker: MERGE_REPAIR_MARKER,
+          protocol: MERGE_REPAIR_PROTOCOL,
           allowedPaths: mergeRepair.conflictingPaths,
         } : undefined,
         recovery: {
@@ -1066,10 +1085,25 @@ export class SubtaskAttemptRunner {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const dependencyFailure = isDependencyMaterializationError(message)
+        ? normalizeDependencyMaterializationFailure(error, {
+            sourceSubtaskId: subtask.dependencies[0]?.fromSubtaskId ?? null,
+            targetSubtaskId: subtask.id,
+            referenceId: extractReferenceId(message),
+          })
+        : null;
+      const normalizedFailure = dependencyFailure
+        ? kernelFailure({
+            kind: dependencyFailure.retryable ? 'infrastructure' : 'capability_mismatch',
+            scope: 'task',
+            code: dependencyFailure.code,
+            summary: `${dependencyFailure.summary} (${dependencyFailure.sourceSubtaskId ?? 'unknown'} -> ${dependencyFailure.targetSubtaskId ?? subtask.id})`,
+          })
+        : null;
       if (mergeRepair) {
         this.publicationRepo.recordRepairFailure(
           mergeRepair.publicationId,
-          message,
+          normalizedFailure?.summary ?? message,
           new Date().toISOString(),
         );
       }
@@ -1077,7 +1111,11 @@ export class SubtaskAttemptRunner {
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse, errorCode: 'attempt_exception', errorDetail: message,
+          terminalState: 'executor_failed',
+          rawResponse,
+          errorCode: normalizedFailure?.code ?? 'attempt_exception',
+          errorDetail: normalizedFailure?.summary ?? message,
+          failure: normalizedFailure,
           resultObjects: this.persistAttemptResults({
             attemptId,
             taskId: task.id,
@@ -1090,10 +1128,17 @@ export class SubtaskAttemptRunner {
           }),
         });
       }
-      claim.markFailed(message);
+      claim.markFailed(normalizedFailure?.summary ?? message);
       return {
-        outcome: 'executor_failed', attemptId, error: message,
-        failure: { kind: 'unknown', scope: 'attempt', code: 'attempt_exception', summary: message },
+        outcome: 'executor_failed',
+        attemptId,
+        error: normalizedFailure?.summary ?? message,
+        failure: normalizedFailure ?? {
+          kind: 'unknown',
+          scope: 'attempt',
+          code: 'attempt_exception',
+          summary: message,
+        },
       };
     } finally {
       clearInterval(heartbeat);
@@ -1787,48 +1832,8 @@ function buildMergeRepairGoal(
     `Read-only base/ours/theirs materials: ${join(workspacePath, '.metaclaw', 'merge-repair')}`,
     'For binary conflicts, regenerate exactly one target file from the supplied read-only versions.',
     'Runtime owns Git operations. Do not run git merge, git add, git commit, checkout, reset, or edit .git.',
-    'Finish with Markdown followed by exactly one ---METACLAW-MERGE-REPAIR--- trailer.',
-    'The trailer JSON must be {"protocol":"metaclaw:merge-repair:v1","resolvedPaths":["..."],"verification":{"summary":"..."}}.',
+    'Follow the dedicated merge-repair completion protocol in the execution context.',
   ].join('\n');
-}
-
-function parseMergeRepairReport(rawResponse: string): {
-  resolvedPaths: string[];
-  verificationSummary: string;
-} {
-  const marker = '---METACLAW-MERGE-REPAIR---';
-  const markerIndex = rawResponse.lastIndexOf(marker);
-  if (markerIndex < 0 || rawResponse.indexOf(marker) !== markerIndex) {
-    throw new Error('merge repair response must contain exactly one protocol trailer');
-  }
-  const payloadText = rawResponse.slice(markerIndex + marker.length).trim();
-  let payload: unknown;
-  try {
-    payload = JSON.parse(payloadText);
-  } catch {
-    throw new Error('merge repair trailer is not valid JSON');
-  }
-  if (!payload || typeof payload !== 'object') throw new Error('merge repair trailer must be an object');
-  const record = payload as Record<string, unknown>;
-  if (record.protocol !== 'metaclaw:merge-repair:v1') {
-    throw new Error('merge repair trailer protocol is invalid');
-  }
-  if (!Array.isArray(record.resolvedPaths)
-    || record.resolvedPaths.some(path => typeof path !== 'string' || path.length === 0)) {
-    throw new Error('merge repair trailer resolvedPaths must contain non-empty strings');
-  }
-  const verification = record.verification;
-  if (!verification || typeof verification !== 'object') {
-    throw new Error('merge repair trailer verification is required');
-  }
-  const summary = (verification as Record<string, unknown>).summary;
-  if (typeof summary !== 'string' || summary.trim().length === 0) {
-    throw new Error('merge repair verification.summary must be non-empty');
-  }
-  return {
-    resolvedPaths: record.resolvedPaths as string[],
-    verificationSummary: summary.trim(),
-  };
 }
 
 function checkpointObjects(checkpoint: StoredWorkspaceCheckpoint) {
@@ -1932,6 +1937,16 @@ function correctionGuidance(code: CompletionContractViolation['code']): string {
   }
 }
 
+function isDependencyMaterializationError(message: string): boolean {
+  return /(?:^|:)(?:dependency_|missing direct dependency workspace_state)/u.test(message)
+    || message.includes('direct dependency workspace_state');
+}
+
+function extractReferenceId(message: string): string | null {
+  const match = /(?:reference|Result Reference)\s+([A-Za-z0-9_.:-]+)/u.exec(message);
+  return match?.[1] ?? null;
+}
+
 function boundedRecoveryPacket(
   receipt: ExecutorAttemptReceipt | null,
   runtime: ExecutorAttemptRuntimeRecord | null,
@@ -1952,4 +1967,28 @@ function boundedRecoveryPacket(
   return serialized.length <= 16_000
     ? packet
     : { ...packet, knownProgress: {}, workspaceDelta: {}, truncated: true };
+}
+
+function recoveryChainWorkspaceBaseline(input: {
+  sourceRuntime: ExecutorAttemptRuntimeRecord | null;
+  workspaceRoot: string;
+  findRuntime(attemptId: string): ExecutorAttemptRuntimeRecord | null;
+}): WorkspaceState | null {
+  const expectedRoot = resolve(input.workspaceRoot);
+  const visited = new Set<string>();
+  let current = input.sourceRuntime;
+  let inherited: WorkspaceState | null = null;
+  while (
+    current
+    && !visited.has(current.attemptId)
+    && current.workspaceRoot
+    && resolve(current.workspaceRoot) === expectedRoot
+  ) {
+    visited.add(current.attemptId);
+    inherited = parseWorkspaceState(current.workspaceBaseline) ?? inherited;
+    current = current.sourceAttemptId
+      ? input.findRuntime(current.sourceAttemptId)
+      : null;
+  }
+  return inherited;
 }

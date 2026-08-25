@@ -33,6 +33,7 @@ import type { GenerationReplanRequestRepo } from '../storage/generation-replan-r
 import type { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import type { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
+import type { UserArtifactPublicationService } from '../delivery/user-artifact-publication-service.js';
 import type { SessionPersistenceService } from '../session/session-persistence-service.js';
 import type { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import type { SessionPresentationService } from '../session/session-presentation-service.js';
@@ -42,6 +43,7 @@ import type { ResourceLeaseService } from '../execution/resource-lease-service.j
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { ExecutionRuntime } from '../execution/execution-runtime.js';
 import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
+import { ResultObjectRepo } from '../storage/result-object-repo.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -83,6 +85,7 @@ export function buildAccountKernelExecutionServices(deps: {
   cancellationCoordinator: TaskCancellationCoordinator;
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
+  userArtifactPublication?: UserArtifactPublicationService;
   persistenceService: SessionPersistenceService;
   kernelExecutorStatusProjector: KernelExecutorStatusProjector;
   presentation: SessionPresentationService;
@@ -136,8 +139,11 @@ export function buildAccountKernelExecutionServices(deps: {
       resourceLeaseService: deps.resourceLeaseService,
       dispatchItemRepo: deps.dispatchItemRepo,
       taskRuntimeService: deps.taskRuntimeService,
+      userArtifactPublication: deps.userArtifactPublication,
     }),
     publicationRepo: deps.publicationRepo,
+    resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),
+    workspaceRepository: deps.workspaceRepository,
     generationReplanRepo: deps.generationReplanRepo,
     cancellationCoordinator: deps.cancellationCoordinator,
     executionProgressService: deps.executionProgressService,

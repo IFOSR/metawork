@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export const CURRENT_SCHEMA_VERSION = 33;
+export const CURRENT_SCHEMA_VERSION = 34;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -1072,6 +1072,33 @@ CREATE INDEX idx_generation_replan_requests_task
 CREATE INDEX idx_generation_replan_requests_revision
             ON generation_replan_requests(configuration_revision, status, created_at);
 
+CREATE TABLE task_artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            generation_id TEXT,
+            subtask_id TEXT,
+            publication_id TEXT,
+            display_name TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            published_path TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'unsupported')),
+            content_hash TEXT NOT NULL,
+            byte_length INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('published', 'unavailable')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(account_id, task_id, relative_path, content_hash),
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+          );
+
+CREATE INDEX idx_task_artifacts_task
+            ON task_artifacts(task_id, created_at);
+
+CREATE INDEX idx_task_artifacts_publication
+            ON task_artifacts(publication_id);
+
 CREATE TRIGGER trg_task_search_index_interactions_insert
       AFTER INSERT ON interactions
       WHEN NEW.task_id IS NOT NULL
@@ -1239,7 +1266,7 @@ export function createSchema30MigrationContext(
 }
 
 /**
- * Creates schema 33 or applies the supported pre-release upgrades.
+ * Creates schema 34 or applies the supported pre-release upgrades.
  */
 export function runMigrations(
   db: Database.Database,
@@ -1255,10 +1282,16 @@ export function runMigrations(
     if (versions.length === 1 && versions[0]?.version === 31) {
       migrateSchema31To32(db);
       migrateSchema32To33(db);
+      migrateSchema33To34(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
       migrateSchema32To33(db);
+      migrateSchema33To34(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 33) {
+      migrateSchema33To34(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1271,6 +1304,7 @@ export function runMigrations(
       migrateSchema30To31(db, migrationContext);
       migrateSchema31To32(db);
       migrateSchema32To33(db);
+      migrateSchema33To34(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1476,6 +1510,47 @@ function migrateSchema31To32(db: Database.Database): void {
     ).run();
     if (updated.changes !== 1) {
       throw new Error('schema version changed during 31 to 32 migration');
+    }
+  });
+  migrate();
+}
+
+function migrateSchema33To34(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS task_artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        generation_id TEXT,
+        subtask_id TEXT,
+        publication_id TEXT,
+        display_name TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        published_path TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'unsupported')),
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('published', 'unavailable')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account_id, task_id, relative_path, content_hash),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_artifacts_task
+        ON task_artifacts(task_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_task_artifacts_publication
+        ON task_artifacts(publication_id);
+    `);
+    // 历史 tasks.artifacts_json 保持只读兼容：旧 artifact 的绝对路径不迁移、
+    // 不暴露；无法安全映射为用户产物的记录保持不可见（unavailable 事实由
+    // 运行时读取时按需落库），这里不做破坏性数据搬迁。
+    const updated = db.prepare(
+      'UPDATE schema_version SET version = 34 WHERE version = 33',
+    ).run();
+    if (updated.changes !== 1) {
+      throw new Error('schema version changed during 33 to 34 migration');
     }
   });
   migrate();

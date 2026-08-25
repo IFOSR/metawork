@@ -66,4 +66,55 @@ describe('KernelDecisionRepo', () => {
     expect(() => repo.findByEventId(record.eventId))
       .toThrow('unsupported Kernel decision schema version 3');
   });
+
+  it('reads a bounded lightweight timeline without parsing ledger JSON bodies', () => {
+    const db = createV31RepositoryDb();
+    const repo = new KernelDecisionRepo(db);
+    const base = createRecord();
+    for (let index = 1; index <= 3; index += 1) {
+      const event = {
+        ...base.event,
+        id: `event_${index}`,
+        occurredAt: `2026-07-20T00:00:0${index}.000Z`,
+      };
+      const decision = {
+        ...base.decision,
+        id: `decision_event_${index}`,
+        eventId: event.id,
+        reason: `reason ${index}`,
+      };
+      repo.insertIfAbsent({
+        ...base,
+        id: decision.id,
+        eventId: event.id,
+        event,
+        decision,
+        reason: decision.reason,
+        createdAt: event.occurredAt,
+      });
+    }
+
+    db.prepare(`
+      UPDATE kernel_decisions
+      SET event_json = 'not-json',
+          snapshot_json = 'not-json',
+          decision_json = 'not-json'
+      WHERE id = 'decision_event_3'
+    `).run();
+
+    expect(repo.listTimelineByTask('task_1', 2)).toEqual([
+      {
+        action: 'no_op',
+        taskId: 'task_1',
+        subtaskId: 'subtask_1',
+        reason: 'reason 2',
+      },
+      {
+        action: 'no_op',
+        taskId: 'task_1',
+        subtaskId: 'subtask_1',
+        reason: 'reason 3',
+      },
+    ]);
+  });
 });

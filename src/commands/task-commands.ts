@@ -314,14 +314,19 @@ export async function pauseTask(args: ResolvedCommandArgs, context: CommandConte
 
 export async function resumeTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   const taskId = stringArg(args, 'taskId');
-  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+  const task = context.taskEngine.getTaskRepo().findById(taskId);
+  if (!task) {
     return { type: 'text', content: `任务不存在: ${taskId}` };
   }
 
   return {
     type: 'directive',
     content: `任务 #${taskId} 已提交恢复请求`,
-    directive: { kind: 'resume-task', taskId, mode: 'resume-parked' },
+    directive: {
+      kind: 'resume-task',
+      taskId,
+      mode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+    },
   };
 }
 

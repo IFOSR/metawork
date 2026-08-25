@@ -853,6 +853,79 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
+  it('validates a continuation against the source attempt chain workspace baseline', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.subtaskRepo.upsert({
+      ...setupResult.a,
+      deliveryKind: 'edit',
+    });
+    setupResult.executionRuntime.run
+      .mockImplementationOnce(async input => {
+        writeFileSync(
+          join(input.executorInput.executionBinding.workspacePath, 'report.html'),
+          '<!doctype html><html><body>complete</body></html>',
+        );
+        return {
+          taskId: 'task_phase2',
+          executionId: 'exec_source',
+          status: 'success',
+          executorName: 'codex-cli',
+          output: 'Report created without a completion marker.',
+          error: null,
+          artifacts: [],
+          subtaskResults: [],
+          durationMs: 10,
+        };
+      })
+      .mockResolvedValueOnce({
+        taskId: 'task_phase2',
+        executionId: 'exec_continuation',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: `Recovered report verified.\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+          evidence: ['report.html exists and was verified'],
+          noChangeReason: null,
+        })}`,
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      });
+
+    const source = await setupResult.runner.run({
+      attemptId: 'attempt_source_workspace_change',
+      executionId: 'exec_source',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    expect(source).toMatchObject({ outcome: 'contract_failed' });
+    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+
+    const recovered = await setupResult.runner.run({
+      attemptId: 'attempt_workspace_continuation',
+      sourceAttemptId: 'attempt_source_workspace_change',
+      attemptKind: 'continuation',
+      recoveryMode: 'recovery_packet',
+      executionId: 'exec_continuation',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'follow-up',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(recovered).toMatchObject({
+      outcome: 'completed',
+      output: 'Recovered report verified.',
+    });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
+      status: 'awaiting_integration',
+    });
+  });
+
   it('does not start a stale fallback after the Task was cancelled', async () => {
     const setupResult = setup(validResponse());
     setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'source attempt failed' });

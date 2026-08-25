@@ -26,6 +26,14 @@ export interface InteractionTrace {
 export interface InteractionTraceEvent {
   id: string;
   sequence: number;
+  /** Stable replay cursor within one turn. */
+  cursor?: string;
+  /** The idempotent source key used to derive `id`. */
+  eventKey?: string;
+  /** Safe identity projection for execution detail filtering. */
+  taskId?: string | null;
+  subtaskId?: string | null;
+  attemptId?: string | null;
   occurredAt: string;
   phase: InteractionTracePhase;
   actor: InteractionTraceActor;

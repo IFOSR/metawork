@@ -124,4 +124,123 @@ describe('SubtaskExecutionContextBuilder', () => {
     expect(JSON.stringify(built.context.outOfScopeSiblings)).not.toContain('private goal');
     expect(built.context.taskBackground.instruction).toBe('background_only');
   });
+
+  it('fails closed with a structured diagnostic when a handoff points to a missing Result Object', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        last_interruption_reason, interruption_count, created_at, updated_at
+      ) VALUES ('task_context_missing_result', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+    `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
+    seedWorkGraphRevision(db, {
+      taskId: 'task_context_missing_result',
+      generationId: 'generation_context_missing_result',
+      configurationRevision: 'revision_context_missing_result',
+    });
+
+    const upstream = node('upstream_missing_result', 'Upstream');
+    upstream.taskId = 'task_context_missing_result';
+    upstream.generationId = 'generation_context_missing_result';
+    upstream.executorBindings = [testExecutorBinding({
+      configurationRevision: 'revision_context_missing_result',
+    })];
+    upstream.status = 'done';
+    const downstream = node('downstream_missing_result', 'Downstream', [{
+      fromSubtaskId: upstream.id,
+      requiredItems: [{ key: 'summary', type: 'text', description: 'summary' }],
+    }]);
+    downstream.taskId = upstream.taskId;
+    downstream.generationId = upstream.generationId;
+    downstream.executorBindings = [testExecutorBinding({
+      configurationRevision: 'revision_context_missing_result',
+    })];
+    const subtaskRepo = new SubtaskRepo(db);
+    subtaskRepo.upsert(upstream);
+    subtaskRepo.upsert(downstream);
+
+    const referenceId = 'missing-result-reference';
+    new SubtaskHandoffRepo(db).insert({
+      taskId: upstream.taskId,
+      fromSubtaskId: upstream.id,
+      toSubtaskId: downstream.id,
+      attemptId: 'attempt_upstream',
+      items: [{
+        key: 'summary',
+        type: 'result_reference',
+        referenceId,
+        summary: 'Authorized upstream result',
+      }],
+      resultReference: {
+        referenceId,
+        resultId: 'missing-result-object',
+        accountId: 'local-default',
+        taskId: upstream.taskId,
+        generationId: upstream.generationId,
+        sourceSubtaskId: upstream.id,
+        targetSubtaskId: downstream.id,
+        edgeKey: `${upstream.id}->${downstream.id}`,
+        requiredItems: ['summary'],
+        readScope: {
+          kind: 'direct_dependency',
+          offset: 0,
+          length: 10,
+          summaryHash: 'sha256:summary',
+        },
+        contentHash: 'sha256:missing',
+        byteLength: 10,
+        mediaType: 'text/plain',
+        completeness: 'complete',
+        createdAt: '2026-07-17T00:00:01.000Z',
+      },
+      completionSchemaVersion: 4,
+      createdAt: '2026-07-17T00:00:01.000Z',
+    });
+
+    const task: Task = {
+      id: upstream.taskId,
+      title: 'Task',
+      goal: 'Goal',
+      status: 'running',
+      summary: '',
+      snapshots: [],
+      resources: [],
+      artifacts: [],
+      dependencies: [],
+      prioritySignals: {
+        dueAt: null,
+        isReady: true,
+        progressRatio: 0,
+        blocksOthers: false,
+        idleHours: 0,
+      },
+      injectedPreferences: [],
+      lastSchedulingReason: '',
+      lastInterruptionReason: '',
+      interruptionCount: 0,
+      createdAt: '2026-07-17T00:00:00.000Z',
+      updatedAt: '2026-07-17T00:00:00.000Z',
+    };
+
+    expect(() => new SubtaskExecutionContextBuilder(db, {
+      accountId: 'local-default',
+      resultRoot: '/tmp/metawork-context-results-missing',
+    }).build({
+      executionId: 'exec',
+      task,
+      subtask: downstream,
+      allSubtasks: [upstream, downstream],
+      attemptId: 'attempt_downstream',
+      workUnitId: 'wu',
+      sessionId: 'session',
+      workspaceContext: {
+        allowFilesystem: true,
+        workingDirectory: '/repo',
+        targetPaths: [],
+      },
+      evidenceToolsAvailable: false,
+    })).toThrow('dependency_result_object_missing');
+  });
 });

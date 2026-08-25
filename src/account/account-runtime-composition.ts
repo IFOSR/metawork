@@ -42,6 +42,8 @@ import { SessionPersistenceService } from '../session/session-persistence-servic
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
+import { UserArtifactPublicationService } from '../delivery/user-artifact-publication-service.js';
+import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
 import { createSqliteAccountPermissionService } from './sqlite-account-permission-service.js';
 import { AccountStartupRecoveryService } from './account-startup-recovery-service.js';
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
@@ -61,6 +63,8 @@ export function buildAccountRuntimeComposition(deps: {
   orchestration: OrchestrationEngine;
   contextRecaller: ContextRecaller;
   notifier: NotificationService;
+  /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
+  userWorkspaceRoot?: string;
   workspaceRoot: string;
   attemptsRoot: string;
   resultsRoot: string;
@@ -154,6 +158,15 @@ export function buildAccountRuntimeComposition(deps: {
   });
   const sharedPresentation = new SessionPresentationService();
   const verificationAndDeliveryService = new VerificationAndDeliveryService();
+  // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
+  // 未提供时（如测试组合）不启用用户产物发布。
+  const userArtifactPublication = deps.userWorkspaceRoot
+    ? new UserArtifactPublicationService({
+      userWorkspaceRoot: deps.userWorkspaceRoot,
+      accountId: deps.accountId,
+      taskArtifactRepo: new TaskArtifactRepo(deps.db),
+    })
+    : null;
   const kernelExecutionServices = buildAccountKernelExecutionServices({
     db: deps.db,
     sessionId: deps.sessionId,
@@ -185,6 +198,7 @@ export function buildAccountRuntimeComposition(deps: {
     cancellationCoordinator: runtimeExecutionServices.cancellationCoordinator,
     executionProgressService: repositories.executionProgressService,
     verificationAndDeliveryService,
+    ...(userArtifactPublication ? { userArtifactPublication } : {}),
     persistenceService: conversationExecutionBinder.routedPersistenceService(),
     kernelExecutorStatusProjector: new KernelExecutorStatusProjector(
       repositories.kernelExecutorStatusRepo,

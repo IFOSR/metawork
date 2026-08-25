@@ -198,6 +198,11 @@ function parseCatalog(raw: string): WebSessionCatalogFile {
 function parseSessionRecord(raw: string, expectedId: string): WebSessionRecord {
   const value = JSON.parse(raw) as unknown;
   assertSessionRecord(value, expectedId);
+  // 向后兼容：历史记录没有 artifacts 字段，读取时补默认值，
+  // 保证 API 消费方（含 Web 前端）总是拿到数组。
+  for (const turn of value.turns) {
+    if (!Array.isArray(turn.artifacts)) turn.artifacts = [];
+  }
   return value;
 }
 
@@ -251,7 +256,25 @@ function isConversationTurn(
     && Array.isArray(value.traceEvents)
     && (isRecord(value.executionTimeline) || value.executionTimeline === null)
     && Array.isArray(value.artifactRefs)
-    && value.artifactRefs.every(item => typeof item === 'string');
+    && value.artifactRefs.every(item => typeof item === 'string')
+    // 新增字段向后兼容：历史记录缺省时按空数组读取。
+    && (value.artifacts === undefined
+      || (Array.isArray(value.artifacts) && value.artifacts.every(isArtifactProjection)));
+}
+
+function isArtifactProjection(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.artifactId === 'string'
+    && typeof value.taskId === 'string'
+    && (typeof value.publicationId === 'string' || value.publicationId === null)
+    && typeof value.displayName === 'string'
+    && typeof value.relativePath === 'string'
+    && typeof value.mediaType === 'string'
+    && ['markdown', 'text', 'code', 'unsupported'].includes(String(value.previewKind))
+    && typeof value.previewable === 'boolean'
+    && typeof value.byteLength === 'number'
+    && typeof value.contentHash === 'string'
+    && typeof value.publishedAt === 'string';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

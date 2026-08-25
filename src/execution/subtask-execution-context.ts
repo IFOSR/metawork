@@ -102,6 +102,12 @@ export class SubtaskExecutionContextBuilder {
     this.syncTaskEvidenceCatalog(input.task);
     const incomingHandoffs = this.handoffRepo.listIncoming(input.task.id, input.subtask.id);
     assertIncomingHandoffsComplete(input.subtask, incomingHandoffs);
+    assertIncomingHandoffMaterialization(
+      this.resultObjectRepo,
+      input.task.id,
+      input.subtask,
+      incomingHandoffs,
+    );
     const outgoingHandoffRequirements = input.allSubtasks.flatMap(candidate => {
       const dependency = candidate.dependencies.find(item => item.fromSubtaskId === input.subtask.id);
       return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
@@ -327,4 +333,44 @@ function assertIncomingHandoffsComplete(subtask: Subtask, handoffs: PersistedSub
     .map(dependency => dependency.fromSubtaskId)
     .filter(dependencyId => !actual.has(dependencyId));
   if (missing.length > 0) throw new Error(`incoming_handoff_missing: ${missing.join(', ')}`);
+}
+
+function assertIncomingHandoffMaterialization(
+  resultObjectRepo: ResultObjectRepo,
+  taskId: string,
+  subtask: Subtask,
+  handoffs: PersistedSubtaskHandoff[],
+): void {
+  for (const handoff of handoffs) {
+    const referenceItem = handoff.items.find(item => item.type === 'result_reference');
+    if (!referenceItem) continue;
+    const reference = handoff.resultReference;
+    if (
+      !reference
+      || reference.referenceId !== referenceItem.referenceId
+      || reference.taskId !== taskId
+      || reference.targetSubtaskId !== subtask.id
+      || reference.sourceSubtaskId !== handoff.fromSubtaskId
+      || reference.generationId !== subtask.generationId
+    ) {
+      throw new Error(
+        `dependency_identity_mismatch: ${handoff.fromSubtaskId} -> ${subtask.id}`,
+      );
+    }
+    if (!resultObjectRepo.findObject(reference.resultId)) {
+      throw new Error(
+        `dependency_result_object_missing: ${reference.resultId}`,
+      );
+    }
+    const persistedReference = resultObjectRepo.findReference(reference.referenceId);
+    if (
+      !persistedReference
+      || persistedReference.resultId !== reference.resultId
+      || persistedReference.targetSubtaskId !== subtask.id
+    ) {
+      throw new Error(
+        `dependency_result_reference_unauthorized: ${reference.referenceId}`,
+      );
+    }
+  }
 }

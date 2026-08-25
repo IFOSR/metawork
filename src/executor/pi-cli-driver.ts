@@ -160,16 +160,27 @@ export class PiCliDriver implements HarnessDriver {
     if (event.type === 'message_start' && messageRole(event.message) === 'assistant') {
       return { kind: 'status', text: 'Executor model response stream started' };
     }
+    if (event.type === 'message_end' && messageRole(event.message) === 'assistant') {
+      // Executor 的执行叙述（assistant 正文）：脱敏截断后实时呈现给用户，
+      // 让用户看到 Executor 正在做什么、想什么、下一步做什么。
+      const text = assistantMessageText(event.message);
+      if (text) {
+        return { kind: 'status', text: `Executor: ${executorActivityExcerpt(text)}` };
+      }
+      return null;
+    }
     if (event.type === 'tool_execution_start') {
+      const detail = toolArgSummary(event.args);
       return {
         kind: 'skill',
-        text: `Executor started tool: ${safeHarnessName(event.toolName)}`,
+        text: `Executor started tool: ${safeHarnessName(event.toolName)}${detail ? ` — ${detail}` : ''}`,
       };
     }
     if (event.type === 'tool_execution_end') {
+      const detail = toolArgSummary(event.args);
       return {
         kind: 'skill',
-        text: `Executor ${event.isError === true ? 'failed' : 'completed'} tool: ${safeHarnessName(event.toolName)}`,
+        text: `Executor ${event.isError === true ? 'failed' : 'completed'} tool: ${safeHarnessName(event.toolName)}${detail ? ` — ${detail}` : ''}`,
       };
     }
     if (event.type === 'turn_end') {
@@ -259,6 +270,36 @@ function messageRole(value: unknown): string | null {
   return typeof (value as Record<string, unknown>).role === 'string'
     ? String((value as Record<string, unknown>).role)
     : null;
+}
+
+/** 工具参数中允许进入用户可见进度的白名单键；其余一律不透出。 */
+const TOOL_ARG_KEYS = [
+  'command',
+  'path',
+  'file_path',
+  'url',
+  'query',
+  'pattern',
+  'skill',
+] as const;
+
+function toolArgSummary(args: unknown): string {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
+  const record = args as Record<string, unknown>;
+  for (const key of TOOL_ARG_KEYS) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return executorActivityExcerpt(value, 120);
+    }
+  }
+  return '';
+}
+
+/** 脱敏 + 压缩空白 + 截断：Executor 活动文本进入用户可见进度的唯一通道。 */
+export function executorActivityExcerpt(value: string, limit = 240): string {
+  const normalized = redactSensitiveText(value.replace(/\s+/gu, ' ').trim());
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit)}…`;
 }
 
 function assistantTerminalError(message: Record<string, unknown>): string | null {

@@ -22,6 +22,10 @@ import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import { buildEligibleContextRefKeys } from '../work-graph/index.js';
+import {
+  isRetrySafeLegacySystemBindingReplan,
+  legacySystemBindingRecoveryEvent,
+} from '../execution/kernel-application-recovery.js';
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
@@ -136,6 +140,7 @@ export class AccountStartupRecoveryService {
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
     this.deps.kernelServices.kernelWorkflowRepo.reconcileProcessing();
+    this.enqueueRetrySafeSystemBindingRecoveries(now);
     await this.deliverPendingEffects(now);
     await this.recoverKernelCoordinator();
 
@@ -276,6 +281,38 @@ export class AccountStartupRecoveryService {
         apply: decision => this.applyCoordinatorDecision(decision),
       },
     });
+  }
+
+  private enqueueRetrySafeSystemBindingRecoveries(now: string): void {
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
+      const activeRevision = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
+      if (!activeRevision) continue;
+      for (const application of this.deps.kernelServices.kernelWorkflowRepo.listRecoveryItems(task.id)) {
+        const action = application.decision.action;
+        if (action.type !== 'authorize_task_plan') continue;
+        const request = this.deps.runtimeExecutionServices.generationReplanRepo.findByGeneration(
+          task.id,
+          action.generationId,
+          activeRevision.revision,
+        );
+        if (!isRetrySafeLegacySystemBindingReplan({
+          taskId: task.id,
+          application,
+          activeRevision,
+          replanRequest: request,
+        })) continue;
+        const decision = this.deps.kernelServices.kernelDecisionRepo.findById(application.decisionId);
+        if (!decision?.sessionId) continue;
+        this.deps.kernelServices.kernelWorkflowRepo.enqueue(
+          legacySystemBindingRecoveryEvent({
+            taskId: task.id,
+            application,
+            sessionId: decision.sessionId,
+            occurredAt: now,
+          }),
+        );
+      }
+    }
   }
 
   private buildCoordinatorSnapshot(event: KernelEvent): KernelSnapshot {
@@ -427,6 +464,7 @@ export class AccountStartupRecoveryService {
       },
       sessionKernelCallbacks: {
         appendOutput: () => undefined,
+        onDecisionApplying: () => undefined,
         deliverDirectReply: (userInput, reply) => {
           persistenceService.recordInteraction({
             taskId: null,

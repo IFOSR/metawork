@@ -38,6 +38,35 @@ describe('production composition root', () => {
     expect(administration).not.toContain('paths.secrets');
   });
 
+  it('captures the immutable startup workspace root separately from the account workspace store', () => {
+    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+    const composition = readFileSync(
+      resolve(root, 'src/account/account-runtime-composition.ts'),
+      'utf8',
+    );
+    const workspaceServices = readFileSync(
+      resolve(root, 'src/account/account-workspace-services.ts'),
+      'utf8',
+    );
+
+    // 启动目录在组合根一次性捕获，进程生命周期内保持不变。
+    expect(index).toContain('const startupWorkspaceRoot = resolve(process.cwd())');
+    expect(index.match(/startupWorkspaceRoot = resolve\(process\.cwd\(\)\)/gu))
+      .toHaveLength(1);
+    // 用户 Workspace 与内部 workspaceStore 作为不同依赖传递。
+    expect(index).toContain('userWorkspaceRoot: startupWorkspaceRoot');
+    expect(index).toContain('workspaceRoot: accountPaths.workspaceStore');
+    // Markdown preview 的 allowed root 也必须使用捕获的启动目录。
+    expect(index).toContain(
+      'new MarkdownPreviewServer(markdownPreviewConfig, startupWorkspaceRoot)',
+    );
+    expect(index).not.toContain('new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())');
+    // 组合层把两者区分为独立依赖名，账户 workspace-store 不冒充用户 Workspace。
+    expect(composition).toContain("userWorkspaceRoot?: string");
+    expect(composition).toContain('workspaceRoot: string;');
+    expect(workspaceServices).toContain("'workspace-store'");
+  });
+
   it('routes native transactions through the shared installer and Server coordinator', () => {
     const installCli = readFileSync(resolve(root, 'src/install-cli.ts'), 'utf8');
     const installer = readFileSync(

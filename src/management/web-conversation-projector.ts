@@ -57,6 +57,7 @@ export class WebConversationProjector {
       traceEvents: [],
       executionTimeline: null,
       artifactRefs: [],
+      artifacts: [],
     };
     this.outputFrom = Math.max(0, input.outputFrom);
     this.outputLines.clear();

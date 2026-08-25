@@ -65,6 +65,28 @@ export function deriveWorkspaceDelta(before: WorkspaceState, after: WorkspaceSta
   };
 }
 
+export function parseWorkspaceState(value: unknown): WorkspaceState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.kind !== 'git_status_v1'
+    || typeof record.truncated !== 'boolean'
+    || !record.paths
+    || typeof record.paths !== 'object'
+    || Array.isArray(record.paths)
+  ) return null;
+  const paths: Record<string, string | null> = {};
+  for (const [path, hash] of Object.entries(record.paths as Record<string, unknown>)) {
+    if (typeof hash !== 'string' && hash !== null) return null;
+    paths[path] = hash;
+  }
+  return {
+    kind: 'git_status_v1',
+    paths,
+    truncated: record.truncated,
+  };
+}
+
 export function parseWorkspaceDelta(value: unknown): WorkspaceDelta | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;

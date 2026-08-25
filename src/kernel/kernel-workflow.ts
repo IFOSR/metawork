@@ -315,6 +315,14 @@ function appendActionBindings(
         fingerprint: action.bindingFingerprint,
       });
       return;
+    case 'resume_task':
+      if (action.recovery) {
+        entries.push({
+          binding: action.recovery.authorizedBinding,
+          fingerprint: action.recovery.bindingFingerprint,
+        });
+      }
+      return;
     default:
       return;
   }

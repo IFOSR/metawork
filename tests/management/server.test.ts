@@ -1036,6 +1036,66 @@ describe('ManagementServer WebSocket authentication', () => {
       await server.stop();
     }
   });
+  it('serves same-origin artifact metadata, preview, and download by artifact id only', async () => {
+    const port = await reservePort();
+    const artifact = {
+      artifactId: 'artifact_demo',
+      taskId: 'task_ab12cd34',
+      publicationId: 'publication_1',
+      displayName: 'report.md',
+      relativePath: 'report.md',
+      mediaType: 'text/markdown; charset=utf-8',
+      previewKind: 'markdown' as const,
+      previewable: true,
+      byteLength: 14,
+      contentHash: 'sha256:demo',
+      publishedAt: '2026-08-24T01:00:00.000Z',
+    };
+    const server = createManagementServer(port, {
+      artifactQuery: {
+        getMetadata: async artifactId => artifactId === 'artifact_demo'
+          ? { ok: true as const, artifact }
+          : { ok: false as const, reason: 'not_found' as const },
+        readPreview: async artifactId => artifactId === 'artifact_demo'
+          ? { ok: true as const, artifact, content: '# Demo Report' }
+          : { ok: false as const, reason: 'not_found' as const },
+        resolveDownload: async () => ({ ok: false as const, reason: 'unavailable' as const }),
+      },
+    });
+    await server.start();
+    try {
+      const authHeaders = { authorization: 'Bearer manual-token' };
+      const unauthorized = await fetch(
+        `http://127.0.0.1:${port}/api/artifacts/artifact_demo`,
+      );
+      expect(unauthorized.status).toBe(401);
+
+      const metadata = await fetch(
+        `http://127.0.0.1:${port}/api/artifacts/${encodeURIComponent('artifact_demo')}`,
+        { headers: authHeaders },
+      );
+      expect(metadata.status).toBe(200);
+      await expect(metadata.json()).resolves.toEqual({ artifact });
+
+      const preview = await fetch(
+        `http://127.0.0.1:${port}/api/artifacts/artifact_demo/preview`,
+        { headers: authHeaders },
+      );
+      expect(preview.status).toBe(200);
+      await expect(preview.json()).resolves.toEqual({
+        artifact,
+        content: '# Demo Report',
+      });
+
+      const missing = await fetch(
+        `http://127.0.0.1:${port}/api/artifacts/artifact_other/preview`,
+        { headers: authHeaders },
+      );
+      expect(missing.status).toBe(404);
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
 interface ManagementServerTestOverrides {
@@ -1045,6 +1105,7 @@ interface ManagementServerTestOverrides {
   readonly configQuery?: Partial<ConfigQuery>;
   readonly loginCredentials?: LoginCredentials;
   readonly attachmentStore?: FileAttachmentStore;
+  readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
 }
 
 function createManagementServer(
@@ -1065,6 +1126,7 @@ function createManagementServer(
     webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
     attachmentStore: overrides.attachmentStore,
+    artifactQuery: overrides.artifactQuery,
     loginCredentials: 'loginCredentials' in overrides
       ? overrides.loginCredentials
       : resolveLoginCredentials({

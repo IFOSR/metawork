@@ -116,6 +116,25 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('schemaVersion');
   });
 
+  it('renders only the dedicated merge-repair completion protocol', () => {
+    const mergeRepairInput = input();
+    mergeRepairInput.context.currentSubtask.deliveryKind = 'edit';
+    mergeRepairInput.context.completionContract = {
+      marker: '---METACLAW-MERGE-REPAIR---',
+      protocol: 'metaclaw:merge-repair:v1',
+      allowedPaths: ['src/shared.ts'],
+    };
+
+    const prompt = buildExecutorContextPrompt(mergeRepairInput);
+
+    expect(prompt).toContain(
+      '{"protocol":"metaclaw:merge-repair:v1","resolvedPaths":["src/shared.ts"],"verification":{"summary":"<verification summary>"}}',
+    );
+    expect(prompt).not.toContain('"evidence"');
+    expect(prompt).not.toContain('"noChangeReason"');
+    expect(prompt).not.toContain('completion metadata');
+  });
+
   it('keeps recovery attempt identity out of the model-facing recovery packet', () => {
     const recoveryInput = input();
     recoveryInput.context.recovery = {

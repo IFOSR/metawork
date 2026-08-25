@@ -3,6 +3,7 @@ import type {
   InteractionTraceEvent,
   InteractionTraceStatus,
 } from './interaction-trace.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 
 export const WEB_SESSION_FORMAT_VERSION = 1 as const;
 export const MAX_WEB_SESSION_TURNS = 100;
@@ -36,7 +37,10 @@ export interface ConversationTurn {
   completedAt: string | null;
   traceEvents: InteractionTraceEvent[];
   executionTimeline: ExecutionTimeline | null;
+  /** 兼容字段：历史客户端继续可用。 */
   artifactRefs: string[];
+  /** 受限的用户 artifact projection；不含任何内部路径。 */
+  artifacts: ArtifactProjection[];
 }
 
 export interface ConversationTurnProjection

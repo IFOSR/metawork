@@ -601,8 +601,31 @@ output do not cross the browser boundary. Planner RPC lifecycle and safe tool
 milestones are forwarded as they arrive, so a long model turn shows process
 startup, request acceptance, processing cycles, model response start, tool
 start/completion, and agent completion instead of appearing idle until the
-final proposal returns. The panel also shows elapsed time for the active
-phase.
+final proposal returns. The primary Web presentation is an inline `LIVE
+EXECUTION` panel with one card per active Subtask; a settled turn keeps the
+same panel as `EXECUTION SUMMARY`. Clicking a card opens an `Executor Detail`
+drawer backed by the ordered safe trace plus the durable attempt-runtime
+progress history and ExecutionProjector timeline. Heartbeat, dependency wait,
+capacity wait and blocked states are rendered distinctly from actual Executor
+activity. Stable event cursors and event IDs make replay idempotent across
+reconnects, and the persisted turn keeps the trace/timeline after the current
+turn ends. No progress event is Completion Protocol evidence.
+
+Pending dependency publication is a wait fact, not an ordinary user blocker.
+Missing handoff, Result Object, workspace state or identity mismatch is exposed
+as a bounded structured materialization diagnostic. Explicit Task resume enters
+the Kernel as `task_resume_requested`; only the resulting Kernel-authorized
+`resume_task` application may restore Task/Subtask readiness and dispatch a
+new attempt.
+
+Account startup and explicit Resume also repair one known legacy pre-apply
+failure: a replan `authorize_task_plan` application made uncertain only because
+the system Conversation binding lacked the optional `onDecisionApplying`
+presentation callback. The repair is allowed only when the exact error,
+submitted replan request, generation and next graph revision match. It submits
+a durable `recovery_resolution_requested(retry)` and replays the original
+Decision through ControlKernel; all other uncertain applications and effects
+retain ordinary explicit recovery semantics.
 
 All foreground selections, including `--script`, share `runtime.lock`.
 Native update/rollback acquires that same physical lock before migration or

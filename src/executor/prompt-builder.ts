@@ -1,8 +1,35 @@
 import type { ExecutorInput } from './adapter.js';
+import {
+  MERGE_REPAIR_PROTOCOL,
+  mergeRepairReportExample,
+} from '../execution/merge-repair-protocol.js';
 
 /** The only production renderer for an Executor's attempt-scoped context. */
 export function buildExecutorContextPrompt(input: ExecutorInput): string {
   const { context } = input;
+  const completionProtocol = 'protocol' in context.completionContract
+    && context.completionContract.protocol === MERGE_REPAIR_PROTOCOL
+    ? [
+        'Completion protocol:',
+        context.completionContract.marker,
+        mergeRepairReportExample(context.completionContract.allowedPaths),
+        'Return exactly the dedicated merge-repair report above after the Markdown summary.',
+        'resolvedPaths must list exactly the authorized conflict paths that were resolved.',
+        'Runtime owns Git operations and validates the changed paths and conflict state.',
+        'Emit the marker exactly once, only at the end of the final response.',
+      ]
+    : [
+        'Completion protocol:',
+        context.completionContract.marker,
+        JSON.stringify({
+          evidence: ['<evidence that the work and checks succeeded>'],
+          noChangeReason: null,
+        }),
+        'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
+        'For edit delivery, set noChangeReason to null when files changed; when no files need to change, provide a concise non-empty reason. For report delivery it must be null and the workspace must remain unchanged.',
+        'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
+        'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
+      ];
   const lines = [
     '[MetaClaw Subtask Execution Context v1]',
     '',
@@ -76,16 +103,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
       `Recovery packet: ${JSON.stringify(modelRecoveryPacket(context.recovery.packet), null, 2)}`,
     ] : []),
     '',
-    'Completion protocol:',
-    context.completionContract.marker,
-    JSON.stringify({
-      evidence: ['<evidence that the work and checks succeeded>'],
-      noChangeReason: null,
-    }),
-    'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
-    'For edit delivery, set noChangeReason to null when files changed; when no files need to change, provide a concise non-empty reason. For report delivery it must be null and the workspace must remain unchanged.',
-    'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
-    'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
+    ...completionProtocol,
   ];
   return lines.join('\n');
 }

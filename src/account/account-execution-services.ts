@@ -63,6 +63,7 @@ export function buildAccountExecutionServices(deps: {
           authorizedBinding: input.authorizedBinding,
           modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
           attemptsRoot,
+          idleTimeoutMs: input.configuration.runtimePolicy.attemptTimeoutMs,
         });
       }
       return new ContainerCompatibilityAdapter({

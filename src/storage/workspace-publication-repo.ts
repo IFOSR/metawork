@@ -92,6 +92,24 @@ export interface WorkspaceMergeAttemptInput {
   createdAt: string;
 }
 
+interface WorkspaceMergeAttemptRow {
+  id: string;
+  publication_id: string;
+  decision_id: string;
+  attempt_id: string | null;
+  ordinal: number;
+  attempt_kind: 'automatic' | 'repair';
+  base_commit: string;
+  ours_commit: string;
+  theirs_commit: string;
+  conflict_paths_json: string;
+  file_policy_json: string;
+  result: 'integrated' | 'conflicted' | 'failed' | 'uncertain';
+  integration_commit: string | null;
+  error_summary: string | null;
+  created_at: string;
+}
+
 export class WorkspacePublicationRepo {
   constructor(private readonly db: Database.Database) {}
 
@@ -168,7 +186,7 @@ export class WorkspacePublicationRepo {
     const row = this.db.prepare(`
       SELECT * FROM workspace_publications
       WHERE task_id = ? AND generation_id = ?
-        AND status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+        AND status IN ('pending', 'applying', 'conflicted', 'parked', 'cancelling', 'uncertain')
       ORDER BY topology_layer ASC, first_dispatch_order ASC, subtask_id ASC
       LIMIT 1
     `).get(taskId, generationId) as PublicationRow | undefined;
@@ -233,6 +251,25 @@ export class WorkspacePublicationRepo {
           error_summary = NULL, updated_at = ?
       WHERE id = ? AND status = 'conflicted'
     `).run(candidateCommit, now, id);
+  }
+
+  requeueStaleBaselineConflict(
+    id: string,
+    expectedConflictChainId: string,
+    now: string,
+  ): boolean {
+    return this.db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'pending',
+          repair_attempts_used = 0,
+          conflict_replans_used = 0,
+          conflict_chain_id = NULL,
+          error_summary = 'requeued after candidate-delta publication removed stale baseline conflicts',
+          updated_at = ?
+      WHERE id = ?
+        AND status IN ('conflicted', 'parked')
+        AND conflict_chain_id = ?
+    `).run(now, id, expectedConflictChainId).changes === 1;
   }
 
   recordRepairAttempt(id: string, now: string): boolean {
@@ -364,6 +401,16 @@ export class WorkspacePublicationRepo {
     return row.count;
   }
 
+  findLatestMergeAttempt(publicationId: string): WorkspaceMergeAttemptInput | null {
+    const row = this.db.prepare(`
+      SELECT * FROM workspace_merge_attempts
+      WHERE publication_id = ?
+      ORDER BY ordinal DESC, created_at DESC, id DESC
+      LIMIT 1
+    `).get(publicationId) as WorkspaceMergeAttemptRow | undefined;
+    return row ? rowToMergeAttempt(row) : null;
+  }
+
   recordMergeAttempt(input: WorkspaceMergeAttemptInput): void {
     this.db.prepare(`
       INSERT INTO workspace_merge_attempts (
@@ -389,6 +436,26 @@ export class WorkspacePublicationRepo {
       input.createdAt,
     );
   }
+}
+
+function rowToMergeAttempt(row: WorkspaceMergeAttemptRow): WorkspaceMergeAttemptInput {
+  return {
+    id: row.id,
+    publicationId: row.publication_id,
+    decisionId: row.decision_id,
+    attemptId: row.attempt_id,
+    ordinal: row.ordinal,
+    attemptKind: row.attempt_kind,
+    baseCommit: row.base_commit,
+    oursCommit: row.ours_commit,
+    theirsCommit: row.theirs_commit,
+    conflictPaths: JSON.parse(row.conflict_paths_json) as string[],
+    filePolicy: JSON.parse(row.file_policy_json) as Record<string, 'text' | 'binary'>,
+    result: row.result,
+    integrationCommit: row.integration_commit,
+    errorSummary: row.error_summary,
+    createdAt: row.created_at,
+  };
 }
 
 function rowToPublication(row: PublicationRow): WorkspacePublicationRecord {

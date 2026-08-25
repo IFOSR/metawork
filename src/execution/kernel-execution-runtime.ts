@@ -1,5 +1,7 @@
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
@@ -9,7 +11,10 @@ import type { GuidanceProposal, Subtask, Suggestion } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import { generateInteractionId } from '../utils/id.js';
 import type { QueuedExecutionRequest } from '../session/session-helpers.js';
-import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../core/authorized-executor-binding.js';
 import type { SessionPresentationService, GuidanceState } from '../session/session-presentation-service.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -32,12 +37,17 @@ import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } 
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
-import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import type {
+  ExecutorAttemptReceipt,
+  ExecutorAttemptReceiptRepo,
+} from '../storage/executor-attempt-receipt-repo.js';
 import { buildDefaultResourceClaims } from '../resource/index.js';
 import { deriveRunnableFrontier } from '../work-graph/index.js';
 import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import type { ResultObjectRepo } from '../storage/result-object-repo.js';
+import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { AttemptSupervisor, type AttemptSupervisorContext } from './attempt-supervisor.js';
 import type {
@@ -52,6 +62,19 @@ import type { HistoricalResultUpgrader } from './historical-result-upgrader.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
 import type { ExecutorAdapter, ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutionTraceAppendInput } from './execution-trace.js';
+import {
+  buildExecutorDisplayFacts,
+  executionEventDetails,
+} from './execution-transparency.js';
+import {
+  isSupersededMergeReplanApplication,
+  isRetrySafeLegacySystemBindingReplan,
+  isRetrySafeMergeRepairReplan,
+  legacySystemBindingRecoveryEvent,
+  mergeReplanAssumeAppliedRecoveryEvent,
+  mergeRepairReplanRecoveryEvent,
+} from './kernel-application-recovery.js';
+import { mergeConflictObservationId } from './merge-repair-protocol.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -74,6 +97,227 @@ function defaultResourceGrant(taskId: string, generationId: string, subtaskId: s
     handoffsMountId: `handoffs-${taskId}-${generationId}`,
     gitMetadataMountId: `git-metadata-${taskId}-${generationId}-${subtaskId}`,
   });
+}
+
+function dependencyReadinessFacts(input: {
+  taskId: string;
+  generationId: string;
+  subtasks: readonly Subtask[];
+  handoffs: readonly import('../storage/subtask-handoff-repo.js').PersistedSubtaskHandoff[];
+  resultObjectRepo?: ResultObjectRepo;
+  workspaceRepository?: WorkspaceRepositoryPort;
+}): Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness'] {
+  const byId = new Map(input.subtasks.map(subtask => [subtask.id, subtask]));
+  const handoffByEdge = new Map(
+    input.handoffs.map(handoff => [
+      `${handoff.fromSubtaskId}\u0000${handoff.toSubtaskId}`,
+      handoff,
+    ]),
+  );
+  const facts: NonNullable<Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness']> = [];
+
+  for (const target of input.subtasks) {
+    for (const dependency of target.dependencies) {
+      const source = byId.get(dependency.fromSubtaskId);
+      if (!source) {
+        facts.push({
+          sourceSubtaskId: dependency.fromSubtaskId,
+          targetSubtaskId: target.id,
+          code: 'identity_mismatch',
+          terminal: true,
+          detail: 'dependency source Subtask is not present in the active graph',
+        });
+        continue;
+      }
+      if (source.status !== 'done') {
+        facts.push({
+          sourceSubtaskId: source.id,
+          targetSubtaskId: target.id,
+          code: 'pending_publication',
+          terminal: false,
+          detail: `source Subtask status is ${source.status}`,
+        });
+        continue;
+      }
+      const handoff = handoffByEdge.get(`${source.id}\u0000${target.id}`);
+      if (!handoff) {
+        facts.push({
+          sourceSubtaskId: source.id,
+          targetSubtaskId: target.id,
+          code: 'missing_handoff',
+          terminal: true,
+          detail: 'source is done but the edge-scoped handoff is missing',
+        });
+        continue;
+      }
+      const resultReference = handoff.resultReference;
+      const referenceItem = handoff.items.find(item => item.type === 'result_reference');
+      if (referenceItem) {
+        if (
+          !resultReference
+          || resultReference.referenceId !== referenceItem.referenceId
+          || resultReference.taskId !== input.taskId
+          || resultReference.generationId !== input.generationId
+          || resultReference.sourceSubtaskId !== source.id
+          || resultReference.targetSubtaskId !== target.id
+        ) {
+          facts.push({
+            sourceSubtaskId: source.id,
+            targetSubtaskId: target.id,
+            code: 'identity_mismatch',
+            terminal: true,
+            detail: `Result Reference identity does not match ${source.id} -> ${target.id}`,
+          });
+          continue;
+        }
+        if (input.resultObjectRepo && !input.resultObjectRepo.findObject(resultReference.resultId)) {
+          facts.push({
+            sourceSubtaskId: source.id,
+            targetSubtaskId: target.id,
+            code: 'missing_result_object',
+            terminal: true,
+            detail: `Result Object ${resultReference.resultId} is missing`,
+          });
+          continue;
+        }
+        const persistedReference = input.resultObjectRepo?.findReference(resultReference.referenceId);
+        if (
+          input.resultObjectRepo
+          && (!persistedReference || persistedReference.targetSubtaskId !== target.id)
+        ) {
+          facts.push({
+            sourceSubtaskId: source.id,
+            targetSubtaskId: target.id,
+            code: 'identity_mismatch',
+            terminal: true,
+            detail: `Result Reference ${resultReference.referenceId} is not authorized for target ${target.id}`,
+          });
+          continue;
+        }
+      }
+      if (
+        input.workspaceRepository
+        && !input.workspaceRepository.findByIdentity(input.taskId, input.generationId, source.id)
+      ) {
+        facts.push({
+          sourceSubtaskId: source.id,
+          targetSubtaskId: target.id,
+          code: 'missing_workspace',
+          terminal: true,
+          detail: `source workspace state is missing for ${source.id}`,
+        });
+      }
+    }
+  }
+  return facts.length > 0 ? facts : undefined;
+}
+
+function resumeRecoveryCandidates(input: {
+  configurationRevision: string;
+  subtasks: readonly Subtask[];
+  receipts: readonly ExecutorAttemptReceipt[];
+  dispatchItems: readonly KernelDispatchItemRecord[];
+  workspaceRepository: WorkspaceRepositoryPort;
+  nativeContinuationAgentClasses: readonly string[];
+}): Extract<KernelSnapshot, { type: 'dispatch' }>['resumeRecoveryCandidates'] {
+  const activeSubtaskIds = new Set(input.dispatchItems
+    .filter(item => ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status))
+    .map(item => item.subtaskId));
+  const latestReceiptBySubtask = new Map<string, ExecutorAttemptReceipt>();
+  for (const receipt of input.receipts) {
+    if (!latestReceiptBySubtask.has(receipt.subtaskId)) {
+      latestReceiptBySubtask.set(receipt.subtaskId, receipt);
+    }
+  }
+  const candidates = input.subtasks.flatMap(subtask => {
+    if (subtask.status !== 'awaiting_decision' || activeSubtaskIds.has(subtask.id)) return [];
+    if (deriveRecoverySafety(subtask.requiredCapabilities) === 'external_non_idempotent') return [];
+    const receipt = latestReceiptBySubtask.get(subtask.id);
+    if (
+      !receipt
+      || receipt.terminalState !== 'uncertified_result'
+      || receipt.failure !== null
+      || receipt.configurationRevision !== input.configurationRevision
+      || receipt.bindingFingerprint !== authorizedExecutorBindingFingerprint(
+        receipt.authorizedBinding,
+      )
+      || !subtask.executorBindings.some(binding =>
+        authorizedExecutorBindingFingerprint(binding) === receipt.bindingFingerprint
+      )
+      || receipt.verification.violations.length !== 1
+    ) return [];
+    const violation = receipt.verification.violations[0]!;
+    const recoveryReason = violation.code === 'completion_malformed' && violation.path === 'marker'
+      ? 'completion_marker_missing' as const
+      : violation.code === 'completion_no_change_reason_mismatch'
+        && violation.path === 'noChangeReason'
+        ? 'completion_no_change_reason_mismatch' as const
+        : null;
+    if (!recoveryReason) return [];
+    const workspace = input.workspaceRepository.findByIdentity(
+      receipt.taskId,
+      receipt.generationId,
+      receipt.subtaskId,
+    );
+    if (!workspace || workspace.status !== 'active') return [];
+    try {
+      if (!workspace.rootUri.startsWith('file:') || !existsSync(fileURLToPath(workspace.rootUri))) {
+        return [];
+      }
+    } catch {
+      return [];
+    }
+    return [{
+      subtaskId: subtask.id,
+      sourceAttemptId: receipt.attemptId,
+      authorizedBinding: receipt.authorizedBinding,
+      bindingFingerprint: receipt.bindingFingerprint,
+      recoveryMode: input.nativeContinuationAgentClasses.includes(
+        receipt.authorizedBinding.agentClassRef,
+      ) ? 'native_session' as const : 'recovery_packet' as const,
+      reason: recoveryReason,
+    }];
+  });
+  return candidates.length > 0 ? candidates : undefined;
+}
+
+function classifyResumeBlocker(
+  reason: string | undefined,
+): import('../kernel/control-kernel.js').KernelResumeBlockerCategory {
+  const normalized = reason?.toLowerCase() ?? '';
+  if (normalized.includes('capacity') || normalized.includes('资源')) return 'capacity';
+  if (
+    normalized.includes('retry')
+    || normalized.includes('重试')
+    || normalized.includes('network')
+    || normalized.includes('网络')
+    || normalized.includes('代理')
+    || normalized.includes('连接')
+    || normalized.includes('timeout')
+    || normalized.includes('超时')
+  ) return 'retry';
+  if (normalized.includes('availability') || normalized.includes('可用')) return 'availability';
+  if (normalized.includes('publication') || normalized.includes('handoff') || normalized.includes('依赖')) {
+    return 'dependency_publication';
+  }
+  if (
+    normalized.includes('explicit resource')
+    || normalized.includes('explicit_resource')
+    || normalized.includes('material')
+    || normalized.includes('材料')
+    || normalized.includes('文件')
+    || normalized.includes('证据')
+    || normalized.includes('资源')
+    || normalized.includes('权限')
+    || normalized.includes('授权')
+    || normalized.includes('目录')
+    || normalized.includes('permission')
+    || normalized.includes('authorized')
+    || normalized.includes('access')
+    || normalized.includes('evidence')
+  ) return 'explicit_resource';
+  if (normalized.includes('contract') || normalized.includes('契约')) return 'contract';
+  return 'unknown';
 }
 
 export interface KernelExecutionRuntimeInput {
@@ -110,6 +354,13 @@ export interface KernelExecutionRuntimeDeps {
       taskId: string,
       cycleId: string,
     ): Array<Extract<KernelEvent, { type: 'capacity_signal' }>>;
+    listRecoveryItems?(taskId: string): import('../kernel/kernel-workflow.js').KernelDecisionApplicationRecord[];
+    findRecoveryItem?(id: string): import('../kernel/kernel-workflow.js').KernelDecisionApplicationRecord | null;
+    resolveRecoveryItem?(
+      id: string,
+      resolution: 'assume_applied' | 'retry',
+      now: string,
+    ): void;
   };
   kernelDecisionRepo?: Pick<KernelDecisionRepo, 'findById'>;
   dispatchItemRepo: KernelDispatchItemRepo;
@@ -117,6 +368,8 @@ export interface KernelExecutionRuntimeDeps {
   executionTraceHeartbeatMs?: number;
   publicationWorker: WorkspacePublicationWorker;
   publicationRepo: WorkspacePublicationRepo;
+  resultObjectRepo: ResultObjectRepo;
+  workspaceRepository: WorkspaceRepositoryPort;
   generationReplanRepo: GenerationReplanRequestRepo;
   cancellationCoordinator: TaskCancellationCoordinator;
   executionProgressService: ExecutionProgressService;
@@ -559,14 +812,16 @@ export class KernelExecutionRuntime {
     const revisionStableFacts = stableFacts
       ?? this.buildDispatchStableFacts(configurationRevision);
     const done = new Set(subtasks.filter(subtask => subtask.status === 'done').map(subtask => subtask.id));
-    const handoffs = new Set(this.deps.subtaskHandoffRepo.listByTask(taskId)
+    const persistedHandoffs = this.deps.subtaskHandoffRepo.listByTask(taskId);
+    const handoffs = new Set(persistedHandoffs
       .map(handoff => `${handoff.fromSubtaskId}\u0000${handoff.toSubtaskId}`));
-    const persistedAttempts: KernelAttemptFact[] = this.deps.attemptReceiptRepo.listByTask(taskId)
-      .filter(receipt => receipt.terminalState !== 'contract_blocked')
+    const persistedReceipts = this.deps.attemptReceiptRepo.listByTask(taskId)
       .filter(receipt => !activeRevision || (
         receipt.generationId === activeRevision.generationId
         && receipt.graphRevision === activeRevision.revision
-      ))
+      ));
+    const persistedAttempts: KernelAttemptFact[] = persistedReceipts
+      .filter(receipt => receipt.terminalState !== 'contract_blocked')
       .map(receipt => ({
         attemptId: receipt.attemptId,
         subtaskId: receipt.subtaskId,
@@ -589,6 +844,22 @@ export class KernelExecutionRuntime {
         firstDispatchOrder.set(item.subtaskId, item.batchOrder);
       }
     }
+    const dependencyReadiness = dependencyReadinessFacts({
+      taskId,
+      generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
+      subtasks,
+      handoffs: persistedHandoffs,
+      resultObjectRepo: this.deps.resultObjectRepo,
+      workspaceRepository: this.deps.workspaceRepository,
+    }) ?? [];
+    const recoveryCandidates = resumeRecoveryCandidates({
+      configurationRevision,
+      subtasks,
+      receipts: persistedReceipts,
+      dispatchItems,
+      workspaceRepository: this.deps.workspaceRepository,
+      nativeContinuationAgentClasses: revisionStableFacts.nativeContinuationAgentClasses,
+    });
     const frontier = deriveRunnableFrontier(
       { subtasks },
       subtasks.map(subtask => ({
@@ -605,6 +876,11 @@ export class KernelExecutionRuntime {
       return subtask?.dependencies.every(dependency =>
         done.has(dependency.fromSubtaskId)
         && handoffs.has(`${dependency.fromSubtaskId}\u0000${subtask.id}`)
+        && dependencyReadiness.every(fact => (
+          fact.targetSubtaskId !== subtask.id
+          || fact.sourceSubtaskId !== dependency.fromSubtaskId
+          || fact.code === 'ready'
+        ))
       ) ?? false;
     });
     const recoverySubtask = recoverySubtaskId
@@ -625,6 +901,8 @@ export class KernelExecutionRuntime {
         executorBindings: subtask.executorBindings,
       })),
       frontier,
+      dependencyReadiness,
+      resumeRecoveryCandidates: recoveryCandidates,
       dispatchItems: dispatchItems.map(item => ({
         attemptId: item.attemptId,
         subtaskId: item.subtaskId,
@@ -740,6 +1018,70 @@ export class KernelExecutionRuntime {
     );
   }
 
+  private retrySafeLegacySystemBindingRecovery(
+    taskId: string,
+    occurredAt: string,
+  ): Extract<KernelEvent, { type: 'recovery_resolution_requested' }> | null {
+    const activeRevision = this.deps.workGraphRevisionRepo.findActive(taskId);
+    if (!activeRevision) return null;
+    for (const application of this.deps.kernelWorkflowStore.listRecoveryItems?.(taskId) ?? []) {
+      const action = application.decision.action;
+      if (action.type === 'request_merge_replan') {
+        const publication = this.deps.publicationRepo.find(action.publicationId);
+        if (isSupersededMergeReplanApplication({
+          taskId,
+          application,
+          publication,
+          subtask: this.deps.subtaskRepo?.findById(action.subtaskId) ?? null,
+        })) {
+          const decision = this.deps.kernelDecisionRepo?.findById(application.decisionId);
+          if (!decision?.sessionId) return null;
+          return mergeReplanAssumeAppliedRecoveryEvent({
+            taskId,
+            application,
+            sessionId: decision.sessionId,
+            occurredAt,
+          });
+        }
+        if (!isRetrySafeMergeRepairReplan({
+          taskId,
+          application,
+          publication,
+          dispatchItems: this.deps.dispatchItemRepo.listByTask(taskId),
+        })) continue;
+        const decision = this.deps.kernelDecisionRepo?.findById(application.decisionId);
+        if (!decision?.sessionId) return null;
+        return mergeRepairReplanRecoveryEvent({
+          taskId,
+          application,
+          sessionId: decision.sessionId,
+          occurredAt,
+        });
+      }
+      if (action.type !== 'authorize_task_plan') continue;
+      const request = this.deps.generationReplanRepo.findByGeneration(
+        taskId,
+        action.generationId,
+        activeRevision.revision,
+      );
+      if (!isRetrySafeLegacySystemBindingReplan({
+        taskId,
+        application,
+        activeRevision,
+        replanRequest: request,
+      })) continue;
+      const decision = this.deps.kernelDecisionRepo?.findById(application.decisionId);
+      if (!decision?.sessionId) return null;
+      return legacySystemBindingRecoveryEvent({
+        taskId,
+        application,
+        sessionId: decision.sessionId,
+        occurredAt,
+      });
+    }
+    return null;
+  }
+
   private async applyExecutionDecision(input: {
     decision: KernelDecision;
     executionId: string;
@@ -767,9 +1109,98 @@ export class KernelExecutionRuntime {
       eventKey: `${decision.id}:applied`,
       taskId: 'taskId' in action ? action.taskId : null,
     });
+    if (action.type === 'resolve_recovery') {
+      const application = this.deps.kernelWorkflowStore.findRecoveryItem?.(
+        action.recoveryItemId,
+      );
+      if (!application) return null;
+      this.deps.kernelWorkflowStore.resolveRecoveryItem?.(
+        action.recoveryItemId,
+        action.resolution,
+        new Date().toISOString(),
+      );
+      if (
+        action.resolution === 'assume_applied'
+        && application.decision.action.type === 'request_merge_replan'
+      ) {
+        const publication = this.deps.publicationRepo.find(
+          application.decision.action.publicationId,
+        );
+        const subtask = this.deps.subtaskRepo.findById(
+          application.decision.action.subtaskId,
+        );
+        if (publication?.status === 'integrated' && subtask?.status === 'done') {
+          return this.eventFromDecision(decision, {
+            type: 'dispatch_requested',
+            taskId: action.taskId,
+            reason: 'superseded merge replan recovery released task completion',
+          });
+        }
+      }
+      return null;
+    }
+    if (action.type === 'resume_task') {
+      const task = this.deps.taskRuntimeService.findTask(action.taskId);
+      if (
+        !task
+        || (
+          !['blocked', 'parked'].includes(task.status)
+          && !(task.status === 'running' && action.recovery)
+        )
+      ) return null;
+      for (const subtaskId of action.subtaskIds) {
+        const subtask = this.deps.subtaskRepo.findById(subtaskId);
+        if (
+          !subtask
+          || subtask.taskId !== action.taskId
+          || subtask.status === 'done'
+          || subtask.status === 'cancelled'
+        ) continue;
+        if (subtask.status === 'blocked') {
+          this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', { error: null });
+        }
+      }
+      if (task.status === 'parked') this.deps.taskRuntimeService.resumeParkedTask(task.id);
+      else if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+      const current = this.deps.taskRuntimeService.findTask(task.id);
+      if (current?.status === 'ready') this.deps.taskRuntimeService.transitionTask(task.id, 'running');
+      this.deps.callbacks.refreshRuntimeState();
+      if (action.recovery) {
+        return this.eventFromDecision(decision, {
+          type: 'dispatch_requested',
+          taskId: action.taskId,
+          subtaskId: action.recovery.subtaskId,
+          reason: `Kernel-authorized recovery of ${action.recovery.sourceAttemptId}`,
+          recovery: {
+            authorizedBinding: action.recovery.authorizedBinding,
+            bindingFingerprint: action.recovery.bindingFingerprint,
+            attemptKind: action.recovery.attemptKind,
+            sourceAttemptId: action.recovery.sourceAttemptId,
+            recoveryMode: action.recovery.recoveryMode,
+            defaultResourceGrant: action.recovery.defaultResourceGrant,
+          },
+        });
+      }
+      return this.eventFromDecision(decision, {
+        type: 'dispatch_requested',
+        taskId: action.taskId,
+        reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
+      });
+    }
     if (action.type === 'dispatch_batch') {
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
+      for (const item of action.items) {
+        if (item.attemptKind !== 'merge_repair') continue;
+        const subtask = this.deps.subtaskRepo.findById(item.subtaskId);
+        if (subtask?.taskId === action.taskId && subtask.status === 'blocked') {
+          this.deps.subtaskRepo.updateStatus(
+            subtask.id,
+            'awaiting_decision',
+            { error: 'recovering legacy blocked merge conflict' },
+          );
+        }
+      }
       const attempts = Object.fromEntries(action.items.map(item => [
         item.attemptId,
         {
@@ -1230,6 +1661,14 @@ export class KernelExecutionRuntime {
       description: criterion.description,
       requiredEvidence: criterion.requiredEvidence,
     }));
+    // 规范化的用户可见执行事实（§3.5）：显示名称 + 步骤字段，
+    // 同时保留既有内部 ref 字段以兼容历史客户端。
+    const display = buildExecutorDisplayFacts({
+      binding: item.authorizedBinding,
+      subtaskId: item.subtaskId,
+      subtaskTitle: subtask.title,
+    });
+    const dispatchStartedAt = new Date().toISOString();
     const bindingDetails = {
       executorName: item.authorizedBinding.agentClassRef,
       harnessRef: item.authorizedBinding.harnessRef,
@@ -1237,6 +1676,7 @@ export class KernelExecutionRuntime {
       modelRef: item.authorizedBinding.modelRef,
       permissionProfileRef: item.authorizedBinding.permissionProfileRef,
       configurationRevision: item.configurationRevision,
+      ...display,
     };
     this.appendExecutionTrace({
       phase: 'execution',
@@ -1247,16 +1687,23 @@ export class KernelExecutionRuntime {
       summary: `Kernel started ${item.authorizedBinding.agentClassRef} for "${subtask.title}".`,
       details: {
         taskId: item.taskId,
-        subtaskId: item.subtaskId,
-        subtaskTitle: subtask.title,
+        attemptId: item.attemptId,
+        attemptKind: item.attemptKind,
+        recoveryMode: item.recoveryMode,
         subtaskGoal: subtask.goal,
         deliveryKind: subtask.deliveryKind,
         requiredCapabilities: subtask.requiredCapabilities,
         acceptanceCriteria,
-        attemptId: item.attemptId,
-        attemptKind: item.attemptKind,
-        recoveryMode: item.recoveryMode,
         ...bindingDetails,
+        ...executionEventDetails({
+          display,
+          step: {
+            stepKey: 'executor_started',
+            stepLabel: `已启动 ${display.executorDisplayName}`,
+          },
+          startedAt: dispatchStartedAt,
+          updatedAt: dispatchStartedAt,
+        }),
       },
       eventKey: `${item.attemptId}:dispatch_started`,
       taskId: item.taskId,
@@ -1270,16 +1717,24 @@ export class KernelExecutionRuntime {
       summary: `${subtask.goal} Delivery: ${subtask.deliveryKind}.`,
       details: {
         taskId: item.taskId,
-        subtaskId: item.subtaskId,
-        subtaskTitle: subtask.title,
+        attemptId: item.attemptId,
+        attemptKind: item.attemptKind,
+        recoveryMode: item.recoveryMode,
         subtaskGoal: subtask.goal,
         deliveryKind: subtask.deliveryKind,
         requiredCapabilities: subtask.requiredCapabilities,
         acceptanceCriteria,
-        attemptId: item.attemptId,
-        attemptKind: item.attemptKind,
-        recoveryMode: item.recoveryMode,
         ...bindingDetails,
+        ...executionEventDetails({
+          display,
+          step: {
+            stepKey: 'subtask_execution',
+            stepLabel: `正在执行：${subtask.title}`,
+            progress: null,
+          },
+          startedAt: dispatchStartedAt,
+          updatedAt: dispatchStartedAt,
+        }),
       },
       eventKey: `${item.attemptId}:subtask_started`,
       taskId: item.taskId,
@@ -1310,11 +1765,20 @@ export class KernelExecutionRuntime {
         summary: safeText,
         details: {
           taskId: item.taskId,
-          subtaskId: item.subtaskId,
           attemptId: item.attemptId,
-          executorName: executor.name,
           progressKind: event.kind,
           progressSequence,
+          ...bindingDetails,
+          executorName: executor.name,
+          ...executionEventDetails({
+            display,
+            step: {
+              stepKey: 'executor_progress',
+              stepLabel: safeText.slice(0, 120),
+              progress: null,
+            },
+            startedAt: dispatchStartedAt,
+          }),
         },
         eventKey: `${item.attemptId}:progress:${progressSequence}`,
         taskId: item.taskId,
@@ -1337,15 +1801,22 @@ export class KernelExecutionRuntime {
             summary: 'Executor is still running; no new public Harness event has arrived yet.',
             details: {
               taskId: item.taskId,
-              subtaskId: item.subtaskId,
-              subtaskTitle: subtask.title,
               attemptId: item.attemptId,
-              executorName: item.authorizedBinding.agentClassRef,
               elapsedMs: nowMs - startedAtMs,
               silentForMs: nowMs - lastProgressAtMs,
               lastProgressAt: new Date(lastProgressAtMs).toISOString(),
               lastProgressKind,
               heartbeatSequence,
+              ...bindingDetails,
+              ...executionEventDetails({
+                display,
+                step: {
+                  stepKey: 'executor_waiting',
+                  stepLabel: `仍在执行：${subtask.title}`,
+                  progress: null,
+                },
+                startedAt: dispatchStartedAt,
+              }),
             },
             eventKey: `${item.attemptId}:heartbeat:${heartbeatSequence}`,
             taskId: item.taskId,
@@ -1451,17 +1922,23 @@ export class KernelExecutionRuntime {
       if (!publication || !publication.conflictChainId) {
         throw new Error(`merge repair publication is missing: ${payload.publicationId}`);
       }
-      return this.eventFromDispatchItem(item, {
-        type: 'merge_conflict_observed',
-        publicationId: publication.id,
-        conflictChainId: publication.conflictChainId,
-        authorizedBinding: item.authorizedBinding,
-        bindingFingerprint: item.bindingFingerprint,
-        sourceAttemptId: publication.sourceAttemptId,
-        repairAttemptsUsed: publication.repairAttemptsUsed,
-        conflictReplansUsed: publication.conflictReplansUsed,
-        conflictingPaths: payload.conflictingPaths,
-      });
+      return {
+        ...this.eventFromDispatchItem(item, {
+          type: 'merge_conflict_observed',
+          publicationId: publication.id,
+          conflictChainId: publication.conflictChainId,
+          authorizedBinding: item.authorizedBinding,
+          bindingFingerprint: item.bindingFingerprint,
+          sourceAttemptId: publication.sourceAttemptId,
+          repairAttemptsUsed: publication.repairAttemptsUsed,
+          conflictReplansUsed: publication.conflictReplansUsed,
+          conflictingPaths: payload.conflictingPaths,
+        }),
+        id: mergeConflictObservationId(
+          publication.id,
+          publication.repairAttemptsUsed,
+        ),
+      } as KernelEvent;
     }
     this.projectExecutorOutcome(item.authorizedBinding, outcome);
     if (outcome.outcome === 'contract_failed') {
@@ -1566,6 +2043,20 @@ export class KernelExecutionRuntime {
     if (graph.outcome === 'not_executable' && input.request.authorizedWorkGraph) {
       throw new Error(`authorized Work Graph could not be persisted: ${graph.reason}`);
     }
+    const authorization = input.request.workGraphAuthorization;
+    if (
+      graph.outcome !== 'not_executable'
+      && authorization?.source === 'replan'
+    ) {
+      const request = this.deps.generationReplanRepo.findByGeneration(
+        input.taskId,
+        authorization.generationId,
+        authorization.revision - 1,
+      );
+      if (request) {
+        this.deps.generationReplanRepo.resolve(request.id, new Date().toISOString());
+      }
+    }
     return {
       ...input,
       graphState: graph.outcome === 'not_executable'
@@ -1596,18 +2087,45 @@ export class KernelExecutionRuntime {
     const attemptFacts: KernelAttemptFact[] = [];
     const configurationRevision = this.configurationRevisionForTask(taskId);
     const stableFacts = this.buildDispatchStableFacts(configurationRevision);
-    const initialEvent: KernelEvent = {
-      schemaVersion: 5,
-      configurationRevision,
-      type: 'dispatch_requested',
-      id: `dispatch_event_${executionId}`,
-      correlationId: request.kernelDecisionId ?? executionId,
-      causationId: request.kernelDecisionId ?? null,
-      occurredAt: new Date().toISOString(),
-      sessionId: this.sessionId,
-      taskId,
-      reason: request.schedulingReason ?? 'authorized execution request',
-    };
+    const retrySafeRecovery = input.recoveryOnly
+      || request.executionMode === 'resume-blocked'
+      || request.executionMode === 'resume-parked'
+      ? this.retrySafeLegacySystemBindingRecovery(taskId, new Date().toISOString())
+      : null;
+    const initialEvent: KernelEvent = request.executionMode === 'resume-blocked'
+      || request.executionMode === 'resume-parked'
+      ? {
+          schemaVersion: 5,
+          configurationRevision,
+          type: 'task_resume_requested',
+          id: `resume_event_${taskId}_${request.kernelDecisionId ?? executionId}`,
+          correlationId: request.kernelDecisionId ?? executionId,
+          causationId: request.kernelDecisionId ?? null,
+          occurredAt: new Date().toISOString(),
+          sessionId: this.sessionId,
+          taskId,
+          blockerCategory: request.executionMode === 'resume-parked'
+            ? 'parked'
+            : retrySafeRecovery
+              ? 'retry'
+              : classifyResumeBlocker(request.recoveryTrigger?.blockedReason),
+          sourceInputExcerpt: request.recoveryTrigger?.sourceInputExcerpt
+            ?? request.userPrompt.slice(0, 500),
+          newlyProvidedResources: [...(request.newlyProvidedResources ?? [])],
+          idempotencyKey: `resume:${taskId}:${request.kernelDecisionId ?? request.userPrompt.slice(0, 120)}`,
+        }
+      : {
+          schemaVersion: 5,
+          configurationRevision,
+          type: 'dispatch_requested',
+          id: `dispatch_event_${executionId}`,
+          correlationId: request.kernelDecisionId ?? executionId,
+          causationId: request.kernelDecisionId ?? null,
+          occurredAt: new Date().toISOString(),
+          sessionId: this.sessionId,
+          taskId,
+          reason: request.schedulingReason ?? 'authorized execution request',
+        };
     const buildSnapshot = (event: KernelEvent): KernelSnapshot => event.type === 'plan_proposed'
       ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)
       : event.type === 'partition_conflict_observed' ? {
@@ -1642,6 +2160,24 @@ export class KernelExecutionRuntime {
             nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
           executorStatuses: stableFacts.executorStatuses,
           defaultResourceGrant: defaultResourceGrant(task.id, `generation_${task.id}_1`, event.subtaskId ?? 'pending'),
+        }
+      : event.type === 'recovery_resolution_requested' ? {
+          schemaVersion: 5,
+          type: 'recovery',
+          task: { id: task.id, status: task.status },
+          item: (() => {
+            const application = this.deps.kernelWorkflowStore.findRecoveryItem?.(
+              event.recoveryItemId,
+            );
+            return application
+              ? {
+                  id: application.id,
+                  kind: 'application' as const,
+                  status: application.status as 'uncertain' | 'failed',
+                  retrySafe: true,
+                }
+              : null;
+          })(),
         }
       : this.buildDispatchSnapshot(
           event.taskId ?? taskId,
@@ -1683,26 +2219,31 @@ export class KernelExecutionRuntime {
         )),
       },
       acceptedEventTypes: [
-        'dispatch_requested', 'capacity_signal', 'execution_outcome',
+        'dispatch_requested', 'task_resume_requested', 'capacity_signal', 'execution_outcome',
         'handoff_contract_failed', 'execution_result_observed',
         'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
-        'generation_quiescence_observed',
+        'generation_quiescence_observed', 'recovery_resolution_requested',
       ],
       acceptedActions: [
-        'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
+        'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'block_work', 'park_for_replan', 'complete_task', 'request_replan',
         'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
-        'wait_for_partition', 'recover_workspace_attempt',
+        'wait_for_partition', 'recover_workspace_attempt', 'resolve_recovery',
       ],
       taskId,
     });
     this.attemptSupervisor.recover(taskId, supervisorContext);
     await this.recoverExpiredAttempts(workflow, attemptFacts);
-    if (input.recoveryOnly) await workflow.recover();
-    else await workflow.submit(initialEvent);
+    if (input.recoveryOnly) {
+      if (retrySafeRecovery) await workflow.submit(retrySafeRecovery);
+      else await workflow.recover();
+    } else {
+      if (retrySafeRecovery) await workflow.submit(retrySafeRecovery);
+      await workflow.submit(initialEvent);
+    }
     await this.attemptSupervisor.drain(taskId);
     await this.drainPublications({
       taskId,
@@ -1731,7 +2272,7 @@ export class KernelExecutionRuntime {
         if (outcome.type === 'conflicted') {
           await input.workflow.submit(outcome.event);
           await this.attemptSupervisor.drain(input.taskId);
-          break;
+          return;
         }
         if (outcome.type === 'cancelled') continue;
         integrated = true;
@@ -1765,11 +2306,28 @@ export class KernelExecutionRuntime {
     outcome: Extract<WorkspacePublicationOutcome, { type: 'integrated' }>,
   ): void {
     const subtask = this.deps.subtaskRepo.findById(outcome.subtaskId);
+    const userArtifactCount = outcome.userArtifacts.length;
+    // 发布成功的用户产物通过 recordResultDelivery 的既有通道投递，
+    // artifact projection 由 Web 会话投影层按需附加。
     this.recordTaskEvent(outcome.taskId, outcome.subtaskId, 'subtask_done', subtask?.title ?? outcome.subtaskId, {
       attemptId: outcome.sourceAttemptId,
       executorName: outcome.agentClassName,
       warnings: outcome.warnings,
       integrationCommit: outcome.integrationCommit,
+      userArtifactIds: outcome.userArtifacts.map(artifact => artifact.artifactId),
+    });
+    const publishedReceipt = this.deps.attemptReceiptRepo.findByAttemptId(outcome.sourceAttemptId);
+    const publishedBinding = publishedReceipt?.authorizedBinding;
+    const publishedDisplay = buildExecutorDisplayFacts({
+      binding: {
+        agentClassRef: publishedBinding?.agentClassRef ?? outcome.agentClassName,
+        harnessRef: publishedBinding?.harnessRef ?? outcome.agentClassName,
+        providerRef: publishedBinding?.providerRef ?? '',
+        modelRef: publishedBinding?.modelRef ?? '',
+      },
+      executorName: outcome.agentClassName,
+      subtaskId: outcome.subtaskId,
+      subtaskTitle: subtask?.title ?? outcome.subtaskId,
     });
     this.appendExecutionTrace({
       phase: 'delivery',
@@ -1780,12 +2338,21 @@ export class KernelExecutionRuntime {
       summary: `Subtask ${outcome.subtaskId} was integrated into the task workspace.`,
       details: {
         taskId: outcome.taskId,
-        subtaskId: outcome.subtaskId,
         attemptId: outcome.sourceAttemptId,
         executorName: outcome.agentClassName,
         integrationCommit: outcome.integrationCommit,
-        artifactCount: 0,
+        artifactCount: userArtifactCount,
         resultId: outcome.resultId ?? null,
+        ...executionEventDetails({
+          display: publishedDisplay,
+          step: {
+            stepKey: 'executor_published',
+            stepLabel: userArtifactCount > 0
+              ? `产物已发布（${userArtifactCount} 个文件）`
+              : '执行结果已发布',
+            progress: null,
+          },
+        }),
       },
       eventKey: `${outcome.publicationId}:integrated`,
       taskId: outcome.taskId,
@@ -1819,6 +2386,11 @@ export class KernelExecutionRuntime {
       : outcome.outcome === 'cancelled_or_stale'
         ? 'blocked'
         : 'failed';
+    const outcomeDisplay = buildExecutorDisplayFacts({
+      binding: item.authorizedBinding,
+      subtaskId: item.subtaskId,
+      subtaskTitle: this.deps.subtaskRepo.findById(item.subtaskId)?.title ?? item.subtaskId,
+    });
     this.appendExecutionTrace({
       phase: 'verification',
       actor: 'executor',
@@ -1834,7 +2406,6 @@ export class KernelExecutionRuntime {
             : 'Executor attempt became stale or was cancelled.',
       details: {
         taskId: item.taskId,
-        subtaskId: item.subtaskId,
         attemptId: item.attemptId,
         executorName: item.authorizedBinding.agentClassRef,
         outcome: outcome.outcome,
@@ -1847,6 +2418,16 @@ export class KernelExecutionRuntime {
         ...(outcome.outcome === 'executor_failed' ? {
           failureCode: outcome.failure.code,
         } : {}),
+        ...executionEventDetails({
+          display: outcomeDisplay,
+          step: {
+            stepKey: 'executor_verifying',
+            stepLabel: isCompleted
+              ? `正在校验 ${outcomeDisplay.executorDisplayName} 的执行结果`
+              : `执行结束：${outcome.outcome}`,
+            progress: null,
+          },
+        }),
       },
       eventKey: `${item.attemptId}:result`,
       taskId: item.taskId,

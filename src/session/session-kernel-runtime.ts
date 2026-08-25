@@ -71,6 +71,20 @@ export class SessionKernelRuntime {
       case 'authorize_task_control':
         await this.applyTaskControl(decision, userInput);
         return null;
+      case 'resume_task': {
+        const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
+        if (!task) return null;
+        this.deps.callbacks.prepareTaskExecution(task.id, {
+          userPrompt: task.goal,
+          contextTaskId: task.id,
+          executionMode: decision.action.blockerCategory === 'parked'
+            ? 'resume-parked'
+            : 'resume-blocked',
+          origin: 'user',
+          schedulingReason: `Kernel-authorized resume after ${decision.action.blockerCategory} blocker`,
+        });
+        return null;
+      }
       case 'authorize_task_plan':
         await this.applyTaskPlan(decision, userInput);
         return null;
@@ -165,6 +179,18 @@ export class SessionKernelRuntime {
       taskId: task.id,
       executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
       decision,
+      recoveryTrigger: task.status === 'blocked'
+        ? {
+            kind: /^\/task\s+/iu.test(userInput) ? 'explicit-task-command' : 'natural-language-resume',
+            blockedReason: task.dependencies
+              .filter(dependency => dependency.status === 'waiting')
+              .map(dependency => dependency.description)
+              .filter(Boolean)
+              .join('；') || '未知原因',
+            triggerReason: /^\/task\s+/iu.test(userInput) ? '显式解除阻塞' : '自然语言确认阻塞已解除',
+            sourceInputExcerpt: userInput.replace(/\s+/g, ' ').trim().slice(0, 80),
+          }
+        : undefined,
     }));
   }
 
@@ -216,6 +242,7 @@ function buildExecutionRequest(input: {
   taskId: string;
   executionMode: QueuedExecutionRequest['executionMode'];
   decision: KernelDecision;
+  recoveryTrigger?: QueuedExecutionRequest['recoveryTrigger'];
 }): QueuedExecutionRequest {
   return {
     userPrompt: input.userInput,
@@ -223,6 +250,7 @@ function buildExecutionRequest(input: {
     executionMode: input.executionMode,
     kernelDecisionId: input.decision.id,
     schedulingReason: input.decision.reason,
+    recoveryTrigger: input.recoveryTrigger,
   };
 }
 

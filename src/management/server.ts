@@ -19,6 +19,12 @@ import type { WebAuthService } from './web-auth.js';
 import type {
   ManagementWebSessionRuntime,
 } from './web-session-runtime-types.js';
+import type {
+  ArtifactDownloadResult,
+  ArtifactMetadataResult,
+  ArtifactPreviewResult,
+  ArtifactPreviewService,
+} from './artifact-preview-service.js';
 
 export interface TaskSummary {
   id: string;
@@ -94,6 +100,8 @@ export interface ManagementServerDeps {
   sessionRuntime: ManagementWebSessionRuntime;
   /** 会话附件存储；未提供时上传端点返回 503。 */
   attachmentStore?: GatewayAttachmentStore;
+  /** 同源 artifact 预览服务；未提供时 artifact 端点返回 503。 */
+  artifactQuery?: ArtifactPreviewService;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   configurationRuntime?: ConfigurationRuntimeStatusSource;
@@ -426,6 +434,24 @@ export class ManagementServer {
       return;
     }
 
+    const artifactPreviewMatch = /^\/api\/artifacts\/([^/]+)\/preview$/u.exec(url.pathname);
+    if (request.method === 'GET' && artifactPreviewMatch) {
+      await this.handleArtifactPreview(response, decodeURIComponent(artifactPreviewMatch[1]!));
+      return;
+    }
+
+    const artifactDownloadMatch = /^\/api\/artifacts\/([^/]+)\/download$/u.exec(url.pathname);
+    if (request.method === 'GET' && artifactDownloadMatch) {
+      await this.handleArtifactDownload(request, response, decodeURIComponent(artifactDownloadMatch[1]!));
+      return;
+    }
+
+    const artifactMatch = /^\/api\/artifacts\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && artifactMatch) {
+      await this.handleArtifactMetadata(response, decodeURIComponent(artifactMatch[1]!));
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/execution/tasks') {
       this.sendJson(response, 200, this.deps.executionQuery.listTasks());
       return;
@@ -635,6 +661,88 @@ export class ManagementServer {
     }
 
     this.sendJson(response, 404, { error: 'not found', path: url.pathname });
+  }
+
+  private artifactFailureStatus(reason: string): number {
+    if (reason === 'unauthorized') return 403;
+    if (reason === 'unavailable') return 410;
+    if (reason === 'unsupported') return 415;
+    return 404;
+  }
+
+  private async handleArtifactMetadata(
+    response: ServerResponse,
+    artifactId: string,
+  ): Promise<void> {
+    const service = this.deps.artifactQuery;
+    if (!service) {
+      this.sendJson(response, 503, { error: 'artifact preview unavailable' });
+      return;
+    }
+    const result: ArtifactMetadataResult = await service.getMetadata(artifactId);
+    if (!result.ok) {
+      this.sendJson(response, this.artifactFailureStatus(result.reason), { error: result.reason });
+      return;
+    }
+    this.sendJson(response, 200, { artifact: result.artifact });
+  }
+
+  private async handleArtifactPreview(
+    response: ServerResponse,
+    artifactId: string,
+  ): Promise<void> {
+    const service = this.deps.artifactQuery;
+    if (!service) {
+      this.sendJson(response, 503, { error: 'artifact preview unavailable' });
+      return;
+    }
+    const result: ArtifactPreviewResult = await service.readPreview(artifactId);
+    if (!result.ok) {
+      this.sendJson(response, this.artifactFailureStatus(result.reason), { error: result.reason });
+      return;
+    }
+    this.sendJson(response, 200, {
+      artifact: result.artifact,
+      content: result.content,
+      ...(result.renderedHtml ? { renderedHtml: result.renderedHtml } : {}),
+    });
+  }
+
+  private async handleArtifactDownload(
+    request: IncomingMessage,
+    response: ServerResponse,
+    artifactId: string,
+  ): Promise<void> {
+    const service = this.deps.artifactQuery;
+    if (!service) {
+      this.sendJson(response, 503, { error: 'artifact preview unavailable' });
+      return;
+    }
+    const result: ArtifactDownloadResult = await service.resolveDownload(artifactId);
+    if (!result.ok) {
+      this.sendJson(response, this.artifactFailureStatus(result.reason), { error: result.reason });
+      return;
+    }
+    let filePath: string;
+    try {
+      filePath = result.absolutePath;
+      const dispositionName = result.artifact.displayName.replace(/[^\w.\-\u4e00-\u9fff]+/gu, '_');
+      response.writeHead(200, {
+        'Content-Type': result.artifact.mediaType,
+        'Content-Length': result.artifact.byteLength,
+        'Cache-Control': 'no-cache',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(dispositionName)}`,
+        'X-Content-Type-Options': 'nosniff',
+      });
+      createReadStream(filePath).pipe(response);
+      return;
+    } catch (error) {
+      if (!response.headersSent) {
+        this.sendJson(response, 410, { error: 'unavailable', detail: (error as Error).message });
+        return;
+      }
+      response.destroy(error as Error);
+    }
   }
 
   private async handleStatic(response: ServerResponse, pathname: string): Promise<void> {

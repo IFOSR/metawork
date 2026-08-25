@@ -92,6 +92,44 @@ describe('FileWebSessionStore', () => {
     expect((await readdir(reloaded.sessionsDir)).some(name => name.includes('.tmp-'))).toBe(false);
   });
 
+  it('normalizes historical records that predate the artifacts projection field', async () => {
+    const root = await temporaryRoot();
+    const store = new FileWebSessionStore(join(root, 'web-sessions'));
+    await store.initialize();
+    const record = makeRecord();
+    const catalog: WebSessionCatalogFile = {
+      version: WEB_SESSION_FORMAT_VERSION,
+      sessions: [record.session],
+    };
+    await store.writeSession(record);
+    await store.writeCatalog(catalog);
+    // 模拟 schema 升级前的历史落盘记录：turn 没有 artifacts 字段。
+    const sessionPath = join(store.sessionsDir, 'session_1.json');
+    const legacy = JSON.parse(await readFile(sessionPath, 'utf8')) as {
+      turns: Array<Record<string, unknown>>;
+    };
+    legacy.turns.push({
+      id: 'turn_legacy',
+      sessionId: record.session.id,
+      userInput: '历史输入',
+      status: 'completed',
+      finalAnswer: '完成',
+      taskId: null,
+      startedAt: '2026-08-17T08:00:00.000Z',
+      completedAt: '2026-08-17T08:00:05.000Z',
+      traceEvents: [],
+      executionTimeline: null,
+      artifactRefs: ['report.md'],
+    });
+    await writeFile(sessionPath, JSON.stringify(legacy), 'utf8');
+
+    const reloaded = await store.readSession('session_1');
+
+    expect(reloaded?.turns.at(-1)).toMatchObject({ artifactRefs: ['report.md'] });
+    expect(Array.isArray(reloaded?.turns.at(-1)?.artifacts)).toBe(true);
+    expect(reloaded?.turns.at(-1)?.artifacts).toEqual([]);
+  });
+
   it('quarantines a malformed record without replacing the catalog', async () => {
     const root = await temporaryRoot();
     const store = new FileWebSessionStore(join(root, 'web-sessions'));

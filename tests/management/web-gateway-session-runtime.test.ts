@@ -9,6 +9,7 @@ import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js'
 import { WebGatewaySessionRuntime } from '../../src/management/web-gateway-session-runtime.js';
 import type { WebSessionRuntimeCatalog } from '../../src/management/web-session-runtime-types.js';
 import type { WebSessionRecord } from '../../src/management/web-session-types.js';
+import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
   it('subscribes before replay and merges buffered events without duplicates', async () => {
@@ -243,6 +244,258 @@ describe('WebGatewaySessionRuntime', () => {
     ]);
   });
 
+  it('persists the durable trace and execution timeline in the historical turn', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let appended: WebSessionRecord['turns'][number] | null = null;
+    const record = catalogFixture();
+    const timeline: ExecutionTimeline = {
+      taskId: 'task_1',
+      title: '执行任务',
+      status: 'running',
+      stages: [
+        { phase: 'planning', status: 'done' },
+        { phase: 'authorization', status: 'done' },
+        {
+          phase: 'execution',
+          status: 'running',
+          subtasks: [{
+            id: 'sub_1',
+            title: '生成 HTML',
+            status: 'running',
+            executor: 'codex-cli',
+            attempts: [{
+              attemptId: 'attempt_1',
+              result: 'running',
+              progressHistory: [{
+                kind: 'status',
+                text: '正在生成页面',
+                occurredAt: '2026-08-19T00:00:02.000Z',
+              }],
+            }],
+          }],
+        },
+        { phase: 'verification', status: 'pending' },
+        { phase: 'delivery', status: 'pending' },
+      ],
+    };
+    const gateway = {
+      attachClient: async () => () => undefined,
+      subscribe: (
+        _accountId: string,
+        _conversationId: string,
+        next: (event: GatewayEventEnvelope) => void,
+      ) => {
+        listener = next;
+        return () => undefined;
+      },
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+      submit: async (envelope: { requestId: string }) => ({
+        requestId: envelope.requestId,
+        idempotencyKey: 'idem_1',
+        status: 'accepted' as const,
+        conversationId: 'conv_1',
+      }),
+    } as unknown as WebGatewayAdapter;
+    const catalog = {
+      ...record,
+      appendTurn: async (_sessionId: string, turn: WebSessionRecord['turns'][number]) => {
+        appended = structuredClone(turn);
+        return record;
+      },
+    } as unknown as WebSessionRuntimeCatalog;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog,
+      gateway,
+      projectExecutionTimeline: taskId => taskId === 'task_1' ? timeline : null,
+      createId: prefix => `${prefix}_1`,
+    });
+
+    await runtime.initialize();
+    await runtime.submit('生成页面');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message' },
+    });
+    listener!({
+      ...outputEvent('event_trace', 2, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        events: [{
+          id: 'trace_executor',
+          cursor: 'turn_1:1',
+          eventKey: 'attempt_1:progress:1',
+          sequence: 1,
+          occurredAt: '2026-08-19T00:00:02.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress',
+          summary: '正在生成页面',
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+          attemptId: 'attempt_1',
+          details: { taskId: 'task_1', subtaskId: 'sub_1', attemptId: 'attempt_1' },
+        }],
+      },
+    });
+    listener!({
+      ...outputEvent('event_final', 3, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'final_answer',
+      payload: { lines: ['页面已生成'] },
+    });
+
+    await waitFor(() => appended !== null);
+    expect(appended).toMatchObject({
+      id: 'turn_1',
+      userInput: '生成页面',
+      finalAnswer: '页面已生成',
+      taskId: 'task_1',
+      traceEvents: [expect.objectContaining({
+        subtaskId: 'sub_1',
+        attemptId: 'attempt_1',
+        cursor: 'turn_1:1',
+      })],
+      executionTimeline: timeline,
+    });
+  });
+
+  it('rebuilds an explicit resume turn from durable task timeline and artifacts', async () => {
+    const record: WebSessionRecord = {
+      version: 1,
+      session: {
+        id: 'conv_1',
+        title: 'Conversation',
+        createdAt: '2026-08-19T00:00:00.000Z',
+        updatedAt: '2026-08-19T00:05:00.000Z',
+        active: true,
+        archived: false,
+      },
+      turns: [
+        {
+          id: 'turn_resume_old',
+          sessionId: 'conv_1',
+          userInput: '/task resume task_1',
+          status: 'completed',
+          finalAnswer: '恢复请求已提交',
+          taskId: null,
+          startedAt: '2026-08-19T00:00:00.000Z',
+          completedAt: '2026-08-19T00:00:01.000Z',
+          traceEvents: [],
+          executionTimeline: null,
+          artifactRefs: [],
+          artifacts: [],
+        },
+        {
+          id: 'turn_resume',
+          sessionId: 'conv_1',
+          userInput: '/task resume task_1',
+          status: 'completed',
+          finalAnswer: '恢复任务已完成',
+          taskId: null,
+          startedAt: '2026-08-19T00:01:00.000Z',
+          completedAt: '2026-08-19T00:05:00.000Z',
+          traceEvents: [],
+          executionTimeline: null,
+          artifactRefs: [],
+          artifacts: [],
+        },
+      ],
+    };
+    const timeline: ExecutionTimeline = {
+      taskId: 'task_1',
+      title: '生成 HTML',
+      status: 'done',
+      stages: [
+        { phase: 'planning', status: 'done' },
+        { phase: 'authorization', status: 'done' },
+        {
+          phase: 'execution',
+          status: 'done',
+          subtasks: [{
+            id: 'sub_1',
+            title: '生成 HTML 报告',
+            status: 'done',
+            executor: 'codex-cli',
+            attempts: [{
+              attemptId: 'attempt_1',
+              result: 'completed',
+              progressHistory: [{
+                kind: 'status',
+                text: '报告已生成',
+                occurredAt: '2026-08-19T00:04:00.000Z',
+              }],
+            }],
+          }],
+        },
+        { phase: 'verification', status: 'done' },
+        { phase: 'delivery', status: 'done' },
+      ],
+    };
+    let timelineProjectionCount = 0;
+    let artifactProjectionCount = 0;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: {
+        attachClient: async () => () => undefined,
+        subscribe: () => () => undefined,
+        replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+      } as unknown as WebGatewayAdapter,
+      projectExecutionTimeline: taskId => {
+        timelineProjectionCount += 1;
+        return taskId === 'task_1' ? timeline : null;
+      },
+      projectTaskArtifacts: taskId => {
+        artifactProjectionCount += 1;
+        return taskId === 'task_1'
+          ? [{
+          artifactId: 'artifact_1',
+          taskId: 'task_1',
+          publicationId: 'publication_1',
+          displayName: 'report.html',
+          relativePath: 'reports/report.html',
+          mediaType: 'text/html',
+          previewKind: 'code',
+          previewable: true,
+          byteLength: 1_024,
+          contentHash: 'sha256:abc',
+          publishedAt: '2026-08-19T00:04:30.000Z',
+          }]
+          : [];
+      },
+    });
+
+    await runtime.initialize();
+    const rebuilt = await runtime.readSession('conv_1');
+
+    expect(rebuilt?.turns[0]).toMatchObject({
+      taskId: 'task_1',
+      executionTimeline: null,
+      artifacts: [],
+    });
+    expect(rebuilt?.turns[1]).toMatchObject({
+      taskId: 'task_1',
+      executionTimeline: timeline,
+      artifactRefs: ['reports/report.html'],
+      artifacts: [expect.objectContaining({
+        artifactId: 'artifact_1',
+        relativePath: 'reports/report.html',
+      })],
+    });
+    expect(timelineProjectionCount).toBe(1);
+    expect(artifactProjectionCount).toBe(1);
+  });
+
   it('streams and reassembles result chunks before the terminal answer', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
     const projected: unknown[] = [];
@@ -384,6 +637,10 @@ function catalogFixture(): WebSessionRuntimeCatalog {
     },
     turns: [],
   };
+  return catalogForRecord(record);
+}
+
+function catalogForRecord(record: WebSessionRecord): WebSessionRuntimeCatalog {
   return {
     initialize: async () => undefined,
     create: async () => record,

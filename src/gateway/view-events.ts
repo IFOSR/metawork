@@ -1,5 +1,7 @@
 // Structured Client View Events. CLI, Gateway, and Feishu adapters consume these
 // events as typed records instead of parsing display text.
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+
 export type ClientViewEvent =
   | TaskStateChanged
   | PlannerStateChanged
@@ -59,6 +61,8 @@ export interface ArtifactPublished extends ClientViewEventBase {
   taskId: string;
   publicationId: string;
   artifactCount: number;
+  /** 受限的用户 artifact projection；历史客户端可以只使用 artifactCount。 */
+  artifacts?: ArtifactProjection[];
 }
 
 export interface NoticeRaised extends ClientViewEventBase {

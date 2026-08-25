@@ -50,6 +50,87 @@ describe('ManagedGitWorkspaceService', () => {
     expect(await git(source, 'status', '--porcelain')).toContain('tracked.txt');
   });
 
+  it('reuses one immutable dirty baseline for every workspace in a generation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-shared-baseline-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const store = new WorkspaceStore(join(root, 'store'));
+    await exec('git', ['init', source]);
+    await git(source, 'config', 'user.name', 'Test User');
+    await git(source, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(source, 'tracked.txt'), 'committed\n');
+    await git(source, 'add', '.');
+    await git(source, 'commit', '-m', 'base');
+    await writeFile(join(source, 'tracked.txt'), 'generation baseline\n');
+    await writeFile(join(source, 'baseline-only.txt'), 'captured once\n');
+
+    const service = new ManagedGitWorkspaceService(store);
+    const first = await service.ensure({
+      taskId: 'task-shared-baseline',
+      generationId: 'generation-shared-baseline',
+      subtaskId: 'first',
+    }, source);
+    await writeFile(join(source, 'tracked.txt'), 'later source drift\n');
+    await writeFile(join(source, 'late-only.txt'), 'must not enter the generation\n');
+    const second = await service.ensure({
+      taskId: 'task-shared-baseline',
+      generationId: 'generation-shared-baseline',
+      subtaskId: 'second',
+    }, source);
+
+    expect(second.baselineCommit).toBe(first.baselineCommit);
+    expect(second.sourceDiffHash).toBe(first.sourceDiffHash);
+    expect(await readFile(join(second.filesPath, 'tracked.txt'), 'utf8'))
+      .toBe('generation baseline\n');
+    expect(await readFile(join(second.filesPath, 'baseline-only.txt'), 'utf8'))
+      .toBe('captured once\n');
+    await expect(readFile(join(second.filesPath, 'late-only.txt'), 'utf8')).rejects.toThrow();
+  });
+
+  it('publishes only the candidate commit delta when a legacy baseline has divergent source drift', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-candidate-delta-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const store = new WorkspaceStore(join(root, 'store'));
+    await exec('git', ['init', source]);
+    await git(source, 'config', 'user.name', 'Test User');
+    await git(source, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(source, 'implementation.ts'), 'export const value = "base";\n');
+    await git(source, 'add', '.');
+    await git(source, 'commit', '-m', 'base');
+    await writeFile(join(source, 'implementation.ts'), 'export const value = "integration";\n');
+
+    const service = new ManagedGitWorkspaceService(store);
+    const integration = await service.ensure({
+      taskId: 'task-candidate-delta',
+      generationId: 'generation-candidate-delta',
+      subtaskId: '__integration__',
+    }, source);
+    const legacyCandidatePath = join(root, 'legacy-candidate');
+    await exec('git', [
+      '--git-dir', integration.repositoryPath,
+      'worktree', 'add', '-b', 'legacy-candidate', legacyCandidatePath, integration.sourceCommit,
+    ]);
+    await git(legacyCandidatePath, 'config', 'user.name', 'Test User');
+    await git(legacyCandidatePath, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(legacyCandidatePath, 'implementation.ts'), 'export const value = "candidate";\n');
+    await git(legacyCandidatePath, 'add', '.');
+    await git(legacyCandidatePath, 'commit', '-m', 'chore: capture divergent legacy baseline');
+    await writeFile(join(legacyCandidatePath, 'report.html'), '<h1>candidate report</h1>\n');
+    await git(legacyCandidatePath, 'add', '.');
+    await git(legacyCandidatePath, 'commit', '-m', 'feat: add report artifact');
+    const candidateCommit = await git(legacyCandidatePath, 'rev-parse', 'HEAD');
+
+    await expect(service.mergeCandidate(integration, candidateCommit)).resolves.toMatchObject({
+      type: 'integrated',
+      changedPaths: ['report.html'],
+    });
+    expect(await readFile(join(integration.filesPath, 'implementation.ts'), 'utf8'))
+      .toBe('export const value = "integration";\n');
+    expect(await readFile(join(integration.filesPath, 'report.html'), 'utf8'))
+      .toBe('<h1>candidate report</h1>\n');
+  });
+
   it('composes only explicit direct dependency commits', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-deps-'));
     roots.push(root);
@@ -191,6 +272,16 @@ describe('ManagedGitWorkspaceService', () => {
     });
     expect(preparation.conflictPaths).toEqual(['asset.bin', 'shared.txt']);
     expect(await readFile(join(preparation.materialsPath, 'asset.bin.ours'))).toEqual(Buffer.from([0, 5, 6]));
+    const repeatedPreparation = await service.prepareMergeRepair({
+      candidateWorkspace: second,
+      integrationWorkspace: integration,
+      candidateCommit: secondCommit.commit,
+      expectedConflictPaths: conflict.conflictPaths,
+      filePolicy: conflict.filePolicy,
+    });
+    expect(repeatedPreparation.conflictPaths).toEqual(['asset.bin', 'shared.txt']);
+    expect(await readFile(join(repeatedPreparation.materialsPath, 'asset.bin.ours')))
+      .toEqual(Buffer.from([0, 5, 6]));
     await writeFile(join(second.filesPath, 'shared.txt'), 'resolved\n');
     await writeFile(join(second.filesPath, 'asset.bin'), Buffer.from([0, 7, 8]));
     const repaired = await service.commitMergeRepair({

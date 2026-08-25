@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -16,6 +18,11 @@ import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { PersistedSubtaskHandoffItem } from '../storage/subtask-handoff-repo.js';
+import type {
+  UserArtifactPublicationService,
+} from '../delivery/user-artifact-publication-service.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+import { mergeConflictObservationId } from './merge-repair-protocol.js';
 
 export interface IntegratedWorkspacePublication {
   type: 'integrated';
@@ -28,6 +35,8 @@ export interface IntegratedWorkspacePublication {
   resultId: string | null;
   output: string;
   warnings: string[];
+  /** 已复制到用户 Workspace 的可见 artifact（仅 projection，无内部路径）。 */
+  userArtifacts: ArtifactProjection[];
 }
 
 export interface ConflictedWorkspacePublication {
@@ -62,6 +71,8 @@ export interface WorkspacePublicationWorkerDeps {
   resourceLeaseService: ResourceLeaseService;
   dispatchItemRepo: KernelDispatchItemRepo;
   taskRuntimeService: TaskRuntimeService;
+  /** 用户产物发布服务；提供后集成成功的 artifact 会复制到用户 Workspace。 */
+  userArtifactPublication?: UserArtifactPublicationService;
 }
 
 /**
@@ -111,9 +122,18 @@ export class WorkspacePublicationWorker {
       this.reconciledGenerations.add(key);
       this.publications.recoverApplying(taskId, generationId, new Date().toISOString());
     }
+    await this.reconcileIntegratedArtifacts(taskId, generationId);
     while (true) {
       const publication = this.publications.findNextBlocking(taskId, generationId);
-      if (!publication || publication.status !== 'pending') break;
+      if (!publication) break;
+      if (publication.status === 'conflicted' || publication.status === 'parked') {
+        if (await this.requeueStaleBaselineConflict(publication)) continue;
+        if (publication.status === 'parked') break;
+        const replay = this.replayConflict(publication);
+        if (replay) outcomes.push(replay);
+        break;
+      }
+      if (publication.status !== 'pending') break;
       if (!this.isStablePredecessorReleased(publication)) break;
       const outcome = await this.publish(publication);
       if (!outcome) break;
@@ -121,6 +141,72 @@ export class WorkspacePublicationWorker {
       if (outcome.type === 'conflicted') break;
     }
     return outcomes;
+  }
+
+  private async requeueStaleBaselineConflict(
+    publication: WorkspacePublicationRecord,
+  ): Promise<boolean> {
+    const latestMerge = this.publications.findLatestMergeAttempt(publication.id);
+    if (
+      !latestMerge
+      || latestMerge.result !== 'conflicted'
+      || latestMerge.conflictPaths.length === 0
+      || !publication.conflictChainId
+    ) {
+      return false;
+    }
+    const integrationWorkspace = await this.git.ensure({
+      taskId: publication.taskId,
+      generationId: publication.generationId,
+      subtaskId: '__integration__',
+    }, this.deps.sourceRoot);
+    const candidate = await this.git.describeCandidate(
+      integrationWorkspace,
+      publication.candidateCommit,
+    );
+    if (candidate.baseCommit === latestMerge.baseCommit) return false;
+    const includesCandidatePath = latestMerge.conflictPaths.some(conflictPath => (
+      candidate.changedPaths.some(candidatePath => pathsOverlap(conflictPath, candidatePath))
+    ));
+    if (includesCandidatePath) return false;
+    return this.publications.requeueStaleBaselineConflict(
+      publication.id,
+      publication.conflictChainId,
+      new Date().toISOString(),
+    );
+  }
+
+  private replayConflict(
+    publication: WorkspacePublicationRecord,
+  ): ConflictedWorkspacePublication | null {
+    const sourceReceipt = this.deps.attemptReceiptRepo.findByAttemptId(
+      publication.sourceAttemptId,
+    );
+    const mergeAttempt = this.publications.findLatestMergeAttempt(publication.id);
+    if (!sourceReceipt || !mergeAttempt || !publication.conflictChainId) return null;
+    return {
+      type: 'conflicted',
+      event: {
+        schemaVersion: 5,
+        configurationRevision: sourceReceipt.configurationRevision,
+        type: 'merge_conflict_observed',
+        id: mergeConflictObservationId(publication.id, publication.repairAttemptsUsed),
+        correlationId: publication.id,
+        causationId: mergeAttempt.decisionId,
+        occurredAt: mergeAttempt.createdAt,
+        sessionId: this.sessionId,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        publicationId: publication.id,
+        conflictChainId: publication.conflictChainId,
+        authorizedBinding: sourceReceipt.authorizedBinding,
+        bindingFingerprint: sourceReceipt.bindingFingerprint,
+        sourceAttemptId: publication.sourceAttemptId,
+        repairAttemptsUsed: publication.repairAttemptsUsed,
+        conflictReplansUsed: publication.conflictReplansUsed,
+        conflictingPaths: mergeAttempt.conflictPaths,
+      },
+    };
   }
 
   private isStablePredecessorReleased(publication: WorkspacePublicationRecord): boolean {
@@ -322,7 +408,7 @@ export class WorkspacePublicationWorker {
             schemaVersion: 5,
             configurationRevision: sourceReceipt.configurationRevision,
             type: 'merge_conflict_observed',
-            id: `event_${conflictChainId}_${ordinal}`,
+            id: mergeConflictObservationId(publication.id, publication.repairAttemptsUsed),
             correlationId: publication.id,
             causationId: decisionId,
             occurredAt: now,
@@ -484,6 +570,9 @@ export class WorkspacePublicationWorker {
           observedIntegrationCommit: merged.integrationCommit,
         };
       }
+      // Git publication 成功后才把已验证 artifact 发布为用户可见产物；
+      // 用户产物发布失败只降级为 warning，不影响 durable publication 事实。
+      const userArtifacts = await this.publishUserArtifacts(publication, integrationWorkspace);
       return {
         type: 'integrated',
         publicationId: publication.id,
@@ -495,6 +584,7 @@ export class WorkspacePublicationWorker {
         resultId: safeProjection?.resultId ?? null,
         output: publication.originalCompletion.body,
         warnings: publication.originalCompletion.warnings,
+        userArtifacts,
       };
     } catch (error) {
       this.publications.markPending(
@@ -506,6 +596,93 @@ export class WorkspacePublicationWorker {
     } finally {
       this.deps.resourceLeaseService.release(publicationAttemptId, leaseToken);
     }
+  }
+
+  private async publishUserArtifacts(
+    publication: WorkspacePublicationRecord,
+    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
+  ): Promise<ArtifactProjection[]> {
+    const service = this.deps.userArtifactPublication;
+    if (!service) return [];
+    const sources = this.artifactSources(publication, integrationWorkspace);
+    if (sources.length === 0) return [];
+    const task = this.deps.taskRuntimeService.findTask(publication.taskId);
+    try {
+      const outcome = await service.publishIntegratedArtifacts({
+        accountId: this.deps.accountId ?? 'local-default',
+        taskId: publication.taskId,
+        taskTitle: task?.title ?? publication.taskId,
+        generationId: publication.generationId,
+        subtaskId: publication.subtaskId,
+        publicationId: publication.id,
+        integratedWorkspaceRoot: integrationWorkspace.filesPath,
+        sources,
+      });
+      for (const failure of outcome.failures) {
+        console.warn(
+          `user artifact publication skipped ${failure.sourceRelativePath}: ${failure.reason}`,
+        );
+      }
+      return outcome.projections;
+    } catch (error) {
+      console.warn(
+        `user artifact publication failed for ${publication.id}:`
+        + ` ${(error as Error).message}`,
+      );
+      return [];
+    }
+  }
+
+  private async reconcileIntegratedArtifacts(
+    taskId: string,
+    generationId: string,
+  ): Promise<void> {
+    if (!this.deps.userArtifactPublication) return;
+    const publications = this.publications.listIntegratedByTaskIds([taskId])
+      .filter(publication => (
+        publication.generationId === generationId
+        && publication.originalCompletion.artifacts.length > 0
+      ));
+    if (publications.length === 0) return;
+    const integrationWorkspace = await this.git.ensure({
+      taskId,
+      generationId,
+      subtaskId: '__integration__',
+    }, this.deps.sourceRoot);
+    for (const publication of publications) {
+      await this.publishUserArtifacts(publication, integrationWorkspace);
+    }
+  }
+
+  private artifactSources(
+    publication: WorkspacePublicationRecord,
+    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
+  ): Array<{ sourceRelativePath: string }> {
+    const sourceWorkspace = this.deps.workspaceRepository.findByIdentity(
+      publication.taskId,
+      publication.generationId,
+      publication.subtaskId,
+    );
+    const sourceFilesRoot = sourceWorkspace
+      ? join(fileURLToPath(sourceWorkspace.rootUri), 'files')
+      : null;
+    return publication.originalCompletion.artifacts.flatMap(path => {
+      if (typeof path !== 'string' || path.trim().length === 0) return [];
+      if (!isAbsolute(path)) return [{ sourceRelativePath: path }];
+      for (const root of [sourceFilesRoot, integrationWorkspace.filesPath]) {
+        if (!root) continue;
+        const candidate = relative(root, path);
+        if (
+          candidate
+          && !candidate.startsWith('..')
+          && !candidate.includes(`..${sep}`)
+          && !isAbsolute(candidate)
+        ) {
+          return [{ sourceRelativePath: candidate.split(sep).join('/') }];
+        }
+      }
+      return [];
+    });
   }
 
   private findSafeProjection(
@@ -586,4 +763,10 @@ function comparePublicationKeys(
   return left[0] - right[0]
     || left[1] - right[1]
     || left[2].localeCompare(right[2]);
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return left === right
+    || left.startsWith(`${right}/`)
+    || right.startsWith(`${left}/`);
 }

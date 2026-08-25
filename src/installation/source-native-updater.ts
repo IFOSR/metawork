@@ -77,7 +77,13 @@ export class SourceNativeUpdater {
 
       await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
       const sourceSchema = readSchemaVersion(accountPaths.database);
-      if (sourceSchema !== 30 && sourceSchema !== 31 && sourceSchema !== 32 && sourceSchema !== CURRENT_SCHEMA_VERSION) {
+      if (
+        sourceSchema !== 30
+        && sourceSchema !== 31
+        && sourceSchema !== 32
+        && sourceSchema !== 33
+        && sourceSchema !== CURRENT_SCHEMA_VERSION
+      ) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
       const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);

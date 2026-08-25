@@ -42,6 +42,34 @@ record is updated. The trace is presentation-only and never includes raw
 prompts, raw stdout/stderr, credentials, sensitive field names or hidden
 chain-of-thought.
 
+The public execution stream carries stable turn-local `cursor`, `eventKey`,
+Task/Subtask/attempt identity, bounded safe summaries and ordered
+deduplication fields. Attempt-runtime progress history is separate from
+Completion Protocol evidence: it may rebuild a user-facing detail stream but
+never certifies a result. Web renders one inline `LIVE EXECUTION` panel with
+one card per Subtask and retains it as `EXECUTION SUMMARY`; a selected card
+opens a replayable detail drawer. Historical Web turns persist the safe trace
+and durable ExecutionProjector timeline, so reconnect and Conversation
+switching do not fall back to only the latest turn or current in-memory trace.
+Native Planner/TUI and Feishu consume the same passive trace events; Feishu
+coalesces ordinary progress and flushes blockers/publication/completion
+milestones immediately.
+
+Dependency publication readiness is an explicit Runtime fact. Pending
+publication waits, while missing handoff/result/workspace state and identity
+mismatch produce bounded structured diagnostics. A blocked Task can resume only
+through the Kernel `task_resume_requested` event and `resume_task` decision;
+manual, material, contract and unknown blockers remain blocked until explicitly
+resolved. Task and Subtask state restoration is applied only with the Kernel
+decision. A legacy `authorize_task_plan` application made uncertain solely by
+the former system-binding `onDecisionApplying` presentation callback defect is
+the one bounded exception to ordinary manual uncertainty handling. Startup
+recovery or an explicit Resume may submit a deterministic
+`recovery_resolution_requested(retry)` only when the exact error, submitted
+generation replan request, generation identity and adjacent graph revision all
+match. ControlKernel still authorizes the retry; no other uncertain application
+or external effect is retried automatically.
+
 Planner convergence is bounded independently from the wall-clock RPC timeout.
 Runtime, Kernel, recovery, scheduling and Executor semantics come only from the
 seven authoritative MCP queries and the live proposal schema; Planner may not

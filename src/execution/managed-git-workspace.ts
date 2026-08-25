@@ -23,6 +23,7 @@ export interface ManagedGitWorkspace extends WorkspaceHandle {
   branch: string;
   sourceCommit: string;
   baselineCommit: string;
+  headCommit: string;
   sourceDiffHash: string;
   gitMetadataPath: string;
 }
@@ -126,7 +127,13 @@ export class ManagedGitWorkspaceService {
       `${safeRefSegment(identity.generationId)}.git`,
     );
     const branch = `metaclaw/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}/${safeRefSegment(identity.subtaskId)}`;
+    const generationRefPrefix = `refs/metaclaw/generations/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}`;
+    const sourceRef = `${generationRefPrefix}/source`;
+    const baselineRef = `${generationRefPrefix}/baseline`;
+    const workspaceBranchPrefix = `refs/heads/metaclaw/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}/`;
     const gitMetadataPath = join(workspace.filesPath, '.git');
+    let sourceCommit = '';
+    let baselineCommit = '';
 
     await this.withRepositoryOperation(repositoryPath, async () => {
       if (!(await exists(repositoryPath))) {
@@ -137,11 +144,28 @@ export class ManagedGitWorkspaceService {
           await this.importPlainSource(sourceRoot, repositoryPath);
         }
       }
-      const sourceCommit = detectedSource?.commit
-        ?? await git(['--git-dir', repositoryPath, 'rev-parse', 'HEAD']);
+      sourceCommit = await git(['--git-dir', repositoryPath, 'rev-parse', sourceRef])
+        .catch(async () => {
+          const commit = await git(['--git-dir', repositoryPath, 'rev-parse', 'HEAD']);
+          await git(['--git-dir', repositoryPath, 'update-ref', sourceRef, commit]);
+          return commit;
+        });
+      baselineCommit = await git(['--git-dir', repositoryPath, 'rev-parse', baselineRef])
+        .catch(async () => {
+          const legacy = await this.findLegacyGenerationBaseline(
+            repositoryPath,
+            sourceCommit,
+            workspaceBranchPrefix,
+          );
+          if (legacy) await git(['--git-dir', repositoryPath, 'update-ref', baselineRef, legacy]);
+          return legacy ?? '';
+        });
       if (!(await exists(gitMetadataPath))) {
-        await git(['--git-dir', repositoryPath, 'worktree', 'add', '-B', branch, workspace.filesPath, sourceCommit]);
-        if (detectedSource) await this.store.seedDirectory(workspace, detectedSource.root);
+        await git([
+          '--git-dir', repositoryPath,
+          'worktree', 'add', '-B', branch, workspace.filesPath,
+          baselineCommit || sourceCommit,
+        ]);
         await git(['-C', workspace.filesPath, 'config', 'user.name', 'MetaClaw Runtime']);
         await git(['-C', workspace.filesPath, 'config', 'user.email', 'runtime@metaclaw.local']);
         const commonDir = await git(['-C', workspace.filesPath, 'rev-parse', '--git-common-dir']);
@@ -150,26 +174,29 @@ export class ManagedGitWorkspaceService {
         if (!existingExclude.split(/\r?\n/u).includes('.metaclaw/')) {
           await writeFile(excludePath, `${existingExclude.replace(/\s*$/u, '')}\n.metaclaw/\n`, 'utf8');
         }
-        await git(['-C', workspace.filesPath, 'add', '-A']);
-        if (await git(['-C', workspace.filesPath, 'status', '--porcelain'])) {
-          await git(['-C', workspace.filesPath, 'commit', '-m', 'chore: capture task generation baseline']);
+        if (!baselineCommit) {
+          if (detectedSource) await this.store.seedDirectory(workspace, detectedSource.root);
+          await git(['-C', workspace.filesPath, 'add', '-A']);
+          if (await git(['-C', workspace.filesPath, 'status', '--porcelain'])) {
+            await git(['-C', workspace.filesPath, 'commit', '-m', 'chore: capture task generation baseline']);
+          }
+          baselineCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+          await git(['--git-dir', repositoryPath, 'update-ref', baselineRef, baselineCommit]);
         }
+      }
+      if (!baselineCommit) {
+        baselineCommit = await git(['--git-dir', repositoryPath, 'rev-parse', baselineRef]);
       }
     });
 
-    const sourceCommit = detectedSource?.commit
-      ?? await git(['--git-dir', repositoryPath, 'rev-parse', 'HEAD']);
-    const baselineCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
-    const sourceDiff = detectedSource
-      ? await git(['-C', detectedSource.root, 'diff', '--binary', 'HEAD'])
-      : '';
-    const untracked = detectedSource
-      ? await git(['-C', detectedSource.root, 'ls-files', '--others', '--exclude-standard'])
-      : '';
+    const headCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+    const sourceDiff = await git([
+      '--git-dir', repositoryPath, 'diff', '--binary', `${sourceCommit}..${baselineCommit}`,
+    ]);
     const sourceDiffHash = createHash('sha256')
-      .update(detectedSource ? sourceDiff : sourceCommit)
+      .update(sourceCommit)
       .update('\0')
-      .update(untracked)
+      .update(sourceDiff)
       .digest('hex');
     return {
       ...workspace,
@@ -178,6 +205,7 @@ export class ManagedGitWorkspaceService {
       branch,
       sourceCommit,
       baselineCommit,
+      headCommit,
       sourceDiffHash,
       gitMetadataPath,
     };
@@ -217,6 +245,7 @@ export class ManagedGitWorkspaceService {
     await git(['-C', workspace.filesPath, 'add', '-A']);
     await git(['-C', workspace.filesPath, 'commit', '--allow-empty', '-m', message]);
     const commit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
+    workspace.headCommit = commit;
     return { branch: workspace.branch, commit, changedPaths };
   }
 
@@ -235,6 +264,7 @@ export class ManagedGitWorkspaceService {
         throw new Error(`workspace_state_conflict:${commit}:${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    workspace.headCommit = await git(['-C', workspace.filesPath, 'rev-parse', 'HEAD']);
   }
 
   async mergeCandidate(
@@ -243,41 +273,58 @@ export class ManagedGitWorkspaceService {
   ): Promise<ManagedGitMergeResult> {
     const candidate = await this.describeCandidate(integrationWorkspace, candidateCommit);
     const { baseCommit, oursCommit, theirsCommit } = candidate;
-    try {
-      await git(['-C', integrationWorkspace.filesPath, 'merge', '--no-ff', '--no-edit', theirsCommit]);
-      const integrationCommit = await git(['-C', integrationWorkspace.filesPath, 'rev-parse', 'HEAD']);
-      const changedPaths = splitLines(await git([
-        '-C', integrationWorkspace.filesPath, 'diff', '--name-only', `${oursCommit}..${integrationCommit}`,
-      ]));
+    if (await isAncestor(integrationWorkspace.filesPath, theirsCommit, oursCommit)) {
       return {
         type: 'integrated',
         baseCommit,
         oursCommit,
         theirsCommit,
-        integrationCommit,
-        changedPaths,
-        filePolicy: await this.classifyPaths(integrationWorkspace.filesPath, theirsCommit, changedPaths),
+        integrationCommit: oursCommit,
+        changedPaths: [],
+        filePolicy: {},
       };
-    } catch (error) {
-      const conflictPaths = splitLines(await git([
-        '-C', integrationWorkspace.filesPath, 'diff', '--name-only', '--diff-filter=U',
-      ]));
-      const filePolicy = await this.classifyPaths(
-        integrationWorkspace.filesPath,
-        theirsCommit,
-        conflictPaths,
-      );
-      await git(['-C', integrationWorkspace.filesPath, 'merge', '--abort']).catch(() => undefined);
-      if (conflictPaths.length === 0) throw error;
+    }
+    const merge = await mergeTree({
+      workspacePath: integrationWorkspace.filesPath,
+      baseCommit,
+      oursCommit,
+      theirsCommit,
+    });
+    if (merge.type === 'conflicted') {
       return {
         type: 'conflicted',
         baseCommit,
         oursCommit,
         theirsCommit,
-        conflictPaths,
-        filePolicy,
+        conflictPaths: merge.conflictPaths,
+        filePolicy: await this.classifyPaths(
+          integrationWorkspace.filesPath,
+          theirsCommit,
+          merge.conflictPaths,
+        ),
       };
     }
+    const integrationCommit = await git([
+      '-C', integrationWorkspace.filesPath,
+      'commit-tree', merge.tree,
+      '-p', oursCommit,
+      '-p', theirsCommit,
+      '-m', `Merge candidate ${theirsCommit}`,
+    ]);
+    await git(['-C', integrationWorkspace.filesPath, 'reset', '--hard', integrationCommit]);
+    integrationWorkspace.headCommit = integrationCommit;
+    const changedPaths = splitLines(await git([
+      '-C', integrationWorkspace.filesPath, 'diff', '--name-only', `${oursCommit}..${integrationCommit}`,
+    ]));
+    return {
+      type: 'integrated',
+      baseCommit,
+      oursCommit,
+      theirsCommit,
+      integrationCommit,
+      changedPaths,
+      filePolicy: await this.classifyPaths(integrationWorkspace.filesPath, theirsCommit, changedPaths),
+    };
   }
 
   async describeCandidate(
@@ -286,7 +333,9 @@ export class ManagedGitWorkspaceService {
   ): Promise<ManagedGitCandidateDescription> {
     const oursCommit = await git(['-C', integrationWorkspace.filesPath, 'rev-parse', 'HEAD']);
     const theirsCommit = await git(['-C', integrationWorkspace.filesPath, 'rev-parse', candidateCommit]);
-    const baseCommit = await git(['-C', integrationWorkspace.filesPath, 'merge-base', oursCommit, theirsCommit]);
+    const baseCommit = await isAncestor(integrationWorkspace.filesPath, oursCommit, theirsCommit)
+      ? oursCommit
+      : await git(['-C', integrationWorkspace.filesPath, 'rev-parse', `${theirsCommit}^1`]);
     const changedPaths = splitLines(await git([
       '-C', integrationWorkspace.filesPath, 'diff', '--name-only', `${baseCommit}..${theirsCommit}`,
     ]));
@@ -327,6 +376,10 @@ export class ManagedGitWorkspaceService {
         );
       }
       const materialsPath = join(input.candidateWorkspace.filesPath, '.metaclaw', 'merge-repair');
+      // Prior repair attempts intentionally make these inputs read-only. A hard
+      // reset leaves the untracked directory behind, so rebuild it atomically
+      // instead of attempting to overwrite 0444 files.
+      await rm(materialsPath, { recursive: true, force: true });
       for (const path of conflictPaths) {
         for (const [stage, suffix] of [['1', 'base'], ['2', 'ours'], ['3', 'theirs']] as const) {
           const target = join(materialsPath, `${path}.${suffix}`);
@@ -407,12 +460,49 @@ export class ManagedGitWorkspaceService {
       '-m', 'fix: project merge repair without integration ancestry',
     ]);
     const workspaceCommit = await git(['-C', input.workspace.filesPath, 'rev-parse', 'HEAD']);
+    input.workspace.headCommit = workspaceCommit;
     return {
       branch: input.workspace.branch,
       commit,
       workspaceCommit,
       changedPaths: allowed,
     };
+  }
+
+  private async findLegacyGenerationBaseline(
+    repositoryPath: string,
+    sourceCommit: string,
+    workspaceBranchPrefix: string,
+  ): Promise<string | null> {
+    const refs = splitLines(await git([
+      '--git-dir', repositoryPath,
+      'for-each-ref', '--format=%(refname)', workspaceBranchPrefix,
+    ]));
+    const candidates: Array<{ commit: string; timestamp: number }> = [];
+    for (const ref of refs) {
+      const firstCommit = splitLines(await git([
+        '--git-dir', repositoryPath,
+        'rev-list', '--first-parent', '--reverse', `${sourceCommit}..${ref}`,
+      ]))[0];
+      if (!firstCommit) {
+        candidates.push({ commit: sourceCommit, timestamp: 0 });
+        continue;
+      }
+      const subject = await git([
+        '--git-dir', repositoryPath, 'show', '-s', '--format=%s', firstCommit,
+      ]);
+      const commit = subject === 'chore: capture task generation baseline'
+        ? firstCommit
+        : sourceCommit;
+      const timestamp = Number(await git([
+        '--git-dir', repositoryPath, 'show', '-s', '--format=%ct', commit,
+      ]));
+      candidates.push({ commit, timestamp });
+    }
+    candidates.sort((left, right) => (
+      left.timestamp - right.timestamp || left.commit.localeCompare(right.commit)
+    ));
+    return candidates[0]?.commit ?? null;
   }
 
   private async importPlainSource(sourceRoot: string, repositoryPath: string): Promise<void> {
@@ -480,6 +570,60 @@ async function gitBuffer(args: string[]): Promise<Buffer> {
     maxBuffer: 16 * 1024 * 1024,
   });
   return Buffer.from(result.stdout);
+}
+
+async function isAncestor(
+  workspacePath: string,
+  ancestorCommit: string,
+  descendantCommit: string,
+): Promise<boolean> {
+  return git([
+    '-C', workspacePath,
+    'merge-base', '--is-ancestor', ancestorCommit, descendantCommit,
+  ]).then(() => true).catch(() => false);
+}
+
+async function mergeTree(input: {
+  workspacePath: string;
+  baseCommit: string;
+  oursCommit: string;
+  theirsCommit: string;
+}): Promise<
+  | { type: 'integrated'; tree: string }
+  | { type: 'conflicted'; conflictPaths: string[] }
+> {
+  const args = withSafeDirectory([
+    '-C', input.workspacePath,
+    'merge-tree',
+    '--write-tree',
+    '--merge-base', input.baseCommit,
+    '--name-only',
+    '--no-messages',
+    '-z',
+    input.oursCommit,
+    input.theirsCommit,
+  ]);
+  try {
+    const result = await execFileAsync('git', args, {
+      encoding: 'buffer',
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const tree = Buffer.from(result.stdout).toString('utf8').split('\0', 1)[0]?.trim() ?? '';
+    if (!/^[a-f0-9]{40,64}$/u.test(tree)) throw new Error('merge-tree did not return an integration tree');
+    return { type: 'integrated', tree };
+  } catch (error) {
+    const failure = error as Error & { code?: number | string; stdout?: Buffer | string };
+    if (Number(failure.code) !== 1) throw error;
+    const fields = Buffer.isBuffer(failure.stdout)
+      ? failure.stdout.toString('utf8').split('\0')
+      : String(failure.stdout ?? '').split('\0');
+    const conflictPaths = fields.slice(1).map(path => path.trim()).filter(Boolean);
+    if (conflictPaths.length === 0) {
+      throw new Error('merge-tree reported a conflict without path-scoped repair material');
+    }
+    return { type: 'conflicted', conflictPaths: [...new Set(conflictPaths)].sort() };
+  }
 }
 
 function withSafeDirectory(args: string[]): string[] {

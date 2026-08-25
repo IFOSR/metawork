@@ -117,7 +117,7 @@ describe('PiCliDriver', () => {
     });
   });
 
-  it('extracts the final assistant answer and only exposes safe lifecycle progress', () => {
+  it('extracts the final assistant answer and streams sanitized execution activity', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     const stdout = [
       JSON.stringify({ type: 'agent_start' }),
@@ -131,6 +131,13 @@ describe('PiCliDriver', () => {
         toolCallId: 'tool_1',
         toolName: 'web_search',
         args: { query: 'sensitive query value' },
+      }),
+      JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'tool_1',
+        toolName: 'read',
+        isError: false,
+        args: { path: '/workspace/report.md' },
       }),
       JSON.stringify({
         type: 'message_end',
@@ -157,21 +164,57 @@ describe('PiCliDriver', () => {
         },
       }),
     })).toBe('Final research answer');
+    // message_update（逐 token 增量）不进入进度流，message_end 才呈现。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({ type: 'message_update', message: { role: 'assistant' } }),
     })).toBeNull();
+    // 工具活动带白名单参数摘要，实时呈现给用户。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
         type: 'tool_execution_start',
         toolName: 'web_search',
-        args: { query: 'must not appear' },
+        args: { query: 'sensitive query value', secret: 'must not appear' },
       }),
     })).toEqual({
       kind: 'skill',
-      text: 'Executor started tool: web_search',
+      text: 'Executor started tool: web_search — sensitive query value',
     });
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolName: 'read',
+        isError: false,
+        args: { path: '/workspace/report.md' },
+      }),
+    })).toEqual({
+      kind: 'skill',
+      text: 'Executor completed tool: read — /workspace/report.md',
+    });
+    // 助手叙述（执行思路）脱敏后实时流出。
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '我先检查最近的公告，再对比同行业估值。\n\n第二步验证资金流向。' }],
+        },
+      }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor: 我先检查最近的公告，再对比同行业估值。 第二步验证资金流向。',
+    });
+    // 非 assistant 的 message_end 不产生进度。
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_end',
+        message: { role: 'toolResult', content: [{ type: 'text', text: 'raw tool output' }] },
+      }),
+    })).toBeNull();
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({

@@ -3,6 +3,7 @@ import {
   formatExecutorError,
   formatExecutorProgress,
   isRecoverableExecutorFailure,
+  normalizeDependencyMaterializationFailure,
   normalizeExecutorFailure,
 } from '../../src/executor/error-utils.js';
 
@@ -77,6 +78,26 @@ describe('normalizeExecutorFailure', () => {
   });
 });
 
+describe('normalizeDependencyMaterializationFailure', () => {
+  it('returns a bounded non-retryable identity diagnostic for an unauthorized reference', () => {
+    expect(normalizeDependencyMaterializationFailure(
+      new Error('result reference is not authorized for target downstream'),
+      {
+        sourceSubtaskId: 'upstream',
+        targetSubtaskId: 'downstream',
+        referenceId: 'reference_wrong_edge',
+      },
+    )).toEqual({
+      code: 'dependency_result_reference_unauthorized',
+      retryable: false,
+      summary: 'The dependency Result Reference is not authorized for this Subtask.',
+      sourceSubtaskId: 'upstream',
+      targetSubtaskId: 'downstream',
+      referenceId: 'reference_wrong_edge',
+    });
+  });
+});
+
 describe('formatExecutorProgress', () => {
   it('hides related-task filesystem scans and command details from user-facing progress', () => {
     const noisyLines = [
@@ -94,5 +115,20 @@ describe('formatExecutorProgress', () => {
 
   it('keeps concise executor progress that is useful to the user', () => {
     expect(formatExecutorProgress('[codex-cli] 正在检索相关任务')).toBe('正在检索相关任务');
+  });
+
+  it('keeps tool activity while removing unrestricted command and tool arguments', () => {
+    expect(formatExecutorProgress(
+      'Executor started workspace command: /bin/zsh -lc "cat /tmp/private.txt"',
+    )).toBe('Executor started a workspace command');
+    expect(formatExecutorProgress(
+      'Executor completed workspace command: rg -n "secret" /workspace',
+    )).toBe('Executor completed a workspace command');
+    expect(formatExecutorProgress(
+      'Executor started tool: web_search — 智谱 股价 下跌 原因',
+    )).toBe('Executor started tool: web_search');
+    expect(formatExecutorProgress(
+      'Executor started MCP tool: fetch_page — https://example.test/private',
+    )).toBe('Executor started MCP tool: fetch_page');
   });
 });

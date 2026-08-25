@@ -39,7 +39,7 @@ describe('CodexCliDriver', () => {
       .toEqual({ success: false, output: '', error: 'failed' });
   });
 
-  it('extracts JSONL agent output and ignores reasoning details in progress', () => {
+  it('extracts JSONL agent output and streams sanitized execution activity', () => {
     const driver = new CodexCliDriver({ probeCommand: vi.fn() });
     const stdout = [
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-secret' }),
@@ -50,6 +50,10 @@ describe('CodexCliDriver', () => {
       JSON.stringify({
         type: 'item.started',
         item: { id: 'item_2', type: 'command_execution', command: 'cat secret.txt' },
+      }),
+      JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_4', type: 'mcp_tool_call', tool: 'fetch_page', arguments: { url: 'https://example.test/report' } },
       }),
       JSON.stringify({
         type: 'item.completed',
@@ -70,13 +74,18 @@ describe('CodexCliDriver', () => {
         item: { type: 'agent_message', text: 'Implemented safely' },
       }),
     })).toBe('Implemented safely');
+    // 隐藏思维链内容不透出，但"正在推理"里程碑会流出。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
         type: 'item.started',
         item: { type: 'reasoning', text: 'must not appear' },
       }),
-    })).toBeNull();
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor is reasoning through the next step',
+    });
+    // 工作区命令带脱敏后的命令摘录。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -85,7 +94,29 @@ describe('CodexCliDriver', () => {
       }),
     })).toEqual({
       kind: 'status',
-      text: 'Executor started a workspace command',
+      text: 'Executor started workspace command: cat secret.txt',
+    });
+    // MCP 工具带工具名与白名单参数摘要。
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.started',
+        item: { type: 'mcp_tool_call', tool: 'fetch_page', arguments: { url: 'https://example.test/report', secret: 'x' } },
+      }),
+    })).toEqual({
+      kind: 'skill',
+      text: 'Executor started MCP tool: fetch_page — https://example.test/report',
+    });
+    // 助手叙述脱敏后流出。
+    expect(driver.parseProgressLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'Implemented safely' },
+      }),
+    })).toEqual({
+      kind: 'status',
+      text: 'Executor: Implemented safely',
     });
   });
 

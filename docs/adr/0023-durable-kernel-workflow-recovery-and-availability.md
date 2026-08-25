@@ -51,6 +51,33 @@ Successful recovery emits a durable `executor_recovered` fact. Kernel revalidate
 
 Recovery refresh is event-driven at session startup, each planning cycle, Task recovery/resume, Executor configuration changes and `/executor refresh [name|all]`. It never runs as a periodic background health loop.
 
+### Reliability and explicit resume amendment (2026-08-24)
+
+Dependency publication readiness is projected as a bounded Runtime fact rather
+than inferred from an empty frontier. Pending publication produces a Kernel
+`no_op` wait; missing handoff, Result Object, dependency workspace state or
+identity alignment produces a structured materialization failure. Runtime never
+allows a downstream Executor to read an upstream sandbox directly.
+
+Explicit resume is a versioned `task_resume_requested` event. `ControlKernel`
+validates the current Task, generation, Subtask statuses and blocker category,
+then either returns `resume_task`, a dispatchable recovery action, or a
+structured `no_op`/`block_work`. Runtime applies Task/Subtask restoration only
+after that Decision. Unknown, manual, material and contract blockers are not
+implicitly cleared.
+
+The released recovery implementation also contains one narrow legacy repair
+rule. Older account startup bindings could throw
+`Conversation execution callback is unavailable: onDecisionApplying` before an
+`authorize_task_plan` application entered its state-changing branch. Startup
+recovery and explicit Resume may convert only that exact uncertainty into a
+deterministic `recovery_resolution_requested(retry)` event when the application
+is a replan for the next graph revision, the generation identity matches, and
+the corresponding generation replan request remains `submitted`.
+`ControlKernel` must still authorize `resolve_recovery`; the original Decision
+ID is replayed idempotently. This rule does not permit generic automatic replay
+of uncertain applications or external effects.
+
 ## LangGraph Boundary
 
 LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.

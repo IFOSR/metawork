@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HttpClient } from './api/http';
 import type {
+  ArtifactProjection,
   AttachmentMetadata,
   ConversationTurnProjection,
   WebSessionActivationResult,
@@ -15,6 +16,11 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
 import { TrajectoryView } from './components/TrajectoryView';
 import { WorkspaceShell } from './components/WorkspaceShell';
+import {
+  ArtifactPreviewDrawer,
+  type PreviewDrawerState,
+} from './components/ArtifactPreviewDrawer';
+import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
 
 let startupAuthentication: Promise<boolean> | null = null;
@@ -36,6 +42,13 @@ export function App() {
   const [configurationRuntime, setConfigurationRuntime] = useState<ConfigurationRuntimeState | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<PreviewDrawerState>({ status: 'closed' });
+  const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [executionDetail, setExecutionDetail] = useState<{
+    subtaskId: string;
+    subtaskTitle: string;
+    turnId: string;
+  } | null>(null);
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const activeConversationRef = useRef<string | null>(null);
@@ -89,6 +102,9 @@ export function App() {
         setBrowsedSessionId(sessionId);
         setLiveTurn(null);
         setActivationNotice(null);
+        // 切换会话后旧会话的预览与执行详情不得残留。
+        setPreviewState({ status: 'closed' });
+        setExecutionDetail(null);
         loadRecord(sessionId);
       },
       onConversationSnapshot: turn => setLiveTurn(turn),
@@ -105,6 +121,7 @@ export function App() {
           traceEvents: [],
           executionTimeline: null,
           artifactRefs: [],
+          artifacts: [],
         });
       },
       onTraceSnapshot: trace => {
@@ -199,12 +216,51 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [authenticated, search]);
 
+  useEffect(() => {
+    if (previewState.status === 'closed' && !executionDetail) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setPreviewState({ status: 'closed' });
+        setPreviewCollapsed(false);
+        setExecutionDetail(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewState.status, executionDetail]);
+
   const handleSelectSession = (sessionId: string) => {
     setBrowsedSessionId(sessionId);
     setActivationNotice(null);
+    setPreviewState({ status: 'closed' });
+    setExecutionDetail(null);
     void httpRef.current?.getSession(sessionId)
       .then(setSelectedRecord)
       .catch(error => setActivationNotice((error as Error).message));
+  };
+
+  const handleOpenArtifact = (artifact: ArtifactProjection) => {
+    const http = httpRef.current;
+    if (!http) return;
+    setPreviewCollapsed(false);
+    setPreviewState({ status: 'loading', artifactId: artifact.artifactId });
+    void http.getArtifactPreview(artifact.artifactId)
+      .then(result => setPreviewState(current => (
+        current.status === 'loading' && current.artifactId === artifact.artifactId
+          ? {
+            status: 'ready',
+            artifact: result.artifact,
+            content: result.content,
+            ...(result.renderedHtml ? { renderedHtml: result.renderedHtml } : {}),
+          }
+          : current
+      )))
+      .catch(error => setPreviewState(current => (
+        current.status === 'loading' && current.artifactId === artifact.artifactId
+          ? { status: 'error', artifactId: artifact.artifactId, message: (error as Error).message }
+          : current
+      )));
   };
 
   const handleActivation = async (sessionId: string) => {
@@ -216,6 +272,8 @@ export function App() {
       setActiveSessionId(sessionId);
       setBrowsedSessionId(sessionId);
       setLiveTurn(null);
+      setPreviewState({ status: 'closed' });
+      setExecutionDetail(null);
       setSelectedRecord(await httpRef.current.getSession(sessionId));
     }
   };
@@ -234,6 +292,8 @@ export function App() {
       activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);
       setLiveTurn(null);
+      setPreviewState({ status: 'closed' });
+      setExecutionDetail(null);
     }
   };
 
@@ -340,6 +400,12 @@ export function App() {
       ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
       : activationNotice;
 
+  // 执行详情抽屉：只在目标 turn 仍可见时渲染；找不到时视为关闭。
+  const executionDetailTurn = executionDetail
+    ? turns.find(turn => turn.id === executionDetail.turnId) ?? null
+    : null;
+  const executionDetailOpen = executionDetail !== null && executionDetailTurn !== null;
+
   return (
     <>
       <WorkspaceShell
@@ -354,6 +420,25 @@ export function App() {
         composerDisabled={composerDisabled}
         running={running}
         blockedReason={composerBlockedReason}
+        previewOpen={previewState.status !== 'closed' || executionDetailOpen}
+        previewDrawer={executionDetailOpen && executionDetail && executionDetailTurn ? (
+          <ExecutionDetailDrawer
+            turn={executionDetailTurn}
+            subtaskId={executionDetail.subtaskId}
+            onClose={() => setExecutionDetail(null)}
+          />
+        ) : (
+          <ArtifactPreviewDrawer
+            http={httpRef.current}
+            state={previewState}
+            collapsed={previewCollapsed}
+            onClose={() => {
+              setPreviewState({ status: 'closed' });
+              setPreviewCollapsed(false);
+            }}
+            onToggleCollapse={() => setPreviewCollapsed(current => !current)}
+          />
+        )}
         onSearch={setSearch}
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
@@ -380,8 +465,27 @@ export function App() {
           current.filter(entry => entry.attachmentId !== attachmentId))}
       >
         {tab === 'conversation'
-          ? <ConversationView turns={turns} />
-          : <TrajectoryView turn={latestTurn} http={httpRef.current} />}
+          ? (
+            <ConversationView
+              turns={turns}
+              running={running}
+              onOpenArtifact={handleOpenArtifact}
+              onOpenSubtaskDetail={(subtaskId, subtaskTitle) => {
+                const target = turns.at(-1);
+                if (target) setExecutionDetail({ subtaskId, subtaskTitle, turnId: target.id });
+              }}
+            />
+          )
+          : (
+            <TrajectoryView
+              turn={latestTurn}
+              http={httpRef.current}
+              onOpenArtifact={handleOpenArtifact}
+              onOpenSubtaskDetail={(subtaskId, subtaskTitle) => {
+                if (latestTurn) setExecutionDetail({ subtaskId, subtaskTitle, turnId: latestTurn.id });
+              }}
+            />
+          )}
       </WorkspaceShell>
       {settingsOpen && (
         <SettingsPanel

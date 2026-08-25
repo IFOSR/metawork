@@ -9,9 +9,12 @@ import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS = 300_000;
+const DEFAULT_TERMINATION_GRACE_MS = 5_000;
 
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
+  idleTimeoutMs?: number;
   onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
   onRawChunk?: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void;
 }
@@ -34,6 +37,7 @@ export interface LocalCliExecutorAdapterDependencies {
   authorizedBinding: AuthorizedExecutorBinding;
   modelId: string;
   attemptsRoot: string;
+  idleTimeoutMs?: number;
   processRunner?: LocalCliChildProcessRunner;
 }
 
@@ -52,6 +56,8 @@ type LocalCliSpawn = (
 export interface SpawnLocalCliChildProcessRunnerDependencies {
   spawnProcess?: LocalCliSpawn;
   hostEnvironment?: NodeJS.ProcessEnv;
+  signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  terminationGraceMs?: number;
 }
 
 export class LocalCliExecutorAdapter implements ExecutorAdapter {
@@ -62,6 +68,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
   private readonly authorizedBinding: AuthorizedExecutorBinding;
   private readonly modelId: string;
   private readonly attemptsRoot: string;
+  private readonly idleTimeoutMs: number;
   private readonly processRunner: LocalCliChildProcessRunner;
 
   constructor(dependencies: LocalCliExecutorAdapterDependencies) {
@@ -71,6 +78,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
     this.authorizedBinding = dependencies.authorizedBinding;
     this.modelId = dependencies.modelId;
     this.attemptsRoot = dependencies.attemptsRoot;
+    this.idleTimeoutMs = dependencies.idleTimeoutMs ?? DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS;
     this.processRunner = dependencies.processRunner ?? new SpawnLocalCliChildProcessRunner();
   }
 
@@ -107,6 +115,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         command: launch.command,
         args: [...launch.args],
         cwd: launch.cwd,
+        idleTimeoutMs: this.idleTimeoutMs,
         environment: {
           ...this.runtimeBinding.environment,
           ...runtimeHome.environment,
@@ -185,10 +194,14 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   private readonly activeProcesses = new Map<string, ChildProcess>();
   private readonly spawnProcess: LocalCliSpawn;
   private readonly hostEnvironment: NodeJS.ProcessEnv;
+  private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly terminationGraceMs: number;
 
   constructor(dependencies: SpawnLocalCliChildProcessRunnerDependencies = {}) {
     this.spawnProcess = dependencies.spawnProcess ?? spawn;
     this.hostEnvironment = dependencies.hostEnvironment ?? process.env;
+    this.signalProcess = dependencies.signalProcess ?? process.kill;
+    this.terminationGraceMs = dependencies.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
   }
 
   run(input: LocalCliChildProcessInput): Promise<LocalCliChildProcessResult> {
@@ -213,27 +226,28 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let stdoutLineBuffer = '';
       let stderrLineBuffer = '';
       let settled = false;
-      const appendStdout = (chunk: Buffer | string) => {
-        input.onRawChunk?.(chunk, 'stdout');
-        stdout = appendBoundedTail(stdout, chunk);
-        stdoutLineBuffer = emitCompleteLines(
-          stdoutLineBuffer,
-          chunk,
-          line => input.onLine?.(line, 'stdout'),
-        );
+      let timedOut = false;
+      let idleTimer: NodeJS.Timeout | null = null;
+      let forceKillTimer: NodeJS.Timeout | null = null;
+      const signalChild = (signal: NodeJS.Signals) => {
+        const pid = child.pid;
+        if (!pid) return;
+        try {
+          this.signalProcess(process.platform === 'win32' ? pid : -pid, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
       };
-      const appendStderr = (chunk: Buffer | string) => {
-        input.onRawChunk?.(chunk, 'stderr');
-        stderr = appendBoundedTail(stderr, chunk);
-        stderrLineBuffer = emitCompleteLines(
-          stderrLineBuffer,
-          chunk,
-          line => input.onLine?.(line, 'stderr'),
-        );
+      const clearWatchdogs = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        idleTimer = null;
+        forceKillTimer = null;
       };
       const finish = (exitCode: number | null) => {
         if (settled) return;
         settled = true;
+        clearWatchdogs();
         if (stdoutLineBuffer.trim()) input.onLine?.(stdoutLineBuffer, 'stdout');
         if (stderrLineBuffer.trim()) input.onLine?.(stderrLineBuffer, 'stderr');
         if (this.activeProcesses.get(input.attemptId) === child) {
@@ -245,6 +259,56 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
           stderr: decodeBoundedCapture(stderr),
         });
       };
+      const expireIdleWatchdog = () => {
+        if (settled || timedOut) return;
+        timedOut = true;
+        const diagnostic = 'executor idle timeout\n';
+        stderr = appendBoundedTail(stderr, diagnostic);
+        stderrLineBuffer = emitCompleteLines(
+          stderrLineBuffer,
+          diagnostic,
+          line => input.onLine?.(line, 'stderr'),
+        );
+        signalChild('SIGTERM');
+        forceKillTimer = setTimeout(() => {
+          signalChild('SIGKILL');
+          finish(null);
+        }, this.terminationGraceMs);
+        forceKillTimer.unref();
+      };
+      const resetIdleWatchdog = () => {
+        const timeoutMs = input.idleTimeoutMs;
+        if (
+          settled
+          || timedOut
+          || timeoutMs === undefined
+          || !Number.isFinite(timeoutMs)
+          || timeoutMs <= 0
+        ) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(expireIdleWatchdog, timeoutMs);
+        idleTimer.unref();
+      };
+      const appendStdout = (chunk: Buffer | string) => {
+        resetIdleWatchdog();
+        input.onRawChunk?.(chunk, 'stdout');
+        stdout = appendBoundedTail(stdout, chunk);
+        stdoutLineBuffer = emitCompleteLines(
+          stdoutLineBuffer,
+          chunk,
+          line => input.onLine?.(line, 'stdout'),
+        );
+      };
+      const appendStderr = (chunk: Buffer | string) => {
+        resetIdleWatchdog();
+        input.onRawChunk?.(chunk, 'stderr');
+        stderr = appendBoundedTail(stderr, chunk);
+        stderrLineBuffer = emitCompleteLines(
+          stderrLineBuffer,
+          chunk,
+          line => input.onLine?.(line, 'stderr'),
+        );
+      };
 
       child.stdout?.on('data', appendStdout);
       child.stderr?.on('data', appendStderr);
@@ -253,6 +317,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         finish(null);
       });
       child.once('exit', code => finish(code));
+      resetIdleWatchdog();
     });
   }
 
@@ -264,8 +329,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       const pid = child.pid;
       if (!pid) continue;
       try {
-        if (process.platform === 'win32') child.kill('SIGTERM');
-        else process.kill(-pid, 'SIGTERM');
+        this.signalProcess(process.platform === 'win32' ? pid : -pid, 'SIGTERM');
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
       }

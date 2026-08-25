@@ -25,6 +25,20 @@ export interface WebSessionMetadata {
   archived: boolean;
 }
 
+export interface ArtifactProjection {
+  artifactId: string;
+  taskId: string;
+  publicationId: string | null;
+  displayName: string;
+  relativePath: string;
+  mediaType: string;
+  previewKind: 'markdown' | 'text' | 'code' | 'unsupported';
+  previewable: boolean;
+  byteLength: number;
+  contentHash: string;
+  publishedAt: string;
+}
+
 export interface ConversationTurn {
   id: string;
   sessionId: string;
@@ -36,7 +50,10 @@ export interface ConversationTurn {
   completedAt: string | null;
   traceEvents: InteractionTraceEvent[];
   executionTimeline: ExecutionTimeline | null;
+  /** 兼容字段：历史客户端继续可用。 */
   artifactRefs: string[];
+  /** 受限的用户 artifact projection；不含任何内部路径。 */
+  artifacts: ArtifactProjection[];
 }
 
 export interface ConversationTurnProjection

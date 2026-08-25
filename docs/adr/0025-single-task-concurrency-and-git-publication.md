@@ -59,6 +59,20 @@ Conflict handling stays on the original Subtask and original AgentClass. No Plan
 
 After three failed repairs, Kernel may issue one `request_merge_replan` for that conflict chain. This budget is independent from normal retry, fallback, AgentClass health and ordinary automatic replan. A failed conflict replan parks the Subtask.
 
+### Publication-readiness and progress amendment (2026-08-24)
+
+`awaiting_integration` remains the completion boundary. A downstream Subtask
+does not become runnable merely because an upstream attempt produced a receipt;
+the publication worker must integrate Git state and atomically create the
+immutable Result Object, direct-edge Result Reference, handoff and workspace
+facts. The dispatch snapshot distinguishes pending publication from terminal
+materialization failures.
+
+Executor progress is a presentation projection of attempt facts, not a second
+execution authority or verifier evidence channel. Its bounded history is
+replayable by Subtask/attempt identity and preserves terminal milestones while
+ordinary progress may be compacted.
+
 ### Configuration
 
 The global `maxConcurrentAttempts` default is four and must be a positive integer. Invalid configuration fails startup and is never silently clamped. Phase 6A has no serial/concurrent feature flag and no alternate scheduler.

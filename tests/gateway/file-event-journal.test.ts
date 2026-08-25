@@ -328,6 +328,51 @@ describe('FileEventJournal', () => {
     expect(replay.deltas[0]?.sequence).toBe(2);
   });
 
+  it('keeps a bounded trace snapshot replayable after event compaction', async () => {
+    const journal = await makeJournal();
+    await journal.append({
+      ...makeEvent('trace_1', 'trace_delta'),
+      turnId: 'turn_live',
+      payload: {
+        turnId: 'turn_live',
+        events: [{
+          id: 'trace_event_1',
+          sequence: 1,
+          occurredAt: '2026-08-18T00:00:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress',
+          summary: '读取公开材料',
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+          attemptId: 'attempt_1',
+          details: { taskId: 'task_1', subtaskId: 'sub_1', attemptId: 'attempt_1' },
+        }],
+      },
+    });
+    for (let sequence = 2; sequence <= 250; sequence += 1) {
+      await journal.append(makeEvent(`event_${sequence}`, 'trace_delta'));
+    }
+
+    const replay = await journal.replay('local-default', 'conv_1', 0);
+    const traceSnapshot = [...replay.snapshot, ...replay.deltas]
+      .find(event => event.kind === 'trace_delta' && (
+        event.payload as { replay?: boolean }
+      ).replay === true);
+
+    expect(traceSnapshot).toBeDefined();
+    expect(traceSnapshot?.payload).toMatchObject({
+      turnId: 'turn_live',
+      replay: true,
+      events: expect.arrayContaining([expect.objectContaining({
+        id: 'trace_event_1',
+        subtaskId: 'sub_1',
+      })]),
+    });
+  });
+
   it('accepts a cursor immediately before the retained history and returns the terminal snapshot', async () => {
     const journal = await makeJournal();
     for (let sequence = 1; sequence <= 201; sequence += 1) {
@@ -342,9 +387,49 @@ describe('FileEventJournal', () => {
     expect(replay.snapshot.map(event => event.eventId)).toEqual(['e201']);
     expect(replay.deltas[0]?.sequence).toBe(2);
   });
+
+  it('retains completion metadata for every result in a multi-turn Conversation', async () => {
+    const journal = await makeJournal();
+    await journal.append({
+      ...makeEvent('result_1_available', 'result_delivery_available'),
+      payload: { resultId: 'result_1', contentHash: 'sha256:one', byteLength: 3 },
+    });
+    await journal.append({
+      ...makeEvent('result_1_completed', 'result_completed'),
+      payload: { resultId: 'result_1', contentHash: 'sha256:one', byteLength: 3 },
+    });
+    for (let sequence = 0; sequence < 205; sequence += 1) {
+      await journal.append(makeEvent(`turn_${sequence}`, 'trace_delta'));
+    }
+    await journal.append({
+      ...makeEvent('result_2_available', 'result_delivery_available'),
+      payload: { resultId: 'result_2', contentHash: 'sha256:two', byteLength: 3 },
+    });
+    await journal.append({
+      ...makeEvent('result_2_completed', 'result_completed'),
+      payload: { resultId: 'result_2', contentHash: 'sha256:two', byteLength: 3 },
+    });
+
+    const replay = await journal.replay('local-default', 'conv_1', 0);
+    const resultIds = [...replay.snapshot, ...replay.deltas]
+      .filter(event => isResultEvent(event))
+      .map(event => resultIdFrom(event));
+
+    expect(resultIds).toContain('result_1');
+    expect(resultIds).toContain('result_2');
+    expect(replay.snapshot.filter(event => event.kind === 'result_completed')
+      .map(event => resultIdFrom(event)))
+      .toEqual(['result_1', 'result_2']);
+  });
 });
 
 function resultIdFrom(event: GatewayEventEnvelope): string | null {
   const payload = event.payload as { resultId?: unknown };
   return typeof payload.resultId === 'string' ? payload.resultId : null;
+}
+
+function isResultEvent(event: GatewayEventEnvelope): boolean {
+  return event.kind === 'result_delivery_available'
+    || event.kind === 'result_chunk'
+    || event.kind === 'result_completed';
 }

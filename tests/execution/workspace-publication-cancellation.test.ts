@@ -14,6 +14,7 @@ import type { AuthorizedExecutorBinding } from '../../src/core/authorized-execut
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
+import { pathToFileURL } from 'node:url';
 
 const configurationRevision = 'configuration-revision-publication';
 const publicationBinding: AuthorizedExecutorBinding = {
@@ -492,8 +493,11 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       value: {
         ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
         describeCandidate: vi.fn().mockResolvedValue({
-          changedPaths: [],
-          filePolicy: {},
+          baseCommit: 'base',
+          oursCommit: 'ours',
+          theirsCommit: 'theirs',
+          changedPaths: ['src/conflict.ts'],
+          filePolicy: { 'src/conflict.ts': 'text' },
         }),
         mergeCandidate: vi.fn().mockResolvedValue({
           type: 'conflicted',
@@ -507,6 +511,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     });
 
     const outcomes = await worker.drain(task.id, 'generation-publication-conflict');
+    const replayed = await worker.drain(task.id, 'generation-publication-conflict');
 
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({
@@ -517,6 +522,187 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         bindingFingerprint: 'binding-fingerprint-source',
       },
     });
+    expect(replayed).toEqual(outcomes);
+  });
+
+  it('requeues a persisted conflict when only legacy baseline drift caused it', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-stale-conflict');
+    const taskRuntime = new TaskRuntimeService({
+      taskEngine,
+      taskRepo: new TaskRepo(db),
+    });
+    const task = taskEngine.create({
+      id: 'task-publication-stale-conflict',
+      title: 'Publication stale conflict',
+      goal: 'Publish only the candidate delta',
+    });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    insertConfigurationRevision(db, configurationRevision);
+    activateGraphRevision(
+      db,
+      task.id,
+      'generation-publication-stale-conflict',
+      configurationRevision,
+    );
+    const subtasks = new SubtaskRepo(db);
+    subtasks.upsert({
+      id: 'subtask-publication-stale-conflict',
+      taskId: task.id,
+      graphRevision: 1,
+      generationId: 'generation-publication-stale-conflict',
+      title: 'Candidate',
+      goal: 'Publish the report artifact',
+      status: 'awaiting_integration',
+      dependencies: [],
+      contextRefs: [],
+      requiredCapabilities: ['workspace-engineering'],
+      executorBindings: [publicationBinding],
+      deliveryKind: 'report',
+      acceptance: [],
+      riskLevel: 'low',
+      result: '',
+      artifacts: [],
+      verification: { warnings: [], completionSchemaVersion: null },
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const publications = new WorkspacePublicationRepo(db);
+    const sourceWorkspaceRoot = '/managed/source-workspace';
+    const artifactPath = `${sourceWorkspaceRoot}/files/reports/result.html`;
+    publications.insertCandidate({
+      id: 'publication-stale-conflict',
+      taskId: task.id,
+      generationId: 'generation-publication-stale-conflict',
+      subtaskId: 'subtask-publication-stale-conflict',
+      sourceAttemptId: 'attempt-stale-conflict-source',
+      agentClassName: 'codex-cli',
+      candidateCommit: 'candidate-commit',
+      completion: {
+        body: 'candidate output',
+        artifacts: [artifactPath],
+        warnings: [],
+        handoffs: [],
+        completionSchemaVersion: 4,
+      },
+      topologyLayer: 0,
+      firstDispatchOrder: 0,
+      createdAt: now,
+    });
+    const publishIntegratedArtifacts = vi.fn().mockResolvedValue({
+      projections: [],
+      failures: [],
+      taskDirectory: '/user/metaclaw-tasks/report',
+    });
+    const worker = new WorkspacePublicationWorker({
+      db,
+      sessionId: 'session-publication-stale-conflict',
+      resultRoot: '/tmp/workspace-publication-stale-conflict-results',
+      sourceRoot: '/tmp/source',
+      workspaceStore: { rootPath: '/tmp/workspace-publication-test' } as never,
+      workspaceRepository: {
+        upsert: vi.fn(record => record),
+        findByIdentity: vi.fn().mockImplementation((
+          _taskId: string,
+          _generationId: string,
+          subtaskId: string,
+        ) => subtaskId === 'subtask-publication-stale-conflict' ? {
+          rootUri: pathToFileURL(sourceWorkspaceRoot).href,
+        } : null),
+      } as never,
+      subtaskRepo: subtasks,
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn().mockReturnValue({
+          attemptId: 'attempt-stale-conflict-source',
+          taskId: task.id,
+          subtaskId: 'subtask-publication-stale-conflict',
+          generationId: 'generation-publication-stale-conflict',
+          workUnitId: 'work-unit-source',
+          configurationRevision,
+          authorizedBinding: publicationBinding,
+          bindingFingerprint: 'binding-fingerprint-publication',
+        }),
+      } as never,
+      resourceLeaseService: {
+        claim: vi.fn().mockReturnValue({ type: 'claimed', leases: [] }),
+        release: vi.fn(),
+      } as never,
+      dispatchItemRepo: {
+        listByTask: vi.fn().mockReturnValue([]),
+      } as never,
+      taskRuntimeService: taskRuntime,
+      userArtifactPublication: {
+        publishIntegratedArtifacts,
+      } as never,
+    });
+    Object.defineProperty(worker, 'git', {
+      value: {
+        ensure: vi.fn().mockResolvedValue({
+          id: 'integration-workspace',
+          rootPath: '/managed/integration-workspace',
+          filesPath: '/managed/integration-workspace/files',
+        }),
+        describeCandidate: vi.fn().mockResolvedValue({
+          baseCommit: 'candidate-parent',
+          oursCommit: 'ours',
+          theirsCommit: 'candidate-commit',
+          changedPaths: ['reports/result.html'],
+          filePolicy: { 'reports/result.html': 'text' },
+        }),
+        mergeCandidate: vi.fn()
+          .mockResolvedValueOnce({
+            type: 'conflicted',
+            baseCommit: 'legacy-merge-base',
+            oursCommit: 'ours',
+            theirsCommit: 'candidate-commit',
+            conflictPaths: ['src/unrelated.ts'],
+            filePolicy: { 'src/unrelated.ts': 'text' },
+          })
+          .mockResolvedValueOnce({
+            type: 'integrated',
+            baseCommit: 'candidate-parent',
+            oursCommit: 'ours',
+            theirsCommit: 'candidate-commit',
+            integrationCommit: 'integration-commit',
+            changedPaths: ['reports/result.html'],
+            filePolicy: { 'reports/result.html': 'text' },
+          }),
+      },
+    });
+
+    const conflicted = await worker.drain(task.id, 'generation-publication-stale-conflict');
+    publications.recordRepairAttempt('publication-stale-conflict', now);
+    publications.recordRepairAttempt('publication-stale-conflict', now);
+    publications.recordRepairAttempt('publication-stale-conflict', now);
+    publications.incrementConflictReplan('publication-stale-conflict', now);
+    publications.markParkedForConflictReplan('publication-stale-conflict', now);
+    const recovered = await worker.drain(task.id, 'generation-publication-stale-conflict');
+    await worker.drain(task.id, 'generation-publication-stale-conflict');
+
+    expect(conflicted).toEqual([expect.objectContaining({ type: 'conflicted' })]);
+    expect(recovered).toEqual([expect.objectContaining({
+      type: 'integrated',
+      integrationCommit: 'integration-commit',
+    })]);
+    expect(publications.find('publication-stale-conflict')).toMatchObject({
+      status: 'integrated',
+      repairAttemptsUsed: 0,
+      conflictReplansUsed: 0,
+      conflictChainId: null,
+    });
+    expect(subtasks.findById('subtask-publication-stale-conflict')).toMatchObject({
+      status: 'done',
+      artifacts: [artifactPath],
+    });
+    expect(publishIntegratedArtifacts).toHaveBeenCalledTimes(2);
+    expect(publishIntegratedArtifacts).toHaveBeenLastCalledWith(expect.objectContaining({
+      integratedWorkspaceRoot: '/managed/integration-workspace/files',
+      sources: [{ sourceRelativePath: 'reports/result.html' }],
+    }));
   });
 });
 

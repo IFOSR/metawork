@@ -96,6 +96,8 @@ import {
 } from './management/lock.js';
 import { buildWebStartupPresentation } from './management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from './management/server.js';
+import { ArtifactPreviewService } from './management/artifact-preview-service.js';
+import { TaskArtifactRepo } from './storage/task-artifact-repo.js';
 import { ExecutionProjector } from './management/execution-projector.js';
 import { WorkGraphPresentationProjector } from './management/work-graph-presentation-projector.js';
 import { WebAuthService } from './management/web-auth.js';
@@ -184,6 +186,7 @@ async function startWebMode(options: {
   port: number;
   noOpen: boolean;
   runningRevisionId: string;
+  startupWorkspaceRoot: string;
   sessionRuntime: ManagementWebSessionRuntime;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
@@ -192,6 +195,7 @@ async function startWebMode(options: {
     subscribe(listener: (event: unknown) => void): () => void;
   };
   attachmentStore?: FileAttachmentStore;
+  artifactQuery: ArtifactPreviewService;
 }): Promise<ManagementServer> {
   const webAuth = new WebAuthService();
   const loginCredentials = resolveLoginCredentials(process.env);
@@ -215,6 +219,7 @@ async function startWebMode(options: {
     configurationRuntime: options.configurationRuntime,
     loginCredentials,
     attachmentStore: options.attachmentStore,
+    artifactQuery: options.artifactQuery,
   });
   await managementServer.start();
   const presentation = buildWebStartupPresentation(
@@ -232,6 +237,9 @@ async function startWebMode(options: {
 
 async function main() {
   const cliArgs = parseCliArgs(process.argv.slice(2));
+  // 用户可见 Workspace：进程启动目录在整个生命周期内保持不变，
+  // 不能被 Executor cwd、Git worktree 或账户数据目录覆盖。
+  const startupWorkspaceRoot = resolve(process.cwd());
   const paths = resolveAnyFusionPaths();
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const applicationRoot = existsSync(paths.appCurrent)
@@ -382,7 +390,7 @@ async function main() {
   const markdownPreviewConfig = config.integrations?.markdown_preview;
   const markdownPreviewServer = markdownPreviewConfig?.enabled
     && process.env.METACLAW_DISABLE_MARKDOWN_PREVIEW !== '1'
-    ? new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())
+    ? new MarkdownPreviewServer(markdownPreviewConfig, startupWorkspaceRoot)
     : null;
   if (markdownPreviewServer && markdownPreviewConfig) {
     try {
@@ -574,6 +582,7 @@ async function main() {
     orchestration,
     contextRecaller,
     notifier,
+    userWorkspaceRoot: startupWorkspaceRoot,
     workspaceRoot: accountPaths.workspaceStore,
     attemptsRoot: accountPaths.attempts,
     resultsRoot: accountPaths.results,
@@ -1010,6 +1019,7 @@ async function main() {
   }
 
   if (serverSurface === 'web') {
+    const taskArtifactRepo = new TaskArtifactRepo(db);
     const executionProjector = new ExecutionProjector({
       subtaskRepo: new SubtaskRepo(db),
       receiptRepo: new ExecutorAttemptReceiptRepo(db),
@@ -1023,12 +1033,32 @@ async function main() {
       port: cliArgs.webPort ?? 8788,
       noOpen: cliArgs.webNoOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
+      startupWorkspaceRoot,
       attachmentStore: webAttachmentStore,
+      artifactQuery: new ArtifactPreviewService({
+        taskArtifactSource: taskArtifactRepo,
+        query: {
+          authorize: (accountId, taskId) =>
+            accountId === LOCAL_DEFAULT_ACCOUNT_ID && Boolean(taskRepo.findById(taskId)),
+          currentAccountId: () => LOCAL_DEFAULT_ACCOUNT_ID,
+        },
+        userWorkspaceRoot: startupWorkspaceRoot,
+      }),
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
         gateway: webGatewayAdapter,
         attachments: webAttachmentStore,
+        projectExecutionTimeline: taskId => {
+          const task = taskRepo.findById(taskId);
+          return task ? executionProjector.project(task) : null;
+        },
+        projectTaskArtifacts: taskId => taskArtifactRepo.listByTask(taskId)
+          .filter(artifact => (
+            artifact.accountId === LOCAL_DEFAULT_ACCOUNT_ID
+            && artifact.status === 'published'
+          ))
+          .map(artifact => taskArtifactRepo.toProjection(artifact)),
       }),
       executionQuery: {
         listTasks: () => taskEngine.list().map(task => ({

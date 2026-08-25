@@ -593,7 +593,27 @@ Subtask、attempt、验证、publication 和最新的规范化 Executor 进度�
 prompt 和原始 stdout/stderr 不会进入浏览器。Planner RPC 运行期间会实时
 转发安全的生命周期与工具里程碑，包括进程启动、请求接收、处理周期、模型
 响应开始、工具开始/完成和 Planner 回合结束；长时间的模型处理不再等到最终
-proposal 返回后才一次性显示。右侧面板同时显示当前阶段耗时。
+proposal 返回后才一次性显示。Web 主对话中的 `LIVE EXECUTION` 信息卡按
+Subtask 分组展示 Executor、Harness、Provider、Model、当前安全步骤和耗时；
+回合结束后保留为 `EXECUTION SUMMARY`。点击卡片打开 `Executor Detail` 抽屉，
+抽屉使用有序安全 trace、attempt runtime 的有界进度历史和 durable
+ExecutionProjector 时间线，因此重连、切换会话和回合结束后仍能查看同一条
+Subtask 详情。心跳、等待依赖、等待容量和 blocked 会与真实 Executor 活动
+明确区分。执行进度只是展示事实，不会成为 Completion Protocol 验收证据。
+
+依赖 publication 尚未完成时，Kernel/Runtime 会记录等待事实，不会错误地产生
+普通用户阻塞；缺少 handoff、Result Object、workspace 状态或身份不匹配时，
+会给出有界、结构化的材料化诊断。显式恢复通过
+`task_resume_requested` 进入 Kernel，只有 Kernel 授权并应用
+`resume_task` 后才恢复 Task/Subtask 并再次 dispatch。
+
+账号启动恢复和显式 Resume 还会修复一种已知旧版 pre-apply 故障：system
+Conversation binding 缺少可选的 `onDecisionApplying` 展示回调，导致 replan
+的 `authorize_task_plan` application 在进入状态变更分支前被记为 uncertain。
+只有错误文本、`submitted` replan request、generation 和下一 graph revision
+全部精确匹配时，Runtime 才会提交 durable
+`recovery_resolution_requested(retry)`，再由 ControlKernel 授权并按原 Decision
+ID 幂等重放。其他 uncertain application 和外部 effect 仍保留普通显式恢复语义。
 
 包括 `--script` 在内的所有前台选择共享同一把 `runtime.lock`。
 `ScriptedGatewaySession` 把每一行提交给 `ClientGateway`，等待有序终态事件，

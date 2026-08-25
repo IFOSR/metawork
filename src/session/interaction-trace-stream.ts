@@ -84,6 +84,11 @@ export class InteractionTraceStream {
     const event: InteractionTraceEvent = {
       id,
       sequence,
+      cursor: `${this.current.turnId}:${sequence}`,
+      eventKey: input.eventKey ?? String(sequence),
+      taskId: input.taskId ?? null,
+      subtaskId: readDetailString(input.details, 'subtaskId'),
+      attemptId: readDetailString(input.details, 'attemptId'),
       occurredAt,
       phase: input.phase,
       actor: input.actor,
@@ -122,4 +127,9 @@ export class InteractionTraceStream {
     const snapshot = this.getSnapshot();
     for (const listener of this.listeners) listener(snapshot);
   }
+}
+
+function readDetailString(details: Record<string, unknown>, key: string): string | null {
+  const value = details[key];
+  return typeof value === 'string' && value.trim() ? value : null;
 }

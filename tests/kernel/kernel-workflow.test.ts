@@ -56,6 +56,20 @@ describe('DurableKernelWorkflow', () => {
     });
   });
 
+  it('records the exact binding authorized by an uncertified-result resume action', async () => {
+    const store = new MemoryWorkflowStore();
+    const event = resumeEvent();
+    const workflow = createWorkflow(store, [], resumeDecision(event));
+
+    await workflow.submit(event);
+
+    expect(store.ledger).toMatchObject({
+      configurationRevision: CONFIGURATION_REVISION,
+      authorizedBindings: [binding],
+      bindingFingerprints: [bindingFingerprint],
+    });
+  });
+
   it('resumes an existing pending application for a duplicate event without issuing twice', async () => {
     const store = new MemoryWorkflowStore();
     const order: string[] = [];
@@ -258,6 +272,53 @@ function capacitySignalEvent(): Extract<KernelEvent, { type: 'capacity_signal' }
     cycleId: 'cycle_1',
     attemptKind: 'primary',
     attemptPayload: null,
+  };
+}
+
+function resumeEvent(): Extract<KernelEvent, { type: 'task_resume_requested' }> {
+  return {
+    schemaVersion: 5,
+    configurationRevision: CONFIGURATION_REVISION,
+    type: 'task_resume_requested',
+    id: 'event_resume_1',
+    correlationId: 'correlation_resume_1',
+    causationId: null,
+    occurredAt: '2026-07-21T00:00:00.000Z',
+    sessionId: 'session_1',
+    taskId: 'task_1',
+    blockerCategory: 'unknown',
+    sourceInputExcerpt: 'continue',
+    newlyProvidedResources: [],
+    idempotencyKey: 'resume:task_1:continue',
+  };
+}
+
+function resumeDecision(
+  event: Extract<KernelEvent, { type: 'task_resume_requested' }>,
+): KernelDecision {
+  return {
+    schemaVersion: 5,
+    configurationRevision: CONFIGURATION_REVISION,
+    id: `decision_${event.id}`,
+    eventId: event.id,
+    reason: 'exact uncertified-result recovery authorized',
+    action: {
+      type: 'resume_task',
+      taskId: 'task_1',
+      generationId: 'generation_1',
+      graphRevision: 1,
+      subtaskIds: [],
+      blockerCategory: 'unknown',
+      recovery: {
+        subtaskId: 'subtask_1',
+        sourceAttemptId: 'attempt_uncertified',
+        authorizedBinding: binding,
+        bindingFingerprint,
+        attemptKind: 'continuation',
+        recoveryMode: 'native_session',
+        defaultResourceGrant: [],
+      },
+    },
   };
 }
 

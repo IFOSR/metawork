@@ -5,6 +5,11 @@ import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { formatExecutorProgress } from '../executor/error-utils.js';
+
+const MAX_TIMELINE_ATTEMPTS_PER_SUBTASK = 20;
+const MAX_TIMELINE_PROGRESS_EVENTS_PER_ATTEMPT = 50;
+const MAX_TIMELINE_DECISIONS = 200;
 
 // 与 web/src/api/types.ts 同构的前端执行时间线类型。
 export type StagePhase = 'planning' | 'authorization' | 'execution' | 'verification' | 'delivery';
@@ -81,7 +86,10 @@ export class ExecutionProjector {
   project(task: Task): ExecutionTimeline {
     const subtasks = this.deps.subtaskRepo.listByTask(task.id);
     const receipts = this.deps.receiptRepo.listByTask(task.id);
-    const decisions = this.deps.decisionRepo.listByTask(task.id);
+    const decisions = this.deps.decisionRepo.listTimelineByTask(
+      task.id,
+      MAX_TIMELINE_DECISIONS,
+    );
     const dispatchItems = this.deps.dispatchItemRepo.listByTask(task.id);
 
     return {
@@ -115,7 +123,7 @@ export class ExecutionProjector {
   }
 
   private projectAuthorization(
-    decisions: ReturnType<KernelDecisionRepo['listByTask']>,
+    decisions: ReturnType<KernelDecisionRepo['listTimelineByTask']>,
   ): TimelineStage {
     if (decisions.length === 0) {
       return { phase: 'authorization', status: 'pending' };
@@ -163,7 +171,7 @@ export class ExecutionProjector {
         const attemptIds = [...new Set([
           ...subtaskDispatches.map(item => item.attemptId),
           ...subtaskReceipts.map(item => item.attemptId),
-        ])];
+        ])].slice(-MAX_TIMELINE_ATTEMPTS_PER_SUBTASK);
         return {
           id: subtask.id,
           title: subtask.title,
@@ -176,6 +184,7 @@ export class ExecutionProjector {
             const dispatch = subtaskDispatches.find(item => item.attemptId === attemptId);
             const runtime = this.deps.attemptRuntimeRepo.find(attemptId);
             const progressHistory = progressHistoryFrom(runtime?.progress);
+            const currentProgress = currentProgressFrom(runtime?.progress);
             return {
               attemptId,
               result: receipt
@@ -188,8 +197,8 @@ export class ExecutionProjector {
                 ?? receipt?.errorCode
                 ?? dispatch?.errorSummary
                 ?? undefined,
-              ...(runtime?.progress && Object.keys(runtime.progress).length > 0
-                ? { progress: runtime.progress }
+              ...(currentProgress && Object.keys(currentProgress).length > 0
+                ? { progress: currentProgress }
                 : {}),
               ...(progressHistory.length > 0 ? { progressHistory } : {}),
             };
@@ -243,9 +252,29 @@ function progressHistoryFrom(
   progress: Record<string, unknown> | undefined,
 ): TimelineProgressEntry[] {
   if (!Array.isArray(progress?.history)) return [];
-  return progress.history.filter((entry): entry is TimelineProgressEntry => Boolean(entry)
-    && typeof entry === 'object'
-    && typeof (entry as Record<string, unknown>).kind === 'string'
-    && typeof (entry as Record<string, unknown>).text === 'string'
-    && typeof (entry as Record<string, unknown>).occurredAt === 'string');
+  return progress.history
+    .filter((entry): entry is TimelineProgressEntry => Boolean(entry)
+      && typeof entry === 'object'
+      && typeof (entry as Record<string, unknown>).kind === 'string'
+      && typeof (entry as Record<string, unknown>).text === 'string'
+      && typeof (entry as Record<string, unknown>).occurredAt === 'string')
+    .slice(-MAX_TIMELINE_PROGRESS_EVENTS_PER_ATTEMPT)
+    .flatMap(entry => {
+      const text = formatExecutorProgress(entry.text);
+      return text ? [{ ...entry, text }] : [];
+    });
+}
+
+function currentProgressFrom(
+  progress: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  if (!progress) return null;
+  const current: Record<string, unknown> = {};
+  if (typeof progress.kind === 'string') current.kind = progress.kind;
+  if (typeof progress.text === 'string') {
+    const text = formatExecutorProgress(progress.text);
+    if (text) current.text = text;
+  }
+  if (typeof progress.occurredAt === 'string') current.occurredAt = progress.occurredAt;
+  return current;
 }

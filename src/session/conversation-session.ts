@@ -27,6 +27,7 @@ import type { SessionPersistenceService } from './session-persistence-service.js
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import type { PlannerImageAttachment, PlanningContext } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
@@ -313,9 +314,19 @@ export class ConversationSession {
     });
     if (decision.action.type !== 'authorize_task_plan') return;
     const action = decision.action;
+    const subtaskTitles = new Map(
+      this.deps.runtimePort.queries
+        .listSubtasks(action.taskId)
+        .map(subtask => [subtask.id, subtask.title]),
+    );
     for (const subtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
       const bindings = action.authorizedBindingsBySubtask[subtaskId] ?? [];
       bindings.forEach((binding, fallbackOrder) => {
+        const routedDisplay = buildExecutorDisplayFacts({
+          binding,
+          subtaskId,
+          subtaskTitle: subtaskTitles.get(subtaskId),
+        });
         this.deps.interactionTraceStream?.append({
           phase: 'routing',
           actor: 'kernel',
@@ -324,10 +335,10 @@ export class ConversationSession {
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
           summary: `${binding.agentClassRef} via ${binding.harnessRef} using ${binding.providerRef}/${binding.modelRef}`,
           details: {
-            subtaskId,
             fallbackOrder,
             routingRole: fallbackOrder === 0 ? 'primary' : 'fallback',
             authorizedBinding: binding,
+            ...routedDisplay,
           },
           eventKey: `${decision.id}:${subtaskId}:${fallbackOrder}`,
           taskId: action.taskId,
@@ -1020,13 +1031,36 @@ export class ConversationSession {
     options: InputControllerSubmitOptions = {},
   ): Promise<{ exitRequested: boolean }> {
     const userInput = text.trim();
-    if (userInput && !userInput.startsWith('/')) {
+    const startsTrace = shouldStartInteractionTrace(userInput);
+    const interactionTurnId = options.interactionTurnId ?? `turn_${generateInteractionId()}`;
+    if (startsTrace) {
       this.deps.interactionTraceStream?.beginTurn({
-        turnId: options.interactionTurnId ?? `turn_${generateInteractionId()}`,
+        turnId: interactionTurnId,
         userInput,
       });
     }
-    return this.inputController.submit(text, options);
+    const result = await this.inputController.submit(text, options);
+    if (
+      startsTrace
+      && userInput.startsWith('/')
+      && (options.awaitAsyncWork || this.backgroundWork.size === 0)
+    ) {
+      const current = this.deps.interactionTraceStream?.getSnapshot();
+      if (current?.turnId === interactionTurnId && current.status === 'running') {
+        this.deps.interactionTraceStream?.append({
+          phase: 'delivery',
+          actor: 'runtime',
+          kind: 'command_completed',
+          status: 'completed',
+          title: 'Command completed',
+          summary: 'The task control command completed without active Executor work.',
+          details: {},
+          eventKey: 'command_completed',
+          traceStatus: 'completed',
+        });
+      }
+    }
+    return result;
   }
 
   private appendTrace(
@@ -1728,6 +1762,12 @@ export class ConversationSession {
       listener(snapshot);
     }
   }
+}
+
+function shouldStartInteractionTrace(userInput: string): boolean {
+  if (!userInput) return false;
+  if (!userInput.startsWith('/')) return true;
+  return /^\/task\s+(?:resume|unblock|recover)\b/iu.test(userInput);
 }
 
 function plannerOutcome(

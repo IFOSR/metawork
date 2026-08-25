@@ -48,6 +48,36 @@ describe('InteractionTraceStream', () => {
     expect(serialized.length).toBeLessThan(5_000);
   });
 
+  it('publishes a replay cursor and execution identity alongside safe progress', () => {
+    const stream = new InteractionTraceStream('session-execution', {
+      now: () => '2026-08-17T00:00:00.000Z',
+    });
+    stream.beginTurn({ turnId: 'turn-execution', userInput: '运行任务' });
+    stream.append({
+      phase: 'execution',
+      actor: 'executor',
+      kind: 'executor_progress',
+      status: 'running',
+      title: 'Executor progress',
+      summary: '正在读取公开材料',
+      taskId: 'task_1',
+      details: {
+        subtaskId: 'sub_1',
+        attemptId: 'attempt_1',
+      },
+      eventKey: 'attempt_1:progress:1',
+    });
+
+    const event = stream.getSnapshot()?.events.at(-1);
+    expect(event).toMatchObject({
+      cursor: 'turn-execution:2',
+      eventKey: 'attempt_1:progress:1',
+      taskId: 'task_1',
+      subtaskId: 'sub_1',
+      attemptId: 'attempt_1',
+    });
+  });
+
   it('replays the latest snapshot to late subscribers and bounds retained events', () => {
     const stream = new InteractionTraceStream('session-replay', {
       maxEvents: 3,

@@ -35,6 +35,17 @@ export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blo
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_integration' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
 export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
 export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
+export type KernelResumeBlockerCategory =
+  | 'capacity'
+  | 'retry'
+  | 'availability'
+  | 'dependency_publication'
+  | 'explicit_resource'
+  | 'parked'
+  | 'manual'
+  | 'material'
+  | 'contract'
+  | 'unknown';
 export type KernelRecoverySafety = 'read_only' | 'workspace_reconcilable' | 'external_non_idempotent';
 export type KernelDispatchItemStatus =
   | 'pending_launch'
@@ -99,6 +110,13 @@ export type KernelEvent =
         recoveryMode: KernelRecoveryMode;
         defaultResourceGrant: ResourceClaim[];
       } | null;
+    })
+  | (KernelEventEnvelope & {
+      type: 'task_resume_requested';
+      blockerCategory: KernelResumeBlockerCategory;
+      sourceInputExcerpt: string;
+      newlyProvidedResources: string[];
+      idempotencyKey: string;
     })
   | (KernelEventEnvelope & {
       type: 'capacity_signal';
@@ -251,6 +269,31 @@ export interface KernelDispatchItemFact {
   order: number;
 }
 
+export type KernelDependencyReadinessCode =
+  | 'ready'
+  | 'pending_publication'
+  | 'missing_handoff'
+  | 'missing_workspace'
+  | 'missing_result_object'
+  | 'identity_mismatch';
+
+export interface KernelDependencyReadinessFact {
+  sourceSubtaskId: string;
+  targetSubtaskId: string;
+  code: KernelDependencyReadinessCode;
+  terminal: boolean;
+  detail: string;
+}
+
+export interface KernelResumeRecoveryCandidate {
+  subtaskId: string;
+  sourceAttemptId: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
+  recoveryMode: Exclude<KernelRecoveryMode, 'fresh'>;
+  reason: 'completion_marker_missing' | 'completion_no_change_reason_mismatch';
+}
+
 export type KernelSnapshot =
   | {
       schemaVersion: 5;
@@ -272,6 +315,8 @@ export type KernelSnapshot =
       graphState: 'ready' | 'missing' | 'conflict';
       subtasks: KernelSubtaskFact[];
       frontier: string[];
+      dependencyReadiness?: KernelDependencyReadinessFact[];
+      resumeRecoveryCandidates?: KernelResumeRecoveryCandidate[];
       dispatchItems: KernelDispatchItemFact[];
       maxConcurrentAttempts: number;
       availableSlots: number;
@@ -404,6 +449,23 @@ export type KernelDecisionAction =
         order: number;
         attemptPayload: KernelAttemptPayload;
       }>;
+    }
+  | {
+      type: 'resume_task';
+      taskId: string;
+      generationId: string;
+      graphRevision: number;
+      subtaskIds: string[];
+      blockerCategory: KernelResumeBlockerCategory;
+      recovery?: {
+        subtaskId: string;
+        sourceAttemptId: string;
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+        attemptKind: 'continuation';
+        recoveryMode: Exclude<KernelRecoveryMode, 'fresh'>;
+        defaultResourceGrant: ResourceClaim[];
+      };
     }
   | {
       type: 'probe_capacity';
@@ -548,6 +610,11 @@ export class ControlKernel {
         );
       case 'dispatch_requested':
         return this.decideDispatch(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
+      case 'task_resume_requested':
+        return this.decideTaskResume(
+          event,
+          snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>,
+        );
       case 'capacity_signal':
         return this.decideCapacity(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'execution_outcome':
@@ -744,6 +811,28 @@ export class ControlKernel {
     }
     const subtasks = selectDispatchableSubtasks(snapshot);
     if (subtasks.length === 0) {
+      const dependencyReadiness = snapshot.dependencyReadiness ?? [];
+      const pendingDependencies = dependencyReadiness.filter(fact => !fact.terminal);
+      if (pendingDependencies.length > 0) {
+        const first = pendingDependencies[0]!;
+        return decision(
+          event,
+          { type: 'no_op' },
+          `dependency publication pending: ${first.sourceSubtaskId} -> ${first.targetSubtaskId}; ${first.detail}`,
+        );
+      }
+      const terminalDependencyFailure = dependencyReadiness.find(fact => fact.terminal && fact.code !== 'ready');
+      if (terminalDependencyFailure) {
+        return decision(
+          event,
+          {
+            type: 'block_work',
+            taskId: event.taskId,
+            subtaskId: terminalDependencyFailure.targetSubtaskId,
+          },
+          `dependency materialization failed: ${terminalDependencyFailure.sourceSubtaskId} -> ${terminalDependencyFailure.targetSubtaskId}; ${terminalDependencyFailure.detail}`,
+        );
+      }
       if (snapshot.generationReplanRequest?.status === 'pending_quiescence') {
         return snapshot.generationQuiescent
           ? decision(event, {
@@ -772,6 +861,97 @@ export class ControlKernel {
       }, 'all runnable Subtasks lack an available authorized AgentClass');
     }
     return decision(event, { type: 'dispatch_batch', taskId: event.taskId, items }, 'dispatch batch authorized');
+  }
+
+  private decideTaskResume(
+    event: Extract<KernelEvent, { type: 'task_resume_requested' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
+  ): KernelDecision {
+    if (
+      !event.taskId
+      || !snapshot.task
+      || snapshot.task.id !== event.taskId
+      || !['blocked', 'parked', 'running'].includes(snapshot.task.status)
+    ) {
+      return decision(event, { type: 'no_op' }, 'resume target is not an active recoverable Task');
+    }
+    if (snapshot.graphState !== 'ready') {
+      return decision(
+        event,
+        { type: 'park_for_replan', taskId: event.taskId },
+        `work graph is ${snapshot.graphState}; replanning is required`,
+      );
+    }
+    if (event.blockerCategory === 'dependency_publication') {
+      const pending = (snapshot.dependencyReadiness ?? []).find(fact => !fact.terminal);
+      if (pending) {
+        return decision(
+          event,
+          { type: 'no_op' },
+          `resume is waiting for dependency publication: ${pending.sourceSubtaskId} -> ${pending.targetSubtaskId}`,
+        );
+      }
+    }
+    const recovery = (snapshot.resumeRecoveryCandidates ?? []).find(candidate => {
+      const subtask = snapshot.subtasks.find(item => item.id === candidate.subtaskId);
+      return subtask?.status === 'awaiting_decision'
+        && candidate.bindingFingerprint === authorizedExecutorBindingFingerprint(
+          candidate.authorizedBinding,
+        )
+        && candidate.authorizedBinding.configurationRevision === event.configurationRevision
+        && subtask.executorBindings.some(binding =>
+          authorizedExecutorBindingFingerprint(binding) === candidate.bindingFingerprint
+        )
+        && !snapshot.dispatchItems.some(item =>
+          item.subtaskId === candidate.subtaskId && isPendingOrActiveDispatch(item.status)
+        );
+    });
+    if (
+      recovery
+      && !['manual', 'material', 'contract'].includes(event.blockerCategory)
+    ) {
+      return decision(event, {
+        type: 'resume_task',
+        taskId: event.taskId,
+        generationId: snapshot.generationId,
+        graphRevision: snapshot.graphRevision,
+        subtaskIds: [],
+        blockerCategory: event.blockerCategory,
+        recovery: {
+          subtaskId: recovery.subtaskId,
+          sourceAttemptId: recovery.sourceAttemptId,
+          authorizedBinding: recovery.authorizedBinding,
+          bindingFingerprint: recovery.bindingFingerprint,
+          attemptKind: 'continuation',
+          recoveryMode: recovery.recoveryMode,
+          defaultResourceGrant: resourceGrantForSubtask(snapshot, recovery.subtaskId),
+        },
+      }, 'Kernel authorized exact uncertified-result workspace recovery');
+    }
+    if (snapshot.task.status === 'running') {
+      return decision(event, { type: 'no_op' }, 'running Task has no exact recoverable Subtask');
+    }
+    if (['manual', 'material', 'contract', 'unknown'].includes(event.blockerCategory)) {
+      return decision(
+        event,
+        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
+        `resume requires resolving the ${event.blockerCategory} blocker first`,
+      );
+    }
+    const recoverableSubtasks = snapshot.subtasks
+      .filter(subtask => subtask.status === 'ready' || subtask.status === 'blocked')
+      .map(subtask => subtask.id);
+    if (recoverableSubtasks.length === 0) {
+      return decision(event, { type: 'no_op' }, 'resume has no recoverable Subtask');
+    }
+    return decision(event, {
+      type: 'resume_task',
+      taskId: event.taskId,
+      generationId: snapshot.generationId,
+      graphRevision: snapshot.graphRevision,
+      subtaskIds: recoverableSubtasks,
+      blockerCategory: event.blockerCategory,
+    }, 'Kernel authorized explicit Task resume');
   }
 
   private decideAvailabilityRecovery(
@@ -876,6 +1056,13 @@ export class ControlKernel {
     }
     if (event.attemptKind === 'contract_correction') {
       return decision(event, { type: 'no_op' }, 'metadata correction failed; safe result remains awaiting decision');
+    }
+    if (event.attemptKind === 'merge_repair') {
+      return decision(
+        event,
+        { type: 'no_op' },
+        'merge repair failure is governed by the publication conflict chain',
+      );
     }
     if (failure.code === 'startup_orphaned_work') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
@@ -1384,6 +1571,7 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
   if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
+  if (event.type === 'task_resume_requested') return snapshot.type === 'dispatch';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
   if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
   if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';

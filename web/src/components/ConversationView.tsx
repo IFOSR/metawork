@@ -1,7 +1,18 @@
-import type { ConversationTurnProjection } from '../api/session-types';
+import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import { ConversationTurnView } from './ConversationTurn';
+import { LiveExecutionPanel } from './LiveExecutionPanel';
 
-export function ConversationView({ turns }: { turns: ConversationTurnProjection[] }) {
+export function ConversationView({
+  turns,
+  running = false,
+  onOpenArtifact,
+  onOpenSubtaskDetail,
+}: {
+  turns: ConversationTurnProjection[];
+  running?: boolean;
+  onOpenArtifact?: (artifact: ArtifactProjection) => void;
+  onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
+}) {
   if (turns.length === 0) {
     return (
       <div className="workspace-empty">
@@ -11,9 +22,15 @@ export function ConversationView({ turns }: { turns: ConversationTurnProjection[
       </div>
     );
   }
+  const latest = turns.at(-1);
   return (
     <div className="conversation-view">
-      {turns.map(turn => <ConversationTurnView turn={turn} key={turn.id} />)}
+      {latest && (
+        <LiveExecutionPanel turn={latest} onSelectSubtask={onOpenSubtaskDetail} />
+      )}
+      {turns.map(turn => (
+        <ConversationTurnView turn={turn} key={turn.id} onOpenArtifact={onOpenArtifact} />
+      ))}
     </div>
   );
 }

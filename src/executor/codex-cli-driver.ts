@@ -10,6 +10,7 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { buildCodexNonInteractiveArgs } from './codex-args.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
   HarnessDriver,
   HarnessLaunchInput,
@@ -27,8 +28,10 @@ import {
   normalizeHarnessResult,
   parseJsonLine,
   parseJsonLines,
+  safeHarnessName,
   safeHostEnvironment,
 } from './harness-driver.js';
+import { executorActivityExcerpt } from './pi-cli-driver.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -134,26 +137,55 @@ export class CodexCliDriver implements HarnessDriver {
     if (!['item.started', 'item.completed'].includes(event.type)) return null;
     const item = event.item;
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
-    const itemType = (item as Record<string, unknown>).type;
+    const record = item as Record<string, unknown>;
+    const itemType = record.type;
     const completed = event.type === 'item.completed';
     if (itemType === 'command_execution') {
+      const command = typeof record.command === 'string'
+        ? executorActivityExcerpt(record.command, 120)
+        : '';
       return {
         kind: 'status',
         text: completed
-          ? 'Executor completed a workspace command'
-          : 'Executor started a workspace command',
+          ? `Executor completed workspace command${command ? `: ${command}` : ''}`
+          : `Executor started workspace command${command ? `: ${command}` : ''}`,
       };
     }
     if (itemType === 'mcp_tool_call') {
+      const tool = typeof record.tool === 'string'
+        ? safeHarnessName(record.tool)
+        : typeof record.name === 'string'
+          ? safeHarnessName(record.name)
+          : '';
+      const detail = codexArgDetail(record.arguments ?? record.args);
       return {
         kind: 'skill',
-        text: completed ? 'Executor completed an MCP tool call' : 'Executor started an MCP tool call',
+        text: `${completed ? 'Executor completed' : 'Executor started'} MCP tool${tool ? `: ${tool}` : ''}${detail ? ` — ${detail}` : ''}`,
       };
     }
     if (itemType === 'web_search') {
+      const query = typeof record.query === 'string'
+        ? executorActivityExcerpt(record.query, 120)
+        : '';
       return {
         kind: 'skill',
-        text: completed ? 'Executor completed a web search' : 'Executor started a web search',
+        text: `${completed ? 'Executor completed' : 'Executor started'} web search${query ? `: ${query}` : ''}`,
+      };
+    }
+    if (itemType === 'agent_message' && completed) {
+      const text = typeof record.text === 'string' && record.text.trim()
+        ? executorActivityExcerpt(record.text)
+        : '';
+      if (text) return { kind: 'status', text: `Executor: ${text}` };
+      return { kind: 'status', text: 'Executor produced an assistant message' };
+    }
+    if (itemType === 'reasoning') {
+      // 隐藏思维链内容不透出，只呈现"正在推理"这一安全里程碑。
+      return {
+        kind: 'status',
+        text: completed
+          ? 'Executor finished a reasoning step'
+          : 'Executor is reasoning through the next step',
       };
     }
     if (itemType === 'file_change' && completed) {
@@ -184,6 +216,19 @@ export class CodexCliDriver implements HarnessDriver {
     await copyFile(source, target);
     await chmod(target, 0o600);
   }
+}
+
+/** Codex 工具调用参数的安全摘要：只取白名单键，脱敏截断。 */
+function codexArgDetail(args: unknown): string {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
+  const record = args as Record<string, unknown>;
+  for (const key of ['command', 'path', 'file_path', 'url', 'query', 'pattern'] as const) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return redactSensitiveText(value.replace(/\s+/gu, ' ').trim()).slice(0, 120);
+    }
+  }
+  return '';
 }
 
 async function defaultProbeCommand(command: string, args: readonly string[]) {

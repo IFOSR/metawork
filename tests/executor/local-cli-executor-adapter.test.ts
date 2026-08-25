@@ -223,6 +223,35 @@ describe('LocalCliExecutorAdapter', () => {
     });
   });
 
+  it('passes the configured idle watchdog to the local process runner', async () => {
+    const driver = harnessDriver('codex-cli');
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: 'raw output\n',
+        stderr: '',
+      })),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'implementation-alpha',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts',
+      idleTimeoutMs: 123_000,
+      processRunner,
+    });
+
+    await adapter.execute(executorInput('attempt-watchdog'));
+
+    expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt-watchdog',
+      idleTimeoutMs: 123_000,
+    }));
+  });
+
   it('does not inherit host Agent homes into a local CLI process', async () => {
     const spawnProcess = vi.fn((_command, _args, options) => {
       expect(options.env).not.toHaveProperty('HOME');
@@ -303,6 +332,65 @@ describe('LocalCliExecutorAdapter', () => {
     expect(rawChunks.join('')).toBe(`${prefix}${finalEvent}`);
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(16 * 1024 * 1024);
   });
+
+  it('terminates a local CLI process after the configured idle timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = controllableChildProcess();
+      const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
+        if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
+      });
+      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
+
+      const resultPromise = runner.run({
+        attemptId: 'attempt-idle-timeout',
+        command: 'codex',
+        args: [],
+        cwd: '/workspace/attempt-idle-timeout',
+        environment: {},
+        idleTimeoutMs: 300,
+      });
+      await vi.advanceTimersByTimeAsync(300);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        exitCode: null,
+        stderr: expect.stringContaining('executor idle timeout'),
+      });
+      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renews the idle timeout when stdout or stderr remains active', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = controllableChildProcess();
+      const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
+        if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
+      });
+      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
+
+      const resultPromise = runner.run({
+        attemptId: 'attempt-active-output',
+        command: 'codex',
+        args: [],
+        cwd: '/workspace/attempt-active-output',
+        environment: {},
+        idleTimeoutMs: 300,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      child.emitStdout('still active\n');
+      await vi.advanceTimersByTimeAsync(250);
+      expect(signalProcess).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(50);
+      await resultPromise;
+      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function completedChildProcess() {
@@ -342,6 +430,32 @@ function streamingChildProcess(stdoutChunks: string[]) {
       return child;
     }),
     kill: vi.fn(),
+  };
+  return child;
+}
+
+function controllableChildProcess() {
+  let stdoutListener: ((chunk: string) => void) | null = null;
+  let exitListener: ((code: number | null) => void) | null = null;
+  const child = {
+    pid: 123,
+    stdout: {
+      on: vi.fn((event: string, listener: (chunk: string) => void) => {
+        if (event === 'data') stdoutListener = listener;
+      }),
+    },
+    stderr: { on: vi.fn() },
+    once: vi.fn((event: string, listener: (...args: any[]) => void) => {
+      if (event === 'exit') exitListener = listener;
+      return child;
+    }),
+    kill: vi.fn(),
+    emitStdout(chunk: string) {
+      stdoutListener?.(chunk);
+    },
+    emitExit(code: number | null) {
+      exitListener?.(code);
+    },
   };
   return child;
 }

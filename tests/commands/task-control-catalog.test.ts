@@ -69,6 +69,22 @@ describe('canonical task control commands', () => {
     expect(harness.abortTask).not.toHaveBeenCalled();
   });
 
+  it('lets a running Task submit an explicit recovery request for uncertain durable work', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'recover-running');
+
+    const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
+
+    expect(result).toMatchObject({
+      type: 'directive',
+      directive: {
+        kind: 'resume-task',
+        taskId: task.id,
+        mode: 'resume-parked',
+      },
+    });
+  });
+
   it('removes the manual complete command from the command surface', async () => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, 'complete');

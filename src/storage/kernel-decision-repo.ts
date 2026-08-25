@@ -10,6 +10,13 @@ export type RevisionedKernelDecisionLedgerRecord = KernelDecisionLedgerRecord & 
   bindingFingerprints: string[];
 };
 
+export interface KernelDecisionTimelineRecord {
+  action: KernelDecision['action']['type'];
+  taskId: string | null;
+  subtaskId: string | null;
+  reason: string;
+}
+
 interface KernelDecisionRow {
   id: string;
   schema_version: number;
@@ -97,6 +104,36 @@ export class KernelDecisionRepo {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE task_id = ? ORDER BY created_at ASC, id ASC
     `).all(taskId) as KernelDecisionRow[]).map(rowToRecord);
+  }
+
+  /**
+   * Public timeline projection only needs bounded display columns. Avoid
+   * reading and parsing the large event/snapshot/decision JSON ledger bodies.
+   */
+  listTimelineByTask(taskId: string, limit: number): KernelDecisionTimelineRecord[] {
+    const boundedLimit = Math.max(1, Math.floor(limit));
+    return this.db.prepare(`
+      SELECT action, task_id, subtask_id, reason
+      FROM (
+        SELECT action, task_id, subtask_id, reason, created_at, id
+        FROM kernel_decisions
+        WHERE task_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      )
+      ORDER BY created_at ASC, id ASC
+    `).all(taskId, boundedLimit).map(row => {
+      const value = row as Pick<
+        KernelDecisionRow,
+        'action' | 'task_id' | 'subtask_id' | 'reason'
+      >;
+      return {
+        action: value.action,
+        taskId: value.task_id,
+        subtaskId: value.subtask_id,
+        reason: value.reason,
+      };
+    });
   }
 
   listCurrentByAction(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[] {

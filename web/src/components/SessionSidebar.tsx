@@ -3,6 +3,7 @@ import type { WebSessionMetadata } from '../api/session-types';
 export function SessionSidebar({
   sessions,
   activeSessionId,
+  runningSessionId,
   selectedSessionId,
   search,
   onSearch,
@@ -15,6 +16,7 @@ export function SessionSidebar({
 }: {
   sessions: WebSessionMetadata[];
   activeSessionId: string | null;
+  runningSessionId: string | null;
   selectedSessionId: string | null;
   search: string;
   onSearch: (value: string) => void;
@@ -58,11 +60,13 @@ export function SessionSidebar({
       <div className="session-list">
         {sessions.map(session => {
           const active = session.id === activeSessionId;
+          const running = session.id === runningSessionId;
           const selected = session.id === selectedSessionId;
           return (
             <button
               className="session-row"
               data-active={active}
+              data-running={running || undefined}
               data-selected={selected}
               key={session.id}
               onClick={() => onSelect(session.id)}
@@ -70,7 +74,10 @@ export function SessionSidebar({
               <span className="session-row-status" />
               <span className="session-row-copy">
                 <strong>{session.title}</strong>
-                <small>{formatRelativeTime(session.updatedAt)}{active ? ' · 运行中' : ''}</small>
+                <small>
+                  {formatRelativeTime(session.updatedAt)}
+                  {running ? ' · 运行中' : active ? ' · 当前' : ''}
+                </small>
               </span>
               {!active && selected && (
                 <span

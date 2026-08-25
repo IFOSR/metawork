@@ -13,6 +13,7 @@ import {
   type WebSessionMetadata,
   type WebSessionRecord,
 } from './web-session-types.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import type { FileWebSessionStore } from '../storage/file-web-session-store.js';
 
 const MAX_SESSION_TITLE_LENGTH = 80;
@@ -237,13 +238,40 @@ function sanitizeConversationTurn(
     artifactRefs: turn.artifactRefs
       .slice(0, 100)
       .map(reference => sanitizeInteractionTraceText(reference, 500)),
+    artifacts: sanitizeArtifactProjections(turn.artifacts),
   };
+}
+
+function sanitizeArtifactProjections(
+  artifacts: ArtifactProjection[] | undefined,
+): ArtifactProjection[] {
+  if (!artifacts) return [];
+  return artifacts.slice(0, 100).map(artifact => ({
+    artifactId: sanitizeInteractionTraceText(artifact.artifactId, 160),
+    taskId: sanitizeInteractionTraceText(artifact.taskId, 160),
+    publicationId: artifact.publicationId === null
+      ? null
+      : sanitizeInteractionTraceText(artifact.publicationId, 160),
+    displayName: sanitizeInteractionTraceText(artifact.displayName, 300),
+    relativePath: sanitizeInteractionTraceText(artifact.relativePath, 500),
+    mediaType: sanitizeInteractionTraceText(artifact.mediaType, 120),
+    previewKind: artifact.previewKind,
+    previewable: artifact.previewable === true,
+    byteLength: Number.isFinite(artifact.byteLength) ? Math.max(0, Math.floor(artifact.byteLength)) : 0,
+    contentHash: sanitizeInteractionTraceText(artifact.contentHash, 200),
+    publishedAt: sanitizeInteractionTraceText(artifact.publishedAt, 80),
+  }));
 }
 
 function sanitizeTraceEvent(event: InteractionTraceEvent): InteractionTraceEvent {
   return {
     ...event,
     id: sanitizeInteractionTraceText(event.id, 160),
+    ...(event.cursor ? { cursor: sanitizeInteractionTraceText(event.cursor, 240) } : {}),
+    ...(event.eventKey ? { eventKey: sanitizeInteractionTraceText(event.eventKey, 240) } : {}),
+    ...(event.taskId ? { taskId: sanitizeInteractionTraceText(event.taskId, 160) } : {}),
+    ...(event.subtaskId ? { subtaskId: sanitizeInteractionTraceText(event.subtaskId, 160) } : {}),
+    ...(event.attemptId ? { attemptId: sanitizeInteractionTraceText(event.attemptId, 160) } : {}),
     kind: sanitizeInteractionTraceText(event.kind, 160),
     title: sanitizeInteractionTraceText(event.title, 300),
     summary: sanitizeInteractionTraceText(event.summary, 1_000),

@@ -1,6 +1,10 @@
 import Database from 'better-sqlite3';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import {
+  authorizedExecutorBindingFingerprint,
+  type AuthorizedExecutorBinding,
+} from '../../src/core/authorized-executor-binding.js';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
@@ -191,6 +195,358 @@ describe('KernelExecutionRuntime executor recovery', () => {
     });
   });
 
+  it('reuses one durable merge conflict identity for duplicate failures at the same repair budget', async () => {
+    const publication = {
+      id: 'publication-merge',
+      conflictChainId: 'conflict-chain-merge',
+      sourceAttemptId: 'attempt-primary',
+      repairAttemptsUsed: 1,
+      conflictReplansUsed: 0,
+    };
+    const runtime = new KernelExecutionRuntime({
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn().mockReturnValue(null),
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-merge',
+          taskId: 'task-merge',
+          title: 'Repair report publication',
+          goal: 'Repair the publication conflict',
+          deliveryKind: 'edit',
+          requiredCapabilities: ['workspace-engineering'],
+          acceptance: [],
+        }),
+      },
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({
+          id: 'task-merge',
+          status: 'running',
+        }),
+      },
+      attemptRunner: {
+        run: vi.fn().mockResolvedValue({
+          outcome: 'cancelled_or_stale',
+          attemptId: 'ignored-by-runtime',
+          reason: 'duplicate repair dispatch is stale',
+        }),
+      },
+      publicationRepo: {
+        find: vi.fn().mockReturnValue(publication),
+      },
+      presentation: {
+        formatExecutorDispatch: vi.fn().mockReturnValue([]),
+      },
+      callbacks: {
+        appendExecutionTrace: vi.fn(),
+        appendOutput: vi.fn(),
+        setRunningExecutorName: vi.fn(),
+        clearRunningExecutorName: vi.fn(),
+      },
+      kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const run = (attemptId: string) => (runtime as unknown as {
+      runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
+    }).runDispatchItem({
+      item: {
+        ...historicalDispatch(),
+        attemptId,
+        taskId: 'task-merge',
+        subtaskId: 'subtask-merge',
+        attemptKind: 'merge_repair',
+        sourceAttemptId: 'attempt-primary',
+        attemptPayload: {
+          protocol: 'metaclaw:merge-repair:v1',
+          publicationId: publication.id,
+          conflictChainId: publication.conflictChainId,
+          conflictingPaths: ['src/shared.ts'],
+        },
+        authorizedBinding: binding('revision-a'),
+        status: 'running',
+      },
+      executionId: 'execution-merge',
+      request: {},
+      progressTracker: { onProgress: vi.fn() },
+    });
+
+    const first = await run('attempt-merge-a');
+    const duplicate = await run('attempt-merge-b');
+
+    expect(first).toMatchObject({
+      type: 'merge_conflict_observed',
+      repairAttemptsUsed: 1,
+    });
+    expect(duplicate.id).toBe(first.id);
+  });
+
+  it('restores a legacy blocked Subtask only while applying an authorized merge repair dispatch', async () => {
+    const updateStatus = vi.fn();
+    const enqueue = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      workGraphRevisionRepo: {
+        findActive: vi.fn().mockReturnValue({
+          generationId: 'generation-merge',
+        }),
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-merge',
+          taskId: 'task-merge',
+          status: 'blocked',
+        }),
+        updateStatus,
+      },
+      callbacks: {
+        appendExecutionTrace: vi.fn(),
+      },
+      taskEventRepo: {},
+      dispatchItemRepo: {
+        listPending: vi.fn().mockReturnValue([]),
+      },
+      maxConcurrentAttempts: 4,
+    } as never);
+    Object.defineProperty(runtime, 'attemptSupervisor', {
+      value: { enqueue },
+    });
+    const decision: KernelDecision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-a',
+      id: 'decision-merge-repair',
+      eventId: 'event-merge-conflict',
+      reason: 'merge repair 2 of 3 authorized',
+      action: {
+        type: 'dispatch_batch',
+        taskId: 'task-merge',
+        items: [{
+          order: 0,
+          subtaskId: 'subtask-merge',
+          attemptId: 'attempt-merge-repair',
+          authorizedBinding: binding('revision-a'),
+          bindingFingerprint: 'binding-fingerprint',
+          attemptKind: 'merge_repair',
+          sourceAttemptId: 'attempt-primary',
+          recoveryMode: 'recovery_packet',
+          attemptPayload: {
+            protocol: 'metaclaw:merge-repair:v1',
+            publicationId: 'publication-merge',
+            conflictChainId: 'conflict-chain-merge',
+            conflictingPaths: ['src/shared.ts'],
+          },
+          defaultResourceGrant: [],
+        }],
+      },
+    };
+
+    await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-merge',
+      request: {},
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution: vi.fn(),
+    });
+
+    expect(updateStatus).toHaveBeenCalledWith(
+      'subtask-merge',
+      'awaiting_decision',
+      { error: 'recovering legacy blocked merge conflict' },
+    );
+    expect(updateStatus.mock.invocationCallOrder[0]).toBeLessThan(
+      enqueue.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('applies an authorized uncertified-result resume without clearing awaiting_decision', async () => {
+    const updateStatus = vi.fn();
+    const unblockTask = vi.fn();
+    const transitionTask = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'running' }),
+        unblockTask,
+        transitionTask,
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-resume',
+          taskId: 'task-resume',
+          status: 'awaiting_decision',
+        }),
+        updateStatus,
+      },
+      callbacks: {
+        appendExecutionTrace: vi.fn(),
+        refreshRuntimeState: vi.fn(),
+      },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const authorizedBinding = binding('revision-a');
+    const decision: KernelDecision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-a',
+      id: 'decision-resume-uncertified',
+      eventId: 'event-resume-uncertified',
+      reason: 'Kernel authorized exact uncertified-result recovery',
+      action: {
+        type: 'resume_task',
+        taskId: 'task-resume',
+        generationId: 'generation-resume',
+        graphRevision: 3,
+        subtaskIds: [],
+        blockerCategory: 'unknown',
+        recovery: {
+          subtaskId: 'subtask-resume',
+          sourceAttemptId: 'attempt-uncertified',
+          authorizedBinding,
+          bindingFingerprint: 'sha256:binding',
+          attemptKind: 'continuation',
+          recoveryMode: 'recovery_packet',
+          defaultResourceGrant: [],
+        },
+      },
+    };
+
+    const nextEvent = await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-resume',
+      request: {},
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution: vi.fn(),
+    });
+
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(unblockTask).not.toHaveBeenCalled();
+    expect(transitionTask).not.toHaveBeenCalled();
+    expect(nextEvent).toMatchObject({
+      type: 'dispatch_requested',
+      taskId: 'task-resume',
+      subtaskId: 'subtask-resume',
+      recovery: {
+        authorizedBinding,
+        bindingFingerprint: 'sha256:binding',
+        attemptKind: 'continuation',
+        sourceAttemptId: 'attempt-uncertified',
+        recoveryMode: 'recovery_packet',
+        defaultResourceGrant: [],
+      },
+    });
+  });
+
+  it('projects a marker-only uncertified receipt with an active workspace as a resume candidate', () => {
+    const authorizedBinding = binding('revision-a');
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'blocked' }),
+        getCurrentRunningTask: vi.fn().mockReturnValue(null),
+      },
+      workGraphRevisionRepo: {
+        findActive: vi.fn().mockReturnValue({
+          taskId: 'task-resume',
+          generationId: 'generation-resume',
+          revision: 3,
+          configurationRevision: 'revision-a',
+        }),
+        countAutomaticReplans: vi.fn().mockReturnValue(0),
+      },
+      subtaskRepo: {
+        listActiveByTask: vi.fn().mockReturnValue([{
+          id: 'subtask-resume',
+          taskId: 'task-resume',
+          generationId: 'generation-resume',
+          graphRevision: 3,
+          title: 'Build HTML report',
+          goal: 'Publish the completed HTML report',
+          status: 'awaiting_decision',
+          dependencies: [],
+          requiredCapabilities: ['workspace-engineering'],
+          executorBindings: [authorizedBinding],
+        }]),
+      },
+      subtaskHandoffRepo: {
+        listByTask: vi.fn().mockReturnValue([]),
+      },
+      attemptReceiptRepo: {
+        listByTask: vi.fn().mockReturnValue([{
+          ...historicalReceipt(),
+          attemptId: 'attempt-uncertified',
+          taskId: 'task-resume',
+          subtaskId: 'subtask-resume',
+          generationId: 'generation-resume',
+          graphRevision: 3,
+          terminalState: 'uncertified_result',
+          failure: null,
+          configurationRevision: 'revision-a',
+          authorizedBinding,
+          bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
+          verification: {
+            warnings: [],
+            violations: [{
+              code: 'completion_no_change_reason_mismatch',
+              path: 'noChangeReason',
+              message: 'edit delivery without workspace changes requires a no-change reason',
+            }],
+          },
+        }]),
+      },
+      dispatchItemRepo: {
+        listByTask: vi.fn().mockReturnValue([]),
+      },
+      workspaceRepository: {
+        findByIdentity: vi.fn().mockReturnValue({
+          id: 'workspace-resume',
+          status: 'active',
+          rootUri: pathToFileURL(process.cwd()).href,
+        }),
+      },
+      resultObjectRepo: {},
+      publicationRepo: {
+        hasBlockingResidue: vi.fn().mockReturnValue(false),
+      },
+      generationReplanRepo: {
+        findActive: vi.fn().mockReturnValue(null),
+      },
+      cancellationCoordinator: {
+        findCleanupTaskId: vi.fn().mockReturnValue(null),
+        completionBlockedReasons: vi.fn().mockReturnValue([]),
+      },
+      taskEventRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const snapshot = (runtime as unknown as {
+      buildDispatchSnapshot(
+        taskId: string,
+        graphState: 'ready',
+        stableFacts: Record<string, unknown>,
+      ): Extract<import('../../src/kernel/control-kernel.js').KernelSnapshot, { type: 'dispatch' }>;
+    }).buildDispatchSnapshot('task-resume', 'ready', {
+      executorStatuses: [],
+      correctionSupportedAgentClasses: [],
+      nativeContinuationAgentClasses: [AGENT_CLASS],
+    });
+
+    expect(snapshot.resumeRecoveryCandidates).toEqual([{
+      subtaskId: 'subtask-resume',
+      sourceAttemptId: 'attempt-uncertified',
+      authorizedBinding,
+      bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
+      recoveryMode: 'native_session',
+      reason: 'completion_no_change_reason_mismatch',
+    }]);
+  });
+
   it('resolves only waiting requests pinned to the recovered configuration revision', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
@@ -301,6 +657,93 @@ describe('KernelExecutionRuntime executor recovery', () => {
       correlation_id: 'request-a',
       configuration_revision: 'revision-a',
     }]);
+  });
+
+  it('scans uncertain merge-replan applications and emits the exact safe retry event', () => {
+    const application = {
+      id: 'application-merge-replan',
+      decisionId: 'decision-merge-replan',
+      eventId: 'event-merge-replan',
+      idempotencyKey: 'decision:decision-merge-replan',
+      status: 'uncertain',
+      applyAttempts: 1,
+      observationEvent: null,
+      errorSummary: 'startup recovery requires the originating Conversation Planner for merge replan',
+      createdAt: NOW,
+      updatedAt: NOW,
+      decision: {
+        schemaVersion: 5,
+        configurationRevision: 'revision-a',
+        id: 'decision-merge-replan',
+        eventId: 'event-merge-conflict',
+        reason: 'merge repair exhausted; request semantic replan',
+        action: {
+          type: 'request_merge_replan',
+          taskId: 'task-merge-replan',
+          publicationId: 'publication-merge-replan',
+          conflictChainId: 'conflict-chain-merge-replan',
+          conflictedSubtaskId: 'subtask-old',
+        },
+      },
+    };
+    const runtime = new KernelExecutionRuntime({
+      workGraphRevisionRepo: {
+        findActive: vi.fn().mockReturnValue({
+          taskId: 'task-merge-replan',
+          generationId: 'generation-merge-replan',
+          revision: 2,
+        }),
+      },
+      kernelWorkflowStore: {
+        listRecoveryItems: vi.fn().mockReturnValue([application]),
+      },
+      publicationRepo: {
+        find: vi.fn().mockReturnValue({
+          id: 'publication-merge-replan',
+          taskId: 'task-merge-replan',
+          status: 'parked',
+        }),
+      },
+      dispatchItemRepo: {
+        listByTask: vi.fn().mockReturnValue([{
+          attemptKind: 'merge_repair',
+          status: 'terminal',
+          attemptPayload: {
+            protocol: 'metaclaw:merge-repair:v1',
+            publicationId: 'publication-merge-replan',
+            conflictChainId: 'conflict-chain-merge-replan',
+            conflictingPaths: ['reports/zhipu.html'],
+          },
+          errorSummary: 'EACCES: permission denied, open \'/workspace/.metaclaw/merge-repair/reports/zhipu.html.base\'',
+        }]),
+      },
+      kernelDecisionRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'decision-merge-replan',
+          sessionId: 'session-originating-planner',
+        }),
+      },
+      taskEventRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const event = (runtime as unknown as {
+      retrySafeLegacySystemBindingRecovery(
+        taskId: string,
+        occurredAt: string,
+      ): KernelEvent | null;
+    }).retrySafeLegacySystemBindingRecovery(
+      'task-merge-replan',
+      '2026-08-25T05:00:00.000Z',
+    );
+
+    expect(event).toMatchObject({
+      type: 'recovery_resolution_requested',
+      taskId: 'task-merge-replan',
+      recoveryItemId: 'application-merge-replan',
+      resolution: 'retry',
+      sessionId: 'session-originating-planner',
+    });
   });
 });
 

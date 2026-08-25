@@ -16,6 +16,8 @@ export function WorkspaceShell({
   composerDisabled,
   running,
   blockedReason,
+  previewOpen = false,
+  previewDrawer = null,
   children,
   onSearch,
   onNewSession,
@@ -43,6 +45,9 @@ export function WorkspaceShell({
   composerDisabled: boolean;
   running: boolean;
   blockedReason?: string | null;
+  /** 右侧文档预览抽屉是否打开；打开时主画布切换为三列桌面布局。 */
+  previewOpen?: boolean;
+  previewDrawer?: ReactNode;
   children: ReactNode;
   onSearch: (value: string) => void;
   onNewSession: () => void;
@@ -60,10 +65,11 @@ export function WorkspaceShell({
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
   return (
-    <div className="workspace-shell">
+    <div className="workspace-shell" data-preview-open={previewOpen || undefined}>
       <SessionSidebar
         sessions={sessions}
         activeSessionId={activeSessionId}
+        runningSessionId={running ? activeSessionId : null}
         selectedSessionId={selectedSessionId}
         search={search}
         onSearch={onSearch}
@@ -81,7 +87,10 @@ export function WorkspaceShell({
           connected={connected}
           onTabChange={onTabChange}
         />
-        <section className="workspace-canvas">{children}</section>
+        <div className="workspace-body">
+          <section className="workspace-canvas">{children}</section>
+          {previewOpen && previewDrawer}
+        </div>
         <Composer
           draft={draft}
           disabled={composerDisabled}

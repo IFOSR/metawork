@@ -108,11 +108,113 @@ export function normalizeExecutorFailure(raw?: string, interrupted = false): Ker
   return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary });
 }
 
+export type DependencyMaterializationFailureCode =
+  | 'dependency_publication_pending'
+  | 'dependency_handoff_missing'
+  | 'dependency_result_object_missing'
+  | 'dependency_result_reference_unauthorized'
+  | 'dependency_identity_mismatch'
+  | 'dependency_workspace_missing';
+
+export interface DependencyMaterializationFailure {
+  code: DependencyMaterializationFailureCode;
+  retryable: boolean;
+  summary: string;
+  sourceSubtaskId: string | null;
+  targetSubtaskId: string | null;
+  referenceId: string | null;
+}
+
+export function normalizeDependencyMaterializationFailure(
+  error: unknown,
+  input: {
+    sourceSubtaskId?: string | null;
+    targetSubtaskId?: string | null;
+    referenceId?: string | null;
+  } = {},
+): DependencyMaterializationFailure {
+  const raw = error instanceof Error ? error.message : String(error);
+  const normalized = raw.toLowerCase();
+  const identity = {
+    sourceSubtaskId: input.sourceSubtaskId ?? null,
+    targetSubtaskId: input.targetSubtaskId ?? null,
+    referenceId: input.referenceId ?? null,
+  };
+  if (normalized.includes('pending') || normalized.includes('awaiting_integration')) {
+    return {
+      ...identity,
+      code: 'dependency_publication_pending',
+      retryable: true,
+      summary: 'Upstream publication is still pending; downstream execution will wait.',
+    };
+  }
+  if (normalized.includes('incoming_handoff_missing') || normalized.includes('handoff')) {
+    return {
+      ...identity,
+      code: 'dependency_handoff_missing',
+      retryable: true,
+      summary: 'The authorized dependency handoff is not available yet.',
+    };
+  }
+  if (normalized.includes('result object not found')) {
+    return {
+      ...identity,
+      code: 'dependency_result_object_missing',
+      retryable: true,
+      summary: 'The published dependency Result Object is not available.',
+    };
+  }
+  if (normalized.includes('not authorized') || normalized.includes('unauthorized')) {
+    return {
+      ...identity,
+      code: 'dependency_result_reference_unauthorized',
+      retryable: false,
+      summary: 'The dependency Result Reference is not authorized for this Subtask.',
+    };
+  }
+  if (normalized.includes('identity mismatch') || normalized.includes(' target ')) {
+    return {
+      ...identity,
+      code: 'dependency_identity_mismatch',
+      retryable: false,
+      summary: 'The dependency publication identity does not match the authorized edge.',
+    };
+  }
+  if (normalized.includes('workspace')) {
+    return {
+      ...identity,
+      code: 'dependency_workspace_missing',
+      retryable: true,
+      summary: 'The dependency workspace state is not available yet.',
+    };
+  }
+  return {
+    ...identity,
+    code: 'dependency_handoff_missing',
+    retryable: true,
+    summary: 'The authorized dependency materialization could not be read.',
+  };
+}
+
 export function formatExecutorProgress(raw?: string): string | undefined {
   if (!raw) return undefined;
 
   const normalized = stripExecutorLogPrefix(raw.trim());
   if (!normalized) return undefined;
+
+  const workspaceCommand = /^Executor (started|completed) workspace command(?:\s*:[\s\S]*)?$/iu.exec(
+    normalized,
+  );
+  if (workspaceCommand) {
+    return `Executor ${workspaceCommand[1]?.toLowerCase()} a workspace command`;
+  }
+
+  const toolActivity = /^Executor (started|completed) ((?:MCP )?tool):\s*([A-Za-z0-9_.:/-]+)(?:\s+[—-][\s\S]*)?$/iu.exec(
+    normalized,
+  );
+  if (toolActivity) {
+    return `Executor ${toolActivity[1]?.toLowerCase()} ${toolActivity[2]}: ${toolActivity[3]}`;
+  }
 
   if (EXECUTOR_NOISE_PATTERNS.some(pattern => pattern.test(normalized))) {
     return undefined;

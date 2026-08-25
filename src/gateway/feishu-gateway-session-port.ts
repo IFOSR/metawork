@@ -95,6 +95,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     let settled = false;
     const seenEventIds = new Set<string>();
     const resultAssembler = new ResultStreamAssembler();
+    const pendingProgress = new Map<string, string>();
+    let progressFlushTimer: NodeJS.Timeout | null = null;
     let resolvePromise!: (lines: string[]) => void;
     let rejectPromise!: (error: Error) => void;
     const cleanup = () => {
@@ -102,6 +104,28 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       unsubscribe = null;
       if (timeout) clearTimeout(timeout);
       timeout = null;
+      if (progressFlushTimer) clearTimeout(progressFlushTimer);
+      progressFlushTimer = null;
+    };
+    const flushProgress = () => {
+      if (pendingProgress.size === 0) return;
+      const text = [...pendingProgress.values()].join('\n');
+      pendingProgress.clear();
+      onProgress(text);
+    };
+    const queueProgress = (key: string, text: string, immediate: boolean) => {
+      if (!text.trim()) return;
+      pendingProgress.set(key, text.slice(0, 500));
+      if (immediate) {
+        flushProgress();
+        return;
+      }
+      if (progressFlushTimer) return;
+      progressFlushTimer = setTimeout(() => {
+        progressFlushTimer = null;
+        flushProgress();
+      }, 250);
+      progressFlushTimer.unref?.();
     };
     const consume = (event: GatewayEventEnvelope): string[] | null => {
       if (settled || event.requestId !== requestId) return null;
@@ -122,19 +146,42 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         return null;
       }
       if (event.kind === 'trace_delta') {
-        const payload = event.payload as { events?: Array<{ title?: string; summary?: string }> };
+        const payload = event.payload as {
+          events?: Array<{
+            id?: string;
+            kind?: string;
+            title?: string;
+            summary?: string;
+            subtaskId?: string | null;
+            details?: { subtaskId?: string };
+          }>;
+        };
         for (const item of payload.events ?? []) {
           const text = [item.title, item.summary].filter(Boolean).join('：');
-          if (text) onProgress(text);
+          const terminal = Boolean(item.kind && (
+            item.kind.includes('blocked')
+            || item.kind.includes('failed')
+            || item.kind.includes('publication')
+            || item.kind.includes('delivery_completed')
+            || item.kind.includes('result_observed')
+          ));
+          const key = item.subtaskId
+            ?? item.details?.subtaskId
+            ?? item.kind
+            ?? item.id
+            ?? 'execution';
+          queueProgress(key, text, terminal);
         }
       }
       if (event.kind === 'terminal_error') {
+        flushProgress();
         settled = true;
         cleanup();
         rejectPromise(new Error((event.payload as { message?: string }).message ?? 'Gateway execution failed'));
         return null;
       }
       if (event.kind === 'final_answer') {
+        flushProgress();
         const payload = event.payload as { lines?: string[]; resultId?: string };
         const completed = payload.resultId
           ? resultAssembler.find(payload.resultId)

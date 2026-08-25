@@ -231,6 +231,22 @@ Command idempotency and event resume cursors are durable enough to prevent
 duplicate user turns and to replay the bounded terminal/current state after
 reconnect. Transport retry is not a new Planner turn or Kernel retry.
 
+### Execution trace and Conversation retention amendment (2026-08-24)
+
+The existing Gateway `trace_delta` plane is the public execution stream; no
+second scheduler or control channel is introduced. Safe trace events carry
+stable turn-local `cursor`/`eventKey` values and bounded Task/Subtask/attempt
+identity. Journal compaction builds a bounded trace snapshot, deduplicates
+replayed events and preserves terminal milestones without exposing prompts,
+hidden reasoning, credentials or raw process output.
+
+Web persists the safe trace together with the durable ExecutionProjector
+timeline in each terminal Conversation turn. Transcript retention and result
+stream retention are separate: every retained result keeps delivery/completion
+metadata, while only the active result needs full chunks. Web's inline execution
+cards and per-Subtask detail drawer, native Planner/TUI, and Feishu all consume
+these passive projections and cannot trigger a semantic Planner turn.
+
 ### 9. Account Data Isolation
 
 Each Account owns a separate data root and SQLite database. The recommended

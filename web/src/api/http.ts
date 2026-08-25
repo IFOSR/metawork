@@ -8,6 +8,7 @@ import type {
   WorkGraphPresentationProjection,
 } from './types';
 import type {
+  ArtifactProjection,
   AttachmentMetadata,
   WebSessionActivationResult,
   WebSessionCreationResult,
@@ -99,6 +100,22 @@ export class HttpClient {
 
   clearSessions(): Promise<{ deleted: number }> {
     return this.request('/api/sessions/clear-all', { method: 'POST' });
+  }
+
+  getArtifact(artifactId: string): Promise<{ artifact: ArtifactProjection }> {
+    return this.request(`/api/artifacts/${encodeURIComponent(artifactId)}`);
+  }
+
+  getArtifactPreview(artifactId: string): Promise<{
+    artifact: ArtifactProjection;
+    content: string;
+    renderedHtml?: string;
+  }> {
+    return this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/preview`);
+  }
+
+  artifactDownloadUrl(artifactId: string): string {
+    return `/api/artifacts/${encodeURIComponent(artifactId)}/download`;
   }
 
   async uploadAttachment(

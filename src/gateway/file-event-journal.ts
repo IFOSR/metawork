@@ -198,43 +198,59 @@ function boundHistoricalPayload(payload: unknown): unknown {
 
 function buildReplaySnapshot(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
   const snapshot = events.filter(event => isTerminalGatewayEvent(event.kind));
-  snapshot.push(...latestResultEvents(events));
+  snapshot.push(...retainedResultEvents(events));
   const conversationSnapshot = buildConversationSnapshot(events);
   if (conversationSnapshot) snapshot.push(conversationSnapshot);
   const taskProjection = findLast(events, event => event.kind === 'task_projection');
   if (taskProjection) snapshot.push(taskProjection);
+  const traceSnapshot = buildTraceSnapshot(events);
+  if (traceSnapshot) snapshot.push(traceSnapshot);
   return uniqueEvents(snapshot).sort((left, right) => left.sequence - right.sequence);
 }
 
 function compactEvents(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
   if (events.length <= MAX_EVENTS_PER_CONVERSATION) return [...events];
-  const resultEvents = latestResultEvents(events);
+  const resultEvents = retainedResultEvents(events);
   const resultEventIds = new Set(resultEvents.map(event => event.eventId));
   const retained = events
     .filter(event => !resultEventIds.has(event.eventId))
     .slice(-MAX_EVENTS_PER_CONVERSATION);
-  return [...retained, ...resultEvents]
+  const retainedIds = new Set(retained.map(event => event.eventId));
+  const snapshots = [
+    buildConversationSnapshot(events),
+    findLast(events, event => event.kind === 'task_projection'),
+    buildTraceSnapshot(events),
+  ].filter((event): event is GatewayEventEnvelope => Boolean(event))
+    .filter(event => !retainedIds.has(event.eventId));
+  return [...retained, ...resultEvents, ...snapshots]
     .sort((left, right) => left.sequence - right.sequence);
 }
 
-function latestResultEvents(
+function retainedResultEvents(
   events: readonly GatewayEventEnvelope[],
 ): GatewayEventEnvelope[] {
-  const latestResultId = findLast(events, event => (
-    event.kind === 'result_completed'
-    || event.kind === 'result_chunk'
-    || event.kind === 'result_delivery_available'
-  ));
-  const resultId = latestResultId ? resultIdFrom(latestResultId) : null;
-  if (!resultId) return [];
-  return events.filter(event =>
-    (
-      event.kind === 'result_completed'
-      || event.kind === 'result_chunk'
-      || event.kind === 'result_delivery_available'
-    )
-    && resultIdFrom(event) === resultId
+  const resultIds = new Set(
+    events
+      .filter(isResultEvent)
+      .map(resultIdFrom)
+      .filter((resultId): resultId is string => Boolean(resultId)),
   );
+  const latestResultId = [...events]
+    .reverse()
+    .map(resultIdFrom)
+    .find((resultId): resultId is string => Boolean(resultId));
+  return events.filter(event => {
+    const resultId = resultIdFrom(event);
+    if (!resultId || !resultIds.has(resultId)) return false;
+    if (resultId === latestResultId) return true;
+    return event.kind === 'result_delivery_available' || event.kind === 'result_completed';
+  });
+}
+
+function isResultEvent(event: GatewayEventEnvelope): boolean {
+  return event.kind === 'result_completed'
+    || event.kind === 'result_chunk'
+    || event.kind === 'result_delivery_available';
 }
 
 function resultIdFrom(event: GatewayEventEnvelope): string | null {
@@ -243,7 +259,75 @@ function resultIdFrom(event: GatewayEventEnvelope): string | null {
 }
 
 function isCompactedSnapshotSource(event: GatewayEventEnvelope): boolean {
-  return event.kind === 'conversation_snapshot' || event.kind === 'task_projection';
+  return event.kind === 'conversation_snapshot'
+    || event.kind === 'task_projection'
+    || (
+      event.kind === 'trace_delta'
+      && isRecord(event.payload)
+      && Array.isArray(event.payload.events)
+      && event.payload.events.length > 0
+    );
+}
+
+function buildTraceSnapshot(
+  events: readonly GatewayEventEnvelope[],
+): GatewayEventEnvelope | null {
+  const traceEvents = events
+    .filter(event => event.kind === 'trace_delta')
+    .flatMap(event => {
+      const payload = isRecord(event.payload) ? event.payload : {};
+      return Array.isArray(payload.events) ? payload.events : [];
+    })
+    .filter(isRecord);
+  if (traceEvents.length === 0) return null;
+
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const event of traceEvents) {
+    const id = typeof event.id === 'string'
+      ? event.id
+      : `${String(event.turnId ?? 'turn_unknown')}:${String(event.sequence ?? byId.size + 1)}`;
+    byId.set(id, event);
+  }
+  const ordered = [...byId.values()].sort((left, right) => (
+    numberValue(left.sequence) - numberValue(right.sequence)
+      || stringValue(left.occurredAt).localeCompare(stringValue(right.occurredAt))
+  ));
+  const latest = [...events].reverse().find(event => (
+    event.kind === 'trace_delta'
+      && isRecord(event.payload)
+      && Array.isArray(event.payload.events)
+      && event.payload.events.length > 0
+  ));
+  if (!latest) return null;
+  const payload = {
+    ...(isRecord(latest.payload) ? latest.payload : {}),
+    events: boundTraceEvents(ordered),
+    replay: true,
+  };
+  return {
+    ...latest,
+    payload,
+  };
+}
+
+function boundTraceEvents(events: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const bounded: Record<string, unknown>[] = [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const candidate = [events[index]!, ...bounded];
+    if (gatewayEventPayloadBytes({ events: candidate, replay: true }) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) {
+      break;
+    }
+    bounded.unshift(events[index]!);
+  }
+  return bounded;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function buildConversationSnapshot(

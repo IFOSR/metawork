@@ -2,15 +2,21 @@ import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
 import type { GatewayEventEnvelope, GatewayReplay } from '../gateway/client-events.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
-import type { InteractionTraceEvent } from './interaction-trace.js';
+import type {
+  InteractionTraceEvent,
+  InteractionTraceStatus,
+} from './interaction-trace.js';
+import type { ExecutionTimeline } from './execution-projector.js';
 import type { WebGatewayAdapter } from './web-gateway-adapter.js';
 import type {
   WebSessionActivationResult,
   WebSessionCreationResult,
+  ConversationTurn,
   WebSessionMetadata,
   WebSessionRecord,
 } from './web-session-types.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
 const MAX_ENRICHMENT_BYTES = 16 * 1024;
@@ -43,6 +49,10 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly gateway: WebGatewayAdapter;
   /** 会话附件存储；提供后用户消息可携带附件并自动增强 Planner 提示。 */
   readonly attachments?: GatewayAttachmentStore;
+  /** Read-only durable execution projection used to rebuild a turn after reconnect. */
+  readonly projectExecutionTimeline?: (taskId: string) => ExecutionTimeline | null;
+  /** Read-only published artifact projection used to rebuild completed turns. */
+  readonly projectTaskArtifacts?: (taskId: string) => ArtifactProjection[];
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
 }
@@ -52,6 +62,8 @@ export class WebGatewaySessionRuntime {
   private readonly pendingInputs = new Map<string, string>();
   private readonly resultAssemblies = new Map<string, ResultAssembly>();
   private readonly completedResults = new Map<string, string>();
+  private readonly turnStates = new Map<string, RuntimeTurnState>();
+  private readonly persistedTurnIds = new Set<string>();
   private unsubscribe: (() => void) | null = null;
   private detachClient: (() => void) | null = null;
   private replayEvents: WebSessionRuntimeEvent[] = [];
@@ -95,6 +107,8 @@ export class WebGatewaySessionRuntime {
     this.pendingInputs.clear();
     this.resultAssemblies.clear();
     this.completedResults.clear();
+    this.turnStates.clear();
+    this.persistedTurnIds.clear();
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
     return this.disposePromise;
   }
@@ -162,8 +176,9 @@ export class WebGatewaySessionRuntime {
   listSessions(query = ''): Promise<WebSessionMetadata[]> {
     return query.trim() ? this.deps.catalog.search(query) : this.deps.catalog.list();
   }
-  readSession(sessionId: string): Promise<WebSessionRecord | null> {
-    return this.deps.catalog.read(sessionId);
+  async readSession(sessionId: string): Promise<WebSessionRecord | null> {
+    const record = await this.deps.catalog.read(sessionId);
+    return record ? this.enrichRecord(record) : null;
   }
 
   async createSession(title?: string): Promise<WebSessionCreationResult> {
@@ -253,6 +268,24 @@ export class WebGatewaySessionRuntime {
     this.replayEvents = [];
     this.resultAssemblies.clear();
     this.completedResults.clear();
+    this.turnStates.clear();
+    const existingRecord = await this.deps.catalog.read(sessionId);
+    for (const turn of existingRecord?.turns ?? []) {
+      this.persistedTurnIds.add(turn.id);
+      this.turnStates.set(turn.id, {
+        id: turn.id,
+        sessionId: turn.sessionId,
+        requestId: null,
+        userInput: turn.userInput,
+        status: turn.status,
+        finalAnswer: turn.finalAnswer,
+        taskId: turn.taskId ?? inferTaskId(turn.userInput),
+        startedAt: turn.startedAt,
+        completedAt: turn.completedAt,
+        traceEvents: structuredClone(turn.traceEvents),
+        executionTimeline: structuredClone(turn.executionTimeline),
+      });
+    }
     const buffered: GatewayEventEnvelope[] = [];
     let replaying = true;
     const unsubscribe = this.deps.gateway.subscribe(
@@ -306,6 +339,7 @@ export class WebGatewaySessionRuntime {
 
   private consume(event: GatewayEventEnvelope, replay: boolean): void {
     const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
+    this.rememberTurnEvent(event, userInput);
     const resultEvent = this.consumeResultEvent(event);
     if (resultEvent) {
       if (replay) this.replayEvents.push(resultEvent);
@@ -322,28 +356,191 @@ export class WebGatewaySessionRuntime {
       if (replay) this.replayEvents.push(mapped);
       else this.emit(mapped);
     }
+    const execution = this.projectExecutionFromEvent(event);
+    if (execution) {
+      if (replay) this.replayEvents.push(execution);
+      else this.emit(execution);
+    }
     if (event.kind === 'final_answer' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
-      if (userInput) {
-        const lines = mapped?.type === 'final_answer' ? mapped.lines : [];
-        void this.deps.catalog.appendTurn(event.conversationId, {
-          id: event.turnId ?? this.id('turn'),
-          sessionId: event.conversationId,
-          userInput,
-          status: 'completed',
-          finalAnswer: lines.join('\n'),
-          taskId: null,
-          startedAt: event.occurredAt,
-          completedAt: event.occurredAt,
-          traceEvents: [],
-          executionTimeline: null,
-          artifactRefs: [],
-        });
-      }
+      void this.persistTerminalTurn(event, mapped?.type === 'final_answer' ? mapped.lines : []);
     }
     if (event.kind === 'terminal_error' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
+      void this.persistTerminalTurn(event, []);
     }
+  }
+
+  private rememberTurnEvent(
+    event: GatewayEventEnvelope,
+    userInput?: string,
+  ): RuntimeTurnState | null {
+    const turnId = event.turnId;
+    if (!turnId) return null;
+    const existing = this.turnStates.get(turnId);
+    const state = existing ?? {
+      id: turnId,
+      sessionId: event.conversationId,
+      requestId: event.requestId,
+      userInput: userInput ?? '',
+      status: 'running' as const,
+      finalAnswer: null,
+      taskId: null,
+      startedAt: event.occurredAt,
+      completedAt: null,
+      traceEvents: [],
+      executionTimeline: null,
+    };
+    if (userInput && !state.userInput) state.userInput = userInput;
+    state.taskId ??= inferTaskId(state.userInput);
+    if (event.kind === 'turn_started') {
+      state.requestId = event.requestId;
+      state.startedAt = event.occurredAt;
+    }
+    if (event.kind === 'trace_delta') {
+      const payload = asRecord(event.payload);
+      const traceEvents = Array.isArray(payload.events)
+        ? payload.events.filter(isInteractionTraceEvent)
+        : [];
+      const byId = new Map(state.traceEvents.map(item => [item.id, item]));
+      for (const item of traceEvents) {
+        byId.set(item.id, item);
+        state.taskId = item.taskId ?? stringValue(item.details.taskId) ?? state.taskId;
+      }
+      state.traceEvents = [...byId.values()].sort(compareTraceEvents);
+    }
+    if (event.kind === 'final_answer') {
+      state.status = 'completed';
+      state.completedAt = event.occurredAt;
+      const payload = asRecord(event.payload);
+      state.finalAnswer = arrayStringValue(payload.lines)?.join('\n')
+        ?? state.finalAnswer;
+    } else if (event.kind === 'terminal_error') {
+      state.status = 'failed';
+      state.completedAt = event.occurredAt;
+      state.finalAnswer = stringValue(asRecord(event.payload).message) ?? state.finalAnswer;
+    }
+    this.turnStates.set(turnId, state);
+    return state;
+  }
+
+  private projectExecutionFromEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
+    if (event.kind !== 'trace_delta' || !this.deps.projectExecutionTimeline || !event.turnId) {
+      return null;
+    }
+    const state = this.turnStates.get(event.turnId);
+    const taskId = state?.taskId ?? null;
+    if (!state || !taskId) return null;
+    const timeline = this.deps.projectExecutionTimeline(taskId);
+    if (!timeline) return null;
+    state.executionTimeline = structuredClone(timeline);
+    const eventPayload = { type: 'execution', taskId, timeline } as const;
+    return eventPayload;
+  }
+
+  private async persistTerminalTurn(
+    event: GatewayEventEnvelope,
+    finalLines: string[],
+  ): Promise<void> {
+    if (!event.turnId || this.persistedTurnIds.has(event.turnId)) return;
+    const state = this.turnStates.get(event.turnId);
+    if (!state || !state.userInput) return;
+    this.persistedTurnIds.add(event.turnId);
+    const finalAnswer = finalLines.length > 0
+      ? finalLines.join('\n')
+      : state.finalAnswer ?? '';
+    const status = state.status === 'failed'
+      ? 'failed'
+      : state.status === 'blocked' ? 'blocked' : 'completed';
+    const taskId = state.taskId ?? inferTaskId(state.userInput);
+    const executionTimeline = taskId
+      ? this.deps.projectExecutionTimeline?.(taskId) ?? state.executionTimeline
+      : state.executionTimeline;
+    const artifacts = taskId
+      ? this.deps.projectTaskArtifacts?.(taskId) ?? []
+      : [];
+    await this.deps.catalog.appendTurn(event.conversationId, {
+      id: state.id,
+      sessionId: event.conversationId,
+      userInput: state.userInput,
+      status,
+      finalAnswer,
+      taskId,
+      startedAt: state.startedAt,
+      completedAt: state.completedAt ?? event.occurredAt,
+      traceEvents: state.traceEvents,
+      executionTimeline,
+      artifactRefs: artifacts.map(artifact => artifact.relativePath),
+      artifacts,
+    });
+  }
+
+  private enrichRecord(record: WebSessionRecord): WebSessionRecord {
+    const taskIds = record.turns.map(turn => turn.taskId ?? inferTaskId(turn.userInput));
+    const latestTurnByTask = new Map<string, number>();
+    taskIds.forEach((taskId, index) => {
+      if (taskId) latestTurnByTask.set(taskId, index);
+    });
+    const timelineByTask = new Map<string, ExecutionTimeline | null>();
+    const artifactsByTask = new Map<string, ArtifactProjection[]>();
+    return {
+      ...structuredClone(record),
+      turns: record.turns.map((turn, index) => {
+        const taskId = taskIds[index];
+        const hydrateDurableFacts = Boolean(
+          taskId && latestTurnByTask.get(taskId) === index,
+        );
+        return this.enrichTurn(
+          turn,
+          taskId,
+          hydrateDurableFacts,
+          timelineByTask,
+          artifactsByTask,
+        );
+      }),
+    };
+  }
+
+  private enrichTurn(
+    turn: ConversationTurn,
+    taskId: string | null,
+    hydrateDurableFacts: boolean,
+    timelineByTask: Map<string, ExecutionTimeline | null>,
+    artifactsByTask: Map<string, ArtifactProjection[]>,
+  ): ConversationTurn {
+    if (!taskId) return structuredClone(turn);
+    if (!hydrateDurableFacts) {
+      return {
+        ...structuredClone(turn),
+        taskId,
+      };
+    }
+    if (!timelineByTask.has(taskId)) {
+      timelineByTask.set(
+        taskId,
+        this.deps.projectExecutionTimeline?.(taskId) ?? turn.executionTimeline,
+      );
+    }
+    if (!artifactsByTask.has(taskId)) {
+      artifactsByTask.set(
+        taskId,
+        this.deps.projectTaskArtifacts?.(taskId) ?? [],
+      );
+    }
+    const executionTimeline = timelineByTask.get(taskId) ?? turn.executionTimeline;
+    const projectedArtifacts = artifactsByTask.get(taskId) ?? [];
+    const artifacts = mergeArtifacts(turn.artifacts, projectedArtifacts);
+    const artifactRefs = [...new Set([
+      ...turn.artifactRefs,
+      ...artifacts.map(artifact => artifact.relativePath),
+    ])];
+    return {
+      ...structuredClone(turn),
+      taskId,
+      executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
+      artifactRefs,
+      artifacts,
+    };
   }
 
   private consumeResultEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
@@ -543,4 +740,67 @@ function nonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
     ? value
     : null;
+}
+
+interface RuntimeTurnState {
+  id: string;
+  sessionId: string;
+  requestId: string | null;
+  userInput: string;
+  status: InteractionTraceStatus;
+  finalAnswer: string | null;
+  taskId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  traceEvents: InteractionTraceEvent[];
+  executionTimeline: ExecutionTimeline | null;
+}
+
+function isInteractionTraceEvent(value: unknown): value is InteractionTraceEvent {
+  if (!value || typeof value !== 'object') return false;
+  const event = value as Record<string, unknown>;
+  return typeof event.id === 'string'
+    && typeof event.sequence === 'number'
+    && typeof event.kind === 'string'
+    && typeof event.title === 'string'
+    && typeof event.summary === 'string'
+    && typeof event.details === 'object'
+    && event.details !== null;
+}
+
+function compareTraceEvents(
+  left: InteractionTraceEvent,
+  right: InteractionTraceEvent,
+): number {
+  return left.sequence - right.sequence
+    || left.occurredAt.localeCompare(right.occurredAt)
+    || left.id.localeCompare(right.id);
+}
+
+function arrayStringValue(value: unknown): string[] | null {
+  return Array.isArray(value)
+    && value.every(item => typeof item === 'string')
+    ? value as string[]
+    : null;
+}
+
+function inferTaskId(userInput: string): string | null {
+  const match = /^\/task\s+(?:resume|unblock|recover)\s+([A-Za-z0-9_.:-]+)(?:\s|$)/iu.exec(
+    userInput.trim(),
+  );
+  return match?.[1] ?? null;
+}
+
+function mergeArtifacts(
+  current: ArtifactProjection[],
+  projected: ArtifactProjection[],
+): ArtifactProjection[] {
+  const byId = new Map<string, ArtifactProjection>();
+  for (const artifact of [...current, ...projected]) {
+    byId.set(artifact.artifactId, structuredClone(artifact));
+  }
+  return [...byId.values()].sort(
+    (left, right) => left.publishedAt.localeCompare(right.publishedAt)
+      || left.artifactId.localeCompare(right.artifactId),
+  );
 }

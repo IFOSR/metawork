@@ -664,6 +664,147 @@ describe('ControlKernel', () => {
     }), dispatchSnapshot([], 'done')).action).toEqual({ type: 'complete_task', taskId: 'task_1' });
   });
 
+  it('waits for dependency publication instead of converting an empty frontier into an ordinary block', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.frontier = [];
+    snapshot.subtasks = [
+      {
+        id: 'upstream',
+        taskId: 'task_1',
+        status: 'awaiting_integration',
+        executorBindings: [codexBinding],
+      },
+      {
+        id: 'downstream',
+        taskId: 'task_1',
+        status: 'ready',
+        executorBindings: [codexBinding],
+      },
+    ];
+    snapshot.dependencyReadiness = [{
+      sourceSubtaskId: 'upstream',
+      targetSubtaskId: 'downstream',
+      code: 'pending_publication',
+      terminal: false,
+      detail: 'upstream publication has not been integrated',
+    }];
+
+    const result = new ControlKernel().decide(
+      runtimeEvent({
+        type: 'dispatch_requested',
+        subtaskId: undefined,
+        reason: 'continue after upstream attempt',
+      }),
+      snapshot,
+    );
+
+    expect(result.action).toEqual({ type: 'no_op' });
+    expect(result.reason).toContain('dependency publication');
+  });
+
+  it('authorizes explicit resume only for a recoverable blocked Task and restores runnable Subtasks through Runtime', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.subtasks[0]!.status = 'ready';
+    const result = new ControlKernel().decide({
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'task_resume_requested',
+      id: 'resume_event_1',
+      correlationId: 'resume_request_1',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      blockerCategory: 'capacity',
+      sourceInputExcerpt: 'continue',
+      newlyProvidedResources: [],
+      idempotencyKey: 'resume:task_1:continue',
+    }, snapshot);
+
+    expect(result.action).toEqual({
+      type: 'resume_task',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      subtaskIds: ['subtask_1'],
+      blockerCategory: 'capacity',
+    });
+  });
+
+  it('does not clear a manual or contract blocker on explicit resume', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.task = { id: 'task_1', status: 'blocked' };
+    const result = new ControlKernel().decide({
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'task_resume_requested',
+      id: 'resume_event_manual',
+      correlationId: 'resume_request_manual',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      blockerCategory: 'contract',
+      sourceInputExcerpt: 'continue',
+      newlyProvidedResources: [],
+      idempotencyKey: 'resume:task_1:contract',
+    }, snapshot);
+
+    expect(result.action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: null,
+    });
+  });
+
+  it('authorizes exact workspace continuation when a safe result only lacks the completion marker', () => {
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.task = { id: 'task_1', status: 'running' };
+    snapshot.resumeRecoveryCandidates = [{
+      subtaskId: 'subtask_1',
+      sourceAttemptId: 'attempt_uncertified',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      recoveryMode: 'native_session',
+      reason: 'completion_marker_missing',
+    }];
+
+    const result = new ControlKernel().decide({
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'task_resume_requested',
+      id: 'resume_event_uncertified',
+      correlationId: 'resume_request_uncertified',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      blockerCategory: 'unknown',
+      sourceInputExcerpt: 'continue',
+      newlyProvidedResources: [],
+      idempotencyKey: 'resume:task_1:uncertified',
+    }, snapshot);
+
+    expect(result.action).toEqual({
+      type: 'resume_task',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      subtaskIds: [],
+      blockerCategory: 'unknown',
+      recovery: {
+        subtaskId: 'subtask_1',
+        sourceAttemptId: 'attempt_uncertified',
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
+        attemptKind: 'continuation',
+        recoveryMode: 'native_session',
+        defaultResourceGrant: [],
+      },
+    });
+  });
+
   it('waits once for preferred infrastructure recovery, then falls back exactly once per remaining class', () => {
     const kernel = new ControlKernel();
     const firstFailure = executionFailure('attempt_1', codexBinding, 'primary', 'network');
@@ -815,6 +956,32 @@ describe('ControlKernel', () => {
       event,
       dispatchSnapshot([], 'awaiting_decision'),
     ).action).toEqual({ type: 'no_op' });
+  });
+
+  it('lets the merge conflict observation own repair failure policy', () => {
+    const event = runtimeEvent({
+      type: 'execution_outcome',
+      attemptId: 'attempt_merge_repair',
+      terminalKind: 'failed',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'merge_repair',
+      sourceAttemptId: 'attempt_primary',
+      failure: {
+        kind: 'unknown',
+        scope: 'attempt',
+        code: 'attempt_exception',
+        summary: 'merge repair trailer protocol is invalid',
+      },
+    });
+
+    expect(new ControlKernel().decide(
+      event,
+      dispatchSnapshot([], 'awaiting_decision'),
+    )).toMatchObject({
+      action: { type: 'no_op' },
+      reason: 'merge repair failure is governed by the publication conflict chain',
+    });
   });
 
   it('keeps merge repair on the original AgentClass for three attempts, then requests one conflict replan', () => {

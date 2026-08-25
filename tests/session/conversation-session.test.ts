@@ -304,6 +304,57 @@ describe('ConversationSession', () => {
     });
   });
 
+  it('starts a fresh interaction trace for an explicit task resume command', async () => {
+    const trace = new InteractionTraceStream('planner_resume');
+    let session!: ConversationSession;
+    session = new ConversationSession({
+      conversationId: 'conv_resume',
+      plannerSessionId: 'planner_resume',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+      handleCommand: async () => {
+        session.appendExecutionTrace({
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'completed',
+          title: 'Executor completed',
+          summary: '恢复任务已完成',
+          details: {
+            subtaskId: 'subtask_resume',
+            attemptId: 'attempt_resume',
+          },
+          eventKey: 'attempt_resume:completed',
+          taskId: 'task_resume',
+          traceStatus: 'completed',
+        });
+        return false;
+      },
+    });
+
+    await session.submitUserInput('/task resume task_resume', {
+      interactionTurnId: 'gateway_resume_turn',
+    });
+
+    expect(session.getInteractionTrace()).toMatchObject({
+      turnId: 'gateway_resume_turn',
+      taskId: 'task_resume',
+      status: 'completed',
+      events: [
+        expect.objectContaining({
+          kind: 'query_received',
+          summary: '/task resume task_resume',
+        }),
+        expect.objectContaining({
+          kind: 'executor_progress',
+          subtaskId: 'subtask_resume',
+          attemptId: 'attempt_resume',
+        }),
+      ],
+    });
+  });
+
   it('passes Gateway image attachments into the Planner context', async () => {
     let receivedContext: PlanningContext | null = null;
     const session = new ConversationSession({
