@@ -2616,14 +2616,14 @@ select {
 .trajectory-summary {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-trajectory);
   border-radius: 10px;
-  background: #111511;
+  background: var(--surface-trajectory-panel);
 }
 
 .trajectory-summary div {
   padding: 15px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--line-trajectory);
 }
 
 .trajectory-summary div:last-child {
@@ -2646,15 +2646,15 @@ select {
 
 .trajectory-band {
   padding: 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-trajectory);
   border-radius: 10px;
-  background: #101310;
+  background: var(--surface-trajectory-panel);
 }
 
 .trajectory-band-labels {
   display: flex;
   justify-content: space-between;
-  color: #687269;
+  color: var(--text-trajectory-muted);
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 9px;
 }
@@ -2666,8 +2666,14 @@ select {
   overflow: hidden;
   border-radius: 5px;
   background:
-    repeating-linear-gradient(90deg, #202620 0, #202620 1px, transparent 1px, transparent 10%),
-    #161a17;
+    repeating-linear-gradient(
+      90deg,
+      var(--line-trajectory-track) 0,
+      var(--line-trajectory-track) 1px,
+      transparent 1px,
+      transparent 10%
+    ),
+    var(--surface-trajectory-track);
 }
 
 .trajectory-segment {
@@ -2708,17 +2714,18 @@ select {
 .trajectory-filters select {
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-trajectory);
   border-radius: 7px;
   outline: 0;
-  color: var(--text);
-  background: #141814;
+  color: var(--text-primary);
+  background: var(--surface-trajectory-control);
 }
 
 .trajectory-table {
   overflow-x: auto;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-trajectory);
   border-radius: 9px;
+  background: var(--surface-trajectory-panel);
 }
 
 .trajectory-row {
@@ -2728,15 +2735,15 @@ select {
   min-width: 820px;
   gap: 10px;
   padding: 9px 12px;
-  border-bottom: 1px solid #222923;
+  border-bottom: 1px solid var(--line-trajectory);
   font-size: 10px;
 }
 
 .trajectory-head {
-  color: #6e786f;
+  color: var(--text-trajectory-muted);
   font-family: 'SFMono-Regular', Consolas, monospace;
   text-transform: uppercase;
-  background: #151915;
+  background: var(--surface-trajectory-header);
 }
 
 .trajectory-event summary {
@@ -2749,7 +2756,7 @@ select {
 }
 
 .trajectory-event summary:hover {
-  background: #151a16;
+  background: var(--surface-trajectory-row-hover);
 }
 
 .trajectory-event strong {
@@ -2773,8 +2780,8 @@ select {
   margin: 0;
   padding: 13px 20px 13px 148px;
   overflow-x: auto;
-  color: #aab5ac;
-  background: #0d100e;
+  color: var(--text-primary);
+  background: var(--surface-trajectory-detail);
   font-size: 10px;
 }
 
@@ -2914,6 +2921,15 @@ select {
   --line-user-message: #374039;
   --text-user-message: var(--text-primary);
   --text-user-message-label: #87958c;
+  --surface-trajectory-panel: #111511;
+  --surface-trajectory-control: #141814;
+  --surface-trajectory-header: #151915;
+  --surface-trajectory-row-hover: #151a16;
+  --surface-trajectory-detail: #0d100e;
+  --surface-trajectory-track: #161a17;
+  --line-trajectory: #2a322b;
+  --line-trajectory-track: #202620;
+  --text-trajectory-muted: #8d998f;
   --bg: var(--surface-canvas);
   --bg-panel: var(--surface-panel);
   --bg-elevated: var(--surface-raised);
@@ -2944,6 +2960,15 @@ select {
   --line-user-message: #bdc9ba;
   --text-user-message: var(--text-primary);
   --text-user-message-label: #56645a;
+  --surface-trajectory-panel: #faf8f2;
+  --surface-trajectory-control: #ffffff;
+  --surface-trajectory-header: #e6eee4;
+  --surface-trajectory-row-hover: #edf2eb;
+  --surface-trajectory-detail: #f2eee5;
+  --surface-trajectory-track: #e5e9e2;
+  --line-trajectory: #c8cfc5;
+  --line-trajectory-track: #c3cbc1;
+  --text-trajectory-muted: #56645a;
 }
 
 body {

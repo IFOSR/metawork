@@ -157,6 +157,7 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
         await cdp.evaluate(`document.querySelectorAll('.workspace-tabs button')[1].click()`);
         await waitForExpression(cdp, `document.body.innerText.includes('未入选模型候选')`);
         await assertThemeReadability(cdp);
+        await assertLightTrajectorySurfaces(cdp);
 
         await selectTheme(cdp, '深色');
         expect(await cdp.evaluate(`document.documentElement.dataset.theme`)).toBe('dark');
@@ -619,6 +620,64 @@ async function assertUserMessageReadability(
     expect(audit.backgroundLuminance).toBeGreaterThanOrEqual(0.65);
   } else {
     expect(audit.backgroundLuminance).toBeLessThanOrEqual(0.05);
+  }
+}
+
+async function assertLightTrajectorySurfaces(cdp: CdpClient): Promise<void> {
+  const audit = await cdp.evaluate(`(() => {
+    const parse = value => {
+      const match = value.match(/[\\d.]+/g);
+      return match ? match.slice(0, 3).map(Number) : null;
+    };
+    const luminance = rgb => {
+      const values = rgb.map(value => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2];
+    };
+    const selectors = [
+      '.trajectory-summary',
+      '.trajectory-band',
+      '.trajectory-filters input',
+      '.trajectory-filters select',
+      '.trajectory-head',
+    ];
+    const results = selectors.flatMap(selector => (
+      [...document.querySelectorAll(selector)].map((element, index) => {
+        const style = getComputedStyle(element);
+        const background = luminance(parse(style.backgroundColor));
+        const foreground = luminance(parse(style.color));
+        return {
+          selector: selector + ':' + index,
+          background,
+          contrast: (Math.max(foreground, background) + 0.05)
+            / (Math.min(foreground, background) + 0.05),
+        };
+      })
+    ));
+    const firstEvent = document.querySelector('.trajectory-event');
+    firstEvent.open = true;
+    const detail = firstEvent.querySelector('pre');
+    const detailStyle = getComputedStyle(detail);
+    const detailBackground = luminance(parse(detailStyle.backgroundColor));
+    const detailForeground = luminance(parse(detailStyle.color));
+    results.push({
+      selector: '.trajectory-event pre',
+      background: detailBackground,
+      contrast: (Math.max(detailForeground, detailBackground) + 0.05)
+        / (Math.min(detailForeground, detailBackground) + 0.05),
+    });
+    return results;
+  })()`) as Array<{
+    selector: string;
+    background: number;
+    contrast: number;
+  }>;
+
+  for (const surface of audit) {
+    expect(surface.background, surface.selector).toBeGreaterThanOrEqual(0.65);
+    expect(surface.contrast, surface.selector).toBeGreaterThanOrEqual(4.5);
   }
 }
 
