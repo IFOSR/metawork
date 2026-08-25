@@ -413,7 +413,7 @@ The plan document should be updated on completion with:
 
 ## 7. Completion Record
 
-**Status:** Implemented and validated; GitHub synchronization in progress.
+**Status:** Implemented, validated, committed, and synchronized.
 **Implementation date:** 2026-08-25.
 
 **Delivered behavior:**
@@ -546,8 +546,8 @@ an acceptance requirement for this delivery.
 flow is native; Docker remains an optional repository compatibility path and is
 not a release or completion gate for these changes.
 
-**Closing commit:** Not committed by instruction. Commit and GitHub
-synchronization remain pending explicit user instruction.
+**Closing commit:** `3ce64f5` (`feat: improve execution reliability and
+transparency`).
 
 **Known residual risks:** Generic uncertain applications and external effects
 still require their existing explicit recovery flow by design. The automated
