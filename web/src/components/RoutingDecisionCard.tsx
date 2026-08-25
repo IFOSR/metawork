@@ -6,14 +6,15 @@ export function RoutingDecisionCard({ routing }: { routing: Routing }) {
   return (
     <div className="routing-decision-card">
       <div className="routing-decision-head">
-        <strong>{routing.agentClassRef}</strong>
+        <strong>{routing.executorDisplayName}</strong>
         <span>{routing.policy.toUpperCase()}</span>
       </div>
+      <span className="routing-section-label">最终选择</span>
       <div className="routing-decision-binding">
-        {routing.providerRef && routing.modelRef
-          ? `${routing.providerRef}/${routing.modelRef}`
-          : '等待 Kernel concrete binding'}
-        {routing.harnessRef ? ` · ${routing.harnessRef}` : ''}
+        {routing.selected
+          ? `${routing.selected.providerDisplayName} / ${routing.selected.modelDisplayName}`
+          : '等待 Kernel 最终选择'}
+        {routing.harnessDisplayName ? ` · ${routing.harnessDisplayName}` : ''}
       </div>
       {(routing.estimatedCost !== undefined || routing.estimatedLatencyMs !== undefined) && (
         <small>
@@ -24,13 +25,25 @@ export function RoutingDecisionCard({ routing }: { routing: Routing }) {
       )}
       {routing.rejectedCandidates.length > 0 && (
         <div className="routing-rejections">
+          <strong>未入选模型候选</strong>
           {routing.rejectedCandidates.map(candidate => (
-            <span key={`${candidate.providerRef}/${candidate.modelRef}:${candidate.reason}`}>
-              拒绝 {candidate.providerRef}/{candidate.modelRef}: {candidate.reason}
-            </span>
+            <div key={`${candidate.providerDisplayName}/${candidate.modelDisplayName}:${candidate.reasonCode}`}>
+              <span>{candidate.providerDisplayName} / {candidate.modelDisplayName}</span>
+              <small>{candidateReason(candidate.reasonCode, candidate.reasonDetail)}</small>
+            </div>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function candidateReason(reasonCode: string, reasonDetail?: string): string {
+  if (reasonCode === 'missing_capability') {
+    return `该模型未声明任务所需的 ${reasonDetail ?? '能力'} 能力`;
+  }
+  if (reasonCode === 'latency_limit_exceeded') return '预计延迟超过当前任务限制';
+  if (reasonCode === 'cost_limit_exceeded') return '预计成本超过当前任务限制';
+  if (reasonCode === 'unavailable') return '该模型当前不可用';
+  return '该模型未满足本次任务的路由条件';
 }

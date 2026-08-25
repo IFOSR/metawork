@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 const root = new URL('../../web/src/', import.meta.url);
 
 describe('Web workspace shell', () => {
-  it('renders session navigation, dual views, and one shared composer', async () => {
+  it('renders session navigation, dual views, and a conversation-only composer', async () => {
     const [app, shell, sidebar, header, composer, styles] = await Promise.all([
       readFile(new URL('App.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8'),
@@ -17,6 +17,8 @@ describe('Web workspace shell', () => {
     expect(shell).toContain('<SessionSidebar');
     expect(shell).toContain('<WorkspaceHeader');
     expect(shell).toContain('<Composer');
+    expect(shell).toContain('composerVisible');
+    expect(shell).toContain('{composerVisible && (');
     expect(sidebar).toContain('新建会话');
     expect(sidebar).toContain('搜索会话');
     expect(sidebar).toContain('继续此会话');
@@ -31,8 +33,29 @@ describe('Web workspace shell', () => {
     expect(app).toContain('onTurnStarted');
     expect(app).toContain('onFinalAnswer');
     expect(app).toContain('onTraceDelta');
+    expect(app).toContain("composerVisible={tab === 'conversation'}");
     expect(styles).toContain('@media (max-width: 860px)');
     expect(styles).toContain('.workspace-sidebar');
+  });
+
+  it('provides a three-state persisted theme control', async () => {
+    const [app, header, control, styles, html] = await Promise.all([
+      readFile(new URL('App.tsx', root), 'utf8'),
+      readFile(new URL('components/WorkspaceHeader.tsx', root), 'utf8'),
+      readFile(new URL('components/ThemeControl.tsx', root), 'utf8'),
+      readFile(new URL('styles.css', root), 'utf8'),
+      readFile(new URL('../index.html', root), 'utf8'),
+    ]);
+
+    expect(app).toContain('useThemePreference');
+    expect(header).toContain('<ThemeControl');
+    expect(control).toContain('跟随系统');
+    expect(control).toContain('浅色');
+    expect(control).toContain('深色');
+    expect(styles).toContain(":root[data-theme='light']");
+    expect(styles).toContain('--surface-canvas');
+    expect(html).toContain('anyfusion.theme');
+    expect(html).toContain('data-theme-preference');
   });
 
   it('opens a right-side document preview drawer without global horizontal overflow', async () => {

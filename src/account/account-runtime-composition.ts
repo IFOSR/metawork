@@ -179,6 +179,7 @@ export function buildAccountRuntimeComposition(deps: {
     maxConcurrentAttempts: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttempts
       ?? 4,
     getConfigurationRevision: deps.getConfigurationRevision,
+    getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
     agentClassService: taskServices.agentClassService,
     workGraphRuntimeService: repositories.workGraphRuntimeService,

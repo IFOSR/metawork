@@ -3,9 +3,13 @@ import {
   WorkGraphPresentationProjector,
   type WorkGraphPresentationInput,
 } from '../../src/management/work-graph-presentation-projector.js';
+import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
 
 function input(): WorkGraphPresentationInput {
   return {
+    taskId: 'task-1',
+    graphRevision: 1,
+    configuration: configuration(),
     graph: {
       schemaVersion: 7,
       configurationRevision: 'revision-1',
@@ -53,9 +57,9 @@ function input(): WorkGraphPresentationInput {
       ],
     },
     subtasks: [
-      { id: 'inspect', status: 'done', generationId: 'generation-1', firstDispatchOrder: 0, hasPendingOrActiveAttempt: false },
-      { id: 'implement', status: 'running', generationId: 'generation-1', firstDispatchOrder: 1, hasPendingOrActiveAttempt: true },
-      { id: 'docs', status: 'ready', generationId: 'generation-1', firstDispatchOrder: 2, hasPendingOrActiveAttempt: false },
+      { id: 'task-1_r1_inspect', status: 'done', generationId: 'generation-1', firstDispatchOrder: 0, hasPendingOrActiveAttempt: false },
+      { id: 'task-1_r1_implement', status: 'running', generationId: 'generation-1', firstDispatchOrder: 1, hasPendingOrActiveAttempt: true },
+      { id: 'task-1_r1_docs', status: 'ready', generationId: 'generation-1', firstDispatchOrder: 2, hasPendingOrActiveAttempt: false },
     ],
     decisions: [{
       taskId: 'task-1',
@@ -77,7 +81,7 @@ function input(): WorkGraphPresentationInput {
         estimatedLatencyMs: 800,
       }],
     }],
-    dispatchItems: [{ subtaskId: 'implement', status: 'running', authorizedBinding: {
+    dispatchItems: [{ subtaskId: 'task-1_r1_implement', status: 'running', authorizedBinding: {
       agentClassRef: 'codex',
       harnessRef: 'codex-harness',
       providerRef: 'openai',
@@ -94,25 +98,44 @@ describe('WorkGraphPresentationProjector', () => {
   it('projects dependency edges, parallel groups, frontier and concrete routing facts', () => {
     const result = new WorkGraphPresentationProjector().project(input());
 
-    expect(result.configurationRevision).toBe('revision-1');
-    expect(result.nodes.map(node => node.id)).toEqual(['inspect', 'implement', 'docs']);
+    expect(result.nodes.map(node => node.id)).toEqual([
+      'task-1_r1_inspect',
+      'task-1_r1_implement',
+      'task-1_r1_docs',
+    ]);
     expect(result.edges).toEqual(expect.arrayContaining([
-      { from: 'inspect', to: 'implement', kind: 'handoff', label: 'Inspection findings' },
+      {
+        from: 'task-1_r1_inspect',
+        to: 'task-1_r1_implement',
+        kind: 'handoff',
+        label: 'Inspection findings',
+      },
     ]));
     expect(result.parallelGroups).toEqual([
-      ['inspect', 'docs'],
-      ['implement'],
+      ['task-1_r1_inspect', 'task-1_r1_docs'],
+      ['task-1_r1_implement'],
     ]);
-    expect(result.currentRunnableFrontier).toEqual(['docs']);
-    expect(result.nodes.find(node => node.id === 'implement')).toMatchObject({
+    expect(result.currentRunnableFrontier).toEqual(['task-1_r1_docs']);
+    expect(result.nodes.find(node => node.id === 'task-1_r1_implement')).toMatchObject({
       status: 'running',
       routing: [{
-        providerRef: 'openai',
-        modelRef: 'coding-model',
+        executorDisplayName: 'Codex',
+        harnessDisplayName: 'Codex CLI',
         policy: 'auto',
-        rejectedCandidates: [{ reason: 'latency_limit_exceeded' }],
+        selected: {
+          providerDisplayName: 'OpenAI',
+          modelDisplayName: 'gpt-coding',
+        },
+        rejectedCandidates: [{
+          providerDisplayName: 'OpenAI',
+          modelDisplayName: 'gpt-slow',
+          reasonCode: 'latency_limit_exceeded',
+        }],
       }],
     });
+    expect(JSON.stringify(result)).not.toContain('coding-model');
+    expect(JSON.stringify(result)).not.toContain('slow-model');
+    expect(JSON.stringify(result)).not.toContain('configurationRevision');
   });
 
   it('does not expose prompt, credential or raw process fields', () => {
@@ -136,3 +159,55 @@ describe('WorkGraphPresentationProjector', () => {
     expect(serialized).not.toContain('rawPrompt');
   });
 });
+
+function configuration(): ConfigurationSnapshot {
+  return {
+    revisionId: 'revision-1',
+    contentHash: 'sha256:revision-1',
+    config: {
+      schemaVersion: 2,
+      providers: {
+        openai: {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKeyRef: 'file-secret:anyfusion/openai',
+          region: 'international',
+          enabled: true,
+        },
+      },
+      models: {
+        'coding-model': {
+          providerRef: 'openai',
+          modelId: 'gpt-coding',
+          capabilities: ['coding'],
+          reasoning: 'high',
+          enabled: true,
+        },
+        'slow-model': {
+          providerRef: 'openai',
+          modelId: 'gpt-slow',
+          capabilities: ['coding'],
+          reasoning: 'high',
+          enabled: true,
+        },
+      },
+      harnesses: {
+        'codex-harness': {
+          kind: 'executor',
+          transport: 'local-cli',
+          command: 'codex',
+          args: [],
+          driverId: 'codex-cli',
+          supportsProbe: true,
+          supportsAbort: true,
+          supportsContinuation: true,
+          enabled: true,
+        },
+      },
+      agentClasses: {},
+      permissionProfiles: {},
+      runtimePolicy: {},
+      gateway: {},
+    },
+  };
+}

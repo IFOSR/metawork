@@ -1,3 +1,5 @@
+import { publicProviderDisplayName } from './public-provider-catalog.js';
+
 export type CompletionFieldState =
   | '已自动发现'
   | '已从 Provider 补全'
@@ -14,6 +16,7 @@ export interface ConfigurationCompletionProviderSource {
 
 export interface ConfigurationCompletionPreset {
   providerRef: string;
+  displayName?: string;
   baseUrl: string;
   modelIds: string[];
 }
@@ -32,8 +35,15 @@ export interface ConfigurationCompletionModel {
 
 export interface ConfigurationCompletionResult {
   providers: Record<string, {
+    displayName: string;
     baseUrl: string | null;
     credentialState: CompletionFieldState;
+    modelIds: string[];
+  }>;
+  providerPresets: Array<{
+    providerRef: string;
+    displayName: string;
+    baseUrl: string;
     modelIds: string[];
   }>;
   models: Record<string, ConfigurationCompletionModel>;
@@ -91,6 +101,7 @@ export class ConfigurationCompletionService {
             ? '已从 Provider 补全'
             : '缺失';
       providers[providerRef] = {
+        displayName: preset?.displayName ?? publicProviderDisplayName(providerRef, baseUrl ?? undefined),
         baseUrl,
         credentialState,
         modelIds: unique([
@@ -137,6 +148,15 @@ export class ConfigurationCompletionService {
 
     return {
       providers,
+      providerPresets: [...presets.values()]
+        .map(preset => ({
+          providerRef: preset.providerRef,
+          displayName: preset.displayName
+            ?? publicProviderDisplayName(preset.providerRef, preset.baseUrl),
+          baseUrl: preset.baseUrl,
+          modelIds: unique(preset.modelIds),
+        }))
+        .sort((left, right) => left.providerRef.localeCompare(right.providerRef)),
       models,
       requiredFields: [...new Set(requiredFields)].sort(),
     };

@@ -6,6 +6,7 @@ import type { WorkspacePublicationRepo } from '../storage/workspace-publication-
 import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
+import type { KernelAttemptKind } from '../kernel/control-kernel.js';
 
 const MAX_TIMELINE_ATTEMPTS_PER_SUBTASK = 20;
 const MAX_TIMELINE_PROGRESS_EVENTS_PER_ATTEMPT = 50;
@@ -28,6 +29,10 @@ export interface TimelineDecision {
 
 export interface TimelineAttempt {
   attemptId?: string;
+  attemptKind: KernelAttemptKind;
+  attemptOrdinal: number;
+  attemptLabel: string;
+  displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '状态未知';
   result: string;
   status?: string;
   startedAt?: string;
@@ -179,14 +184,19 @@ export class ExecutionProjector {
           executor: subtaskDispatches[0]?.authorizedBinding.agentClassRef
             ?? subtaskReceipts[0]?.agentClassName
             ?? subtask.executorBindings[0]?.agentClassRef,
-          attempts: attemptIds.map(attemptId => {
+          attempts: attemptIds.map((attemptId, attemptIndex) => {
             const receipt = subtaskReceipts.find(item => item.attemptId === attemptId);
             const dispatch = subtaskDispatches.find(item => item.attemptId === attemptId);
             const runtime = this.deps.attemptRuntimeRepo.find(attemptId);
             const progressHistory = progressHistoryFrom(runtime?.progress);
             const currentProgress = currentProgressFrom(runtime?.progress);
+            const attemptKind = dispatch?.attemptKind ?? receipt?.attemptKind ?? 'primary';
             return {
               attemptId,
+              attemptKind,
+              attemptOrdinal: attemptIndex + 1,
+              attemptLabel: attemptLabel(attemptKind),
+              displayStatus: displayAttemptStatus(dispatch?.status, receipt?.terminalState),
               result: receipt
                 ? receipt.terminalState === 'completed' ? 'success' : 'failed'
                 : dispatch?.status ?? 'running',
@@ -246,6 +256,32 @@ export class ExecutionProjector {
     );
     return { phase: 'delivery', status: hasFinishedSubtask ? 'running' : 'pending' };
   }
+}
+
+function attemptLabel(kind: KernelAttemptKind): string {
+  const labels: Record<KernelAttemptKind, string> = {
+    primary: '主执行',
+    continuation: '继续执行',
+    fallback: '回退执行',
+    contract_correction: '结果修正',
+    merge_repair: '合并修复',
+  };
+  return labels[kind];
+}
+
+function displayAttemptStatus(
+  dispatchStatus: string | undefined,
+  terminalState: string | undefined,
+): TimelineAttempt['displayStatus'] {
+  if (terminalState === 'completed') return '已完成';
+  if (terminalState === 'cancelled_or_stale') return '已取消';
+  if (terminalState) return '失败';
+  if (dispatchStatus === 'pending_launch' || dispatchStatus === 'launching') return '等待启动';
+  if (dispatchStatus === 'running' || dispatchStatus === 'cancelling') return '执行中';
+  if (dispatchStatus === 'terminal') return '已完成';
+  if (dispatchStatus === 'cancelled') return '已取消';
+  if (dispatchStatus === 'uncertain') return '状态未知';
+  return dispatchStatus ? '状态未知' : '等待启动';
 }
 
 function progressHistoryFrom(

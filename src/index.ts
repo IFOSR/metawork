@@ -108,6 +108,11 @@ import { FileAttachmentStore } from './storage/file-attachment-store.js';
 import { WebSessionCatalog } from './management/web-session-catalog.js';
 import { WebGatewaySessionRuntime } from './management/web-gateway-session-runtime.js';
 import type { ManagementWebSessionRuntime } from './management/web-session-runtime-types.js';
+import {
+  normalizeExecutionPresentation,
+} from './management/execution-presentation-normalizer.js';
+import type { ConversationTurn } from './management/web-session-types.js';
+import { buildCanonicalSubtaskIdentityMap } from './work-graph/index.js';
 import { resolveServerSurface } from './session/server-application.js';
 import { ensureActiveConfigurationRevision } from './storage/active-configuration-revision.js';
 import {
@@ -117,6 +122,7 @@ import {
   ConfigurationRuntimeCoordinator,
 } from './configuration/configuration-runtime-coordinator.js';
 import { ConfigurationCompletionService } from './configuration/configuration-completion-service.js';
+import { PUBLIC_PROVIDER_PRESETS } from './configuration/public-provider-catalog.js';
 import { ConfigurationRevisionRepo } from './storage/configuration-revision-repo.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
@@ -766,6 +772,7 @@ async function main() {
       planningContextBuilder,
       db,
       getKernelConfiguration: () => stagedConfiguration.kernel,
+      getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
       commandCatalog,
       commandReadServices,
       taskEngine,
@@ -796,8 +803,25 @@ async function main() {
   );
   await conversationBindings.initialize();
   const eventJournal = new FileEventJournal(resolve(accountPaths.gateway, 'events'));
+  const normalizeTurnPresentation = (turn: ConversationTurn): ConversationTurn => {
+    if (!turn.taskId) return structuredClone(turn);
+    const graphDecision = [...new KernelDecisionRepo(db).listByTask(turn.taskId)]
+      .reverse()
+      .find(record => record.decision.action.type === 'authorize_task_plan');
+    const action = graphDecision?.decision.action;
+    if (!action || action.type !== 'authorize_task_plan') return structuredClone(turn);
+    return normalizeExecutionPresentation(
+      turn,
+      buildCanonicalSubtaskIdentityMap(
+        action.taskId,
+        action.graphRevision,
+        action.workGraph.subtasks,
+      ),
+    );
+  };
   const webSessionCatalog = new WebSessionCatalog(
     new FileWebSessionStore(resolve(accountPaths.conversations, 'web')),
+    { normalizeTurnPresentation },
   );
   const webAttachmentStore = new FileAttachmentStore(
     resolve(accountPaths.conversations, 'web-attachments'),
@@ -1049,6 +1073,7 @@ async function main() {
         catalog: webSessionCatalog,
         gateway: webGatewayAdapter,
         attachments: webAttachmentStore,
+        normalizeTurnPresentation,
         projectExecutionTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;
@@ -1103,6 +1128,10 @@ async function main() {
             routing: planAction.routing?.[subtaskId],
           }));
           return workGraphPresentationProjector.project({
+            taskId,
+            graphRevision: planAction.graphRevision,
+            configuration: runtimeBindings.getRuntimeConfiguration(graph.configurationRevision)
+              ?? runtimeBindings.getActiveRuntimeConfiguration(),
             graph,
             subtasks: subtasks.map(subtask => ({
               id: subtask.id,
@@ -1183,7 +1212,10 @@ async function main() {
               };
             }),
           );
-          return new ConfigurationCompletionService({ providerCatalog }).complete({
+          return new ConfigurationCompletionService({
+            providerCatalog,
+            presets: PUBLIC_PROVIDER_PRESETS,
+          }).complete({
             providers: Object.fromEntries(
               Object.entries(snapshot.config.providers).map(([providerRef, provider]) => [
                 providerRef,

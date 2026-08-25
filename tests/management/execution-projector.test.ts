@@ -160,6 +160,7 @@ describe('ExecutionProjector', () => {
           attemptId: 'attempt_running',
           subtaskId: 'sub_1',
           status: 'running',
+          attemptKind: 'primary',
           authorizedBinding: { agentClassRef: 'pi-agent' },
           launchStartedAt: '2026-08-17T08:00:00.000Z',
           updatedAt: '2026-08-17T08:00:04.000Z',
@@ -190,6 +191,10 @@ describe('ExecutionProjector', () => {
     const attempt = timeline.stages[2].subtasks?.[0]?.attempts[0];
     expect(attempt).toMatchObject({
       attemptId: 'attempt_running',
+      attemptKind: 'primary',
+      attemptOrdinal: 1,
+      attemptLabel: '主执行',
+      displayStatus: '执行中',
       result: 'running',
       progress: { text: '正在整理四维度趋势数据' },
       progressHistory: [
@@ -207,6 +212,7 @@ describe('ExecutionProjector', () => {
       attemptId: `attempt_${index}`,
       subtaskId: 'sub_1',
       status: 'terminal',
+      attemptKind: index === 24 ? 'continuation' : 'primary',
       authorizedBinding: { agentClassRef: 'codex-cli' },
       createdAt: `2026-08-17T08:${String(index).padStart(2, '0')}:00.000Z`,
       updatedAt: `2026-08-17T08:${String(index).padStart(2, '0')}:30.000Z`,
@@ -236,6 +242,12 @@ describe('ExecutionProjector', () => {
     expect(attempts).toHaveLength(20);
     expect(attempts[0]?.attemptId).toBe('attempt_5');
     expect(attempts.at(-1)?.attemptId).toBe('attempt_24');
+    expect(attempts.at(-1)).toMatchObject({
+      attemptKind: 'continuation',
+      attemptOrdinal: 20,
+      attemptLabel: '继续执行',
+      displayStatus: '已完成',
+    });
     expect(attempts[0]?.progressHistory?.length).toBeLessThanOrEqual(50);
     expect(attempts[0]?.progressHistory?.[0]?.text).toBe('步骤 25');
     expect(attempts[0]?.progressHistory?.at(-1)?.text)
@@ -262,6 +274,52 @@ describe('ExecutionProjector', () => {
     }).project(makeTask());
 
     expect(timeline.stages[3].status).toBe('failed');
+  });
+
+  it('projects every attempt kind and terminal state as user-facing labels', () => {
+    const kinds = [
+      ['primary', '主执行'],
+      ['continuation', '继续执行'],
+      ['fallback', '回退执行'],
+      ['contract_correction', '结果修正'],
+      ['merge_repair', '合并修复'],
+    ] as const;
+    const dispatches = kinds.map(([attemptKind], index) => ({
+      attemptId: `attempt_dispatch_event_exec_${index}_${attemptKind}`,
+      subtaskId: 'sub_1',
+      status: index === 0 ? 'cancelled' : 'terminal',
+      attemptKind,
+      authorizedBinding: { agentClassRef: 'codex-cli' },
+      createdAt: `2026-08-17T08:00:0${index}.000Z`,
+      updatedAt: `2026-08-17T08:00:1${index}.000Z`,
+    }));
+    const receipts = kinds.slice(1).map(([attemptKind], index) => ({
+      attemptId: `attempt_dispatch_event_exec_${index + 1}_${attemptKind}`,
+      subtaskId: 'sub_1',
+      attemptKind,
+      agentClassName: 'codex-cli',
+      terminalState: index === 0 ? 'completed' : 'executor_failed',
+      errorCode: null,
+      errorDetail: null,
+      verification: { warnings: [], violations: [] },
+    }));
+    const timeline = makeProjector({
+      subtaskRepo: {
+        listByTask: () => [makeSubtask({ id: 'sub_1', status: 'done' })],
+      },
+      dispatchItemRepo: { listByTask: () => dispatches },
+      receiptRepo: { listByTask: () => receipts },
+    }).project(makeTask({ status: 'done' }));
+
+    const attempts = timeline.stages[2].subtasks?.[0]?.attempts ?? [];
+    expect(attempts.map(attempt => attempt.attemptLabel)).toEqual(kinds.map(([, label]) => label));
+    expect(attempts.map(attempt => attempt.displayStatus)).toEqual([
+      '已取消',
+      '已完成',
+      '失败',
+      '失败',
+      '失败',
+    ]);
   });
 
   it('delivery 阶段 integrated 推导 done', () => {

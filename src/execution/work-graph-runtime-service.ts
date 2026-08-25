@@ -2,6 +2,7 @@
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { Subtask, Task } from '../core/types.js';
 import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
+import { buildCanonicalSubtaskIdentityMap } from '../work-graph/subtask-identity.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
@@ -177,9 +178,9 @@ export class WorkGraphRuntimeService {
     authorization: WorkGraphAuthorization,
   ): Subtask[] {
     const now = new Date().toISOString();
-    const idMap = buildSubtaskIdMap(taskId, authorization.revision, workGraph.subtasks);
+    const idMap = buildCanonicalSubtaskIdentityMap(taskId, authorization.revision, workGraph.subtasks);
     const subtasks: Subtask[] = workGraph.subtasks.map(proposal => ({
-      id: idMap.get(proposal.id) ?? stableSubtaskId(taskId, authorization.revision, proposal.id, new Set()),
+      id: idMap.get(proposal.id)!,
       taskId,
       graphRevision: authorization.revision,
       generationId: authorization.generationId,
@@ -188,8 +189,7 @@ export class WorkGraphRuntimeService {
       status: 'ready',
       dependencies: proposal.dependencies.map(dependency => ({
         ...dependency,
-        fromSubtaskId: idMap.get(dependency.fromSubtaskId)
-          ?? normalizeSubtaskId(taskId, authorization.revision, dependency.fromSubtaskId),
+        fromSubtaskId: idMap.get(dependency.fromSubtaskId)!,
       })),
       contextRefs: proposal.contextRefs,
       requiredCapabilities: proposal.requiredCapabilities,
@@ -288,36 +288,6 @@ function validateAuthorizedBindings(
     }
   }
   return authorizedBindingsBySubtask;
-}
-
-function buildSubtaskIdMap(taskId: string, revision: number, proposals: SubtaskProposal[]): Map<string, string> {
-  const used = new Set<string>();
-  const idMap = new Map<string, string>();
-  for (const proposal of proposals) idMap.set(proposal.id, stableSubtaskId(taskId, revision, proposal.id, used));
-  return idMap;
-}
-
-function stableSubtaskId(taskId: string, revision: number, id: string, used: Set<string>): string {
-  const base = normalizeSubtaskId(taskId, revision, id);
-  if (!used.has(base)) {
-    used.add(base);
-    return base;
-  }
-  let index = 2;
-  for (;;) {
-    const candidate = `${base}_${index}`;
-    if (!used.has(candidate)) {
-      used.add(candidate);
-      return candidate;
-    }
-    index += 1;
-  }
-}
-
-function normalizeSubtaskId(taskId: string, revision: number, id: string): string {
-  if (id.startsWith(`${taskId}_r${revision}_`)) return id;
-  const safeId = id.replace(/[^a-zA-Z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '') || 'subtask_execute';
-  return `${taskId}_r${revision}_${safeId}`;
 }
 
 function revisionId(taskId: string, revision: number): string {

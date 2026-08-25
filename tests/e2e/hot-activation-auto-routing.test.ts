@@ -103,6 +103,9 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
     expect(routed.binding?.modelRef).toBe('vision');
 
     const projection = new WorkGraphPresentationProjector().project({
+      taskId: 'task-e2e',
+      graphRevision: 1,
+      configuration: after,
       graph: {
         schemaVersion: 7,
         configurationRevision: after.revisionId,
@@ -145,12 +148,13 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
       publications: [],
     });
 
-    expect(projection.configurationRevision).toBe(after.revisionId);
-    expect(projection.currentRunnableFrontier).toEqual(['inspect']);
+    expect(projection.currentRunnableFrontier).toEqual(['task-e2e_r1_inspect']);
     expect(projection.nodes[0]?.routing[0]).toMatchObject({
       policy: 'auto',
-      modelRef: 'model',
-      providerRef: 'provider',
+      selected: {
+        modelDisplayName: 'new-model',
+        providerDisplayName: 'Provider',
+      },
     });
     expect(projection.nodes[0]?.routing[0]?.rejectedCandidates).toHaveLength(1);
   });

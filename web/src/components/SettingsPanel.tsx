@@ -6,10 +6,6 @@ import type {
   ConfigurationCompletionResult,
   ConfigurationRuntimeState,
 } from '../api/types';
-import {
-  presetProvider,
-  presetProviderByBaseUrl,
-} from '../preset-providers';
 import { resolveProviderSecretReference } from './provider-secret-state';
 import {
   AgentClassConfig,
@@ -64,16 +60,20 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
     const provider = asRecord(raw);
     const completed = completionProviders[providerRef];
     const baseUrl = String(provider.baseUrl ?? completed?.baseUrl ?? '');
-    const preset = presetProvider(providerRef) ?? presetProviderByBaseUrl(baseUrl);
+    const preset = completion?.providerPresets.find(candidate => (
+      candidate.providerRef === providerRef || candidate.baseUrl === baseUrl
+    ));
     return [
       providerRef,
       {
         providerRef,
-        displayName: preset?.label ?? humanizeProviderRef(providerRef),
+        displayName: completed?.displayName
+          ?? preset?.displayName
+          ?? humanizeProviderRef(providerRef),
         baseUrl,
         modelIds: [...new Set([
           ...(completed?.modelIds ?? []),
-          ...(preset?.models ?? []),
+          ...(preset?.modelIds ?? []),
         ])],
         apiKey: '',
         credentialState: completed?.credentialState ?? '需要确认',
@@ -205,11 +205,14 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const secretStatusVersion = useRef(0);
 
-  const applyConfigSnapshot = (snapshot: ConfigSnapshot) => {
+  const applyConfigSnapshot = (
+    snapshot: ConfigSnapshot,
+    completion?: ConfigurationCompletionResult,
+  ) => {
     const config = snapshot.config as RawRecord;
     setRevisionId(snapshot.revisionId);
     setRunningRevisionId(snapshot.runtimeRevisionId ?? snapshot.runningRevisionId);
-    setCatalog(loadCatalog(config));
+    setCatalog(loadCatalog(config, completion));
     setDraft(loadRoutingDraft(config));
     setFacts(loadRoutingFacts(config));
   };
@@ -264,25 +267,11 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
 
   useEffect(() => {
     if (!http) return;
-    void http.getConfig().then(snapshot => {
-      applyConfigSnapshot(snapshot);
-      void http.getConfigurationCompletion().then(nextCompletion => {
-        setCatalog(current => {
-          if (!current) return current;
-          const providers = Object.fromEntries(Object.entries(current.providers).map(([ref, provider]) => [
-            ref,
-            {
-              ...provider,
-              modelIds: [...new Set([
-                ...provider.modelIds,
-                ...(nextCompletion.providers[ref]?.modelIds ?? []),
-              ])],
-              credentialState: nextCompletion.providers[ref]?.credentialState ?? provider.credentialState,
-            },
-          ]));
-          return { ...current, providers };
-        });
-      }).catch(() => undefined);
+    void Promise.all([
+      http.getConfig(),
+      http.getConfigurationCompletion(),
+    ]).then(([snapshot, completion]) => {
+      applyConfigSnapshot(snapshot, completion);
     }).catch(error => setLoadError((error as Error).message));
   }, [http]);
 

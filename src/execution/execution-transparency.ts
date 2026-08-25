@@ -6,7 +6,7 @@
  * 隐藏思维链、binding fingerprint 或内部 revision。
  */
 
-import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
+import type { PublicRoutingIdentity } from '../configuration/public-routing-identity.js';
 
 export interface ExecutorDisplayFacts {
   subtaskId: string;
@@ -25,31 +25,18 @@ export interface ExecutionStepFacts {
   progress?: number | null;
 }
 
-/** 把内部 ref（如 `codex-engineering`）转为稳定可读的显示名。 */
-export function displayNameFromRef(ref: string): string {
-  if (!ref) return '';
-  const tail = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
-  const prettified = tail
-    .split(/[-_.]+/u)
-    .filter(Boolean)
-    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
-  return prettified || tail;
-}
-
 export function buildExecutorDisplayFacts(input: {
-  binding: Pick<RevisionedAgentBinding, 'agentClassRef' | 'harnessRef' | 'providerRef' | 'modelRef'>;
-  executorName?: string;
+  identity: PublicRoutingIdentity;
   subtaskId: string;
   subtaskTitle?: string;
 }): ExecutorDisplayFacts {
   return {
     subtaskId: input.subtaskId,
     subtaskTitle: input.subtaskTitle ?? input.subtaskId,
-    executorDisplayName: displayNameFromRef(input.executorName || input.binding.agentClassRef),
-    harnessDisplayName: displayNameFromRef(input.binding.harnessRef),
-    providerDisplayName: displayNameFromRef(input.binding.providerRef),
-    modelDisplayName: displayNameFromRef(input.binding.modelRef),
+    executorDisplayName: input.identity.executorDisplayName,
+    harnessDisplayName: input.identity.harnessDisplayName,
+    providerDisplayName: input.identity.providerDisplayName,
+    modelDisplayName: input.identity.modelDisplayName,
   };
 }
 

@@ -1,6 +1,12 @@
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import {
+  resolvePublicRoutingIdentity,
+  type ConfigurationSnapshot,
+  type RuntimeConfigurationView,
+} from '../configuration/index.js';
 import type { RoutingResolutionAudit } from '../routing/auto-model-resolver.js';
 import { deriveRunnableFrontier } from '../work-graph/frontier.js';
+import { buildCanonicalSubtaskIdentityMap } from '../work-graph/subtask-identity.js';
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/types.js';
 
 export interface WorkGraphPresentationSubtaskFact {
@@ -38,6 +44,9 @@ export interface WorkGraphPresentationPublicationFact {
 }
 
 export interface WorkGraphPresentationInput {
+  taskId: string;
+  graphRevision: number;
+  configuration: ConfigurationSnapshot | RuntimeConfigurationView;
   graph: WorkGraphProposal;
   subtasks: readonly WorkGraphPresentationSubtaskFact[];
   decisions: readonly WorkGraphPresentationDecisionFact[];
@@ -47,15 +56,21 @@ export interface WorkGraphPresentationInput {
 }
 
 export interface WorkGraphPresentationRouting {
-  agentClassRef: string;
-  harnessRef?: string;
+  executorDisplayName: string;
+  harnessDisplayName: string;
   policy: 'auto' | 'fixed';
-  providerRef?: string;
-  modelRef?: string;
-  permissionProfileRef?: string;
+  selected?: {
+    providerDisplayName: string;
+    modelDisplayName: string;
+  };
   estimatedCost?: number;
   estimatedLatencyMs?: number;
-  rejectedCandidates: Array<{ providerRef: string; modelRef: string; reason: string }>;
+  rejectedCandidates: Array<{
+    providerDisplayName: string;
+    modelDisplayName: string;
+    reasonCode: string;
+    reasonDetail?: string;
+  }>;
 }
 
 export interface WorkGraphPresentationNode {
@@ -79,7 +94,6 @@ export interface WorkGraphPresentationEdge {
 }
 
 export interface WorkGraphPresentationProjection {
-  configurationRevision: string;
   generationId: string | null;
   nodes: WorkGraphPresentationNode[];
   edges: WorkGraphPresentationEdge[];
@@ -89,17 +103,30 @@ export interface WorkGraphPresentationProjection {
 
 export class WorkGraphPresentationProjector {
   project(input: WorkGraphPresentationInput): WorkGraphPresentationProjection {
-    const factsById = new Map(input.subtasks.map(fact => [fact.id, fact]));
+    const aliases = buildCanonicalSubtaskIdentityMap(
+      input.taskId,
+      input.graphRevision,
+      input.graph.subtasks,
+    );
+    const canonical = (subtaskId: string): string => aliases.get(subtaskId) ?? subtaskId;
+    const graph = canonicalGraph(input.graph, canonical);
+    const factsById = new Map(input.subtasks.map(fact => [canonical(fact.id), fact]));
     const decisionsBySubtask = new Map(
       input.decisions
         .filter(decision => decision.subtaskId)
-        .map(decision => [decision.subtaskId!, decision]),
+        .map(decision => [canonical(decision.subtaskId!), decision]),
     );
-    const dispatchBySubtask = new Map(input.dispatchItems.map(item => [item.subtaskId, item]));
-    const receiptBySubtask = new Map(input.receipts.map(item => [item.subtaskId, item]));
-    const publicationBySubtask = new Map(input.publications.map(item => [item.subtaskId, item]));
-    const layers = topologyLayers(input.graph.subtasks);
-    const edges = input.graph.subtasks.flatMap(subtask => subtask.dependencies.flatMap(dependency => (
+    const dispatchBySubtask = new Map(
+      input.dispatchItems.map(item => [canonical(item.subtaskId), item]),
+    );
+    const receiptBySubtask = new Map(
+      input.receipts.map(item => [canonical(item.subtaskId), item]),
+    );
+    const publicationBySubtask = new Map(
+      input.publications.map(item => [canonical(item.subtaskId), item]),
+    );
+    const layers = topologyLayers(graph.subtasks);
+    const edges = graph.subtasks.flatMap(subtask => subtask.dependencies.flatMap(dependency => (
       dependency.requiredItems.map(item => ({
         from: dependency.fromSubtaskId,
         to: subtask.id,
@@ -108,15 +135,15 @@ export class WorkGraphPresentationProjector {
       }))
     )));
     const runnable = new Set(deriveRunnableFrontier(
-      input.graph,
+      graph,
       input.subtasks.map(fact => ({
-        subtaskId: fact.id,
+        subtaskId: canonical(fact.id),
         status: normalizeRuntimeStatus(fact.status),
         firstDispatchOrder: fact.firstDispatchOrder,
         hasPendingOrActiveAttempt: fact.hasPendingOrActiveAttempt,
       })),
     ));
-    const nodes = input.graph.subtasks.map(subtask => {
+    const nodes = graph.subtasks.map(subtask => {
       const fact = factsById.get(subtask.id);
       const decision = decisionsBySubtask.get(subtask.id);
       const dispatch = dispatchBySubtask.get(subtask.id);
@@ -132,11 +159,16 @@ export class WorkGraphPresentationProjector {
         dependencies: subtask.dependencies.map(dependency => dependency.fromSubtaskId),
         requiredCapabilities: [...subtask.requiredCapabilities].sort(),
         acceptanceCriteria: subtask.acceptance.map(item => bounded(item.description, 300)),
-        routing: routingFor(subtask, decision, dispatch, receipt),
+        routing: routingFor(
+          subtask,
+          decision,
+          dispatch,
+          receipt,
+          input.configuration,
+        ),
       } satisfies WorkGraphPresentationNode;
     });
     return {
-      configurationRevision: input.graph.configurationRevision,
       generationId: input.subtasks[0]?.generationId ?? null,
       nodes,
       edges,
@@ -156,6 +188,7 @@ function routingFor(
   decision: WorkGraphPresentationDecisionFact | undefined,
   dispatch: WorkGraphPresentationDispatchFact | undefined,
   receipt: WorkGraphPresentationReceiptFact | undefined,
+  configuration: ConfigurationSnapshot | RuntimeConfigurationView,
 ): WorkGraphPresentationRouting[] {
   const finalBindings = new Map<string, AuthorizedExecutorBinding>();
   for (const binding of decision?.authorizedBindings ?? []) finalBindings.set(binding.agentClassRef, binding);
@@ -171,25 +204,69 @@ function routingFor(
           && typeof candidate.providerRef === 'string'
           && typeof candidate.modelRef === 'string'
           && typeof candidate.reason === 'string'
-          ? [{ providerRef: candidate.providerRef, modelRef: candidate.modelRef, reason: candidate.reason }]
+          ? [publicRejectedCandidate(candidate, binding, proposed.agentClassRef, configuration)]
           : []
       ))
       : [];
     const score = isRecord(audit?.scoreBreakdown) ? audit.scoreBreakdown : undefined;
+    const identityBinding = binding ?? audit?.binding;
+    const identity = identityBinding
+      ? resolvePublicRoutingIdentity(configuration, identityBinding)
+      : null;
     return {
-      agentClassRef: proposed.agentClassRef,
-      ...(binding ? {
-        harnessRef: binding.harnessRef,
-        providerRef: binding.providerRef,
-        modelRef: binding.modelRef,
-        permissionProfileRef: binding.permissionProfileRef,
-      } : {}),
+      executorDisplayName: identity?.executorDisplayName ?? proposed.agentClassRef,
+      harnessDisplayName: identity?.harnessDisplayName ?? '',
       policy,
+      ...(identity ? {
+        selected: {
+          providerDisplayName: identity.providerDisplayName,
+          modelDisplayName: identity.modelDisplayName,
+        },
+      } : {}),
       ...(typeof score?.estimatedCost === 'number' ? { estimatedCost: score.estimatedCost } : {}),
       ...(typeof score?.estimatedLatencyMs === 'number' ? { estimatedLatencyMs: score.estimatedLatencyMs } : {}),
       rejectedCandidates,
     };
   });
+}
+
+function canonicalGraph(
+  graph: WorkGraphProposal,
+  canonical: (subtaskId: string) => string,
+): WorkGraphProposal {
+  return {
+    ...graph,
+    subtasks: graph.subtasks.map(subtask => ({
+      ...subtask,
+      id: canonical(subtask.id),
+      dependencies: subtask.dependencies.map(dependency => ({
+        ...dependency,
+        fromSubtaskId: canonical(dependency.fromSubtaskId),
+      })),
+    })),
+  };
+}
+
+function publicRejectedCandidate(
+  candidate: { providerRef: string; modelRef: string; reason: string },
+  selectedBinding: AuthorizedExecutorBinding | undefined,
+  agentClassRef: string,
+  configuration: ConfigurationSnapshot | RuntimeConfigurationView,
+): WorkGraphPresentationRouting['rejectedCandidates'][number] {
+  const identity = resolvePublicRoutingIdentity(configuration, {
+    agentClassRef,
+    harnessRef: selectedBinding?.harnessRef ?? agentClassRef,
+    providerRef: candidate.providerRef,
+    modelRef: candidate.modelRef,
+    configurationRevision: selectedBinding?.configurationRevision ?? configuration.revisionId,
+  });
+  const [reasonCode, reasonDetail] = candidate.reason.split(':', 2);
+  return {
+    providerDisplayName: identity.providerDisplayName,
+    modelDisplayName: identity.modelDisplayName,
+    reasonCode: reasonCode || 'unknown',
+    ...(reasonDetail ? { reasonDetail } : {}),
+  };
 }
 
 function topologyLayers(subtasks: readonly WorkGraphSubtask[]): Map<string, number> {

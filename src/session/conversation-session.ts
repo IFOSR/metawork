@@ -42,9 +42,16 @@ import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type Database from 'better-sqlite3';
-import type { KernelConfigurationView } from '../configuration/index.js';
+import {
+  resolvePublicRoutingIdentity,
+  type KernelConfigurationView,
+  type RuntimeConfigurationView,
+} from '../configuration/index.js';
 import { generateInteractionId } from '../utils/id.js';
-import { buildEligibleContextRefKeys } from '../work-graph/index.js';
+import {
+  buildCanonicalSubtaskIdentityMap,
+  buildEligibleContextRefKeys,
+} from '../work-graph/index.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
   KernelExecutionRuntimeCallbacks,
@@ -102,6 +109,7 @@ export interface ConversationSessionDeps {
   readonly db?: Database.Database;
   readonly kernelConfiguration?: KernelConfigurationView;
   readonly getKernelConfiguration?: () => KernelConfigurationView | undefined;
+  readonly getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
@@ -314,16 +322,26 @@ export class ConversationSession {
     });
     if (decision.action.type !== 'authorize_task_plan') return;
     const action = decision.action;
+    const aliases = buildCanonicalSubtaskIdentityMap(
+      action.taskId,
+      action.graphRevision,
+      action.workGraph.subtasks,
+    );
     const subtaskTitles = new Map(
       this.deps.runtimePort.queries
         .listSubtasks(action.taskId)
         .map(subtask => [subtask.id, subtask.title]),
     );
-    for (const subtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
-      const bindings = action.authorizedBindingsBySubtask[subtaskId] ?? [];
+    for (const proposalSubtaskId of Object.keys(action.authorizedBindingsBySubtask).sort()) {
+      const subtaskId = aliases.get(proposalSubtaskId) ?? proposalSubtaskId;
+      const bindings = action.authorizedBindingsBySubtask[proposalSubtaskId] ?? [];
       bindings.forEach((binding, fallbackOrder) => {
-        const routedDisplay = buildExecutorDisplayFacts({
+        const identity = resolvePublicRoutingIdentity(
+          this.deps.getRuntimeConfiguration?.(binding.configurationRevision),
           binding,
+        );
+        const routedDisplay = buildExecutorDisplayFacts({
+          identity,
           subtaskId,
           subtaskTitle: subtaskTitles.get(subtaskId),
         });
@@ -333,11 +351,11 @@ export class ConversationSession {
           kind: 'executor_routed',
           status: 'completed',
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
-          summary: `${binding.agentClassRef} via ${binding.harnessRef} using ${binding.providerRef}/${binding.modelRef}`,
+          summary: `${identity.executorDisplayName} via ${identity.harnessDisplayName}`
+            + ` using ${identity.providerDisplayName}/${identity.modelDisplayName}`,
           details: {
             fallbackOrder,
             routingRole: fallbackOrder === 0 ? 'primary' : 'fallback',
-            authorizedBinding: binding,
             ...routedDisplay,
           },
           eventKey: `${decision.id}:${subtaskId}:${fallbackOrder}`,

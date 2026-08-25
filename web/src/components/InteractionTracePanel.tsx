@@ -32,6 +32,20 @@ const STATUS_LABEL: Record<string, string> = {
   blocked: '阻塞',
 };
 
+const PUBLIC_DETAIL_KEYS = new Set([
+  'action',
+  'question',
+  'fallbackOrder',
+  'routingRole',
+  'subtaskTitle',
+  'executorDisplayName',
+  'harnessDisplayName',
+  'providerDisplayName',
+  'modelDisplayName',
+  'stepLabel',
+  'progress',
+]);
+
 export function InteractionTracePanel({
   trace,
   timeline,
@@ -83,7 +97,7 @@ export function InteractionTracePanel({
           <div className="trace-query">
             <span>当前请求</span>
             <strong>{trace.events.find(event => event.kind === 'query_received')?.summary}</strong>
-            <small>{trace.taskId ? `Task ${trace.taskId}` : trace.turnId}</small>
+            <small>{trace.status === 'running' ? '正在实时更新' : '执行记录'}</small>
           </div>
           <ol className="interaction-events">
             {trace.events.map(event => (
@@ -156,13 +170,9 @@ export function InteractionTracePanel({
 }
 
 function DetailGrid({ details }: { details: Record<string, unknown> }) {
-  const authorizedBinding = details.authorizedBinding;
   return (
     <dl className="detail-grid">
-      {authorizedBinding !== undefined && (
-        <div><dt>授权绑定</dt><dd>{formatValue(authorizedBinding)}</dd></div>
-      )}
-      {Object.entries(details).filter(([key]) => key !== 'authorizedBinding').map(([key, value]) => (
+      {Object.entries(details).filter(([key]) => PUBLIC_DETAIL_KEYS.has(key)).map(([key, value]) => (
         <div key={key}><dt>{formatKey(key)}</dt><dd>{formatValue(value)}</dd></div>
       ))}
     </dl>
@@ -176,12 +186,9 @@ function formatValue(value: unknown): string {
 
 function formatKey(key: string): string {
   return ({
-    decisionId: '决策 ID',
     action: '动作',
-    eventId: '事件 ID',
-    configurationRevision: '配置 revision',
     question: '澄清问题',
-    subtaskId: 'Subtask ID',
+    subtaskTitle: '子任务',
     fallbackOrder: '回退顺序',
     routingRole: '路由角色',
   } as Record<string, string>)[key] ?? key;

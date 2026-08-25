@@ -6,6 +6,7 @@ describe('ConfigurationCompletionService', () => {
     const result = new ConfigurationCompletionService({
       presets: [{
         providerRef: 'kimi',
+        displayName: 'Kimi',
         baseUrl: 'https://api.kimi.com/coding/v1',
         modelIds: ['k3'],
       }],
@@ -27,10 +28,17 @@ describe('ConfigurationCompletionService', () => {
     });
 
     expect(result.providers.kimi).toMatchObject({
+      displayName: 'Kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
       credentialState: '已从本机 Agent 导入',
       modelIds: ['k3'],
     });
+    expect(result.providerPresets).toEqual([{
+      providerRef: 'kimi',
+      displayName: 'Kimi',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      modelIds: ['k3'],
+    }]);
     expect(result.requiredFields).toEqual([]);
   });
 
@@ -49,6 +57,7 @@ describe('ConfigurationCompletionService', () => {
       capabilityState: '需要确认',
       capabilities: [],
     });
+    expect(result.providers.custom?.displayName).toBe('Custom');
     expect(result.requiredFields).toEqual([
       'models.customModel.capabilities',
       'providers.custom.credential',

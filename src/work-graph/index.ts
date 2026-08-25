@@ -32,3 +32,4 @@ export {
   buildEligibleContextRefKeys,
   isEligibleInteractionRef,
 } from './context-ref-eligibility.js';
+export { buildCanonicalSubtaskIdentityMap } from './subtask-identity.js';

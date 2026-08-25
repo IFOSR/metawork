@@ -94,6 +94,16 @@ export {
   type ConfigurationCompletionProviderSource,
   type ConfigurationCompletionResult,
 } from './configuration-completion-service.js';
+export {
+  PUBLIC_PROVIDER_PRESETS,
+  publicDisplayNameFromRef,
+  publicProviderDisplayName,
+  type PublicProviderPreset,
+} from './public-provider-catalog.js';
+export {
+  resolvePublicRoutingIdentity,
+  type PublicRoutingIdentity,
+} from './public-routing-identity.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   PlannerRuntimeEnvironmentResolverInput,

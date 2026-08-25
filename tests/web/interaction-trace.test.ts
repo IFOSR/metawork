@@ -16,7 +16,8 @@ describe('Web interaction trace panel', () => {
     expect(panel).toContain('PHASE_LABEL');
     expect(panel).toContain('ACTOR_LABEL');
     expect(panel).toContain('<details');
-    expect(panel).toContain('authorizedBinding');
+    expect(panel).toContain('PUBLIC_DETAIL_KEYS');
+    expect(panel).not.toContain('配置 revision');
     expect(panel).toContain('data-streaming');
     expect(panel).toContain('event-elapsed');
     expect(panel).toContain('window.setInterval');
@@ -27,5 +28,12 @@ describe('Web interaction trace panel', () => {
     expect(chat).not.toContain('ExecutionTrace');
     expect(styles).toContain('@media (max-width: 820px)');
     expect(styles).toContain('@keyframes trace-pulse');
+    const routing = await readFile(new URL('components/RoutingDecisionCard.tsx', root), 'utf8');
+    expect(routing).toContain('最终选择');
+    expect(routing).toContain('未入选模型候选');
+    expect(routing).toContain('providerDisplayName');
+    expect(routing).toContain('modelDisplayName');
+    expect(routing).not.toContain('routing.modelRef');
+    expect(routing).not.toContain('拒绝 ');
   });
 });

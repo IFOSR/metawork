@@ -39,6 +39,11 @@ e2e('Settings workbench browser flow', () => {
         await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
         await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
         await waitForExpression(cdp, `Boolean(document.querySelector('.settings-workbench'))`);
+        await waitForExpression(
+          cdp,
+          `document.querySelectorAll('.provider-card').length === 2
+            && document.querySelectorAll('.agent-route-card').length === 3`,
+        );
 
         const initial = await cdp.evaluate(`(() => {
           const panel = document.querySelector('.settings-workbench');
@@ -296,16 +301,32 @@ async function startMockServer(webDist: string): Promise<{
       json(response, {
         providers: {
           'code-cli': {
+            displayName: 'Code CLI',
             baseUrl: 'https://code.example/v1',
             credentialState: '已自动发现',
             modelIds: ['gpt-5.6-sol', 'gpt-5.6-terra'],
           },
           deepseek: {
+            displayName: 'DeepSeek',
             baseUrl: 'https://deepseek.example/v1',
             credentialState: '已自动发现',
             modelIds: ['deepseek-v4-pro'],
           },
         },
+        providerPresets: [
+          {
+            providerRef: 'code-cli',
+            displayName: 'Code CLI',
+            baseUrl: 'https://code.example/v1',
+            modelIds: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+          },
+          {
+            providerRef: 'deepseek',
+            displayName: 'DeepSeek',
+            baseUrl: 'https://deepseek.example/v1',
+            modelIds: ['deepseek-v4-pro'],
+          },
+        ],
         models: {},
         requiredFields: [],
       });
@@ -536,7 +557,7 @@ async function readJsonBody(request: import('node:http').IncomingMessage): Promi
 
 async function waitForDebuggingPort(profile: string): Promise<number> {
   const file = join(profile, 'DevToolsActivePort');
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     try {
       return Number((await readFile(file, 'utf8')).split('\n')[0]);
     } catch {

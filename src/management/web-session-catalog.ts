@@ -1,5 +1,9 @@
 import { nanoid } from 'nanoid';
-import type { ExecutionTimeline, TimelineStage } from './execution-projector.js';
+import type {
+  ExecutionTimeline,
+  TimelineAttempt,
+  TimelineStage,
+} from './execution-projector.js';
 import {
   sanitizeInteractionTraceDetails,
   sanitizeInteractionTraceText,
@@ -22,6 +26,7 @@ const DEFAULT_SESSION_TITLE = 'New session';
 export interface WebSessionCatalogOptions {
   createId?: () => string;
   now?: () => string;
+  normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
 }
 
 export interface CreateWebSessionInput {
@@ -32,6 +37,7 @@ export interface CreateWebSessionInput {
 export class WebSessionCatalog {
   private readonly createId: () => string;
   private readonly now: () => string;
+  private readonly normalizeTurnPresentation: (turn: ConversationTurn) => ConversationTurn;
   private initialized = false;
 
   constructor(
@@ -40,6 +46,8 @@ export class WebSessionCatalog {
   ) {
     this.createId = options.createId ?? (() => `sess_web_${nanoid(10)}`);
     this.now = options.now ?? (() => new Date().toISOString());
+    this.normalizeTurnPresentation = options.normalizeTurnPresentation
+      ?? (turn => structuredClone(turn));
   }
 
   async initialize(): Promise<void> {
@@ -99,7 +107,13 @@ export class WebSessionCatalog {
 
   async read(sessionId: string): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
-    return this.store.readSession(sessionId);
+    const record = await this.store.readSession(sessionId);
+    return record
+      ? {
+          ...record,
+          turns: record.turns.map(turn => this.normalizeTurn(turn)),
+        }
+      : null;
   }
 
   async appendTurn(
@@ -110,7 +124,7 @@ export class WebSessionCatalog {
     const record = await this.store.readSession(sessionId);
     if (!record) return null;
 
-    const safeTurn = sanitizeConversationTurn(turn, sessionId);
+    const safeTurn = this.normalizeTurn(sanitizeConversationTurn(turn, sessionId));
     const timestamp = this.now();
     const shouldDeriveTitle = record.session.title === DEFAULT_SESSION_TITLE;
     const updated: WebSessionRecord = {
@@ -197,6 +211,10 @@ export class WebSessionCatalog {
 
   private async ensureInitialized(): Promise<void> {
     if (!this.initialized) await this.initialize();
+  }
+
+  private normalizeTurn(turn: ConversationTurn): ConversationTurn {
+    return this.normalizeTurnPresentation(turn);
   }
 }
 
@@ -322,10 +340,17 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
         ...(subtask.executor ? {
           executor: sanitizeInteractionTraceText(subtask.executor, 160),
         } : {}),
-        attempts: subtask.attempts.slice(0, 20).map(attempt => ({
+        attempts: subtask.attempts.slice(0, 20).map((attempt, attemptIndex) => ({
           ...(attempt.attemptId === undefined ? {} : {
             attemptId: sanitizeInteractionTraceText(attempt.attemptId, 160),
           }),
+          attemptKind: attempt.attemptKind ?? 'primary',
+          attemptOrdinal: Math.max(1, Math.floor(attempt.attemptOrdinal ?? attemptIndex + 1)),
+          attemptLabel: sanitizeInteractionTraceText(
+            attempt.attemptLabel ?? legacyAttemptLabel(attempt.attemptKind),
+            80,
+          ),
+          displayStatus: attempt.displayStatus ?? legacyDisplayStatus(attempt.status, attempt.result),
           result: sanitizeInteractionTraceText(attempt.result, 160),
           ...(attempt.status === undefined ? {} : {
             status: sanitizeInteractionTraceText(attempt.status, 80),
@@ -354,4 +379,24 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
       })),
     } : {}),
   };
+}
+
+function legacyAttemptLabel(kind: TimelineAttempt['attemptKind'] | undefined): string {
+  if (kind === 'continuation') return '继续执行';
+  if (kind === 'fallback') return '回退执行';
+  if (kind === 'contract_correction') return '结果修正';
+  if (kind === 'merge_repair') return '合并修复';
+  return '主执行';
+}
+
+function legacyDisplayStatus(
+  status: string | undefined,
+  result: string,
+): TimelineAttempt['displayStatus'] {
+  if (result === 'success' || status === 'terminal') return '已完成';
+  if (result === 'failed') return '失败';
+  if (status === 'cancelled') return '已取消';
+  if (status === 'pending_launch' || status === 'launching') return '等待启动';
+  if (status === 'running' || result === 'running') return '执行中';
+  return '状态未知';
 }

@@ -1,25 +1,59 @@
 import { describe, expect, it } from 'vitest';
+import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
+import { resolvePublicRoutingIdentity } from '../../src/configuration/public-routing-identity.js';
 import {
   buildExecutorDisplayFacts,
-  displayNameFromRef,
   executionEventDetails,
 } from '../../src/execution/execution-transparency.js';
 
 describe('execution transparency projection', () => {
-  it('derives stable user-readable display names from internal refs', () => {
-    expect(displayNameFromRef('codex-engineering')).toBe('Codex Engineering');
-    expect(displayNameFromRef('kimi')).toBe('Kimi');
-    expect(displayNameFromRef('provider:deepseek-chat')).toBe('Deepseek Chat');
-    expect(displayNameFromRef('')).toBe('');
+  it('resolves the configured modelId instead of exposing the internal modelRef', () => {
+    const identity = resolvePublicRoutingIdentity(snapshot('revision-a', 'gpt-5.6-terra'), {
+      agentClassRef: 'codex-cli',
+      harnessRef: 'codex-cli',
+      providerRef: 'code-cli',
+      modelRef: 'code-cli-5',
+      configurationRevision: 'revision-a',
+    });
+
+    expect(identity).toEqual({
+      executorDisplayName: 'Codex CLI',
+      harnessDisplayName: 'Codex CLI',
+      providerDisplayName: 'Code CLI',
+      modelDisplayName: 'gpt-5.6-terra',
+      availability: 'available',
+    });
+    expect(JSON.stringify(identity)).not.toContain('code-cli-5');
   });
 
-  it('builds executor display facts from an authorized binding', () => {
+  it('uses the binding revision instead of an active revision with the same modelRef', () => {
+    const oldIdentity = resolvePublicRoutingIdentity(snapshot('revision-old', 'gpt-5.6-terra'), {
+      agentClassRef: 'codex-cli',
+      harnessRef: 'codex-cli',
+      providerRef: 'code-cli',
+      modelRef: 'code-cli-5',
+      configurationRevision: 'revision-old',
+    });
+    const newIdentity = resolvePublicRoutingIdentity(snapshot('revision-new', 'gpt-5.7-sol'), {
+      agentClassRef: 'codex-cli',
+      harnessRef: 'codex-cli',
+      providerRef: 'code-cli',
+      modelRef: 'code-cli-5',
+      configurationRevision: 'revision-new',
+    });
+
+    expect(oldIdentity.modelDisplayName).toBe('gpt-5.6-terra');
+    expect(newIdentity.modelDisplayName).toBe('gpt-5.7-sol');
+  });
+
+  it('builds executor display facts from resolved public identity', () => {
     const facts = buildExecutorDisplayFacts({
-      binding: {
-        agentClassRef: 'pi-research',
-        harnessRef: 'anyfusion-pi',
-        providerRef: 'moonshot',
-        modelRef: 'kimi-k2',
+      identity: {
+        executorDisplayName: 'Pi Agent',
+        harnessDisplayName: 'Pi CLI',
+        providerDisplayName: 'Kimi',
+        modelDisplayName: 'k3',
+        availability: 'available',
       },
       subtaskId: 'subtask_1',
       subtaskTitle: '调研章节',
@@ -28,20 +62,21 @@ describe('execution transparency projection', () => {
     expect(facts).toEqual({
       subtaskId: 'subtask_1',
       subtaskTitle: '调研章节',
-      executorDisplayName: 'Pi Research',
-      harnessDisplayName: 'Anyfusion Pi',
-      providerDisplayName: 'Moonshot',
-      modelDisplayName: 'Kimi K2',
+      executorDisplayName: 'Pi Agent',
+      harnessDisplayName: 'Pi CLI',
+      providerDisplayName: 'Kimi',
+      modelDisplayName: 'k3',
     });
   });
 
   it('normalizes milestone details without fabricating progress', () => {
     const display = buildExecutorDisplayFacts({
-      binding: {
-        agentClassRef: 'codex-cli',
-        harnessRef: 'codex-cli',
-        providerRef: 'openai',
-        modelRef: 'gpt-5',
+      identity: {
+        executorDisplayName: 'Codex CLI',
+        harnessDisplayName: 'Codex CLI',
+        providerDisplayName: 'Code CLI',
+        modelDisplayName: 'gpt-5.6-sol',
+        availability: 'available',
       },
       subtaskId: 'subtask_9',
       subtaskTitle: '实现模块',
@@ -56,10 +91,10 @@ describe('execution transparency projection', () => {
     expect(details).toMatchObject({
       subtaskId: 'subtask_9',
       subtaskTitle: '实现模块',
-      executorDisplayName: 'Codex Cli',
-      harnessDisplayName: 'Codex Cli',
-      providerDisplayName: 'Openai',
-      modelDisplayName: 'Gpt 5',
+      executorDisplayName: 'Codex CLI',
+      harnessDisplayName: 'Codex CLI',
+      providerDisplayName: 'Code CLI',
+      modelDisplayName: 'gpt-5.6-sol',
       stepKey: 'executor_started',
       stepLabel: '已启动 Codex Cli',
       progress: null,
@@ -71,3 +106,70 @@ describe('execution transparency projection', () => {
     expect(JSON.stringify(details)).not.toContain('fingerprint');
   });
 });
+
+function snapshot(revisionId: string, modelId: string): ConfigurationSnapshot {
+  return {
+    revisionId,
+    contentHash: `sha256:${revisionId}`,
+    config: {
+      schemaVersion: 2,
+      providers: {
+        'code-cli': {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://www.code-cli.cn/v1',
+          apiKeyRef: 'file-secret:anyfusion/code-cli',
+          region: 'international',
+          enabled: true,
+        },
+      },
+      models: {
+        'code-cli-5': {
+          providerRef: 'code-cli',
+          modelId,
+          capabilities: [],
+          reasoning: 'high',
+          enabled: true,
+        },
+      },
+      harnesses: {
+        'codex-cli': {
+          kind: 'executor',
+          transport: 'local-cli',
+          command: 'codex',
+          args: [],
+          driverId: 'codex-cli',
+          supportsProbe: true,
+          supportsAbort: true,
+          supportsContinuation: true,
+          enabled: true,
+        },
+      },
+      agentClasses: {
+        'codex-cli': {
+          kind: 'executor',
+          harnessRef: 'codex-cli',
+          modelPolicy: { mode: 'fixed', modelRef: 'code-cli-5' },
+          permissionProfileRef: 'workspace-engineering',
+          routingCapabilities: ['workspace-engineering'],
+          primaryUseCases: [],
+          avoidUseCases: [],
+          plannerAffordances: ['workspace-read-write'],
+          skills: [],
+          mcpServers: [],
+          plugins: [],
+          generatedRuntimeRef: 'codex-cli',
+          enabled: true,
+        },
+      },
+      permissionProfiles: {
+        'workspace-engineering': {
+          profileId: 'workspace-engineering',
+          version: 1,
+          parameters: {},
+        },
+      },
+      runtimePolicy: {},
+      gateway: {},
+    },
+  };
+}

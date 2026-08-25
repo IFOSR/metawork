@@ -22,6 +22,7 @@ export interface WebConversationProjectorDeps {
   store: WebConversationProjectionStore;
   createTurnId?: () => string;
   now?: () => string;
+  normalizeTurnPresentation?: <T extends ConversationTurnProjection>(turn: T) => T;
 }
 
 export class WebConversationProjector {
@@ -110,6 +111,7 @@ export class WebConversationProjector {
     this.current.taskId = trace.taskId ?? this.current.taskId;
     this.current.status = trace.status;
     this.current.completedAt = trace.completedAt;
+    this.normalizeCurrent();
     this.publish();
     await this.persistIfReady();
   }
@@ -119,6 +121,7 @@ export class WebConversationProjector {
     if (this.current.taskId && this.current.taskId !== timeline.taskId) return;
     this.current.taskId = timeline.taskId;
     this.current.executionTimeline = structuredClone(timeline);
+    this.normalizeCurrent();
 
     const terminalStatus = terminalStatusFromTimeline(timeline);
     if (terminalStatus) {
@@ -210,6 +213,12 @@ export class WebConversationProjector {
   private publish(): void {
     const snapshot = this.getSnapshot();
     for (const listener of this.listeners) listener(snapshot);
+  }
+
+  private normalizeCurrent(): void {
+    if (this.current && this.deps.normalizeTurnPresentation) {
+      this.current = this.deps.normalizeTurnPresentation(this.current);
+    }
   }
 }
 

@@ -7,6 +7,7 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
   }
 
   const grouped = new Map<number, WorkGraphPresentationProjection['nodes']>();
+  const titleById = new Map(projection.nodes.map(node => [node.id, node.title]));
   for (const node of projection.nodes) {
     const bucket = grouped.get(node.phase) ?? [];
     bucket.push(node);
@@ -23,7 +24,6 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
         <div className="work-graph-meta">
           <span>{projection.nodes.length} subtasks</span>
           <span>frontier {projection.currentRunnableFrontier.length}</span>
-          <code>{projection.configurationRevision}</code>
         </div>
       </header>
       <div className="work-graph-desktop">
@@ -31,7 +31,7 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
           <div className="work-graph-phase" key={phase}>
             <div className="work-graph-phase-label">PHASE {phase + 1}</div>
             <div className="work-graph-phase-nodes">
-              {nodes.map(node => <WorkGraphNode key={node.id} node={node} />)}
+              {nodes.map(node => <WorkGraphNode key={node.id} node={node} titleById={titleById} />)}
             </div>
           </div>
         ))}
@@ -42,7 +42,9 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
             <div className="work-graph-phase-label">并行阶段 {index + 1}</div>
             {group.map(id => {
               const node = projection.nodes.find(candidate => candidate.id === id);
-              return node ? <WorkGraphNode key={node.id} node={node} /> : null;
+              return node
+                ? <WorkGraphNode key={node.id} node={node} titleById={titleById} />
+                : null;
             })}
           </div>
         ))}
@@ -52,7 +54,9 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
           <span className="eyebrow">HANDOFFS</span>
           {projection.edges.map(edge => (
             <div className="work-graph-edge" key={`${edge.from}-${edge.to}-${edge.label}`}>
-              <code>{edge.from}</code><span>→</span><code>{edge.to}</code>
+              <strong>{titleById.get(edge.from) ?? '上游子任务'}</strong>
+              <span>→</span>
+              <strong>{titleById.get(edge.to) ?? '下游子任务'}</strong>
               <small>{edge.kind} · {edge.label}</small>
             </div>
           ))}
@@ -62,7 +66,13 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
   );
 }
 
-function WorkGraphNode({ node }: { node: WorkGraphPresentationProjection['nodes'][number] }) {
+function WorkGraphNode({
+  node,
+  titleById,
+}: {
+  node: WorkGraphPresentationProjection['nodes'][number];
+  titleById: ReadonlyMap<string, string>;
+}) {
   return (
     <article className="work-graph-node" data-status={node.status} data-runnable={node.runnable}>
       <div className="work-graph-node-topline">
@@ -74,13 +84,15 @@ function WorkGraphNode({ node }: { node: WorkGraphPresentationProjection['nodes'
         {node.requiredCapabilities.map(capability => <span key={capability}>{capability}</span>)}
       </div>
       {node.dependencies.length > 0 && (
-        <small className="work-graph-dependencies">等待：{node.dependencies.join(', ')}</small>
+        <small className="work-graph-dependencies">
+          等待：{node.dependencies.map(id => titleById.get(id) ?? '上游子任务').join('、')}
+        </small>
       )}
       {node.routing.length > 0 && (
         <div className="work-graph-routing">
           {node.routing.map(routing => (
             <RoutingDecisionCard
-              key={`${routing.agentClassRef}:${routing.modelRef ?? 'pending'}`}
+              key={`${routing.executorDisplayName}:${routing.selected?.modelDisplayName ?? 'pending'}`}
               routing={routing}
             />
           ))}

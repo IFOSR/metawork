@@ -44,6 +44,7 @@ import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { ExecutionRuntime } from '../execution/execution-runtime.js';
 import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
+import type { RuntimeConfigurationView } from '../configuration/index.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -66,6 +67,7 @@ export function buildAccountKernelExecutionServices(deps: {
   notifier: NotificationService;
   maxConcurrentAttempts: number;
   getConfigurationRevision: () => string;
+  getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   taskRuntimeService: TaskRuntimeService;
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
@@ -102,6 +104,7 @@ export function buildAccountKernelExecutionServices(deps: {
     sessionId: deps.sessionId,
     getSessionId: deps.getSessionId,
     getConfigurationRevision: deps.getConfigurationRevision,
+    getRuntimeConfiguration: deps.getRuntimeConfiguration,
     orchestration: deps.orchestration,
     notifier: deps.notifier,
     taskRuntimeService: deps.taskRuntimeService,

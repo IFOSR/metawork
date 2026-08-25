@@ -25,6 +25,10 @@ export interface SubtaskCard {
   executor?: string;
   attempts: Array<{
     attemptId?: string;
+    attemptKind: 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
+    attemptOrdinal: number;
+    attemptLabel: string;
+    displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '状态未知';
     result: string;
     status?: string;
     startedAt?: string;
@@ -48,7 +52,6 @@ export interface ExecutionTimeline {
 }
 
 export interface WorkGraphPresentationProjection {
-  configurationRevision: string;
   generationId: string | null;
   nodes: Array<{
     id: string;
@@ -61,15 +64,21 @@ export interface WorkGraphPresentationProjection {
     requiredCapabilities: string[];
     acceptanceCriteria: string[];
     routing: Array<{
-      agentClassRef: string;
-      harnessRef?: string;
+      executorDisplayName: string;
+      harnessDisplayName: string;
       policy: 'auto' | 'fixed';
-      providerRef?: string;
-      modelRef?: string;
-      permissionProfileRef?: string;
+      selected?: {
+        providerDisplayName: string;
+        modelDisplayName: string;
+      };
       estimatedCost?: number;
       estimatedLatencyMs?: number;
-      rejectedCandidates: Array<{ providerRef: string; modelRef: string; reason: string }>;
+      rejectedCandidates: Array<{
+        providerDisplayName: string;
+        modelDisplayName: string;
+        reasonCode: string;
+        reasonDetail?: string;
+      }>;
     }>;
   }>;
   edges: Array<{ from: string; to: string; kind: 'dependency' | 'handoff' | 'artifact'; label: string }>;
@@ -130,8 +139,15 @@ export type ConfigurationCompletionFieldState =
 
 export interface ConfigurationCompletionResult {
   providers: Record<string, {
+    displayName: string;
     baseUrl: string | null;
     credentialState: ConfigurationCompletionFieldState;
+    modelIds: string[];
+  }>;
+  providerPresets: Array<{
+    providerRef: string;
+    displayName: string;
+    baseUrl: string;
     modelIds: string[];
   }>;
   models: Record<string, {

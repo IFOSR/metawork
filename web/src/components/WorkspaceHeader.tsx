@@ -1,15 +1,22 @@
+import type { ThemePreference } from '../theme';
+import { ThemeControl } from './ThemeControl';
+
 export type WorkspaceTab = 'conversation' | 'trajectory';
 
 export function WorkspaceHeader({
   title,
   tab,
   connected,
+  themePreference,
   onTabChange,
+  onThemeChange,
 }: {
   title: string;
   tab: WorkspaceTab;
   connected: boolean;
+  themePreference: ThemePreference;
   onTabChange: (tab: WorkspaceTab) => void;
+  onThemeChange: (preference: ThemePreference) => void;
 }) {
   return (
     <header className="workspace-header">
@@ -26,6 +33,7 @@ export function WorkspaceHeader({
         </button>
       </nav>
       <div className="workspace-runtime">
+        <ThemeControl value={themePreference} onChange={onThemeChange} />
         <span className="connection-state" data-connected={connected}>
           {connected ? 'LIVE' : 'OFFLINE'}
         </span>

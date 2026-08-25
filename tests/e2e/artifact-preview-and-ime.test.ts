@@ -119,6 +119,22 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         )).toBe(true);
         await waitForExpression(cdp, `document.querySelectorAll('.artifact-link').length >= 2`);
 
+        // Composer 只属于对话页；切换轨迹不会清空草稿。
+        await cdp.evaluate(`
+          (() => {
+            const textarea = document.querySelector('.composer textarea');
+            const setter = Object.getOwnPropertyDescriptor(
+              window.HTMLTextAreaElement.prototype, 'value',
+            ).set;
+            setter.call(textarea, '保留的草稿');
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelectorAll('.workspace-tabs button')[1].click();
+          })()
+        `);
+        await waitForExpression(cdp, `!document.querySelector('.composer')`);
+        await cdp.evaluate(`document.querySelectorAll('.workspace-tabs button')[0].click()`);
+        await waitForExpression(cdp, `document.querySelector('.composer textarea')?.value === '保留的草稿'`);
+
         // 1. 点击第一个报告链接 → 右侧预览抽屉打开，显示 Markdown 内容。
         await cdp.evaluate(`document.querySelectorAll('.artifact-link')[0].click()`);
         await waitForExpression(cdp, `Boolean(document.querySelector('.artifact-preview-drawer'))`);
@@ -230,6 +246,36 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
           startedAt: new Date().toISOString(),
         }));
         server.pushWs(JSON.stringify({
+          type: 'execution',
+          taskId: 'task_live',
+          timeline: {
+            taskId: 'task_live',
+            title: '研究港股智谱股价持续下跌的原因',
+            status: 'done',
+            stages: [{
+              phase: 'execution',
+              status: 'done',
+              subtasks: [{
+                id: 'subtask_research_1',
+                title: '研究港股智谱股价持续下跌的原因',
+                status: 'done',
+                executor: 'Codex CLI',
+                attempts: [{
+                  attemptId: 'attempt_dispatch_event_exec_int_4qLeqcgC5h_task_plan_event_proposal_primary',
+                  attemptKind: 'primary',
+                  attemptOrdinal: 1,
+                  attemptLabel: '主执行',
+                  displayStatus: '已完成',
+                  result: 'success',
+                  status: 'terminal',
+                  startedAt: new Date(Date.now() - 4_000).toISOString(),
+                  updatedAt: new Date().toISOString(),
+                }],
+              }],
+            }],
+          },
+        }));
+        server.pushWs(JSON.stringify({
           type: 'trace_snapshot',
           trace: {
             sessionId: 'session-1',
@@ -308,6 +354,11 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         // 实时执行卡片出现，主对话框叙述同步流出富进度。
         await waitForExpression(cdp, `Boolean(document.querySelector('.live-execution-panel'))`);
         await waitForExpression(cdp, `document.body.innerText.includes('我先检查最近的公告，再对比同行业估值。')`);
+        await waitForExpression(cdp, `document.body.innerText.includes('主执行')`);
+        expect(await cdp.evaluate(
+          `document.body.innerText.includes('attempt_dispatch_event_exec_int_')`,
+        )).toBe(false);
+        expect(await cdp.evaluate(`document.body.innerText.includes('terminal')`)).toBe(false);
         // 点击子任务卡 → 执行详情抽屉打开，显示完整时间线。
         await cdp.evaluate(`document.querySelector('.execution-card.is-clickable').click()`);
         await waitForExpression(cdp, `Boolean(document.querySelector('.execution-detail-drawer'))`);
@@ -351,6 +402,45 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         // Escape 关闭执行详情抽屉。
         await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
         await waitForExpression(cdp, `!document.querySelector('.execution-detail-drawer')`);
+
+        // 轨迹页展示公共路由身份，不泄露 modelRef，并且没有 Composer。
+        await cdp.evaluate(`document.querySelectorAll('.workspace-tabs button')[1].click()`);
+        await waitForExpression(cdp, `document.body.innerText.includes('未入选模型候选')`);
+        expect(await cdp.evaluate(`document.body.innerText.includes('Code CLI / gpt-5.6-sol')`))
+          .toBe(true);
+        expect(await cdp.evaluate(`document.body.innerText.includes('Code CLI / gpt-5.6-terra')`))
+          .toBe(true);
+        expect(await cdp.evaluate(`document.body.innerText.includes('code-cli-5')`)).toBe(false);
+        expect(await cdp.evaluate(`Boolean(document.querySelector('.composer'))`)).toBe(false);
+
+        // 三态主题：固定主题持久化，system 响应系统媒体变化。
+        await cdp.evaluate(`
+          [...document.querySelectorAll('.theme-control button')]
+            .find(button => button.textContent === '浅色').click()
+        `);
+        await waitForExpression(cdp, `document.documentElement.dataset.theme === 'light'`);
+        expect(await cdp.evaluate(`localStorage.getItem('anyfusion.theme')`)).toBe('light');
+        await cdp.evaluate(`
+          [...document.querySelectorAll('.theme-control button')]
+            .find(button => button.textContent === '跟随系统').click()
+        `);
+        await cdp.send('Emulation.setEmulatedMedia', {
+          features: [{ name: 'prefers-color-scheme', value: 'dark' }],
+        });
+        await waitForExpression(cdp, `document.documentElement.dataset.theme === 'dark'`);
+
+        expect(await cdp.evaluate(
+          `document.documentElement.scrollWidth <= window.innerWidth`,
+        )).toBe(true);
+        await cdp.send('Emulation.setDeviceMetricsOverride', {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 1,
+          mobile: true,
+        });
+        expect(await cdp.evaluate(
+          `document.documentElement.scrollWidth <= window.innerWidth`,
+        )).toBe(true);
       } finally {
         cdp.close();
       }
@@ -511,6 +601,41 @@ async function startMockServer(webDist: string): Promise<{
       });
       return;
     }
+    if (url.pathname === '/api/execution/tasks/task_live/work-graph') {
+      json(response, {
+        generationId: 'generation-live',
+        nodes: [{
+          id: 'subtask_research_1',
+          title: '研究港股智谱股价持续下跌的原因',
+          goal: '完成研究并输出结论',
+          status: 'done',
+          phase: 0,
+          runnable: false,
+          dependencies: [],
+          requiredCapabilities: ['coding'],
+          acceptanceCriteria: ['完成研究'],
+          routing: [{
+            executorDisplayName: 'Codex CLI',
+            harnessDisplayName: 'Codex CLI',
+            policy: 'auto',
+            selected: {
+              providerDisplayName: 'Code CLI',
+              modelDisplayName: 'gpt-5.6-sol',
+            },
+            rejectedCandidates: [{
+              providerDisplayName: 'Code CLI',
+              modelDisplayName: 'gpt-5.6-terra',
+              reasonCode: 'missing_capability',
+              reasonDetail: 'coding',
+            }],
+          }],
+        }],
+        edges: [],
+        parallelGroups: [['subtask_research_1']],
+        currentRunnableFrontier: [],
+      });
+      return;
+    }
     await serveStatic(webDist, url.pathname, response);
   }
 
@@ -564,7 +689,7 @@ async function waitForDebuggingPort(profile: string, chrome: ChildProcess): Prom
     stderr += chunk.toString();
   };
   stderrStream?.on('data', onStderr);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     const advertisedPort = stderr.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//u)?.[1];
     if (advertisedPort) {
       stderrStream?.off('data', onStderr);

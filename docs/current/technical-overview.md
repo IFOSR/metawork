@@ -611,6 +611,33 @@ activity. Stable event cursors and event IDs make replay idempotent across
 reconnects, and the persisted turn keeps the trace/timeline after the current
 turn ends. No progress event is Completion Protocol evidence.
 
+Execution presentation uses the Runtime Subtask ID as its canonical identity.
+`src/work-graph/subtask-identity.ts` is the single pure owner of proposal-to-
+Runtime ID mapping, and Management applies it to historical reads, reconnect
+snapshots and live deltas before Web groups cards or opens detail streams.
+There is no title, list-order or ID-suffix merge heuristic.
+
+Routing presentation is revision-pinned and user-facing. Configuration resolves
+the authorized binding against the Task generation's configuration snapshot,
+then Management emits only public Executor, Harness, Provider and configured
+model names plus normalized rejected-candidate reasons. Internal `modelRef`,
+`providerRef`, configuration revision and binding fingerprint do not enter the
+ordinary Web contract; unrecoverable historical identity is rendered as
+unavailable rather than falling back to an internal ref. The routing card
+separates the final selection from model candidates that were not selected, so
+one rejected model under Codex CLI does not imply that the Codex CLI Executor
+was rejected.
+
+Attempt IDs remain durable correlation keys but are not visible labels.
+Execution narrative projects attempt kind and ordinal into `主执行`,
+`继续执行`, `回退执行`, `结果修正` or `合并修复`, and maps internal lifecycle
+states to localized user status. The three-part attempt header keeps label,
+status and duration non-overlapping on desktop and mobile. Trajectory is
+read-only and does not render the Composer; draft and pending attachments stay
+owned by the App and return with Conversation. The header also provides
+system/light/dark theme preference, persisted in `anyfusion.theme` and applied
+before the first application render through semantic color tokens.
+
 Pending dependency publication is a wait fact, not an ordinary user blocker.
 Missing handoff, Result Object, workspace state or identity mismatch is exposed
 as a bounded structured materialization diagnostic. Explicit Task resume enters
@@ -677,9 +704,9 @@ reasons, and HTTP 409 responses for busy, revision-conflict, or
 restart-required activation. Work Graph presentation is a read-only projection
 of validated graph, Kernel decision, Dispatch, Attempt, Verification, and
 Publication facts. It renders dependency/handoff/artifact edges, parallel
-groups, runnable frontier, routing policy, concrete Provider/Model, estimated
-cost/latency, and rejected candidates; it cannot schedule, cancel, retry,
-fallback, mutate bindings, or access storage.
+groups, runnable frontier, routing policy, public Provider/Model names,
+estimated cost/latency, and model-level candidates that were not selected; it
+cannot schedule, cancel, retry, fallback, mutate bindings, or access storage.
 
 The native launcher stores account-owned state under:
 

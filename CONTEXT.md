@@ -51,6 +51,25 @@ one card per Subtask and retains it as `EXECUTION SUMMARY`; a selected card
 opens a replayable detail drawer. Historical Web turns persist the safe trace
 and durable ExecutionProjector timeline, so reconnect and Conversation
 switching do not fall back to only the latest turn or current in-memory trace.
+Work Graph owns the pure proposal-to-Runtime canonical Subtask identity map;
+Runtime materialization and every Management replay/live projection use that
+same map, without title, order or suffix guessing. Configuration owns
+revision-pinned public routing identity resolution. Ordinary Web projections
+show the Provider catalog label, configured model ID, Executor and Harness
+display names, while internal model/provider refs, configuration revisions and
+binding fingerprints remain server-side. If a historical revision cannot
+recover a public model identity, the projection reports that the historical
+model information is unavailable instead of exposing the internal ref.
+
+Public attempt timelines retain the internal `attemptId` only as a non-visible
+correlation key. Visible execution narrative uses attempt kind/ordinal labels
+such as `主执行` and localized display status such as `已完成`; raw statuses such
+as `terminal` are not presentation text. The Composer exists only in the
+Conversation tab, while App-owned draft and attachment state survives a switch
+to the read-only Trajectory tab. Web theme preference is client-only,
+persisted under `anyfusion.theme`, and supports system, light and dark modes
+through semantic CSS tokens without changing Gateway, Kernel or Executor
+behavior.
 Native Planner/TUI and Feishu consume the same passive trace events; Feishu
 coalesces ordinary progress and flushes blockers/publication/completion
 milestones immediately.

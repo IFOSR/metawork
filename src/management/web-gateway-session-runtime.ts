@@ -53,6 +53,7 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly projectExecutionTimeline?: (taskId: string) => ExecutionTimeline | null;
   /** Read-only published artifact projection used to rebuild completed turns. */
   readonly projectTaskArtifacts?: (taskId: string) => ArtifactProjection[];
+  readonly normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
 }
@@ -339,14 +340,17 @@ export class WebGatewaySessionRuntime {
 
   private consume(event: GatewayEventEnvelope, replay: boolean): void {
     const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
-    this.rememberTurnEvent(event, userInput);
+    const state = this.rememberTurnEvent(event, userInput);
+    const presentationEvent = event.kind === 'trace_delta' && state
+      ? traceEventWithNormalizedPresentation(event, state.traceEvents)
+      : event;
     const resultEvent = this.consumeResultEvent(event);
     if (resultEvent) {
       if (replay) this.replayEvents.push(resultEvent);
       else this.emit(resultEvent);
     }
     const mapped = mapGatewayEvent(
-      event,
+      presentationEvent,
       userInput,
       resultIdFromPayload(event.payload)
         ? this.completedResults.get(resultIdFromPayload(event.payload)!) ?? null
@@ -420,8 +424,9 @@ export class WebGatewaySessionRuntime {
       state.completedAt = event.occurredAt;
       state.finalAnswer = stringValue(asRecord(event.payload).message) ?? state.finalAnswer;
     }
-    this.turnStates.set(turnId, state);
-    return state;
+    const normalizedState = this.normalizeRuntimeState(state);
+    this.turnStates.set(turnId, normalizedState);
+    return normalizedState;
   }
 
   private projectExecutionFromEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
@@ -605,9 +610,51 @@ export class WebGatewaySessionRuntime {
     for (const listener of this.listeners) listener(structuredClone(event));
   }
 
+  private normalizeRuntimeState(state: RuntimeTurnState): RuntimeTurnState {
+    if (!this.deps.normalizeTurnPresentation) return state;
+    const normalized = this.deps.normalizeTurnPresentation({
+      id: state.id,
+      sessionId: state.sessionId,
+      userInput: state.userInput,
+      status: state.status === 'running' ? 'completed' : state.status,
+      finalAnswer: state.finalAnswer,
+      taskId: state.taskId,
+      startedAt: state.startedAt,
+      completedAt: state.completedAt,
+      traceEvents: state.traceEvents,
+      executionTimeline: state.executionTimeline,
+      artifactRefs: [],
+      artifacts: [],
+    });
+    return {
+      ...state,
+      taskId: normalized.taskId,
+      traceEvents: normalized.traceEvents,
+      executionTimeline: normalized.executionTimeline,
+    };
+  }
+
   private id(prefix: string): string {
     return this.deps.createId?.(prefix) ?? `${prefix}_${nanoid(12)}`;
   }
+}
+
+function traceEventWithNormalizedPresentation(
+  event: GatewayEventEnvelope,
+  normalizedEvents: InteractionTraceEvent[],
+): GatewayEventEnvelope {
+  const payload = asRecord(event.payload);
+  const incoming = Array.isArray(payload.events)
+    ? payload.events.filter(isInteractionTraceEvent)
+    : [];
+  const ids = new Set(incoming.map(item => item.id));
+  return {
+    ...event,
+    payload: {
+      ...payload,
+      events: normalizedEvents.filter(item => ids.has(item.id)),
+    },
+  };
 }
 
 function once(operation: () => void): () => void {

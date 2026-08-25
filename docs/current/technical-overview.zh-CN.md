@@ -601,6 +601,29 @@ ExecutionProjector 时间线，因此重连、切换会话和回合结束后仍�
 Subtask 详情。心跳、等待依赖、等待容量和 blocked 会与真实 Executor 活动
 明确区分。执行进度只是展示事实，不会成为 Completion Protocol 验收证据。
 
+执行展示统一使用 Runtime Subtask ID 作为 canonical identity。
+`src/work-graph/subtask-identity.ts` 是 proposal ID 到 Runtime ID 映射的唯一纯
+函数 owner；Management 在历史读取、重连 snapshot 和实时 delta 进入 Web 前
+统一转换，不按标题、数组顺序或 ID 后缀猜测合并关系。因此同一逻辑 Subtask
+在对话、轨迹和详情抽屉中始终只有一张卡片。
+
+路由展示固定使用 Task generation 对应的 configuration revision。
+Configuration 根据已授权 binding 解析公开的 Executor、Harness、Provider
+显示名称和用户配置的真实 model ID，Management 只输出这些公开字段与规范化
+的候选未入选原因。普通 Web 契约不包含内部 `modelRef`、`providerRef`、
+configuration revision 或 binding fingerprint；历史 revision 无法恢复名称时
+显示“历史模型信息不可用”，不会回退暴露内部引用。路由卡明确分开“最终选择”
+和“未入选模型候选”，所以 Codex CLI 下某个模型未入选不再被误解为整个
+Codex CLI Executor 被拒绝。
+
+原始 `attemptId` 继续用于服务端幂等、恢复和关联，但不作为用户标签。
+Execution Narrative 根据 attempt kind 和序号显示“主执行”“继续执行”“回退执行”
+“结果修正”或“合并修复”，并把内部 lifecycle 状态转换为本地化用户状态。
+Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。Trajectory 是只读
+页面，不渲染 Composer；草稿和待上传附件仍由 App 持有，切回 Conversation
+后恢复。Workspace Header 提供跟随系统、浅色和深色三态主题，偏好保存在
+`anyfusion.theme`，并在应用首屏渲染前通过语义颜色 token 生效。
+
 依赖 publication 尚未完成时，Kernel/Runtime 会记录等待事实，不会错误地产生
 普通用户阻塞；缺少 handoff、Result Object、workspace 状态或身份不匹配时，
 会给出有界、结构化的材料化诊断。显式恢复通过

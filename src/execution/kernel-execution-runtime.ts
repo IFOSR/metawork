@@ -67,6 +67,10 @@ import {
   executionEventDetails,
 } from './execution-transparency.js';
 import {
+  resolvePublicRoutingIdentity,
+  type RuntimeConfigurationView,
+} from '../configuration/index.js';
+import {
   isSupersededMergeReplanApplication,
   isRetrySafeLegacySystemBindingReplan,
   isRetrySafeMergeRepairReplan,
@@ -334,6 +338,7 @@ export interface KernelExecutionRuntimeDeps {
   sessionId: string;
   getSessionId?(): string;
   getConfigurationRevision(): string;
+  getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
   taskRuntimeService: TaskRuntimeService;
@@ -1664,7 +1669,10 @@ export class KernelExecutionRuntime {
     // 规范化的用户可见执行事实（§3.5）：显示名称 + 步骤字段，
     // 同时保留既有内部 ref 字段以兼容历史客户端。
     const display = buildExecutorDisplayFacts({
-      binding: item.authorizedBinding,
+      identity: resolvePublicRoutingIdentity(
+        this.deps.getRuntimeConfiguration?.(item.configurationRevision),
+        item.authorizedBinding,
+      ),
       subtaskId: item.subtaskId,
       subtaskTitle: subtask.title,
     });
@@ -2318,14 +2326,20 @@ export class KernelExecutionRuntime {
     });
     const publishedReceipt = this.deps.attemptReceiptRepo.findByAttemptId(outcome.sourceAttemptId);
     const publishedBinding = publishedReceipt?.authorizedBinding;
+    const publicationBinding = {
+      agentClassRef: publishedBinding?.agentClassRef ?? outcome.agentClassName,
+      harnessRef: publishedBinding?.harnessRef ?? outcome.agentClassName,
+      providerRef: publishedBinding?.providerRef ?? '',
+      modelRef: publishedBinding?.modelRef ?? '',
+      permissionProfileRef: publishedBinding?.permissionProfileRef ?? null,
+      configurationRevision: publishedReceipt?.configurationRevision
+        ?? this.configurationRevisionForTask(outcome.taskId),
+    };
     const publishedDisplay = buildExecutorDisplayFacts({
-      binding: {
-        agentClassRef: publishedBinding?.agentClassRef ?? outcome.agentClassName,
-        harnessRef: publishedBinding?.harnessRef ?? outcome.agentClassName,
-        providerRef: publishedBinding?.providerRef ?? '',
-        modelRef: publishedBinding?.modelRef ?? '',
-      },
-      executorName: outcome.agentClassName,
+      identity: resolvePublicRoutingIdentity(
+        this.deps.getRuntimeConfiguration?.(publicationBinding.configurationRevision),
+        publicationBinding,
+      ),
       subtaskId: outcome.subtaskId,
       subtaskTitle: subtask?.title ?? outcome.subtaskId,
     });
@@ -2387,7 +2401,10 @@ export class KernelExecutionRuntime {
         ? 'blocked'
         : 'failed';
     const outcomeDisplay = buildExecutorDisplayFacts({
-      binding: item.authorizedBinding,
+      identity: resolvePublicRoutingIdentity(
+        this.deps.getRuntimeConfiguration?.(item.configurationRevision),
+        item.authorizedBinding,
+      ),
       subtaskId: item.subtaskId,
       subtaskTitle: this.deps.subtaskRepo.findById(item.subtaskId)?.title ?? item.subtaskId,
     });

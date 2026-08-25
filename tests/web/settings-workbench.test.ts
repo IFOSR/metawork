@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { presetProvider } from '../../web/src/preset-providers.js';
+import { PUBLIC_PROVIDER_PRESETS } from '../../src/configuration/public-provider-catalog.js';
 import {
   buildProviderModelOptions,
   dedupeModelEntries,
@@ -21,10 +21,11 @@ const webRoot = new URL('../../web/src/', import.meta.url);
 
 describe('Settings workbench model semantics', () => {
   it('exposes the current DeepSeek V4 Flash model IDs in the Provider preset', () => {
-    expect(presetProvider('deepseek')?.models).toEqual(expect.arrayContaining([
-      'deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp',
-    ]));
+    expect(PUBLIC_PROVIDER_PRESETS.find(preset => preset.providerRef === 'deepseek')?.modelIds)
+      .toEqual(expect.arrayContaining([
+        'deepseek-v4-flash',
+        'deepseek-v4-flash-vision-exp',
+      ]));
   });
 
   const providers: SettingsProviderEntry[] = [
@@ -234,6 +235,8 @@ describe('Settings workbench model semantics', () => {
     const styles = await readFile(new URL('styles.css', webRoot), 'utf8');
 
     expect(panel).toContain('高级诊断');
+    expect(panel).not.toContain('../preset-providers');
+    expect(panel).toContain('providerPresets.find');
     expect(panel).toContain('draftValidationIssues.length > 0');
     expect(routing).toContain('当前没有可用模型，请重新选择');
     expect(routing).toContain('适合做什么');

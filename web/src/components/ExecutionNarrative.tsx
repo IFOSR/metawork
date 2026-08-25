@@ -80,9 +80,13 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
                       key={attempt.attemptId ?? attempt.result}
                     >
                       <header>
-                        <span>{attempt.attemptId ?? 'attempt'}</span>
-                        <strong>{attempt.status ?? attempt.result}</strong>
-                        <time>{formatElapsed(attempt.startedAt, nowMs)}</time>
+                        <span className="executor-attempt-label" title={attempt.attemptLabel}>
+                          {attempt.attemptLabel}
+                        </span>
+                        <strong className="executor-attempt-status">{attempt.displayStatus}</strong>
+                        <time className="executor-attempt-duration">
+                          {formatElapsed(attempt.startedAt, nowMs)}
+                        </time>
                       </header>
                       <ol>
                         {history.map((entry, index) => (

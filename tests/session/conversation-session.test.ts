@@ -95,6 +95,101 @@ function makeSession(
 }
 
 describe('ConversationSession', () => {
+  it('projects routing traces with the modelId from the binding revision', () => {
+    const interactionTraceStream = new InteractionTraceStream('conv_routing_identity');
+    interactionTraceStream.beginTurn({
+      turnId: 'turn_routing_identity',
+      userInput: '分析智谱下跌',
+    });
+    const session = new ConversationSession({
+      conversationId: 'conv_routing_identity',
+      plannerSessionId: 'planner_routing_identity',
+      runtimePort: makePort('local-default', {
+        queries: {
+          listSubtasks: () => [{
+            id: 'task_1_r1_research',
+            title: '研究下跌原因',
+          }] as never,
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream,
+      getRuntimeConfiguration: revisionId => revisionId === 'revision-old'
+        ? {
+            revisionId,
+            contentHash: 'sha256:old',
+            providers: {
+              'code-cli': {
+                protocol: 'openai-compatible',
+                baseUrl: 'https://www.code-cli.cn/v1',
+                apiKeyRef: 'file-secret:anyfusion/code-cli',
+                region: 'international',
+                enabled: true,
+              },
+            },
+            models: {
+              'code-cli-5': {
+                providerRef: 'code-cli',
+                modelId: 'gpt-5.6-terra',
+                capabilities: [],
+                reasoning: 'high',
+                enabled: true,
+              },
+            },
+            harnesses: {
+              'codex-cli': {
+                kind: 'executor',
+                transport: 'local-cli',
+                command: 'codex',
+                args: [],
+                driverId: 'codex-cli',
+                supportsProbe: true,
+                supportsAbort: true,
+                supportsContinuation: true,
+                enabled: true,
+              },
+            },
+          } as never
+        : null,
+    });
+
+    session.recordKernelDecisionTrace({
+      id: 'decision_1',
+      eventId: 'event_1',
+      configurationRevision: 'revision-old',
+      reason: 'work graph authorized',
+      action: {
+        type: 'authorize_task_plan',
+        taskId: 'task_1',
+        task: { title: '分析智谱下跌', goal: '输出分析' },
+        workGraph: { subtasks: [] },
+        authorizedBindingsBySubtask: {
+          task_1_r1_research: [{
+            agentClassRef: 'codex-cli',
+            harnessRef: 'codex-cli',
+            providerRef: 'code-cli',
+            modelRef: 'code-cli-5',
+            permissionProfileRef: 'workspace-write',
+            configurationRevision: 'revision-old',
+          }],
+        },
+        generationId: 'generation_1',
+        graphRevision: 1,
+        proposalSource: 'initial',
+      },
+    } as never);
+
+    const routed = interactionTraceStream.getSnapshot()?.events
+      .find(item => item.kind === 'executor_routed');
+    expect(routed?.details).toMatchObject({
+      providerDisplayName: 'Code CLI',
+      modelDisplayName: 'gpt-5.6-terra',
+      executorDisplayName: 'Codex CLI',
+    });
+    expect(routed?.summary).toContain('Code CLI/gpt-5.6-terra');
+    expect(routed?.summary).not.toContain('code-cli-5');
+  });
+
   it('qualifies the current user input for initial Work Graph admission', () => {
     const session = new ConversationSession({
       conversationId: 'conv_context_ref',

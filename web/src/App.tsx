@@ -22,10 +22,12 @@ import {
 } from './components/ArtifactPreviewDrawer';
 import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
+import { useThemePreference } from './theme';
 
 let startupAuthentication: Promise<boolean> | null = null;
 
 export function App() {
+  const [themePreference, setThemePreference] = useThemePreference();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -416,6 +418,8 @@ export function App() {
         title={selectedMetadata?.title ?? 'New session'}
         tab={tab}
         connected={connected}
+        themePreference={themePreference}
+        composerVisible={tab === 'conversation'}
         draft={draft}
         composerDisabled={composerDisabled}
         running={running}
@@ -447,6 +451,7 @@ export function App() {
         onClearSessions={() => void handleClearSessions()}
         onSettings={() => setSettingsOpen(true)}
         onTabChange={setTab}
+        onThemeChange={setThemePreference}
         onDraftChange={setDraft}
         onSend={(text, attachments) => {
           const sent = (wsRef.current?.sendInput(text, attachments) ?? false);
