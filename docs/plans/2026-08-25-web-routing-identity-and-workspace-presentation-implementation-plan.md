@@ -785,7 +785,7 @@ Residual risk: the browser fixture does not contact external model Providers;
 their availability remains covered by existing configuration probe and runtime
 contracts. No known acceptance gap remains.
 
-**Closing commit:** pending user instruction
+**Closing implementation commit:** `4bd79a3`
 
-The workspace remains intentionally uncommitted and has not been synchronized
-to GitHub.
+The implementation was committed as `4bd79a3`. The documentation closeout
+commit and implementation commit are pushed together to `origin/main`.

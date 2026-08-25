@@ -376,6 +376,7 @@ git diff --check
 - 主题仍保留少量不随主题变化的语义图表色；普通 Workspace、Routing、Trajectory、
   Composer、Settings 和两个 Drawer 的关键表面已通过双主题浏览器验收。
 
-**Closing commit:** pending user instruction
+**Closing implementation commit:** `4bd79a3`
 
-代码未提交，未同步 GitHub。
+GitHub sync target: `origin/main`; the implementation and documentation
+closeout commits are pushed together.
