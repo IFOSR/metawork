@@ -63,22 +63,23 @@ describe('unified server composition', () => {
   });
 
   it('asserts the actual production composition root activates the registry', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'index.ts'), 'utf8');
+    const index = readFileSync(join(process.cwd(), 'src', 'server', 'server-composition.ts'), 'utf8');
     expect(index).toContain('accountRegistry.getOrActivate');
     expect(index).toContain('new ConversationGatewayRuntime');
     expect(index).toContain('new ClientGateway');
-    expect(index).toContain('resolveServerSurface');
     expect(index).not.toContain('new MetaclawSession');
   });
 
   it('starts shared adapters before selecting the foreground client', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'index.ts'), 'utf8');
+    const index = readFileSync(join(process.cwd(), 'src', 'server', 'server-composition.ts'), 'utf8');
     const sharedStart = index.indexOf('await gatewayServer.start()');
-    const foregroundSelection = index.indexOf("if (serverSurface === 'web')");
+    const foregroundSelection = index.indexOf('const taskArtifactRepo = new TaskArtifactRepo');
 
     expect(sharedStart).toBeGreaterThan(0);
     expect(foregroundSelection).toBeGreaterThan(sharedStart);
-    expect(index.slice(sharedStart, foregroundSelection)).toContain('startFeishuRuntimeBridge');
+    expect(index.slice(sharedStart, foregroundSelection)).toContain('gatewayFeishuManager.applyConfiguration');
+    expect(index).not.toContain('startInteractive');
+    expect(index).not.toContain('open(');
   });
 });
 

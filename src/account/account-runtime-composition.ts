@@ -65,6 +65,9 @@ export function buildAccountRuntimeComposition(deps: {
   notifier: NotificationService;
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
+  resolveUserWorkspaceRoot?: (
+    sessionId: string,
+  ) => Promise<string | null> | string | null;
   workspaceRoot: string;
   attemptsRoot: string;
   resultsRoot: string;
@@ -160,9 +163,12 @@ export function buildAccountRuntimeComposition(deps: {
   const verificationAndDeliveryService = new VerificationAndDeliveryService();
   // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
   // 未提供时（如测试组合）不启用用户产物发布。
-  const userArtifactPublication = deps.userWorkspaceRoot
+  const userArtifactPublication = deps.userWorkspaceRoot || deps.resolveUserWorkspaceRoot
     ? new UserArtifactPublicationService({
-      userWorkspaceRoot: deps.userWorkspaceRoot,
+      ...(deps.userWorkspaceRoot ? { userWorkspaceRoot: deps.userWorkspaceRoot } : {}),
+      ...(deps.resolveUserWorkspaceRoot
+        ? { resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot }
+        : {}),
       accountId: deps.accountId,
       taskArtifactRepo: new TaskArtifactRepo(deps.db),
     })
@@ -200,6 +206,9 @@ export function buildAccountRuntimeComposition(deps: {
     executionProgressService: repositories.executionProgressService,
     verificationAndDeliveryService,
     ...(userArtifactPublication ? { userArtifactPublication } : {}),
+    ...(deps.resolveUserWorkspaceRoot ? {
+      resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
+    } : {}),
     persistenceService: conversationExecutionBinder.routedPersistenceService(),
     kernelExecutorStatusProjector: new KernelExecutorStatusProjector(
       repositories.kernelExecutorStatusRepo,

@@ -3,7 +3,10 @@ import { createInterface } from 'readline';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
 import type { GatewayClientMessage, GatewayServerMessage } from './protocol.js';
 
-export async function runGatewayReadlineClient(socketPath: string): Promise<void> {
+export async function runGatewayReadlineClient(
+  socketPath: string,
+  conversationId?: string,
+): Promise<void> {
   const socket = createConnection(socketPath);
   await new Promise<void>((resolve, reject) => {
     socket.once('connect', resolve);
@@ -19,6 +22,10 @@ export async function runGatewayReadlineClient(socketPath: string): Promise<void
   const send = (message: GatewayClientMessage) => {
     socket.write(encodeJsonLine(message));
   };
+
+  if (conversationId) {
+    send({ type: 'attach', conversationId, resumeFromSequence: 0 });
+  }
 
   const parse = createJsonLineParser<GatewayServerMessage>((message) => {
     if (message.type === 'hello') {

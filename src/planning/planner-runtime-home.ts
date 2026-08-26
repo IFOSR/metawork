@@ -4,22 +4,52 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 
 const materializations = new Map<string, Promise<string>>();
 
+interface PlannerRuntimeHomeOptions {
+  runtimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  expectedModel?: { provider: string; modelId: string };
+}
+
+interface PlannerRuntimeHomeInput {
+  sourceHome: string;
+  runtimeRoot: string;
+  revisionId: string;
+}
+
 /**
  * Copies the immutable generated Planner configuration into a writable,
  * account-scoped home. Planner persists trust and other runtime state there.
  */
 export async function materializePlannerRuntimeHome(
+  input: PlannerRuntimeHomeInput,
+): Promise<string>;
+export async function materializePlannerRuntimeHome(
   sourceHome: string,
   runtimeRoot: string,
   revisionId: string,
-  options: {
-    runtimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
-    expectedModel?: { provider: string; modelId: string };
-  } = {},
+  options?: PlannerRuntimeHomeOptions,
+): Promise<string>;
+export async function materializePlannerRuntimeHome(
+  sourceOrInput: string | PlannerRuntimeHomeInput,
+  runtimeRoot?: string,
+  revisionId?: string,
+  options: PlannerRuntimeHomeOptions = {},
 ): Promise<string> {
-  const source = resolve(sourceHome);
-  const root = resolve(runtimeRoot);
-  const target = resolve(root, revisionId);
+  const input = typeof sourceOrInput === 'string'
+    ? {
+      sourceHome: sourceOrInput,
+      runtimeRoot: runtimeRoot as string,
+      revisionId: revisionId as string,
+    }
+    : sourceOrInput;
+  const plannerRevisionId = input.revisionId;
+  if (!input.sourceHome || !input.runtimeRoot || !plannerRevisionId) {
+    throw new Error('Planner runtime home requires sourceHome, runtimeRoot, and revisionId');
+  }
+  const sourceHome = resolve(input.sourceHome);
+  const plannerRuntimeRoot = resolve(input.runtimeRoot);
+  const source = sourceHome;
+  const root = plannerRuntimeRoot;
+  const target = resolve(root, plannerRevisionId);
   assertContained(root, target, 'Planner runtime revision');
 
   const key = `${source}\0${target}`;
@@ -149,7 +179,8 @@ async function copyTree(source: string, target: string): Promise<void> {
       throw new Error(`Unsupported entry in Planner generated home: ${sourcePath}`);
     }
     await copyFile(sourcePath, targetPath);
-    await chmod(targetPath, 0o600);
+    const sourceInfo = await lstat(sourcePath);
+    await chmod(targetPath, sourceInfo.mode & 0o777);
   }
 }
 

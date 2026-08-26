@@ -309,7 +309,7 @@ function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }
 
-/** Wires the session-facing services and exposes the imperative API used by TUI, CLI, gateway, and scripted runs. */
+/** Wires the session-facing services and exposes the server-side session API. */
 export class MetaclawSession {
   private output: string[] = [];
   private runtimeState: RuntimeState = {

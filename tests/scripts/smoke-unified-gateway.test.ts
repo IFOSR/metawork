@@ -12,6 +12,9 @@ describe('unified Gateway smoke command', () => {
     const source = readFileSync('scripts/smoke-unified-gateway.mjs', 'utf8');
 
     expect(packageJson.scripts['smoke:gateway']).toContain('smoke-unified-gateway.mjs');
+    expect(packageJson.scripts['smoke:clients']).toContain(
+      'independent-client-lifecycle.integration.test.ts',
+    );
     expect(packageJson.scripts['smoke:metawork']).toContain('smoke-metaclaw-real-task.mjs');
     expect(packageJson.scripts['smoke:anyfusion']).toBe(packageJson.scripts['smoke:metawork']);
     expect(packageJson.scripts['smoke:metaclaw']).toBe(packageJson.scripts['smoke:metawork']);
@@ -27,6 +30,8 @@ describe('unified Gateway smoke command', () => {
     expect(source).not.toContain('ANYFUSION_INSTALL_ROOT');
     expect(source).toContain('tests/architecture/unified-server-composition.test.ts');
     expect(source).toContain('tests/integration/unified-client-runtime.integration.test.ts');
+    expect(source).toContain('tests/integration/independent-client-lifecycle.integration.test.ts');
     expect(source).toContain('tests/security/gateway-account-isolation.test.ts');
+    expect(source).not.toContain('scripted-gateway-session.test.ts');
   });
 });

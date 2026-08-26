@@ -8,7 +8,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
-import { runScriptedSession } from '../../src/session/scripted-session.js';
+import { runSessionInputs } from '../support/scripted-session-test-helper.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
@@ -52,7 +52,7 @@ describe('Round 5 material loop acceptance', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Phoenix 周报结论：主线推进稳定，风险集中在联调和测试数据。',
     }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputs({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
         '/task attach {{last_task_id}} fixture-a.md fixture-b.md',

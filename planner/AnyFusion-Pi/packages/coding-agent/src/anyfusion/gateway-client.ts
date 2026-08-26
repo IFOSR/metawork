@@ -15,8 +15,9 @@ import type {
 } from './gateway-protocol.js';
 
 export interface GatewayClientDeps {
-  submit(envelope: GatewayCommandEnvelope): Promise<GatewayCommandReceipt>;
-  replay(conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
+	submit(envelope: GatewayCommandEnvelope): Promise<GatewayCommandReceipt>;
+	replay(conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
+	createConversation?(): Promise<string>;
   subscribe(listener: (event: GatewayEventEnvelope) => void): () => void;
   onDisconnect?(listener: () => void): () => void;
   createId?(prefix: string): string;
@@ -27,7 +28,8 @@ let sequenceCounter = 0;
 export class GatewayClient {
   private readonly deps: GatewayClientDeps;
   private lastSequence = 0;
-  private readonly listeners = new Set<(event: GatewayEventEnvelope) => void>();
+	private readonly listeners = new Set<(event: GatewayEventEnvelope) => void>();
+	private readonly disconnectListeners = new Set<() => void>();
   private readonly createId: (prefix: string) => string;
   private transportUnsubscribe: (() => void) | null = null;
   private disconnectUnsubscribe: (() => void) | null = null;
@@ -36,15 +38,21 @@ export class GatewayClient {
   private reconnectRequired = false;
   private reconnectFailure: Error | null = null;
 
-  constructor(deps: GatewayClientDeps) {
+	constructor(deps: GatewayClientDeps) {
     this.deps = deps;
     this.createId = deps.createId ?? (prefix => `${prefix}_${Date.now()}_${sequenceCounter += 1}`);
-    this.disconnectUnsubscribe = deps.onDisconnect?.(() => {
-      this.reconnectRequired = this.activeConversationId !== null;
-      this.reconnectFailure = null;
-      void this.reconnect();
-    }) ?? null;
-  }
+		this.disconnectUnsubscribe = deps.onDisconnect?.(() => {
+			this.reconnectRequired = this.activeConversationId !== null;
+			this.reconnectFailure = null;
+			for (const listener of this.disconnectListeners) listener();
+			void this.reconnect();
+		}) ?? null;
+	}
+
+	onDisconnect(listener: () => void): () => void {
+		this.disconnectListeners.add(listener);
+		return () => this.disconnectListeners.delete(listener);
+	}
 
   submitUserInput(
     text: string,
@@ -85,7 +93,7 @@ export class GatewayClient {
     };
   }
 
-  async resume(conversationId: string): Promise<GatewayReplay> {
+	async resume(conversationId: string): Promise<GatewayReplay> {
     this.activeConversationId = conversationId;
     try {
       const replay = await this.deps.replay(conversationId, this.lastSequence);
@@ -93,12 +101,22 @@ export class GatewayClient {
       this.reconnectRequired = false;
       this.reconnectFailure = null;
       return replay;
-    } catch (error) {
-      this.reconnectRequired = true;
-      this.reconnectFailure = asError(error);
-      throw this.reconnectFailure;
-    }
-  }
+	    } catch (error) {
+	      this.reconnectRequired = true;
+	      this.reconnectFailure = asError(error);
+	      throw this.reconnectFailure;
+	    }
+	  }
+
+	createConversation(): Promise<string> {
+		if (!this.deps.createConversation) {
+			return Promise.reject(new Error("Gateway transport cannot create a Conversation"));
+	}
+		return this.deps.createConversation().then((conversationId) => {
+			this.activeConversationId = conversationId;
+			return conversationId;
+		});
+	}
 
   get currentSequence(): number {
     return this.lastSequence;
@@ -109,7 +127,8 @@ export class GatewayClient {
     this.transportUnsubscribe = null;
     this.disconnectUnsubscribe?.();
     this.disconnectUnsubscribe = null;
-    this.listeners.clear();
+		this.listeners.clear();
+		this.disconnectListeners.clear();
   }
 
   private async submit(

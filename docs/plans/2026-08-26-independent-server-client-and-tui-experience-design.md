@@ -1,6 +1,6 @@
 # MetaWork 独立 Server/Client 与 TUI 体验改造设计
 
-> Status: Approved for implementation
+> Status: Implemented
 > Design date: 2026-08-26
 > Review completed: 2026-08-26
 > Review owner: Product / Architecture
@@ -44,7 +44,7 @@
   TUI、Web 和飞书分别决定自己的展示方式。
 - 不重做、简化或迁移当前 Web Client 的信息架构、交互流程、视觉设计和展示内容。
   本次 Web 改动只允许改变连接拓扑，并加入 Workspace 缺失时的必要状态处理。
-- 本文档不实施生产代码；设计已完成 review，等待实施指令。
+- 本文档对应的生产实施已完成；交付记录见第 16 节。
 
 ## 3. 当前状态与问题证据
 
@@ -729,3 +729,46 @@ Reducer 规则：
 8. 当前 Web Client 是不可回归的体验基线；Server 新 contract 必须至少是当前
    Web 展示信息的超集，本次不改 Web 的展示和交互逻辑。
 9. 当前没有遗留的产品决策待确认，可以进入 ADR 和生产实施。
+
+## 16. 实施完成记录
+
+**Completion date:** 2026-08-26
+
+已交付：
+
+- `metawork server start|stop|restart|status|doctor` 成为唯一 Server 生命周期入口；
+  `metawork`、`metawork tui` 和 `metawork web` 均为独立 Client，不拥有 Runtime
+  生命周期。
+- Server 启动不绑定 Workspace；所有 Conversation 使用统一
+  `/workspace /absolute/path` command，缺失时以 `workspace_required` 阻止语义任务，
+  active work 切换时返回 `workspace_busy`。
+- Unix Gateway、loopback Web/WebSocket、Server-owned Feishu adapter 共用同一个
+  Gateway command/event contract；Client 断开不会停止 Server。
+- TUI 使用统一 Turn 时间线、六阶段安全轨迹、Subtask、permission、result、
+  replay/reconnect projection；不显示 hidden reasoning、raw prompt、secret、
+  raw stdout/stderr、socket path 或内部 ID。
+- Web 维持原有 Session、Conversation、Trajectory、Execution、Artifact、Settings、
+  Authentication、Theme 和 Composer 交互，仅增加独立连接、query attach、
+  Workspace required 与 Server connection state 所需的 additive 处理。
+- 用户 Artifact publication 按 Conversation session 动态解析 Workspace，不再固定
+  使用 Server 进程 cwd 或账户内部 workspace store。
+- Script Client、旧 foreground Server/Client、`gateway run`、`--connect` 和
+  `feishu run` 生产路径已删除或硬失败。
+
+验证：
+
+- `npm run lint`：通过。
+- `npm run build`：通过。
+- `npm test`：347 个文件中 1606 个测试通过、18 个跳过；首轮发现的 4 个既有断言
+  与新增 `workspace_changed` 合约不一致项已修正后，相关测试全部通过。
+- Web/Management/Gateway 聚焦回归：15 个文件、80 个测试通过。
+- `npm run smoke:clients`：通过。
+- `npm run smoke:gateway`：7 个文件、31 个测试通过。
+- vendored AnyFusion-Pi build：通过；TUI reducer/view/client mode 18 个测试通过。
+- Provider 依赖的真实任务 smoke 未在本次本地环境执行；独立 Client transport、
+  Server start/stop 和 workspace 注入路径已由 smoke helper 与集成测试覆盖。
+
+**Closing commit:** 未在本次 worktree 中创建 commit，保留给后续合并/发布操作。
+
+残余风险：浏览器 native golden screenshot 需要具备浏览器运行环境后再执行；真实
+Provider/Executor smoke 仍取决于本机配置和外部服务可用性。

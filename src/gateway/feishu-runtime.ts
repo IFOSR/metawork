@@ -44,3 +44,36 @@ export async function startFeishuRuntimeBridge(
     stop: () => bridge!.stop(),
   };
 }
+
+export class FeishuRuntimeManager {
+  private active: StartedFeishuRuntimeBridge | null = null;
+  private fingerprint: string | null = null;
+
+  constructor(private readonly deps: {
+    session: FeishuSessionPort;
+    createBridge?: CreateFeishuBridge;
+  }) {}
+
+  async applyConfiguration(config: Config): Promise<void> {
+    const fingerprint = JSON.stringify({
+      gateway: config.gateway?.platforms?.feishu ?? null,
+      integration: (
+        config.integrations as { feishu?: unknown } | undefined
+      )?.feishu ?? null,
+    });
+    if (fingerprint === this.fingerprint) return;
+    await this.active?.stop();
+    this.active = await startFeishuRuntimeBridge(
+      config,
+      this.deps.session,
+      this.deps.createBridge,
+    );
+    this.fingerprint = fingerprint;
+  }
+
+  async stop(): Promise<void> {
+    await this.active?.stop();
+    this.active = null;
+    this.fingerprint = null;
+  }
+}

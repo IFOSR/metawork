@@ -21,6 +21,7 @@ type ConnectionStatus = 'connecting' | 'connected' | 'closed' | 'error';
 
 interface GatewayClientAppProps {
   socketPath: string;
+  conversationId?: string;
 }
 
 export function GatewayClientApp(props: GatewayClientAppProps) {
@@ -61,7 +62,16 @@ export function GatewayClientApp(props: GatewayClientAppProps) {
     });
 
     socket.on('data', parse);
-    socket.on('connect', () => setStatus('connected'));
+    socket.on('connect', () => {
+      setStatus('connected');
+      if (props.conversationId) {
+        socket.write(encodeJsonLine({
+          type: 'attach',
+          conversationId: props.conversationId,
+          resumeFromSequence: 0,
+        }));
+      }
+    });
     socket.on('close', () => setStatus(previous => previous === 'error' ? previous : 'closed'));
     socket.on('error', error => {
       setStatus('error');
@@ -170,11 +180,14 @@ export function GatewayClientApp(props: GatewayClientAppProps) {
   );
 }
 
-export async function runGatewayClientUi(socketPath: string): Promise<void> {
+export async function runGatewayClientUi(
+  socketPath: string,
+  conversationId?: string,
+): Promise<void> {
   if (!process.stdin.isTTY) {
-    await runGatewayReadlineClient(socketPath);
+    await runGatewayReadlineClient(socketPath, conversationId);
     return;
   }
-  render(<GatewayClientApp socketPath={socketPath} />);
+  render(<GatewayClientApp socketPath={socketPath} conversationId={conversationId} />);
   await new Promise(() => undefined);
 }

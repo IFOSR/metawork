@@ -6,7 +6,6 @@ import {
 	Text,
 	TUI,
 } from "@earendil-works/pi-tui";
-import { createHash } from "node:crypto";
 import { GatewayClient } from "../../anyfusion/gateway-client.ts";
 import type {
 	ConversationSelection,
@@ -17,10 +16,21 @@ import type {
 import { GatewaySocketTransport } from "../../anyfusion/gateway-socket-transport.ts";
 import { VERSION } from "../../config.ts";
 import { getEditorTheme, theme } from "./theme/theme.ts";
+import {
+	rebuildFromReplay,
+	reduceGatewayEvent,
+	type ConversationViewModel,
+} from "./metawork-client-reducer.ts";
+import {
+	renderConversation,
+	type ClientConnectionState,
+} from "./metawork-client-view.ts";
 
 interface GatewayClientPort {
 	onEvent(listener: (event: GatewayEventEnvelope) => void): () => void;
+	onDisconnect?(listener: () => void): () => void;
 	resume(conversationId: string): Promise<GatewayReplay>;
+	createConversation?(): Promise<string>;
 	submitUserInput(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitSlashCommand(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitPermissionResolution(
@@ -33,7 +43,7 @@ interface GatewayClientPort {
 }
 
 export interface AnyFusionClientModeView {
-	setConnectionState(state: "connecting" | "connected" | "closed"): void;
+	setConnectionState(state: ClientConnectionState): void;
 	appendUserInput(text: string): void;
 	appendGatewayEvent(event: GatewayEventEnvelope): void;
 	showError(message: string): void;
@@ -42,27 +52,37 @@ export interface AnyFusionClientModeView {
 export class AnyFusionClientModeController {
 	private readonly deps: {
 		gateway: GatewayClientPort;
-		conversationId: string;
+		conversationId?: string;
 		view: AnyFusionClientModeView;
 	};
-	private readonly selection: ConversationSelection;
+	private selection: ConversationSelection;
+	private conversationId: string | undefined;
 	private unsubscribe: (() => void) | null = null;
+	private disconnectUnsubscribe: (() => void) | null = null;
 	private pendingPermissionRequestId: string | null = null;
+	private currentTurnId: string | null = null;
 
 	constructor(
-		deps: {
-			gateway: GatewayClientPort;
-			conversationId: string;
-			view: AnyFusionClientModeView;
-		},
-	) {
+			deps: {
+				gateway: GatewayClientPort;
+				conversationId?: string;
+				view: AnyFusionClientModeView;
+			},
+		) {
 		this.deps = deps;
-		this.selection = { mode: "attach", conversationId: deps.conversationId };
+		this.conversationId = deps.conversationId;
+		this.selection = deps.conversationId
+			? { mode: "attach", conversationId: deps.conversationId }
+			: { mode: "new" };
 	}
 
 	async start(): Promise<void> {
 		this.deps.view.setConnectionState("connecting");
+		this.disconnectUnsubscribe = this.deps.gateway.onDisconnect?.(() => {
+			this.deps.view.setConnectionState("reconnecting");
+		}) ?? null;
 		this.unsubscribe = this.deps.gateway.onEvent((event) => {
+			if (event.turnId) this.currentTurnId = event.turnId;
 			if (event.kind === "permission_request") {
 				const payload = event.payload as { requestId?: unknown };
 				if (typeof payload.requestId === "string") {
@@ -71,7 +91,17 @@ export class AnyFusionClientModeController {
 			}
 			this.deps.view.appendGatewayEvent(event);
 		});
-		await this.deps.gateway.resume(this.deps.conversationId);
+		if (this.conversationId) {
+			const replay = await this.deps.gateway.resume(this.conversationId);
+			for (const event of [...replay.snapshot, ...replay.deltas].sort((left, right) => left.sequence - right.sequence)) {
+				this.deps.view.appendGatewayEvent(event);
+			}
+		} else if (!this.deps.gateway.createConversation) {
+			throw new Error("Gateway client cannot create a Conversation");
+		} else {
+			this.conversationId = await this.deps.gateway.createConversation();
+			this.selection = { mode: "attach", conversationId: this.conversationId };
+		}
 		this.deps.view.setConnectionState("connected");
 	}
 
@@ -80,14 +110,22 @@ export class AnyFusionClientModeController {
 		if (!input) return;
 		this.deps.view.appendUserInput(input);
 		let receipt: GatewayCommandReceipt;
-		if ((input === "/approve" || input === "/deny") && this.pendingPermissionRequestId) {
+		if ((input === "/approve" || input === "a") && this.pendingPermissionRequestId) {
 			receipt = await this.deps.gateway.submitPermissionResolution(
 				this.pendingPermissionRequestId,
 				input === "/approve" ? "approve" : "deny",
 				this.selection,
 			);
+		} else if ((input === "/deny" || input === "x") && this.pendingPermissionRequestId) {
+			receipt = await this.deps.gateway.submitPermissionResolution(
+				this.pendingPermissionRequestId,
+				"deny",
+				this.selection,
+			);
 		} else if (input.startsWith("/cancel ")) {
 			receipt = await this.deps.gateway.cancelTurn(input.slice(8).trim(), this.selection);
+		} else if (input === "c" && this.currentTurnId) {
+			receipt = await this.deps.gateway.cancelTurn(this.currentTurnId, this.selection);
 		} else if (input.startsWith("/")) {
 			receipt = await this.deps.gateway.submitSlashCommand(input, this.selection);
 		} else {
@@ -101,6 +139,8 @@ export class AnyFusionClientModeController {
 	stop(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = null;
+		this.disconnectUnsubscribe?.();
+		this.disconnectUnsubscribe = null;
 		this.deps.gateway.dispose?.();
 		this.deps.view.setConnectionState("closed");
 	}
@@ -109,34 +149,24 @@ export class AnyFusionClientModeController {
 class TerminalClientView implements AnyFusionClientModeView {
 	private readonly ui: TUI;
 	private readonly conversationId: string;
-	private readonly transcript: string[] = [];
-	private readonly trace: string[] = [];
-	private readonly transcriptText = new Text("", 1, 0);
-	private readonly traceText = new Text("", 1, 0);
+	private connectionState: ClientConnectionState = "connecting";
+	private model: ConversationViewModel = rebuildFromReplay({
+		lastSequence: 0,
+		snapshot: [],
+		deltas: [],
+	});
+	private readonly userMessages: string[] = [];
+	private readonly timelineText = new Text("", 1, 0);
 	private readonly statusText = new Text("", 1, 0);
-	private readonly results = new Map<string, {
-		startLine: number;
-		content: string;
-		contentHash: string;
-		byteLength: number;
-		certification: "certified" | "uncertified";
-	}>();
 
 	constructor(
 		ui: TUI,
-		conversationId: string,
+		conversationId: string | undefined,
 		socketPath: string,
 		editor: Editor,
 	) {
 		this.ui = ui;
-		this.conversationId = conversationId;
-		const header = new Text(
-			theme.bold(theme.fg("accent", "◆ ANYFUSION"))
-				+ `\n${theme.bold("Gateway Client")} ${theme.fg("dim", `v${VERSION}`)}`
-				+ `\n${theme.fg("muted", `${conversationId} · ${socketPath}`)}`,
-			1,
-			0,
-		);
+		this.conversationId = conversationId ?? "new";
 		const editorContainer = new Container();
 		editorContainer.addChild(
 			new Text(
@@ -146,129 +176,50 @@ class TerminalClientView implements AnyFusionClientModeView {
 			),
 		);
 		editorContainer.addChild(editor);
-		ui.addChild(header);
-		ui.addChild(new Spacer(1));
-		ui.addChild(new Text(theme.bold(theme.fg("accent", "执行轨迹")), 1, 0));
-		ui.addChild(this.traceText);
-		ui.addChild(new Spacer(1));
-		ui.addChild(new Text(theme.bold(theme.fg("accent", "对话")), 1, 0));
-		ui.addChild(this.transcriptText);
+		ui.addChild(this.timelineText);
 		ui.addChild(this.statusText);
 		ui.addChild(editorContainer);
 	}
 
-	setConnectionState(state: "connecting" | "connected" | "closed"): void {
-		this.statusText.setText(
-			theme.fg(
-				state === "connected" ? "success" : state === "closed" ? "warning" : "muted",
-				`Gateway ${state} · conversation ${this.conversationId}`,
-			),
-		);
+	setConnectionState(state: ClientConnectionState): void {
+		this.connectionState = state;
+		this.statusText.setText(theme.fg(
+			state === "connected" ? "success" : state === "offline" || state === "closed" ? "warning" : "muted",
+			`${state} · 输入 /help 查看命令`,
+		));
+		this.refreshView();
 		this.ui.requestRender();
 	}
 
 	appendUserInput(text: string): void {
-		this.transcript.push(theme.bold(theme.fg("accent", `You: ${text}`)));
-		this.refreshTranscript();
+		this.userMessages.push(text);
+		this.userMessages.splice(0, Math.max(0, this.userMessages.length - 20));
+		this.refreshView();
 	}
 
 	appendGatewayEvent(event: GatewayEventEnvelope): void {
-		if (
-			event.kind === "result_delivery_available"
-			|| event.kind === "result_chunk"
-			|| event.kind === "result_completed"
-		) {
-			this.consumeResultEvent(event);
-			return;
-		}
-		const lines = formatGatewayEvent(event);
-		if (event.kind === "final_answer") {
-			const payload = isRecord(event.payload) ? event.payload : {};
-			const resultId = typeof payload.resultId === "string" ? payload.resultId : null;
-			if (resultId && this.results.has(resultId)) return;
-		}
-		if (event.kind === "conversation_snapshot" || event.kind === "final_answer") {
-			this.transcript.push(...lines);
-			this.refreshTranscript();
-			return;
-		}
-		this.trace.push(...lines);
-		this.trace.splice(0, Math.max(0, this.trace.length - 240));
-		this.traceText.setText(this.trace.join("\n"));
-		this.ui.requestRender();
+		this.model = reduceGatewayEvent(this.model, event);
+		this.refreshView();
 	}
 
 	showError(message: string): void {
-		this.trace.push(theme.fg("error", `Error · ${message}`));
-		this.traceText.setText(this.trace.join("\n"));
-		this.ui.requestRender();
+		this.model = {
+			...this.model,
+			notices: [...this.model.notices, { kind: "error" as const, text: message }].slice(-20),
+		};
+		this.refreshView();
 	}
 
-	private refreshTranscript(): void {
-		this.transcriptText.setText(this.transcript.join("\n"));
-		this.ui.requestRender();
-	}
-
-	private consumeResultEvent(event: GatewayEventEnvelope): void {
-		const payload = isRecord(event.payload) ? event.payload : {};
-		const resultId = typeof payload.resultId === "string" ? payload.resultId : null;
-		if (!resultId) return;
-		if (event.kind === "result_delivery_available") {
-			if (
-				typeof payload.contentHash !== "string"
-				|| typeof payload.byteLength !== "number"
-				|| (payload.certification !== "certified" && payload.certification !== "uncertified")
-			) return;
-			this.results.set(resultId, {
-				startLine: this.transcript.length,
-				content: "",
-				contentHash: payload.contentHash,
-				byteLength: payload.byteLength,
-				certification: payload.certification,
-			});
-			this.trace.push(theme.fg(
-				payload.certification === "uncertified" ? "warning" : "muted",
-				payload.certification === "uncertified"
-					? "结果开始返回 · 完成认证待处理"
-					: "结果开始返回",
-			));
-			this.traceText.setText(this.trace.join("\n"));
-			this.ui.requestRender();
-			return;
-		}
-		const result = this.results.get(resultId);
-		if (!result) return;
-		if (event.kind === "result_chunk") {
-			if (typeof payload.offset !== "number" || typeof payload.chunk !== "string") return;
-			result.content = appendUtf8Chunk(result.content, payload.offset, payload.chunk);
-			this.transcript.splice(
-				result.startLine,
-				this.transcript.length - result.startLine,
-				...result.content.split("\n"),
-			);
-			this.refreshTranscript();
-			return;
-		}
-		const bytes = Buffer.from(result.content, "utf8");
-		const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-		if (bytes.byteLength !== result.byteLength || hash !== result.contentHash) {
-			this.showError(`Result verification failed: ${resultId}`);
-			return;
-		}
-		this.trace.push(theme.fg(
-			result.certification === "uncertified" ? "warning" : "success",
-			result.certification === "uncertified"
-				? "结果已完整返回 · 完成认证待处理"
-				: "结果已完整返回",
-		));
-		this.traceText.setText(this.trace.join("\n"));
+	private refreshView(): void {
+		const rendered = renderConversation(this.model, this.userMessages, this.connectionState, 120);
+		this.timelineText.setText(rendered);
 		this.ui.requestRender();
 	}
 }
 
 export async function runAnyFusionClientMode(input: {
 	socketPath: string;
-	conversationId: string;
+	conversationId?: string;
 }): Promise<void> {
 	const ui = new TUI(new ProcessTerminal());
 	const editor = new Editor(ui, getEditorTheme(), { paddingX: 1 });
@@ -358,11 +309,16 @@ function formatGatewayEvent(event: GatewayEventEnvelope): string[] {
 	];
 }
 
-function appendUtf8Chunk(current: string, offset: number, chunk: string): string {
-	const bytes = Buffer.from(current, "utf8");
-	if (offset === bytes.byteLength) return current + chunk;
-	if (offset > bytes.byteLength) return current;
-	return bytes.subarray(0, offset).toString("utf8") + chunk;
+function stageLabel(stage: string): string {
+	switch (stage) {
+		case "understanding": return "理解";
+		case "planning": return "规划";
+		case "authorization": return "授权";
+		case "execution": return "执行";
+		case "verification": return "验证";
+		case "delivery": return "交付";
+		default: return "等待输入";
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

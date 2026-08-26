@@ -52,7 +52,7 @@ implementation is deferred to a separate roadmap.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one MetaWork runtime.
 - Uses the nested `planner/AnyFusion-Pi` fork as the default local Planner conversation surface, with an isolated process/dependency tree and MetaWork-managed provider/model configuration in both native and optional container runtimes.
-- Runs the native AnyFusion-Pi interface as a Gateway-only client with separate execution-trace and conversation projections, cursor-based replay, reconnect, versioned slash/permission commands, and no local semantic runtime. The original Ink UI remains source-preserved as a standby module.
+- Runs the native AnyFusion-Pi interface as an independent Gateway-only client with a single Turn timeline, cursor-based replay, reconnect, versioned slash/permission commands, and no local semantic runtime. The original Ink UI remains source-preserved as a standby module.
 - Ships with `npm run smoke:metawork`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
@@ -765,10 +765,12 @@ Installation-global transport state remains outside the account root:
 └── runtime.lock
 ```
 
-Connect a second terminal to the same runtime:
+Launch an independent client after the Server is ready:
 
 ```bash
-./anyfusion.sh connect
+metawork
+metawork tui
+metawork web
 ```
 
 Server utilities:

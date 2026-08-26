@@ -69,8 +69,9 @@ export class ArtifactPreviewService {
   constructor(private readonly deps: {
     taskArtifactSource: TaskArtifactSource;
     query: ArtifactPreviewQuery;
-    /** 用户可见 Workspace 根；用户产物固定位于 `<root>/metaclaw-tasks`。 */
-    userWorkspaceRoot: string;
+    /** 兼容默认根；生产 Server 也会提供 Conversation Workspace roots。 */
+    userWorkspaceRoot?: string;
+    userWorkspaceRoots?: () => Promise<string[]> | string[];
   }) {}
 
   async getMetadata(artifactId: string): Promise<ArtifactMetadataResult> {
@@ -160,20 +161,26 @@ export class ArtifactPreviewService {
    */
   private async safePublishedPath(publishedPath: string): Promise<string> {
     if (!isAbsolute(publishedPath)) throw new Error('published path must be absolute');
-    const artifactsRoot = await realpath(
-      resolve(this.deps.userWorkspaceRoot, USER_ARTIFACTS_DIRECTORY),
-    );
     const real = await realpath(publishedPath);
-    const rel = relative(artifactsRoot, real);
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
-      throw new Error('published path escapes the user artifacts root');
+    const roots = [
+      ...(this.deps.userWorkspaceRoot ? [this.deps.userWorkspaceRoot] : []),
+      ...(await this.deps.userWorkspaceRoots?.() ?? []),
+    ];
+    for (const root of roots) {
+      let artifactsRoot: string;
+      try {
+        artifactsRoot = await realpath(resolve(root, USER_ARTIFACTS_DIRECTORY));
+      } catch {
+        continue;
+      }
+      const rel = relative(artifactsRoot, real);
+      if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
+        const stat = await lstat(real);
+        if (stat.isSymbolicLink()) throw new Error('published path must not be a symbolic link');
+        return real;
+      }
     }
-    // 符号链接来源一律拒绝：realpath 后的父链已由 realpath 保证，
-    // 但目标本身若是指向根外的链接，rel 检查已经拦截；这里额外拒绝
-    // 位于根内的符号链接，保证下载的是真实文件而非链接跳转。
-    const stat = await lstat(real);
-    if (stat.isSymbolicLink()) throw new Error('published path must not be a symbolic link');
-    return real;
+    throw new Error('published path escapes the user artifacts root');
   }
 }
 

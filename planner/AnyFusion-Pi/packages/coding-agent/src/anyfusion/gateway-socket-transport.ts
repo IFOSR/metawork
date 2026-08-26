@@ -60,6 +60,10 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private readonly eventListeners = new Set<(event: GatewayEventEnvelope) => void>();
 	private readonly disconnectListeners = new Set<() => void>();
 	private readonly deliveredEventIds = new Set<string>();
+	private readonly helloWaiters = new Set<{
+		resolve(conversationId: string): void;
+		reject(error: Error): void;
+	}>();
 	private readonly socketPath: string;
 	private readonly maxFrameBytes: number;
 	private closed = false;
@@ -96,6 +100,14 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			snapshot: [],
 			deltas: [],
 		};
+	}
+
+	async createConversation(): Promise<string> {
+		await this.ensureConnected();
+		if (this.currentConversationId) return this.currentConversationId;
+		return new Promise<string>((resolve, reject) => {
+			this.helloWaiters.add({ resolve, reject });
+		});
 	}
 
 	subscribe(listener: (event: GatewayEventEnvelope) => void): () => void {
@@ -180,6 +192,8 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private handleMessage(message: GatewayWireServerMessage): void {
 		if (message.type === "hello") {
 			this.currentConversationId = message.sessionId;
+			for (const waiter of this.helloWaiters) waiter.resolve(message.sessionId);
+			this.helloWaiters.clear();
 			if (this.pendingAttach?.conversationId === message.sessionId) {
 				if (this.desiredConversationId === message.sessionId) {
 					this.desiredAfterSequence = 0;
@@ -294,6 +308,8 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.buffer = "";
 		this.currentConversationId = null;
 		const error = new Error("Gateway connection closed");
+		for (const waiter of this.helloWaiters) waiter.reject(error);
+		this.helloWaiters.clear();
 		this.pendingAttach?.reject(error);
 		this.pendingAttach = null;
 		for (const pending of this.pendingReceipts.values()) pending.reject(error);

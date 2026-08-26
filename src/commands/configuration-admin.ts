@@ -17,11 +17,22 @@ export interface ConfigurationAdminDeps {
   activate?(config: AnyFusionConfigurationV2): Promise<ConfigurationMutationResult>;
 }
 
+type ConfigurationAdminCommand = AdminCommand | { kind: 'status' };
+
 export async function runConfigurationAdmin(
-  command: AdminCommand,
+  command: ConfigurationAdminCommand,
   deps: ConfigurationAdminDeps,
 ): Promise<string[]> {
   switch (command.kind) {
+    case 'status': {
+      const snapshot = await deps.getActiveSnapshot();
+      return [
+        `revision: ${snapshot.revisionId}`,
+        `providers: ${Object.keys(snapshot.config.providers).length}`,
+        `models: ${Object.keys(snapshot.config.models).length}`,
+        `agentClasses: ${Object.keys(snapshot.config.agentClasses).length}`,
+      ];
+    }
     case 'config':
       return runConfig(command, deps);
     case 'provider':

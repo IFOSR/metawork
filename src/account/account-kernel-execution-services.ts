@@ -88,6 +88,9 @@ export function buildAccountKernelExecutionServices(deps: {
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
   userArtifactPublication?: UserArtifactPublicationService;
+  resolveUserWorkspaceRoot?: (
+    sessionId: string,
+  ) => Promise<string | null> | string | null;
   persistenceService: SessionPersistenceService;
   kernelExecutorStatusProjector: KernelExecutorStatusProjector;
   presentation: SessionPresentationService;
@@ -143,6 +146,7 @@ export function buildAccountKernelExecutionServices(deps: {
       dispatchItemRepo: deps.dispatchItemRepo,
       taskRuntimeService: deps.taskRuntimeService,
       userArtifactPublication: deps.userArtifactPublication,
+      resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
     }),
     publicationRepo: deps.publicationRepo,
     resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),

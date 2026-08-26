@@ -60,7 +60,7 @@ describe('gateway setup', () => {
       });
       expect(createFeishuBridge(config, {} as never)).not.toBeNull();
       expect(readFileSync(resolve(metaclawDir, '.env'), 'utf-8')).toContain('FEISHU_BOT_OPEN_ID=ou_bot');
-      expect(outputLines.join('\n')).toContain('metaclaw gateway run');
+      expect(outputLines.join('\n')).toContain('metawork server restart');
     } finally {
       if (previousSecret === undefined) {
         delete process.env.FEISHU_APP_SECRET;

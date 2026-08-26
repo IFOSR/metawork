@@ -676,7 +676,8 @@ ID 幂等重放。其他 uncertain application 和外部 effect 仍保留普通�
 连接和展示状态，都附着到同一个常驻 Server 所拥有的 `RuntimeRegistry`、
 `AccountRuntime`、`ConversationRegistry` 和 `ClientGateway`。`anyfusion`
 和 `metaclaw` 保留为兼容 CLI alias，但 `gateway run`、`--connect`、前台 Web
-和 script mode 等旧生命周期形式会被明确拒绝。
+和 script mode 等旧生命周期形式会被明确拒绝。Server 通过
+`metawork server start` 独立常驻，TUI/Web 只作为独立 Client 连接。
 
 运行中的 Planner、Kernel 和 Executor 始终固定使用进程启动时加载的配置
 revision。Web 设置页激活仍完整执行 validate、compile、probe 和 immutable

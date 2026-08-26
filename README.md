@@ -27,8 +27,9 @@ executing, recovering, and delivering agent work.
   history persist across process restarts.
 - **Governed execution:** the Planner proposes work, the ControlKernel
   authorizes state changes, and Executors run only concrete approved attempts.
-- **Multiple clients, one runtime:** native TUI, Web, Feishu, scripts, and Unix
-  clients share the same versioned Gateway command and event plane.
+- **Multiple clients, one runtime:** native TUI, Web, Feishu, and Unix clients
+  share the same versioned Gateway command and event plane. Server owns the
+  Runtime and remains alive when Clients exit.
 - **Explainable routing:** every authorized attempt is pinned to a configuration
   revision and a complete Provider, Model, AgentClass, Harness, and Permission
   Profile binding.

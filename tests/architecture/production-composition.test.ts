@@ -6,7 +6,7 @@ const root = resolve(import.meta.dirname, '../..');
 
 describe('production composition root', () => {
   it('uses the revisioned configuration authority for storage and Executor bindings', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
     const gatewayRuntime = readFileSync(
       resolve(root, 'src/gateway/conversation-gateway-runtime.ts'),
       'utf8',
@@ -24,20 +24,16 @@ describe('production composition root', () => {
   });
 
   it('passes the runtime binding resolver to the preserved standby TUI', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
-    const standbyStart = index.indexOf("if (serverSurface === 'standby')");
-    const standbyEnd = index.indexOf('// 9. 启动默认 Gateway-only native TUI client.', standbyStart);
-
-    expect(standbyStart).toBeGreaterThan(0);
-    expect(standbyEnd).toBeGreaterThan(standbyStart);
-    expect(index.slice(standbyStart, standbyEnd))
-      .toContain('getRuntimeBinding: runtimeBindings.getRuntimeBinding');
+    const server = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
+    expect(server).not.toContain('serverSurface');
+    expect(readFileSync(resolve(root, 'src/tui/app.tsx'), 'utf8'))
+      .toContain('MetaclawSession');
   });
 
   it('uses the local-default account paths for runtime and configuration administration', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
-    const adminStart = index.indexOf('const adminCommand = parseAdminArgs');
-    const adminEnd = index.indexOf('// Every mode that reaches', adminStart);
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
+    const adminStart = index.indexOf("if (cliCommand.kind === 'admin')");
+    const adminEnd = index.indexOf('// Only standalone Server startup', adminStart);
     const administration = index.slice(adminStart, adminEnd);
 
     expect(index).toContain('resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root)');
@@ -49,8 +45,8 @@ describe('production composition root', () => {
     expect(administration).not.toContain('paths.secrets');
   });
 
-  it('captures the immutable startup workspace root separately from the account workspace store', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+  it('keeps Server startup independent from the user Workspace', () => {
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
     const composition = readFileSync(
       resolve(root, 'src/account/account-runtime-composition.ts'),
       'utf8',
@@ -60,19 +56,12 @@ describe('production composition root', () => {
       'utf8',
     );
 
-    // 启动目录在组合根一次性捕获，进程生命周期内保持不变。
-    expect(index).toContain('const startupWorkspaceRoot = resolve(process.cwd())');
-    expect(index.match(/startupWorkspaceRoot = resolve\(process\.cwd\(\)\)/gu))
-      .toHaveLength(1);
-    // 用户 Workspace 与内部 workspaceStore 作为不同依赖传递。
-    expect(index).toContain('userWorkspaceRoot: startupWorkspaceRoot');
+    expect(index).not.toContain('process.cwd()');
+    expect(index).toContain('userWorkspaceRoot: accountPaths.workspaceStore');
     expect(index).toContain('workspaceRoot: accountPaths.workspaceStore');
-    // Markdown preview 的 allowed root 也必须使用捕获的启动目录。
     expect(index).toContain(
-      'new MarkdownPreviewServer(markdownPreviewConfig, startupWorkspaceRoot)',
+      'new MarkdownPreviewServer(markdownPreviewConfig, accountPaths.workspaceStore)',
     );
-    expect(index).not.toContain('new MarkdownPreviewServer(markdownPreviewConfig, process.cwd())');
-    // 组合层把两者区分为独立依赖名，账户 workspace-store 不冒充用户 Workspace。
     expect(composition).toContain("userWorkspaceRoot?: string");
     expect(composition).toContain('workspaceRoot: string;');
     expect(workspaceServices).toContain("'workspace-store'");
@@ -99,7 +88,7 @@ describe('production composition root', () => {
   });
 
   it('fails closed when production clients attach to an existing Conversation', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
 
     expect(index).toContain('verifyOwnership: authorizeConversationAttach');
     expect(index.match(/authorizeAttach: authorizeConversationAttach/g)).toHaveLength(1);
@@ -107,7 +96,7 @@ describe('production composition root', () => {
   });
 
   it('runs account recovery timers and drains commands before runtime disposal', () => {
-    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
     const composition = readFileSync(
       resolve(root, 'src/account/account-runtime-composition.ts'),
       'utf8',
@@ -116,9 +105,9 @@ describe('production composition root', () => {
     expect(index).toContain('accountRuntimeComposition.accountRuntime.reviewTaskPoolOnTimer()');
     expect(index).not.toContain('conversationRegistry.reviewTaskPoolOnTimer()');
     expect(index).toContain('clientGateway.closeAdmission()');
-    expect(index).toContain('await runShutdownStep(() => clientGateway.drain())');
+    expect(index).toContain('await clientGateway.drain()');
     expect(index).toContain('conversationGatewayRuntime.closeAdmission()');
-    expect(index).toContain('await runShutdownStep(() => conversationGatewayRuntime.drain())');
+    expect(index).toContain('await conversationGatewayRuntime.drain()');
     expect(index.indexOf('clientGateway.closeAdmission()'))
       .toBeLessThan(index.indexOf('conversationGatewayRuntime.closeAdmission()'));
     expect(index.indexOf('conversationGatewayRuntime.drain()'))

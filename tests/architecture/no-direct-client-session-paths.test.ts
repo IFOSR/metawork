@@ -39,7 +39,6 @@ function clientSourcesImportingMetaclawSession(): string[] {
       'management/',
       'integrations/',
       'tui-bridge/',
-      'session/scripted-session.ts',
     ].some(prefix => relativePath.startsWith(prefix))) {
       return false;
     }

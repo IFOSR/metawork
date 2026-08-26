@@ -25,8 +25,8 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
 - **持久工作：** Task、Work Graph、结果、恢复事实和审计记录可跨进程重启保留。
 - **受控执行：** Planner 负责提出工作，ControlKernel 负责授权状态变化，
   Executor 只执行明确获批的 attempt。
-- **多端统一：** 原生 TUI、Web、飞书、脚本和 Unix 客户端使用同一套版本化
-  Gateway 命令与事件平面。
+- **多端统一：** 原生 TUI、Web、飞书和 Unix 客户端使用同一套版本化
+  Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
 - **显式恢复：** retry、fallback、continuation、merge repair、cancel 和 resume
