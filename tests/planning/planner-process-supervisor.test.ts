@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -161,6 +161,50 @@ describe('PlannerProcessSupervisor', () => {
     } finally {
       if (previousHome === undefined) delete process.env.METACLAW_PLANNER_HOME;
       else process.env.METACLAW_PLANNER_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a writable Planner home when the generated revision is immutable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-runtime-home-'));
+    const generatedRoot = join(root, 'generated');
+    const revisionHome = join(generatedRoot, 'revision-writable', 'planner');
+    const plannerRuntimeRoot = join(root, 'planner-runtime');
+    const sessionDir = join(root, 'planner-sessions');
+    await mkdir(revisionHome, { recursive: true });
+    await writeFile(join(revisionHome, 'agent.json'), '{"kind":"planner"}\n', 'utf8');
+    await chmod(revisionHome, 0o555);
+
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      generatedRuntimeRoot: generatedRoot,
+      plannerRuntimeRoot,
+      sessionDir,
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-v4-pro',
+      },
+      spawn: spawn as never,
+    });
+
+    try {
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-writable-home', source: 'gateway' },
+        configuration: { revisionId: 'revision-writable' },
+      } as never, 'kernel');
+
+      const plannerHome = spawn.mock.calls[0]?.[2]?.env?.ANYFUSION_PLANNER_HOME;
+      expect(plannerHome).toBe(join(plannerRuntimeRoot, 'revision-writable'));
+      await mkdir(join(plannerHome!, 'trust.json.lock'));
+    } finally {
+      await chmod(join(revisionHome, 'agent.json'), 0o600);
+      await chmod(revisionHome, 0o700);
       await rm(root, { recursive: true, force: true });
     }
   });

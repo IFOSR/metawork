@@ -146,6 +146,10 @@ describe('ConfigurationCompiler', () => {
     const result = await compiler.compile(snapshot());
 
     expect(result.rootPath).toBe(join(root, 'revision-1'));
+    expect(await readFile(join(result.rootPath, 'planner', 'models.json'), 'utf8'))
+      .toContain('"engineering-model"');
+    expect(await readFile(join(result.rootPath, 'planner', 'settings.json'), 'utf8'))
+      .toContain('"review-model"');
     for (const relativePath of [
       'planner/planner-default',
       'executors/codex-engineering',

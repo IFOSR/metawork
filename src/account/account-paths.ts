@@ -22,6 +22,7 @@ export interface AccountPaths {
   readonly generated: string;
   readonly generatedAgentRuntime: string;
   readonly generatedCurrent: string;
+  readonly plannerRuntime: string;
   readonly data: string;
   readonly database: string;
   readonly databaseRevisions: string;
@@ -55,6 +56,7 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     generated: resolve(root, 'generated'),
     generatedAgentRuntime: resolve(root, 'generated', 'agent-runtime'),
     generatedCurrent: resolve(root, 'generated', 'current'),
+    plannerRuntime: resolve(planner, 'runtime'),
     data,
     database: resolve(data, 'anyfusion.db'),
     databaseRevisions: resolve(data, 'database-revisions'),

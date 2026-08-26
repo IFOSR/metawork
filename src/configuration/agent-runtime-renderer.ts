@@ -102,7 +102,7 @@ function apiKeyVariable(providerRef: string, providerCount: number): string {
     : `$OPENAI_API_KEY__${providerRef.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
 }
 
-function buildModelsJson(config: AnyFusionConfigurationV2): Record<string, unknown> {
+export function buildModelsJson(config: AnyFusionConfigurationV2): Record<string, unknown> {
   const providers = enabledProviders(config);
   const providerEntries: Record<string, unknown> = {};
   for (const [ref, provider] of providers) {
@@ -130,7 +130,7 @@ function resolveModelRef(config: AnyFusionConfigurationV2, agentClassId: string)
   return policy.defaultModelRef ?? policy.allowedModelRefs[0] ?? null;
 }
 
-function buildSettingsJson(config: AnyFusionConfigurationV2, agentClassId: string): Record<string, unknown> {
+export function buildSettingsJson(config: AnyFusionConfigurationV2, agentClassId: string): Record<string, unknown> {
   const providers = enabledProviders(config);
   const defaultModelRef = resolveModelRef(config, agentClassId);
   const defaultModel = defaultModelRef ? config.models[defaultModelRef] : null;

@@ -498,6 +498,7 @@ async function main() {
     configurationRevision: stagedConfiguration.snapshot.revisionId,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
     generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
+    plannerRuntimeRoot: accountPaths.plannerRuntime,
     databasePath: accountPaths.database,
     configurationRoot: accountPaths.config,
     schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v8.schema.json'),

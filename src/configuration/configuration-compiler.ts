@@ -13,6 +13,7 @@ import type {
   ModelPolicy,
   PermissionProfile,
 } from './types.js';
+import { buildModelsJson, buildSettingsJson } from './agent-runtime-renderer.js';
 
 export interface CompiledAgentRuntime {
   rootPath: string;
@@ -36,6 +37,11 @@ export class ConfigurationCompiler {
         agentClassPaths[agentClassId] = agentRoot;
         await writeAgentRuntime(agentRoot, agentClassId, agentClass, snapshot);
       }
+      const plannerAgentClassId = Object.entries(snapshot.config.agentClasses)
+        .find(([, agentClass]) => agentClass.kind === 'planner')?.[0];
+      if (plannerAgentClassId) {
+        await writePlannerHomeConfig(rootPath, snapshot, plannerAgentClassId);
+      }
       await writeJson(rootPath, 'runtime-manifest.json', {
         schemaVersion: 1,
         revisionId: snapshot.revisionId,
@@ -48,6 +54,18 @@ export class ConfigurationCompiler {
       throw error;
     }
   }
+}
+
+async function writePlannerHomeConfig(
+  rootPath: string,
+  snapshot: ConfigurationSnapshot,
+  agentClassId: string,
+): Promise<void> {
+  const plannerRoot = join(rootPath, 'planner');
+  await Promise.all([
+    writeJson(plannerRoot, 'models.json', buildModelsJson(snapshot.config)),
+    writeJson(plannerRoot, 'settings.json', buildSettingsJson(snapshot.config, agentClassId)),
+  ]);
 }
 
 async function writeAgentRuntime(

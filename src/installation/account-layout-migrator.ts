@@ -200,6 +200,7 @@ export class AccountLayoutMigrator {
       accountPaths.secrets.replace(accountPaths.root, stageRoot),
       accountPaths.generated.replace(accountPaths.root, stageRoot),
       accountPaths.generatedAgentRuntime.replace(accountPaths.root, stageRoot),
+      accountPaths.plannerRuntime.replace(accountPaths.root, stageRoot),
       accountPaths.plannerSessions.replace(accountPaths.root, stageRoot),
       accountPaths.conversations.replace(accountPaths.root, stageRoot),
       accountPaths.workspaceStore.replace(accountPaths.root, stageRoot),

@@ -69,6 +69,8 @@ describe('SourceNativeInstaller', () => {
     expect(readFileSync(join(paths.appCurrent, 'dist', 'index.js'), 'utf8')).toBe('runtime\n');
     expect(readFileSync(join(paths.appCurrent, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js'), 'utf8'))
       .toBe('planner\n');
+    expect(statSync(join(paths.appCurrent, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js')).mode & 0o777)
+      .toBe(0o555);
     await expect(secretStore.get('file-secret:anyfusion/provider')).resolves.toBe('install-secret');
 
     const repository = new FileConfigurationRepository(accountPaths.config);
@@ -179,7 +181,9 @@ function fixtureRelease(sourceRoot: string, plannerRoot: string): void {
   writeFileSync(join(sourceRoot, 'package.json'), '{"name":"anyfusion"}\n');
   mkdirSync(join(plannerRoot, 'packages', 'coding-agent', 'dist'), { recursive: true });
   mkdirSync(join(plannerRoot, 'node_modules'), { recursive: true });
-  writeFileSync(join(plannerRoot, 'packages', 'coding-agent', 'dist', 'cli.js'), 'planner\n');
+  const plannerCli = join(plannerRoot, 'packages', 'coding-agent', 'dist', 'cli.js');
+  writeFileSync(plannerCli, 'planner\n', { mode: 0o755 });
+  chmodSync(plannerCli, 0o755);
   writeFileSync(join(plannerRoot, 'package.json'), '{"name":"anyfusion-pi"}\n');
 }
 

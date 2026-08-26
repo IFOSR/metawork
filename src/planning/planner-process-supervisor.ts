@@ -20,6 +20,7 @@ import type {
   PlannerRunProgressPayload,
 } from './planner-progress.js';
 import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
+import { materializePlannerRuntimeHome } from './planner-runtime-home.js';
 import {
   PlannerRunError,
   type PlannerRunResult,
@@ -82,6 +83,7 @@ export interface PlannerProcessSupervisorDeps {
   configurationRevision?: string;
   bindingFingerprint?: string;
   generatedRuntimeRoot?: string;
+  plannerRuntimeRoot?: string;
   databasePath?: string;
   configurationRoot?: string;
   runtimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
@@ -714,6 +716,19 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       );
     }
     const plannerHome = this.deps.plannerHome
+      ?? (
+        revisionPlannerHome && this.deps.plannerRuntimeRoot && configurationRevision
+          ? await materializePlannerRuntimeHome(
+            revisionPlannerHome,
+            this.deps.plannerRuntimeRoot,
+            configurationRevision,
+            {
+              runtimeEnvironment: this.currentRuntimeEnvironment,
+              expectedModel: this.currentExpectedModel,
+            },
+          )
+          : undefined
+      )
       ?? revisionPlannerHome
       ?? process.env.METACLAW_PLANNER_HOME
       ?? process.env.ANYFUSION_PLANNER_HOME

@@ -410,7 +410,7 @@ async function makeImmutable(path: string): Promise<void> {
     }
     await chmod(path, 0o555);
   } else if (!info.isSymbolicLink()) {
-    await chmod(path, 0o444);
+    await chmod(path, (info.mode & 0o111) !== 0 ? 0o555 : 0o444);
   }
 }
 
