@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { startFeishuRuntimeBridge } from '../../src/gateway/feishu-runtime.js';
+import {
+  FeishuRuntimeManager,
+  startFeishuRuntimeBridge,
+} from '../../src/gateway/feishu-runtime.js';
 import type { Config } from '../../src/core/types.js';
 
 describe('Feishu runtime bridge', () => {
@@ -73,5 +76,37 @@ describe('Feishu runtime bridge', () => {
 
     expect(runtimeBridge).toBeNull();
     expect(session.appendSystemMessage).toHaveBeenCalledWith('⚠️ 飞书应用桥接未启动: missing secret');
+  });
+
+  it('restarts the Server-owned bridge when active configuration changes', async () => {
+    const first = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const createBridge = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    const manager = new FeishuRuntimeManager({
+      session: { appendSystemMessage: vi.fn() } as any,
+      createBridge,
+    });
+
+    await manager.applyConfiguration(baseConfig);
+    await manager.applyConfiguration({
+      ...baseConfig,
+      integrations: {
+        ...baseConfig.integrations,
+        feishu: { ...baseConfig.integrations.feishu, app_id: 'cli_changed' },
+      },
+    });
+
+    expect(first.stop).toHaveBeenCalledTimes(1);
+    expect(second.start).toHaveBeenCalledTimes(1);
+    await manager.stop();
+    expect(second.stop).toHaveBeenCalledTimes(1);
   });
 });

@@ -14,6 +14,8 @@ export {
 export type QueuedExecutionRequest = {
   userPrompt: string;
   contextTaskId: string;
+  /** Canonical Conversation Workspace fixed at task admission. */
+  workspacePath?: string;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   authorizedWorkGraph?: WorkGraphProposal | null;
   authorizedBindingsBySubtask?: Readonly<Record<string, AuthorizedExecutorBinding[]>> | null;

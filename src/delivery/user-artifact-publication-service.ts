@@ -37,6 +37,7 @@ export interface UserArtifactSource {
 }
 
 export interface PublishUserArtifactsInput {
+  sessionId?: string;
   accountId: string;
   taskId: string;
   taskTitle: string;
@@ -45,6 +46,8 @@ export interface PublishUserArtifactsInput {
   publicationId: string | null;
   /** Git 集成成功后的 workspace 根（只读来源）。 */
   integratedWorkspaceRoot: string;
+  /** 当前 Conversation 选择的用户 Workspace；优先于固定默认根。 */
+  userWorkspaceRoot?: string;
   sources: UserArtifactSource[];
 }
 
@@ -55,8 +58,11 @@ export interface UserArtifactPublicationResult {
 }
 
 export interface UserArtifactPublicationServiceDeps {
-  /** 用户可见 Workspace 根（进程启动目录），进程生命周期内不变。 */
-  userWorkspaceRoot: string;
+  /** 测试/兼容组合的固定默认根；生产组合可按 session 动态解析。 */
+  userWorkspaceRoot?: string;
+  resolveUserWorkspaceRoot?: (
+    sessionId: string,
+  ) => Promise<string | null> | string | null;
   accountId?: string;
   taskArtifactRepo: TaskArtifactRepo;
   now?: () => string;
@@ -91,7 +97,7 @@ export class UserArtifactPublicationService {
   }
 
   get userWorkspaceRoot(): string {
-    return this.deps.userWorkspaceRoot;
+    return this.deps.userWorkspaceRoot ?? '';
   }
 
   /**
@@ -102,9 +108,17 @@ export class UserArtifactPublicationService {
   async publishIntegratedArtifacts(
     input: PublishUserArtifactsInput,
   ): Promise<UserArtifactPublicationResult> {
+    const userWorkspaceRoot = input.userWorkspaceRoot
+      ?? (input.sessionId
+        ? await this.deps.resolveUserWorkspaceRoot?.(input.sessionId)
+        : undefined)
+      ?? this.deps.userWorkspaceRoot;
+    if (!userWorkspaceRoot) {
+      throw new Error(`Conversation ${input.sessionId ?? '<unknown>'} has no selected Workspace`);
+    }
     const taskSlug = userTaskDirectorySlug(input.taskTitle, input.taskId);
     const taskDirectory = join(
-      resolve(this.deps.userWorkspaceRoot),
+      resolve(userWorkspaceRoot),
       USER_ARTIFACTS_DIRECTORY,
       taskSlug,
     );

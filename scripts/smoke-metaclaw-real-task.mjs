@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { dump, load } from 'js-yaml';
@@ -391,6 +391,21 @@ function readPlannerDiagnostics(repoRoot, dbPath) {
   return result.status === 0 ? String(result.stdout ?? '').trim() : '';
 }
 
+function waitForFile(path, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Smoke failed: Server endpoint manifest was not created: ${path}`);
+    }
+    sleepSync(100);
+  }
+}
+
+function sleepSync(durationMs) {
+  const shared = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(shared, 0, 0, durationMs);
+}
+
 function readPlannerInteractions(repoRoot, dbPath) {
   const source = [
     "import Database from 'better-sqlite3';",
@@ -594,13 +609,38 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
       METACLAW_PLANNER_TUI_SOCKET: bridgeSocketPath,
       METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',
     };
-    const runResult = run('node', [join(repoRoot, 'dist/index.js'), '--script', scriptPath], {
+    const endpointPath = join(installRoot, 'server-endpoint.json');
+    const serverProcess = spawn(process.execPath, [
+      join(repoRoot, 'dist', 'index.js'),
+      'server',
+      'start',
+    ], {
       cwd: workdir,
       env: childEnv,
-      logPath: outputPath,
+      detached: true,
+      stdio: 'ignore',
     });
+    serverProcess.unref();
+    try {
+      waitForFile(endpointPath);
+      run(process.execPath, [
+        join(repoRoot, 'scripts', 'smoke-independent-clients.mjs'),
+        '--socket', join(metaclawHome, 'gateway.sock'),
+        '--input-file', scriptPath,
+        '--workspace', workdir,
+        '--output', outputPath,
+      ], {
+        cwd: workdir,
+        env: childEnv,
+      });
+    } finally {
+      run(process.execPath, [join(repoRoot, 'dist', 'index.js'), 'server', 'stop'], {
+        cwd: workdir,
+        env: childEnv,
+      });
+    }
 
-    const output = `${runResult.stdout ?? ''}\n${runResult.stderr ?? ''}`;
+    const output = readFileSync(outputPath, 'utf8');
     if (executorCommand === 'pi' && !output.includes('pi-agent')) {
       process.stderr.write(output);
       throw new Error('Smoke failed: expected route/execution output to mention pi-agent');

@@ -9,6 +9,7 @@ export const GATEWAY_PROTOCOL_VERSION = 1;
 
 export type GatewayEventKind =
   | 'conversation_snapshot'
+  | 'workspace_changed'
   | 'turn_started'
   | 'trace_delta'
   | 'task_projection'

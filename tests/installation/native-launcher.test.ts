@@ -24,6 +24,12 @@ describe('renderNativeLauncher', () => {
     expect(launcher).toContain(
       'METACLAW_PLANNER_SESSION_DIR="$METAWORK_INSTALL_ROOT/data/planner-sessions"',
     );
+    expect(launcher).toContain(
+      'export ANYFUSION_WEB_USERNAME="${ANYFUSION_WEB_USERNAME:-admin}"',
+    );
+    expect(launcher).toContain(
+      'export ANYFUSION_WEB_PASSWORD="${ANYFUSION_WEB_PASSWORD:-123456}"',
+    );
   });
 
   it('continues to recognize the previous AnyFusion managed marker', async () => {

@@ -196,13 +196,21 @@ export function App() {
     wsRef.current = ws;
     ws.connect();
     void Promise.all([http.getSessions(), http.getConfig()])
-      .then(([catalog, config]) => {
+      .then(async ([catalog, config]) => {
+        const requestedConversationId = new URLSearchParams(window.location.search).get('conversation');
+        const requested = requestedConversationId
+          ? catalog.sessions.find(session => session.id === requestedConversationId)
+          : undefined;
+        if (requested && requested.id !== catalog.activeSessionId) {
+          await http.activateSession(requested.id).catch(() => undefined);
+        }
         setSessions(catalog.sessions);
-        activeConversationRef.current = catalog.activeSessionId;
-        setActiveSessionId(catalog.activeSessionId);
-        setBrowsedSessionId(current => current ?? catalog.activeSessionId);
+        const initialSessionId = requested?.id ?? catalog.activeSessionId;
+        activeConversationRef.current = initialSessionId;
+        setActiveSessionId(initialSessionId);
+        setBrowsedSessionId(current => current ?? initialSessionId);
         setConfigurationRuntime(config);
-        loadRecord(catalog.activeSessionId);
+        loadRecord(initialSessionId);
       })
       .catch(() => undefined);
     return () => ws.close();

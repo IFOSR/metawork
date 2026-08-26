@@ -108,7 +108,7 @@ async function setupFeishuGateway(metaclawDir: string, deps: Required<GatewaySet
   if (credentials.botName) {
     deps.writeLine(`Bot: ${credentials.botName}`);
   }
-  deps.writeLine('下一步: metaclaw gateway run');
+  deps.writeLine('下一步: metawork server restart');
 }
 
 function normalizeQrResult(result: FeishuQrRegistrationResult): FeishuSetupCredentials {

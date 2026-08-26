@@ -270,7 +270,7 @@ function buildConfiguration(
       },
     },
     agentClasses: {
-      'planner-default': {
+      planner: {
         kind: 'planner',
         harnessRef: 'anyfusion-planner',
         modelPolicy: { mode: 'fixed', modelRef },
@@ -281,7 +281,7 @@ function buildConfiguration(
         skills: ['metaclaw-planner'],
         mcpServers: ['metaclaw-planner'],
         plugins: [],
-        generatedRuntimeRef: 'planner-default',
+        generatedRuntimeRef: 'planner',
         enabled: true,
       },
       'codex-engineering': {
@@ -342,6 +342,7 @@ export async function stageSourceRelease(
   try {
     await Promise.all([
       cp(join(sourceRoot, 'dist'), join(stageRoot, 'dist'), { recursive: true }),
+      cp(join(sourceRoot, 'web', 'dist'), join(stageRoot, 'web', 'dist'), { recursive: true }),
       cp(join(sourceRoot, 'node_modules'), join(stageRoot, 'node_modules'), { recursive: true }),
       copyFile(join(sourceRoot, 'package.json'), join(stageRoot, 'package.json')),
       cp(plannerRoot, join(stageRoot, 'planner'), {
@@ -410,7 +411,7 @@ async function makeImmutable(path: string): Promise<void> {
     }
     await chmod(path, 0o555);
   } else if (!info.isSymbolicLink()) {
-    await chmod(path, 0o444);
+    await chmod(path, (info.mode & 0o111) | 0o444);
   }
 }
 

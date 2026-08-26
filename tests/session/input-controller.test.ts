@@ -34,7 +34,7 @@ describe('InputController', () => {
     const result = await controller.submit('  /exit  ', { awaitAsyncWork: true });
 
     expect(port.appendUserInput).toHaveBeenCalledWith('/exit');
-    expect(port.handleCommand).toHaveBeenCalledWith('/exit');
+    expect(port.handleCommand).toHaveBeenCalledWith('/exit', { awaitAsyncWork: true });
     expect(port.handleNaturalLanguageInput).not.toHaveBeenCalled();
     expect(port.waitForAsyncWork).toHaveBeenCalledTimes(1);
     expect(result.exitRequested).toBe(true);

@@ -73,6 +73,10 @@ export interface WorkspacePublicationWorkerDeps {
   taskRuntimeService: TaskRuntimeService;
   /** 用户产物发布服务；提供后集成成功的 artifact 会复制到用户 Workspace。 */
   userArtifactPublication?: UserArtifactPublicationService;
+  /** 根据当前 Conversation session 解析用户可见 Workspace。 */
+  resolveUserWorkspaceRoot?: (
+    sessionId: string,
+  ) => Promise<string | null> | string | null;
 }
 
 /**
@@ -609,6 +613,7 @@ export class WorkspacePublicationWorker {
     const task = this.deps.taskRuntimeService.findTask(publication.taskId);
     try {
       const outcome = await service.publishIntegratedArtifacts({
+        sessionId: this.sessionId,
         accountId: this.deps.accountId ?? 'local-default',
         taskId: publication.taskId,
         taskTitle: task?.title ?? publication.taskId,
@@ -616,6 +621,8 @@ export class WorkspacePublicationWorker {
         subtaskId: publication.subtaskId,
         publicationId: publication.id,
         integratedWorkspaceRoot: integrationWorkspace.filesPath,
+        userWorkspaceRoot: await this.deps.resolveUserWorkspaceRoot?.(this.sessionId)
+          ?? undefined,
         sources,
       });
       for (const failure of outcome.failures) {

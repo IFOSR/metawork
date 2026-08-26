@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';

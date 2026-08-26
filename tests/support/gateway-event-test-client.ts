@@ -1,14 +1,15 @@
 import { nanoid } from 'nanoid';
-import type { RuntimeState } from '../core/types.js';
-import type { ScriptedSessionPort } from '../session/scripted-session.js';
-import type { SessionSnapshot } from '../session/session-types.js';
-import type { ClientGateway } from './client-gateway.js';
-import type { GatewayEventEnvelope } from './client-events.js';
-import type { GatewayCommand } from './client-protocol.js';
-import type { GatewaySubscriptions } from './gateway-subscriptions.js';
-import { ResultStreamAssembler } from './result-stream-assembler.js';
+import { createHash } from 'node:crypto';
+import type { RuntimeState } from '../../src/core/types.js';
+import type { SessionSnapshot } from '../../src/session/session-types.js';
+import type { ClientGateway } from '../../src/gateway/client-gateway.js';
+import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
+import type { GatewayCommand } from '../../src/gateway/client-protocol.js';
+import type { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
+import { ResultStreamAssembler } from '../../src/gateway/result-stream-assembler.js';
+import type { ScriptedSessionTestPort } from './scripted-session-test-helper.js';
 
-export interface ScriptedGatewaySessionDeps {
+export interface GatewayEventTestClientDeps {
   readonly accountId: string;
   readonly conversationId: string;
   readonly gateway: Pick<ClientGateway, 'handle'>;
@@ -33,14 +34,7 @@ const EMPTY_RUNTIME_STATE: RuntimeState = {
   lastEvent: null,
 };
 
-/**
- * Headless CLI adapter for `--script`.
- *
- * Script input crosses the same ClientGateway command plane as interactive
- * clients. Output and task state are reconstructed exclusively from bounded
- * Gateway events, so this adapter never receives a live ConversationSession.
- */
-export class ScriptedGatewaySession implements ScriptedSessionPort {
+export class GatewayEventTestClient implements ScriptedSessionTestPort {
   private readonly output: string[] = [];
   private readonly seenEventIds = new Set<string>();
   private readonly pending = new Map<string, PendingTerminal>();
@@ -51,10 +45,10 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
   private unsubscribe: (() => void) | null = null;
   private disposed = false;
 
-  constructor(private readonly deps: ScriptedGatewaySessionDeps) {}
+  constructor(private readonly deps: GatewayEventTestClientDeps) {}
 
   initialize(): void {
-    if (this.disposed) throw new Error('Scripted Gateway client is disposed');
+    if (this.disposed) throw new Error('Gateway event test client is disposed');
     this.unsubscribe ??= this.deps.subscriptions.subscribe({
       accountId: this.deps.accountId,
       conversationId: this.deps.conversationId,
@@ -83,7 +77,6 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
     const requestId = this.id('req');
     const idempotencyKey = this.id('idem');
     const terminal = this.waitForTerminal(requestId);
-    // A terminal event may arrive synchronously before handle() returns.
     void terminal.promise.catch(() => undefined);
     const command: GatewayCommand = text.startsWith('/')
       ? { kind: 'slash_command', text }
@@ -93,18 +86,15 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
         protocolVersion: 1,
         requestId,
         idempotencyKey,
-        connectionId: 'script',
-        conversation: {
-          mode: 'attach',
-          conversationId: this.deps.conversationId,
-        },
+        connectionId: 'test-client',
+        conversation: { mode: 'attach', conversationId: this.deps.conversationId },
         command,
         clientCapabilities: ['trace_v1'],
       }, 'local');
       if ('kind' in receipt || receipt.status === 'rejected') {
         throw new Error('kind' in receipt
           ? receipt.message
-          : receipt.reason ?? 'Gateway rejected scripted input');
+          : receipt.reason ?? 'Gateway rejected test input');
       }
       await terminal.promise;
       return { exitRequested: text.trim() === '/exit' };
@@ -121,7 +111,7 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
     this.unsubscribe = null;
     for (const [requestId, terminal] of this.pending) {
       clearTimeout(terminal.timeout);
-      terminal.reject(new Error('Scripted Gateway client disposed before command completion'));
+      terminal.reject(new Error('Gateway event test client disposed before completion'));
       this.pending.delete(requestId);
     }
     this.resultAssembler.clear();
@@ -204,7 +194,7 @@ export class ScriptedGatewaySession implements ScriptedSessionPort {
       const pending = this.pending.get(requestId);
       if (!pending) return;
       this.pending.delete(requestId);
-      pending.reject(new Error('Timed out waiting for scripted Gateway terminal event'));
+      pending.reject(new Error('Timed out waiting for Gateway test terminal event'));
     }, this.deps.timeoutMs ?? 2 * 60 * 60 * 1000);
     const terminal = { promise, resolve, reject, timeout };
     this.pending.set(requestId, terminal);
@@ -269,4 +259,8 @@ function hasSuffix(output: string[], lines: string[]): boolean {
   if (lines.length > output.length) return false;
   const offset = output.length - lines.length;
   return lines.every((line, index) => output[offset + index] === line);
+}
+
+export function expectedContentHash(content: string): string {
+  return `sha256:${createHash('sha256').update(Buffer.from(content)).digest('hex')}`;
 }

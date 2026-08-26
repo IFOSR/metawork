@@ -12,8 +12,8 @@ import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import {
   parseScriptInputs,
-  runScriptedSession as runScriptedSessionPort,
-} from '../../src/session/scripted-session.js';
+  runSessionInputs,
+} from '../support/scripted-session-test-helper.js';
 import {
   MetaclawSession,
   type MetaclawSessionDeps,
@@ -48,11 +48,11 @@ function createConfig(): Config {
   };
 }
 
-function runScriptedSession(
+function runSessionInputsForTest(
   input: { inputs: string[] } & MetaclawSessionDeps,
 ) {
   const { inputs, ...deps } = input;
-  return runScriptedSessionPort({
+  return runSessionInputs({
     inputs,
     session: new MetaclawSession(deps),
   });
@@ -105,7 +105,7 @@ describe('scripted session', () => {
     );
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已恢复处理' }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         `/task unblock ${blockedTask.id} /tmp/evidence-v3.pdf`,
         '/task list done',
@@ -137,7 +137,7 @@ describe('scripted session', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
     }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         '整理 Phoenix 项目的周报，输出一个简短结论',
         '/task show {{last_task_id}}',
@@ -178,7 +178,7 @@ describe('scripted session', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已发送给客户' }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         '直接把邮件发给客户',
       ],
@@ -222,7 +222,7 @@ describe('scripted session', () => {
           artifacts: [artifactPath],
         };
       });
-    await runScriptedSession({
+    await runSessionInputsForTest({
       inputs: [
         '写一段测试内容，保存成 markdown 文件',
       ],
@@ -263,7 +263,7 @@ describe('scripted session', () => {
           artifacts: [artifactPath],
         };
       });
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         '生成一个报名落地页 html 文件',
       ],
@@ -298,7 +298,7 @@ describe('scripted session', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
     }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         '请产出飞书云文档和在线预览',
       ],
@@ -344,7 +344,7 @@ describe('scripted session', () => {
           '需要你允许后，我再继续完成完整调研报告并写入目标目录。',
         ].join('\n'),
     }));
-    const result = await runScriptedSession({
+    const result = await runSessionInputsForTest({
       inputs: [
         '请调研 pi Agent，产出飞书云文档和在线预览',
       ],

@@ -255,6 +255,7 @@ export class SubtaskAttemptRunner {
     attemptPayload?: KernelAttemptPayload;
     sourceAttemptId?: string | null;
     recoveryMode?: KernelRecoveryMode;
+    sourceRoot?: string;
     defaultResourceGrant: ResourceClaim[];
     onProgress?: ProgressCallback;
   } & AuthorizedAttemptIdentity): Promise<SubtaskAttemptOutcome> {
@@ -262,6 +263,7 @@ export class SubtaskAttemptRunner {
     const dispatch = this.requireAuthorizedDispatch(input);
     const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
+    const sourceRoot = input.sourceRoot ?? this.deps.sourceRoot;
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const attemptKind = dispatch.attemptKind;
     const sourceAttemptId = dispatch.sourceAttemptId;
@@ -386,7 +388,7 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       };
-      gitWorkspace = await this.managedGitWorkspace.ensure(workspaceIdentity, this.deps.sourceRoot);
+      gitWorkspace = await this.managedGitWorkspace.ensure(workspaceIdentity, sourceRoot);
       workspace = gitWorkspace;
       if (subtask.dependencies.length > 0) {
         const dependencyCommits = subtask.dependencies.map(dependency => {
@@ -411,7 +413,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           generationId: subtask.generationId,
           subtaskId: '__integration__',
-        }, this.deps.sourceRoot);
+        }, sourceRoot);
         const description = await this.managedGitWorkspace.describeCandidate(
           integrationWorkspace,
           publication.candidateCommit,
@@ -626,7 +628,7 @@ export class SubtaskAttemptRunner {
             idempotencyKey: `dispatch:${attemptId}`,
             workspacePath: workspace.filesPath,
             workspaceId: workspace.id,
-            sourcePath: this.deps.sourceRoot,
+            sourcePath: sourceRoot,
             inputsPath,
             handoffsPath,
             gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
@@ -685,7 +687,7 @@ export class SubtaskAttemptRunner {
               rawResponse: execution.output,
               subtask,
               outgoingHandoffs: [],
-              workspaceRoot: workspace?.filesPath ?? this.deps.sourceRoot,
+              workspaceRoot: workspace?.filesPath ?? sourceRoot,
               workspaceDelta,
             })
           : null;
@@ -1193,10 +1195,12 @@ export class SubtaskAttemptRunner {
     subtaskId: string;
     completionContract: unknown;
     violations: CompletionContractViolation[];
+    sourceRoot?: string;
   } & AuthorizedAttemptIdentity): Promise<SubtaskAttemptOutcome> {
     const dispatch = this.requireAuthorizedDispatch(input);
     const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
+    const sourceRoot = input.sourceRoot ?? this.deps.sourceRoot;
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
     const sourceRuntime = this.attemptRuntimeRepo.find(input.sourceAttemptId);
@@ -1268,7 +1272,7 @@ export class SubtaskAttemptRunner {
         taskId: task.id,
         generationId: subtask.generationId,
         subtaskId: subtask.id,
-      }, this.deps.sourceRoot);
+      }, sourceRoot);
       const correctionMarkerIndex = result.output.indexOf(COMPLETION_MARKER_V4);
       const correctedMetadata = correctionMarkerIndex >= 0
         ? result.output.slice(correctionMarkerIndex)

@@ -1,11 +1,11 @@
-// Runs MetaClaw sessions from plain-text scripts, including task-id placeholder
-// substitution between submitted lines.
-import { readFileSync } from 'fs';
-import type { SessionSnapshot } from './session-types.js';
+import { readFileSync } from 'node:fs';
 
-export interface ScriptedSessionPort {
+export interface ScriptedSessionTestPort {
   initialize(options?: { showDashboard?: boolean }): void;
-  getSnapshot(): SessionSnapshot;
+  getSnapshot(): {
+    output: string[];
+    currentTaskId: string | null;
+  };
   submit(
     text: string,
     options?: { awaitAsyncWork?: boolean },
@@ -34,22 +34,15 @@ export function resolveScriptPlaceholders(
 
   let resolved = line;
   for (const [placeholder, value] of replacements) {
-    if (!resolved.includes(placeholder)) {
-      continue;
-    }
-
-    if (!value) {
-      throw new Error(`脚本占位符 ${placeholder} 当前不可用`);
-    }
-
+    if (!resolved.includes(placeholder)) continue;
+    if (!value) throw new Error(`测试脚本占位符 ${placeholder} 当前不可用`);
     resolved = resolved.replaceAll(placeholder, value);
   }
-
   return resolved;
 }
 
-export async function runScriptedSession(
-  input: { inputs: string[]; session: ScriptedSessionPort },
+export async function runSessionInputs(
+  input: { inputs: string[]; session: ScriptedSessionTestPort },
 ): Promise<{ output: string[]; exitRequested: boolean }> {
   const { inputs, session } = input;
   session.initialize();
@@ -65,31 +58,24 @@ export async function runScriptedSession(
       });
       const result = await session.submit(line, { awaitAsyncWork: true });
       const snapshotAfterSubmit = session.getSnapshot();
-      if (snapshotAfterSubmit.currentTaskId) {
-        lastTaskId = snapshotAfterSubmit.currentTaskId;
-      }
+      if (snapshotAfterSubmit.currentTaskId) lastTaskId = snapshotAfterSubmit.currentTaskId;
       if (result.exitRequested) {
         exitRequested = true;
         break;
       }
     }
-
-    return {
-      output: session.getSnapshot().output,
-      exitRequested,
-    };
+    return { output: session.getSnapshot().output, exitRequested };
   } finally {
     await session.dispose();
   }
 }
 
-export async function runScriptedSessionFile(
+export async function runSessionInputFile(
   scriptPath: string,
-  session: ScriptedSessionPort,
+  session: ScriptedSessionTestPort,
 ): Promise<{ output: string[]; exitRequested: boolean }> {
-  const content = readFileSync(scriptPath, 'utf-8');
-  return runScriptedSession({
+  return runSessionInputs({
     session,
-    inputs: parseScriptInputs(content),
+    inputs: parseScriptInputs(readFileSync(scriptPath, 'utf8')),
   });
 }

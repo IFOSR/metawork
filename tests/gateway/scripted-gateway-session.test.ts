@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
-import { ScriptedGatewaySession } from '../../src/gateway/scripted-gateway-session.js';
 import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
-import { runScriptedSession } from '../../src/session/scripted-session.js';
+import { runSessionInputs } from '../support/scripted-session-test-helper.js';
+import { GatewayEventTestClient as ScriptedGatewaySession } from '../support/gateway-event-test-client.js';
 
 describe('ScriptedGatewaySession', () => {
   it('routes each script line through ClientGateway and preserves task placeholders', async () => {
@@ -70,7 +70,7 @@ describe('ScriptedGatewaySession', () => {
       createId: prefix => `${prefix}_${submitted.length + 1}`,
     });
 
-    const result = await runScriptedSession({
+    const result = await runSessionInputs({
       inputs: ['create task', '/task show {{last_task_id}}'],
       session,
     });
@@ -79,7 +79,7 @@ describe('ScriptedGatewaySession', () => {
       { kind: 'user_message', text: 'create task', attachments: [] },
       { kind: 'slash_command', text: '/task show task_1' },
     ]);
-    expect(submitted.every(envelope => envelope.connectionId === 'script')).toBe(true);
+    expect(submitted.every(envelope => envelope.connectionId === 'test-client')).toBe(true);
     expect(result.output).toEqual([
       'answer:create task',
       'answer:/task show task_1',
@@ -116,7 +116,7 @@ describe('ScriptedGatewaySession', () => {
       },
     });
 
-    await expect(runScriptedSession({ inputs: ['hello'], session }))
+    await expect(runSessionInputs({ inputs: ['hello'], session }))
       .rejects.toThrow('planner unavailable');
   });
 
@@ -200,7 +200,7 @@ describe('ScriptedGatewaySession', () => {
       createId: prefix => `${prefix}_large`,
     });
 
-    const result = await runScriptedSession({ inputs: ['large answer'], session });
+    const result = await runSessionInputs({ inputs: ['large answer'], session });
 
     expect(result.output).toEqual([answer]);
   });

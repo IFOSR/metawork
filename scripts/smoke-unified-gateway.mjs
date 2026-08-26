@@ -12,7 +12,7 @@ const acceptanceFiles = [
   'tests/integration/unified-client-runtime.integration.test.ts',
   'tests/security/gateway-account-isolation.test.ts',
   'tests/gateway/server-lifecycle.test.ts',
-  'tests/gateway/scripted-gateway-session.test.ts',
+  'tests/integration/independent-client-lifecycle.integration.test.ts',
   'tests/management/web-gateway-session-runtime.test.ts',
 ];
 

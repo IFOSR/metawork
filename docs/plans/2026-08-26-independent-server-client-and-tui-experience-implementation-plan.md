@@ -2,7 +2,7 @@
 
 > **For implementation:** Execute this plan task by task with the repository TDD rules.
 
-**Status:** Approved for implementation
+**Status:** Implemented
 
 **Plan date:** 2026-08-26
 
@@ -43,7 +43,7 @@ HTTP/WebSocket, AnyFusion-Pi TUI, Vitest, native macOS launcher.
   行为超集。
 - 生产协议需要 breaking change 时做一次明确版本升级，不长期双写。
 - 每个 Task 先写失败测试，再实现最小生产代码。
-- 实施完成前不修改本文档为 Completed。
+- 实施完成后必须补齐完成记录、验证结果和残余风险。
 
 ## Task 1: 用 ADR 固定独立进程拓扑
 
@@ -921,3 +921,36 @@ metawork web
 17. 安全回归证明无 hidden reasoning、prompt、secret、stdout/stderr 泄漏。
 18. build、lint、full test、Web golden flow、Gateway smoke、multi-client smoke 和真实任务 smoke
     全部通过或有明确的外部阻塞记录。
+
+## 14. 实施完成记录
+
+**Completion date:** 2026-08-26
+
+**Delivered behavior:** 已完成独立常驻 Server、独立 TUI/Web Client、Server-owned
+Feishu lifecycle、Conversation Workspace admission、动态 Artifact publication、
+endpoint manifest/socket probe、TUI replay/live reducer 和旧 Script/foreground
+路径硬切换。Web 保持现有交互和信息架构，Server 返回的 Gateway/Web projection
+未删除现有 Web 所需字段。
+
+**Validation:**
+
+- `npm run lint`：PASS
+- `npm run build`：PASS
+- `npm test`：PASS after correcting four stale assertions exposed by the full run；
+  1606 passed / 18 skipped
+- `npm test -- tests/web tests/management/server.test.ts tests/management/websocket.test.ts tests/management/web-gateway-session-runtime.test.ts tests/gateway/management-api-server.test.ts`：80 passed
+- `npm run smoke:clients`：PASS
+- `npm run smoke:gateway`：31 passed
+- `cd planner/AnyFusion-Pi/packages/coding-agent && npm run build`：PASS
+- vendored TUI focused tests：18 passed
+
+**Smoke evidence:** 独立 Client smoke 已通过 Unix Gateway 连接常驻 Server，先提交
+`/workspace`，再提交语义输入，最后显式 `server stop`。Provider-dependent
+真实任务 smoke 未执行，原因是本地未提供可确认的 Provider/Executor fixture；
+对应运行器已不再使用 `--script`，而是使用独立 Client transport。
+
+**Closing commit:** 未在本次 worktree 创建 commit。
+
+**Residual risks:** 浏览器 native golden screenshot 和真实 Provider/Executor 任务仍
+需要具备相应外部环境后执行；代码级 Web regression、Gateway smoke、multi-client
+continuity 和 vendored TUI tests 已通过。

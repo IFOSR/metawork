@@ -1863,6 +1863,7 @@ export class KernelExecutionRuntime {
             sourceAttemptId: item.sourceAttemptId,
             recoveryMode: item.recoveryMode,
             defaultResourceGrant: item.resourceGrant,
+            sourceRoot: input.request.workspacePath,
             onProgress,
           });
     } finally {

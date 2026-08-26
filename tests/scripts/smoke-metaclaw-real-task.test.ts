@@ -264,6 +264,15 @@ describe('smoke-metaclaw-real-task helpers', () => {
     expect(source).toContain("METACLAW_DISABLE_MARKDOWN_PREVIEW: '1'");
   });
 
+  it('runs the real-task smoke through the independent Client transport', () => {
+    const source = readFileSync('scripts/smoke-metaclaw-real-task.mjs', 'utf8');
+    expect(source).toContain('smoke-independent-clients.mjs');
+    expect(source).toContain("'server',");
+    expect(source).toContain("'start',");
+    expect(source).toContain("'stop'");
+    expect(source).not.toContain("dist/index.js'), '--script'");
+  });
+
   it('keeps the Python hello requirements in one Planner turn', async () => {
     const smoke = await loadSmokeScript();
     const turns = smoke.buildScenarioScript('python-hello').trim().split('\n');

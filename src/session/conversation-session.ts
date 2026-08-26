@@ -154,6 +154,7 @@ export class ConversationSession {
   private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
   private sessionKernelRuntime: SessionKernelRuntime | null = null;
   private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
+  private workspacePath: string | null = null;
   private readonly inputController: InputController;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
   private resultDeliveries: ConversationResultDelivery[] = [];
@@ -1065,6 +1066,7 @@ export class ConversationSession {
     options: InputControllerSubmitOptions = {},
   ): Promise<{ exitRequested: boolean }> {
     const userInput = text.trim();
+    this.workspacePath = (await this.getWorkspace())?.path ?? this.workspacePath;
     const startsTrace = shouldStartInteractionTrace(userInput);
     const interactionTurnId = options.interactionTurnId ?? `turn_${generateInteractionId()}`;
     if (startsTrace) {
@@ -1074,6 +1076,7 @@ export class ConversationSession {
       });
     }
     const result = await this.inputController.submit(text, options);
+    this.workspacePath = (await this.getWorkspace())?.path ?? this.workspacePath;
     if (
       startsTrace
       && userInput.startsWith('/')
@@ -1702,7 +1705,10 @@ export class ConversationSession {
   }
 
   prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void {
-    this.taskExecutionApplicationService?.prepareTaskExecution(taskId, request);
+    this.taskExecutionApplicationService?.prepareTaskExecution(taskId, {
+      ...request,
+      workspacePath: request.workspacePath ?? this.workspacePath ?? undefined,
+    });
   }
 
   /** 装配账户级 Kernel 执行服务所需的三个 callbacks 对象（ADR-0031）。 */

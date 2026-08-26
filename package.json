@@ -20,7 +20,8 @@
   },
   "scripts": {
     "dev": "tsup --watch",
-    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts",
+    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts && npm run build:web",
+    "build:web": "npm ci --prefix web --ignore-scripts && npm run build --prefix web",
     "test": "vitest run",
     "test:task8-contract": "vitest run tests/acceptance/task8-cross-repository-contract.test.ts",
     "test:watch": "vitest",
@@ -29,6 +30,7 @@
     "smoke:metawork": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:gateway": "node scripts/smoke-unified-gateway.mjs",
+    "smoke:clients": "vitest run tests/integration/independent-client-lifecycle.integration.test.ts",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
     "start": "node dist/index.js"
   },

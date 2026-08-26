@@ -491,16 +491,11 @@ export async function main(args: string[], _options?: MainOptions) {
 
 	const clientParsed = parseArgs(args);
 	if (clientParsed.gatewaySocket) {
-		if (!clientParsed.conversationId?.trim()) {
-			console.error(chalk.red("Error: --conversation-id is required with --gateway-socket"));
-			process.exitCode = 1;
-			return;
-		}
 		initTheme("dark", true);
 		try {
 			await runAnyFusionClientMode({
 				socketPath: clientParsed.gatewaySocket,
-				conversationId: clientParsed.conversationId,
+				conversationId: clientParsed.conversationId?.trim(),
 			});
 		} finally {
 			stopThemeWatcher();
