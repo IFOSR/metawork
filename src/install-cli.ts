@@ -15,6 +15,10 @@ import { InstallerCore } from './installation/installer-core.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
+import {
+  ProductRootMigrator,
+  type ProductRootMigration,
+} from './installation/product-root-migrator.js';
 import { isInstanceRunning } from './management/lock.js';
 import { ServerUpdateCoordinator } from './session/server-update-coordinator.js';
 
@@ -70,7 +74,13 @@ export async function runNativeInstallCli(
   const args = parseNativeInstallArgs(argv);
   const env = dependencies.env ?? process.env;
   const productEnvironment = resolveInstallerEnvironment(env);
-  const paths = resolveMetaWorkPaths(env.HOME, productEnvironment.installRoot);
+  const rootMigration = await prepareProductRootMigration(
+    args.command,
+    env,
+    productEnvironment.installRoot,
+  );
+  const paths = rootMigration?.paths
+    ?? resolveMetaWorkPaths(env.HOME, productEnvironment.installRoot);
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const secretStore = createProductionSecretStore({
     platform: dependencies.platform,
@@ -133,29 +143,50 @@ export async function runNativeInstallCli(
     isServerRunning,
   });
   if (args.command === 'update') {
+    try {
+      const result = await runOfflineNativeTransaction({
+        command: args.command,
+        releaseId: args.releaseId,
+        paths,
+        isServerRunning,
+        operation: () => updater.update({
+          releaseId: args.releaseId,
+          sourceRoot: args.sourceRoot!,
+          plannerRoot: args.plannerRoot!,
+        }),
+      });
+      await rootMigration?.commit();
+      write(`updated to ${args.releaseId} (${result.upgradeId})`);
+      return 0;
+    } catch (error) {
+      await rootMigration?.rollback();
+      throw error;
+    }
+  }
+  try {
     const result = await runOfflineNativeTransaction({
       command: args.command,
       releaseId: args.releaseId,
       paths,
       isServerRunning,
-      operation: () => updater.update({
-        releaseId: args.releaseId,
-        sourceRoot: args.sourceRoot!,
-        plannerRoot: args.plannerRoot!,
-      }),
+      operation: () => updater.rollback(args.releaseId),
     });
-    write(`updated to ${args.releaseId} (${result.upgradeId})`);
+    await rootMigration?.commit();
+    write(`rolled back to ${args.releaseId} (${result.upgradeId})`);
     return 0;
+  } catch (error) {
+    await rootMigration?.rollback();
+    throw error;
   }
-  const result = await runOfflineNativeTransaction({
-    command: args.command,
-    releaseId: args.releaseId,
-    paths,
-    isServerRunning,
-    operation: () => updater.rollback(args.releaseId),
-  });
-  write(`rolled back to ${args.releaseId} (${result.upgradeId})`);
-  return 0;
+}
+
+async function prepareProductRootMigration(
+  command: NativeInstallCommand,
+  env: NodeJS.ProcessEnv,
+  installRoot: string | undefined,
+): Promise<ProductRootMigration | null> {
+  if (command === 'install' || installRoot !== undefined) return null;
+  return new ProductRootMigrator({ userHome: env.HOME }).prepare();
 }
 
 async function runOfflineNativeTransaction<T>(input: {

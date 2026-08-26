@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -213,12 +214,76 @@ describe('native install CLI', () => {
     expect(() => lstatSync(join(installRoot, 'app', 'releases', '1.2.0-preview.1')))
       .toThrow();
   });
+
+  it('migrates a default legacy AnyFusion root before a real update commits', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-root-migration-'));
+    cleanup.push(root);
+    const initialSource = join(root, 'source-initial');
+    const initialPlanner = join(root, 'planner-initial');
+    fixtureRelease(initialSource, initialPlanner, 'runtime-initial\n');
+    const legacyRoot = join(root, '.anyfusion');
+    await runNativeInstallCli([
+      'install',
+      '1.2.0-preview.0',
+      '--source-root',
+      initialSource,
+      '--planner-root',
+      initialPlanner,
+    ], {
+      env: {
+        HOME: root,
+        ANYFUSION_INSTALL_ROOT: legacyRoot,
+        ANYFUSION_SECRET_STORE: 'file',
+        ANYFUSION_PROVIDER_KEY: 'secret',
+        ANYFUSION_PROVIDER_URL: 'https://provider.example/v1',
+        ANYFUSION_PROVIDER_MODEL: 'model',
+        ANYFUSION_PROVIDER_REGION: 'international',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+    });
+
+    const nextSource = join(root, 'source-next');
+    const nextPlanner = join(root, 'planner-next');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-next\n');
+
+    await expect(runNativeInstallCli([
+      'update',
+      '1.2.1-preview.0',
+      '--source-root',
+      nextSource,
+      '--planner-root',
+      nextPlanner,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_SECRET_STORE: 'file',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+    })).resolves.toBe(0);
+
+    const canonicalRoot = join(root, '.metawork');
+    expect(readFileSync(join(canonicalRoot, 'app', 'current', 'dist', 'index.js'), 'utf8'))
+      .toBe('runtime-next\n');
+    expect(existsSync(legacyRoot)).toBe(false);
+    expect(readdirSync(root).some(name => name.startsWith('.anyfusion.migrated-')))
+      .toBe(true);
+    expect(readFileSync(join(root, '.local', 'bin', 'metawork'), 'utf8'))
+      .toContain(`ANYFUSION_INSTALL_ROOT:-${canonicalRoot}`);
+  });
 });
 
-function fixtureRelease(sourceRoot: string, plannerRoot: string): void {
+function fixtureRelease(
+  sourceRoot: string,
+  plannerRoot: string,
+  runtime = 'runtime\n',
+): void {
   mkdirSync(join(sourceRoot, 'dist'), { recursive: true });
   mkdirSync(join(sourceRoot, 'node_modules'), { recursive: true });
-  writeFileSync(join(sourceRoot, 'dist', 'index.js'), 'runtime\n');
+  writeFileSync(join(sourceRoot, 'dist', 'index.js'), runtime);
   writeFileSync(join(sourceRoot, 'package.json'), '{"name":"anyfusion"}\n');
   mkdirSync(join(plannerRoot, 'packages', 'coding-agent', 'dist'), { recursive: true });
   mkdirSync(join(plannerRoot, 'node_modules'), { recursive: true });
