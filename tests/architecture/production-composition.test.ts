@@ -23,6 +23,17 @@ describe('production composition root', () => {
     expect(gatewayRuntime).toContain('conversations.getOrOpen');
   });
 
+  it('passes the runtime binding resolver to the preserved standby TUI', () => {
+    const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
+    const standbyStart = index.indexOf("if (serverSurface === 'standby')");
+    const standbyEnd = index.indexOf('// 9. 启动默认 Gateway-only native TUI client.', standbyStart);
+
+    expect(standbyStart).toBeGreaterThan(0);
+    expect(standbyEnd).toBeGreaterThan(standbyStart);
+    expect(index.slice(standbyStart, standbyEnd))
+      .toContain('getRuntimeBinding: runtimeBindings.getRuntimeBinding');
+  });
+
   it('uses the local-default account paths for runtime and configuration administration', () => {
     const index = readFileSync(resolve(root, 'src/index.ts'), 'utf8');
     const adminStart = index.indexOf('const adminCommand = parseAdminArgs');

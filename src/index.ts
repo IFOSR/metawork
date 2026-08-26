@@ -1392,6 +1392,7 @@ async function main() {
       plannerHost,
       plannerSupervisor,
       stagedConfiguration,
+      getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     });
     return;
   }
