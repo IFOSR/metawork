@@ -40,7 +40,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
 
   const scriptPath = argv[scriptFlagIndex + 1];
   if (!scriptPath) {
-    throw new Error('缺少脚本路径。用法: metaclaw --script <脚本文件>');
+    throw new Error('缺少脚本路径。用法: metawork --script <脚本文件>');
   }
 
   return {
@@ -54,21 +54,21 @@ export function parseCliArgs(argv: string[]): CliArgs {
 
 export function formatCliHelp(): string {
   return [
-    'AnyFusion',
+    'MetaWork',
     '',
     '用法:',
-    '  anyfusion',
-    '  anyfusion web [start|restart] [--port <端口>] [--no-open]',
-    '  anyfusion --script <脚本文件>',
-    '  anyfusion --gateway',
-    '  anyfusion --connect',
-    '  anyfusion gateway <run|setup|pairing|doctor|install|start|stop|restart|status>',
-    '  anyfusion <configure|config|provider|model|planner|executor|doctor|status> ...',
+    '  metawork',
+    '  metawork web [start|restart] [--port <端口>] [--no-open]',
+    '  metawork --script <脚本文件>',
+    '  metawork --gateway',
+    '  metawork --connect',
+    '  metawork gateway <run|setup|pairing|doctor|install|start|stop|restart|status>',
+    '  metawork <configure|config|provider|model|planner|executor|doctor|status> ...',
     '',
     '选项:',
     '  -h, --help  显示帮助',
     '',
-    '兼容命令别名: metawork、metaclaw',
+    '兼容命令别名: anyfusion、metaclaw',
   ].join('\n');
 }
 

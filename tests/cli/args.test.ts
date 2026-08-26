@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCliArgs } from '../../src/cli/args.js';
+import { formatCliHelp, parseCliArgs } from '../../src/cli/args.js';
 
 describe('parseCliArgs', () => {
   it('parses script mode from argv', () => {
@@ -95,5 +95,21 @@ describe('parseCliArgs', () => {
   it('rejects unknown gateway subcommands', () => {
     expect(() => parseCliArgs(['gateway', 'deploy'])).toThrow('未知 gateway 子命令');
     expect(() => parseCliArgs(['gateway', 'pairing', 'unknown'])).toThrow('未知 gateway pairing 子命令');
+  });
+
+  it('presents MetaWork as the canonical command with compatibility aliases', () => {
+    const help = formatCliHelp();
+
+    expect(help).toContain('MetaWork');
+    expect(help).toContain('  metawork');
+    expect(help).toContain('  metawork web');
+    expect(help).toContain('兼容命令别名: anyfusion、metaclaw');
+    expect(help).not.toContain('\nAnyFusion\n');
+  });
+
+  it('uses the canonical command in script-path errors', () => {
+    expect(() => parseCliArgs(['--script'])).toThrow(
+      '用法: metawork --script <脚本文件>',
+    );
   });
 });
