@@ -6,11 +6,16 @@
     <title>MetaWork</title>
     <script>
       (() => {
-        const key = 'anyfusion.theme';
-        const stored = localStorage.getItem(key);
+        const key = 'metawork.theme';
+        const legacyKey = 'anyfusion.theme';
+        const canonical = localStorage.getItem(key);
+        const legacy = localStorage.getItem(legacyKey);
+        const stored = canonical ?? legacy;
         const preference = stored === 'light' || stored === 'dark' || stored === 'system'
           ? stored
           : 'system';
+        if (canonical === null && legacy !== null) localStorage.setItem(key, preference);
+        if (legacy !== null) localStorage.removeItem(legacyKey);
         const theme = preference === 'system'
           ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : preference;

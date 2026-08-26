@@ -1,6 +1,7 @@
 # Changelog
 
-All notable public changes to AnyFusion are documented in this file.
+All notable public changes to MetaWork are documented in this file. Historical
+AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
@@ -12,7 +13,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   immutable `ConfigurationSnapshot`, and one-configuration-revision-per-generation
   binding for Planner, Kernel, and Runtime.
 - Local management API over a mode-0600 Unix socket (`/api/v1/server/health`)
-  plus `anyfusion config|provider|model|planner|executor|doctor|status` admin
+  plus `metawork config|provider|model|planner|executor|doctor|status` admin
   surface and structured view events.
 - Transactional native install/update/rollback core with durable upgrade
   journal, signed release verification, database backup, and preflight doctor.
@@ -31,6 +32,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   sanitized event journals, and a provider-independent `smoke:gateway` gate.
 - Transactional account migration with SQLite WAL-safe backup, verified staging
   manifests, crash recovery, and legacy-state archival.
+- Canonical MetaWork product identity, CLI, environment variables, installation
+  root, Web presentation, and compatibility-safe AnyFusion root migration.
 
 ### Changed
 
@@ -42,7 +45,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - Formatted task completion once in the Delivery service before transport
   selection instead of per-notifier.
 - Added native macOS setup for the isolated nested AnyFusion-Pi Planner,
-  current-directory read-only inspection, and AnyFusion-only Executor homes
+  current-directory read-only inspection, and MetaWork-only Executor homes
   without installing or modifying existing Codex/Pi CLIs.
 - Advanced the current pre-release baseline to Kernel wire/ledger v5 and
   fresh-install SQLite schema v29 with durable Planner proposal turn/submission identity and accepted-turn locking.

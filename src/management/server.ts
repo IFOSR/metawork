@@ -805,7 +805,7 @@ export class ManagementServer {
   }
 
   private logWebSocketRejection(request: IncomingMessage, reason: string): void {
-    console.warn('[AnyFusion Web] WebSocket 握手拒绝', {
+    console.warn('[MetaWork Web] WebSocket 握手拒绝', {
       path: request.url ?? '/',
       origin: request.headers.origin ?? null,
       hasSessionCookie: this.deps.webAuth.hasSession(request.headers.cookie),

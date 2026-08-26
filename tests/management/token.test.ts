@@ -8,7 +8,7 @@ import {
 describe('management Web token', () => {
   it('labels the token as local Web access rather than a Provider credential', () => {
     expect(formatWebAccessTokenLine('test-token')).toBe(
-      'AnyFusion Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: test-token',
+      'MetaWork Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: test-token',
     );
   });
 
@@ -25,8 +25,8 @@ describe('management Web token', () => {
     )).toEqual({
       browserUrl: 'http://127.0.0.1:8788/#bootstrap=bootstrap+token',
       terminalLines: [
-        'AnyFusion Web: http://127.0.0.1:8788',
-        '浏览器将自动完成本机登录；若未打开，请使用 `anyfusion web --no-open`。',
+        'MetaWork Web: http://127.0.0.1:8788',
+        '浏览器将自动完成本机登录；若未打开，请使用 `metawork web --no-open`。',
       ],
     });
   });
@@ -40,8 +40,8 @@ describe('management Web token', () => {
     )).toEqual({
       browserUrl: 'http://127.0.0.1:8788',
       terminalLines: [
-        'AnyFusion Web: http://127.0.0.1:8788',
-        'AnyFusion Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: manual-token',
+        'MetaWork Web: http://127.0.0.1:8788',
+        'MetaWork Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: manual-token',
       ],
     });
   });

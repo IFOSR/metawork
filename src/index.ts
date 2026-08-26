@@ -1,4 +1,4 @@
-// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
+// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default MetaWork Planner TUI.
 import { dirname, join, resolve } from 'path';
 import { mkdirSync, existsSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -262,8 +262,8 @@ async function main() {
     mkdirSync(dataDir, { recursive: true });
     const result = await stopInstanceForRestart(resolve(dataDir, 'runtime.lock'));
     const message = result.status === 'stopped'
-      ? `AnyFusion Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
-      : '未检测到运行中的 AnyFusion 实例，正在启动 Web。';
+      ? `MetaWork Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
+      : '未检测到运行中的 MetaWork 实例，正在启动 Web。';
     process.stdout.write(`${message}\n`);
   }
 
@@ -978,7 +978,7 @@ async function main() {
       });
       await runShutdownStep(() => accountRegistry.shutdown());
       if (errors.length > 0) {
-        throw new AggregateError(errors, 'AnyFusion shutdown did not complete cleanly');
+        throw new AggregateError(errors, 'MetaWork shutdown did not complete cleanly');
       }
     })();
     return shutdownPromise;
@@ -990,7 +990,7 @@ async function main() {
     void shutdown().then(
       () => process.exit(0),
       error => {
-        console.error(`AnyFusion shutdown failed: ${(error as Error).message}`);
+        console.error(`MetaWork shutdown failed: ${(error as Error).message}`);
         process.exit(1);
       },
     );

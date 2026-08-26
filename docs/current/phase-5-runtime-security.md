@@ -25,12 +25,12 @@ the Engine socket into attempt containers or native Executor processes.
 When the control plane sees container-local paths but the Docker Engine resolves host paths, configure `METACLAW_DOCKER_HOST_PATH_MAP` as JSON from container prefix to Engine-host prefix. Runtime rejects unmapped bind sources instead of guessing. Provider API keys stay in the trusted control plane: every attempt receives only a random scoped bearer token and the internal URL of its short-lived model gateway.
 
 Native installation stores static configuration only in immutable
-`~/.anyfusion/accounts/local-default/config/revisions/<revision-id>`
+`~/.metawork/accounts/local-default/config/revisions/<revision-id>`
 directories selected by the account `config/active` pointer. Provider
 credentials are referenced through the account SecretStore:
 macOS defaults to Keychain and non-macOS native use requires the explicit
-`ANYFUSION_SECRET_STORE=file` fallback. The managed launcher points only at
-`~/.anyfusion/app/current`, captures the user's current directory for Planner
+`METAWORK_SECRET_STORE=file` fallback. The managed launcher points only at
+`~/.metawork/app/current`, captures the user's current directory for Planner
 read-only inspection, and never reads personal Codex or Pi homes. Native
 update/rollback refuses to mutate pointers while the daemon is running; online
 admission closure and drain are not inferred from a PID file.
@@ -122,16 +122,16 @@ docker run --rm metaclaw-test
 # Run the Docker integration test from a control container with the Engine
 # socket and an explicit host-path map.
 # The default live smoke verifies two turns in one persisted AnyFusion-Pi Planner session.
-npm run smoke:metaclaw
+npm run smoke:metawork
 # The explicit artifact gate exercises Planner -> Kernel -> attempt -> publication.
-npm run smoke:metaclaw -- --scenario artifact
+npm run smoke:metawork -- --scenario artifact
 # Provider-independent Gateway/replay/composition gate.
 npm run smoke:gateway
 ```
 
-Both live smokes run as native host processes by default, using the AnyFusion
-configuration installed under `ANYFUSION_CONFIG_HOME` (default
-`~/.config/anyfusion`) and the worktree Executor backend; Docker is not
+Both live smokes run as native host processes by default, using the MetaWork
+configuration installed under `METAWORK_CONFIG_HOME` (default
+`~/.config/metawork`) and the worktree Executor backend; Docker is not
 required. `--mode docker` instead builds the unified runtime image and runs
 the same scenarios inside a control container against a trusted local Docker
 Engine, requiring the `docker/*.env` provider files. The artifact

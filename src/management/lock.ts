@@ -18,7 +18,7 @@ export async function isInstanceRunning(
 
   const pid = Number(holder.pid);
   if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`AnyFusion 运行锁中的 PID 无效: ${holder.pid}`);
+    throw new Error(`MetaWork 运行锁中的 PID 无效: ${holder.pid}`);
   }
   try {
     signalProcess(pid, 0);
@@ -59,7 +59,7 @@ export async function acquireInstanceLock(lockPath: string): Promise<InstanceLoc
   }
 
   const holder = await readLock(lockPath);
-  throw new Error(`AnyFusion 已在运行（PID ${holder.pid}）`);
+  throw new Error(`MetaWork 已在运行（PID ${holder.pid}）`);
 }
 
 export async function stopInstanceForRestart(
@@ -71,10 +71,10 @@ export async function stopInstanceForRestart(
 
   const pid = Number(holder.pid);
   if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`AnyFusion 运行锁中的 PID 无效: ${holder.pid}`);
+    throw new Error(`MetaWork 运行锁中的 PID 无效: ${holder.pid}`);
   }
   if (pid === process.pid) {
-    throw new Error('AnyFusion 拒绝重启当前进程自身');
+    throw new Error('MetaWork 拒绝重启当前进程自身');
   }
 
   const signalProcess = options.signalProcess ?? process.kill.bind(process);
@@ -102,7 +102,7 @@ export async function stopInstanceForRestart(
     }
   }
 
-  throw new Error(`AnyFusion 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
+  throw new Error(`MetaWork 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
 }
 
 async function tryAcquire(lockPath: string, content: string): Promise<boolean> {

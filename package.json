@@ -4,7 +4,7 @@
   "description": "A commercial AI Task OS for durable, policy-governed agent workflows.",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "UNLICENSED",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/IFOSR/metawork.git"

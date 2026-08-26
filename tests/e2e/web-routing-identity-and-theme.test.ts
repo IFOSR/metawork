@@ -142,7 +142,8 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
         // 固定主题不受系统变化影响，刷新后仍使用 localStorage 中的用户偏好。
         await selectTheme(cdp, '浅色');
         await assertUserMessageReadability(cdp, 'light');
-        expect(await cdp.evaluate(`localStorage.getItem('anyfusion.theme')`)).toBe('light');
+        expect(await cdp.evaluate(`localStorage.getItem('metawork.theme')`)).toBe('light');
+        expect(await cdp.evaluate(`localStorage.getItem('anyfusion.theme')`)).toBeNull();
         await cdp.send('Emulation.setEmulatedMedia', {
           features: [{ name: 'prefers-color-scheme', value: 'dark' }],
         });

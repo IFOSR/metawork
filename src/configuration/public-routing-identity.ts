@@ -84,7 +84,7 @@ function configurationFacts(source: PublicRoutingConfiguration | null | undefine
 function executorDisplayName(agentClassRef: string): string {
   if (agentClassRef === 'codex-cli') return 'Codex CLI';
   if (agentClassRef === 'pi-agent') return 'Pi Agent';
-  if (agentClassRef === 'planner') return 'AnyFusion Planner';
+  if (agentClassRef === 'planner') return 'MetaWork Planner (AnyFusion-Pi)';
   return publicDisplayNameFromRef(agentClassRef);
 }
 
@@ -92,6 +92,6 @@ function harnessDisplayName(harnessRef: string, driverId?: string): string {
   const identity = driverId ?? harnessRef;
   if (identity === 'codex-cli') return 'Codex CLI';
   if (identity === 'pi-cli') return 'Pi CLI';
-  if (identity === 'anyfusion-planner-host-v2') return 'AnyFusion Planner';
+  if (identity === 'anyfusion-planner-host-v2') return 'MetaWork Planner (AnyFusion-Pi)';
   return publicDisplayNameFromRef(harnessRef);
 }

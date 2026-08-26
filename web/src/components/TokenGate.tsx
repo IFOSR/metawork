@@ -70,7 +70,7 @@ export function TokenGate({ error, onLogin, onTokenAuth }: TokenGateProps) {
         ) : (
           <>
             <p>
-              请粘贴 <span className="mono">anyfusion web --no-open</span>
+              请粘贴 <span className="mono">metawork web --no-open</span>
               终端中显示的本机访问 token。它不是模型 API Key。
             </p>
             {error && <div className="result-banner result-error">{error}</div>}

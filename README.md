@@ -4,64 +4,51 @@
 
 <div align="center">
 
-# AnyFusion
+# MetaWork
 
-**A local-first AI Task OS for durable, governed agent work.**
+**A commercial AI Task OS for durable, governed agent work.**
 
-AnyFusion turns natural-language requests into persistent Tasks and Work Graphs
-that can survive restarts, run through controlled Planner and Executor
-boundaries, and deliver verifiable results instead of ending at a chat reply.
+MetaWork turns natural-language requests into persistent Tasks and Work Graphs
+that survive restarts, execute through controlled Planner and Executor
+boundaries, and deliver verifiable results instead of stopping at a chat reply.
 
-[![Developer Preview](https://img.shields.io/badge/status-Developer%20Preview-F59E0B)](#project-status)
-[![CI](https://github.com/IFOSR/metawork/actions/workflows/ci.yml/badge.svg)](https://github.com/IFOSR/metawork/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-2563EB.svg)](#license)
-
-[Why AnyFusion](#why-anyfusion) · [Installation](#installation) ·
-[Usage](#usage) · [How it works](#how-it-works) ·
-[Project status](#project-status) · [中文](README.zh-CN.md)
+[Why MetaWork](#why-metawork) · [Installation](#installation) ·
+[Usage](#usage) · [Architecture](#architecture) ·
+[Compatibility](#compatibility) · [中文](README.zh-CN.md)
 
 </div>
 
-## Why AnyFusion
+## Why MetaWork
 
-Running more agents should not require more disconnected entry points.
-AnyFusion provides one conversation surface backed by a durable control plane:
-the Planner understands the request, the ControlKernel authorizes state
-changes, and the Runtime executes only concrete approved work.
+MetaWork provides one commercial service system for planning, authorizing,
+executing, recovering, and delivering agent work.
 
-### Durable work, not session-only chat
-
-- **Persistent Tasks** retain state, recovery facts, results, and audit history
-  across process restarts.
-- **Work Graphs** represent dependency-aware Subtasks, typed handoffs,
-  acceptance criteria, and publication order.
-- **Result-first delivery** can expose a safe useful result before completion
-  certification, without incorrectly marking the Subtask done.
-- **Recovery is explicit**: retry, fallback, continuation, merge repair,
+- **Durable work:** Tasks, Work Graphs, results, recovery facts, and audit
+  history persist across process restarts.
+- **Governed execution:** the Planner proposes work, the ControlKernel
+  authorizes state changes, and Executors run only concrete approved attempts.
+- **Multiple clients, one runtime:** native TUI, Web, Feishu, scripts, and Unix
+  clients share the same versioned Gateway command and event plane.
+- **Explainable routing:** every authorized attempt is pinned to a configuration
+  revision and a complete Provider, Model, AgentClass, Harness, and Permission
+  Profile binding.
+- **Explicit recovery:** retry, fallback, continuation, merge repair,
   cancellation, and resume remain ControlKernel decisions.
-
-### One runtime, multiple clients
-
-The native TUI, Web workspace, Feishu integration, scripts, and Unix clients
-all use the same versioned Gateway command and event plane. They share one
-account-scoped Runtime while keeping Conversation history and presentation
-state separate.
-
-### Explainable routing and governed execution
-
-AnyFusion separates AgentClass selection from concrete execution bindings.
-Each authorized attempt is pinned to a configuration revision and a complete
-Provider, Model, AgentClass, Harness, and Permission Profile tuple.
-
-Executor Auto routing filters the user-approved model pool by compatibility,
-health, capability, context, cost, latency, and quality constraints, then
-records the selected binding and bounded rejection facts. The Runtime never
-silently substitutes the current configuration for historical or in-flight
-work.
 
 ```text
 Plan -> Authorize -> Dispatch -> Execute -> Verify -> Publish -> Deliver
 ```
+
+## Product Boundary
+
+MetaWork is the canonical product represented by this repository. It is a
+proprietary commercial system.
+
+[AnyFusion](https://github.com/IFOSR) is a separate open-source project.
+MetaWork may reuse or adapt attributed AnyFusion components and contracts. In
+particular, the vendored `planner/AnyFusion-Pi` fork remains the isolated
+Planner component, and durable/protocol compatibility identifiers retain their
+existing names where changing them would break installations.
 
 ## Installation
 
@@ -71,31 +58,14 @@ supported production path; use WSL2 or the optional Docker compatibility path.
 
 ### Prerequisites
 
-Required for installation:
-
 - Node.js `>=22.19.0`
 - npm
 - Git
 - Native build tools for `better-sqlite3`
 - An OpenAI-compatible Provider base URL and API key
 
-Recommended build tools:
-
-```bash
-# macOS
-xcode-select --install
-brew install node@22 git
-export PATH="$(brew --prefix node@22)/bin:$PATH"
-
-# Ubuntu, Debian, or WSL2
-sudo apt-get update
-sudo apt-get install -y git build-essential python3 make g++
-```
-
-Codex CLI and Pi Agent are installed independently. Setup detects `codex` and
-`pi` on `PATH` and enables the available canonical Executor classes. It does
-not install, upgrade, downgrade, or reconfigure either CLI. Executable Tasks
-require at least one compatible enabled Executor.
+Codex CLI and Pi Agent are installed independently. Setup detects them on
+`PATH`; it does not install, upgrade, downgrade, or reconfigure either CLI.
 
 ### Install
 
@@ -103,40 +73,32 @@ require at least one compatible enabled Executor.
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
 
-export ANYFUSION_PROVIDER_KEY='replace-with-your-key'
-export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
+export METAWORK_PROVIDER_KEY='replace-with-your-key'
+export METAWORK_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
 
-# Optional. The installer defaults to gpt-5.6-terra and international.
-export ANYFUSION_PROVIDER_MODEL='your-model-id'
-export ANYFUSION_PROVIDER_REGION='international'
+# Optional
+export METAWORK_PROVIDER_MODEL='your-model-id'
+export METAWORK_PROVIDER_REGION='international'
 
 ./setup.sh
 
 export PATH="$HOME/.local/bin:$PATH"
-anyfusion --help
+metawork --help
 ```
 
-On non-macOS systems, `setup.sh` selects the mode-`0600` file SecretStore
-automatically. macOS uses Keychain-backed secrets unless explicitly configured
-otherwise.
-
-The installer:
-
-- builds the AnyFusion Runtime and vendored `planner/AnyFusion-Pi` sources in
-  separate dependency trees;
-- installs the public launcher at `~/.local/bin/anyfusion`;
-- stores releases, account state, configuration revisions, generated runtime
-  files, and update journals under `~/.anyfusion`;
-- keeps Planner sessions and Executor runtime homes isolated from personal
-  `~/.codex` and `~/.pi` homes.
+The installer builds the MetaWork Runtime and vendored `planner/AnyFusion-Pi`
+sources in separate dependency trees. Releases, account state, configuration,
+generated runtime files, and update journals are stored under `~/.metawork`.
 
 ### Runtime layout
 
 ```text
 ~/.local/bin/
-└── anyfusion
+├── metawork
+├── anyfusion
+└── metaclaw
 
-~/.anyfusion/
+~/.metawork/
 ├── app/
 │   ├── current
 │   └── releases/
@@ -160,7 +122,7 @@ The installer:
 └── upgrade-journals/
 ```
 
-Set `ANYFUSION_INSTALL_ROOT` before installation to use a different root.
+Set `METAWORK_INSTALL_ROOT` before installation to use a different root.
 
 ## Usage
 
@@ -168,52 +130,38 @@ Set `ANYFUSION_INSTALL_ROOT` before installation to use a different root.
 
 ```bash
 cd /path/to/your/project
-anyfusion
+metawork
 ```
 
-The launch directory becomes the workspace context. Planner-side repository
-access remains controlled and read-only; authorized Executor changes occur in
-managed Task/Subtask Git worktrees and pass through the publication gate.
+The launch directory becomes the read-only Planner workspace context.
+Authorized Executor changes happen in managed Task/Subtask Git worktrees and
+pass through the publication gate.
 
 ### Web workspace
 
 ```bash
-anyfusion web
-anyfusion web start
-anyfusion web restart
-anyfusion web --port 9000 --no-open
+metawork web
+metawork web start
+metawork web restart
+metawork web --port 9000 --no-open
 ```
 
 The default Web endpoint is `http://127.0.0.1:8788`. Normal startup exchanges a
 short-lived URL-fragment bootstrap for an HttpOnly, SameSite=Strict session
 cookie. Use `--no-open` for SSH, port forwarding, or manual browser startup.
 
-### CLI reference
+### Management commands
 
 ```text
-anyfusion
-anyfusion web [start|restart] [--port <p>] [--no-open]
-anyfusion --script <file>
-anyfusion --gateway
-anyfusion --connect
-anyfusion gateway <run|setup|pairing|doctor|install|start|stop|restart|status>
-anyfusion <configure|config|provider|model|planner|executor|doctor|status> ...
+metawork status
+metawork doctor
+metawork config show | validate | history | diff | rollback
+metawork provider list | add | edit | test | remove
+metawork model    list | add | edit | test | remove
+metawork executor list | add | edit | enable | disable | remove | test
 ```
 
-Common management commands:
-
-```text
-anyfusion status
-anyfusion doctor
-anyfusion config show | validate | history | diff | rollback
-anyfusion provider list | add | edit | test | remove
-anyfusion model    list | add | edit | test | remove
-anyfusion executor list | add | edit | enable | disable | remove | test
-```
-
-The source installer creates the `anyfusion` launcher.
-
-## How it works
+## Architecture
 
 ```text
 Client
@@ -226,67 +174,46 @@ Client
               -> Executor
 ```
 
-- **ClientGateway** owns the versioned multi-client command/event protocol,
-  replay, attachment, permission, and presentation-safe event flow.
-- **ConversationSession** owns one serialized input mailbox, one persisted
-  AnyFusion-Pi Planner session, and one bounded interaction trace.
-- **AccountRuntime** owns account-wide configuration, memory, Task, Kernel,
-  execution, publication, delivery, and recovery services.
-- **PlanningAgent** owns natural-language semantics and submits strict
-  `PlanningAgentPlan v8` proposals. It cannot mutate storage, authorize work,
-  or control an Executor.
-- **ControlKernel** is the sole policy authority for admission, dispatch,
-  retry, fallback, cancellation, recovery, permissions, and publication.
-- **Runtime** applies durable authorized decisions and reports normalized facts
-  back to the Kernel.
-- **Executor adapters** transport one authorized attempt through the native
-  worktree backend or the explicit Docker compatibility backend.
+- `ClientGateway` owns the versioned multi-client command/event protocol.
+- `ConversationSession` owns one serialized input mailbox and one persisted
+  AnyFusion-Pi Planner session.
+- `AccountRuntime` owns shared account services and the single active
+  top-level Task boundary.
+- `ControlKernel` is the deterministic policy authority.
+- Execution owns claims, leases, backends, attempts, Git publication, and
+  normalized observations.
 
-One AccountRuntime admits one active top-level Task. A Task may contain a
-dependency-aware Work Graph with up to four independent attempts running
-concurrently. Successful attempts produce immutable receipts and candidate Git
-commits; publication integrates them in deterministic order before completion
-facts become authoritative.
+See [the current technical overview](docs/current/technical-overview.md) and
+[accepted ADRs](docs/adr/README.md) for the complete contracts.
 
-Configuration is Provider-first and revisioned. Planner uses one fixed model
-binding. Codex and Pi Executor policies may be fixed or Auto; Auto always
-resolves to a concrete binding before execution. Configuration activation is
-allowed only while the AccountRuntime activation gate is idle and affects new
-Planner turns and new Task generations, never an in-flight attempt.
+## Compatibility
 
-## Project status
+`anyfusion` and `metaclaw` remain compatibility CLI aliases for `metawork`.
+Existing `ANYFUSION_*` product settings remain accepted as aliases for their
+`METAWORK_*` equivalents and fail closed when both values conflict.
+Component-specific `ANYFUSION_PI_*` and `ANYFUSION_PLANNER_*` variables retain
+their names because they identify the AnyFusion-Pi integration.
 
-| Area | Current state |
-| --- | --- |
-| Version | `v1.2.0-preview.0` |
-| Maturity | Developer Preview |
-| Runtime | Node.js `>=22.19.0`, TypeScript ESM |
-| Planner contract | PlanningAgentPlan v8 |
-| Work Graph contract | v7 |
-| Kernel contract | v5 |
-| Completion contract | v4 |
-| Persistence | SQLite schema v33 |
-| Canonical Executors | Codex CLI and Pi Agent |
-| Top-level scheduling | One active Task per AccountRuntime |
-| Subtask concurrency | Up to four attempts |
+An existing `~/.anyfusion` installation is migrated transactionally to
+`~/.metawork`. MetaWork does not keep steady-state dual reads or writes after a
+successful migration. Durable compatibility names such as `anyfusion.db`,
+`AnyFusionConfigurationV2`, and `anyfusion-planner-host-v2` are intentionally
+preserved.
 
-This is not a stable production release. Installation, configuration,
-extension, and update contracts may change before the first stable version.
-Multi-top-level-Task scheduling is intentionally deferred to a separate future
-roadmap.
+## Project Status
 
-## Documentation
-
-| Resource | Purpose |
-| --- | --- |
-| [Current Technical Overview](docs/current/technical-overview.md) | Full runtime, deployment, configuration, and repository overview |
-| [Account Runtime Operations](docs/current/account-runtime-and-gateway-operations.md) | Server lifecycle, account paths, Gateway replay, and diagnostics |
-| [Runtime Security](docs/current/phase-5-runtime-security.md) | Workspaces, resource leases, permissions, and execution backends |
-| [Architecture Decisions](docs/adr/README.md) | Accepted decisions and authority matrix |
-| [Documentation Map](docs/README.md) | Current docs, plans, technical debt, and archives |
+MetaWork is under active commercial development. The current runtime admits one
+active top-level Task per account while allowing bounded parallel Subtask
+attempts inside that Task. Interfaces and operational contracts may change
+before a generally available commercial release.
 
 ## License
 
-AnyFusion is licensed under the [Apache License, Version 2.0](LICENSE).
+MetaWork is proprietary and is not offered under the repository's historical
+open-source license file. Company-approved commercial license terms must be
+provided separately before external distribution.
 
-Copyright 2026 Shanghai Metafusion Artificial Intelligence Technology Co., Ltd.
+AnyFusion-derived and other third-party open-source components retain their own
+copyright, license, attribution, and notice requirements. The root `LICENSE`
+file is retained unchanged for historical and third-party review; it does not
+license the MetaWork product as a whole.

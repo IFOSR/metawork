@@ -1,6 +1,6 @@
-# Account Runtime And Gateway Operations
+# MetaWork Account Runtime And Gateway Operations
 
-ADR-0031 is active in production composition. One Server process owns a
+ADR-0031 is active in MetaWork production composition. One Server process owns a
 `RuntimeRegistry`, one loaded `AccountRuntime` for `local-default`, a
 `ConversationRegistry`, and one transport-neutral `ClientGateway`.
 
@@ -9,31 +9,31 @@ ADR-0031 is active in production composition. One Server process owns a
 Start the default native Gateway-backed TUI:
 
 ```bash
-anyfusion
+metawork
 ```
 
 Start or restart the Web foreground surface:
 
 ```bash
-anyfusion web
-anyfusion web start
-anyfusion web restart
+metawork web
+metawork web start
+metawork web restart
 ```
 
 Run or manage the user-level Gateway service:
 
 ```bash
-anyfusion gateway run
-anyfusion gateway start
-anyfusion gateway status
-anyfusion gateway restart
-anyfusion gateway stop
+metawork gateway run
+metawork gateway start
+metawork gateway status
+metawork gateway restart
+metawork gateway stop
 ```
 
 Attach another local terminal to a running Unix Gateway:
 
 ```bash
-anyfusion --connect
+metawork --connect
 ```
 
 `web restart` and `gateway restart` stop the process holding `runtime.lock`
@@ -45,7 +45,7 @@ not the Runtime topology; neither command creates a second AccountRuntime.
 The default account root is:
 
 ```text
-~/.anyfusion/accounts/local-default/
+~/.metawork/accounts/local-default/
 ├── account.json
 ├── config/
 ├── secrets/
@@ -74,6 +74,12 @@ before update/rollback; later transactions switch only account-scoped pointers.
 Runtime code must not write the legacy installation-global database,
 Planner-session, configuration, generated-runtime, workspace or attempt paths
 after account-layout activation.
+
+## Compatibility
+
+`anyfusion` and `metaclaw` remain CLI aliases. A legacy `~/.anyfusion` root is
+migrated transactionally before update or rollback; it is not a second runtime
+authority after activation.
 
 Use Web settings or the account administration commands to change
 configuration. The authoritative pointer is
@@ -131,10 +137,10 @@ fails closed as `command_execution_uncertain` and is not run again.
 Use:
 
 ```bash
-anyfusion status
-anyfusion doctor
-anyfusion gateway status
-anyfusion gateway doctor
+metawork status
+metawork doctor
+metawork gateway status
+metawork gateway doctor
 ```
 
 For a stuck client, verify the Server process, Unix socket, active configuration
@@ -148,7 +154,7 @@ Provider-independent release validation:
 npm run smoke:gateway
 ```
 
-The live semantic Planner gate remains `npm run smoke:metaclaw` and requires a
+The live semantic Planner gate remains `npm run smoke:metawork` and requires a
 valid configured Provider credential.
 
 ## Future App Contract

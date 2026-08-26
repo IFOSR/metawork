@@ -1,6 +1,10 @@
-# AnyFusion
+# MetaWork
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
+
+MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的开源上游；下文保留的
+`AnyFusion-Pi` 及其他 AnyFusion 名称用于标识已归属组件或兼容契约，不代表本仓库的
+产品身份。
 
 > 当前实现基线（2026-08-21）：PlanningAgentPlan v8、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
@@ -28,7 +32,7 @@ Resource/Kernel 的代码契约拥有。数据库采用 v30→v31→v32 事务�
 release 验签、关闭 Task admission、dispatch quiesce、数据库备份、candidate
 health check 和 rollback 协调。A2A 实现移入独立后续路线图。
 
-AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
+MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
 它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / ControlKernel / Durable KernelWorkflow / work-unit runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
 
@@ -46,14 +50,14 @@ AnyFusion 是一个本地优先的 AI Task OS。它把自然语言需求变成�
 - 每个 Conversation 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
-- 本地 Gateway 支持多个终端连接同一个 AnyFusion runtime。
+- 本地 Gateway 支持多个终端连接同一个 MetaWork runtime。
 - 默认本地界面使用 `planner/AnyFusion-Pi` 下的 Gateway-only TUI，以独立的执行轨迹和对话区域流式展示安全事件，不创建本地语义 runtime。
 - 支持按游标重放与重连、版本化斜杠命令和权限决议；原 Ink UI 完整保留为备用模块。
-- 提供 `npm run smoke:anyfusion` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
+- 提供 `npm run smoke:metawork` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
 
-AnyFusion 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。AnyFusion 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
+MetaWork 是面向任务的系统，而不是纯 session agent。普通 agent session 主要回答当前这一轮。MetaWork 会判断用户输入应该保持为轻量对话、控制已有任务，还是变成一个可以调度、阻塞、恢复、检索、验收、交付和审计的持久任务。
 
 ### 已实施的多客户端架构
 
@@ -125,7 +129,7 @@ flowchart LR
 
 所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
-AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；AnyFusion 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 AnyFusion 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
+AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；MetaWork 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 MetaWork 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
 本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → DurableKernelWorkflow → ControlKernel`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
 
@@ -197,14 +201,14 @@ flowchart LR
   Handler --> Adapter[飞书 Gateway adapter]
   Adapter --> Gateway[ClientGateway]
   Gateway --> Conversation[ConversationSession]
-  Conversation --> Progress[Gateway trace 事件<br/>AnyFusion 里程碑 vs Executor 里程碑]
+  Conversation --> Progress[Gateway trace 事件<br/>MetaWork 里程碑 vs Executor 里程碑]
   Progress --> Cards[飞书过程卡片]
   Conversation --> Final[最终 Gateway 事件]
   Final --> Reply[最终回复卡片或富文本 fallback]
   Reply --> Files[产物上传和 Markdown 预览链接]
 ```
 
-飞书进度会刻意区分 AnyFusion 里程碑和具体 executor 里程碑。用户能看到当前是 AnyFusion 在规划、召回上下文、调度、claim work unit，还是具体 executor 正在执行。
+飞书进度会刻意区分 MetaWork 里程碑和具体 executor 里程碑。用户能看到当前是 MetaWork 在规划、召回上下文、调度、claim work unit，还是具体 executor 正在执行。
 
 conversation / task 的边界很重要：
 
@@ -214,7 +218,7 @@ conversation / task 的边界很重要：
 
 当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
 
-[AnyFusion Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；ADR-0031 的多客户端 Gateway 收敛已于 2026 年 8 月 19 日完成。
+[MetaWork Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；ADR-0031 的多客户端 Gateway 收敛已于 2026 年 8 月 19 日完成。
 
 重要边界：不存在第二套策略或编排循环。交互式、Web、飞书、Unix 与
 `--script` 输入都先进入 `ClientGateway` 和 Conversation mailbox，再由服务端
@@ -280,15 +284,15 @@ cd metawork
 export ANYFUSION_PROVIDER_KEY='替换为你的密钥'
 export ANYFUSION_PROVIDER_URL='https://你的-openai-兼容服务地址.example/v1'
 ./setup.sh
-anyfusion --help
+metawork --help
 ```
 
 macOS 上，`setup.sh` 要求 Node.js 22.19+、Git、npm，以及已经存在的
 `codex` 和 `pi` 命令。它会直接构建仓库内检入的 `planner/AnyFusion-Pi` planner
-源码（不克隆外部仓库），两者使用独立依赖树，构建后把 mode-`0600` 的 AnyFusion 专用 provider
-和模型配置写入 `~/.config/anyfusion`，只安装
+源码（不克隆外部仓库），两者使用独立依赖树，构建后把 mode-`0600` 的 MetaWork 专用 provider
+和模型配置写入 `~/.config/metawork`，只安装
 `~/.local/bin/anyfusion`，并将账户运行状态保存在
-`~/.anyfusion/accounts/local-default`。安装期间不会运行两个 Executor，也不会
+`~/.metawork/accounts/local-default`。安装期间不会运行两个 Executor，也不会
 写入 `~/.codex` 或 `~/.pi`。
 
 安装后的 launcher 在每次执行时读取当前目录。请从 Planner 需要检查的
@@ -303,8 +307,8 @@ anyfusion
 
 - `node --version` 是 `>=22.19.0`。
 - `./setup.sh` 输出原生安装完成。
-- `~/.config/anyfusion/provider.env` 权限为 `0600`。
-- 新开一个 shell 后，`anyfusion --help` 可用。
+- `~/.config/metawork/provider.env` 权限为 `0600`。
+- 新开一个 shell 后，`metawork --help` 可用。
 - 安装前后的 `command -v codex`、`codex --version`、`command -v pi`
   和 `pi --version` 保持不变。
 
@@ -313,7 +317,7 @@ anyfusion
 
 ## Windows 安装
 
-Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 AnyFusion 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
+Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 MetaWork 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
 
 先在 Windows PowerShell 中安装 WSL2：
 
@@ -335,37 +339,37 @@ npm --version
 git --version
 ```
 
-然后在 WSL Ubuntu shell 内安装并验证 AnyFusion：
+然后在 WSL Ubuntu shell 内安装并验证 MetaWork：
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
 ./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
+metawork --help
+npm run smoke:metawork
 ```
 
-请在 setup 之外独立安装并登录 Codex/Pi；AnyFusion setup 不应用来改变
+请在 setup 之外独立安装并登录 Codex/Pi；MetaWork setup 不应用来改变
 现有 Executor 安装。
 
 Windows 安装核验清单：
 
-- 在 WSL Ubuntu 里运行 AnyFusion 命令，不要在 Windows PowerShell 里直接运行。
-- 仓库建议放在 WSL 文件系统，例如 `~/AnyFusion`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
+- 在 WSL Ubuntu 里运行 MetaWork 命令，不要在 Windows PowerShell 里直接运行。
+- 仓库建议放在 WSL 文件系统，例如 `~/MetaWork`，不要放在 `/mnt/c/...`，这样文件和 SQLite 性能更稳定。
 - `node --version` 是 `>=22.19.0`。
-- 新开一个 WSL shell 后，`anyfusion --help` 可用。
+- 新开一个 WSL shell 后，`metawork --help` 可用。
 - 默认 executor 在 WSL 内可用，例如 `codex --help`。
-- `npm run smoke:anyfusion` 成功完成
+- `npm run smoke:metawork` 成功完成
 
 Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以使用 Node.js 22.19+、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js` 直接开发，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。直接 Linux 开发使用 WSL2；容器 runtime 只保留为可选兼容路径。
 
 ## 安装执行器
 
-AnyFusion 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
+MetaWork 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
 
 ### 注册自定义 Executor
 
-Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
+Executor 是 MetaWork 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
 
 - `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
 - 运行绑定：不可变 Docker image ID、受控 permission profile、容器内命令/参数、安装检测命令和可选项目地址。
@@ -377,7 +381,7 @@ Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册
 /executor register wizard
 ```
 
-向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，AnyFusion 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
+向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，MetaWork 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
 
 也可以一次性注册：
 
@@ -394,7 +398,7 @@ Executor 是 AnyFusion 可以分配 subtask 的运行时工人。一个已注册
   --capabilities research,report_generation
 ```
 
-`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，AnyFusion 会把 prompt 追加为最后一个参数。image ID 必须匹配引用镜像，permission profile 必须来自受控目录。缺少绑定、镜像标签漂移或 profile 无效都会 fail closed；不存在宿主进程 fallback。路由 capability 仍与权限事实分离，不把权限细节暴露给 Planner。
+`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，MetaWork 会把 prompt 追加为最后一个参数。image ID 必须匹配引用镜像，permission profile 必须来自受控目录。缺少绑定、镜像标签漂移或 profile 无效都会 fail closed；不存在宿主进程 fallback。路由 capability 仍与权限事实分离，不把权限细节暴露给 Planner。
 
 `codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态字段、不可变镜像绑定和 permission profile 强制收敛，常规注册接口也拒绝覆盖或删除。非 canonical capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺少 image/profile 的历史自定义类保留审计记录但不可执行。
 
@@ -434,7 +438,7 @@ Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_ex
 - 失败时应返回非 0 exit code，或在 stderr 输出明确错误。
 - 长任务应周期性输出进度，避免被 idle watchdog 判断为卡死。
 - 文件产物应写入 prompt 中指定的任务输出目录。
-- 飞书交付、文件上传和预览链接生成应由 AnyFusion 后端完成；Executor 应产出本地文件，不应自己直接调用飞书 API。
+- 飞书交付、文件上传和预览链接生成应由 MetaWork 后端完成；Executor 应产出本地文件，不应自己直接调用飞书 API。
 
 可选高级 Adapter 接口：
 
@@ -471,18 +475,18 @@ executor:
   max_duration: 3600
 ```
 
-`timeout` 表示连续无输出 watchdog，不是固定墙钟总时长限制。只要 executor 仍在 stdout 或 stderr 输出内容，AnyFusion 就会续期，不会因为运行时间长而杀掉仍活跃的进程。`max_duration` 仅保留用于兼容旧配置，不再用于终止活跃 executor。
+`timeout` 表示连续无输出 watchdog，不是固定墙钟总时长限制。只要 executor 仍在 stdout 或 stderr 输出内容，MetaWork 就会续期，不会因为运行时间长而杀掉仍活跃的进程。`max_duration` 仅保留用于兼容旧配置，不再用于终止活跃 executor。
 
 ### Pi Agent
 
-在 AnyFusion 之外独立安装并登录 Pi，然后验证：
+在 MetaWork 之外独立安装并登录 Pi，然后验证：
 
 ```bash
 which pi
 pi --help
 ```
 
-AnyFusion 调用方式：
+MetaWork 调用方式：
 
 ```bash
 pi -p "<prompt>"
@@ -503,7 +507,7 @@ Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么�
 Executor 的优势：
 
 - 增加新的 runtime 边界，包括模型、工具、凭证、权限和命令行行为。
-- 让 AnyFusion 可以把 ready subtask 分配给最适合该工作的 executor work unit。
+- 让 MetaWork 可以把 ready subtask 分配给最适合该工作的 executor work unit。
 - 支持 planner-driven reassignment、交叉验证和审计。
 - 可以接入通用 Skill 无法访问的私有系统或垂直领域系统。
 
@@ -527,7 +531,7 @@ Skill 的限制：
 - 不能凭空获得不存在的 CLI、私有 API、浏览器能力、文件权限或企业系统集成。
 - 通常提升执行质量，而不是扩展 runtime 边界。
 
-当缺失能力来自“需要不同工人或不同 runtime”时，AnyFusion 通过注册 Executor 扩展能力；当已有工人需要更好的流程、领域知识或输出规范时，通过 Skill 扩展能力。
+当缺失能力来自“需要不同工人或不同 runtime”时，MetaWork 通过注册 Executor 扩展能力；当已有工人需要更好的流程、领域知识或输出规范时，通过 Skill 扩展能力。
 
 ## 运行
 
@@ -556,13 +560,13 @@ anyfusion
 浏览器交互端使用：
 
 ```bash
-anyfusion web
+metawork web
 ```
 
 重启统一 Server，并选择 Web 作为前台交互界面：
 
 ```bash
-anyfusion web restart
+metawork web restart
 ```
 
 该命令读取共享 `runtime.lock`，向持锁进程发送 `SIGTERM`，最多等待十秒确认
@@ -573,7 +577,7 @@ Unix Gateway、AccountRuntime 和 Conversation 拓扑不会改变。旧进程无
 Web 交互面只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
 fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
 进程级会话 Cookie 后立即清除地址栏 fragment。用户无需复制 token，浏览器
-JavaScript 也不持久化 token。`anyfusion web --no-open` 仅为 SSH、端口转发
+JavaScript 也不持久化 token。`metawork web --no-open` 仅为 SSH、端口转发
 和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
 和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
 
@@ -622,7 +626,7 @@ Execution Narrative 根据 attempt kind 和序号显示“主执行”“继续�
 Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。Trajectory 是只读
 页面，不渲染 Composer；草稿和待上传附件仍由 App 持有，切回 Conversation
 后恢复。Workspace Header 提供跟随系统、浅色和深色三态主题，偏好保存在
-`anyfusion.theme`，并在应用首屏渲染前通过语义颜色 token 生效。
+`metawork.theme`，并在应用首屏渲染前通过语义颜色 token 生效。
 
 依赖 publication 尚未完成时，Kernel/Runtime 会记录等待事实，不会错误地产生
 普通用户阻塞；缺少 handoff、Result Object、workspace 状态或身份不匹配时，
@@ -645,22 +649,22 @@ ID 幂等重放。其他 uncertain application 和外部 effect 仍保留普通�
 替换的 socket。Planner RPC 会保留结构化 transport uncertainty 及其部分工具
 审计。
 
-原生 AnyFusion-Pi TUI 仍是 `anyfusion` 的默认入口。Web 与 TUI 可以选择
+原生 AnyFusion-Pi TUI 仍是 `metawork` 的默认入口。Web 与 TUI 可以选择
 不同的前台展示模式，但都使用同一套 `RuntimeRegistry`、`AccountRuntime`、
 `ConversationRegistry` 和 `ClientGateway` 组合，不再拥有互斥的 Runtime
-架构。
+架构。`anyfusion` 和 `metaclaw` 保留为兼容 CLI alias。
 
 运行中的 Planner、Kernel 和 Executor 始终固定使用进程启动时加载的配置
 revision。Web 设置页激活仍完整执行 validate、compile、probe 和 immutable
 repository activation，但新 active revision 会显示为“下次启动 revision”，
 并返回 `restartRequired: true`。Planner 子进程及其 MCP server 显式接收当前
 运行 revision，因此配置激活不会造成 Planner 上下文与 Kernel/Execution
-策略分裂。重启 AnyFusion 后新 revision 才会生效。
+策略分裂。重启 MetaWork 后新 revision 才会生效。
 
 原生 launcher 将账户状态保存在：
 
 ```text
-~/.anyfusion/accounts/local-default/
+~/.metawork/accounts/local-default/
 ├── config/
 ├── secrets/
 ├── generated/
@@ -680,7 +684,7 @@ repository activation，但新 active revision 会显示为“下次启动 revis
 安装级 transport 状态保留在账户根之外：
 
 ```text
-~/.anyfusion/
+~/.metawork/
 ├── gateway.sock
 └── runtime.lock
 ```
@@ -730,17 +734,17 @@ Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
 
 ## 配置
 
-通过 Web 设置页或 `anyfusion config|provider|model|planner|executor` 管理命令
+通过 Web 设置页或 `metawork config|provider|model|planner|executor` 管理命令
 修改配置。激活流程会 validate、compile、probe 并生成账户级不可变 revision；
 运行中的 Server 在重启后应用新 revision。当前生效指针是：
 
 ```text
-~/.anyfusion/accounts/local-default/config/active
+~/.metawork/accounts/local-default/config/active
   -> revisions/<revision-id>/
 ```
 
 不要原地编辑不可变 revision 文件。Provider 凭据由账户 SecretStore 解析；
-macOS 默认使用 Keychain，只有显式设置 `ANYFUSION_SECRET_STORE=file` 时才使用
+macOS 默认使用 Keychain，只有显式设置 `METAWORK_SECRET_STORE=file` 时才使用
 权限为 `0600` 的文件。
 
 启动前导出飞书密钥：
@@ -752,24 +756,24 @@ export FEISHU_APP_SECRET="your Feishu app secret"
 
 ## 飞书交付和在线预览
 
-AnyFusion 将“文档生成”和“飞书交付”分开处理：
+MetaWork 将“文档生成”和“飞书交付”分开处理：
 
 - 执行器只负责把 Markdown 或其他文件写入任务输出目录。
-- AnyFusion 将文件记录为 task artifacts。
+- MetaWork 将文件记录为 task artifacts。
 - 飞书后端把最终答案发回聊天。
 - 如果文件上传能力可用，飞书后端会上传任务产物。
 - 如果配置了 Markdown Preview，Markdown 产物会附带在线预览链接。
 - 投递尝试会写入 `~/.metaclaw/gateway-audit.jsonl`。
 
-执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，AnyFusion 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
+执行器不应该直接调用飞书云文档 API。用户说“飞书云文档”或“在线预览”时，MetaWork 会要求执行器产出本地 Markdown 产物，后端负责飞书同步和预览链接。
 
-飞书进度卡片会明确展示执行链路。AnyFusion 先进行意图解析和执行准备，然后展示 planner work-graph 决策、work-unit claim 状态，以及真正启动 subtask 的执行器。这样飞书用户不会把意图解析器、planner 或 dispatcher 误认为最终执行器。
+飞书进度卡片会明确展示执行链路。MetaWork 先进行意图解析和执行准备，然后展示 planner work-graph 决策、work-unit claim 状态，以及真正启动 subtask 的执行器。这样飞书用户不会把意图解析器、planner 或 dispatcher 误认为最终执行器。
 
-最终飞书回复优先使用 Markdown message card。长回复会拆成多张卡片；如果某个卡片 chunk 失败，AnyFusion 会把该 chunk 重试为富文本 post；如果仍有 chunk 无法投递，会上传完整最终答案 Markdown 文件，避免用户只收到半截结果。
+最终飞书回复优先使用 Markdown message card。长回复会拆成多张卡片；如果某个卡片 chunk 失败，MetaWork 会把该 chunk 重试为富文本 post；如果仍有 chunk 无法投递，会上传完整最终答案 Markdown 文件，避免用户只收到半截结果。
 
 访问控制由 Gateway 处理：
 
-- 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `anyfusion gateway pairing` 审批或撤销。
+- 私聊默认使用 `dm_policy: pairing`。第一个私聊用户会自动通过，后续用户可用 `metawork gateway pairing` 审批或撤销。
 - 群聊默认使用 `group_policy: open` 和 `require_mention: true`。
 - 在飞书聊天里发送 `/sethome` 会把该聊天记录为 `gateway.platforms.feishu.home_channel`。
 - Feishu 配置只从 `gateway.platforms.feishu` 读取。
@@ -777,10 +781,10 @@ AnyFusion 将“文档生成”和“飞书交付”分开处理：
 常用飞书 Gateway 命令：
 
 ```bash
-anyfusion gateway doctor
-anyfusion gateway pairing list
-anyfusion gateway pairing approve <open_id>
-anyfusion gateway pairing revoke <open_id>
+metawork gateway doctor
+metawork gateway pairing list
+metawork gateway pairing approve <open_id>
+metawork gateway pairing revoke <open_id>
 ```
 
 默认预览 URL：
@@ -808,7 +812,7 @@ integrations:
 > 对比三份合同的风险点，并生成风险矩阵。
 ```
 
-AnyFusion 会：
+MetaWork 会：
 
 1. 判断输入是轻量对话、任务控制，还是持久任务。
 2. 创建新任务或定位已有任务。
@@ -858,7 +862,7 @@ AnyFusion-Pi Gateway TUI 是默认本地入口。client 只拥有编辑器和展
 
 ## 任务检索
 
-AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id；Planner 可先用查询文本搜索，再读取明确选中的任务上下文。
+MetaWork 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可以被重新发现。用户不需要记住准确 task id；Planner 可先用查询文本搜索，再读取明确选中的任务上下文。
 
 命令：
 
@@ -871,7 +875,7 @@ AnyFusion 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可
 
 ## 单 Task 并发调度模型
 
-AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v5 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
+MetaWork 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v5 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
 
 当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
 
@@ -894,7 +898,7 @@ AnyFusion 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖
 
 ## 复杂任务策略和 Agentic Loop
 
-AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
+MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；路径逃逸、未授权写入、秘密暴露和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
@@ -904,7 +908,7 @@ AnyFusion 可以把复杂需求表示成 work graph，而不是把整段需求�
 
 ## 显式记忆
 
-AnyFusion 把显式确认的偏好、任务记忆卡片和学习候选保存在 SQLite 中。
+MetaWork 把显式确认的偏好、任务记忆卡片和学习候选保存在 SQLite 中。
 
 自然语言请求不会通过代码侧启发式创建、提升或应用记忆。用户只通过显式 `/memory` 命令管理偏好。PlanningAgent 会收到有界的全局已确认偏好，并可在 Subtask `contextRef` 中精确引用某条确认偏好。
 
@@ -923,7 +927,7 @@ AnyFusion 把显式确认的偏好、任务记忆卡片和学习候选保存在 
 
 ## 学习循环
 
-AnyFusion 可以把成功任务、失败任务、文件产物和 executor skill 使用情况沉淀成学习候选。
+MetaWork 可以把成功任务、失败任务、文件产物和 executor skill 使用情况沉淀成学习候选。
 
 命令：
 
@@ -945,7 +949,7 @@ npm run dev
 npm run build
 npm test
 npm run lint
-npm run smoke:anyfusion
+npm run smoke:metawork
 npm run smoke:gateway
 ```
 
@@ -963,9 +967,9 @@ anyfusion --script /tmp/anyfusion-flow.txt
 `--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。每一行都与
 Web、TUI、飞书和 Unix 客户端一样进入 `ClientGateway`、Conversation mailbox、
 服务端 Planner 与 AccountRuntime，因此必须获取同一把 `runtime.lock`；并行
-烟测必须使用隔离的 `ANYFUSION_INSTALL_ROOT`。
+烟测必须使用隔离的 `METAWORK_INSTALL_ROOT`。
 
-`npm run smoke:anyfusion` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 AnyFusion 配置（`ANYFUSION_CONFIG_HOME`，默认 `~/.config/anyfusion`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
+`npm run smoke:metawork` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 MetaWork 配置（`METAWORK_CONFIG_HOME`，默认 `~/.config/metawork`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
 
 `npm run smoke:gateway` 是不依赖外部模型凭据的生产边界门禁，覆盖 Gateway
 准入、replay、重连、账户恢复、统一 surface composition 和脚本 Gateway
@@ -1017,4 +1021,6 @@ src/
 
 ## License
 
-AnyFusion 基于 [Apache License 2.0](../../LICENSE) 开源。版权所有 © 2026 The AnyFusion Contributors。
+MetaWork 是闭源商业软件。对外分发前必须由公司提供正式批准的商业许可条款。
+AnyFusion 衍生组件及其他第三方开源组件继续遵守各自的许可证与 NOTICE；根目录
+`LICENSE` 暂时保留用于历史和第三方审查，不代表 MetaWork 整体采用该许可证。

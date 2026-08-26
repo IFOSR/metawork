@@ -5,7 +5,7 @@ export function generateToken(): string {
 }
 
 export function formatWebAccessTokenLine(token: string): string {
-  return `AnyFusion Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: ${token}`;
+  return `MetaWork Web 本机访问 token（仅用于 --no-open/SSH，非 Provider API Key）: ${token}`;
 }
 
 export function buildWebStartupPresentation(
@@ -21,7 +21,7 @@ export function buildWebStartupPresentation(
     return {
       browserUrl: address,
       terminalLines: [
-        `AnyFusion Web: ${address}`,
+        `MetaWork Web: ${address}`,
         formatWebAccessTokenLine(manualAccessToken),
       ],
     };
@@ -30,8 +30,8 @@ export function buildWebStartupPresentation(
   return {
     browserUrl: `${address.replace(/\/+$/u, '')}/#${parameters.toString()}`,
     terminalLines: [
-      `AnyFusion Web: ${address}`,
-      '浏览器将自动完成本机登录；若未打开，请使用 `anyfusion web --no-open`。',
+      `MetaWork Web: ${address}`,
+      '浏览器将自动完成本机登录；若未打开，请使用 `metawork web --no-open`。',
     ],
   };
 }

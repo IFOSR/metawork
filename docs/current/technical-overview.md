@@ -1,10 +1,15 @@
-# AnyFusion
+# MetaWork
 
 [English Home](../../README.md) | [中文技术总览](technical-overview.zh-CN.md)
 
-AnyFusion is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
+MetaWork is the proprietary commercial product represented by this repository.
+AnyFusion is a separate open-source upstream; `AnyFusion-Pi` and other retained
+AnyFusion names below identify attributed components or compatibility
+contracts, not this repository's product identity.
 
-It is built for teams who need agents to do more than answer the current turn. AnyFusion gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
+MetaWork is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
+
+It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
 > Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
@@ -32,7 +37,7 @@ v31, coordinated with signed release verification, Task-admission closure,
 dispatch quiescence, database backup, candidate health checks and rollback. A2A
 implementation is deferred to a separate roadmap.
 
-## What AnyFusion Does
+## What MetaWork Does
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
@@ -42,17 +47,17 @@ implementation is deferred to a separate roadmap.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
 - Validates every Subtask through Completion Protocol v4, persists immutable Result Objects and direct-edge references, and separates safe result delivery from completion certification.
-- Binds each Conversation to one persisted AnyFusion-Pi Planner session; AnyFusion-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
+- Binds each Conversation to one persisted AnyFusion-Pi Planner session; MetaWork-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
-- Provides a local Gateway so multiple terminals can connect to one AnyFusion runtime.
-- Uses the nested `planner/AnyFusion-Pi` fork as the default local Planner conversation surface, with an isolated process/dependency tree and AnyFusion-managed provider/model configuration in both native and optional container runtimes.
+- Provides a local Gateway so multiple terminals can connect to one MetaWork runtime.
+- Uses the nested `planner/AnyFusion-Pi` fork as the default local Planner conversation surface, with an isolated process/dependency tree and MetaWork-managed provider/model configuration in both native and optional container runtimes.
 - Runs the native AnyFusion-Pi interface as a Gateway-only client with separate execution-trace and conversation projections, cursor-based replay, reconnect, versioned slash/permission commands, and no local semantic runtime. The original Ink UI remains source-preserved as a standby module.
-- Ships with `npm run smoke:anyfusion`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
+- Ships with `npm run smoke:metawork`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
 
-AnyFusion is task-oriented rather than session-only. A normal agent session answers the current turn. AnyFusion decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
+MetaWork is task-oriented rather than session-only. A normal agent session answers the current turn. MetaWork decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
 
 ### Unified Multi-Client Architecture
 
@@ -120,7 +125,7 @@ flowchart LR
 
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
-The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; AnyFusion does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only AnyFusion MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by AnyFusion. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
+The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
 Planner provider/model activation is revision-pinned at the process boundary.
 The supervisor selects `generated/agent-runtime/<configurationRevision>/planner`
@@ -188,7 +193,7 @@ This path is still semantic. The persisted AnyFusion-Pi Planner session preserve
 
 ```mermaid
 flowchart LR
-  Input[User asks AnyFusion to do work] --> Planning[PlanningAgent]
+  Input[User asks MetaWork to do work] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
   Proposal --> Kernel[ControlKernel<br/>authorize or reject]
   Kernel --> Decision[authorize_task_plan]
@@ -219,14 +224,14 @@ flowchart LR
   Handler --> Adapter[Feishu Gateway adapter]
   Adapter --> Gateway[ClientGateway]
   Gateway --> Conversation[ConversationSession]
-  Conversation --> Progress[Gateway trace events<br/>AnyFusion milestones vs Executor milestones]
+  Conversation --> Progress[Gateway trace events<br/>MetaWork milestones vs Executor milestones]
   Progress --> Cards[Feishu progress cards]
   Conversation --> Final[Final Gateway event]
   Final --> Reply[Final reply cards or post fallback]
   Reply --> Files[Artifact upload and Markdown preview links]
 ```
 
-Feishu progress is intentionally split into AnyFusion milestones and concrete executor milestones. Users can see when AnyFusion is planning, recalling context, scheduling, claiming a work unit, or waiting for the actual executor.
+Feishu progress is intentionally split into MetaWork milestones and concrete executor milestones. Users can see when MetaWork is planning, recalling context, scheduling, claiming a work unit, or waiting for the actual executor.
 
 The conversation/task boundary matters:
 
@@ -236,7 +241,7 @@ The conversation/task boundary matters:
 
 The current direct-reply path is explicit: MetaClaw sends the current turn through the bound persisted AnyFusion-Pi Planner session, the PlanningAgent queries confirmed preferences or runtime facts only when needed, and runtime delivers `response.directReply` without claiming an executor work unit.
 
-The Task OS upgrade described in [AnyFusion Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence under ADR-0031 has been delivered: Web, Feishu and the native TUI route through the unified Gateway and share one AccountRuntime.
+The Task OS upgrade described in [MetaWork Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence under ADR-0031 has been delivered: Web, Feishu and the native TUI route through the unified Gateway and share one AccountRuntime.
 
 Important runtime boundary: there is no second strategy/orchestration loop
 beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph
@@ -245,7 +250,7 @@ availability, and recovery remain explicit Kernel policy.
 
 ## Current Executors
 
-AnyFusion ships two canonical Executor AgentClasses. The default Runtime
+MetaWork ships two canonical Executor AgentClasses. The default Runtime
 executes them as child processes in the Subtask worktree. The legacy Docker
 attempt backend remains available explicitly for compatibility:
 
@@ -316,19 +321,19 @@ cd metawork
 export ANYFUSION_PROVIDER_KEY='replace-with-your-key'
 export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
 ./setup.sh
-anyfusion --help
+metawork --help
 ```
 
 On macOS, `setup.sh` requires Node.js 22.19+, Git, npm, and existing `codex`
 and `pi` commands. It builds MetaClaw and the vendored `planner/AnyFusion-Pi` planner
 sources (checked into this repository) with separate dependency trees, writes mode-`0600`
-AnyFusion-only provider and model configuration under
-`~/.config/anyfusion`, installs only `~/.local/bin/anyfusion`, and stores
-account runtime state under `~/.anyfusion/accounts/local-default`. It does not run either
+MetaWork-only provider and model configuration under
+`~/.config/metawork`, installs only `~/.local/bin/anyfusion`, and stores
+account runtime state under `~/.metawork/accounts/local-default`. It does not run either
 Executor during installation and does not write `~/.codex` or `~/.pi`.
 
 The installed launcher captures the current directory at invocation time.
-Start AnyFusion from the repository or directory the Planner should inspect:
+Start MetaWork from the repository or directory the Planner should inspect:
 
 ```bash
 cd /path/to/project
@@ -339,8 +344,8 @@ Install checklist:
 
 - `node --version` is `>=22.19.0`.
 - `./setup.sh` reports native installation complete.
-- `~/.config/anyfusion/provider.env` is mode `0600`.
-- `anyfusion --help` works from a new shell.
+- `~/.config/metawork/provider.env` is mode `0600`.
+- `metawork --help` works from a new shell.
 - `command -v codex`, `codex --version`, `command -v pi`, and `pi --version`
   are unchanged after setup.
 
@@ -349,7 +354,7 @@ AnyFusion-Pi checkout is preserved and built without being overwritten.
 
 ## Windows Install
 
-The recommended Windows path is WSL2 with Ubuntu. This gives AnyFusion the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
+The recommended Windows path is WSL2 with Ubuntu. This gives MetaWork the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
 
 Install WSL2 from PowerShell:
 
@@ -371,37 +376,37 @@ npm --version
 git --version
 ```
 
-Install and verify AnyFusion inside the WSL Ubuntu shell:
+Install and verify MetaWork inside the WSL Ubuntu shell:
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
 ./setup.sh
-anyfusion --help
-npm run smoke:anyfusion
+metawork --help
+npm run smoke:metawork
 ```
 
-Install and authenticate Codex/Pi independently before setup; AnyFusion setup
+Install and authenticate Codex/Pi independently before setup; MetaWork setup
 must not be used to change an existing Executor installation.
 
 Windows install checklist:
 
-- Run AnyFusion commands inside WSL Ubuntu, not Windows PowerShell.
-- Keep the repository under the WSL filesystem, for example `~/AnyFusion`, not `/mnt/c/...`, for better file and SQLite performance.
+- Run MetaWork commands inside WSL Ubuntu, not Windows PowerShell.
+- Keep the repository under the WSL filesystem, for example `~/MetaWork`, not `/mnt/c/...`, for better file and SQLite performance.
 - Confirm `node --version` is `>=22.19.0`.
-- Confirm `anyfusion --help` works in a fresh WSL shell.
+- Confirm `metawork --help` works in a fresh WSL shell.
 - Confirm the default executor works in WSL, for example `codex --help`.
-- Confirm `npm run smoke:anyfusion` completes successfully
+- Confirm `npm run smoke:metawork` completes successfully
 
 Native Windows PowerShell is not the primary supported runtime today. Advanced users can try direct development with Node.js 22.19+, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use WSL2 for direct Linux development; the container runtime remains an optional compatibility path.
 
 ## Install Executors
 
-AnyFusion does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
+MetaWork does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
 
 ### Register Custom Executors
 
-Installed executors are runtime workers that AnyFusion can assign subtasks to. A registered executor now has three parts:
+Installed executors are runtime workers that MetaWork can assign subtasks to. A registered executor now has three parts:
 
 - The `AgentClass`: domains, capabilities, risk level, input/output types, use-case hints, route-intent affinity, and runtime defaults.
 - The runtime binding: immutable Docker image ID, controlled permission profile, in-container command/arguments, install check command, and optional project URL.
@@ -413,7 +418,7 @@ Use the guided registration flow when you are not sure what to fill in:
 /executor register wizard
 ```
 
-The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, AnyFusion tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
+The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, MetaWork tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
 
 One-line registration is also supported:
 
@@ -430,7 +435,7 @@ One-line registration is also supported:
   --capabilities research,report_generation
 ```
 
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, AnyFusion appends the prompt as the final argument. The image ID must match the referenced image and the permission profile must be one of the controlled profiles. A missing binding or changed tag fails closed until the class is explicitly updated; there is no host-process fallback. Static routing capabilities remain separate and Planner-safe.
+`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaWork appends the prompt as the final argument. The image ID must match the referenced image and the permission profile must be one of the controlled profiles. A missing binding or changed tag fails closed until the class is explicitly updated; there is no host-process fallback. Static routing capabilities remain separate and Planner-safe.
 
 `codex-cli` and `pi-agent` are owned completely by canonical definitions. Startup force-converges every persisted static field, immutable image binding and permission profile for those names, and normal registration APIs reject overwrite or deletion. Non-canonical capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. Historical custom classes without image/profile bindings remain visible for audit but are non-executable.
 
@@ -476,7 +481,7 @@ Runtime behavior requirements:
 - Failures should return a non-zero exit code or a clear stderr error.
 - Long-running tasks should emit progress periodically so the idle watchdog does not treat the process as stuck.
 - File artifacts should be written into the task output directory provided in the prompt.
-- Feishu delivery, file upload, and preview link generation should stay in AnyFusion's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
+- Feishu delivery, file upload, and preview link generation should stay in MetaWork's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
 
 Optional advanced adapter interfaces:
 
@@ -510,14 +515,14 @@ runs the canonical `metaclaw-executor-codex:phase5` image.
 
 ### Pi Agent
 
-Install and authenticate Pi independently before running AnyFusion, then verify:
+Install and authenticate Pi independently before running MetaWork, then verify:
 
 ```bash
 which pi
 pi --help
 ```
 
-AnyFusion calls it as:
+MetaWork calls it as:
 
 ```bash
 pi -p "<prompt>"
@@ -556,13 +561,13 @@ Or use the project helper:
 Start the browser interaction surface with:
 
 ```bash
-anyfusion web
+metawork web
 ```
 
 Restart the unified Server with Web selected as the foreground surface:
 
 ```bash
-anyfusion web restart
+metawork web restart
 ```
 
 The command reads the shared `runtime.lock`, sends `SIGTERM` to its holder,
@@ -574,7 +579,7 @@ does not force-kill an unresponsive process.
 The Web surface binds only to `127.0.0.1`. Normal startup opens a short-lived,
 single-use URL-fragment bootstrap that is exchanged for an HttpOnly,
 SameSite=Strict process-local session cookie and removed from the address bar.
-No token is copied or stored by browser JavaScript. `anyfusion web --no-open`
+No token is copied or stored by browser JavaScript. `metawork web --no-open`
 prints a manual fallback token for SSH and port-forwarded use. WebSocket
 upgrades require the session cookie and an allowed loopback Origin before the
 protocol switches; stale cookies return the browser to the fallback gate
@@ -635,7 +640,7 @@ states to localized user status. The three-part attempt header keeps label,
 status and duration non-overlapping on desktop and mobile. Trajectory is
 read-only and does not render the Composer; draft and pending attachments stay
 owned by the App and return with Conversation. The header also provides
-system/light/dark theme preference, persisted in `anyfusion.theme` and applied
+system/light/dark theme preference, persisted in `metawork.theme` and applied
 before the first application render through semantic color tokens.
 
 Pending dependency publication is a wait fact, not an ordinary user blocker.
@@ -668,10 +673,11 @@ stale socket and records the created device/inode so shutdown cannot unlink a
 replacement. Planner RPC preserves structured transport uncertainty and partial
 tool audit.
 
-The native AnyFusion-Pi TUI remains the default `anyfusion` surface. Web and TUI
+The native AnyFusion-Pi TUI remains the default `metawork` surface. Web and TUI
 may select different foreground presentation modes, but both use the same
 RuntimeRegistry, AccountRuntime, ConversationRegistry and ClientGateway
-composition rather than owning different Runtime architectures.
+composition rather than owning different Runtime architectures. `anyfusion`
+and `metaclaw` remain compatibility CLI aliases.
 
 Configuration activation is AccountRuntime-scoped. Provider base URLs and
 credential references, the Provider model catalog, and Planner/Executor routing
@@ -711,7 +717,7 @@ cannot schedule, cancel, retry, fallback, mutate bindings, or access storage.
 The native launcher stores account-owned state under:
 
 ```text
-~/.anyfusion/accounts/local-default/
+~/.metawork/accounts/local-default/
 ├── config/
 ├── secrets/
 ├── generated/
@@ -731,7 +737,7 @@ The native launcher stores account-owned state under:
 Installation-global transport state remains outside the account root:
 
 ```text
-~/.anyfusion/
+~/.metawork/
 ├── gateway.sock
 └── runtime.lock
 ```
@@ -752,7 +758,7 @@ Runtime utilities:
 ./anyfusion.sh stop
 ```
 
-Install or manage AnyFusion as a user-level service:
+Install or manage MetaWork as a user-level service:
 
 ```bash
 ./anyfusion.sh gateway install
@@ -786,20 +792,20 @@ Local validation covers TypeScript lint/build, focused Planner RPC and host-prot
 ## Configuration
 
 Use the Web settings surface or the
-`anyfusion config|provider|model|planner|executor` administration commands.
+`metawork config|provider|model|planner|executor` administration commands.
 Configuration activation validates, compiles and probes an immutable
 account-scoped revision. Hot-safe catalog and routing changes apply without
 restarting the Server; process-level changes return `restart_required`. The
 active pointer is:
 
 ```text
-~/.anyfusion/accounts/local-default/config/active
+~/.metawork/accounts/local-default/config/active
   -> revisions/<revision-id>/
 ```
 
 Do not edit immutable revision files in place. Provider credentials resolve
 through the account SecretStore, with macOS Keychain as the default and
-mode-`0600` files only when `ANYFUSION_SECRET_STORE=file` is explicit.
+mode-`0600` files only when `METAWORK_SECRET_STORE=file` is explicit.
 
 Export the Feishu app secret before starting the runtime:
 
@@ -810,24 +816,24 @@ export FEISHU_APP_SECRET="your Feishu app secret"
 
 ## Feishu Gateway Delivery And Markdown Preview
 
-AnyFusion separates document generation from Feishu delivery:
+MetaWork separates document generation from Feishu delivery:
 
 - The executor writes Markdown or other files into the task output directory.
-- AnyFusion records those files as task artifacts.
+- MetaWork records those files as task artifacts.
 - The Feishu Gateway sends the final answer back to the origin chat.
 - The Feishu Gateway uploads generated artifact files when file upload is available.
 - Markdown artifacts get online preview links when Markdown Preview is configured.
 - Delivery attempts are written to `~/.metaclaw/gateway-audit.jsonl`.
 
-Executors should not call Feishu Docs or cloud-document APIs directly. If a user asks for a "Feishu cloud document" or "online preview", AnyFusion instructs the executor to produce local Markdown artifacts; the Gateway handles Feishu synchronization and preview links.
+Executors should not call Feishu Docs or cloud-document APIs directly. If a user asks for a "Feishu cloud document" or "online preview", MetaWork instructs the executor to produce local Markdown artifacts; the Gateway handles Feishu synchronization and preview links.
 
-Feishu progress cards show the execution chain explicitly. AnyFusion first performs intent parsing and execution preparation, then shows planner work-graph decisions, work-unit claim status, and the actual executor that starts the subtask. This prevents Feishu users from mistaking the intent parser, planner, or dispatcher for the final executor.
+Feishu progress cards show the execution chain explicitly. MetaWork first performs intent parsing and execution preparation, then shows planner work-graph decisions, work-unit claim status, and the actual executor that starts the subtask. This prevents Feishu users from mistaking the intent parser, planner, or dispatcher for the final executor.
 
-Final Feishu replies use Markdown message cards first. Long answers are split into multiple cards. If a card chunk fails, AnyFusion retries that chunk as a rich-text post; if any chunk still cannot be delivered, AnyFusion uploads the complete final answer as a Markdown file so the user does not receive a partial result.
+Final Feishu replies use Markdown message cards first. Long answers are split into multiple cards. If a card chunk fails, MetaWork retries that chunk as a rich-text post; if any chunk still cannot be delivered, MetaWork uploads the complete final answer as a Markdown file so the user does not receive a partial result.
 
 Access control is handled by the Gateway:
 
-- Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `anyfusion gateway pairing`.
+- Direct messages default to `dm_policy: pairing`. The first DM user is approved automatically; later users can be approved or revoked with `metawork gateway pairing`.
 - Group chats default to `group_policy: open` with `require_mention: true`.
 - `/sethome` sent in a Feishu chat records that chat as `gateway.platforms.feishu.home_channel`.
 - Feishu configuration is read only from `gateway.platforms.feishu`.
@@ -835,10 +841,10 @@ Access control is handled by the Gateway:
 Useful Feishu Gateway commands:
 
 ```bash
-anyfusion gateway doctor
-anyfusion gateway pairing list
-anyfusion gateway pairing approve <open_id>
-anyfusion gateway pairing revoke <open_id>
+metawork gateway doctor
+metawork gateway pairing list
+metawork gateway pairing approve <open_id>
+metawork gateway pairing revoke <open_id>
 ```
 
 Default preview URL:
@@ -866,7 +872,7 @@ Create a task in natural language:
 > Compare these three contracts and create a risk matrix.
 ```
 
-AnyFusion will:
+MetaWork will:
 
 1. Classify the input as conversation, task control, or durable work.
 2. Create or resolve the target task.
@@ -918,7 +924,7 @@ frontend.
 
 ## Task Search
 
-AnyFusion keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
+MetaWork keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
 
 Commands:
 
@@ -931,7 +937,7 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 ## Single-Task Concurrent Kernel Control Model
 
-AnyFusion admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are outside the completed Phase 6 scope. Direct replies, clarifications, status/query commands and explicit task-control commands remain available.
+MetaWork admits one active top-level Task and has no production multi-Task scheduler. Within that Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Queueing, priority selection, preemption, parked auto-resume and cross-Task fairness are outside the completed Phase 6 scope. Direct replies, clarifications, status/query commands and explicit task-control commands remain available.
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. `KernelWorkflow` remains serial, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
 
@@ -952,7 +958,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 ## Complex Task Strategy And Agentic Loop
 
-AnyFusion can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
+MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
 In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v33 and supports transactional 30→31→32→33 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, and Planner proposal configuration-revision pins for safe replay. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
@@ -980,7 +986,7 @@ Skills are lighter capability packages. They describe how to perform a specific 
 Executor strengths:
 
 - Adds a new runtime boundary: model, tools, credentials, permissions, and command-line behavior.
-- Lets AnyFusion assign ready subtasks to the executor work unit best suited for that work.
+- Lets MetaWork assign ready subtasks to the executor work unit best suited for that work.
 - Enables planner-driven reassignment, cross-checking, and audit trails across different agents.
 - Can integrate private or domain-specific systems that a generic Skill cannot access.
 
@@ -1004,11 +1010,11 @@ Skill tradeoffs:
 - Cannot make an unavailable CLI, private API, browser, file permission, or enterprise integration appear by itself.
 - Usually improves execution quality rather than expanding the runtime boundary.
 
-AnyFusion uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
+MetaWork uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
 
 ## Explicit Memory
 
-AnyFusion stores explicitly confirmed preferences, task memory cards, and learning candidates in SQLite.
+MetaWork stores explicitly confirmed preferences, task memory cards, and learning candidates in SQLite.
 
 Natural-language requests never create, promote, or apply memory through a code-side heuristic. Users manage preferences through explicit `/memory` commands. Bounded confirmed global preferences are provided to the PlanningAgent, which may reference an exact confirmed preference in a Subtask `contextRef`.
 
@@ -1027,7 +1033,7 @@ Commands:
 
 ## Learning Loop
 
-AnyFusion can turn successful tasks, failures, artifacts, and executor skill usage into learning candidates.
+MetaWork can turn successful tasks, failures, artifacts, and executor skill usage into learning candidates.
 
 Commands:
 
@@ -1057,7 +1063,7 @@ anyfusion --script /tmp/anyfusion-flow.txt
 are ignored. Every line enters the same `ClientGateway`, Conversation mailbox,
 server-side Planner and AccountRuntime path as Web, TUI, Feishu and Unix
 clients. Script runs therefore acquire the same `runtime.lock`; concurrent
-smokes must use an isolated `ANYFUSION_INSTALL_ROOT`.
+smokes must use an isolated `METAWORK_INSTALL_ROOT`.
 
 ## Development
 
@@ -1066,11 +1072,11 @@ npm run dev
 npm run build
 npm test
 npm run lint
-npm run smoke:anyfusion
+npm run smoke:metawork
 npm run smoke:gateway
 ```
 
-`npm run smoke:anyfusion` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one Conversation, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against the installed AnyFusion configuration (`ANYFUSION_CONFIG_HOME`, default `~/.config/anyfusion`); pass `--mode docker` to force the container path, which requires the `docker/*.env` provider files.
+`npm run smoke:metawork` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one Conversation, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against the installed MetaWork configuration (`METAWORK_CONFIG_HOME`, default `~/.config/metawork`); pass `--mode docker` to force the container path, which requires the `docker/*.env` provider files.
 
 `npm run smoke:gateway` is the provider-independent production-boundary gate
 for Gateway admission, replay, reconnect, account recovery, surface
@@ -1122,4 +1128,8 @@ Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally 
 
 ## License
 
-AnyFusion is licensed under the [Apache License, Version 2.0](../../LICENSE). Copyright 2026 The AnyFusion Contributors.
+MetaWork is proprietary. Company-approved commercial terms must be supplied
+separately before external distribution. AnyFusion-derived and other
+third-party open-source components retain their own licenses and notices; the
+root `LICENSE` file remains unchanged for historical and third-party review and
+does not license MetaWork as a whole.
