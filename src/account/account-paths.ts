@@ -9,7 +9,7 @@
  */
 
 import { resolve } from 'node:path';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { isValidAccountId } from './account-id.js';
 
 export interface AccountPaths {
@@ -39,8 +39,8 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     throw new Error(`invalid account id: ${accountId}`);
   }
   const paths = installRoot !== undefined
-    ? resolveAnyFusionPaths(undefined, installRoot)
-    : resolveAnyFusionPaths();
+    ? resolveMetaWorkPaths(undefined, installRoot)
+    : resolveMetaWorkPaths();
   const root = resolve(paths.accountsRoot, accountId);
   const config = resolve(root, 'config');
   const data = resolve(root, 'data');

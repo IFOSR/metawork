@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
 import { resolveAccountPaths } from '../../src/account/account-paths.js';
 
-const INSTALL_ROOT = '/Users/test/.anyfusion';
+const INSTALL_ROOT = '/Users/test/.metawork';
 
 describe('account-scoped paths', () => {
   it('resolves the local-default account layout', () => {
