@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { dump, load } from 'js-yaml';
 
-const artifactExpectedLine = 'MetaClaw real task smoke passed.';
+const artifactExpectedLine = 'MetaWork real task smoke passed.';
 const pythonHelloFileName = 'hello.py';
 const pythonHelloSource = 'print("Hello world")';
 const pythonHelloOutput = 'Hello world';
@@ -80,7 +80,7 @@ export function buildScenarioScript(scenario) {
 
   if (scenario === 'artifact') {
     return [
-      `Create a file named smoke-result.md inside MetaClaw's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
+      `Create a file named smoke-result.md inside MetaWork's managed Task workspace. The Runtime will provide the exact authorized target directory to the Executor, so do not ask me for a path. Its content must include this exact line: ${artifactExpectedLine} After creating it, tell me the absolute file path.`,
       '/exit',
       '',
     ].join('\n');
@@ -422,8 +422,29 @@ export function resolveSmokeMode(rawArgs, env, repoRoot = process.cwd()) {
   return 'native';
 }
 
+export function resolveProductEnvironment(
+  env,
+  canonicalName,
+  compatibilityName,
+  defaultValue,
+) {
+  const canonicalValue = String(env[canonicalName] ?? '').trim();
+  const compatibilityValue = String(env[compatibilityName] ?? '').trim();
+  if (canonicalValue && compatibilityValue && canonicalValue !== compatibilityValue) {
+    throw new Error(
+      `${canonicalName} conflicts with compatibility variable ${compatibilityName}`,
+    );
+  }
+  return canonicalValue || compatibilityValue || defaultValue;
+}
+
 export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(process.cwd())) {
-  const configHome = resolve(env.ANYFUSION_CONFIG_HOME ?? join(homedir(), '.config', 'anyfusion'));
+  const configHome = resolve(resolveProductEnvironment(
+    env,
+    'METAWORK_CONFIG_HOME',
+    'ANYFUSION_CONFIG_HOME',
+    join(homedir(), '.config', 'metawork'),
+  ));
   const providerEnvFile = join(configHome, 'provider.env');
   const plannerHome = join(configHome, 'planner');
   const codexHome = join(configHome, 'codex');
@@ -443,7 +464,7 @@ export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(pr
     if (!existsSync(requiredPath)) {
       throw new Error([
         `Native smoke requires ${requiredPath}.`,
-        'Run `npm run setup:native` to install the native AnyFusion configuration,',
+        'Run `npm run setup:native` to install the native MetaWork configuration,',
         'or configure the docker/*.env files and rerun with --mode docker.',
       ].join(' '));
     }
@@ -498,8 +519,13 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
 
   const smokeRoot = env.METACLAW_SMOKE_ROOT ? resolve(env.METACLAW_SMOKE_ROOT) : tmpdir();
   mkdirSync(smokeRoot, { recursive: true });
-  const installRoot = env.ANYFUSION_INSTALL_ROOT
-    ? resolve(env.ANYFUSION_INSTALL_ROOT)
+  const configuredInstallRoot = resolveProductEnvironment(
+    env,
+    'METAWORK_INSTALL_ROOT',
+    'ANYFUSION_INSTALL_ROOT',
+  );
+  const installRoot = configuredInstallRoot
+    ? resolve(configuredInstallRoot)
     : mkdtempSync(join(smokeRoot, 'metaclaw-smoke-install-'));
   const metaclawHome = join(installRoot, 'data');
   const accountPaths = resolveSmokeAccountPaths(installRoot);
@@ -535,7 +561,12 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     }
     const configHome = overlayEnv?.ANYFUSION_PLANNER_HOME
       ? resolve(overlayEnv.ANYFUSION_PLANNER_HOME, '..')
-      : resolve(env.ANYFUSION_CONFIG_HOME ?? join(homedir(), '.config', 'anyfusion'));
+      : resolve(resolveProductEnvironment(
+        env,
+        'METAWORK_CONFIG_HOME',
+        'ANYFUSION_CONFIG_HOME',
+        join(homedir(), '.config', 'metawork'),
+      ));
     run('node', [
       join(repoRoot, 'dist', 'prepare-smoke-configuration.js'),
       installRoot,
@@ -555,7 +586,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     const bridgeSocketPath = join(scriptDir, 'bridge.sock');
     const childEnv = {
       ...(overlayEnv ?? {}),
-      ANYFUSION_INSTALL_ROOT: installRoot,
+      METAWORK_INSTALL_ROOT: installRoot,
       METACLAW_HOME: metaclawHome,
       METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
       METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
@@ -593,8 +624,8 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
 
     process.stdout.write([
       scenario === 'planner-session'
-        ? 'MetaClaw native Planner session smoke passed.'
-        : 'MetaClaw real task smoke passed.',
+        ? 'MetaWork native Planner session smoke passed.'
+        : 'MetaWork real task smoke passed.',
       `Executor: ${executorCommand}`,
       `Scenario: ${scenario}`,
       scenario === 'planner-session'
@@ -609,7 +640,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     if (plannerDiagnostics) process.stderr.write(`Planner diagnostics: ${plannerDiagnostics}\n`);
     process.stderr.write([
       'Smoke failed; diagnostics were preserved:',
-      `  ANYFUSION_INSTALL_ROOT: ${installRoot}`,
+      `  METAWORK_INSTALL_ROOT: ${installRoot}`,
       `  METACLAW_HOME: ${metaclawHome}`,
       `  Workdir: ${workdir}`,
       `  Output: ${outputPath}`,
@@ -696,7 +727,7 @@ function runDockerSmoke(rawArgs, env) {
       '-e', 'METACLAW_SMOKE_SCRIPT_DIR=/smoke/script',
       '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
       '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
-      '-e', 'ANYFUSION_INSTALL_ROOT=/data/anyfusion',
+      '-e', 'METAWORK_INSTALL_ROOT=/data/metawork',
       '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
       '-e', 'METACLAW_EXECUTOR_BACKEND=worktree',
       runtimeImage,
@@ -718,33 +749,36 @@ function runDockerSmoke(rawArgs, env) {
   }
 }
 
-function buildHelp() {
+export function buildHelp() {
   return [
-    'Usage: npm run smoke:metaclaw -- [--mode <native|docker>] [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
+    'Usage: npm run smoke:metawork -- [--mode <native|docker>] [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
     '',
     'Modes:',
     '  native (default)  Run the Runtime and Planner as native host processes. Uses the',
-    '                    native AnyFusion configuration under ANYFUSION_CONFIG_HOME',
-    '                    (default ~/.config/anyfusion) installed by `npm run setup:native`.',
+    '                    native MetaWork configuration under METAWORK_CONFIG_HOME',
+    '                    (default ~/.config/metawork) installed by `npm run setup:native`.',
     '  docker            Build the unified runtime image and run the smoke inside a',
     '                    control container. Requires the docker/*.env provider files.',
     '                    Only used when explicitly requested; Docker is not needed otherwise.',
     '',
     'Environment variables:',
     '  METACLAW_SMOKE_MODE          Smoke mode: native or docker. Defaults to native.',
-    '  ANYFUSION_CONFIG_HOME        Native configuration home. Defaults to ~/.config/anyfusion.',
+    '  METAWORK_CONFIG_HOME         Native configuration home. Defaults to ~/.config/metawork.',
+    '  METAWORK_INSTALL_ROOT        Isolated runtime root. A temporary root is used by default.',
+    '  ANYFUSION_CONFIG_HOME        compatibility alias for METAWORK_CONFIG_HOME.',
+    '  ANYFUSION_INSTALL_ROOT       compatibility alias for METAWORK_INSTALL_ROOT.',
     '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
-    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion Planner memory).',
+    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion-Pi memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
     '  METACLAW_PLANNER_TIMEOUT_MS   Planner RPC timeout forwarded to the Runtime; Docker smoke defaults to 180000.',
     '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; Docker smoke runs set it inside the control container.',
     '',
     'Examples:',
-    '  npm run smoke:metaclaw',
-    '  npm run smoke:metaclaw -- --executor pi --scenario python-hello',
-    '  npm run smoke:metaclaw -- --mode docker --scenario artifact',
-    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metaclaw',
+    '  npm run smoke:metawork',
+    '  npm run smoke:metawork -- --executor pi --scenario python-hello',
+    '  npm run smoke:metawork -- --mode docker --scenario artifact',
+    '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metawork',
     '',
   ].join('\n');
 }

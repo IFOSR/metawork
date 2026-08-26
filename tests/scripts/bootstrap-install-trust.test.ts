@@ -50,6 +50,16 @@ describe('bootstrap installer trust boundary', () => {
     }
   });
 
+  it('uses the MetaWork release channel with a fail-closed AnyFusion alias', () => {
+    const script = readFileSync(resolve('scripts/bootstrap-install.sh'), 'utf8');
+
+    expect(script).toContain('METAWORK_RELEASE_CHANNEL');
+    expect(script).toContain('ANYFUSION_RELEASE_CHANNEL');
+    expect(script).toContain(
+      'METAWORK_RELEASE_CHANNEL conflicts with compatibility variable ANYFUSION_RELEASE_CHANNEL',
+    );
+  });
+
   it('executes a fully signed fixture only after both artifacts verify', () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-bootstrap-functional-'));
     try {

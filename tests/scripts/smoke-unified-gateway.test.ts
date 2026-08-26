@@ -12,6 +12,9 @@ describe('unified Gateway smoke command', () => {
     const source = readFileSync('scripts/smoke-unified-gateway.mjs', 'utf8');
 
     expect(packageJson.scripts['smoke:gateway']).toContain('smoke-unified-gateway.mjs');
+    expect(packageJson.scripts['smoke:metawork']).toContain('smoke-metaclaw-real-task.mjs');
+    expect(packageJson.scripts['smoke:anyfusion']).toBe(packageJson.scripts['smoke:metawork']);
+    expect(packageJson.scripts['smoke:metaclaw']).toBe(packageJson.scripts['smoke:metawork']);
     expect(packageJson.name).toBe('metawork');
     expect(packageJson.private).toBe(true);
     expect(packageJson.bin.metawork).toBe('./dist/index.js');
@@ -20,7 +23,8 @@ describe('unified Gateway smoke command', () => {
     expect(packageJson.bin['metawork-install']).toBe('./dist/install-cli.js');
     expect(packageJson.bin['anyfusion-install']).toBe('./dist/install-cli.js');
     expect(source).toContain('mkdtempSync');
-    expect(source).toContain('ANYFUSION_INSTALL_ROOT');
+    expect(source).toContain('METAWORK_INSTALL_ROOT');
+    expect(source).not.toContain('ANYFUSION_INSTALL_ROOT');
     expect(source).toContain('tests/architecture/unified-server-composition.test.ts');
     expect(source).toContain('tests/integration/unified-client-runtime.integration.test.ts');
     expect(source).toContain('tests/security/gateway-account-isolation.test.ts');
