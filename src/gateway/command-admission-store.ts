@@ -12,6 +12,7 @@ export interface StoredCommandAdmission {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
   readonly requestId: string;
+  readonly principalId?: string;
   readonly conversation: ConversationSelection;
   readonly command: GatewayCommand;
   readonly conversationId: string | null;
@@ -27,6 +28,7 @@ export interface ReserveCommandAdmissionInput {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
   readonly requestId: string;
+  readonly principalId?: string;
   readonly conversation: ConversationSelection;
   readonly command: GatewayCommand;
   readonly conversationId: string | null;

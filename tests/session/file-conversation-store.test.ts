@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ConversationBindingRepository } from '../../src/session/conversation-binding-repository.js';
 import {
   CONVERSATION_FORMAT_VERSION,
+  type ConversationWorkspace,
   type ConversationRecord,
 } from '../../src/session/conversation-store.js';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
@@ -37,6 +38,7 @@ function makeRecord(
       createdAt: '2026-08-18T00:00:00.000Z',
       updatedAt: '2026-08-18T00:00:00.000Z',
       archived: false,
+      workspace: null,
     },
     turns: [],
   };
@@ -90,6 +92,51 @@ describe('FileConversationStore', () => {
     const loaded = await store.readConversation('conv_2');
     expect(loaded!.conversation.plannerSessionId).toBe('planner_stable');
     expect(loaded!.turns).toHaveLength(1);
+  });
+
+  it('migrates a legacy v1 record without a Workspace to workspace null', async () => {
+    const root = await makeRoot();
+    const store = new FileConversationStore(root);
+    await store.initialize();
+
+    await writeFile(join(root, 'records', 'conv_legacy.json'), JSON.stringify({
+      version: 1,
+      conversation: {
+        id: 'conv_legacy',
+        plannerSessionId: 'planner_legacy',
+        accountId: 'local-default',
+        title: 'legacy',
+        createdAt: '2026-08-18T00:00:00.000Z',
+        updatedAt: '2026-08-18T00:00:00.000Z',
+        archived: false,
+      },
+      turns: [],
+    }), 'utf8');
+
+    const loaded = await store.readConversation('conv_legacy');
+    expect(loaded?.version).toBe(CONVERSATION_FORMAT_VERSION);
+    expect(loaded?.conversation.workspace).toBeNull();
+  });
+
+  it('persists a canonical Conversation Workspace with the metadata', async () => {
+    const root = await makeRoot();
+    const store = new FileConversationStore(root);
+    await store.initialize();
+
+    const workspace: ConversationWorkspace = {
+      path: '/tmp/project',
+      selectedAt: '2026-08-26T00:00:00.000Z',
+      selectedByPrincipal: 'local:installation',
+    };
+    const record = {
+      ...makeRecord('conv_workspace', 'planner_workspace'),
+      conversation: {
+        ...makeRecord('conv_workspace', 'planner_workspace').conversation,
+        workspace,
+      },
+    };
+    await store.writeConversation(record);
+    expect((await store.readConversation('conv_workspace'))?.conversation.workspace).toEqual(workspace);
   });
 
   it('quarantines an invalid record instead of returning it', async () => {

@@ -4,8 +4,6 @@ import { parseAdminArgs } from '../../src/cli/admin-args.js';
 describe('parseAdminArgs', () => {
   it('parses top-level management commands', () => {
     expect(parseAdminArgs(['configure'])).toEqual({ kind: 'configure' });
-    expect(parseAdminArgs(['doctor'])).toEqual({ kind: 'doctor' });
-    expect(parseAdminArgs(['status'])).toEqual({ kind: 'status' });
   });
 
   it('parses config subcommands', () => {
@@ -41,11 +39,20 @@ describe('parseAdminArgs', () => {
     expect(parseAdminArgs(['task', 'resume'])).toBeNull();
     expect(parseAdminArgs([])).toBeNull();
     expect(parseAdminArgs(['--gateway'])).toBeNull();
+    expect(parseAdminArgs(['doctor'])).toBeNull();
+    expect(parseAdminArgs(['status'])).toBeNull();
+    expect(parseAdminArgs(['server', 'doctor'])).toBeNull();
   });
 
   it('rejects unknown subcommands', () => {
     expect(() => parseAdminArgs(['config', 'bogus'])).toThrow('未知 config 子命令');
     expect(() => parseAdminArgs(['provider'])).toThrow('未知 provider 子命令');
     expect(() => parseAdminArgs(['executor', 'nope'])).toThrow('未知 executor 子命令');
+  });
+
+  it('rejects unexpected administration arguments', () => {
+    expect(() => parseAdminArgs(['configure', 'extra'])).toThrow('未知 configure 参数');
+    expect(() => parseAdminArgs(['config', 'show', 'extra'])).toThrow('未知 config 参数');
+    expect(() => parseAdminArgs(['planner', 'show', 'extra'])).toThrow('未知 planner 参数');
   });
 });

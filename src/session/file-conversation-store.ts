@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { isValidConversationId } from './conversation-types.js';
 import {
   CONVERSATION_FORMAT_VERSION,
+  LEGACY_CONVERSATION_FORMAT_VERSION,
   type ConversationCatalogFile,
   type ConversationMetadata,
   type ConversationRecord,
@@ -134,14 +135,12 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
 
 function parseCatalog(raw: string): ConversationCatalogFile {
   const value = JSON.parse(raw) as unknown;
-  assertCatalog(value);
-  return value;
+  return normalizeCatalog(value);
 }
 
 function parseRecord(raw: string, expectedId: string): ConversationRecord {
   const value = JSON.parse(raw) as unknown;
-  assertRecord(value, expectedId);
-  return value;
+  return normalizeRecord(value, expectedId);
 }
 
 function assertCatalog(value: unknown): asserts value is ConversationCatalogFile {
@@ -151,6 +150,24 @@ function assertCatalog(value: unknown): asserts value is ConversationCatalogFile
     || !value.conversations.every(isMetadata)) {
     throw new Error('Invalid conversation catalog');
   }
+}
+
+function normalizeCatalog(value: unknown): ConversationCatalogFile {
+  if (!isRecord(value) || !Array.isArray(value.conversations)) {
+    throw new Error('Invalid conversation catalog');
+  }
+  if (value.version !== CONVERSATION_FORMAT_VERSION
+    && value.version !== LEGACY_CONVERSATION_FORMAT_VERSION) {
+    throw new Error('Invalid conversation catalog');
+  }
+  const conversations = value.conversations.map(item => normalizeMetadata(item));
+  if (conversations.some(item => item === null)) {
+    throw new Error('Invalid conversation catalog');
+  }
+  return {
+    version: CONVERSATION_FORMAT_VERSION,
+    conversations: conversations as ConversationMetadata[],
+  };
 }
 
 function assertRecord(value: unknown, expectedId: string): asserts value is ConversationRecord {
@@ -166,18 +183,73 @@ function assertRecord(value: unknown, expectedId: string): asserts value is Conv
   }
 }
 
+function normalizeRecord(value: unknown, expectedId: string): ConversationRecord {
+  if (!isRecord(value) || !Array.isArray(value.turns)) {
+    throw new Error(`Invalid conversation record: ${expectedId}`);
+  }
+  if (value.version !== CONVERSATION_FORMAT_VERSION
+    && value.version !== LEGACY_CONVERSATION_FORMAT_VERSION) {
+    throw new Error(`Invalid conversation record: ${expectedId}`);
+  }
+  const conversation = normalizeMetadata(value.conversation);
+  if (!conversation || conversation.id !== expectedId) {
+    throw new Error(`Invalid conversation record: ${expectedId}`);
+  }
+  const turns = value.turns;
+  if (!turns.every(turn => isTurn(turn, expectedId))) {
+    throw new Error(`Invalid conversation record: ${expectedId}`);
+  }
+  return {
+    version: CONVERSATION_FORMAT_VERSION,
+    conversation,
+    turns: turns as ConversationTurn[],
+  };
+}
+
 function isMetadata(value: unknown): value is ConversationMetadata {
-  if (!isRecord(value)) return false;
-  if (typeof value.id !== 'string' || !isValidConversationId(value.id)) return false;
+  return normalizeMetadata(value) !== null;
+}
+
+function normalizeMetadata(value: unknown): ConversationMetadata | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !isValidConversationId(value.id)) return null;
   if (typeof value.plannerSessionId !== 'string'
-    || !PLANNER_SESSION_ID_PATTERN.test(value.plannerSessionId)) return false;
+    || !PLANNER_SESSION_ID_PATTERN.test(value.plannerSessionId)) return null;
   if (typeof value.accountId !== 'string'
-    || !ACCOUNT_ID_PATTERN.test(value.accountId)) return false;
-  if (typeof value.title !== 'string') return false;
-  if (typeof value.createdAt !== 'string') return false;
-  if (typeof value.updatedAt !== 'string') return false;
-  if (typeof value.archived !== 'boolean') return false;
-  return true;
+    || !ACCOUNT_ID_PATTERN.test(value.accountId)) return null;
+  if (typeof value.title !== 'string') return null;
+  if (typeof value.createdAt !== 'string') return null;
+  if (typeof value.updatedAt !== 'string') return null;
+  if (typeof value.archived !== 'boolean') return null;
+  const workspace = value.workspace === undefined ? null : parseWorkspace(value.workspace);
+  if (workspace === undefined) return null;
+  return {
+    id: value.id,
+    plannerSessionId: value.plannerSessionId,
+    accountId: value.accountId,
+    title: value.title,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    archived: value.archived,
+    workspace,
+  };
+}
+
+function parseWorkspace(value: unknown): ConversationMetadata['workspace'] | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.path !== 'string'
+    || typeof value.selectedAt !== 'string'
+    || typeof value.selectedByPrincipal !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    path: value.path,
+    selectedAt: value.selectedAt,
+    selectedByPrincipal: value.selectedByPrincipal,
+  };
 }
 
 function isTurn(value: unknown, conversationId: string): value is ConversationTurn {

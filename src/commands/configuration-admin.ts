@@ -22,8 +22,6 @@ export async function runConfigurationAdmin(
   deps: ConfigurationAdminDeps,
 ): Promise<string[]> {
   switch (command.kind) {
-    case 'status':
-      return formatStatus(await deps.getActiveSnapshot());
     case 'config':
       return runConfig(command, deps);
     case 'provider':
@@ -34,22 +32,9 @@ export async function runConfigurationAdmin(
       return runPlanner(command.subcommand, await deps.getActiveSnapshot());
     case 'executor':
       return runExecutor(command, await deps.getActiveSnapshot(), deps);
-    case 'doctor':
-      return ['doctor: use the gateway doctor surface for health checks'];
     case 'configure':
       return ['configuration is managed via `anyfusion config` subcommands'];
   }
-}
-
-function formatStatus(snapshot: ConfigurationSnapshot): string[] {
-  return [
-    `revision: ${snapshot.revisionId}`,
-    `contentHash: ${snapshot.contentHash}`,
-    `providers: ${Object.keys(snapshot.config.providers).length}`,
-    `models: ${Object.keys(snapshot.config.models).length}`,
-    `harnesses: ${Object.keys(snapshot.config.harnesses).length}`,
-    `agentClasses: ${Object.keys(snapshot.config.agentClasses).length}`,
-  ];
 }
 
 function formatMutationResult(result: ConfigurationMutationResult): string[] {

@@ -11,6 +11,7 @@ import {
   createPlannerProposalSubmissionId,
   plannerProposalFingerprint,
 } from '../../src/planning/planner-proposal.js';
+import type { ConversationWorkspace } from '../../src/session/conversation-store.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -240,6 +241,38 @@ describe('ConversationSession', () => {
     expect(session.getOutput()).toEqual(['hello']);
     // Session 通过端口访问账户，不持有/构造 Kernel 服务。
     expect(session.accountId).toBe('local-default');
+  });
+
+  it('rejects semantic input before Planner when the Conversation has no Workspace', async () => {
+    let plannerCalls = 0;
+    const session = new ConversationSession({
+      conversationId: 'conv_workspace_required',
+      plannerSessionId: 'planner_workspace_required',
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async () => {
+            plannerCalls += 1;
+            throw new Error('Planner must not start');
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      workspace: {
+        getWorkspace: async (): Promise<ConversationWorkspace | null> => null,
+        execute: async () => ({
+          status: 'rejected' as const,
+          code: 'workspace_required' as const,
+          message: 'workspace required',
+        }),
+      },
+    });
+
+    await expect(session.executeGatewayCommand({
+      kind: 'user_message',
+      text: '分析当前项目',
+      attachments: [],
+    }, { rethrowErrors: true })).rejects.toThrow('workspace_required');
+    expect(plannerCalls).toBe(0);
   });
 
   it('shares account facts but not output across conversations', () => {

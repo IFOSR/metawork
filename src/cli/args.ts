@@ -1,69 +1,65 @@
-export interface CliArgs {
-  help?: boolean;
-  scriptPath?: string;
-  gateway?: boolean;
-  connect?: boolean;
-  web?: boolean;
-  webCommand?: 'start' | 'restart';
-  webPort?: number;
-  webNoOpen?: boolean;
-  gatewayCommand?: 'setup' | 'run' | 'install' | 'start' | 'stop' | 'restart' | 'status' | 'pairing' | 'doctor';
-  gatewayPairingCommand?: 'list' | 'approve' | 'revoke';
-  gatewayPairingUserId?: string;
-}
+import { parseAdminArgs, type AdminCommand } from './admin-args.js';
 
-export function parseCliArgs(argv: string[]): CliArgs {
-  if (argv.includes('--help') || argv.includes('-h')) {
-    return {
-      gateway: false,
-      connect: false,
-      help: true,
-    };
+export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor';
+
+export type CliCommand =
+  | { kind: 'server'; action: ServerAction }
+  | { kind: 'tui'; conversationId?: string }
+  | { kind: 'web'; conversationId?: string; noOpen?: boolean }
+  | { kind: 'admin'; command: AdminCommand }
+  | { kind: 'help' };
+
+const SERVER_ACTIONS: readonly ServerAction[] = [
+  'start',
+  'stop',
+  'restart',
+  'status',
+  'doctor',
+];
+
+export function parseCliArgs(argv: readonly string[]): CliCommand {
+  if (argv.length === 0) return { kind: 'tui' };
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help')) {
+    return { kind: 'help' };
   }
 
-  if (argv[0] === 'web') {
-    return parseWebArgs(argv.slice(1));
+  rejectRemovedCommand(argv);
+
+  const [namespace, ...rest] = argv;
+  if (namespace === 'server') return parseServerArgs(rest);
+  if (namespace === 'tui') return parseClientArgs('tui', rest);
+  if (namespace === 'web') return parseClientArgs('web', rest);
+
+  if (namespace === 'doctor' || namespace === 'status') {
+    throw new Error(`请使用 \`metawork server ${namespace}\``);
   }
 
-  const gatewaySubcommand = parseGatewaySubcommand(argv);
-  const gateway = argv.includes('--gateway') || gatewaySubcommand?.command === 'run';
-  const connect = argv.includes('--connect');
-  const scriptFlagIndex = argv.findIndex(arg => arg === '--script');
-  if (scriptFlagIndex === -1) {
-    return {
-      gateway,
-      connect,
-      ...(gatewaySubcommand ? { gatewayCommand: gatewaySubcommand.command } : {}),
-      ...gatewaySubcommand?.pairing,
-    };
-  }
-
-  const scriptPath = argv[scriptFlagIndex + 1];
-  if (!scriptPath) {
-    throw new Error('缺少脚本路径。用法: metawork --script <脚本文件>');
-  }
-
-  return {
-    scriptPath,
-    gateway,
-    connect,
-    ...(gatewaySubcommand ? { gatewayCommand: gatewaySubcommand.command } : {}),
-    ...gatewaySubcommand?.pairing,
-  };
+  const adminCommand = parseAdminArgs(argv);
+  if (adminCommand) return { kind: 'admin', command: adminCommand };
+  throw new Error(`未知命令: ${namespace ?? '(missing)'}`);
 }
 
 export function formatCliHelp(): string {
   return [
     'MetaWork',
     '',
-    '用法:',
+    'MetaWork Server（先启动，持续运行）:',
+    '  metawork server start',
+    '  metawork server stop',
+    '  metawork server restart',
+    '  metawork server status',
+    '  metawork server doctor',
+    '',
+    'Clients（连接已有 Server）:',
     '  metawork',
-    '  metawork web [start|restart] [--port <端口>] [--no-open]',
-    '  metawork --script <脚本文件>',
-    '  metawork --gateway',
-    '  metawork --connect',
-    '  metawork gateway <run|setup|pairing|doctor|install|start|stop|restart|status>',
-    '  metawork <configure|config|provider|model|planner|executor|doctor|status> ...',
+    '  metawork tui [--conversation <id>]',
+    '  metawork web [--conversation <id>] [--no-open]',
+    '',
+    'Conversation Workspace:',
+    '  /workspace /absolute/path',
+    '',
+    '配置管理:',
+    '  metawork <configure|config|provider|model|planner|executor> ...',
     '',
     '选项:',
     '  -h, --help  显示帮助',
@@ -72,67 +68,65 @@ export function formatCliHelp(): string {
   ].join('\n');
 }
 
-function parseWebArgs(argv: string[]): CliArgs {
-  const result: CliArgs = { web: true };
+function parseServerArgs(argv: readonly string[]): CliCommand {
+  const [rawAction, ...rest] = argv;
+  if (!rawAction) throw new Error('缺少 server 子命令');
+  if (!SERVER_ACTIONS.includes(rawAction as ServerAction)) {
+    throw new Error(`未知 server 子命令: ${rawAction}`);
+  }
+  if (rest.includes('--workspace') || rest.some(arg => arg.startsWith('--workspace='))) {
+    throw new Error('server start 不接受 Workspace；请在 Client 中使用 `/workspace /absolute/path`');
+  }
+  if (rest.length > 0) throw new Error(`未知 server 参数: ${rest[0]}`);
+  return { kind: 'server', action: rawAction as ServerAction };
+}
+
+function parseClientArgs(
+  kind: 'tui' | 'web',
+  argv: readonly string[],
+): Extract<CliCommand, { kind: 'tui' | 'web' }> {
+  let conversationId: string | undefined;
+  let noOpen = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--port') {
-      const raw = argv[index + 1];
-      const port = Number(raw);
-      if (!raw || !Number.isInteger(port) || port <= 0 || port > 65535) {
-        throw new Error(`无效端口: ${raw ?? '(missing)'}`);
-      }
-      result.webPort = port;
+    if (arg === '--conversation') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('-')) throw new Error('缺少 Conversation ID');
+      if (conversationId) throw new Error('Conversation ID 只能指定一次');
+      conversationId = value;
       index += 1;
       continue;
     }
-    if (arg === '--no-open') {
-      result.webNoOpen = true;
+    if (kind === 'web' && arg === '--no-open') {
+      noOpen = true;
       continue;
     }
-    if (arg === 'start' || arg === 'restart') {
-      result.webCommand = arg;
-      continue;
+    if (kind === 'web' && (arg === 'start' || arg === 'restart')) {
+      const replacement = arg === 'restart'
+        ? 'metawork server restart'
+        : 'metawork server start';
+      throw new Error(`Web 不再管理 Server；请使用 \`${replacement}\``);
     }
-    throw new Error(`未知 web 参数: ${arg}`);
+    throw new Error(`未知 ${kind} 参数: ${arg}`);
   }
-  return result;
+  return {
+    kind,
+    ...(conversationId ? { conversationId } : {}),
+    ...(kind === 'web' && noOpen ? { noOpen: true } : {}),
+  };
 }
 
-function parseGatewaySubcommand(argv: string[]): {
-  command: NonNullable<CliArgs['gatewayCommand']>;
-  pairing?: Pick<CliArgs, 'gatewayPairingCommand' | 'gatewayPairingUserId'>;
-} | undefined {
-  const gatewayIndex = argv.findIndex(arg => arg === 'gateway');
-  if (gatewayIndex === -1) {
-    return undefined;
+function rejectRemovedCommand(argv: readonly string[]): void {
+  if (argv.includes('--script')) {
+    throw new Error('Script Client 已移除；请使用 `metawork tui` 或 `metawork web`');
   }
-
-  const command = argv[gatewayIndex + 1] ?? 'run';
-  if (command === 'pairing') {
-    const pairingCommand = argv[gatewayIndex + 2] ?? 'list';
-    if (pairingCommand !== 'list' && pairingCommand !== 'approve' && pairingCommand !== 'revoke') {
-      throw new Error(`未知 gateway pairing 子命令: ${pairingCommand}`);
-    }
-    return {
-      command,
-      pairing: {
-        gatewayPairingCommand: pairingCommand,
-        ...(argv[gatewayIndex + 3] ? { gatewayPairingUserId: argv[gatewayIndex + 3] } : {}),
-      },
-    };
+  if (argv.includes('--connect')) {
+    throw new Error('`--connect` 已移除；请使用 `metawork tui`');
   }
-  if (
-    command === 'setup'
-    || command === 'run'
-    || command === 'install'
-    || command === 'doctor'
-    || command === 'start'
-    || command === 'stop'
-    || command === 'restart'
-    || command === 'status'
-  ) {
-    return { command };
+  if (argv.includes('--gateway') || argv[0] === 'gateway') {
+    throw new Error('Gateway 生命周期命令已移除；请使用 `metawork server start`');
   }
-  throw new Error(`未知 gateway 子命令: ${command}`);
+  if (argv[0] === 'feishu') {
+    throw new Error('飞书连接由 Server 自动管理，不提供 `feishu run`');
+  }
 }

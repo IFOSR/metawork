@@ -6,7 +6,8 @@
  * Planner 历史仍在 Planner 会话文件里，权威的 Task/Kernel 事实仍在 SQLite。
  */
 
-export const CONVERSATION_FORMAT_VERSION = 1;
+export const CONVERSATION_FORMAT_VERSION = 2;
+export const LEGACY_CONVERSATION_FORMAT_VERSION = 1;
 
 /** 每个 Conversation 最多保留的终态 turn 投影数量。 */
 export const MAX_CONVERSATION_TURNS = 50;
@@ -19,6 +20,13 @@ export interface ConversationMetadata {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly archived: boolean;
+  readonly workspace: ConversationWorkspace | null;
+}
+
+export interface ConversationWorkspace {
+  readonly path: string;
+  readonly selectedAt: string;
+  readonly selectedByPrincipal: string;
 }
 
 export interface ConversationTurn {
