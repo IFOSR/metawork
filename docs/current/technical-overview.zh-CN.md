@@ -61,7 +61,7 @@ MetaWork 是面向任务的系统，而不是纯 session agent。普通 agent se
 
 ### 已实施的多客户端架构
 
-ADR-0031 已于 2026 年 8 月 19 日完成代码交付。TUI、Web 对话、飞书、脚本和
+ADR-0031 已于 2026 年 8 月 19 日完成代码交付。TUI、Web 对话、飞书和
 Unix 客户端统一使用带版本的 Gateway command/event
 协议。同一认证 Account 的客户端共享一个 `AccountRuntime`，其中包含配置、
 记忆、Task、Kernel、Executor 和恢复服务；不同 Conversation 继续拥有独立的
@@ -73,6 +73,13 @@ Unix 客户端统一使用带版本的 Gateway command/event
 ServerProcess -> RuntimeRegistry -> AccountRuntime
   -> ConversationRegistry -> ConversationSession -> ClientConnection
 ```
+
+ADR-0034 已于 2026 年 8 月 26 日接受，固定了该领域模型的进程生命周期：
+`metawork server start` 是唯一拥有 Runtime 的启动路径，并独立于所有 Client
+持续运行。裸 `metawork` 只启动 TUI Client，`metawork web` 只打开已有
+Server 的 loopback Web origin，飞书连接由 Server 按配置持有。Server 启动时
+不绑定 Workspace；每个 Conversation 必须先通过
+`/workspace /absolute/path` 建立持久 Workspace 才能进入语义准入。
 
 KernelWorkflow、Execution Runtime 和启动恢复等账号级服务由
 `AccountRuntime` 单例持有。每个 Account 只有一个 Kernel coordinator
@@ -220,9 +227,9 @@ conversation / task 的边界很重要：
 
 [MetaWork Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；ADR-0031 的多客户端 Gateway 收敛已于 2026 年 8 月 19 日完成。
 
-重要边界：不存在第二套策略或编排循环。交互式、Web、飞书、Unix 与
-`--script` 输入都先进入 `ClientGateway` 和 Conversation mailbox，再由服务端
-PlanningAgent → ControlKernel → Runtime 链处理；脚本入口不再直连 Session。
+重要边界：不存在第二套策略或编排循环。TUI、Web、飞书与 Unix 输入都先进入
+`ClientGateway` 和 Conversation mailbox，再由服务端
+PlanningAgent → ControlKernel → Runtime 链处理；已删除 script Client。
 
 ## 当前执行器
 
@@ -551,28 +558,45 @@ anyfusion
 - 原始 v8 plan、prompt、隐藏推理、凭据和原始进程输出都保留在服务端。
 - 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，未来启用也必须通过 Gateway。
 
-或使用项目脚本：
+先启动常驻 Server：
 
 ```bash
-./anyfusion.sh start
+metawork server start
+metawork server status
 ```
 
-浏览器交互端使用：
+再独立启动任意 Client：
 
 ```bash
+metawork
+metawork tui --conversation <id>
 metawork web
+metawork web --conversation <id>
 ```
 
-重启统一 Server，并选择 Web 作为前台交互界面：
+Server 生命周期使用显式命令：
 
 ```bash
-metawork web restart
+metawork server stop
+metawork server restart
+metawork server doctor
 ```
 
-该命令读取共享 `runtime.lock`，向持锁进程发送 `SIGTERM`，最多等待十秒确认
-旧进程正常退出，然后通过标准 composition 路径重新取锁并启动替代 Server。
-Unix Gateway、AccountRuntime 和 Conversation 拓扑不会改变。旧进程无响应时
-命令会失败关闭，不会强制终止或并行启动第二个实例。
+只有 Server 持有 `runtime.lock`、Runtime、恢复和 transport listener。TUI 与
+Web 读取同一份原子 endpoint manifest；没有兼容且 ready 的 Server 时，明确
+提示执行 `metawork server start`。关闭终端或浏览器不会停止 Server 或已接纳
+的 Task。
+
+Server 启动时不绑定用户 Workspace。新 Conversation 在所有 Client 中都会先
+返回 `workspace_required`，直到用户提交同一条命令：
+
+```text
+/workspace /absolute/path/to/project
+```
+
+Server 对路径做 canonicalize 和授权并持久化到 Conversation；活动工作期间切换
+返回 `workspace_busy`。Web 继续使用现有 Composer 提交该命令，不增加 Web
+专属 Workspace selector 或 mutation API。
 
 Web 交互面只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
 fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
@@ -642,17 +666,17 @@ Conversation binding 缺少可选的 `onDecisionApplying` 展示回调，导致 
 `recovery_resolution_requested(retry)`，再由 ControlKernel 授权并按原 Decision
 ID 幂等重放。其他 uncertain application 和外部 effect 仍保留普通显式恢复语义。
 
-包括 `--script` 在内的所有前台选择共享同一把 `runtime.lock`。
-`ScriptedGatewaySession` 把每一行提交给 `ClientGateway`，等待有序终态事件，
-不会直接调用 `ConversationSession`。Planner Host 启动时先探测活动 socket，
+只有常驻 Server 与原生 update/rollback 共享 `runtime.lock`。Planner Host
+启动时先探测活动 socket，
 只回收确认 stale 的路径；停止时校验创建时记录的 device/inode，不能删除后来
 替换的 socket。Planner RPC 会保留结构化 transport uncertainty 及其部分工具
 审计。
 
-原生 AnyFusion-Pi TUI 仍是 `metawork` 的默认入口。Web 与 TUI 可以选择
-不同的前台展示模式，但都使用同一套 `RuntimeRegistry`、`AccountRuntime`、
-`ConversationRegistry` 和 `ClientGateway` 组合，不再拥有互斥的 Runtime
-架构。`anyfusion` 和 `metaclaw` 保留为兼容 CLI alias。
+原生 AnyFusion-Pi TUI 仍是裸 `metawork` 的默认 Client。Web 与 TUI 只拥有
+连接和展示状态，都附着到同一个常驻 Server 所拥有的 `RuntimeRegistry`、
+`AccountRuntime`、`ConversationRegistry` 和 `ClientGateway`。`anyfusion`
+和 `metaclaw` 保留为兼容 CLI alias，但 `gateway run`、`--connect`、前台 Web
+和 script mode 等旧生命周期形式会被明确拒绝。
 
 运行中的 Planner、Kernel 和 Executor 始终固定使用进程启动时加载的配置
 revision。Web 设置页激活仍完整执行 validate、compile、probe 和 immutable
@@ -689,37 +713,14 @@ repository activation，但新 active revision 会显示为“下次启动 revis
 └── runtime.lock
 ```
 
-连接已有实例：
+Server 管理：
 
 ```bash
-./anyfusion.sh connect
-```
-
-运行管理：
-
-```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
-```
-
-安装或管理用户级 Gateway 服务：
-
-```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
-```
-
-直接 Gateway 模式：
-
-```bash
-anyfusion --gateway
-anyfusion --connect
+metawork server start
+metawork server status
+metawork server doctor
+metawork server restart
+metawork server stop
 ```
 
 ### 可选容器兼容验证
@@ -953,27 +954,10 @@ npm run smoke:metawork
 npm run smoke:gateway
 ```
 
-脚本化烟测：
-
-```bash
-cat > /tmp/anyfusion-flow.txt <<'EOF'
-Compare the risk points across three contracts and produce a concise table.
-/task list done
-EOF
-
-anyfusion --script /tmp/anyfusion-flow.txt
-```
-
-`--script` 会逐行执行输入，空行和以 `#` 开头的行会被忽略。每一行都与
-Web、TUI、飞书和 Unix 客户端一样进入 `ClientGateway`、Conversation mailbox、
-服务端 Planner 与 AccountRuntime，因此必须获取同一把 `runtime.lock`；并行
-烟测必须使用隔离的 `METAWORK_INSTALL_ROOT`。
-
 `npm run smoke:metawork` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 MetaWork 配置（`METAWORK_CONFIG_HOME`，默认 `~/.config/metawork`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
 
 `npm run smoke:gateway` 是不依赖外部模型凭据的生产边界门禁，覆盖 Gateway
-准入、replay、重连、账户恢复、统一 surface composition 和脚本 Gateway
-adapter。
+准入、replay、重连、账户恢复和独立 Client/Server composition。
 
 针对性测试：
 
@@ -992,7 +976,8 @@ npm test -- tests/storage/subtask-repo.test.ts
 
 ```text
 src/
-├── cli/            # CLI 参数解析：--script、--gateway、--connect
+├── cli/            # canonical server、tui、web 与管理命令
+├── client/         # endpoint 解析与独立 TUI/Web launcher
 ├── commands/       # Slash command 路由和命令处理
 ├── core/           # 窄共享基础类型和规范化 KernelFailure 事实
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
@@ -1006,6 +991,7 @@ src/
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 显式偏好、确定性会话上下文和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
+├── server/         # 常驻 Server composition、lifecycle 与 manifest
 ├── planning/       # PlanningAgent 接口（AnyFusionPlanningAgent）、context builder、plan schema/词汇、校验
 ├── resource/       # Partition identity、冲突、permission profile 与 bounded grant 纯规则
 ├── session/        # Session 协调、PlanningAgent/ControlKernel wiring 与状态投影

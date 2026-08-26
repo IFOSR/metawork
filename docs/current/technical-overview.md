@@ -76,6 +76,14 @@ ServerProcess -> RuntimeRegistry -> AccountRuntime
   -> ConversationRegistry -> ConversationSession -> ClientConnection
 ```
 
+ADR-0034, accepted on August 26, 2026, fixes the process lifecycle around that
+domain model. `metawork server start` is the only Runtime-owning startup path
+and remains alive independently of all Clients. Bare `metawork` launches only
+the TUI Client, `metawork web` only opens the existing Server-owned loopback
+Web origin, and configured Feishu connectivity is owned by Server. Server
+startup is Workspace-neutral. Each Conversation must establish its durable
+Workspace with `/workspace /absolute/path` before semantic admission.
+
 Runtime-wide KernelWorkflow, execution and startup recovery are constructed once
 per AccountRuntime. One account Kernel coordinator owns durable
 decision/application draining, and ADR-0011 remains one active top-level Task
@@ -552,29 +560,47 @@ The default command launches the pinned AnyFusion-Pi Gateway client:
 - The raw v8 plan, prompts, hidden reasoning, credentials and raw process output remain server-side.
 - Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and any future activation must remain Gateway-backed.
 
-Or use the project helper:
+Start the persistent Server before launching a Client:
 
 ```bash
-./anyfusion.sh start
+metawork server start
+metawork server status
 ```
 
-Start the browser interaction surface with:
+Launch independent Clients:
 
 ```bash
+metawork
+metawork tui --conversation <id>
 metawork web
+metawork web --conversation <id>
 ```
 
-Restart the unified Server with Web selected as the foreground surface:
+Server lifecycle is explicit:
 
 ```bash
-metawork web restart
+metawork server stop
+metawork server restart
+metawork server doctor
 ```
 
-The command reads the shared `runtime.lock`, sends `SIGTERM` to its holder,
-waits up to ten seconds for a clean exit, and then acquires the lock through
-the normal composition path before starting the replacement Server. The Unix
-Gateway, AccountRuntime and Conversation topology are unchanged. The command
-does not force-kill an unresponsive process.
+Only Server owns `runtime.lock`, Runtime, recovery and transport listeners.
+TUI and Web resolve the atomic endpoint manifest and fail with a concrete
+`metawork server start` instruction when no compatible ready Server exists.
+Closing a terminal or browser does not stop Server or accepted Task work.
+
+Server startup never binds a user Workspace. A new Conversation rejects
+semantic input with `workspace_required` until every Client surface uses the
+same command:
+
+```text
+/workspace /absolute/path/to/project
+```
+
+Server canonicalizes and authorizes the path, persists it on the Conversation,
+and returns `workspace_busy` when active work prevents a change. The existing
+Web Composer submits this command; no Web-only Workspace selector or mutation
+API exists.
 
 The Web surface binds only to `127.0.0.1`. Normal startup opens a short-lived,
 single-use URL-fragment bootstrap that is exchanged for an HttpOnly,
@@ -659,25 +685,22 @@ a durable `recovery_resolution_requested(retry)` and replays the original
 Decision through ControlKernel; all other uncertain applications and effects
 retain ordinary explicit recovery semantics.
 
-All foreground selections, including `--script`, share `runtime.lock`.
-Native update/rollback acquires that same physical lock before migration or
-pointer switching. Account migration uses SQLite online backup to include
+Only the persistent Server shares `runtime.lock` with native
+update/rollback. Account migration uses SQLite online backup to include
 committed WAL data, verifies a staged tree manifest, and archives the legacy
 layout outside writable authority. Periodic durable recovery is AccountRuntime
 owned and does not depend on open Conversations; expired Gateway cursors reset
-to a compacted current/terminal snapshot.
-`ScriptedGatewaySession` submits each script line through `ClientGateway`,
-waits for ordered terminal events, and never calls `ConversationSession`
-directly. Planner Host startup probes live sockets before reclaiming a confirmed
-stale socket and records the created device/inode so shutdown cannot unlink a
-replacement. Planner RPC preserves structured transport uncertainty and partial
-tool audit.
+to a compacted current/terminal snapshot. Planner Host startup probes live
+sockets before reclaiming a confirmed stale socket and records the created
+device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
+structured transport uncertainty and partial tool audit.
 
-The native AnyFusion-Pi TUI remains the default `metawork` surface. Web and TUI
-may select different foreground presentation modes, but both use the same
-RuntimeRegistry, AccountRuntime, ConversationRegistry and ClientGateway
-composition rather than owning different Runtime architectures. `anyfusion`
-and `metaclaw` remain compatibility CLI aliases.
+The native AnyFusion-Pi TUI remains the default Client for bare `metawork`.
+Web and TUI own only connection and presentation state; both attach to the same
+persistent Server-owned RuntimeRegistry, AccountRuntime, ConversationRegistry
+and ClientGateway. `anyfusion` and `metaclaw` remain compatibility CLI aliases,
+but removed lifecycle forms such as `gateway run`, `--connect`, foreground Web
+and script mode are rejected.
 
 Configuration activation is AccountRuntime-scoped. Provider base URLs and
 credential references, the Provider model catalog, and Planner/Executor routing
@@ -748,31 +771,14 @@ Connect a second terminal to the same runtime:
 ./anyfusion.sh connect
 ```
 
-Runtime utilities:
+Server utilities:
 
 ```bash
-./anyfusion.sh status
-./anyfusion.sh logs
-./anyfusion.sh logs -f
-./anyfusion.sh restart
-./anyfusion.sh stop
-```
-
-Install or manage MetaWork as a user-level service:
-
-```bash
-./anyfusion.sh gateway install
-./anyfusion.sh gateway start
-./anyfusion.sh gateway status
-./anyfusion.sh gateway restart
-./anyfusion.sh gateway stop
-```
-
-Direct Gateway modes:
-
-```bash
-anyfusion --gateway
-anyfusion --connect
+metawork server start
+metawork server status
+metawork server doctor
+metawork server restart
+metawork server stop
 ```
 
 ### Optional container compatibility validation
@@ -1048,23 +1054,6 @@ Commands:
 /learning weekly
 ```
 
-## Scripted Smoke Test
-
-```bash
-cat > /tmp/anyfusion-flow.txt <<'EOF'
-Compare the risk points across three contracts and produce a concise table.
-/task list done
-EOF
-
-anyfusion --script /tmp/anyfusion-flow.txt
-```
-
-`--script` executes input line by line. Blank lines and lines starting with `#`
-are ignored. Every line enters the same `ClientGateway`, Conversation mailbox,
-server-side Planner and AccountRuntime path as Web, TUI, Feishu and Unix
-clients. Script runs therefore acquire the same `runtime.lock`; concurrent
-smokes must use an isolated `METAWORK_INSTALL_ROOT`.
-
 ## Development
 
 ```bash
@@ -1079,8 +1068,8 @@ npm run smoke:gateway
 `npm run smoke:metawork` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one Conversation, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against the installed MetaWork configuration (`METAWORK_CONFIG_HOME`, default `~/.config/metawork`); pass `--mode docker` to force the container path, which requires the `docker/*.env` provider files.
 
 `npm run smoke:gateway` is the provider-independent production-boundary gate
-for Gateway admission, replay, reconnect, account recovery, surface
-composition, and the scripted Gateway adapter.
+for Gateway admission, replay, reconnect, account recovery, and independent
+Client/Server composition.
 
 Targeted tests:
 
@@ -1099,7 +1088,8 @@ npm test -- tests/storage/subtask-repo.test.ts
 
 ```text
 src/
-├── cli/            # CLI args: --script, --gateway, --connect
+├── cli/            # Canonical server, tui, web, and administration commands
+├── client/         # Endpoint resolution and independent TUI/Web launchers
 ├── commands/       # Slash command router and handlers
 ├── core/           # Narrow shared primitives and normalized KernelFailure facts
 ├── delivery/       # Verification, artifact extraction, aggregation checks, and final delivery preparation
@@ -1113,6 +1103,7 @@ src/
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Explicit preferences, deterministic conversation context, vault export
 ├── notifications/  # Notification adapters such as Feishu notifications
+├── server/         # Persistent Server composition, lifecycle, and manifest
 ├── planning/       # PlanningAgent interface (AnyFusionPlanningAgent), context builder, plan schema/vocabulary, validation
 ├── resource/       # Partition identity, conflicts, permission profiles, grants, and capability-use rules
 ├── session/        # Application-shell intake, projections, and Kernel runtime wiring
