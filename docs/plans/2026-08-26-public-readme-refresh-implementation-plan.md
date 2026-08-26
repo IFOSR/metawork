@@ -2,9 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Status:** In Progress
+**Status:** Completed
 
 **Plan date:** 2026-08-26
+
+**Completion date:** 2026-08-26
 
 **Goal:** Publish accurate, synchronized English and Chinese AnyFusion READMEs
 and push the documentation update to `origin/main`.
@@ -81,3 +83,27 @@ git push origin main
 - One documentation commit is created on `main`.
 - `origin/main` advances to the new commit without force-push.
 
+## Delivered Behavior
+
+- `README.md` and `README.zh-CN.md` now use AnyFusion as the public product
+  name and share the same current information architecture.
+- The installation guide distinguishes required build/provider dependencies
+  from independently installed Executor CLIs.
+- The runtime overview includes the unified Gateway and account ownership
+  hierarchy, revision-pinned routing, Completion Protocol v4, SQLite schema
+  v33, and the single-Task/four-attempt boundary.
+- The source installer is documented as creating only the `anyfusion`
+  launcher.
+
+## Validation
+
+```text
+stale README term scan: passed
+local Markdown link check: passed
+git diff --check: passed
+npm run lint: passed
+```
+
+**Plan commit:** `49bea8c`
+
+**Closing commit:** `912bf62`

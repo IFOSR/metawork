@@ -1,8 +1,10 @@
 # AnyFusion Public README Refresh Design
 
-**Status:** Approved
+**Status:** Completed
 
 **Plan date:** 2026-08-26
+
+**Completion date:** 2026-08-26
 
 **Goal:** Bring the English and Chinese repository READMEs in line with the
 current AnyFusion product name, installation behavior, runtime architecture,
@@ -69,3 +71,18 @@ and socket.
 - Run `npm run lint` because README changes are shipped from the same release
   branch and must not mask an existing TypeScript regression.
 
+## Delivered
+
+- Replaced the MetaWork public brand with AnyFusion in both repository
+  READMEs.
+- Reframed the public architecture around ClientGateway,
+  ConversationSession, AccountRuntime, PlanningAgent, ControlKernel, Runtime,
+  and Executor boundaries.
+- Updated installation, runtime layout, routing, concurrency, and persistence
+  claims to match the active implementation.
+- Removed unsupported source-install aliases and the obsolete Pareto-routing
+  claim.
+
+**Design commit:** `49bea8c`
+
+**Closing commit:** `912bf62`
