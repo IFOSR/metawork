@@ -54,7 +54,9 @@ describe('Web workspace shell', () => {
     expect(control).toContain('深色');
     expect(styles).toContain(":root[data-theme='light']");
     expect(styles).toContain('--surface-canvas');
+    expect(html).toContain('metawork.theme');
     expect(html).toContain('anyfusion.theme');
+    expect(html).toContain('localStorage.removeItem(legacyKey)');
     expect(html).toContain('data-theme-preference');
   });
 

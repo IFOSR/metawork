@@ -144,7 +144,6 @@ import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import type { InteractionTrace, InteractionTraceStatus } from '../management/interaction-trace.js';

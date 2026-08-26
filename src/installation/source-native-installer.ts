@@ -61,6 +61,11 @@ export class SourceNativeInstaller {
     assertSecretReference(input.provider.secretReference);
     const secretReference = input.provider.secretReference;
     const paths = this.dependencies.paths;
+    const launcherPaths = [
+      paths.launcher,
+      paths.anyFusionLauncher,
+      paths.metaclawLauncher,
+    ];
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const release = resolveReleasePaths(paths.root, input.releaseId);
     const configurationRevision = `install-${input.releaseId}`;
@@ -85,7 +90,7 @@ export class SourceNativeInstaller {
       release.releaseRoot,
       configurationRevision,
     );
-    await assertLauncherAvailable(paths.launcher);
+    await Promise.all(launcherPaths.map(path => assertLauncherAvailable(path)));
     const [codexDetected, piDetected] = await Promise.all([
       this.dependencies.detectCommand('codex'),
       this.dependencies.detectCommand('pi'),
@@ -93,7 +98,7 @@ export class SourceNativeInstaller {
     const config = buildConfiguration(input, codexDetected, piDetected);
 
     const switched: string[] = [];
-    let launcherInstalled = false;
+    const installedLaunchers: string[] = [];
     let secretStored = false;
     let compiledRuntimeRoot: string | null = null;
     try {
@@ -126,8 +131,10 @@ export class SourceNativeInstaller {
       compiledRuntimeRoot = compiledRuntime.rootPath;
       await createFreshDatabase(databaseRevision);
 
-      await installNativeLauncher(paths.launcher, paths.root);
-      launcherInstalled = true;
+      for (const launcherPath of launcherPaths) {
+        await installNativeLauncher(launcherPath, paths.root);
+        installedLaunchers.push(launcherPath);
+      }
       await replaceRelativeSymlink(
         accountPaths.generatedCurrent,
         relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
@@ -153,9 +160,10 @@ export class SourceNativeInstaller {
         cleanupErrors,
         Promise.all(switched.map(path => rm(path, { force: true }))),
       );
-      if (launcherInstalled) {
-        await collectCleanupError(cleanupErrors, removeManagedLauncher(paths.launcher));
-      }
+      await collectCleanupError(
+        cleanupErrors,
+        Promise.all(installedLaunchers.map(path => removeManagedLauncher(path))),
+      );
       if (secretStored) {
         await collectCleanupError(
           cleanupErrors,

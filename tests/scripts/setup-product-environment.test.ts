@@ -1,0 +1,29 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+describe('source setup product environment', () => {
+  it('promotes MetaWork variables while retaining bounded AnyFusion aliases', () => {
+    const source = readFileSync('setup.sh', 'utf8');
+
+    expect(source).toContain('resolve_product_env');
+    expect(source).toContain('METAWORK_PROVIDER_KEY');
+    expect(source).toContain('METAWORK_PROVIDER_URL');
+    expect(source).toContain('METAWORK_PROVIDER_MODEL');
+    expect(source).toContain('METAWORK_PROVIDER_REGION');
+    expect(source).toContain('METAWORK_SECRET_STORE');
+    expect(source).toContain('ANYFUSION_PROVIDER_KEY');
+    expect(source).toContain('ANYFUSION_PI_SOURCE_ROOT');
+    expect(source).toContain('conflicts with compatibility variable');
+  });
+
+  it('keeps the macOS installer aligned with the canonical product variables', () => {
+    const source = readFileSync('scripts/install-native-macos.mjs', 'utf8');
+
+    expect(source).toContain('METAWORK_PROVIDER_KEY');
+    expect(source).toContain('METAWORK_PROVIDER_URL');
+    expect(source).toContain('METAWORK_PROVIDER_MODEL');
+    expect(source).toContain('METAWORK_PROVIDER_REGION');
+    expect(source).toContain('MetaWork native installation failed');
+    expect(source).toContain('ANYFUSION_PI_SOURCE_ROOT');
+  });
+});

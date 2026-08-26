@@ -5,6 +5,10 @@ import {
   type SecretReference,
   type SecretStore,
 } from './secret-store.js';
+import {
+  PRODUCT_ENVIRONMENT,
+  resolveProductEnvironment,
+} from '../installation/product-environment.js';
 
 export function createProductionSecretStore(input: {
   platform?: NodeJS.Platform;
@@ -13,18 +17,21 @@ export function createProductionSecretStore(input: {
   references?: readonly string[];
 }): SecretStore {
   const platform = input.platform ?? process.platform;
-  const requested = input.env?.ANYFUSION_SECRET_STORE?.trim();
+  const requested = resolveProductEnvironment(
+    input.env ?? {},
+    ...PRODUCT_ENVIRONMENT.secretStore,
+  );
   const configured = configuredSecretStore(input.references ?? []);
   if (requested && configured && requested !== configured) {
     throw new Error(
-      `ANYFUSION_SECRET_STORE=${requested} conflicts with active ${configured} secret references`,
+      `METAWORK_SECRET_STORE=${requested} conflicts with active ${configured} secret references`,
     );
   }
   if (requested === 'file') {
     return new FileSecretStore(input.secretsRoot);
   }
   if (requested && requested !== 'keychain') {
-    throw new Error(`unsupported ANYFUSION_SECRET_STORE: ${requested}`);
+    throw new Error(`unsupported METAWORK_SECRET_STORE: ${requested}`);
   }
   if (configured === 'file') {
     return new FileSecretStore(input.secretsRoot);
@@ -34,7 +41,7 @@ export function createProductionSecretStore(input: {
       throw new Error('Keychain secret store requires macOS');
     }
     throw new Error(
-      'non-macOS native installation requires explicit ANYFUSION_SECRET_STORE=file',
+      'non-macOS native installation requires explicit METAWORK_SECRET_STORE=file',
     );
   }
   return new KeychainSecretStore();

@@ -81,14 +81,22 @@ describe('SourceNativeInstaller', () => {
     expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 34 });
     db.close();
     expect(statSync(accountPaths.database).mode & 0o777).toBe(0o600);
-    expect(statSync(paths.launcher).mode & 0o777).toBe(0o755);
+    for (const path of [
+      paths.launcher,
+      paths.anyFusionLauncher,
+      paths.metaclawLauncher,
+    ]) {
+      expect(statSync(path).mode & 0o777).toBe(0o755);
+    }
     const launcher = readFileSync(paths.launcher, 'utf8');
-    expect(launcher).toContain('# AnyFusion managed launcher');
+    expect(readFileSync(paths.anyFusionLauncher, 'utf8')).toBe(launcher);
+    expect(readFileSync(paths.metaclawLauncher, 'utf8')).toBe(launcher);
+    expect(launcher).toContain('# MetaWork managed launcher');
     expect(launcher).toContain('export ANYFUSION_PLANNER_WORKSPACE="$PWD"');
-    expect(launcher).toContain('$ANYFUSION_INSTALL_ROOT/app/current/dist/index.js');
+    expect(launcher).toContain('$METAWORK_INSTALL_ROOT/app/current/dist/index.js');
   });
 
-  it('refuses to overwrite an unowned anyfusion launcher', async () => {
+  it('refuses to overwrite an unowned compatibility launcher', async () => {
     const home = mkdtempSync(join(tmpdir(), 'anyfusion-source-install-collision-'));
     cleanup.push(home);
     const sourceRoot = join(home, 'source');
@@ -97,7 +105,7 @@ describe('SourceNativeInstaller', () => {
     const paths = resolveAnyFusionPaths(home);
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     mkdirSync(join(home, '.local', 'bin'), { recursive: true });
-    writeFileSync(paths.launcher, '#!/bin/sh\necho other\n', { mode: 0o755 });
+    writeFileSync(paths.anyFusionLauncher, '#!/bin/sh\necho other\n', { mode: 0o755 });
 
     await expect(new SourceNativeInstaller({
       paths,
@@ -114,7 +122,7 @@ describe('SourceNativeInstaller', () => {
         region: 'international',
         secretReference: 'file-secret:anyfusion/provider',
       },
-    })).rejects.toThrow(/launcher.*not managed by AnyFusion/i);
+    })).rejects.toThrow(/launcher.*not managed by MetaWork/i);
 
     expect(() => readFileSync(join(paths.releases, '1.2.0-preview.0', 'dist', 'index.js')))
       .toThrow();
@@ -153,6 +161,8 @@ describe('SourceNativeInstaller', () => {
 
     expect(() => statSync(join(paths.releases, input.releaseId))).toThrow();
     expect(() => statSync(paths.launcher)).toThrow();
+    expect(() => statSync(paths.anyFusionLauncher)).toThrow();
+    expect(() => statSync(paths.metaclawLauncher)).toThrow();
 
     await expect(new SourceNativeInstaller({
       paths,

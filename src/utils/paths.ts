@@ -1,9 +1,11 @@
 import { homedir } from 'os';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 
 export function resolveMetaclawDir(
-  envAnyFusionInstallRoot = process.env.ANYFUSION_INSTALL_ROOT,
+  envInstallRoot?: string,
   userHome = homedir(),
 ): string {
-  return resolveAnyFusionPaths(userHome, envAnyFusionInstallRoot).data;
+  return envInstallRoot === undefined
+    ? resolveMetaWorkPaths(undefined, undefined, process.env).data
+    : resolveMetaWorkPaths(userHome, envInstallRoot).data;
 }

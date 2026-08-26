@@ -2,6 +2,12 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+**Status:** Completed
+
+**Plan date:** 2026-08-26
+
+**Completion date:** 2026-08-26
+
 **Goal:** Make MetaWork the canonical private product identity, CLI, and fresh-install root while preserving existing AnyFusion and MetaClaw entry points, persisted state, and concrete AnyFusion component contracts.
 
 **Architecture:** Product naming is resolved only at Application Shell, configuration, installation, and presentation boundaries. Canonical `METAWORK_*` settings and `~/.metawork` paths are introduced with fail-closed AnyFusion aliases; existing roots are migrated through one verified offline transaction, never through steady-state dual reads or writes. Planner, Kernel, Work Graph, Execution, durable database identifiers, `AnyFusion-Pi`, and protocol IDs retain their existing semantics.
@@ -805,3 +811,60 @@ git add docs/plans/2026-08-26-metawork-product-identity-migration.md \
   docs/plans/2026-08-26-metawork-product-identity-migration-design.md
 git commit -m "docs: close MetaWork identity migration"
 ```
+
+## Completion Record
+
+Delivered behavior:
+
+- MetaWork is the canonical package, CLI, native launcher, public product
+  identity, documentation identity, Web identity, theme namespace, fresh-install
+  root, and public environment-variable namespace.
+- `anyfusion` and `metaclaw` remain compatibility CLI aliases. Existing
+  `ANYFUSION_*` product settings remain fail-closed aliases for their
+  `METAWORK_*` equivalents.
+- Legacy `~/.anyfusion` state migrates transactionally into `~/.metawork`
+  without steady-state dual reads or writes. Runtime locks, staged verification,
+  rollback, archival, account data, SQLite/WAL state, releases, and managed
+  launchers remain covered by focused tests.
+- `AnyFusion-Pi`, `AnyFusionPlanningAgent`, `AnyFusionConfigurationV2`,
+  `anyfusion-planner-host-v2`, `anyfusion.db`, `file-secret:anyfusion/...`, and
+  component-specific `ANYFUSION_PI_*`/`ANYFUSION_PLANNER_*` names remain intact.
+- Public Planner presentation is `MetaWork Planner (AnyFusion-Pi)` while the
+  persisted Harness ID remains unchanged.
+- Web theme storage now uses `metawork.theme`; a valid or invalid legacy
+  `anyfusion.theme` value is consumed once, normalized, and removed.
+- The private root package uses `UNLICENSED`. The root `LICENSE` file was not
+  replaced because company-approved proprietary terms were not supplied;
+  current docs state that it does not license MetaWork as a whole and preserve
+  third-party/open-source attribution obligations.
+
+Validation completed on 2026-08-26:
+
+- `git diff --check`, `npm run lint`, `npm run build`, Web package-lock
+  regeneration, and `npm --prefix web run build` passed.
+- Shell syntax validation passed for `setup.sh`, `metawork.sh`,
+  `anyfusion.sh`, `metaclaw.sh`, and `scripts/bootstrap-install.sh`.
+- The migration/compatibility focused suite passed: 16 files, 95 tests.
+- The final full repository suite passed: 339 files and 1,589 tests passed;
+  7 files and 18 environment-gated tests were skipped by their existing
+  conditions.
+- `npm run smoke:gateway` passed: 7 files, 33 tests, using an isolated
+  MetaWork root.
+- The stale-product-claim audit returned no matches, while the retained
+  component/compatibility audit returned the expected AnyFusion identifiers.
+- `npm run smoke:metawork` was not run because this host does not have the
+  required native MetaWork Provider configuration installed under
+  `METAWORK_CONFIG_HOME`; no credentials were added or synthesized.
+
+Implementation commits:
+
+- `17da8e7 feat: resolve MetaWork environment compatibility`
+- `04a56d8 feat: add canonical MetaWork installation paths`
+- `4033f28 feat: add MetaWork CLI with compatibility aliases`
+- `9ffa982 feat: accept canonical MetaWork installer settings`
+- `a3d01c1 feat: migrate legacy AnyFusion install roots safely`
+- `0125950 refactor: use MetaWork paths in production composition`
+- `61f0cc6 docs: present MetaWork as the canonical product`
+- `e6f5cf7 chore: make MetaWork the canonical runtime facade`
+- Closing commit: `docs: close MetaWork identity migration` (this document
+  update).

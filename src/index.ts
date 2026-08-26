@@ -1,4 +1,4 @@
-// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default AnyFusion Planner TUI.
+// CLI entrypoint that assembles storage, runtime modules, gateway processes, and the default MetaWork Planner TUI.
 import { dirname, join, resolve } from 'path';
 import { mkdirSync, existsSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -37,7 +37,7 @@ import {
   type SecretReference,
   type SecretStore,
 } from './configuration/secret-store.js';
-import { resolveAnyFusionPaths } from './installation/paths.js';
+import { resolveMetaWorkPaths } from './installation/paths.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { resolveAccountPaths } from './account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
@@ -246,7 +246,7 @@ async function main() {
   // 用户可见 Workspace：进程启动目录在整个生命周期内保持不变，
   // 不能被 Executor cwd、Git worktree 或账户数据目录覆盖。
   const startupWorkspaceRoot = resolve(process.cwd());
-  const paths = resolveAnyFusionPaths();
+  const paths = resolveMetaWorkPaths();
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const applicationRoot = existsSync(paths.appCurrent)
     ? paths.appCurrent
@@ -262,8 +262,8 @@ async function main() {
     mkdirSync(dataDir, { recursive: true });
     const result = await stopInstanceForRestart(resolve(dataDir, 'runtime.lock'));
     const message = result.status === 'stopped'
-      ? `AnyFusion Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
-      : '未检测到运行中的 AnyFusion 实例，正在启动 Web。';
+      ? `MetaWork Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
+      : '未检测到运行中的 MetaWork 实例，正在启动 Web。';
     process.stdout.write(`${message}\n`);
   }
 
@@ -978,7 +978,7 @@ async function main() {
       });
       await runShutdownStep(() => accountRegistry.shutdown());
       if (errors.length > 0) {
-        throw new AggregateError(errors, 'AnyFusion shutdown did not complete cleanly');
+        throw new AggregateError(errors, 'MetaWork shutdown did not complete cleanly');
       }
     })();
     return shutdownPromise;
@@ -990,7 +990,7 @@ async function main() {
     void shutdown().then(
       () => process.exit(0),
       error => {
-        console.error(`AnyFusion shutdown failed: ${(error as Error).message}`);
+        console.error(`MetaWork shutdown failed: ${(error as Error).message}`);
         process.exit(1);
       },
     );

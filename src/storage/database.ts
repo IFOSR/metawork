@@ -21,7 +21,7 @@ export function createDatabase(
     const version = readSchemaVersion(db);
     if (version === 30) {
       throw new Error(
-        'runtime startup cannot migrate schema 30 in place; run the transactional AnyFusion updater',
+        'runtime startup cannot migrate schema 30 in place; run the transactional MetaWork updater',
       );
     }
     runMigrations(db);

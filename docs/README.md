@@ -1,4 +1,9 @@
-# AnyFusion Documentation
+# MetaWork Documentation
+
+MetaWork is the proprietary commercial product represented by this repository.
+AnyFusion references identify the separate open-source upstream, attributed
+components such as `AnyFusion-Pi`, compatibility contracts, or historical
+records.
 
 This directory contains both current technical documentation and historical planning material. Start with the current docs before opening dated plans.
 

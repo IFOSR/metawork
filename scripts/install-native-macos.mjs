@@ -30,8 +30,23 @@ function requireNodeVersion() {
   }
 }
 
-function requiredEnvironment(name) {
-  const value = process.env[name]?.trim();
+function resolveProductEnvironment(canonicalName, compatibilityName, defaultValue) {
+  const canonicalValue = process.env[canonicalName]?.trim();
+  const compatibilityValue = process.env[compatibilityName]?.trim();
+  if (canonicalValue && compatibilityValue && canonicalValue !== compatibilityValue) {
+    throw new Error(
+      `${canonicalName} conflicts with compatibility variable ${compatibilityName}`,
+    );
+  }
+  const value = canonicalValue || compatibilityValue || defaultValue;
+  if (value) {
+    process.env[canonicalName] = value;
+    process.env[compatibilityName] = value;
+  }
+  return value;
+}
+
+function requiredEnvironment(value, name) {
   if (!value) throw new Error(`${name} is required`);
 }
 
@@ -40,10 +55,26 @@ function main() {
     throw new Error(`install-native-macos requires macOS; found ${process.platform}`);
   }
   requireNodeVersion();
-  requiredEnvironment('ANYFUSION_PROVIDER_KEY');
-  requiredEnvironment('ANYFUSION_PROVIDER_URL');
-  process.env.ANYFUSION_PROVIDER_MODEL ??= 'gpt-5.6-terra';
-  process.env.ANYFUSION_PROVIDER_REGION ??= 'international';
+  resolveProductEnvironment('METAWORK_INSTALL_ROOT', 'ANYFUSION_INSTALL_ROOT');
+  requiredEnvironment(
+    resolveProductEnvironment('METAWORK_PROVIDER_KEY', 'ANYFUSION_PROVIDER_KEY'),
+    'METAWORK_PROVIDER_KEY',
+  );
+  requiredEnvironment(
+    resolveProductEnvironment('METAWORK_PROVIDER_URL', 'ANYFUSION_PROVIDER_URL'),
+    'METAWORK_PROVIDER_URL',
+  );
+  resolveProductEnvironment(
+    'METAWORK_PROVIDER_MODEL',
+    'ANYFUSION_PROVIDER_MODEL',
+    'gpt-5.6-terra',
+  );
+  resolveProductEnvironment(
+    'METAWORK_PROVIDER_REGION',
+    'ANYFUSION_PROVIDER_REGION',
+    'international',
+  );
+  resolveProductEnvironment('METAWORK_SECRET_STORE', 'ANYFUSION_SECRET_STORE');
 
   run('npm', ['ci'], runtimeRoot);
   run('npm', ['run', 'build'], runtimeRoot);
@@ -68,7 +99,7 @@ try {
   main();
 } catch (error) {
   process.stderr.write(
-    `AnyFusion native installation failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    `MetaWork native installation failed: ${error instanceof Error ? error.message : String(error)}\n`,
   );
   process.exitCode = 1;
 }

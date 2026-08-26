@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const repoRoot = resolve(import.meta.dirname, '..');
-const installRoot = mkdtempSync(join(tmpdir(), 'anyfusion-gateway-smoke-'));
+const installRoot = mkdtempSync(join(tmpdir(), 'metawork-gateway-smoke-'));
 const vitest = join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs');
 const acceptanceFiles = [
   'tests/architecture/no-direct-client-session-paths.test.ts',
@@ -24,7 +24,7 @@ try {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ANYFUSION_INSTALL_ROOT: installRoot,
+        METAWORK_INSTALL_ROOT: installRoot,
         METACLAW_INSTALL_ROOT: installRoot,
       },
       encoding: 'utf8',

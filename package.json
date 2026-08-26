@@ -1,16 +1,19 @@
 {
-  "name": "anyfusion",
+  "name": "metawork",
   "version": "1.2.0-preview.0",
-  "description": "A company-backed AI Task OS for durable, policy-governed agent workflows.",
+  "description": "A commercial AI Task OS for durable, policy-governed agent workflows.",
+  "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "UNLICENSED",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/IFOSR/metawork.git"
   },
   "bin": {
+    "metawork": "./dist/index.js",
     "anyfusion": "./dist/index.js",
     "metaclaw": "./dist/index.js",
+    "metawork-install": "./dist/install-cli.js",
     "anyfusion-install": "./dist/install-cli.js",
     "request_capability": "./dist/capability-request-cli.js",
     "use_capability": "./dist/capability-use-cli.js"
@@ -23,6 +26,7 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "setup:native": "node scripts/install-native-macos.mjs",
+    "smoke:metawork": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:gateway": "node scripts/smoke-unified-gateway.mjs",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
@@ -54,6 +58,5 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "private": true,
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

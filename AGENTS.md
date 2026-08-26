@@ -2,9 +2,12 @@
 
 ## Start Here
 
-AnyFusion is the public product name. `MetaClaw`, `metaclaw`, and `Metaclaw*`
-remain internal/runtime names and the compatibility CLI alias. Do not rename them
-during unrelated work.
+MetaWork is the canonical product and repository identity. It is a proprietary
+commercial system. AnyFusion is a separate open-source upstream/component
+family; retain its name only for attributed components and compatibility
+contracts such as `planner/AnyFusion-Pi`. `MetaClaw`, `metaclaw`, and
+`Metaclaw*` remain internal/runtime names and compatibility identifiers. Do not
+rename those contracts during unrelated work.
 
 Read only what the task needs, in this order:
 
@@ -34,8 +37,8 @@ Architecture shortcuts:
 
 ## Repository Map
 
-MetaClaw is a Node 22.19+ TypeScript ESM CLI/TUI. `src/index.ts` is the composition
-root. Detailed ownership and dependency rules live in
+MetaWork is a Node 22.19+ TypeScript ESM service and CLI/TUI. `src/index.ts` is
+the composition root. Detailed ownership and dependency rules live in
 [ADR-0020](docs/adr/0020-core-module-ownership-and-dependency-direction.md).
 
 | Area | Start here |
@@ -94,12 +97,12 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
 
 - `npm install`, `npm run dev`, `npm run build`, `npm run start`
 - `npm run lint`, `npm test`, `npm run test:watch`
-- `npm run smoke:metaclaw` — native Planner-session smoke. Smokes always run as
+- `npm run smoke:metawork` — native Planner-session smoke. Smokes always run as
   native host processes by default, using the configuration installed by
-  `npm run setup:native` under `ANYFUSION_CONFIG_HOME` (default
-  `~/.config/anyfusion`); `--mode docker` opts into the container path, which
+  `npm run setup:native` under `METAWORK_CONFIG_HOME` (default
+  `~/.config/metawork`); `--mode docker` opts into the container path, which
   requires the `docker/*.env` provider files.
-- `npm run smoke:metaclaw -- --scenario artifact` — Planner-to-Executor artifact
+- `npm run smoke:metawork -- --scenario artifact` — Planner-to-Executor artifact
   gate; see [runtime security](docs/current/phase-5-runtime-security.md).
 
 `better-sqlite3` is unavailable in the local Windows environment. Run SQLite and
@@ -117,7 +120,7 @@ the owning seam.
 For the AnyFusion-Pi integration, native macOS installation builds the vendored
 Planner sources (`planner/AnyFusion-Pi`, checked into this repository) with an isolated
 dependency tree, process, home, and sessions while
-using the directory where the user starts AnyFusion as the read-only workspace.
+using the directory where the user starts MetaWork as the read-only workspace.
 Docker validation still covers both source trees in one Node 22.19+ runtime
 image, the Unix socket bridge, stdin/stdout Planner RPC, Session-to-Kernel
 handoff, and unchanged core regressions. The Pi fork uses

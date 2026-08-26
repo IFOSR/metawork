@@ -60,7 +60,7 @@ describe('production SecretStore selection', () => {
       platform: 'linux',
       secretsRoot: '/unused',
       env: {},
-    })).toThrow('ANYFUSION_SECRET_STORE=file');
+    })).toThrow('METAWORK_SECRET_STORE=file');
 
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-production-secrets-'));
     roots.push(root);
@@ -71,6 +71,27 @@ describe('production SecretStore selection', () => {
     });
     expect(store).toBeInstanceOf(FileSecretStore);
     await prepareProductionSecretStore(store);
+  });
+
+  it('uses the canonical MetaWork secret-store setting', () => {
+    expect(createProductionSecretStore({
+      platform: 'linux',
+      secretsRoot: '/secrets',
+      env: { METAWORK_SECRET_STORE: 'file' },
+    })).toBeInstanceOf(FileSecretStore);
+  });
+
+  it('fails closed when canonical and compatibility secret-store settings conflict', () => {
+    expect(() => createProductionSecretStore({
+      platform: 'darwin',
+      secretsRoot: '/unused',
+      env: {
+        METAWORK_SECRET_STORE: 'file',
+        ANYFUSION_SECRET_STORE: 'keychain',
+      },
+    })).toThrow(
+      'METAWORK_SECRET_STORE conflicts with compatibility variable ANYFUSION_SECRET_STORE',
+    );
   });
 
   it('never silently falls back from a requested Keychain store', () => {

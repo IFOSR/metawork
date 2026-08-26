@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { FileAccountRepository } from '../account/file-account-repository.js';
-import { resolveAnyFusionPaths } from './paths.js';
+import { resolveMetaWorkPaths } from './paths.js';
 
 export interface InstallationDoctorCheck {
   name: string;
@@ -51,7 +51,7 @@ export async function runInstallationDoctor(
 }
 
 async function runAccountDiagnostics(anyfusionRoot: string): Promise<InstallationDoctorCheck[]> {
-  const paths = resolveAnyFusionPaths(undefined, anyfusionRoot);
+  const paths = resolveMetaWorkPaths(undefined, anyfusionRoot);
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, anyfusionRoot);
   const repository = new FileAccountRepository(paths.accountsRoot);
   const record = await repository.load(LOCAL_DEFAULT_ACCOUNT_ID);

@@ -419,7 +419,8 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
             .find(button => button.textContent === '浅色').click()
         `);
         await waitForExpression(cdp, `document.documentElement.dataset.theme === 'light'`);
-        expect(await cdp.evaluate(`localStorage.getItem('anyfusion.theme')`)).toBe('light');
+        expect(await cdp.evaluate(`localStorage.getItem('metawork.theme')`)).toBe('light');
+        expect(await cdp.evaluate(`localStorage.getItem('anyfusion.theme')`)).toBeNull();
         await cdp.evaluate(`
           [...document.querySelectorAll('.theme-control button')]
             .find(button => button.textContent === '跟随系统').click()

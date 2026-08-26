@@ -21,12 +21,35 @@ node -e '
   exit 1
 }
 
-: "${ANYFUSION_PROVIDER_KEY:?ANYFUSION_PROVIDER_KEY is required}"
-: "${ANYFUSION_PROVIDER_URL:?ANYFUSION_PROVIDER_URL is required}"
-export ANYFUSION_PROVIDER_MODEL="${ANYFUSION_PROVIDER_MODEL:-gpt-5.6-terra}"
-export ANYFUSION_PROVIDER_REGION="${ANYFUSION_PROVIDER_REGION:-international}"
+resolve_product_env() {
+  local canonical_name="$1"
+  local compatibility_name="$2"
+  local default_value="${3:-}"
+  local canonical_value="${!canonical_name:-}"
+  local compatibility_value="${!compatibility_name:-}"
+  if [ -n "$canonical_value" ] \
+    && [ -n "$compatibility_value" ] \
+    && [ "$canonical_value" != "$compatibility_value" ]; then
+    echo "$canonical_name conflicts with compatibility variable $compatibility_name" >&2
+    exit 1
+  fi
+  local resolved_value="${canonical_value:-${compatibility_value:-$default_value}}"
+  printf -v "$canonical_name" '%s' "$resolved_value"
+  printf -v "$compatibility_name" '%s' "$resolved_value"
+  export "$canonical_name" "$compatibility_name"
+}
+
+resolve_product_env METAWORK_INSTALL_ROOT ANYFUSION_INSTALL_ROOT
+resolve_product_env METAWORK_PROVIDER_KEY ANYFUSION_PROVIDER_KEY
+resolve_product_env METAWORK_PROVIDER_URL ANYFUSION_PROVIDER_URL
+resolve_product_env METAWORK_PROVIDER_MODEL ANYFUSION_PROVIDER_MODEL gpt-5.6-terra
+resolve_product_env METAWORK_PROVIDER_REGION ANYFUSION_PROVIDER_REGION international
+: "${METAWORK_PROVIDER_KEY:?METAWORK_PROVIDER_KEY is required}"
+: "${METAWORK_PROVIDER_URL:?METAWORK_PROVIDER_URL is required}"
 if [ "$(uname -s)" != "Darwin" ]; then
-  export ANYFUSION_SECRET_STORE="${ANYFUSION_SECRET_STORE:-file}"
+  resolve_product_env METAWORK_SECRET_STORE ANYFUSION_SECRET_STORE file
+else
+  resolve_product_env METAWORK_SECRET_STORE ANYFUSION_SECRET_STORE
 fi
 
 PLANNER_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$SCRIPT_DIR/planner/AnyFusion-Pi}"

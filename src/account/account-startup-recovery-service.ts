@@ -538,7 +538,7 @@ function startupOrphanEvent(input: {
       kind: 'heartbeat_lost',
       scope: 'agent_class',
       code: 'startup_orphaned_work',
-      summary: 'AnyFusion restarted with orphaned active work; explicit recovery is required',
+      summary: 'MetaWork restarted with orphaned active work; explicit recovery is required',
     },
   };
 }

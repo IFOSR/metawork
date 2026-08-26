@@ -987,7 +987,7 @@ export class ConversationSession {
         submissionId: submission.submissionId,
         planId: parsed.data.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v8 proposal validated by AnyFusion.',
+        displayText: 'PlanningAgentPlan v8 proposal validated by MetaWork.',
         taskId: parsed.data.task.taskId,
         kernel: null,
       };

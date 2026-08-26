@@ -98,7 +98,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     });
   });
 
-  it('builds the native overlay from the installed AnyFusion configuration home', async () => {
+  it('builds the native overlay from the installed MetaWork configuration home', async () => {
     const smoke = await loadSmokeScript();
     const configHome = join(tempRoot, 'anyfusion-config');
     const repoRoot = join(tempRoot, 'repo');
@@ -118,7 +118,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
     writeFileSync(plannerCli, '#!/usr/bin/env node\n');
 
     const overlay = smoke.buildNativeSmokeOverlay(
-      { ANYFUSION_CONFIG_HOME: configHome },
+      { METAWORK_CONFIG_HOME: configHome },
       repoRoot,
     );
 
@@ -135,9 +135,41 @@ describe('smoke-metaclaw-real-task helpers', () => {
     const configHome = join(tempRoot, 'missing-config');
 
     expect(() => smoke.buildNativeSmokeOverlay(
-      { ANYFUSION_CONFIG_HOME: configHome },
+      { METAWORK_CONFIG_HOME: configHome },
       tempRoot,
     )).toThrow(/npm run setup:native/);
+  });
+
+  it('accepts a compatibility configuration home and rejects conflicting roots', async () => {
+    const smoke = await loadSmokeScript();
+    const compatibilityHome = join(tempRoot, 'compatibility-config');
+
+    expect(smoke.resolveProductEnvironment(
+      { ANYFUSION_CONFIG_HOME: compatibilityHome },
+      'METAWORK_CONFIG_HOME',
+      'ANYFUSION_CONFIG_HOME',
+    )).toBe(compatibilityHome);
+    expect(() => smoke.resolveProductEnvironment(
+      {
+        METAWORK_INSTALL_ROOT: join(tempRoot, 'metawork'),
+        ANYFUSION_INSTALL_ROOT: join(tempRoot, 'anyfusion'),
+      },
+      'METAWORK_INSTALL_ROOT',
+      'ANYFUSION_INSTALL_ROOT',
+    )).toThrow(/METAWORK_INSTALL_ROOT conflicts with compatibility variable ANYFUSION_INSTALL_ROOT/);
+  });
+
+  it('promotes MetaWork smoke help while documenting compatibility aliases', async () => {
+    const smoke = await loadSmokeScript();
+    const help = smoke.buildHelp();
+
+    expect(help).toContain('npm run smoke:metawork');
+    expect(help).toContain('METAWORK_CONFIG_HOME');
+    expect(help).toContain('METAWORK_INSTALL_ROOT');
+    expect(help).toContain('ANYFUSION_CONFIG_HOME');
+    expect(help).toContain('compatibility alias');
+    expect(help).toContain('AnyFusion-Pi');
+    expect(help).not.toContain('Usage: npm run smoke:metaclaw');
   });
 
   it('derives smoke configuration from the same template used by shell.ps1', async () => {
