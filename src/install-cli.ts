@@ -6,7 +6,11 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { createProductionSecretStore } from './configuration/production-secret-store.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { resolveAccountPaths } from './account/account-paths.js';
-import { resolveAnyFusionPaths } from './installation/paths.js';
+import { resolveMetaWorkPaths } from './installation/paths.js';
+import {
+  PRODUCT_ENVIRONMENT,
+  resolveProductEnvironment,
+} from './installation/product-environment.js';
 import { InstallerCore } from './installation/installer-core.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
@@ -26,7 +30,7 @@ export interface NativeInstallArgs {
 export function parseNativeInstallArgs(argv: string[]): NativeInstallArgs {
   const [command, releaseId, ...options] = argv;
   if (command !== 'install' && command !== 'update' && command !== 'rollback') {
-    throw new Error('usage: anyfusion-install <install|update|rollback> <release-id>');
+    throw new Error('usage: metawork-install <install|update|rollback> <release-id>');
   }
   if (!releaseId?.trim()) throw new Error('release ID is required');
   const parsed: NativeInstallArgs = { command, releaseId };
@@ -65,7 +69,8 @@ export async function runNativeInstallCli(
 ): Promise<number> {
   const args = parseNativeInstallArgs(argv);
   const env = dependencies.env ?? process.env;
-  const paths = resolveAnyFusionPaths(env.HOME, env.ANYFUSION_INSTALL_ROOT);
+  const productEnvironment = resolveInstallerEnvironment(env);
+  const paths = resolveMetaWorkPaths(env.HOME, productEnvironment.installRoot);
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const secretStore = createProductionSecretStore({
     platform: dependencies.platform,
@@ -79,7 +84,7 @@ export async function runNativeInstallCli(
   const write = dependencies.write ?? (line => process.stdout.write(`${line}\n`));
 
   if (args.command === 'install') {
-    const secretScheme = env.ANYFUSION_SECRET_STORE === 'file'
+    const secretScheme = productEnvironment.secretStore === 'file'
       ? 'file-secret'
       : 'keychain';
     const result = await runOfflineNativeTransaction({
@@ -96,10 +101,22 @@ export async function runNativeInstallCli(
         sourceRoot: args.sourceRoot!,
         plannerRoot: args.plannerRoot!,
         provider: {
-          baseUrl: requiredEnvironment(env, 'ANYFUSION_PROVIDER_URL'),
-          apiKey: requiredEnvironment(env, 'ANYFUSION_PROVIDER_KEY'),
-          modelId: requiredEnvironment(env, 'ANYFUSION_PROVIDER_MODEL'),
-          region: requiredEnvironment(env, 'ANYFUSION_PROVIDER_REGION'),
+          baseUrl: requiredProductEnvironment(
+            productEnvironment.providerUrl,
+            PRODUCT_ENVIRONMENT.providerUrl[0],
+          ),
+          apiKey: requiredProductEnvironment(
+            productEnvironment.providerKey,
+            PRODUCT_ENVIRONMENT.providerKey[0],
+          ),
+          modelId: requiredProductEnvironment(
+            productEnvironment.providerModel,
+            PRODUCT_ENVIRONMENT.providerModel[0],
+          ),
+          region: requiredProductEnvironment(
+            productEnvironment.providerRegion,
+            PRODUCT_ENVIRONMENT.providerRegion[0],
+          ),
           secretReference:
             `${secretScheme}:anyfusion/provider`,
         },
@@ -144,7 +161,7 @@ export async function runNativeInstallCli(
 async function runOfflineNativeTransaction<T>(input: {
   command: NativeInstallCommand;
   releaseId: string;
-  paths: ReturnType<typeof resolveAnyFusionPaths>;
+  paths: ReturnType<typeof resolveMetaWorkPaths>;
   isServerRunning(): Promise<boolean>;
   operation(): Promise<T>;
 }): Promise<T> {
@@ -226,9 +243,29 @@ async function runOfflineNativeTransaction<T>(input: {
   return value;
 }
 
-function requiredEnvironment(env: NodeJS.ProcessEnv, name: string): string {
-  const value = env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
+function resolveInstallerEnvironment(env: NodeJS.ProcessEnv): {
+  installRoot: string | undefined;
+  providerKey: string | undefined;
+  providerUrl: string | undefined;
+  providerModel: string | undefined;
+  providerRegion: string | undefined;
+  secretStore: string | undefined;
+} {
+  return {
+    installRoot: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.installRoot),
+    providerKey: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.providerKey),
+    providerUrl: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.providerUrl),
+    providerModel: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.providerModel),
+    providerRegion: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.providerRegion),
+    secretStore: resolveProductEnvironment(env, ...PRODUCT_ENVIRONMENT.secretStore),
+  };
+}
+
+function requiredProductEnvironment(
+  value: string | undefined,
+  canonicalName: string,
+): string {
+  if (!value) throw new Error(`${canonicalName} is required`);
   return value;
 }
 
@@ -238,7 +275,7 @@ if (
 ) {
   runNativeInstallCli(process.argv.slice(2)).catch(error => {
     process.stderr.write(
-      `AnyFusion installer failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      `MetaWork installer failed: ${error instanceof Error ? error.message : String(error)}\n`,
     );
     process.exitCode = 1;
   });
