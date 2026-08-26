@@ -13,6 +13,7 @@ import type { GatewayCommand } from '../gateway/client-protocol.js';
 export interface MailboxCommand {
   readonly requestId: string;
   readonly idempotencyKey: string;
+  readonly principalId?: string;
   readonly command?: GatewayCommand;
 }
 

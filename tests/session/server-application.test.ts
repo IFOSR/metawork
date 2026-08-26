@@ -26,7 +26,7 @@ function makeDeps(surface: ServerSurface, overrides: {
 }
 
 describe('ServerApplication', () => {
-  for (const surface of ['interactive', 'gateway', 'web', 'scripted', 'standby'] as ServerSurface[]) {
+  for (const surface of ['interactive', 'gateway', 'web', 'standby'] as ServerSurface[]) {
     it(`starts shared then the ${surface} surface`, async () => {
       const { deps, calls } = makeDeps(surface);
       const app = new ServerApplication(deps);
@@ -69,11 +69,11 @@ describe('ServerApplication', () => {
     expect(calls).toEqual(['startShared', 'startSurface:standby', 'stopSurface:standby', 'stopShared']);
   });
 
-  it('selects only the foreground client without changing shared Server composition', () => {
-    expect(resolveServerSurface({}, {})).toBe('interactive');
-    expect(resolveServerSurface({ gateway: true }, {})).toBe('gateway');
-    expect(resolveServerSurface({ web: true }, {})).toBe('web');
-    expect(resolveServerSurface({ scriptPath: '/tmp/flow.txt' }, {})).toBe('scripted');
-    expect(resolveServerSurface({}, { METACLAW_STANDBY_TUI: '1' })).toBe('standby');
+  it('maps only canonical lifecycle commands during the transitional composition', () => {
+    expect(resolveServerSurface({ kind: 'tui' }, {})).toBe('interactive');
+    expect(resolveServerSurface({ kind: 'server', action: 'start' }, {})).toBe('gateway');
+    expect(resolveServerSurface({ kind: 'web' }, {})).toBe('web');
+    expect(resolveServerSurface({ kind: 'tui' }, { METACLAW_STANDBY_TUI: '1' })).toBe('standby');
+    expect(() => resolveServerSurface({ kind: 'help' }, {})).toThrow('does not select a Server surface');
   });
 });

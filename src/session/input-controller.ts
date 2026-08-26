@@ -8,6 +8,7 @@ export interface InputControllerSubmitOptions {
   interactionTurnId?: string;
   /** 多模态图片附件，随自然语言输入进入规划上下文。 */
   images?: PlannerImageAttachment[];
+  principalId?: string;
 }
 
 export interface InputControllerSubmitResult {
@@ -16,7 +17,7 @@ export interface InputControllerSubmitResult {
 
 export interface InputControllerPort {
   appendUserInput(input: string): void;
-  handleCommand(input: string): Promise<boolean>;
+  handleCommand(input: string, options?: InputControllerSubmitOptions): Promise<boolean>;
   handleNaturalLanguageInput(input: string, images?: PlannerImageAttachment[]): Promise<void>;
   waitForAsyncWork(): Promise<void>;
   handleSubmitError(error: unknown): void;
@@ -39,7 +40,7 @@ export class InputController {
 
     try {
       if (userInput.startsWith('/')) {
-        const exitRequested = await this.port.handleCommand(userInput);
+        const exitRequested = await this.port.handleCommand(userInput, options);
         if (options.awaitAsyncWork) {
           await this.port.waitForAsyncWork();
         }

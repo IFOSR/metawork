@@ -24,7 +24,9 @@ export interface ConversationGatewayRuntimeDeps {
   readonly accountId: string;
   readonly registry: RuntimeRegistry;
   readonly conversations: ConversationRegistry;
-  readonly conversationFactory: (conversationId: string) => ConversationSession;
+  readonly conversationFactory: (
+    conversationId: string,
+  ) => ConversationSession | Promise<ConversationSession>;
   readonly journal: EventJournal;
   readonly subscriptions: GatewaySubscriptions;
   /** 会话附件存储；提供后 user_message 的附件引用会解析为 Planner 多模态图片。 */
@@ -69,6 +71,7 @@ export class ConversationGatewayRuntime {
     requestId: string,
     idempotencyKey: string,
     command: GatewayCommand,
+    principalId = 'unknown',
   ): Promise<ConversationCommandReceipt> {
     if (this.admissionClosed) {
       const reason = 'gateway_closing';
@@ -101,6 +104,7 @@ export class ConversationGatewayRuntime {
       requestId,
       idempotencyKey,
       command,
+      principalId,
     );
     this.submissions.set(completionKey, submission);
     try {
@@ -184,6 +188,7 @@ export class ConversationGatewayRuntime {
     requestId: string,
     idempotencyKey: string,
     command: GatewayCommand,
+    principalId: string,
   ): Promise<ConversationCommandReceipt> {
     const completionKey = this.completionKey(conversationId, idempotencyKey);
     const recovered = await this.recoverDurableSubmission(
@@ -199,6 +204,7 @@ export class ConversationGatewayRuntime {
     const receipt = conversation.submitCommand({
       requestId,
       idempotencyKey,
+      principalId,
       command,
     });
     if (receipt.status === 'rejected') {
@@ -212,7 +218,7 @@ export class ConversationGatewayRuntime {
     const conversation = await this.deps.conversations.getOrOpen(
       conversationId,
       async () => {
-        const created = this.deps.conversationFactory(conversationId);
+        const created = await this.deps.conversationFactory(conversationId);
         created.bindMailboxExecutor(command => this.execute(created, command));
         return created;
       },
@@ -296,9 +302,25 @@ export class ConversationGatewayRuntime {
           awaitAsyncWork: true,
           rethrowErrors: true,
           interactionTurnId: turnId,
+          principalId: mailboxCommand.principalId,
           ...(images && images.length > 0 ? { images } : {}),
         },
       );
+      if (
+        mailboxCommand.command.kind === 'slash_command'
+        && /^\/workspace(?:\s|$)/u.test(mailboxCommand.command.text)
+      ) {
+        const workspace = await conversation.getWorkspace();
+        if (workspace) {
+          await this.publish(
+            conversation.conversationId,
+            mailboxCommand.requestId,
+            turnId,
+            'workspace_changed',
+            { workspace },
+          );
+        }
+      }
       const lines = assistantOutputLines(
         conversation.getOutput().slice(before),
         mailboxCommand.command,
@@ -331,7 +353,12 @@ export class ConversationGatewayRuntime {
           mailboxCommand.requestId,
           turnId,
           'terminal_error',
-          { message: reason },
+          {
+            message: reason,
+            ...('code' in (error as object) && typeof (error as { code?: unknown }).code === 'string'
+              ? { code: (error as { code: string }).code }
+              : {}),
+          },
         );
       } finally {
         completion?.resolve({ status: 'failed', reason });

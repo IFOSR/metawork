@@ -14,6 +14,7 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export type GatewayEventKind =
   | 'conversation_snapshot'
+  | 'workspace_changed'
   | 'turn_started'
   | 'trace_delta'
   | 'task_projection'
@@ -29,6 +30,7 @@ export type GatewayEventKind =
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_snapshot',
+  'workspace_changed',
   'turn_started',
   'trace_delta',
   'task_projection',

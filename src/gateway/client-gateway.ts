@@ -43,6 +43,7 @@ export interface ClientGatewayDeps {
     requestId: string,
     idempotencyKey: string,
     command: GatewayCommand,
+    principalId?: string,
   ): Promise<ConversationSubmissionResult>;
   commandAdmissionStore?: CommandAdmissionStore;
   now?: () => string;
@@ -134,6 +135,7 @@ export class ClientGateway {
       idempotencyKey: envelope.idempotencyKey,
       fingerprint,
       requestId: envelope.requestId,
+      principalId: `${principal.kind}:${principal.id}`,
       conversation: envelope.conversation,
       command: envelope.command,
       conversationId: null,
@@ -236,6 +238,7 @@ export class ClientGateway {
         admission.requestId,
         admission.idempotencyKey,
         admission.command,
+        admission.principalId,
       );
       const receipt = commandReceipt(admission, submission);
       if (submission.status === 'rejected') {

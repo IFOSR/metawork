@@ -1,21 +1,21 @@
-import type { CliArgs } from '../cli/args.js';
+import type { CliCommand } from '../cli/args.js';
 
 // Unifies Server startup/shutdown across the supported surfaces:
 // interactive Planner TUI, Gateway daemon, scripted session, and the standby
 // Ink TUI. Shared resources (database, ConfigurationService, PlannerHostBridge,
 // Gateway, timers, delivery) start once before the selected surface and stop
 // after it.
-export type ServerSurface = 'interactive' | 'gateway' | 'web' | 'scripted' | 'standby';
+export type ServerSurface = 'interactive' | 'gateway' | 'web' | 'standby';
 
 export function resolveServerSurface(
-  args: CliArgs,
+  command: CliCommand,
   environment: NodeJS.ProcessEnv = process.env,
 ): ServerSurface {
-  if (args.scriptPath) return 'scripted';
-  if (args.web) return 'web';
-  if (args.gateway) return 'gateway';
-  if (environment.METACLAW_STANDBY_TUI === '1') return 'standby';
-  return 'interactive';
+  if (command.kind === 'server') return 'gateway';
+  if (command.kind === 'web') return 'web';
+  if (command.kind === 'tui' && environment.METACLAW_STANDBY_TUI === '1') return 'standby';
+  if (command.kind === 'tui') return 'interactive';
+  throw new Error(`${command.kind} does not select a Server surface`);
 }
 
 export interface ServerSurfaceHandle {

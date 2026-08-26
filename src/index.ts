@@ -15,7 +15,6 @@ import { ContextRecaller } from './memory/context-recaller.js';
 import { resolveMetaclawDir } from './utils/paths.js';
 import { renderApp } from './tui/app.js';
 import { formatCliHelp, parseCliArgs } from './cli/args.js';
-import { parseAdminArgs } from './cli/admin-args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from './commands/configuration-admin.js';
 import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
 import { AgentRuntimeRenderer } from './configuration/agent-runtime-renderer.js';
@@ -44,14 +43,11 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { buildAccountRuntimeComposition } from './account/account-runtime-composition.js';
 import { RuntimeRegistry } from './account/runtime-registry.js';
 import { ConversationRegistry } from './session/conversation-registry.js';
-import { runScriptedSessionFile } from './session/scripted-session.js';
 import { createNotificationService } from './notifications/feishu.js';
 import { nanoid } from 'nanoid';
 import { MetaclawGatewayServer } from './gateway/server.js';
-import { runGatewayClientUi } from './gateway/client-ui.js';
 import { resolveGatewaySocketPath } from './gateway/gateway-paths.js';
 import { MarkdownPreviewServer } from './integrations/markdown-preview.js';
-import { runGatewaySetup } from './gateway/setup.js';
 import { startFeishuRuntimeBridge } from './gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from './gateway/feishu-gateway-adapter.js';
 import { FeishuGatewaySessionPort } from './gateway/feishu-gateway-session-port.js';
@@ -62,11 +58,15 @@ import { FileEventJournal } from './gateway/file-event-journal.js';
 import { GatewaySubscriptions } from './gateway/gateway-subscriptions.js';
 import { ConversationGatewayRuntime } from './gateway/conversation-gateway-runtime.js';
 import { FileCommandAdmissionStore } from './gateway/command-admission-store.js';
-import { ScriptedGatewaySession } from './gateway/scripted-gateway-session.js';
 import { WebGatewayAdapter } from './management/web-gateway-adapter.js';
-import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from './gateway/doctor.js';
 import { ConversationSession } from './session/conversation-session.js';
+import { FileConversationStore } from './session/file-conversation-store.js';
+import {
+  CONVERSATION_FORMAT_VERSION,
+  type ConversationRecord,
+} from './session/conversation-store.js';
+import { ConversationWorkspaceService } from './workspace/conversation-workspace-service.js';
 import { SessionPersistenceService } from './session/session-persistence-service.js';
 import { SessionPresentationService } from './session/session-presentation-service.js';
 import { SessionStateRepo } from './storage/session-state-repo.js';
@@ -91,6 +91,7 @@ import { ExecutorAttemptRuntimeRepo } from './storage/executor-attempt-runtime-r
 import { KernelDispatchItemRepo } from './storage/kernel-dispatch-item-repo.js';
 import {
   acquireInstanceLock,
+  isInstanceRunning,
   stopInstanceForRestart,
   type InstanceLock,
 } from './management/lock.js';
@@ -102,7 +103,6 @@ import { ExecutionProjector } from './management/execution-projector.js';
 import { WorkGraphPresentationProjector } from './management/work-graph-presentation-projector.js';
 import { WebAuthService } from './management/web-auth.js';
 import { resolveLoginCredentials } from './management/login-credentials.js';
-import { requiresCompositionLock } from './installation/composition-runtime.js';
 import { FileWebSessionStore } from './storage/file-web-session-store.js';
 import { FileAttachmentStore } from './storage/file-attachment-store.js';
 import { WebSessionCatalog } from './management/web-session-catalog.js';
@@ -242,7 +242,7 @@ async function startWebMode(options: {
 }
 
 async function main() {
-  const cliArgs = parseCliArgs(process.argv.slice(2));
+  const cliCommand = parseCliArgs(process.argv.slice(2));
   // 用户可见 Workspace：进程启动目录在整个生命周期内保持不变，
   // 不能被 Executor cwd、Git worktree 或账户数据目录覆盖。
   const startupWorkspaceRoot = resolve(process.cwd());
@@ -252,19 +252,9 @@ async function main() {
     ? paths.appCurrent
     : resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-  if (cliArgs.help) {
+  if (cliCommand.kind === 'help') {
     process.stdout.write(`${formatCliHelp()}\n`);
     return;
-  }
-
-  if (cliArgs.webCommand === 'restart') {
-    const dataDir = paths.data;
-    mkdirSync(dataDir, { recursive: true });
-    const result = await stopInstanceForRestart(resolve(dataDir, 'runtime.lock'));
-    const message = result.status === 'stopped'
-      ? `MetaWork Web 旧实例已停止（PID ${result.pid}），正在重新启动。`
-      : '未检测到运行中的 MetaWork 实例，正在启动 Web。';
-    process.stdout.write(`${message}\n`);
   }
 
   // 1. 初始化目录
@@ -274,26 +264,36 @@ async function main() {
   if (!existsSync(metaclawDir)) mkdirSync(metaclawDir, { recursive: true });
   if (!existsSync(snapshotDir)) mkdirSync(snapshotDir, { recursive: true });
 
-  if (cliArgs.connect) {
-    await runGatewayClientUi(gatewaySocketPath);
+  const runtimeLockPath = resolve(paths.data, 'runtime.lock');
+  if (cliCommand.kind === 'server' && cliCommand.action === 'status') {
+    process.stdout.write(
+      await isInstanceRunning(runtimeLockPath)
+        ? 'MetaWork Server 正在运行。\n'
+        : 'MetaWork Server 未运行。请执行 `metawork server start`。\n',
+    );
     return;
   }
 
-  if (cliArgs.gatewayCommand === 'setup') {
-    await runGatewaySetup({ metaclawDir });
+  if (cliCommand.kind === 'server' && cliCommand.action === 'stop') {
+    const result = await stopInstanceForRestart(runtimeLockPath);
+    process.stdout.write(
+      result.status === 'stopped'
+        ? `MetaWork Server 已停止（PID ${result.pid}）。\n`
+        : 'MetaWork Server 未运行。\n',
+    );
     return;
   }
 
-  if (cliArgs.gatewayCommand === 'pairing') {
-    runGatewayPairingCommand({
-      metaclawDir,
-      command: cliArgs.gatewayPairingCommand ?? 'list',
-      userId: cliArgs.gatewayPairingUserId,
-    });
-    return;
+  if (cliCommand.kind === 'server' && cliCommand.action === 'restart') {
+    const result = await stopInstanceForRestart(runtimeLockPath);
+    process.stdout.write(
+      result.status === 'stopped'
+        ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`
+        : 'MetaWork Server 未运行，正在启动。\n',
+    );
   }
 
-  if (cliArgs.gatewayCommand === 'doctor') {
+  if (cliCommand.kind === 'server' && cliCommand.action === 'doctor') {
     const configurationRepository = new FileConfigurationRepository(
       accountPaths.config,
     );
@@ -309,19 +309,7 @@ async function main() {
     return;
   }
 
-  if (
-    cliArgs.gatewayCommand === 'install'
-    || cliArgs.gatewayCommand === 'start'
-    || cliArgs.gatewayCommand === 'stop'
-    || cliArgs.gatewayCommand === 'restart'
-    || cliArgs.gatewayCommand === 'status'
-  ) {
-    console.log(`请使用 ./metaclaw.sh ${cliArgs.gatewayCommand} 管理后台进程。`);
-    return;
-  }
-
-  const adminCommand = parseAdminArgs(process.argv.slice(2));
-  if (adminCommand) {
+  if (cliCommand.kind === 'admin') {
     const configurationRepository = new FileConfigurationRepository(
       accountPaths.config,
     );
@@ -352,7 +340,7 @@ async function main() {
         secretStore,
       }),
     });
-    const lines = await runConfigurationAdmin(adminCommand, {
+    const lines = await runConfigurationAdmin(cliCommand.command, {
       getActiveSnapshot: () => configurationService.getActiveSnapshot(),
       rollback: async targetRevisionId => toMutationResult(
         await configurationService.rollback(targetRevisionId, activeSnapshot.revisionId),
@@ -365,11 +353,11 @@ async function main() {
     return;
   }
 
-  // Every mode that reaches Session/Kernel/Planner Host composition owns the
-  // same runtime lock, including scripted sessions.
+  // Only standalone Server startup owns the Runtime instance lock. Client
+  // launchers are separated from this composition in the following tasks.
   let instanceLock: InstanceLock | null = null;
   let instanceLockPath: string | null = null;
-  if (requiresCompositionLock(cliArgs)) {
+  if (cliCommand.kind === 'server') {
     const dataDir = paths.data;
     mkdirSync(dataDir, { recursive: true });
     instanceLockPath = resolve(dataDir, 'runtime.lock');
@@ -488,8 +476,15 @@ async function main() {
   // the configured Executor runtime is unavailable.
 
   // 8. 初始化上下文召回器
-  const sessionId = `sess_${nanoid(10)}`;
+  const requestedConversationId = (
+    cliCommand.kind === 'tui' || cliCommand.kind === 'web'
+  ) ? cliCommand.conversationId : undefined;
+  const sessionId = requestedConversationId ?? `sess_${nanoid(10)}`;
   const contextRecaller = new ContextRecaller(db);
+  const conversationStore = new FileConversationStore(
+    resolve(accountPaths.conversations, 'gateway'),
+  );
+  await conversationStore.initialize();
   const notifier = createNotificationService(config);
   const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
     ?? process.env.METACLAW_PLANNER_TUI_SOCKET
@@ -740,7 +735,34 @@ async function main() {
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
-  const buildConversationSession = (conversationId: string): ConversationSession => {
+  const buildConversationSession = async (conversationId: string): Promise<ConversationSession> => {
+    let record = await conversationStore.readConversation(conversationId);
+    if (!record) {
+      const now = new Date().toISOString();
+      record = {
+        version: CONVERSATION_FORMAT_VERSION,
+        conversation: {
+          id: conversationId,
+          plannerSessionId: conversationId,
+          accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+          title: 'New conversation',
+          createdAt: now,
+          updatedAt: now,
+          archived: false,
+          workspace: null,
+        },
+        turns: [],
+      } satisfies ConversationRecord;
+      await conversationStore.writeConversation(record);
+      const catalog = await conversationStore.readCatalog();
+      await conversationStore.writeCatalog({
+        ...catalog,
+        conversations: [
+          ...catalog.conversations.filter(item => item.id !== conversationId),
+          record.conversation,
+        ],
+      });
+    }
     const port = runtimePort;
     const persistenceService = new SessionPersistenceService(db);
     const presentation = new SessionPresentationService();
@@ -760,7 +782,19 @@ async function main() {
       getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
     });
 
-    const conversation = new ConversationSession({
+    let conversation!: ConversationSession;
+    const workspace = new ConversationWorkspaceService({
+      store: conversationStore,
+      conversationId,
+      principalId: 'unknown',
+      authorize: async () => true,
+      isBusy: () => {
+        if (!conversation) return false;
+        const switching = conversation.getSwitchingState();
+        return switching.plannerTurnActive || switching.taskRuntimeActive;
+      },
+    });
+    conversation = new ConversationSession({
       conversationId,
       plannerSessionId: conversationId,
       runtimePort: port,
@@ -780,6 +814,7 @@ async function main() {
       orchestration,
       config,
       plannerProposalRepo: new PlannerProposalRepo(db),
+      workspace,
       dispose: async () => unregisterPlannerHost(),
     });
     const unregisterPlannerHost = plannerHost.registerSession(conversationId, conversation);
@@ -905,8 +940,14 @@ async function main() {
       resolve(accountPaths.gateway, 'command-admissions'),
     ),
     activateAccount: accountId => conversationGatewayRuntime.activateAccount(accountId).then(() => undefined),
-    submitToConversation: (conversationId, requestId, idempotencyKey, command) =>
-      conversationGatewayRuntime.submit(conversationId, requestId, idempotencyKey, command),
+    submitToConversation: (conversationId, requestId, idempotencyKey, command, principalId) =>
+      conversationGatewayRuntime.submit(
+        conversationId,
+        requestId,
+        idempotencyKey,
+        command,
+        principalId,
+      ),
   });
   const webGatewayAdapter = new WebGatewayAdapter({
     gateway: clientGateway,
@@ -934,7 +975,7 @@ async function main() {
     },
     onConversationCreated: rememberConversation,
   });
-  const serverSurface = resolveServerSurface(cliArgs);
+  const serverSurface = resolveServerSurface(cliCommand);
   let gatewayFeishuBridge: Awaited<ReturnType<typeof startFeishuRuntimeBridge>> = null;
   let managementServer: ManagementServer | null = null;
   const taskPoolReviewTimer = setInterval(() => {
@@ -1003,7 +1044,7 @@ async function main() {
   });
 
   await gatewayServer.start();
-  if (serverSurface !== 'scripted' && serverSurface !== 'standby') {
+  if (cliCommand.kind === 'server') {
     const feishuPort = new FeishuGatewaySessionPort({
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       tenantKey: config.gateway?.platforms?.feishu?.app_id ?? 'local-feishu-app',
@@ -1022,26 +1063,6 @@ async function main() {
     gatewayFeishuBridge = await startFeishuRuntimeBridge(config, feishuPort);
   }
 
-  if (serverSurface === 'scripted') {
-    try {
-      const result = await runScriptedSessionFile(
-        cliArgs.scriptPath!,
-        new ScriptedGatewaySession({
-          accountId: LOCAL_DEFAULT_ACCOUNT_ID,
-          conversationId: sessionId,
-          gateway: clientGateway,
-          subscriptions: gatewaySubscriptions,
-        }),
-      );
-      if (result.output.length > 0) {
-        process.stdout.write(`${result.output.join('\n')}\n`);
-      }
-    } finally {
-      await shutdown();
-    }
-    return;
-  }
-
   if (serverSurface === 'web') {
     const taskArtifactRepo = new TaskArtifactRepo(db);
     const executionProjector = new ExecutionProjector({
@@ -1054,8 +1075,8 @@ async function main() {
     });
     const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
-      port: cliArgs.webPort ?? 8788,
-      noOpen: cliArgs.webNoOpen === true,
+      port: 8788,
+      noOpen: cliCommand.kind === 'web' && cliCommand.noOpen === true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
       startupWorkspaceRoot,
       attachmentStore: webAttachmentStore,

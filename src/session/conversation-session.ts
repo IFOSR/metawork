@@ -71,6 +71,11 @@ import {
 } from './conversation-input-mailbox.js';
 import { InputController, type InputControllerSubmitOptions } from './input-controller.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
+import type {
+  ConversationWorkspacePort,
+  WorkspaceCommandResult,
+} from '../workspace/conversation-workspace-service.js';
+import type { ConversationWorkspace } from './conversation-store.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type {
@@ -123,6 +128,7 @@ export interface ConversationSessionDeps {
   readonly directiveExecutor?: (directive: unknown, userInput: string) => Promise<void>;
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
+  readonly workspace?: ConversationWorkspacePort;
 }
 
 export class ConversationSession {
@@ -160,7 +166,7 @@ export class ConversationSession {
     this.taskExecutionApplicationService = deps.taskExecutionApplicationService ?? null;
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
-      handleCommand: input => this.handleCommand(input),
+      handleCommand: (input, options) => this.handleCommand(input, options?.principalId),
       handleNaturalLanguageInput: (input, images) => this.handleNaturalLanguageInput(input, images),
       waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
       handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
@@ -177,6 +183,10 @@ export class ConversationSession {
 
   get accountId(): string {
     return this.deps.runtimePort.accountId;
+  }
+
+  async getWorkspace(): Promise<ConversationWorkspace | null> {
+    return this.deps.workspace?.getWorkspace() ?? null;
   }
 
   attachClient(): void {
@@ -435,6 +445,12 @@ export class ConversationSession {
     userInput: string,
     images?: PlannerImageAttachment[],
   ): Promise<void> {
+    if (this.deps.workspace && !(await this.deps.workspace.getWorkspace())) {
+      throw workspaceError(
+        'workspace_required',
+        '请先使用 `/workspace /absolute/path` 设置当前 Conversation 的 Workspace。',
+      );
+    }
     const handled = await this.handlePlanningKernelDecision(userInput, images);
     if (handled) return;
     this.appendOutput(
@@ -721,7 +737,7 @@ export class ConversationSession {
 
   async executeGatewayCommand(
     command: GatewayCommand,
-    options: InputControllerSubmitOptions = {},
+    options: InputControllerSubmitOptions & { principalId?: string } = {},
   ): Promise<void> {
     switch (command.kind) {
       case 'user_message':
@@ -1229,7 +1245,18 @@ export class ConversationSession {
     });
   }
 
-  private async handleCommand(input: string): Promise<boolean> {
+  private async handleCommand(input: string, principalId = 'unknown'): Promise<boolean> {
+    if (/^\/workspace(?:\s|$)/u.test(input)) {
+      if (!this.deps.workspace) {
+        throw workspaceError('workspace_command_invalid', 'Workspace 服务未连接');
+      }
+      const result = await this.deps.workspace.execute(input, principalId);
+      if (result.status === 'rejected') {
+        throw workspaceError(result.code, result.message);
+      }
+      this.appendOutput(`Workspace 已设置为: ${result.workspace.path}`);
+      return false;
+    }
     // 命令处理由调用方注入（当前 MetaclawSession.handleCommand 桥接）时优先使用；
     // 否则降级为内联 commandCatalog 执行。
     if (this.deps.handleCommand) {
@@ -1780,6 +1807,12 @@ export class ConversationSession {
       listener(snapshot);
     }
   }
+}
+
+function workspaceError(code: string, message: string): Error & { code: string } {
+  const error = new Error(`${code}: ${message}`) as Error & { code: string };
+  error.code = code;
+  return error;
 }
 
 function shouldStartInteractionTrace(userInput: string): boolean {
