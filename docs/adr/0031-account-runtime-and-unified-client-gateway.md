@@ -9,6 +9,7 @@
 - **Related design**: `docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`
 - **Implementation plan**: `docs/plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md`
 - **Governed by**: ADR-0020
+- **Lifecycle amended by**: ADR-0034
 
 ## Context
 
@@ -363,9 +364,8 @@ storage, Planner, Kernel, Runtime and Gateway adapters.
 
 The production composition was cut over on August 19, 2026:
 
-- `src/index.ts` activates `RuntimeRegistry -> AccountRuntime`, constructs one
-  `ConversationRegistry`, starts the shared Unix Gateway before foreground
-  selection, and routes Unix, Web, Feishu and script traffic through one
+- the composition activates `RuntimeRegistry -> AccountRuntime`, constructs one
+  `ConversationRegistry`, and routes Unix, Web and Feishu traffic through one
   `ClientGateway`;
 - account data resolves under `accounts/local-default/`, including the SQLite
   database, Planner sessions, Conversations, Gateway journal/admission state,
@@ -377,9 +377,9 @@ The production composition was cut over on August 19, 2026:
   mode before model, tool or local semantic runtime creation;
 - Planner semantics remain server-side RPC, with proposal submission through
   the registered Conversation and Planner Host boundary;
-- Web, Feishu and Unix adapters can coexist in one Server process; native TUI
-  and script are foreground clients of the same composition rather than
-  alternate Runtime architectures;
+- Web, Feishu and Unix adapters can coexist in one Server process, while native
+  TUI remains a Gateway-only client rather than an alternate Runtime
+  architecture;
 - clean install and native update/rollback switch account-scoped database,
   configuration, SecretStore and generated-runtime authority; legacy global
   paths are retained only as one-time migration/rollback evidence;
@@ -393,10 +393,17 @@ The production composition was cut over on August 19, 2026:
 - account periodic recovery, cancellation retries and connection attachment
   lifecycles are fenced and drained by AccountRuntime shutdown;
 - `npm run smoke:gateway` exercises production Gateway admission, replay,
-  recovery, surface composition and scripted-client boundaries without an
+  recovery and surface composition without an
   external model Provider;
 - architecture tests reject production `MetaclawSession` constructors,
   client-owned Runtime services, and native-TUI direct Conversation calls.
+
+The August 19 evidence above records the AccountRuntime/Gateway domain cutover.
+ADR-0034 supersedes its former foreground-selection, script-client and
+surface-owned process-lifecycle conclusions. Under ADR-0034, Server is a
+persistent Workspace-neutral process, TUI and Web launch independently, Feishu
+is Server-owned, and `/workspace <path>` is the only Conversation Workspace
+mutation.
 
 ## Rejected Alternatives
 

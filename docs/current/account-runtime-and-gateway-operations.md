@@ -1,44 +1,55 @@
 # MetaWork Account Runtime And Gateway Operations
 
-ADR-0031 is active in MetaWork production composition. One Server process owns a
-`RuntimeRegistry`, one loaded `AccountRuntime` for `local-default`, a
-`ConversationRegistry`, and one transport-neutral `ClientGateway`.
+ADR-0031 and ADR-0034 define the MetaWork production composition. One persistent
+Server process owns a `RuntimeRegistry`, one loaded `AccountRuntime` for
+`local-default`, a `ConversationRegistry`, and one transport-neutral
+`ClientGateway`. Server startup is Workspace-neutral and independent of every
+Client lifecycle.
 
 ## Runtime Commands
 
-Start the default native Gateway-backed TUI:
+Start or manage the persistent Server:
+
+```bash
+metawork server start
+metawork server status
+metawork server doctor
+metawork server restart
+metawork server stop
+```
+
+Launch independent Clients after Server is ready:
 
 ```bash
 metawork
-```
-
-Start or restart the Web foreground surface:
-
-```bash
+metawork tui
+metawork tui --conversation <id>
 metawork web
-metawork web start
-metawork web restart
+metawork web --conversation <id>
 ```
 
-Run or manage the user-level Gateway service:
+Bare `metawork` is exactly `metawork tui`. Client commands read and validate the
+Server endpoint manifest; they do not acquire `runtime.lock`, construct
+Runtime, or start a Server child. Closing the TUI or browser leaves Server,
+Conversation, Planner, Task, and Executor work running.
 
-```bash
-metawork gateway run
-metawork gateway start
-metawork gateway status
-metawork gateway restart
-metawork gateway stop
+Removed forms such as `gateway run`, `--connect`, foreground Web, `feishu run`,
+and script mode fail closed and point to the canonical commands above.
+
+## Conversation Workspace
+
+Every new Conversation starts without a user Workspace. Before submitting a
+semantic task, use the same Gateway command from TUI, Web Composer, or Feishu:
+
+```text
+/workspace /absolute/path/to/project
 ```
 
-Attach another local terminal to a running Unix Gateway:
-
-```bash
-metawork --connect
-```
-
-`web restart` and `gateway restart` stop the process holding `runtime.lock`
-before starting the replacement. `web restart` changes the foreground surface,
-not the Runtime topology; neither command creates a second AccountRuntime.
+Server resolves and canonicalizes the path, verifies an accessible directory,
+authorizes the Principal, and atomically persists it on the Conversation.
+Missing Workspace returns `workspace_required`; an active Turn or Task returns
+`workspace_busy`. Attach and replay restore the selected Workspace. Different
+Conversations may use different Workspaces on the same Server.
 
 ## Account Data
 
@@ -66,8 +77,10 @@ The default account root is:
     └── events/
 ```
 
-Installation-global releases, logs, upgrade journals, `runtime.lock`, and the
-Unix Gateway socket remain outside the account root. Clean install writes the
+Installation-global releases, logs, upgrade journals, `runtime.lock`, endpoint
+manifest, and Unix Gateway socket remain outside the account root. The manifest
+contains safe process/version/protocol/socket/Web-origin readiness facts and
+never a user Workspace. Clean install writes the
 database, immutable configuration revisions, SecretStore files and generated
 runtime directly into `local-default`. Existing legacy state is copied once
 before update/rollback; later transactions switch only account-scoped pointers.
@@ -137,16 +150,15 @@ fails closed as `command_execution_uncertain` and is not run again.
 Use:
 
 ```bash
-metawork status
-metawork doctor
-metawork gateway status
-metawork gateway doctor
+metawork server status
+metawork server doctor
 ```
 
-For a stuck client, verify the Server process, Unix socket, active configuration
-revision, account database, Gateway event journal, and command-admission record
-before retrying. Reuse the original idempotency key when retrying an uncertain
-transport submission.
+For a stuck client, verify the manifest state and protocol, Server PID and
+health, Unix socket, loopback Web endpoint, active configuration revision,
+Conversation Workspace, account database, Gateway event journal, and
+command-admission record before retrying. Reuse the original idempotency key
+when retrying an uncertain transport submission.
 
 Provider-independent release validation:
 
