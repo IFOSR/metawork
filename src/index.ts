@@ -37,7 +37,7 @@ import {
   type SecretReference,
   type SecretStore,
 } from './configuration/secret-store.js';
-import { resolveAnyFusionPaths } from './installation/paths.js';
+import { resolveMetaWorkPaths } from './installation/paths.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { resolveAccountPaths } from './account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
@@ -246,7 +246,7 @@ async function main() {
   // 用户可见 Workspace：进程启动目录在整个生命周期内保持不变，
   // 不能被 Executor cwd、Git worktree 或账户数据目录覆盖。
   const startupWorkspaceRoot = resolve(process.cwd());
-  const paths = resolveAnyFusionPaths();
+  const paths = resolveMetaWorkPaths();
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const applicationRoot = existsSync(paths.appCurrent)
     ? paths.appCurrent

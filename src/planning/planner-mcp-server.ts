@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import { buildPlannerRoutingCatalog } from '../routing/configuration-catalog.js';
 import type { ConfigurationRoutingCatalog } from '../routing/types.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
@@ -358,7 +358,7 @@ export function resolvePlannerMcpRuntimePaths(input: {
   return {
     databasePath: explicitDatabasePath || join(home!, 'metaclaw.db'),
     configurationRoot: input.configurationRoot?.trim()
-      || dirname(resolveAnyFusionPaths().configurationRevisions),
+      || dirname(resolveMetaWorkPaths().configurationRevisions),
   };
 }
 

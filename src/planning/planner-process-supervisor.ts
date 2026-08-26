@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import {
   resolveCurrentRuntimeHome,
   resolveRevisionRuntimeHome,
@@ -702,9 +702,9 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     const command = this.resolveCommand();
     const cwd = cwdOverride ?? this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? process.cwd();
     const authorizedWorkspace = process.env.ANYFUSION_PLANNER_WORKSPACE ?? realpathOrSelf(cwd);
-    const anyFusionPaths = resolveAnyFusionPaths();
+    const metaWorkPaths = resolveMetaWorkPaths();
     const generatedRuntimeRoot = this.deps.generatedRuntimeRoot
-      ?? anyFusionPaths.generatedAgentRuntime;
+      ?? metaWorkPaths.generatedAgentRuntime;
     const revisionPlannerHome = this.deps.plannerHome
       ? undefined
       : resolveRevisionRuntimeHome(generatedRuntimeRoot, configurationRevision, 'planner');

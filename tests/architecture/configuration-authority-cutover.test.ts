@@ -64,6 +64,14 @@ function findAuthorityViolations(): AuthorityViolation[] {
       ),
     ];
 
+    if (file.path !== 'src/installation/paths.ts') {
+      violations.push(...matchingLines(
+        file,
+        'legacy-product-path-api',
+        /\bresolveAnyFusionPaths\b/u,
+      ));
+    }
+
     if (/^src\/(?:commands|cli|tui|tui-bridge)\//u.test(file.path)) {
       violations.push(...matchingLines(
         file,

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import {
   resolveCurrentRuntimeHome,
   resolveRevisionRuntimeHome,
@@ -50,7 +50,7 @@ export class PiCliDriver implements HarnessDriver {
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
     this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
     this.fallbackHomeTemplateDir = emptyToUndefined(
-      resolveCurrentRuntimeHome(resolveAnyFusionPaths().generatedAgentRuntime, 'pi-home')
+      resolveCurrentRuntimeHome(resolveMetaWorkPaths().generatedAgentRuntime, 'pi-home')
       ?? process.env.METACLAW_EXECUTOR_PI_HOME,
     );
   }

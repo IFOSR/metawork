@@ -8,7 +8,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { resolveAnyFusionPaths } from '../installation/paths.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import {
   WEB_SESSION_FORMAT_VERSION,
   type ConversationTurn,
@@ -30,7 +30,7 @@ export class FileWebSessionStore {
   readonly quarantineDir: string;
 
   constructor(
-    rootDir = join(resolveAnyFusionPaths().data, 'web-sessions'),
+    rootDir = join(resolveMetaWorkPaths().data, 'web-sessions'),
   ) {
     this.rootDir = resolve(rootDir);
     this.catalogPath = join(this.rootDir, 'catalog.json');
