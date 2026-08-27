@@ -53,7 +53,12 @@ export interface ClientGatewayDeps {
         | 'archive_conversation';
     }>,
     context: { accountId: string; principalId: string; connectionId: string },
-  ): Promise<{ status: 'accepted' | 'rejected'; conversationId?: string; reason?: string }>;
+  ): Promise<{
+    status: 'accepted' | 'rejected';
+    workspaceId?: string;
+    conversationId?: string;
+    reason?: string;
+  }>;
   commandAdmissionStore?: CommandAdmissionStore;
   now?: () => string;
 }
@@ -228,6 +233,7 @@ export class ClientGateway {
           idempotencyKey: admission.idempotencyKey,
           status: result.status,
           conversationId: result.conversationId ?? null,
+          workspaceId: result.workspaceId ?? null,
           ...(result.reason ? { reason: result.reason } : {}),
         });
       }

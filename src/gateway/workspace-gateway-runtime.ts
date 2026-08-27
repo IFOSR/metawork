@@ -10,6 +10,7 @@ type WorkspaceGatewayCommand = Extract<GatewayCommand, {
 
 export interface WorkspaceGatewayRuntimeResult {
   readonly status: 'accepted' | 'rejected';
+  readonly workspaceId?: string;
   readonly conversationId?: string;
   readonly reason?: string;
 }
@@ -70,7 +71,7 @@ export class WorkspaceGatewayRuntime {
           selection.workspace.id,
           { workspace: selection.workspace, page },
         );
-        return { status: 'accepted' };
+        return { status: 'accepted', workspaceId: selection.workspace.id };
       }
       const activeWorkspaceId = this.activeWorkspaceByConnection.get(context.connectionId);
       if (!activeWorkspaceId) {
@@ -89,7 +90,7 @@ export class WorkspaceGatewayRuntime {
           activeWorkspaceId,
           { page },
         );
-        return { status: 'accepted' };
+        return { status: 'accepted', workspaceId: activeWorkspaceId };
       }
       if (command.kind === 'create_conversation') {
         const conversation = await this.directory.createConversation(
@@ -107,7 +108,11 @@ export class WorkspaceGatewayRuntime {
           activeWorkspaceId,
           { conversation: summary ?? conversation },
         );
-        return { status: 'accepted', conversationId: conversation.id };
+        return {
+          status: 'accepted',
+          workspaceId: activeWorkspaceId,
+          conversationId: conversation.id,
+        };
       }
       await this.directory.archiveConversation(
         command.conversationId,
@@ -119,7 +124,11 @@ export class WorkspaceGatewayRuntime {
         activeWorkspaceId,
         { conversationId: command.conversationId },
       );
-      return { status: 'accepted', conversationId: command.conversationId };
+      return {
+        status: 'accepted',
+        workspaceId: activeWorkspaceId,
+        conversationId: command.conversationId,
+      };
     } catch (error) {
       return { status: 'rejected', reason: (error as Error).message };
     }

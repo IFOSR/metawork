@@ -125,7 +125,7 @@ export class ManagementServer {
   private server: Server | null = null;
   private readonly wsConnections = new Set<WebSocketConnection>();
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
-  private sessionRuntimeUnsubscribe: (() => void) | null = null;
+  private readonly wsConnectionsByClient = new Map<string, Set<WebSocketConnection>>();
   private configurationRuntimeUnsubscribe: (() => void) | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
@@ -136,9 +136,6 @@ export class ManagementServer {
     if (this.server) return;
     if (this.stopping) throw new Error('ManagementServer is stopping');
     await this.deps.sessionRuntime.initialize();
-    this.sessionRuntimeUnsubscribe = this.deps.sessionRuntime.subscribe(event => {
-      this.broadcast(event);
-    });
     this.configurationRuntimeUnsubscribe = this.deps.configurationRuntime?.subscribe?.(
       event => this.broadcast(event),
     ) ?? null;
@@ -174,8 +171,7 @@ export class ManagementServer {
     }
     this.wsConnections.clear();
     this.authenticatedWsConnections.clear();
-    this.sessionRuntimeUnsubscribe?.();
-    this.sessionRuntimeUnsubscribe = null;
+    this.wsConnectionsByClient.clear();
     this.configurationRuntimeUnsubscribe?.();
     this.configurationRuntimeUnsubscribe = null;
     this.stopPromise = Promise.all([
@@ -204,7 +200,8 @@ export class ManagementServer {
       this.rejectUpgrade(socket, 403, 'Forbidden');
       return;
     }
-    if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+    const authSession = this.deps.webAuth.getSession(request.headers.cookie);
+    if (!authSession) {
       this.logWebSocketRejection(request, 'unauthorized');
       this.rejectUpgrade(socket, 401, 'Unauthorized');
       return;
@@ -215,14 +212,18 @@ export class ManagementServer {
       socket.destroy();
       return;
     }
-    this.handleWsConnection(socket, key);
+    this.handleWsConnection(socket, key, authSession.clientId);
   }
 
-  private handleWsConnection(socket: Socket, key: string): void {
+  private handleWsConnection(socket: Socket, key: string, clientId: string): void {
     WebSocketConnection.accept(socket, key);
 
     let ws: WebSocketConnection;
 
+    const unsubscribeRuntime = this.deps.sessionRuntime.subscribe(
+      clientId,
+      event => ws.send(JSON.stringify(event)),
+    );
     ws = new WebSocketConnection(socket, {
       onMessage: text => {
         let message: { type?: string; text?: string; attachments?: Array<{ attachmentId?: unknown }> };
@@ -241,24 +242,31 @@ export class ManagementServer {
           const attachments = (message.attachments ?? [])
             .filter(entry => typeof entry?.attachmentId === 'string')
             .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
-          void this.deps.sessionRuntime.submit(message.text, attachments).catch(error => {
+          void this.deps.sessionRuntime.submit(clientId, message.text, attachments).catch(error => {
             ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
           });
         }
       },
       onClose: () => {
+        unsubscribeRuntime();
         this.authenticatedWsConnections.delete(ws);
         this.wsConnections.delete(ws);
+        const clientConnections = this.wsConnectionsByClient.get(clientId);
+        clientConnections?.delete(ws);
+        if (clientConnections?.size === 0) this.wsConnectionsByClient.delete(clientId);
       },
     });
 
     this.wsConnections.add(ws);
     this.authenticatedWsConnections.add(ws);
+    const clientConnections = this.wsConnectionsByClient.get(clientId) ?? new Set();
+    clientConnections.add(ws);
+    this.wsConnectionsByClient.set(clientId, clientConnections);
     ws.send(JSON.stringify({
       type: 'hello',
-      sessionId: this.deps.sessionRuntime.activeSessionId,
+      sessionId: this.deps.sessionRuntime.getClientState(clientId).activeSessionId,
     }));
-    for (const event of this.deps.sessionRuntime.getReplayEvents()) {
+    for (const event of this.deps.sessionRuntime.getReplayEvents(clientId)) {
       ws.send(JSON.stringify(event));
     }
   }
@@ -385,10 +393,10 @@ export class ManagementServer {
         this.sendJson(response, 401, { error: 'unauthorized' });
         return;
       }
-      const workspaceInitialization = session.launchContext
-        ? await this.deps.sessionRuntime.initializeClient?.(session.launchContext)
-          ?? { status: 'not_requested' as const }
-        : { status: 'not_requested' as const };
+      const workspaceInitialization = await this.deps.sessionRuntime.initializeClient(
+        session.clientId,
+        session.launchContext,
+      );
       response.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
@@ -436,6 +444,11 @@ export class ManagementServer {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
         return;
       }
+      const session = this.deps.webAuth.getSession(request.headers.cookie);
+      if (session) {
+        for (const ws of this.wsConnectionsByClient.get(session.clientId) ?? []) ws.close();
+        await this.deps.sessionRuntime.closeClient(session.clientId);
+      }
       this.deps.webAuth.revokeSession(request.headers.cookie);
       response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.clearSessionCookie() });
       response.end();
@@ -443,12 +456,14 @@ export class ManagementServer {
     }
 
     const provided = bearerTokenFromHeader(request.headers.authorization);
-    const authenticated = this.deps.webAuth.hasSession(request.headers.cookie)
+    const authSession = this.deps.webAuth.getSession(request.headers.cookie);
+    const authenticated = Boolean(authSession)
       || Boolean(provided && tokenMatches(this.deps.token, provided));
     if (!authenticated) {
       this.sendJson(response, 401, { error: 'unauthorized' });
       return;
     }
+    const clientId = authSession?.clientId ?? 'manual-bearer-client';
 
     if (request.method === 'POST' && url.pathname === '/api/attachments') {
       await this.handleAttachmentUpload(request, response, url);
@@ -478,52 +493,82 @@ export class ManagementServer {
       return;
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/sessions') {
+    if (request.method === 'GET' && url.pathname === '/api/workspaces') {
+      const state = this.deps.sessionRuntime.getClientState(clientId);
       this.sendJson(response, 200, {
-        activeSessionId: this.deps.sessionRuntime.activeSessionId,
-        sessions: await this.deps.sessionRuntime.listSessions(url.searchParams.get('q') ?? ''),
+        activeWorkspaceId: state.activeWorkspaceId,
+        workspaces: await this.deps.sessionRuntime.listWorkspaces(clientId),
       });
       return;
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/sessions') {
+    if (request.method === 'POST' && url.pathname === '/api/workspaces/select') {
       const body = await readRequestBody(request);
-      const launchContext = this.deps.webAuth
-        .getSession(request.headers.cookie)
-        ?.launchContext;
-      this.sendJson(
-        response,
-        201,
-        await this.deps.sessionRuntime.createSession(
-          body.title,
-          launchContext?.workspaceHint,
+      if (typeof body.path !== 'string' || !body.path.trim()) {
+        this.sendJson(response, 400, { error: 'workspace path is required' });
+        return;
+      }
+      const selection = await this.deps.sessionRuntime.selectWorkspace(clientId, body.path);
+      this.sendJson(response, selection.status === 'failed' ? 400 : 200, {
+        selection,
+        ...this.deps.sessionRuntime.getClientState(clientId),
+      });
+      return;
+    }
+
+    const workspaceConversationsMatch = /^\/api\/workspaces\/([^/]+)\/conversations$/u
+      .exec(url.pathname);
+    if (request.method === 'GET' && workspaceConversationsMatch) {
+      const workspaceId = decodeURIComponent(workspaceConversationsMatch[1]!);
+      const state = this.deps.sessionRuntime.getClientState(clientId);
+      if (workspaceId !== state.activeWorkspaceId) {
+        this.sendJson(response, 409, { error: 'workspace is not selected' });
+        return;
+      }
+      this.sendJson(response, 200, {
+        activeWorkspaceId: state.activeWorkspaceId,
+        activeConversationId: state.activeSessionId,
+        conversations: await this.deps.sessionRuntime.listSessions(
+          clientId,
+          url.searchParams.get('q') ?? '',
         ),
-      );
+      });
       return;
     }
 
-    // 注意：必须在通配的 /api/sessions/:id 之前匹配。
-    if (request.method === 'POST' && url.pathname === '/api/sessions/clear-all') {
-      this.sendJson(response, 200, await this.deps.sessionRuntime.clearAllSessions());
+    if (request.method === 'POST' && workspaceConversationsMatch) {
+      const workspaceId = decodeURIComponent(workspaceConversationsMatch[1]!);
+      if (workspaceId !== this.deps.sessionRuntime.getClientState(clientId).activeWorkspaceId) {
+        this.sendJson(response, 409, { error: 'workspace is not selected' });
+        return;
+      }
+      this.sendJson(response, 201, await this.deps.sessionRuntime.createSession(clientId));
       return;
     }
 
-    const sessionActivateMatch = /^\/api\/sessions\/([^/]+)\/activate$/u.exec(url.pathname);
-    if (request.method === 'POST' && sessionActivateMatch) {
+    if (request.method === 'POST' && url.pathname === '/api/conversations/clear-all') {
+      this.sendJson(response, 200, await this.deps.sessionRuntime.clearAllSessions(clientId));
+      return;
+    }
+
+    const conversationAttachMatch = /^\/api\/conversations\/([^/]+)\/attach$/u.exec(url.pathname);
+    if (request.method === 'POST' && conversationAttachMatch) {
       this.sendJson(
         response,
         200,
         await this.deps.sessionRuntime.activateSession(
-          decodeURIComponent(sessionActivateMatch[1]!),
+          clientId,
+          decodeURIComponent(conversationAttachMatch[1]!),
         ),
       );
       return;
     }
 
-    const sessionMatch = /^\/api\/sessions\/([^/]+)$/u.exec(url.pathname);
-    if (request.method === 'DELETE' && sessionMatch) {
+    const conversationMatch = /^\/api\/conversations\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'DELETE' && conversationMatch) {
       const outcome = await this.deps.sessionRuntime.deleteSession(
-        decodeURIComponent(sessionMatch[1]!),
+        clientId,
+        decodeURIComponent(conversationMatch[1]!),
       );
       if (outcome === 'active') {
         this.sendJson(response, 409, { error: 'session is active; switch away before deleting' });
@@ -537,9 +582,10 @@ export class ManagementServer {
       response.end();
       return;
     }
-    if (request.method === 'GET' && sessionMatch) {
+    if (request.method === 'GET' && conversationMatch) {
       const record = await this.deps.sessionRuntime.readSession(
-        decodeURIComponent(sessionMatch[1]!),
+        clientId,
+        decodeURIComponent(conversationMatch[1]!),
       );
       if (!record) {
         this.sendJson(response, 404, { error: 'session not found' });
@@ -881,6 +927,7 @@ interface RequestBody {
   apiKey?: string;
   secrets?: Record<string, string>;
   title?: string;
+  path?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

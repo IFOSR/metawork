@@ -20,7 +20,8 @@ describe('FileCommandAdmissionStore', () => {
       idempotencyKey: 'idem_1',
       fingerprint: 'fingerprint_1',
       requestId: 'req_1',
-      conversation: { mode: 'new' },
+      connectionId: 'conn_1',
+      scope: { kind: 'conversation', selection: { mode: 'new', workspaceId: 'workspace_repo' } },
       command: { kind: 'user_message', text: 'hello', attachments: [] },
       conversationId: null,
       now: '2026-08-19T00:00:00.000Z',
@@ -59,10 +60,18 @@ describe('FileCommandAdmissionStore', () => {
         idempotencyKey: 'idem_1',
         status: 'accepted',
         conversationId: 'conv_new_stable',
+        workspaceId: 'workspace_repo',
       },
       '2026-08-19T00:00:02.000Z',
     );
     await expect(restarted.listRecoverable()).resolves.toEqual([]);
+    await expect(restarted.find('local-default', 'idem_1')).resolves.toMatchObject({
+      receipt: {
+        status: 'accepted',
+        conversationId: 'conv_new_stable',
+        workspaceId: 'workspace_repo',
+      },
+    });
   });
 
   it('keeps the first durable Conversation identity under concurrent assignment', async () => {
@@ -74,7 +83,11 @@ describe('FileCommandAdmissionStore', () => {
       idempotencyKey: 'idem_1',
       fingerprint: 'first',
       requestId: 'req_1',
-      conversation: { mode: 'new' as const },
+      connectionId: 'conn_1',
+      scope: {
+        kind: 'conversation' as const,
+        selection: { mode: 'new' as const, workspaceId: 'workspace_repo' },
+      },
       command: { kind: 'user_message' as const, text: 'hello', attachments: [] },
       conversationId: null,
       now: '2026-08-19T00:00:00.000Z',
@@ -113,7 +126,11 @@ describe('FileCommandAdmissionStore', () => {
       idempotencyKey: 'idem_1',
       fingerprint: 'fingerprint_1',
       requestId: 'req_1',
-      conversation: { mode: 'attach', conversationId: 'conv_1' },
+      connectionId: 'conn_1',
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: 'conv_1' },
+      },
       command: { kind: 'user_message', text: 'hello', attachments: [] },
       conversationId: 'conv_1',
       now: '2026-08-19T00:00:00.000Z',
@@ -164,7 +181,11 @@ describe('FileCommandAdmissionStore', () => {
       idempotencyKey: 'same-key',
       fingerprint: `fingerprint:${accountId}`,
       requestId: `request:${accountId}`,
-      conversation: { mode: 'new' },
+      connectionId: `connection:${accountId}`,
+      scope: {
+        kind: 'conversation' as const,
+        selection: { mode: 'new' as const, workspaceId: 'workspace_repo' },
+      },
       command: { kind: 'user_message', text: accountId, attachments: [] },
       conversationId,
       now: '2026-08-19T00:00:00.000Z',

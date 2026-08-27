@@ -54,7 +54,11 @@ describe('WorkspaceGatewayRuntime', () => {
       workspaceId: 'workspace_repo',
     }, context);
     expect(runtime.activeWorkspaceId('conn_1')).toBe('workspace_repo');
-    expect(created).toEqual({ status: 'accepted', conversationId: 'conv_new' });
+    expect(created).toEqual({
+      status: 'accepted',
+      workspaceId: 'workspace_repo',
+      conversationId: 'conv_new',
+    });
     expect(fixture.calls).toEqual([
       'select:/repo',
       'list:workspace_repo',

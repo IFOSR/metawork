@@ -63,7 +63,7 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly now?: () => string;
 }
 
-export class WebGatewaySessionRuntime {
+class WebGatewayClientSession {
   private readonly listeners = new Set<(event: WebSessionRuntimeEvent) => void>();
   private readonly pendingInputs = new Map<string, string>();
   private readonly resultAssemblies = new Map<string, ResultAssembly>();
@@ -79,9 +79,16 @@ export class WebGatewaySessionRuntime {
   private readonly pendingAttaches = new Set<Promise<void>>();
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
-  private startupCreatedSessionId: string | null = null;
+  private activeWorkspaceId: string | null = null;
 
-  constructor(private readonly deps: WebGatewaySessionRuntimeDeps) {}
+  constructor(
+    private readonly deps: WebGatewaySessionRuntimeDeps,
+    private readonly clientId: string,
+  ) {}
+
+  private get connectionId(): string {
+    return `web:${this.clientId}`;
+  }
 
   get activeSessionId(): string {
     if (!this._activeSessionId) throw new Error('Web Gateway runtime is not initialized');
@@ -90,34 +97,33 @@ export class WebGatewaySessionRuntime {
 
   async initialize(): Promise<void> {
     if (this.disposed) throw new Error('Web Gateway runtime is disposed');
-    if (this._activeSessionId) return;
     await this.deps.catalog.initialize();
-    const sessions = await this.deps.catalog.list();
-    const active = sessions.find(session => session.active && !session.archived);
-    const record = active
-      ? await this.deps.catalog.read(active.id)
-      : await this.deps.catalog.create({ active: true });
-    if (!record) throw new Error('Active Web conversation is unavailable');
-    this.startupCreatedSessionId = active ? null : record.session.id;
-    if (!record.session.active) await this.deps.catalog.setActive(record.session.id);
-    await this.attach(record.session.id);
   }
 
-  async initializeClient(context: WebLaunchContextInput): Promise<WorkspaceInitializationResult> {
+  async initializeClient(context: WebLaunchContextInput | null): Promise<WorkspaceInitializationResult> {
+    await this.initialize();
+    if (!context) return { status: 'not_requested' };
     if (context.conversationId) {
-      this.startupCreatedSessionId = null;
+      const workspaceId = await this.deps.catalog.workspaceIdForConversation(context.conversationId);
+      if (!workspaceId) return { status: 'failed', reason: 'conversation_workspace_unavailable' };
+      this.activeWorkspaceId = workspaceId;
+      this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
+      await this.attach(context.conversationId);
       return { status: 'not_requested' };
     }
-    const startupCreatedSessionId = this.startupCreatedSessionId;
-    this.startupCreatedSessionId = null;
-    if (
-      !startupCreatedSessionId
-      || this.activeSessionId !== startupCreatedSessionId
-      || this.workspaces.get(startupCreatedSessionId)
-    ) {
-      return { status: 'not_requested' };
-    }
-    return this.initializeWorkspace(startupCreatedSessionId, context.workspaceHint);
+    return this.initializeWorkspace(context.workspaceHint);
+  }
+
+  getState(): { activeWorkspaceId: string | null; activeSessionId: string | null } {
+    return { activeWorkspaceId: this.activeWorkspaceId, activeSessionId: this._activeSessionId };
+  }
+
+  listWorkspaces() {
+    return this.deps.catalog.listWorkspaces(`web:${this.clientId}`);
+  }
+
+  selectWorkspace(path: string): Promise<WorkspaceInitializationResult> {
+    return this.initializeWorkspace(path);
   }
 
   dispose(): Promise<void> {
@@ -129,7 +135,6 @@ export class WebGatewaySessionRuntime {
     this.detachClient?.();
     this.detachClient = null;
     this._activeSessionId = null;
-    this.startupCreatedSessionId = null;
     this.replayEvents = [];
     this.pendingInputs.clear();
     this.resultAssemblies.clear();
@@ -137,6 +142,7 @@ export class WebGatewaySessionRuntime {
     this.turnStates.clear();
     this.persistedTurnIds.clear();
     this.workspaces.clear();
+    this.deps.gateway.closeConnection?.(this.connectionId);
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
     return this.disposePromise;
   }
@@ -155,7 +161,7 @@ export class WebGatewaySessionRuntime {
       protocolVersion: 2,
       requestId,
       idempotencyKey: this.id('idem'),
-      connectionId: 'web',
+      connectionId: this.connectionId,
       scope: {
         kind: 'conversation',
         selection: { mode: 'attach', conversationId: this.activeSessionId },
@@ -205,23 +211,43 @@ export class WebGatewaySessionRuntime {
   }
 
   async listSessions(query = ''): Promise<WebSessionMetadataProjection[]> {
+    if (!this.activeWorkspaceId) return [];
+    const input = {
+      workspaceId: this.activeWorkspaceId,
+      principalId: `web:${this.clientId}`,
+      activeConversationId: this._activeSessionId,
+      ...(query.trim() ? { query } : {}),
+    };
     const sessions = query.trim()
-      ? await this.deps.catalog.search(query)
-      : await this.deps.catalog.list();
+      ? await this.deps.catalog.search(input)
+      : await this.deps.catalog.list(input);
     return Promise.all(sessions.map(session => this.projectMetadata(session)));
   }
   async readSession(sessionId: string): Promise<WebSessionRecordProjection | null> {
-    const record = await this.deps.catalog.read(sessionId);
+    const record = await this.deps.catalog.read(sessionId, this._activeSessionId);
     if (!record) return null;
     return this.projectRecord(this.enrichRecord(record));
   }
 
-  async createSession(title?: string, workspaceHint?: string): Promise<WebSessionCreationResult> {
-    const created = await this.deps.catalog.create({ title, active: false });
+  async createSession(): Promise<WebSessionCreationResult> {
+    if (!this.activeWorkspaceId) throw new Error('workspace_required');
+    const requestId = this.id('req');
+    const receipt = await this.deps.gateway.submit({
+      protocolVersion: 2,
+      requestId,
+      idempotencyKey: this.id('idem'),
+      connectionId: this.connectionId,
+      scope: { kind: 'workspace' },
+      command: { kind: 'create_conversation', workspaceId: this.activeWorkspaceId },
+      clientCapabilities: ['trace_v1'],
+    });
+    if ('kind' in receipt || receipt.status === 'rejected' || !receipt.conversationId) {
+      throw new Error('kind' in receipt ? receipt.message : receipt.reason ?? 'conversation_create_failed');
+    }
+    const created = await this.deps.catalog.read(receipt.conversationId);
+    if (!created) throw new Error('created_conversation_unavailable');
     const activation = await this.activateSession(created.session.id);
-    const workspaceInitialization = activation.state === 'active' && workspaceHint
-      ? await this.initializeWorkspace(created.session.id, workspaceHint)
-      : { status: 'not_requested' as const };
+    const workspaceInitialization = { status: 'not_requested' as const };
     return {
       session: await this.readSession(created.session.id)
         ?? await this.projectRecord(created),
@@ -235,7 +261,12 @@ export class WebGatewaySessionRuntime {
     if (!target || target.session.archived) {
       return { state: 'activation_blocked', sessionId, reason: 'session_unavailable' };
     }
-    await this.deps.catalog.setActive(sessionId);
+    const workspaceId = await this.deps.catalog.workspaceIdForConversation(sessionId);
+    if (!workspaceId || (this.activeWorkspaceId && workspaceId !== this.activeWorkspaceId)) {
+      return { state: 'activation_blocked', sessionId, reason: 'session_unavailable' };
+    }
+    this.activeWorkspaceId = workspaceId;
+    this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
     await this.attach(sessionId);
     this.emit({ type: 'active_session_changed', sessionId });
     this.emit({
@@ -248,7 +279,12 @@ export class WebGatewaySessionRuntime {
 
   async deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'> {
     if (sessionId === this._activeSessionId) return 'active';
-    const deleted = await this.deps.catalog.deleteSession(sessionId);
+    if (!this.activeWorkspaceId) return 'not_found';
+    const deleted = await this.deps.catalog.archive(
+      sessionId,
+      this.activeWorkspaceId,
+      `web:${this.clientId}`,
+    );
     if (!deleted) return 'not_found';
     if (this._activeSessionId) {
       this.emit({
@@ -261,7 +297,13 @@ export class WebGatewaySessionRuntime {
   }
 
   async clearAllSessions(): Promise<{ deleted: number }> {
-    const deleted = await this.deps.catalog.clearAll(this._activeSessionId ?? undefined);
+    const deleted = this.activeWorkspaceId
+      ? await this.deps.catalog.clearWorkspace(
+          this.activeWorkspaceId,
+          `web:${this.clientId}`,
+          this._activeSessionId ?? undefined,
+        )
+      : 0;
     if (this._activeSessionId) {
       this.emit({
         type: 'session_catalog',
@@ -309,7 +351,7 @@ export class WebGatewaySessionRuntime {
     this.resultAssemblies.clear();
     this.completedResults.clear();
     this.turnStates.clear();
-    const existingRecord = await this.deps.catalog.read(sessionId);
+    const existingRecord = await this.deps.catalog.read(sessionId, sessionId);
     for (const turn of existingRecord?.turns ?? []) {
       this.persistedTurnIds.add(turn.id);
       this.turnStates.set(turn.id, {
@@ -435,17 +477,14 @@ export class WebGatewaySessionRuntime {
     };
   }
 
-  private async initializeWorkspace(
-    sessionId: string,
-    workspaceHint: string,
-  ): Promise<WorkspaceInitializationResult> {
+  private async initializeWorkspace(workspaceHint: string): Promise<WorkspaceInitializationResult> {
     try {
       const requestId = this.id('req');
       const receipt = await this.deps.gateway.submit({
         protocolVersion: 2,
         requestId,
         idempotencyKey: this.id('idem'),
-        connectionId: 'web',
+        connectionId: this.connectionId,
         scope: { kind: 'workspace' },
         command: { kind: 'select_workspace', path: workspaceHint },
         clientCapabilities: ['trace_v1'],
@@ -458,6 +497,8 @@ export class WebGatewaySessionRuntime {
             : receipt.reason ?? 'Gateway rejected Workspace initialization',
         };
       }
+      if (!receipt.workspaceId) return { status: 'failed', reason: 'workspace_identity_missing' };
+      this.activeWorkspaceId = receipt.workspaceId;
       return { status: 'accepted' };
     } catch (error) {
       return {
@@ -767,6 +808,110 @@ export class WebGatewaySessionRuntime {
 
   private id(prefix: string): string {
     return this.deps.createId?.(prefix) ?? `${prefix}_${nanoid(12)}`;
+  }
+}
+
+export class WebGatewaySessionRuntime {
+  private readonly clients = new Map<string, WebGatewayClientSession>();
+  private initialized = false;
+  private disposed = false;
+
+  constructor(private readonly deps: WebGatewaySessionRuntimeDeps) {}
+
+  async initialize(): Promise<void> {
+    if (this.disposed) throw new Error('Web Gateway runtime is disposed');
+    if (this.initialized) return;
+    await this.deps.catalog.initialize();
+    this.initialized = true;
+  }
+
+  async initializeClient(
+    clientId: string,
+    context: WebLaunchContextInput | null,
+  ): Promise<WorkspaceInitializationResult> {
+    return this.client(clientId).initializeClient(context);
+  }
+
+  async closeClient(clientId: string): Promise<void> {
+    const client = this.clients.get(clientId);
+    if (!client) return;
+    this.clients.delete(clientId);
+    await client.dispose();
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    const clients = [...this.clients.values()];
+    this.clients.clear();
+    await Promise.all(clients.map(client => client.dispose()));
+  }
+
+  getClientState(clientId: string) {
+    return this.client(clientId).getState();
+  }
+
+  listWorkspaces(clientId: string) {
+    return this.client(clientId).listWorkspaces();
+  }
+
+  selectWorkspace(clientId: string, path: string): Promise<WorkspaceInitializationResult> {
+    return this.client(clientId).selectWorkspace(path);
+  }
+
+  submit(
+    clientId: string,
+    text: string,
+    attachments?: Array<{ attachmentId: string; kind: string }>,
+  ): Promise<void> {
+    return this.client(clientId).submit(text, attachments);
+  }
+
+  listSessions(clientId: string, query?: string): Promise<WebSessionMetadataProjection[]> {
+    return this.client(clientId).listSessions(query);
+  }
+
+  readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null> {
+    return this.client(clientId).readSession(sessionId);
+  }
+
+  createSession(clientId: string): Promise<WebSessionCreationResult> {
+    return this.client(clientId).createSession();
+  }
+
+  activateSession(clientId: string, sessionId: string): Promise<WebSessionActivationResult> {
+    return this.client(clientId).activateSession(sessionId);
+  }
+
+  deleteSession(
+    clientId: string,
+    sessionId: string,
+  ): Promise<'deleted' | 'not_found' | 'active'> {
+    return this.client(clientId).deleteSession(sessionId);
+  }
+
+  clearAllSessions(clientId: string): Promise<{ deleted: number }> {
+    return this.client(clientId).clearAllSessions();
+  }
+
+  subscribe(
+    clientId: string,
+    listener: (event: WebSessionRuntimeEvent) => void,
+  ): () => void {
+    return this.client(clientId).subscribe(listener);
+  }
+
+  getReplayEvents(clientId: string): WebSessionRuntimeEvent[] {
+    return this.client(clientId).getReplayEvents();
+  }
+
+  private client(clientId: string): WebGatewayClientSession {
+    if (this.disposed) throw new Error('Web Gateway runtime is disposed');
+    const existing = this.clients.get(clientId);
+    if (existing) return existing;
+    const created = new WebGatewayClientSession(this.deps, clientId);
+    this.clients.set(clientId, created);
+    return created;
   }
 }
 

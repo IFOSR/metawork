@@ -20,6 +20,7 @@ describe('WebAuthService', () => {
 
     expect(auth.exchange(issued.token)).toEqual({
       sessionToken: 'session-token-a',
+      clientId: 'session-token-a',
       launchContext: {
         workspaceHint: '/repo-a',
         conversationId: 'conv_1',
@@ -27,6 +28,7 @@ describe('WebAuthService', () => {
     });
     expect(auth.exchange(issued.token)).toBeNull();
     expect(auth.getSession('anyfusion_web_session=session-token-a')).toEqual({
+      clientId: 'session-token-a',
       launchContext: {
         workspaceHint: '/repo-a',
         conversationId: 'conv_1',
@@ -44,12 +46,22 @@ describe('WebAuthService', () => {
 
     const first = auth.exchange('manual-token');
     const second = auth.exchange('manual-token');
-    expect(first).toEqual({ sessionToken: 'session-token-1', launchContext: null });
-    expect(second).toEqual({ sessionToken: 'session-token-2', launchContext: null });
+    expect(first).toEqual({
+      sessionToken: 'session-token-1',
+      clientId: 'session-token-1',
+      launchContext: null,
+    });
+    expect(second).toEqual({
+      sessionToken: 'session-token-2',
+      clientId: 'session-token-2',
+      launchContext: null,
+    });
     expect(auth.getSession('anyfusion_web_session=session-token-1')).toEqual({
+      clientId: 'session-token-1',
       launchContext: null,
     });
     expect(auth.getSession('anyfusion_web_session=session-token-2')).toEqual({
+      clientId: 'session-token-2',
       launchContext: null,
     });
   });

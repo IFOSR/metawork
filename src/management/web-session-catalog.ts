@@ -1,4 +1,3 @@
-import { nanoid } from 'nanoid';
 import type {
   ExecutionTimeline,
   TimelineAttempt,
@@ -19,107 +18,131 @@ import {
   type WebSessionRecord,
 } from './web-session-types.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
-import type { FileWebSessionStore } from '../storage/file-web-session-store.js';
+import type {
+  ConversationPresentationStore,
+} from '../storage/file-conversation-presentation-store.js';
+import { CONVERSATION_PRESENTATION_VERSION } from '../storage/file-conversation-presentation-store.js';
+import type { ConversationStore } from '../session/conversation-store.js';
+import { MAX_CONVERSATION_TURNS } from '../session/conversation-store.js';
+import type { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 
 const MAX_SESSION_TITLE_LENGTH = 80;
 const DEFAULT_SESSION_TITLE = 'New session';
 
-export interface WebSessionCatalogOptions {
-  createId?: () => string;
+export interface WebSessionCatalogDeps {
+  readonly directory: WorkspaceDirectoryService;
+  readonly conversationStore: ConversationStore;
+  readonly presentationStore: ConversationPresentationStore;
   now?: () => string;
   normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
 }
 
 export interface CreateWebSessionInput {
-  title?: string;
-  active?: boolean;
+  readonly workspaceId: string;
+  readonly principalId: string;
+}
+
+export interface ListWebSessionsInput {
+  readonly workspaceId: string;
+  readonly principalId: string;
+  readonly activeConversationId?: string | null;
+  readonly query?: string;
 }
 
 export class WebSessionCatalog {
-  private readonly createId: () => string;
   private readonly now: () => string;
   private readonly normalizeTurnPresentation: (turn: ConversationTurn) => ConversationTurn;
   private initialized = false;
 
-  constructor(
-    private readonly store: FileWebSessionStore,
-    options: WebSessionCatalogOptions = {},
-  ) {
-    this.createId = options.createId ?? (() => `sess_web_${nanoid(10)}`);
-    this.now = options.now ?? (() => new Date().toISOString());
-    this.normalizeTurnPresentation = options.normalizeTurnPresentation
+  constructor(private readonly deps: WebSessionCatalogDeps) {
+    this.now = deps.now ?? (() => new Date().toISOString());
+    this.normalizeTurnPresentation = deps.normalizeTurnPresentation
       ?? (turn => structuredClone(turn));
   }
 
   async initialize(): Promise<void> {
-    await this.store.initialize();
+    await Promise.all([
+      this.deps.conversationStore.initialize(),
+      this.deps.presentationStore.initialize(),
+    ]);
     this.initialized = true;
   }
 
-  async create(input: CreateWebSessionInput = {}): Promise<WebSessionRecord> {
+  async create(input: CreateWebSessionInput): Promise<WebSessionRecord> {
     await this.ensureInitialized();
-    const timestamp = this.now();
-    const session: WebSessionMetadata = {
-      id: this.createId(),
-      title: normalizeSessionTitle(input.title),
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      active: input.active ?? false,
-      archived: false,
-    };
+    const conversation = await this.deps.directory.createConversation(
+      input.workspaceId,
+      input.principalId,
+    );
     const record: WebSessionRecord = {
       version: WEB_SESSION_FORMAT_VERSION,
-      session,
+      session: metadataProjection(conversation, false),
       turns: [],
     };
-    await this.store.writeSession(record);
-    await this.upsertMetadata(session);
+    await this.deps.presentationStore.write({
+      version: CONVERSATION_PRESENTATION_VERSION,
+      conversationId: conversation.id,
+      turns: [],
+    });
     return record;
   }
 
-  async list(): Promise<WebSessionMetadata[]> {
+  async list(input: ListWebSessionsInput): Promise<WebSessionMetadata[]> {
     await this.ensureInitialized();
-    const catalog = await this.store.readCatalog();
-    const sessions = await Promise.all(catalog.sessions.map(async metadata => {
-      const record = await this.store.readSession(metadata.id);
-      return record ? metadataWithFirstQueryTitle(record) : metadata;
-    }));
-    return sessions.sort(compareUpdatedAt);
+    const sessions: WebSessionMetadata[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.deps.directory.listConversations(
+        input.workspaceId,
+        input.principalId,
+        {
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+          ...(input.query ? { query: input.query } : {}),
+        },
+      );
+      sessions.push(...page.items.map(item => ({
+        id: item.conversationId,
+        title: item.title,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        active: item.conversationId === input.activeConversationId,
+        archived: item.archived,
+      })));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return sessions;
   }
 
-  async search(query: string): Promise<WebSessionMetadata[]> {
-    const normalizedQuery = normalizeSearchText(query);
-    const sessions = await this.list();
-    if (!normalizedQuery) return sessions;
-
-    const matches: WebSessionMetadata[] = [];
-    for (const session of sessions) {
-      if (normalizeSearchText(session.title).includes(normalizedQuery)) {
-        matches.push(session);
-        continue;
-      }
-      const record = await this.store.readSession(session.id);
-      if (!record) continue;
-      const text = record.turns
-        .flatMap(turn => [turn.userInput, turn.finalAnswer ?? ''])
-        .join('\n');
-      if (normalizeSearchText(text).includes(normalizedQuery)) {
-        matches.push(session);
-      }
-    }
-    return matches;
+  async search(input: ListWebSessionsInput): Promise<WebSessionMetadata[]> {
+    return this.list(input);
   }
 
-  async read(sessionId: string): Promise<WebSessionRecord | null> {
+  async read(
+    sessionId: string,
+    activeConversationId: string | null = null,
+  ): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
-    const record = await this.store.readSession(sessionId);
-    return record
-      ? {
-          ...record,
-          session: metadataWithFirstQueryTitle(record),
-          turns: record.turns.map(turn => this.normalizeTurn(turn)),
-        }
-      : null;
+    const conversation = await this.deps.conversationStore.readConversation(sessionId);
+    if (!conversation) return null;
+    const presentation = await this.deps.presentationStore.read(sessionId);
+    return {
+      version: WEB_SESSION_FORMAT_VERSION,
+      session: metadataProjection(
+        conversation.conversation,
+        sessionId === activeConversationId,
+      ),
+      turns: (presentation?.turns ?? []).map(turn => this.normalizeTurn(turn)),
+    };
+  }
+
+  async workspaceIdForConversation(sessionId: string): Promise<string | null> {
+    const record = await this.deps.conversationStore.readConversation(sessionId);
+    return record?.conversation.workspaceBinding?.workspaceId ?? null;
+  }
+
+  listWorkspaces(principalId: string) {
+    return this.deps.directory.listWorkspaces(principalId);
   }
 
   async appendTurn(
@@ -127,91 +150,73 @@ export class WebSessionCatalog {
     turn: ConversationTurn,
   ): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
-    const record = await this.store.readSession(sessionId);
-    if (!record) return null;
+    const conversation = await this.deps.conversationStore.readConversation(sessionId);
+    if (!conversation) return null;
+    const presentation = await this.deps.presentationStore.read(sessionId);
+    const currentTurns = presentation?.turns ?? [];
 
     const safeTurn = this.normalizeTurn(sanitizeConversationTurn(turn, sessionId));
     const timestamp = this.now();
-    const turns = boundWebSessionTurns([...record.turns, safeTurn]);
-    const firstQueryTitle = resolvedFirstQueryTitle(record, safeTurn);
+    const turns = boundWebSessionTurns([...currentTurns, safeTurn]);
+    const firstQueryTitle = firstUserQueryTitle(turns);
+    const metadata = {
+      ...conversation.conversation,
+      title: firstQueryTitle ?? conversation.conversation.title,
+      updatedAt: timestamp,
+    };
+    await this.deps.presentationStore.write({
+      version: CONVERSATION_PRESENTATION_VERSION,
+      conversationId: sessionId,
+      turns,
+    });
+    await this.deps.conversationStore.writeConversation({
+      ...conversation,
+      conversation: metadata,
+      turns: [...conversation.turns, {
+        id: safeTurn.id,
+        conversationId: sessionId,
+        userInput: safeTurn.userInput,
+        finalAnswer: safeTurn.finalAnswer,
+        status: safeTurn.status,
+      }].slice(-MAX_CONVERSATION_TURNS),
+    });
+    const catalog = await this.deps.conversationStore.readCatalog();
+    await this.deps.conversationStore.writeCatalog({
+      ...catalog,
+      conversations: catalog.conversations.map(item => item.id === sessionId ? metadata : item),
+    });
     const updated: WebSessionRecord = {
-      ...record,
-      session: {
-        ...record.session,
-        title: firstQueryTitle ?? record.session.title,
-        updatedAt: timestamp,
-      },
+      version: WEB_SESSION_FORMAT_VERSION,
+      session: metadataProjection(metadata, false),
       turns,
     };
-    await this.store.writeSession(updated);
-    await this.upsertMetadata(updated.session);
     return updated;
   }
 
-  /** 硬删除会话：文件移入 quarantine，catalog 同步移除。返回是否存在过。 */
-  async deleteSession(sessionId: string): Promise<boolean> {
+  async archive(
+    sessionId: string,
+    workspaceId: string,
+    principalId: string,
+  ): Promise<boolean> {
     await this.ensureInitialized();
-    return this.store.deleteSession(sessionId);
+    if (!(await this.deps.conversationStore.readConversation(sessionId))) return false;
+    await this.deps.directory.archiveConversation(sessionId, workspaceId, principalId);
+    return true;
   }
 
-  /** 批量硬删除（保留 exceptId），返回删除数量。 */
-  async clearAll(exceptId?: string): Promise<number> {
+  async clearWorkspace(
+    workspaceId: string,
+    principalId: string,
+    exceptId?: string,
+  ): Promise<number> {
     await this.ensureInitialized();
-    return this.store.deleteAllSessions(exceptId);
-  }
-
-  async archive(sessionId: string): Promise<WebSessionRecord | null> {
-    await this.ensureInitialized();
-    const record = await this.store.readSession(sessionId);
-    if (!record) return null;
-    const updated: WebSessionRecord = {
-      ...record,
-      session: {
-        ...record.session,
-        active: false,
-        archived: true,
-        updatedAt: this.now(),
-      },
-    };
-    await this.store.writeSession(updated);
-    await this.upsertMetadata(updated.session);
-    return updated;
-  }
-
-  async setActive(sessionId: string): Promise<WebSessionRecord | null> {
-    await this.ensureInitialized();
-    const target = await this.store.readSession(sessionId);
-    if (!target || target.session.archived) return null;
-    const catalog = await this.store.readCatalog();
-    const updatedMetadata: WebSessionMetadata[] = [];
-
-    for (const metadata of catalog.sessions) {
-      const active = metadata.id === sessionId;
-      const updated = { ...metadata, active };
-      updatedMetadata.push(updated);
-      const record = await this.store.readSession(metadata.id);
-      if (record && record.session.active !== active) {
-        await this.store.writeSession({
-          ...record,
-          session: { ...record.session, active },
-        });
-      }
+    const sessions = await this.list({ workspaceId, principalId });
+    let archived = 0;
+    for (const session of sessions) {
+      if (session.id === exceptId) continue;
+      if (await this.archive(session.id, workspaceId, principalId)) archived += 1;
     }
-    await this.store.writeCatalog({
-      version: WEB_SESSION_FORMAT_VERSION,
-      sessions: updatedMetadata.sort(compareUpdatedAt),
-    });
-    return this.store.readSession(sessionId);
-  }
-
-  private async upsertMetadata(session: WebSessionMetadata): Promise<void> {
-    const catalog = await this.store.readCatalog();
-    const sessions = catalog.sessions.filter(existing => existing.id !== session.id);
-    sessions.push(session);
-    await this.store.writeCatalog({
-      version: WEB_SESSION_FORMAT_VERSION,
-      sessions: sessions.sort(compareUpdatedAt),
-    });
+    return archived;
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -231,29 +236,6 @@ function normalizeSessionTitle(value?: string): string {
   return normalized.slice(0, MAX_SESSION_TITLE_LENGTH).trimEnd();
 }
 
-function metadataWithFirstQueryTitle(record: WebSessionRecord): WebSessionMetadata {
-  const title = resolvedFirstQueryTitle(record);
-  return title
-    ? { ...record.session, title }
-    : record.session;
-}
-
-function resolvedFirstQueryTitle(
-  record: WebSessionRecord,
-  incoming?: ConversationTurn,
-): string | null {
-  const existingQueryTitles = record.turns
-    .filter(turn => isOrdinaryUserQuery(turn.userInput))
-    .map(turn => normalizeSessionTitle(turn.userInput));
-  if (existingQueryTitles.includes(record.session.title)) {
-    return record.session.title;
-  }
-  if (record.turns.length >= MAX_WEB_SESSION_TURNS) {
-    return record.session.title;
-  }
-  return firstUserQueryTitle(incoming ? [...record.turns, incoming] : record.turns);
-}
-
 function firstUserQueryTitle(turns: ConversationTurn[]): string | null {
   const query = turns.find(turn => isOrdinaryUserQuery(turn.userInput))?.userInput;
   return query ? normalizeSessionTitle(query) : null;
@@ -264,12 +246,18 @@ function isOrdinaryUserQuery(value: string): boolean {
   return normalized.length > 0 && !normalized.startsWith('/');
 }
 
-function normalizeSearchText(value: string): string {
-  return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
-}
-
-function compareUpdatedAt(left: WebSessionMetadata, right: WebSessionMetadata): number {
-  return right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id);
+function metadataProjection(
+  metadata: import('../session/conversation-store.js').ConversationMetadata,
+  active: boolean,
+): WebSessionMetadata {
+  return {
+    id: metadata.id,
+    title: metadata.title,
+    createdAt: metadata.createdAt,
+    updatedAt: metadata.updatedAt,
+    active,
+    archived: metadata.archived,
+  };
 }
 
 function sanitizeConversationTurn(

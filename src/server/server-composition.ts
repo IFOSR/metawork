@@ -112,7 +112,7 @@ import { WorkGraphPresentationProjector } from '../management/work-graph-present
 import { WebAuthService } from '../management/web-auth.js';
 import { WebLaunchContextService } from '../management/web-launch-context.js';
 import { resolveLoginCredentials } from '../management/login-credentials.js';
-import { FileWebSessionStore } from '../storage/file-web-session-store.js';
+import { FileConversationPresentationStore } from '../storage/file-conversation-presentation-store.js';
 import { FileAttachmentStore } from '../storage/file-attachment-store.js';
 import { WebSessionCatalog } from '../management/web-session-catalog.js';
 import { WebGatewaySessionRuntime } from '../management/web-gateway-session-runtime.js';
@@ -888,10 +888,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ),
     );
   };
-  const webSessionCatalog = new WebSessionCatalog(
-    new FileWebSessionStore(resolve(accountPaths.conversations, 'web')),
-    { normalizeTurnPresentation },
-  );
+  const webSessionCatalog = new WebSessionCatalog({
+    directory: workspaceDirectory,
+    conversationStore,
+    presentationStore: new FileConversationPresentationStore(
+      resolve(accountPaths.conversations, 'web-presentation'),
+    ),
+    normalizeTurnPresentation,
+  });
   const webAttachmentStore = new FileAttachmentStore(
     resolve(accountPaths.conversations, 'web-attachments'),
   );

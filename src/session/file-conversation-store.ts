@@ -1,7 +1,7 @@
 /**
  * Conversation 文件存储（ADR-0031 第 9 节）。
  *
- * 账户作用域的 Conversation 记录存储，沿用 FileWebSessionStore 的原子写入、
+ * 账户作用域的 Conversation 记录存储，使用原子写入、
  * 无效记录隔离（quarantine）与 ID 校验模式。目录结构：
  *
  * <conversationsRoot>/

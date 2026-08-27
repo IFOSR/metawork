@@ -13,6 +13,7 @@ export interface CommandReceipt {
   readonly idempotencyKey: string;
   readonly status: 'accepted' | 'duplicate' | 'rejected';
   readonly conversationId: string | null;
+  readonly workspaceId?: string | null;
   readonly reason?: string;
 }
 

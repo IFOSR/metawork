@@ -17,6 +17,8 @@ export interface WebGatewayAdapterDeps {
   journal: EventJournal;
   subscriptions: GatewaySubscriptions;
   attachClient?: (accountId: string, conversationId: string) => Promise<() => void>;
+  restoreWorkspace?: (connectionId: string, workspaceId: string) => void;
+  closeConnection?: (connectionId: string) => void;
 }
 
 export class WebGatewayAdapter {
@@ -45,5 +47,13 @@ export class WebGatewayAdapter {
   attachClient(accountId: string, conversationId: string): Promise<() => void> {
     return this.deps.attachClient?.(accountId, conversationId)
       ?? Promise.resolve(() => undefined);
+  }
+
+  restoreWorkspace(connectionId: string, workspaceId: string): void {
+    this.deps.restoreWorkspace?.(connectionId, workspaceId);
+  }
+
+  closeConnection(connectionId: string): void {
+    this.deps.closeConnection?.(connectionId);
   }
 }

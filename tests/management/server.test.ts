@@ -16,7 +16,7 @@ import {
   resolveLoginCredentials,
   type LoginCredentials,
 } from '../../src/management/login-credentials.js';
-import type { WebSessionRecord } from '../../src/management/web-session-types.js';
+import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
 
 function metadataFixture(id: string, active: boolean) {
   return {
@@ -137,16 +137,16 @@ describe('ManagementServer WebSocket authentication', () => {
   it('submits WebSocket input only through the required session runtime', async () => {
     const port = await reservePort();
     const submitted: string[] = [];
-    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const listeners = new Set<(event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void>();
     const sessionRuntime = createSessionRuntime({
-      activeSessionId: 'session_gateway',
-      submit: async text => {
+      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_gateway' }),
+      submit: async (_clientId, text) => {
         submitted.push(text);
         for (const listener of listeners) {
           listener({ type: 'output', from: 0, lines: ['Final answer'] });
         }
       },
-      subscribe: listener => {
+      subscribe: (_clientId, listener) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
@@ -176,36 +176,14 @@ describe('ManagementServer WebSocket authentication', () => {
 
   it('broadcasts active-session changes from the runtime to every connected client', async () => {
     const port = await reservePort();
-    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
-    const sessionRuntime: ManagementWebSessionRuntime = {
-      activeSessionId: 'session_live',
-      async initialize() {},
-      async dispose() {},
-      async submit() {},
-      async listSessions() {
-        return [];
-      },
-      async readSession() {
-        return null;
-      },
-      async createSession() {
-        throw new Error('not used');
-      },
-      async activateSession() {
-        return { state: 'active', sessionId: 'session_live' };
-      },
-      async deleteSession() {
-        return 'not_found';
-      },
-      async clearAllSessions() {
-        return { deleted: 0 };
-      },
-      subscribe(listener) {
+    const listeners = new Set<(event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void>();
+    const sessionRuntime = createSessionRuntime({
+      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_live' }),
+      subscribe(_clientId, listener) {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
-      getReplayEvents: () => [],
-    };
+    });
     const server = createManagementServer(port, { sessionRuntime });
     await server.start();
     const cookie = await exchangeToken(port, 'manual-token');
@@ -231,30 +209,80 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('exposes session list, history, creation, and structured activation results', async () => {
+  it('closes only the authenticated browser runtime and WebSockets on logout', async () => {
     const port = await reservePort();
-    const live = metadataFixture('session_live', true);
-    const history = metadataFixture('session_history', false);
-    const historyRecord: WebSessionRecord = {
+    const closedClientIds: string[] = [];
+    const sessionRuntime = createSessionRuntime({
+      closeClient: async clientId => {
+        closedClientIds.push(clientId);
+      },
+    });
+    const server = createManagementServer(port, { sessionRuntime });
+    await server.start();
+    const firstCookie = await exchangeToken(port, 'manual-token');
+    const secondCookie = await exchangeToken(port, 'manual-token');
+    const first = await connectWebSocket(port, `http://127.0.0.1:${port}`, firstCookie);
+    const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, secondCookie);
+
+    try {
+      await expect(first.nextText()).resolves.toContain('"type":"hello"');
+      await expect(second.nextText()).resolves.toContain('"type":"hello"');
+      const logout = await fetch(`http://127.0.0.1:${port}/api/auth/logout`, {
+        method: 'POST',
+        headers: {
+          cookie: firstCookie,
+          origin: `http://127.0.0.1:${port}`,
+        },
+      });
+      expect(logout.status).toBe(204);
+      expect(closedClientIds).toEqual(['session-token-1']);
+      await expect(first.nextText()).rejects.toThrow('socket closed');
+
+      second.sendJson({ type: 'input', text: 'still connected' });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(closedClientIds).toEqual(['session-token-1']);
+    } finally {
+      first.close();
+      second.close();
+      await server.stop();
+    }
+  });
+
+  it('exposes Workspace-scoped Conversation list, detail, creation, and attach results', async () => {
+    const port = await reservePort();
+    const workspace = {
+      id: 'workspace_repo',
+      accountId: 'local-default',
+      displayName: 'repo',
+      canonicalPath: '/repo',
+      availability: 'available' as const,
+      createdAt: '2026-08-17T08:00:00.000Z',
+      updatedAt: '2026-08-17T08:00:00.000Z',
+      createdByPrincipal: 'web:manual-bearer-client',
+      archived: false,
+    };
+    const history = { ...metadataFixture('session_history', false), workspace: null };
+    const historyRecord: WebSessionRecordProjection = {
       version: 1,
       session: history,
       turns: [],
     };
-    const sessionRuntime: ManagementWebSessionRuntime = {
-      activeSessionId: 'session_live',
-      async initialize() {},
-      async dispose() {},
-      async submit() {},
-      async listSessions(query) {
+    const sessionRuntime = createSessionRuntime({
+      listWorkspaces: async () => [workspace],
+      listSessions: async (_clientId, query) => {
         return query === 'history' ? [history] : [live, history];
       },
-      async readSession(sessionId) {
+      readSession: async (_clientId, sessionId) => {
         return sessionId === 'session_history' ? historyRecord : null;
       },
-      async createSession(title) {
-        const session: WebSessionRecord = {
+      createSession: async () => {
+        const session: WebSessionRecordProjection = {
           version: 1,
-          session: { ...metadataFixture('session_new', false), title: title ?? 'New session' },
+          session: {
+            ...metadataFixture('session_new', false),
+            title: 'New conversation',
+            workspace: null,
+          },
           turns: [],
         };
         return {
@@ -264,26 +292,17 @@ describe('ManagementServer WebSocket authentication', () => {
             sessionId: 'session_new',
             reason: 'task_runtime_active',
           },
+          workspaceInitialization: { status: 'not_requested' },
         };
       },
-      async activateSession(sessionId) {
+      activateSession: async (_clientId, sessionId) => {
         return {
           state: 'activation_blocked',
           sessionId,
           reason: 'planner_turn_active',
         };
       },
-      async deleteSession() {
-        return 'not_found';
-      },
-      async clearAllSessions() {
-        return { deleted: 0 };
-      },
-      subscribe() {
-        return () => {};
-      },
-      getReplayEvents: () => [],
-    };
+    });
     const server = createManagementServer(port, { sessionRuntime });
     await server.start();
 
@@ -292,28 +311,40 @@ describe('ManagementServer WebSocket authentication', () => {
         authorization: 'Bearer manual-token',
         'content-type': 'application/json',
       };
+      const workspaces = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces`,
+        { headers },
+      );
+      expect(await workspaces.json()).toEqual({
+        activeWorkspaceId: 'workspace_repo',
+        workspaces: [workspace],
+      });
+
       const list = await fetch(
-        `http://127.0.0.1:${port}/api/sessions?q=history`,
+        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations?q=history`,
         { headers },
       );
       expect(await list.json()).toEqual({
-        activeSessionId: 'session_live',
-        sessions: [history],
+        activeWorkspaceId: 'workspace_repo',
+        activeConversationId: 'session_live',
+        conversations: [history],
       });
 
       const record = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_history`,
+        `http://127.0.0.1:${port}/api/conversations/session_history`,
         { headers },
       );
       expect(await record.json()).toEqual(historyRecord);
 
-      const created = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+      const created = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations`,
+        {
         method: 'POST',
         headers,
-        body: JSON.stringify({ title: 'New research' }),
-      });
+        },
+      );
       expect(await created.json()).toMatchObject({
-        session: { session: { id: 'session_new', title: 'New research' } },
+        session: { session: { id: 'session_new', title: 'New conversation' } },
         activation: {
           state: 'activation_blocked',
           reason: 'task_runtime_active',
@@ -321,7 +352,7 @@ describe('ManagementServer WebSocket authentication', () => {
       });
 
       const activated = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_history/activate`,
+        `http://127.0.0.1:${port}/api/conversations/session_history/attach`,
         { method: 'POST', headers },
       );
       expect(await activated.json()).toEqual({
@@ -329,25 +360,27 @@ describe('ManagementServer WebSocket authentication', () => {
         sessionId: 'session_history',
         reason: 'planner_turn_active',
       });
+
+      const legacy = await fetch(`http://127.0.0.1:${port}/api/sessions`, { headers });
+      expect(legacy.status).toBe(404);
     } finally {
       await server.stop();
     }
   });
 
-  it('hard-deletes a session and clears all non-active sessions over HTTP', async () => {
+  it('archives a Conversation and clears non-active Conversations over HTTP', async () => {
     const port = await reservePort();
     const deletedIds: string[] = [];
-    const cleared: Array<string | undefined> = [];
+    const clearedClientIds: string[] = [];
     const sessionRuntime = createSessionRuntime({
-      activeSessionId: 'session_live',
-      deleteSession: async sessionId => {
+      deleteSession: async (_clientId, sessionId) => {
         deletedIds.push(sessionId);
         if (sessionId === 'session_active') return 'active';
         if (sessionId === 'session_missing') return 'not_found';
         return 'deleted';
       },
-      clearAllSessions: async () => {
-        cleared.push('live');
+      clearAllSessions: async clientId => {
+        clearedClientIds.push(clientId);
         return { deleted: 3 };
       },
     });
@@ -358,36 +391,37 @@ describe('ManagementServer WebSocket authentication', () => {
       const headers = { authorization: 'Bearer manual-token' };
 
       const deleted = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_done`,
+        `http://127.0.0.1:${port}/api/conversations/session_done`,
         { method: 'DELETE', headers },
       );
       expect(deleted.status).toBe(204);
       expect(deletedIds).toEqual(['session_done']);
 
       const active = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_active`,
+        `http://127.0.0.1:${port}/api/conversations/session_active`,
         { method: 'DELETE', headers },
       );
       expect(active.status).toBe(409);
 
       const missing = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_missing`,
+        `http://127.0.0.1:${port}/api/conversations/session_missing`,
         { method: 'DELETE', headers },
       );
       expect(missing.status).toBe(404);
 
       const unauthenticated = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/session_done`,
+        `http://127.0.0.1:${port}/api/conversations/session_done`,
         { method: 'DELETE' },
       );
       expect(unauthenticated.status).toBe(401);
 
-      const clear = await fetch(`http://127.0.0.1:${port}/api/sessions/clear-all`, {
+      const clear = await fetch(`http://127.0.0.1:${port}/api/conversations/clear-all`, {
         method: 'POST',
         headers,
       });
       expect(clear.status).toBe(200);
       expect(await clear.json()).toEqual({ deleted: 3 });
+      expect(clearedClientIds).toEqual(['manual-bearer-client']);
     } finally {
       await server.stop();
     }
@@ -426,7 +460,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(cookie).toContain('anyfusion_web_session=');
 
       // 会话 cookie 可访问受保护端点。
-      const guarded = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+      const guarded = await fetch(`http://127.0.0.1:${port}/api/workspaces`, {
         headers: { cookie },
       });
       expect(guarded.status).toBe(200);
@@ -544,16 +578,21 @@ describe('ManagementServer WebSocket authentication', () => {
         summary: 'Show the process',
         details: {},
       } as const;
-    const traceListeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const traceListeners = new Set<
+      (event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void
+    >();
     const sessionRuntime = createSessionRuntime({
-      activeSessionId: 'sess_web_trace',
+      getClientState: () => ({
+        activeWorkspaceId: 'workspace_repo',
+        activeSessionId: 'sess_web_trace',
+      }),
       getReplayEvents: () => [{
         type: 'trace_delta',
         turnId: 'turn-trace',
         fromSequence: 1,
         events: [firstEvent],
       }],
-      subscribe(listener) {
+      subscribe(_clientId, listener) {
         traceListeners.add(listener);
         return () => traceListeners.delete(listener);
       },
@@ -739,7 +778,8 @@ describe('ManagementServer WebSocket authentication', () => {
     });
     const launch = launchContexts.issue({ workspaceHint: '/repo-browser' });
     const initializations: Array<{ workspaceHint: string; conversationId?: string }> = [];
-    const createdHints: Array<string | undefined> = [];
+    const initializationClientIds: string[] = [];
+    const createdClientIds: string[] = [];
     const createdRecord = {
       version: 1 as const,
       session: {
@@ -749,12 +789,13 @@ describe('ManagementServer WebSocket authentication', () => {
       turns: [],
     };
     const sessionRuntime = createSessionRuntime({
-      initializeClient: async context => {
-        initializations.push(context);
+      initializeClient: async (clientId, context) => {
+        initializationClientIds.push(clientId);
+        if (context) initializations.push(context);
         return { status: 'accepted' };
       },
-      createSession: async (_title, workspaceHint) => {
-        createdHints.push(workspaceHint);
+      createSession: async clientId => {
+        createdClientIds.push(clientId);
         return {
           session: createdRecord,
           activation: { state: 'active', sessionId: 'session_new' },
@@ -771,17 +812,20 @@ describe('ManagementServer WebSocket authentication', () => {
     try {
       const cookie = await exchangeToken(port, launch.token);
       expect(initializations).toEqual([{ workspaceHint: '/repo-browser' }]);
+      expect(initializationClientIds).toEqual(['session-token-1']);
 
-      const created = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
-        method: 'POST',
-        headers: {
-          cookie,
-          'content-type': 'application/json',
+      const created = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations`,
+        {
+          method: 'POST',
+          headers: {
+            cookie,
+            'content-type': 'application/json',
+          },
         },
-        body: JSON.stringify({ title: 'New browser session' }),
-      });
+      );
       expect(created.status).toBe(201);
-      expect(createdHints).toEqual(['/repo-browser']);
+      expect(createdClientIds).toEqual(['session-token-1']);
     } finally {
       await server.stop();
     }
@@ -1066,11 +1110,13 @@ describe('ManagementServer WebSocket authentication', () => {
 
   it('tags output increments with stable absolute cursors so reconnects dedupe by index', async () => {
     const port = await reservePort();
-    const listeners = new Set<Parameters<ManagementWebSessionRuntime['subscribe']>[0]>();
+    const listeners = new Set<
+      (event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void
+    >();
     const replay = [{ type: 'output', from: 0, lines: ['第一行', '第二行'] }] as const;
     const sessionRuntime = createSessionRuntime({
       getReplayEvents: () => structuredClone(replay),
-      subscribe(listener) {
+      subscribe(_clientId, listener) {
         listeners.add(listener);
         return () => {
           listeners.delete(listener);
@@ -1303,9 +1349,15 @@ function createSessionRuntime(
   overrides: Partial<ManagementWebSessionRuntime> = {},
 ): ManagementWebSessionRuntime {
   return {
-    activeSessionId: 'session_live',
     async initialize() {},
+    async initializeClient() { return { status: 'not_requested' }; },
+    async closeClient() {},
     async dispose() {},
+    getClientState() {
+      return { activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_live' };
+    },
+    async listWorkspaces() { return []; },
+    async selectWorkspace() { return { status: 'accepted' }; },
     async submit() {},
     async listSessions() {
       return [];
@@ -1316,7 +1368,7 @@ function createSessionRuntime(
     async createSession() {
       throw new Error('not used');
     },
-    async activateSession(sessionId) {
+    async activateSession(_clientId, sessionId) {
       return { state: 'active', sessionId };
     },
     async deleteSession() {

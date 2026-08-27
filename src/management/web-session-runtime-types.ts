@@ -11,16 +11,28 @@ import type {
   WorkspaceInitializationResult,
 } from './web-session-types.js';
 import type { WebLaunchContextInput } from './web-launch-context.js';
+import type { WorkspaceSummary } from '../workspace/workspace-directory-service.js';
 
 export interface WebSessionRuntimeCatalog {
   initialize(): Promise<void>;
-  create(input?: { title?: string; active?: boolean }): Promise<WebSessionRecord>;
-  list(): Promise<WebSessionMetadata[]>;
-  search(query: string): Promise<WebSessionMetadata[]>;
-  read(sessionId: string): Promise<WebSessionRecord | null>;
-  setActive(sessionId: string): Promise<WebSessionRecord | null>;
-  deleteSession(sessionId: string): Promise<boolean>;
-  clearAll(exceptId?: string): Promise<number>;
+  create(input: { workspaceId: string; principalId: string }): Promise<WebSessionRecord>;
+  list(input: {
+    workspaceId: string;
+    principalId: string;
+    activeConversationId?: string | null;
+    query?: string;
+  }): Promise<WebSessionMetadata[]>;
+  search(input: {
+    workspaceId: string;
+    principalId: string;
+    activeConversationId?: string | null;
+    query?: string;
+  }): Promise<WebSessionMetadata[]>;
+  read(sessionId: string, activeConversationId?: string | null): Promise<WebSessionRecord | null>;
+  workspaceIdForConversation(sessionId: string): Promise<string | null>;
+  listWorkspaces(principalId: string): Promise<WorkspaceSummary[]>;
+  archive(sessionId: string, workspaceId: string, principalId: string): Promise<boolean>;
+  clearWorkspace(workspaceId: string, principalId: string, exceptId?: string): Promise<number>;
   appendTurn(sessionId: string, turn: import('./web-session-types.js').ConversationTurn): Promise<unknown>;
 }
 
@@ -97,19 +109,25 @@ export type WebSessionRuntimeEvent =
   };
 
 export interface ManagementWebSessionRuntime {
-  readonly activeSessionId: string;
   initialize(): Promise<void>;
-  initializeClient?(context: WebLaunchContextInput): Promise<WorkspaceInitializationResult>;
+  initializeClient(clientId: string, context: WebLaunchContextInput | null): Promise<WorkspaceInitializationResult>;
+  closeClient(clientId: string): Promise<void>;
   dispose(): Promise<void>;
-  submit(text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
-  listSessions(query?: string): Promise<WebSessionMetadataProjection[]>;
-  readSession(sessionId: string): Promise<WebSessionRecordProjection | null>;
-  createSession(title?: string, workspaceHint?: string): Promise<WebSessionCreationResult>;
-  activateSession(sessionId: string): Promise<WebSessionActivationResult>;
+  getClientState(clientId: string): {
+    activeWorkspaceId: string | null;
+    activeSessionId: string | null;
+  };
+  listWorkspaces(clientId: string): Promise<WorkspaceSummary[]>;
+  selectWorkspace(clientId: string, path: string): Promise<WorkspaceInitializationResult>;
+  submit(clientId: string, text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
+  listSessions(clientId: string, query?: string): Promise<WebSessionMetadataProjection[]>;
+  readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null>;
+  createSession(clientId: string): Promise<WebSessionCreationResult>;
+  activateSession(clientId: string, sessionId: string): Promise<WebSessionActivationResult>;
   /** 硬删除历史会话；活跃会话拒绝删除。 */
-  deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;
+  deleteSession(clientId: string, sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;
   /** 清空除活跃外的全部会话，返回删除数量。 */
-  clearAllSessions(): Promise<{ deleted: number }>;
-  subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void;
-  getReplayEvents(): WebSessionRuntimeEvent[];
+  clearAllSessions(clientId: string): Promise<{ deleted: number }>;
+  subscribe(clientId: string, listener: (event: WebSessionRuntimeEvent) => void): () => void;
+  getReplayEvents(clientId: string): WebSessionRuntimeEvent[];
 }

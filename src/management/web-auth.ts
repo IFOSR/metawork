@@ -16,6 +16,7 @@ export interface WebAuthServiceOptions {
 }
 
 export interface WebAuthSessionState {
+  readonly clientId: string;
   readonly launchContext: WebLaunchContextInput | null;
 }
 
@@ -81,7 +82,8 @@ export class WebAuthService {
 
   createSession(launchContext: WebLaunchContextInput | null = null): WebAuthExchangeResult {
     const sessionToken = this.uniqueSessionToken();
-    const state = {
+    const state: WebAuthSessionState = {
+      clientId: sessionToken,
       launchContext: launchContext
         ? {
           workspaceHint: launchContext.workspaceHint,
