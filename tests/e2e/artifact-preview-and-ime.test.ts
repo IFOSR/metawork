@@ -543,26 +543,52 @@ async function startMockServer(webDist: string): Promise<{
       json(response, { ok: false, reason: 'test', message: '' });
       return;
     }
-    if (url.pathname === '/api/sessions') {
+    if (url.pathname === '/api/workspaces') {
       json(response, {
-        activeSessionId: 'session-1',
-        sessions: [{
+        activeWorkspaceId: 'workspace-1',
+        workspaces: [{
+          id: 'workspace-1',
+          accountId: 'local-default',
+          displayName: 'artifact-workspace',
+          canonicalPath: '/repo-artifact',
+          availability: 'available',
+          createdAt: '2026-08-24T00:00:00.000Z',
+          updatedAt: '2026-08-24T00:00:00.000Z',
+          createdByPrincipal: 'web:browser-test',
+          archived: false,
+        }],
+      });
+      return;
+    }
+    if (url.pathname === '/api/workspaces/workspace-1/conversations') {
+      json(response, {
+        activeWorkspaceId: 'workspace-1',
+        activeConversationId: 'session-1',
+        conversations: [{
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: '产物预览验证',
           createdAt: '2026-08-24T00:00:00.000Z',
           updatedAt: '2026-08-24T00:00:00.000Z',
           active: true,
           archived: false,
+          preview: '产物预览验证',
+          activity: {
+            state: 'idle',
+            taskId: null,
+            updatedAt: '2026-08-24T00:00:00.000Z',
+          },
           workspace: null,
         }],
       });
       return;
     }
-    if (url.pathname === '/api/sessions/session-1') {
+    if (url.pathname === '/api/conversations/session-1') {
       json(response, {
         version: 1,
         session: {
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: '产物预览验证',
           createdAt: '2026-08-24T00:00:00.000Z',
           updatedAt: '2026-08-24T00:00:00.000Z',

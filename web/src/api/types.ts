@@ -203,10 +203,16 @@ import type {
 } from './session-types';
 
 export type ServerMessage =
-  | { type: 'hello'; sessionId: string }
+  | { type: 'hello'; sessionId: string | null }
   | {
       type: 'session_catalog';
       activeSessionId: string;
+      sessions: WebSessionMetadata[];
+    }
+  | {
+      type: 'workspace_directory';
+      activeWorkspaceId: string;
+      activeSessionId: string | null;
       sessions: WebSessionMetadata[];
     }
   | { type: 'active_session_changed'; sessionId: string }

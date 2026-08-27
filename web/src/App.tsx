@@ -8,6 +8,7 @@ import type {
   WebSessionActivationResult,
   WebSessionMetadata,
   WebSessionRecord,
+  WorkspaceSummary,
 } from './api/session-types';
 import type { ConfigurationRuntimeState, InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
@@ -38,6 +39,8 @@ export function App() {
   const [startupLaunchContext, setStartupLaunchContext] = useState<WebLaunchContext | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browsedSessionId, setBrowsedSessionId] = useState<string | null>(null);
@@ -97,7 +100,7 @@ export function App() {
     const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
     const loadRecord = (sessionId: string) => {
-      void http.getSession(sessionId)
+      void http.getConversation(sessionId)
         .then(setSelectedRecord)
         .catch(error => setActivationNotice((error as Error).message));
     };
@@ -105,13 +108,29 @@ export function App() {
       onHello: sessionId => {
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
-        setBrowsedSessionId(current => current ?? sessionId);
-        loadRecord(sessionId);
+        if (sessionId) {
+          setBrowsedSessionId(current => current ?? sessionId);
+          loadRecord(sessionId);
+        }
       },
       onSessionCatalog: (sessionId, nextSessions) => {
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
+      },
+      onWorkspaceDirectory: (workspaceId, sessionId, nextSessions) => {
+        setActiveWorkspaceId(workspaceId);
+        activeConversationRef.current = sessionId;
+        setActiveSessionId(sessionId);
+        setSessions(nextSessions);
+        setBrowsedSessionId(current => (
+          current && nextSessions.some(session => session.id === current) ? current : null
+        ));
+        setSelectedRecord(current => (
+          current && nextSessions.some(session => session.id === current.session.id)
+            ? current
+            : null
+        ));
       },
       onActiveSessionChanged: sessionId => {
         activeConversationRef.current = sessionId;
@@ -224,36 +243,46 @@ export function App() {
     });
     wsRef.current = ws;
     ws.connect();
-    void Promise.all([http.getSessions(), http.getConfig()])
-      .then(async ([catalog, config]) => {
+    void Promise.all([http.getWorkspaces(), http.getConfig()])
+      .then(async ([workspaceCatalog, config]) => {
+        setWorkspaces(workspaceCatalog.workspaces);
+        setActiveWorkspaceId(workspaceCatalog.activeWorkspaceId);
+        const catalog = workspaceCatalog.activeWorkspaceId
+          ? await http.getConversations(workspaceCatalog.activeWorkspaceId)
+          : null;
         const requestedConversationId = startupLaunchContext?.conversationId ?? null;
         const requested = requestedConversationId
-          ? catalog.sessions.find(session => session.id === requestedConversationId)
+          ? catalog?.conversations.find(session => session.id === requestedConversationId)
           : undefined;
-        if (requested && requested.id !== catalog.activeSessionId) {
-          await http.activateSession(requested.id).catch(() => undefined);
+        if (requested && requested.id !== catalog?.activeConversationId) {
+          await http.attachConversation(requested.id).catch(() => undefined);
         }
-        setSessions(catalog.sessions);
-        const initialSessionId = requested?.id ?? catalog.activeSessionId;
+        setSessions(catalog?.conversations ?? []);
+        const activeInWorkspace = catalog?.conversations.some(
+          session => session.id === catalog.activeConversationId,
+        )
+          ? catalog.activeConversationId
+          : null;
+        const initialSessionId = requested?.id ?? activeInWorkspace;
         activeConversationRef.current = initialSessionId;
         setActiveSessionId(initialSessionId);
         setBrowsedSessionId(current => current ?? initialSessionId);
         setConfigurationRuntime(config);
-        loadRecord(initialSessionId);
+        if (initialSessionId) loadRecord(initialSessionId);
       })
       .catch(() => undefined);
     return () => ws.close();
   }, [authenticated, startupLaunchContext]);
 
   useEffect(() => {
-    if (!authenticated || !httpRef.current) return;
+    if (!authenticated || !httpRef.current || !activeWorkspaceId) return;
     const timer = window.setTimeout(() => {
-      void httpRef.current?.getSessions(search)
-        .then(result => setSessions(result.sessions))
+      void httpRef.current?.getConversations(activeWorkspaceId, search)
+        .then(result => setSessions(result.conversations))
         .catch(() => undefined);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [authenticated, search]);
+  }, [authenticated, activeWorkspaceId, search]);
 
   useEffect(() => {
     if (previewState.status === 'closed' && !executionDetail) return;
@@ -269,14 +298,56 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewState.status, executionDetail]);
 
+  const handleSelectWorkspace = async (workspace: WorkspaceSummary) => {
+    const http = httpRef.current;
+    if (!http) return;
+    if (workspace.availability !== 'available') {
+      setActivationNotice(`Workspace ${workspace.displayName} 当前不可用。`);
+      return;
+    }
+    try {
+      const result = await http.selectWorkspace(workspace.canonicalPath);
+      if (result.selection.status === 'failed' || !result.activeWorkspaceId) {
+        setActivationNotice(
+          result.selection.status === 'failed'
+            ? `Workspace 切换失败：${result.selection.reason}`
+            : 'Workspace 切换失败：Server 未返回 workspaceId。',
+        );
+        return;
+      }
+      const [workspaceCatalog, catalog] = await Promise.all([
+        http.getWorkspaces(),
+        http.getConversations(result.activeWorkspaceId),
+      ]);
+      setWorkspaces(workspaceCatalog.workspaces);
+      setActiveWorkspaceId(result.activeWorkspaceId);
+      activeConversationRef.current = result.activeSessionId;
+      setActiveSessionId(result.activeSessionId);
+      setSessions(catalog.conversations);
+      setBrowsedSessionId(null);
+      setSelectedRecord(null);
+      setLiveTurn(null);
+      setPreviewState({ status: 'closed' });
+      setExecutionDetail(null);
+      setActivationNotice(null);
+    } catch (error) {
+      setActivationNotice(`Workspace 切换失败：${(error as Error).message}`);
+    }
+  };
+
   const handleSelectSession = (sessionId: string) => {
     setBrowsedSessionId(sessionId);
     setActivationNotice(null);
     setPreviewState({ status: 'closed' });
     setExecutionDetail(null);
-    void httpRef.current?.getSession(sessionId)
-      .then(setSelectedRecord)
-      .catch(error => setActivationNotice((error as Error).message));
+    if (sessionId === activeSessionId) {
+      void httpRef.current?.getConversation(sessionId)
+        .then(setSelectedRecord)
+        .catch(error => setActivationNotice((error as Error).message));
+    } else {
+      setSelectedRecord(null);
+      setLiveTurn(null);
+    }
   };
 
   const handleOpenArtifact = (artifact: ArtifactProjection) => {
@@ -304,26 +375,38 @@ export function App() {
 
   const handleActivation = async (sessionId: string) => {
     if (!httpRef.current) return;
-    const result = await httpRef.current.activateSession(sessionId);
+    const result = await httpRef.current.attachConversation(sessionId);
     setActivationNotice(activationMessage(result));
     if (result.state === 'active') {
+      const record = await httpRef.current.getConversation(sessionId);
+      const targetWorkspaceId = record.session.workspaceId;
+      if (targetWorkspaceId) {
+        const [workspaceCatalog, catalog] = await Promise.all([
+          httpRef.current.getWorkspaces(),
+          httpRef.current.getConversations(targetWorkspaceId),
+        ]);
+        setWorkspaces(workspaceCatalog.workspaces);
+        setActiveWorkspaceId(targetWorkspaceId);
+        setSessions(catalog.conversations);
+      }
       activeConversationRef.current = sessionId;
       setActiveSessionId(sessionId);
       setBrowsedSessionId(sessionId);
       setLiveTurn(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
-      setSelectedRecord(await httpRef.current.getSession(sessionId));
+      setSelectedRecord(record);
     }
   };
 
   const handleNewSession = async () => {
-    if (!httpRef.current) return;
-    const result = await httpRef.current.createSession();
-    setSessions(current => [
-      result.session.session,
-      ...current.filter(session => session.id !== result.session.session.id),
-    ]);
+    if (!httpRef.current || !activeWorkspaceId) {
+      setActivationNotice('请先选择 Workspace，再新建会话。');
+      return;
+    }
+    const result = await httpRef.current.createConversation(activeWorkspaceId);
+    const catalog = await httpRef.current.getConversations(activeWorkspaceId);
+    setSessions(catalog.conversations);
     setBrowsedSessionId(result.session.session.id);
     setSelectedRecord(result.session);
     setActivationNotice(
@@ -344,7 +427,7 @@ export function App() {
   const handleDeleteSession = async (sessionId: string) => {
     if (!httpRef.current) return;
     try {
-      await httpRef.current.deleteSession(sessionId);
+      await httpRef.current.deleteConversation(sessionId);
       setSessions(current => current.filter(session => session.id !== sessionId));
       if (browsedSessionId === sessionId) {
         setBrowsedSessionId(null);
@@ -384,7 +467,7 @@ export function App() {
   const handleClearSessions = async () => {
     if (!httpRef.current) return;
     try {
-      const result = await httpRef.current.clearSessions();
+      const result = await httpRef.current.clearConversations();
       setSessions(current => current.filter(session => session.id === activeSessionId));
       if (browsedSessionId && browsedSessionId !== activeSessionId) {
         setBrowsedSessionId(null);
@@ -431,12 +514,14 @@ export function App() {
   }
   if (!authenticated) return <TokenGate error={authError} onLogin={handleLogin} onTokenAuth={handleAuth} />;
 
-  const selectedId = browsedSessionId ?? activeSessionId;
+  const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
+  const activeConversationInWorkspace = activeSessionId
+    && sessions.some(session => session.id === activeSessionId)
+    ? activeSessionId
+    : null;
+  const selectedId = browsedSessionId ?? activeConversationInWorkspace;
   const selectedMetadata = sessions.find(session => session.id === selectedId)
     ?? selectedRecord?.session;
-  const selectedWorkspace = selectedRecord?.session.id === selectedId
-    ? selectedRecord.session.workspace
-    : selectedMetadata?.workspace ?? null;
   const turns: ConversationTurnProjection[] = [...(selectedRecord?.turns ?? [])];
   if (selectedId === activeSessionId && liveTurn) {
     const existingIndex = turns.findIndex(turn => turn.id === liveTurn.id);
@@ -463,15 +548,17 @@ export function App() {
     <>
       <WorkspaceShell
         sessions={sessions}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeSessionId}
         selectedSessionId={selectedId}
         search={search}
-        title={selectedMetadata?.title ?? 'New session'}
-        workspace={selectedWorkspace}
+        title={selectedMetadata?.title ?? activeWorkspace?.displayName ?? 'Workspace'}
+        workspace={activeWorkspace}
         tab={tab}
         connected={connected}
         themePreference={themePreference}
-        composerVisible={tab === 'conversation'}
+        composerVisible={tab === 'conversation' && Boolean(selectedId)}
         draft={draft}
         composerDisabled={composerDisabled}
         running={running}
@@ -496,6 +583,7 @@ export function App() {
           />
         )}
         onSearch={setSearch}
+        onSelectWorkspace={workspace => void handleSelectWorkspace(workspace)}
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
         onContinueSession={sessionId => void handleActivation(sessionId)}
@@ -521,7 +609,33 @@ export function App() {
         onRemoveAttachment={attachmentId => setPendingAttachments(current =>
           current.filter(entry => entry.attachmentId !== attachmentId))}
       >
-        {tab === 'conversation'
+        {!selectedId
+          ? (
+            <div className="workspace-home">
+              <span className="workspace-home-kicker">WORKSPACE HOME</span>
+              <h2>{activeWorkspace?.displayName ?? '选择一个 Workspace'}</h2>
+              <p>
+                {activeWorkspace
+                  ? '选择左侧会话继续工作，或在当前 Workspace 新建一个独立会话。'
+                  : '从项目目录启动 MetaWork Web，或选择已有 Workspace。'}
+              </p>
+              {activeWorkspace && (
+                <button onClick={() => void handleNewSession()}>新建会话</button>
+              )}
+            </div>
+          )
+          : readOnly && !selectedRecord
+          ? (
+            <div className="conversation-attach-prompt">
+              <span>CONVERSATION SUMMARY</span>
+              <h2>{selectedMetadata?.title ?? 'Conversation'}</h2>
+              <p>{selectedMetadata?.preview ?? '完整历史仅在 attach 后安全回放。'}</p>
+              <button onClick={() => void handleActivation(selectedId)}>
+                继续此会话
+              </button>
+            </div>
+          )
+          : tab === 'conversation'
           ? (
             <ConversationView
               turns={turns}

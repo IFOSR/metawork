@@ -1,5 +1,9 @@
 import type { ReactNode } from 'react';
-import type { AttachmentMetadata, WebSessionMetadata } from '../api/session-types';
+import type {
+  AttachmentMetadata,
+  WebSessionMetadata,
+  WorkspaceSummary,
+} from '../api/session-types';
 import { Composer } from './Composer';
 import { SessionSidebar } from './SessionSidebar';
 import { WorkspaceHeader, type WorkspaceTab } from './WorkspaceHeader';
@@ -7,6 +11,8 @@ import type { ThemePreference } from '../theme';
 
 export function WorkspaceShell({
   sessions,
+  workspaces,
+  activeWorkspaceId,
   activeSessionId,
   selectedSessionId,
   search,
@@ -24,6 +30,7 @@ export function WorkspaceShell({
   previewDrawer = null,
   children,
   onSearch,
+  onSelectWorkspace,
   onNewSession,
   onSelectSession,
   onContinueSession,
@@ -40,11 +47,13 @@ export function WorkspaceShell({
   onRemoveAttachment,
 }: {
   sessions: WebSessionMetadata[];
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string | null;
   activeSessionId: string | null;
   selectedSessionId: string | null;
   search: string;
   title: string;
-  workspace: { path: string; selectedAt: string } | null;
+  workspace: WorkspaceSummary | null;
   tab: WorkspaceTab;
   connected: boolean;
   themePreference: ThemePreference;
@@ -58,6 +67,7 @@ export function WorkspaceShell({
   previewDrawer?: ReactNode;
   children: ReactNode;
   onSearch: (value: string) => void;
+  onSelectWorkspace: (workspace: WorkspaceSummary) => void;
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
   onContinueSession: (sessionId: string) => void;
@@ -77,11 +87,14 @@ export function WorkspaceShell({
     <div className="workspace-shell" data-preview-open={previewOpen || undefined}>
       <SessionSidebar
         sessions={sessions}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeSessionId}
         runningSessionId={running ? activeSessionId : null}
         selectedSessionId={selectedSessionId}
         search={search}
         onSearch={onSearch}
+        onSelectWorkspace={onSelectWorkspace}
         onNewSession={onNewSession}
         onSelect={onSelectSession}
         onContinue={onContinueSession}

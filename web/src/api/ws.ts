@@ -13,8 +13,13 @@ import type {
 } from './session-types';
 
 export interface WsHandlers {
-  onHello?: (sessionId: string) => void;
+  onHello?: (sessionId: string | null) => void;
   onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
+  onWorkspaceDirectory?: (
+    activeWorkspaceId: string,
+    activeSessionId: string | null,
+    sessions: WebSessionMetadata[],
+  ) => void;
   onActiveSessionChanged?: (sessionId: string) => void;
   onWorkspaceChanged?: (
     sessionId: string,
@@ -101,6 +106,13 @@ export class WsClient {
           break;
         case 'session_catalog':
           this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions);
+          break;
+        case 'workspace_directory':
+          this.handlers.onWorkspaceDirectory?.(
+            message.activeWorkspaceId,
+            message.activeSessionId,
+            message.sessions,
+          );
           break;
         case 'active_session_changed':
           this.handlers.onActiveSessionChanged?.(message.sessionId);

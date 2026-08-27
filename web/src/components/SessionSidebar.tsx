@@ -1,12 +1,16 @@
-import type { WebSessionMetadata } from '../api/session-types';
+import type { WebSessionMetadata, WorkspaceSummary } from '../api/session-types';
+import { WorkspaceSelector } from './WorkspaceSelector';
 
 export function SessionSidebar({
   sessions,
+  workspaces,
+  activeWorkspaceId,
   activeSessionId,
   runningSessionId,
   selectedSessionId,
   search,
   onSearch,
+  onSelectWorkspace,
   onNewSession,
   onSelect,
   onContinue,
@@ -15,11 +19,14 @@ export function SessionSidebar({
   onSettings,
 }: {
   sessions: WebSessionMetadata[];
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string | null;
   activeSessionId: string | null;
   runningSessionId: string | null;
   selectedSessionId: string | null;
   search: string;
   onSearch: (value: string) => void;
+  onSelectWorkspace: (workspace: WorkspaceSummary) => void;
   onNewSession: () => void;
   onSelect: (sessionId: string) => void;
   onContinue: (sessionId: string) => void;
@@ -33,7 +40,16 @@ export function SessionSidebar({
         <span className="brand-mark">MW</span>
         <div><strong>MetaWork</strong><small>Agent runtime</small></div>
       </div>
-      <button className="new-session-button" onClick={onNewSession}>
+      <WorkspaceSelector
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onSelect={onSelectWorkspace}
+      />
+      <button
+        className="new-session-button"
+        onClick={onNewSession}
+        disabled={!activeWorkspaceId}
+      >
         <span>＋</span> 新建会话
       </button>
       <label className="session-search">
@@ -62,11 +78,13 @@ export function SessionSidebar({
           const active = session.id === activeSessionId;
           const running = session.id === runningSessionId;
           const selected = session.id === selectedSessionId;
+          const activity = session.activity?.state ?? (running ? 'executing' : 'idle');
           return (
             <button
               className="session-row"
               data-active={active}
               data-running={running || undefined}
+              data-activity={activity}
               data-selected={selected}
               key={session.id}
               onClick={() => onSelect(session.id)}
@@ -76,7 +94,9 @@ export function SessionSidebar({
                 <strong>{session.title}</strong>
                 <small>
                   {formatRelativeTime(session.updatedAt)}
-                  {running ? ' · 运行中' : active ? ' · 当前' : ''}
+                  {' · '}
+                  {activityLabel(activity)}
+                  {active ? ' · 当前' : ''}
                 </small>
               </span>
               {!active && selected && (
@@ -116,13 +136,29 @@ export function SessionSidebar({
             </button>
           );
         })}
-        {sessions.length === 0 && <div className="sidebar-empty">暂无历史会话</div>}
+        {sessions.length === 0 && (
+          <div className="sidebar-empty">
+            {activeWorkspaceId ? '当前 Workspace 暂无会话' : '请先选择 Workspace'}
+          </div>
+        )}
       </div>
       <button className="sidebar-settings" onClick={onSettings}>
         <span>设置</span>
       </button>
     </aside>
   );
+}
+
+function activityLabel(
+  state: NonNullable<WebSessionMetadata['activity']>['state'],
+): string {
+  return {
+    idle: '空闲',
+    planning: '规划中',
+    executing: '执行中',
+    waiting: '等待中',
+    blocked: '已阻塞',
+  }[state];
 }
 
 function formatRelativeTime(value: string): string {

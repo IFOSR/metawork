@@ -14,6 +14,7 @@ import type {
   WebSessionCreationResult,
   WebSessionMetadata,
   WebSessionRecord,
+  WorkspaceSummary,
 } from './session-types';
 
 export class HttpClient {
@@ -67,39 +68,62 @@ export class HttpClient {
     return this.request<ExecutorSummary[]>('/api/execution/executors');
   }
 
-  getSessions(query = ''): Promise<{
-    activeSessionId: string;
-    sessions: WebSessionMetadata[];
+  getWorkspaces(): Promise<{
+    activeWorkspaceId: string | null;
+    workspaces: WorkspaceSummary[];
+  }> {
+    return this.request('/api/workspaces');
+  }
+
+  selectWorkspace(path: string): Promise<{
+    selection:
+      | { status: 'not_requested' }
+      | { status: 'accepted' }
+      | { status: 'failed'; reason: string };
+    activeWorkspaceId: string | null;
+    activeSessionId: string | null;
+  }> {
+    return this.request('/api/workspaces/select', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  getConversations(workspaceId: string, query = ''): Promise<{
+    activeWorkspaceId: string;
+    activeConversationId: string | null;
+    conversations: WebSessionMetadata[];
   }> {
     const suffix = query.trim() ? `?q=${encodeURIComponent(query)}` : '';
-    return this.request(`/api/sessions${suffix}`);
+    return this.request(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/conversations${suffix}`,
+    );
   }
 
-  getSession(sessionId: string): Promise<WebSessionRecord> {
-    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  getConversation(sessionId: string): Promise<WebSessionRecord> {
+    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}`);
   }
 
-  createSession(title?: string): Promise<WebSessionCreationResult> {
-    return this.request('/api/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    });
-  }
-
-  activateSession(sessionId: string): Promise<WebSessionActivationResult> {
-    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, {
+  createConversation(workspaceId: string): Promise<WebSessionCreationResult> {
+    return this.request(`/api/workspaces/${encodeURIComponent(workspaceId)}/conversations`, {
       method: 'POST',
     });
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
-    await this.request<void>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+  attachConversation(sessionId: string): Promise<WebSessionActivationResult> {
+    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}/attach`, {
+      method: 'POST',
+    });
+  }
+
+  async deleteConversation(sessionId: string): Promise<void> {
+    await this.request<void>(`/api/conversations/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     });
   }
 
-  clearSessions(): Promise<{ deleted: number }> {
-    return this.request('/api/sessions/clear-all', { method: 'POST' });
+  clearConversations(): Promise<{ deleted: number }> {
+    return this.request('/api/conversations/clear-all', { method: 'POST' });
   }
 
   getArtifact(artifactId: string): Promise<{ artifact: ArtifactProjection }> {

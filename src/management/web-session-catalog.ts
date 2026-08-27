@@ -14,6 +14,7 @@ import {
   boundConversationTraceEvents,
   boundWebSessionTurns,
   type ConversationTurn,
+  type WebSessionDirectoryMetadata,
   type WebSessionMetadata,
   type WebSessionRecord,
 } from './web-session-types.js';
@@ -87,9 +88,9 @@ export class WebSessionCatalog {
     return record;
   }
 
-  async list(input: ListWebSessionsInput): Promise<WebSessionMetadata[]> {
+  async list(input: ListWebSessionsInput): Promise<WebSessionDirectoryMetadata[]> {
     await this.ensureInitialized();
-    const sessions: WebSessionMetadata[] = [];
+    const sessions: WebSessionDirectoryMetadata[] = [];
     let cursor: string | undefined;
     do {
       const page = await this.deps.directory.listConversations(
@@ -103,18 +104,21 @@ export class WebSessionCatalog {
       );
       sessions.push(...page.items.map(item => ({
         id: item.conversationId,
+        workspaceId: item.workspaceId,
         title: item.title,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         active: item.conversationId === input.activeConversationId,
         archived: item.archived,
+        preview: item.preview,
+        activity: structuredClone(item.activity),
       })));
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
     return sessions;
   }
 
-  async search(input: ListWebSessionsInput): Promise<WebSessionMetadata[]> {
+  async search(input: ListWebSessionsInput): Promise<WebSessionDirectoryMetadata[]> {
     return this.list(input);
   }
 

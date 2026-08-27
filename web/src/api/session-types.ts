@@ -16,13 +16,34 @@ export type WebSessionActivationBlockReason =
   | 'task_runtime_active'
   | 'session_unavailable';
 
+export interface WorkspaceSummary {
+  id: string;
+  accountId: string;
+  displayName: string;
+  canonicalPath: string;
+  availability: 'available' | 'unavailable';
+  createdAt: string;
+  updatedAt: string;
+  createdByPrincipal: string;
+  archived: boolean;
+}
+
+export interface ConversationActivityProjection {
+  state: 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
+  taskId: string | null;
+  updatedAt: string;
+}
+
 export interface WebSessionMetadata {
   id: string;
+  workspaceId: string | null;
   title: string;
   createdAt: string;
   updatedAt: string;
   active: boolean;
   archived: boolean;
+  preview?: string;
+  activity?: ConversationActivityProjection;
   workspace: ConversationWorkspaceProjection | null;
 }
 

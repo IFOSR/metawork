@@ -26,12 +26,30 @@ export interface WebSessionMetadata {
   archived: boolean;
 }
 
+export interface WebSessionActivityProjection {
+  state: 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
+  taskId: string | null;
+  updatedAt: string;
+}
+
+export interface WebSessionDirectoryMetadata extends WebSessionMetadata {
+  workspaceId: string;
+  preview: string;
+  activity: WebSessionActivityProjection;
+}
+
 export interface ConversationWorkspaceProjection {
   path: string;
   selectedAt: string;
 }
 
 export interface WebSessionMetadataProjection extends WebSessionMetadata {
+  workspaceId: string | null;
+  workspace: ConversationWorkspaceProjection | null;
+}
+
+export interface WebSessionDirectoryMetadataProjection
+  extends WebSessionDirectoryMetadata {
   workspace: ConversationWorkspaceProjection | null;
 }
 

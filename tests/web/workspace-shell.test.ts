@@ -5,16 +5,21 @@ const root = new URL('../../web/src/', import.meta.url);
 
 describe('Web workspace shell', () => {
   it('renders session navigation, dual views, and a conversation-only composer', async () => {
-    const [app, shell, sidebar, header, composer, styles] = await Promise.all([
+    const [app, shell, sidebar, selector, header, composer, http, styles] = await Promise.all([
       readFile(new URL('App.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8'),
       readFile(new URL('components/SessionSidebar.tsx', root), 'utf8'),
+      readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceHeader.tsx', root), 'utf8'),
       readFile(new URL('components/Composer.tsx', root), 'utf8'),
+      readFile(new URL('api/http.ts', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
     ]);
 
     expect(shell).toContain('<SessionSidebar');
+    expect(sidebar).toContain('<WorkspaceSelector');
+    expect(selector).toContain('canonicalPath');
+    expect(selector).toContain('availability');
     expect(shell).toContain('<WorkspaceHeader');
     expect(shell).toContain('<Composer');
     expect(shell).toContain('composerVisible');
@@ -23,7 +28,7 @@ describe('Web workspace shell', () => {
     expect(sidebar).toContain('搜索会话');
     expect(sidebar).toContain('继续此会话');
     expect(sidebar).toContain('runningSessionId');
-    expect(sidebar).toContain("active ? ' · 当前' : ''");
+    expect(sidebar).toContain('activityLabel');
     expect(sidebar).not.toContain("active ? ' · 运行中' : ''");
     expect(header).toContain('对话');
     expect(header).toContain('轨迹');
@@ -32,15 +37,23 @@ describe('Web workspace shell', () => {
     expect(header).toContain('/workspace /absolute/path');
     expect(composer).toContain('<textarea');
     expect(app).toContain('activeSessionId');
+    expect(app).toContain('activeWorkspaceId');
+    expect(app).toContain('workspaces');
     expect(app).toContain('browsedSessionId');
     expect(app).toContain('onTurnStarted');
     expect(app).toContain('onFinalAnswer');
     expect(app).toContain('onTraceDelta');
-    expect(app).toContain('selectedWorkspace');
+    expect(app).toContain('activeWorkspace');
     expect(app).toContain('onWorkspaceChanged');
-    expect(app).toContain("composerVisible={tab === 'conversation'}");
+    expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
+    expect(app).toContain('workspace-home');
+    expect(http).toContain('/api/workspaces');
+    expect(http).toContain('/conversations');
+    expect(http).not.toContain('/api/sessions');
     expect(styles).toContain('@media (max-width: 860px)');
     expect(styles).toContain('.workspace-sidebar');
+    expect(styles).toContain('.workspace-selector');
+    expect(styles).toContain('.workspace-home');
   });
 
   it('provides a three-state persisted theme control', async () => {

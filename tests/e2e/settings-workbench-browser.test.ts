@@ -388,26 +388,52 @@ async function startMockServer(
       json(response, { ok: false, reason: 'test', message: 'WebSocket disabled in browser fixture' });
       return;
     }
-    if (url.pathname === '/api/sessions') {
+    if (url.pathname === '/api/workspaces') {
       json(response, {
-        activeSessionId: 'session-1',
-        sessions: [{
+        activeWorkspaceId: 'workspace-1',
+        workspaces: [{
+          id: 'workspace-1',
+          accountId: 'local-default',
+          displayName: 'settings-workspace',
+          canonicalPath: '/repo-settings',
+          availability: 'available',
+          createdAt: '2026-08-23T00:00:00.000Z',
+          updatedAt: '2026-08-23T00:00:00.000Z',
+          createdByPrincipal: 'web:browser-test',
+          archived: false,
+        }],
+      });
+      return;
+    }
+    if (url.pathname === '/api/workspaces/workspace-1/conversations') {
+      json(response, {
+        activeWorkspaceId: 'workspace-1',
+        activeConversationId: 'session-1',
+        conversations: [{
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: 'Settings verification',
           createdAt: '2026-08-23T00:00:00.000Z',
           updatedAt: '2026-08-23T00:00:00.000Z',
           active: true,
           archived: false,
+          preview: 'Settings verification',
+          activity: {
+            state: 'idle',
+            taskId: null,
+            updatedAt: '2026-08-23T00:00:00.000Z',
+          },
           workspace: null,
         }],
       });
       return;
     }
-    if (url.pathname === '/api/sessions/session-1') {
+    if (url.pathname === '/api/conversations/session-1') {
       json(response, {
         version: 1,
         session: {
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: 'Settings verification',
           createdAt: '2026-08-23T00:00:00.000Z',
           updatedAt: '2026-08-23T00:00:00.000Z',

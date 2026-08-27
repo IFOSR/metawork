@@ -4,8 +4,8 @@ import type {
   ConversationTurnProjection,
   WebSessionActivationResult,
   WebSessionCreationResult,
-  WebSessionMetadata,
-  WebSessionMetadataProjection,
+  WebSessionDirectoryMetadata,
+  WebSessionDirectoryMetadataProjection,
   WebSessionRecord,
   WebSessionRecordProjection,
   WorkspaceInitializationResult,
@@ -21,13 +21,13 @@ export interface WebSessionRuntimeCatalog {
     principalId: string;
     activeConversationId?: string | null;
     query?: string;
-  }): Promise<WebSessionMetadata[]>;
+  }): Promise<WebSessionDirectoryMetadata[]>;
   search(input: {
     workspaceId: string;
     principalId: string;
     activeConversationId?: string | null;
     query?: string;
-  }): Promise<WebSessionMetadata[]>;
+  }): Promise<WebSessionDirectoryMetadata[]>;
   read(sessionId: string, activeConversationId?: string | null): Promise<WebSessionRecord | null>;
   workspaceIdForConversation(sessionId: string): Promise<string | null>;
   listWorkspaces(principalId: string): Promise<WorkspaceSummary[]>;
@@ -41,7 +41,13 @@ export type WebSessionRuntimeEvent =
   | {
     type: 'session_catalog';
     activeSessionId: string;
-    sessions: WebSessionMetadata[];
+    sessions: WebSessionDirectoryMetadataProjection[];
+  }
+  | {
+    type: 'workspace_directory';
+    activeWorkspaceId: string;
+    activeSessionId: string | null;
+    sessions: WebSessionDirectoryMetadataProjection[];
   }
   | { type: 'output'; from: number; lines: string[] }
   | {
@@ -120,7 +126,7 @@ export interface ManagementWebSessionRuntime {
   listWorkspaces(clientId: string): Promise<WorkspaceSummary[]>;
   selectWorkspace(clientId: string, path: string): Promise<WorkspaceInitializationResult>;
   submit(clientId: string, text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
-  listSessions(clientId: string, query?: string): Promise<WebSessionMetadataProjection[]>;
+  listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
   readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;
   activateSession(clientId: string, sessionId: string): Promise<WebSessionActivationResult>;

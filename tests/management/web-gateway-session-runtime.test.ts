@@ -84,6 +84,100 @@ describe('WebGatewaySessionRuntime', () => {
     expect(runtime.getClientState('browser-b').activeWorkspaceId).toBe('workspace_b');
   });
 
+  it('subscribes to active Workspace summaries without exposing another Conversation detail', async () => {
+    const listeners = new Map<string, (event: GatewayEventEnvelope) => void>();
+    const record = sessionRecord('conv_1', false);
+    const directoryRecord = {
+      ...record.session,
+      workspaceId: 'workspace_repo',
+      preview: 'Conversation',
+      activity: {
+        state: 'executing' as const,
+        taskId: 'task_1',
+        updatedAt: '2026-08-27T09:00:00.000Z',
+      },
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogForRecord(record),
+        list: async () => [directoryRecord],
+        search: async () => [directoryRecord],
+      },
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          conversationId: string | null,
+          listener: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listeners.set(conversationId ?? '*', listener);
+          return () => listeners.delete(conversationId ?? '*');
+        },
+      }),
+    });
+    const events: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => events.push(event));
+
+    await runtime.initializeClient('browser-a', { workspaceHint: '/repo' });
+    expect(listeners.has('workspace:workspace_repo')).toBe(true);
+    listeners.get('workspace:workspace_repo')?.({
+      ...outputEvent('workspace_activity_1', 1, []),
+      conversationId: 'workspace:workspace_repo',
+      kind: 'workspace_activity_changed',
+      payload: {
+        workspaceId: 'workspace_repo',
+        conversationId: 'conv_1',
+        activity: directoryRecord.activity,
+      },
+    });
+
+    await waitFor(() => events.some(event => event.type === 'workspace_directory'));
+    expect(events).toContainEqual({
+      type: 'workspace_directory',
+      activeWorkspaceId: 'workspace_repo',
+      activeSessionId: null,
+      sessions: [expect.objectContaining({
+        id: 'conv_1',
+        activity: directoryRecord.activity,
+      })],
+    });
+    expect(events.some(event => event.type === 'trace_delta')).toBe(false);
+    expect(events.some(event => event.type === 'final_answer')).toBe(false);
+    await expect(runtime.readSession('browser-a', 'conv_1')).resolves.toBeNull();
+  });
+
+  it('restores the target Workspace when attaching a Conversation from another Workspace', async () => {
+    const restored: Array<{ connectionId: string; workspaceId: string }> = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogFixture(),
+        workspaceIdForConversation: async sessionId => (
+          sessionId === 'conv_1' ? 'workspace_other' : 'workspace_repo'
+        ),
+      },
+      gateway: gatewayFixture({
+        restoreWorkspace: (connectionId: string, workspaceId: string) => {
+          restored.push({ connectionId, workspaceId });
+        },
+      }),
+    });
+
+    await runtime.initializeClient('browser-a', { workspaceHint: '/repo' });
+    await expect(runtime.activateSession('browser-a', 'conv_1')).resolves.toEqual({
+      state: 'active',
+      sessionId: 'conv_1',
+    });
+    expect(runtime.getClientState('browser-a')).toEqual({
+      activeWorkspaceId: 'workspace_other',
+      activeSessionId: 'conv_1',
+    });
+    expect(restored.at(-1)).toEqual({
+      connectionId: 'web:browser-a',
+      workspaceId: 'workspace_other',
+    });
+  });
+
   it('projects replayed and live Workspace state without persisting a second authority', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
     const record = sessionRecord('conv_1', true);
@@ -196,7 +290,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
     await initializing;
 
-    expect(calls).toEqual(['attach-client', 'subscribe', 'replay']);
+    expect(calls).toEqual(['subscribe', 'attach-client', 'subscribe', 'replay']);
     expect(runtime.getReplayEvents('browser-a')).toEqual([
       { type: 'output', from: 0, lines: ['replayed'] },
       { type: 'output', from: 0, lines: ['buffered'] },
@@ -241,7 +335,7 @@ describe('WebGatewaySessionRuntime', () => {
     await expect(initializing).rejects.toThrow('disposed');
     await disposing;
 
-    expect(calls).toEqual(['attach-start', 'detach-client']);
+    expect(calls).toEqual(['subscribe', 'attach-start', 'unsubscribe', 'detach-client']);
     expect(() => runtime.getClientState('browser-a')).toThrow('disposed');
   });
 

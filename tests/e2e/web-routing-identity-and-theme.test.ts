@@ -396,16 +396,41 @@ async function startMockServer(webDist: string): Promise<{
       json(response, { ok: false, reason: 'test', message: '' });
       return;
     }
-    if (url.pathname === '/api/sessions') {
+    if (url.pathname === '/api/workspaces') {
       json(response, {
-        activeSessionId: 'session-1',
-        sessions: [{
+        activeWorkspaceId: 'workspace-1',
+        workspaces: [{
+          id: 'workspace-1',
+          accountId: 'local-default',
+          displayName: 'repo-browser-e2e',
+          canonicalPath: '/repo-browser-e2e',
+          availability: 'available',
+          createdAt: '2026-08-25T08:00:00.000Z',
+          updatedAt: '2026-08-25T08:01:00.000Z',
+          createdByPrincipal: 'web:browser-test',
+          archived: false,
+        }],
+      });
+      return;
+    }
+    if (url.pathname === '/api/workspaces/workspace-1/conversations') {
+      json(response, {
+        activeWorkspaceId: 'workspace-1',
+        activeConversationId: 'session-1',
+        conversations: [{
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: '路由身份与主题验收',
           createdAt: '2026-08-25T08:00:00.000Z',
           updatedAt: '2026-08-25T08:01:00.000Z',
           active: true,
           archived: false,
+          preview: '路由身份与主题验收',
+          activity: {
+            state: 'idle',
+            taskId: null,
+            updatedAt: '2026-08-25T08:01:00.000Z',
+          },
           workspace: {
             path: '/repo-browser-e2e',
             selectedAt: '2026-08-25T08:00:00.000Z',
@@ -414,11 +439,12 @@ async function startMockServer(webDist: string): Promise<{
       });
       return;
     }
-    if (url.pathname === '/api/sessions/session-1') {
+    if (url.pathname === '/api/conversations/session-1') {
       json(response, {
         version: 1,
         session: {
           id: 'session-1',
+          workspaceId: 'workspace-1',
           title: '路由身份与主题验收',
           createdAt: '2026-08-25T08:00:00.000Z',
           updatedAt: '2026-08-25T08:01:00.000Z',

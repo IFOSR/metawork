@@ -1,4 +1,5 @@
 import type { ThemePreference } from '../theme';
+import type { WorkspaceSummary } from '../api/session-types';
 import { ThemeControl } from './ThemeControl';
 
 export type WorkspaceTab = 'conversation' | 'trajectory';
@@ -13,14 +14,14 @@ export function WorkspaceHeader({
   onThemeChange,
 }: {
   title: string;
-  workspace: { path: string; selectedAt: string } | null;
+  workspace: WorkspaceSummary | null;
   tab: WorkspaceTab;
   connected: boolean;
   themePreference: ThemePreference;
   onTabChange: (tab: WorkspaceTab) => void;
   onThemeChange: (preference: ThemePreference) => void;
 }) {
-  const workspacePath = workspace?.path ?? null;
+  const workspacePath = workspace?.canonicalPath ?? null;
   return (
     <header className="workspace-header">
       <div className="workspace-title-block">
