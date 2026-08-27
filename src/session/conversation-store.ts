@@ -6,8 +6,9 @@
  * Planner 历史仍在 Planner 会话文件里，权威的 Task/Kernel 事实仍在 SQLite。
  */
 
-export const CONVERSATION_FORMAT_VERSION = 2;
-export const LEGACY_CONVERSATION_FORMAT_VERSION = 1;
+import type { WorkspaceId } from '../workspace/workspace-types.js';
+
+export const CONVERSATION_FORMAT_VERSION = 3;
 
 /** 每个 Conversation 最多保留的终态 turn 投影数量。 */
 export const MAX_CONVERSATION_TURNS = 50;
@@ -20,13 +21,13 @@ export interface ConversationMetadata {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly archived: boolean;
-  readonly workspace: ConversationWorkspace | null;
+  readonly workspaceBinding: ConversationWorkspaceBinding | null;
 }
 
-export interface ConversationWorkspace {
-  readonly path: string;
-  readonly selectedAt: string;
-  readonly selectedByPrincipal: string;
+export interface ConversationWorkspaceBinding {
+  readonly workspaceId: WorkspaceId;
+  readonly boundAt: string;
+  readonly boundByPrincipal: string;
 }
 
 export interface ConversationTurn {

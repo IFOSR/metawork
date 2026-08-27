@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ConversationBindingRepository } from '../../src/session/conversation-binding-repository.js';
 import {
   CONVERSATION_FORMAT_VERSION,
-  type ConversationWorkspace,
   type ConversationRecord,
 } from '../../src/session/conversation-store.js';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
@@ -38,7 +37,7 @@ function makeRecord(
       createdAt: '2026-08-18T00:00:00.000Z',
       updatedAt: '2026-08-18T00:00:00.000Z',
       archived: false,
-      workspace: null,
+      workspaceBinding: null,
     },
     turns: [],
   };
@@ -94,7 +93,7 @@ describe('FileConversationStore', () => {
     expect(loaded!.turns).toHaveLength(1);
   });
 
-  it('migrates a legacy v1 record without a Workspace to workspace null', async () => {
+  it('does not accept legacy records on the runtime read path', async () => {
     const root = await makeRoot();
     const store = new FileConversationStore(root);
     await store.initialize();
@@ -113,30 +112,30 @@ describe('FileConversationStore', () => {
       turns: [],
     }), 'utf8');
 
-    const loaded = await store.readConversation('conv_legacy');
-    expect(loaded?.version).toBe(CONVERSATION_FORMAT_VERSION);
-    expect(loaded?.conversation.workspace).toBeNull();
+    expect(await store.readConversation('conv_legacy')).toBeNull();
   });
 
-  it('persists a canonical Conversation Workspace with the metadata', async () => {
+  it('persists only a Workspace binding in v3 metadata', async () => {
     const root = await makeRoot();
     const store = new FileConversationStore(root);
     await store.initialize();
 
-    const workspace: ConversationWorkspace = {
-      path: '/tmp/project',
-      selectedAt: '2026-08-26T00:00:00.000Z',
-      selectedByPrincipal: 'local:installation',
+    const workspaceBinding = {
+      workspaceId: 'workspace_project',
+      boundAt: '2026-08-26T00:00:00.000Z',
+      boundByPrincipal: 'local:local-installation',
     };
     const record = {
       ...makeRecord('conv_workspace', 'planner_workspace'),
       conversation: {
         ...makeRecord('conv_workspace', 'planner_workspace').conversation,
-        workspace,
+        workspaceBinding,
       },
     };
     await store.writeConversation(record);
-    expect((await store.readConversation('conv_workspace'))?.conversation.workspace).toEqual(workspace);
+    const loaded = await store.readConversation('conv_workspace');
+    expect(loaded?.conversation.workspaceBinding).toEqual(workspaceBinding);
+    expect(JSON.stringify(loaded)).not.toContain('"workspace"');
   });
 
   it('quarantines an invalid record instead of returning it', async () => {

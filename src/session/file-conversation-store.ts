@@ -16,7 +16,6 @@ import { dirname, join, resolve } from 'node:path';
 import { isValidConversationId } from './conversation-types.js';
 import {
   CONVERSATION_FORMAT_VERSION,
-  LEGACY_CONVERSATION_FORMAT_VERSION,
   type ConversationCatalogFile,
   type ConversationMetadata,
   type ConversationRecord,
@@ -156,8 +155,7 @@ function normalizeCatalog(value: unknown): ConversationCatalogFile {
   if (!isRecord(value) || !Array.isArray(value.conversations)) {
     throw new Error('Invalid conversation catalog');
   }
-  if (value.version !== CONVERSATION_FORMAT_VERSION
-    && value.version !== LEGACY_CONVERSATION_FORMAT_VERSION) {
+  if (value.version !== CONVERSATION_FORMAT_VERSION) {
     throw new Error('Invalid conversation catalog');
   }
   const conversations = value.conversations.map(item => normalizeMetadata(item));
@@ -187,8 +185,7 @@ function normalizeRecord(value: unknown, expectedId: string): ConversationRecord
   if (!isRecord(value) || !Array.isArray(value.turns)) {
     throw new Error(`Invalid conversation record: ${expectedId}`);
   }
-  if (value.version !== CONVERSATION_FORMAT_VERSION
-    && value.version !== LEGACY_CONVERSATION_FORMAT_VERSION) {
+  if (value.version !== CONVERSATION_FORMAT_VERSION) {
     throw new Error(`Invalid conversation record: ${expectedId}`);
   }
   const conversation = normalizeMetadata(value.conversation);
@@ -221,8 +218,11 @@ function normalizeMetadata(value: unknown): ConversationMetadata | null {
   if (typeof value.createdAt !== 'string') return null;
   if (typeof value.updatedAt !== 'string') return null;
   if (typeof value.archived !== 'boolean') return null;
-  const workspace = value.workspace === undefined ? null : parseWorkspace(value.workspace);
-  if (workspace === undefined) return null;
+  const workspaceBinding = value.workspaceBinding === undefined
+    ? null
+    : parseWorkspaceBinding(value.workspaceBinding);
+  if (workspaceBinding === undefined) return null;
+  if ('workspace' in value) return null;
   return {
     id: value.id,
     plannerSessionId: value.plannerSessionId,
@@ -231,24 +231,26 @@ function normalizeMetadata(value: unknown): ConversationMetadata | null {
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     archived: value.archived,
-    workspace,
+    workspaceBinding,
   };
 }
 
-function parseWorkspace(value: unknown): ConversationMetadata['workspace'] | undefined {
+function parseWorkspaceBinding(
+  value: unknown,
+): ConversationMetadata['workspaceBinding'] | undefined {
   if (value === null) return null;
   if (!isRecord(value)) return undefined;
   if (
-    typeof value.path !== 'string'
-    || typeof value.selectedAt !== 'string'
-    || typeof value.selectedByPrincipal !== 'string'
+    typeof value.workspaceId !== 'string'
+    || typeof value.boundAt !== 'string'
+    || typeof value.boundByPrincipal !== 'string'
   ) {
     return undefined;
   }
   return {
-    path: value.path,
-    selectedAt: value.selectedAt,
-    selectedByPrincipal: value.selectedByPrincipal,
+    workspaceId: value.workspaceId,
+    boundAt: value.boundAt,
+    boundByPrincipal: value.boundByPrincipal,
   };
 }
 

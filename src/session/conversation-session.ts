@@ -72,10 +72,10 @@ import {
 import { InputController, type InputControllerSubmitOptions } from './input-controller.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
 import type {
+  ConversationWorkspaceSelection,
   ConversationWorkspacePort,
   WorkspaceCommandResult,
 } from '../workspace/conversation-workspace-service.js';
-import type { ConversationWorkspace } from './conversation-store.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type {
@@ -186,7 +186,7 @@ export class ConversationSession {
     return this.deps.runtimePort.accountId;
   }
 
-  async getWorkspace(): Promise<ConversationWorkspace | null> {
+  async getWorkspace(): Promise<ConversationWorkspaceSelection | null> {
     return this.deps.workspace?.getWorkspace() ?? null;
   }
 
@@ -746,19 +746,10 @@ export class ConversationSession {
         return;
       case 'slash_command':
         if (command.workspaceMutation === 'initialize_if_unset') {
-          if (!this.deps.workspace) {
-            throw workspaceError('workspace_command_invalid', 'Workspace 服务未连接');
-          }
-          const path = command.text.slice('/workspace'.length).trim();
-          const result = await this.deps.workspace.initializeDefault(
-            path,
-            options.principalId,
+          throw workspaceError(
+            'workspace_command_invalid',
+            'Workspace selection must be handled by ClientGateway',
           );
-          if (result.status === 'rejected') {
-            throw workspaceError(result.code, result.message);
-          }
-          this.appendOutput(`Workspace 已设置为: ${result.workspace.path}`);
-          return result;
         }
         await this.submitUserInput(command.text, options);
         return;
@@ -1267,15 +1258,10 @@ export class ConversationSession {
 
   private async handleCommand(input: string, principalId = 'unknown'): Promise<boolean> {
     if (/^\/workspace(?:\s|$)/u.test(input)) {
-      if (!this.deps.workspace) {
-        throw workspaceError('workspace_command_invalid', 'Workspace 服务未连接');
-      }
-      const result = await this.deps.workspace.execute(input, principalId);
-      if (result.status === 'rejected') {
-        throw workspaceError(result.code, result.message);
-      }
-      this.appendOutput(`Workspace 已设置为: ${result.workspace.path}`);
-      return false;
+      throw workspaceError(
+        'workspace_command_invalid',
+        `Workspace selection for ${principalId} must be handled by ClientGateway`,
+      );
     }
     // 命令处理由调用方注入（当前 MetaclawSession.handleCommand 桥接）时优先使用；
     // 否则降级为内联 commandCatalog 执行。

@@ -61,6 +61,7 @@ import { WebGatewayAdapter } from '../management/web-gateway-adapter.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from '../gateway/doctor.js';
 import { ConversationSession } from '../session/conversation-session.js';
 import { FileConversationStore } from '../session/file-conversation-store.js';
+import { FileWorkspaceCatalogStore } from '../storage/file-workspace-catalog-store.js';
 import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationRecord,
@@ -69,6 +70,7 @@ import {
   ConversationWorkspaceService,
   isAuthenticatedWorkspacePrincipalId,
 } from '../workspace/conversation-workspace-service.js';
+import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -478,6 +480,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const conversationStore = new FileConversationStore(
     resolve(accountPaths.conversations, 'gateway'),
   );
+  const workspaceCatalogStore = new FileWorkspaceCatalogStore(accountPaths.workspaceCatalog);
+  await new WorkspaceConversationMigrator({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    conversationsRoot: conversationStore.rootDir,
+    workspaceCatalogRoot: accountPaths.workspaceCatalog,
+  }).migrate();
+  await workspaceCatalogStore.initialize();
   await conversationStore.initialize();
   const notifier = createNotificationService(config);
   const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
@@ -583,9 +592,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     resultsRoot: accountPaths.results,
     generatedRuntimeRoot: accountPaths.generatedAgentRuntime,
     sourceRoot: accountPaths.workspaceStore,
-    resolveUserWorkspaceRoot: async conversationId => (
-      (await conversationStore.readConversation(conversationId))?.conversation.workspace?.path ?? null
-    ),
+    resolveUserWorkspaceRoot: async conversationId => {
+      const binding = (await conversationStore.readConversation(conversationId))
+        ?.conversation.workspaceBinding;
+      if (!binding) return null;
+      return (await workspaceCatalogStore.findById(binding.workspaceId))?.canonicalPath ?? null;
+    },
     sessionId,
     stagedConfiguration,
     plannerBinding: stagedConfiguration.plannerBinding,
@@ -749,7 +761,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           createdAt: now,
           updatedAt: now,
           archived: false,
-          workspace: null,
+          workspaceBinding: null,
         },
         turns: [],
       } satisfies ConversationRecord;
@@ -785,11 +797,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     let conversation!: ConversationSession;
     const workspace = new ConversationWorkspaceService({
       store: conversationStore,
+      workspaceCatalog: workspaceCatalogStore,
       conversationId,
-      principalId: 'unknown',
-      authorize: async (_path, principalId) => (
-        isAuthenticatedWorkspacePrincipalId(principalId)
-      ),
       isBusy: () => {
         if (!conversation) return false;
         const switching = conversation.getSwitchingState();
@@ -1059,8 +1068,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
         userWorkspaceRoot: accountPaths.workspaceStore,
         userWorkspaceRoots: async () => (
-          (await conversationStore.readCatalog()).conversations
-            .flatMap(conversation => conversation.workspace?.path ? [conversation.workspace.path] : [])
+          (await workspaceCatalogStore.readCatalog()).workspaces
+            .filter(workspace => !workspace.archived && workspace.availability === 'available')
+            .map(workspace => workspace.canonicalPath)
         ),
       }),
       webAuth,

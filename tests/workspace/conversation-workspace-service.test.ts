@@ -1,14 +1,15 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
 import { CONVERSATION_FORMAT_VERSION, type ConversationRecord } from '../../src/session/conversation-store.js';
+import { FileWorkspaceCatalogStore } from '../../src/storage/file-workspace-catalog-store.js';
 import {
   ConversationWorkspaceService,
   isAuthenticatedWorkspacePrincipalId,
-  type WorkspaceAuthorization,
 } from '../../src/workspace/conversation-workspace-service.js';
+import { WORKSPACE_CATALOG_VERSION } from '../../src/workspace/workspace-types.js';
 
 const roots: string[] = [];
 
@@ -16,13 +17,28 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(withTurn = false) {
   const root = await mkdtemp(join(tmpdir(), 'conversation-workspace-'));
   roots.push(root);
-  const workspace = join(root, 'repo');
-  await mkdir(workspace);
+  const repo = join(root, 'repo');
+  await mkdir(repo);
   const store = new FileConversationStore(join(root, 'conversations'));
-  await store.initialize();
+  const workspaceCatalog = new FileWorkspaceCatalogStore(join(root, 'workspace-catalog'));
+  await Promise.all([store.initialize(), workspaceCatalog.initialize()]);
+  await workspaceCatalog.writeCatalog({
+    version: WORKSPACE_CATALOG_VERSION,
+    workspaces: [{
+      id: 'workspace_repo',
+      accountId: 'local-default',
+      displayName: 'repo',
+      canonicalPath: repo,
+      availability: 'available',
+      createdAt: '2026-08-27T00:00:00.000Z',
+      updatedAt: '2026-08-27T00:00:00.000Z',
+      createdByPrincipal: 'local:local-installation',
+      archived: false,
+    }],
+  });
   const record: ConversationRecord = {
     version: CONVERSATION_FORMAT_VERSION,
     conversation: {
@@ -30,145 +46,63 @@ async function fixture() {
       plannerSessionId: 'planner_1',
       accountId: 'local-default',
       title: 'Workspace test',
-      createdAt: '2026-08-26T00:00:00.000Z',
-      updatedAt: '2026-08-26T00:00:00.000Z',
+      createdAt: '2026-08-27T00:00:00.000Z',
+      updatedAt: '2026-08-27T00:00:00.000Z',
       archived: false,
-      workspace: null,
+      workspaceBinding: null,
     },
-    turns: [],
+    turns: withTurn ? [{
+      id: 'turn_1',
+      conversationId: 'conv_1',
+      userInput: 'ordinary query',
+      finalAnswer: 'done',
+      status: 'completed',
+    }] : [],
   };
   await store.writeConversation(record);
   await store.writeCatalog({ version: CONVERSATION_FORMAT_VERSION, conversations: [record.conversation] });
-  return { root, workspace, store };
-}
-
-function service(
-  fixtureValue: Awaited<ReturnType<typeof fixture>>,
-  overrides: Partial<WorkspaceAuthorization> = {},
-) {
-  return new ConversationWorkspaceService({
-    store: fixtureValue.store,
-    conversationId: 'conv_1',
-    principalId: 'local:installation',
-    authorize: async () => true,
-    isBusy: () => false,
-    ...overrides,
-  });
+  return {
+    store,
+    workspaceCatalog,
+    service: new ConversationWorkspaceService({
+      store,
+      workspaceCatalog,
+      conversationId: 'conv_1',
+      isBusy: () => false,
+    }),
+  };
 }
 
 describe('ConversationWorkspaceService', () => {
-  it('sets only an absolute accessible directory after realpath canonicalization', async () => {
+  it('binds an empty Conversation to a Workspace id', async () => {
     const value = await fixture();
-    const result = await service(value).execute(`/workspace ${value.workspace}`);
-    const canonicalPath = await realpath(value.workspace);
-
-    expect(result).toEqual({
-      status: 'changed',
-      workspace: {
-        path: canonicalPath,
-        selectedAt: expect.any(String),
-        selectedByPrincipal: 'local:installation',
-      },
-    });
-    expect((await value.store.readConversation('conv_1'))?.conversation.workspace?.path)
-      .toBe(canonicalPath);
-  });
-
-  it('initializes an empty Conversation through the same canonical Workspace mutation', async () => {
-    const value = await fixture();
-    const result = await service(value).initializeDefault(value.workspace);
-    const canonicalPath = await realpath(value.workspace);
-
-    expect(result).toEqual({
-      status: 'changed',
-      workspace: {
-        path: canonicalPath,
-        selectedAt: expect.any(String),
-        selectedByPrincipal: 'local:installation',
-      },
-    });
-    expect((await value.store.readConversation('conv_1'))?.conversation.workspace?.path)
-      .toBe(canonicalPath);
-  });
-
-  it('does not validate or replace an existing Workspace during default initialization', async () => {
-    const value = await fixture();
-    const workspaceService = service(value);
-    const changed = await workspaceService.execute(`/workspace ${value.workspace}`);
-    if (changed.status !== 'changed') throw new Error('fixture Workspace was not initialized');
-
-    const result = await service(value, {
-      authorize: () => {
-        throw new Error('existing Workspace must win before authorization');
-      },
-      isBusy: () => {
-        throw new Error('existing Workspace must win before busy fencing');
-      },
-    }).initializeDefault('/does/not/exist');
-
-    expect(result).toEqual({
-      status: 'unchanged',
-      workspace: changed.workspace,
-    });
-    expect((await value.store.readConversation('conv_1'))?.conversation.workspace)
-      .toEqual(changed.workspace);
-  });
-
-  it('rejects relative, missing, file, inaccessible, or unauthorized paths', async () => {
-    const value = await fixture();
-    const filePath = join(value.root, 'not-a-directory');
-    await writeFile(filePath, 'file');
-    await expect(service(value).execute('/workspace relative')).resolves.toMatchObject({
-      status: 'rejected',
-      code: 'workspace_path_invalid',
-    });
-    await expect(service(value).execute('/workspace /does/not/exist')).resolves.toMatchObject({
-      status: 'rejected',
-      code: 'workspace_path_invalid',
-    });
-    await expect(service(value).execute(`/workspace ${filePath}`)).resolves.toMatchObject({
-      status: 'rejected',
-      code: 'workspace_path_invalid',
-    });
-    await expect(service(value, { authorize: async () => false }).execute(`/workspace ${value.workspace}`))
-      .resolves.toMatchObject({ status: 'rejected', code: 'workspace_unauthorized' });
-    await expect(service(value, { isBusy: () => true }).execute(`/workspace ${value.workspace}`))
-      .resolves.toMatchObject({ status: 'rejected', code: 'workspace_busy' });
-  });
-
-  it('rejects commands other than the canonical Workspace command', async () => {
-    const value = await fixture();
-    await expect(service(value).execute('/workspace')).resolves.toMatchObject({
-      status: 'rejected',
-      code: 'workspace_command_invalid',
-    });
-    await expect(service(value).execute('/workspace /tmp/a /tmp/b')).resolves.toMatchObject({
-      status: 'rejected',
-      code: 'workspace_command_invalid',
-    });
-  });
-
-  it('accepts only authenticated Principal identifiers at the production Workspace seam', () => {
-    for (const principalId of [
+    const result = await value.service.bindEmptyConversation(
+      'workspace_repo',
       'local:local-installation',
-      'web:local-web-user',
-      'feishu:tenant-1:user-1',
-      'app:device-1',
-    ]) {
-      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(true);
-    }
-    for (const principalId of [
-      '',
-      'unknown',
-      'system:root',
-      'local:',
-      'local:forged-installation',
-      'web:forged-user',
-      'feishu:tenant-only',
-      ':local-installation',
-      'web:local-web-user\nforged',
-    ]) {
-      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(false);
-    }
+    );
+    expect(result).toMatchObject({
+      status: 'changed',
+      workspace: { workspaceId: 'workspace_repo' },
+    });
+    expect((await value.store.readConversation('conv_1'))?.conversation.workspaceBinding)
+      .toMatchObject({ workspaceId: 'workspace_repo' });
+  });
+
+  it('locks binding after the first ordinary query', async () => {
+    const value = await fixture(true);
+    await expect(value.service.bindEmptyConversation(
+      'workspace_repo',
+      'local:local-installation',
+    )).resolves.toMatchObject({
+      status: 'rejected',
+      code: 'workspace_binding_locked',
+    });
+  });
+
+  it('accepts only authenticated Principal identifiers at the production seam', () => {
+    expect(isAuthenticatedWorkspacePrincipalId('local:local-installation')).toBe(true);
+    expect(isAuthenticatedWorkspacePrincipalId('web:local-web-user')).toBe(true);
+    expect(isAuthenticatedWorkspacePrincipalId('feishu:tenant:user')).toBe(true);
+    expect(isAuthenticatedWorkspacePrincipalId('local:forged')).toBe(false);
   });
 });

@@ -1,20 +1,20 @@
-import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
 import type {
-  ConversationMetadata,
   ConversationRecord,
   ConversationStore,
-  ConversationWorkspace,
+  ConversationWorkspaceBinding,
 } from '../session/conversation-store.js';
+import type { WorkspaceCatalogStore } from './workspace-catalog-store.js';
+import type { WorkspaceId } from './workspace-types.js';
 
-export interface WorkspaceAuthorization {
-  readonly authorize: (path: string, principalId: string) => Promise<boolean> | boolean;
-  readonly isBusy: () => boolean;
+export interface ConversationWorkspaceSelection extends ConversationWorkspaceBinding {
+  readonly path: string;
+  readonly selectedAt: string;
+  readonly selectedByPrincipal: string;
 }
 
 export type WorkspaceCommandResult =
-  | { readonly status: 'changed'; readonly workspace: ConversationWorkspace }
-  | { readonly status: 'unchanged'; readonly workspace: ConversationWorkspace }
+  | { readonly status: 'changed'; readonly workspace: ConversationWorkspaceSelection }
+  | { readonly status: 'unchanged'; readonly workspace: ConversationWorkspaceSelection }
   | {
       readonly status: 'rejected';
       readonly code: WorkspaceRejectionCode;
@@ -25,84 +25,88 @@ export type WorkspaceRejectionCode =
   | 'workspace_command_invalid'
   | 'workspace_path_invalid'
   | 'workspace_unauthorized'
+  | 'workspace_unavailable'
+  | 'workspace_binding_locked'
   | 'workspace_busy'
+  | 'workspace_required'
   | 'conversation_not_found';
 
-export interface ConversationWorkspaceServiceDeps extends WorkspaceAuthorization {
+export interface ConversationWorkspaceServiceDeps {
   readonly store: ConversationStore;
+  readonly workspaceCatalog: WorkspaceCatalogStore;
   readonly conversationId: string;
-  readonly principalId: string;
+  readonly isBusy: () => boolean;
   readonly now?: () => string;
 }
 
 export interface ConversationWorkspacePort {
-  getWorkspace(): Promise<ConversationWorkspace | null>;
-  execute(input: string, principalId?: string): Promise<WorkspaceCommandResult>;
-  initializeDefault(path: string, principalId?: string): Promise<WorkspaceCommandResult>;
+  getWorkspace(): Promise<ConversationWorkspaceSelection | null>;
+  bindEmptyConversation(
+    workspaceId: WorkspaceId,
+    principalId: string,
+  ): Promise<WorkspaceCommandResult>;
 }
 
-export class ConversationWorkspaceService {
+export class ConversationWorkspaceService implements ConversationWorkspacePort {
   constructor(private readonly deps: ConversationWorkspaceServiceDeps) {}
 
-  async getWorkspace(): Promise<ConversationWorkspace | null> {
+  async getWorkspace(): Promise<ConversationWorkspaceSelection | null> {
     const record = await this.deps.store.readConversation(this.deps.conversationId);
-    return record?.conversation.workspace ?? null;
+    const binding = record?.conversation.workspaceBinding;
+    if (!binding) return null;
+    const workspace = await this.deps.workspaceCatalog.findById(binding.workspaceId);
+    if (!workspace || workspace.archived || workspace.availability !== 'available') return null;
+    return {
+      ...binding,
+      path: workspace.canonicalPath,
+      selectedAt: binding.boundAt,
+      selectedByPrincipal: binding.boundByPrincipal,
+    };
   }
 
-  async execute(input: string, principalId = this.deps.principalId): Promise<WorkspaceCommandResult> {
-    const rawPath = parseWorkspaceCommand(input);
-    if (!rawPath) {
-      return rejected('workspace_command_invalid', '用法: /workspace /absolute/path');
-    }
-    return this.changeWorkspace(rawPath, principalId);
-  }
-
-  async initializeDefault(
-    path: string,
-    principalId = this.deps.principalId,
-  ): Promise<WorkspaceCommandResult> {
-    const existing = await this.getWorkspace();
-    if (existing) return { status: 'unchanged', workspace: existing };
-    return this.changeWorkspace(path, principalId);
-  }
-
-  private async changeWorkspace(
-    path: string,
+  async bindEmptyConversation(
+    workspaceId: WorkspaceId,
     principalId: string,
   ): Promise<WorkspaceCommandResult> {
-    if (!isAbsolute(path)) {
-      return rejected('workspace_path_invalid', 'Workspace 必须是绝对路径');
-    }
-
-    let canonicalPath: string;
-    try {
-      canonicalPath = await realpath(path);
-      if (!(await stat(canonicalPath)).isDirectory()) {
-        return rejected('workspace_path_invalid', 'Workspace 必须是目录');
-      }
-    } catch {
-      return rejected('workspace_path_invalid', 'Workspace 目录不存在或不可访问');
-    }
-    if (!(await this.deps.authorize(canonicalPath, principalId))) {
-      return rejected('workspace_unauthorized', '当前 Principal 未被授权使用该 Workspace');
-    }
     if (this.deps.isBusy()) {
-      return rejected('workspace_busy', '当前 Conversation 有活动 Turn 或 Task，暂不能切换 Workspace');
+      return rejected('workspace_busy', '当前 Conversation 有活动 Turn 或 Task');
     }
-
+    const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
+    if (!workspace || workspace.archived) {
+      return rejected('workspace_unauthorized', 'Workspace 不存在或未授权');
+    }
+    if (workspace.availability !== 'available') {
+      return rejected('workspace_unavailable', 'Workspace 当前不可用');
+    }
     const record = await this.deps.store.readConversation(this.deps.conversationId);
     if (!record) return rejected('conversation_not_found', 'Conversation 不存在');
-    const workspace: ConversationWorkspace = {
-      path: canonicalPath,
-      selectedAt: this.deps.now?.() ?? new Date().toISOString(),
-      selectedByPrincipal: principalId,
+    if (record.turns.length > 0) {
+      return rejected('workspace_binding_locked', 'Conversation Workspace binding 已锁定');
+    }
+    const existing = record.conversation.workspaceBinding;
+    if (existing?.workspaceId === workspaceId) {
+      return {
+        status: 'unchanged',
+        workspace: {
+          ...existing,
+          path: workspace.canonicalPath,
+          selectedAt: existing.boundAt,
+          selectedByPrincipal: existing.boundByPrincipal,
+        },
+      };
+    }
+    const boundAt = this.deps.now?.() ?? new Date().toISOString();
+    const binding: ConversationWorkspaceBinding = {
+      workspaceId,
+      boundAt,
+      boundByPrincipal: principalId,
     };
     const updated: ConversationRecord = {
       ...record,
       conversation: {
         ...record.conversation,
-        workspace,
-        updatedAt: workspace.selectedAt,
+        workspaceBinding: binding,
+        updatedAt: boundAt,
       },
     };
     await this.deps.store.writeConversation(updated);
@@ -113,16 +117,16 @@ export class ConversationWorkspaceService {
         metadata.id === updated.conversation.id ? updated.conversation : metadata
       )),
     });
-    return { status: 'changed', workspace };
+    return {
+      status: 'changed',
+      workspace: {
+        ...binding,
+        path: workspace.canonicalPath,
+        selectedAt: binding.boundAt,
+        selectedByPrincipal: binding.boundByPrincipal,
+      },
+    };
   }
-}
-
-function parseWorkspaceCommand(input: string): string | null {
-  const prefix = '/workspace';
-  if (!input.startsWith(prefix)) return null;
-  const path = input.slice(prefix.length).trim();
-  if (!path || /\s+\//u.test(path)) return null;
-  return path;
 }
 
 function rejected(
@@ -132,22 +136,15 @@ function rejected(
   return { status: 'rejected', code, message };
 }
 
-export function conversationMetadataWorkspace(
-  metadata: ConversationMetadata,
-): ConversationWorkspace | null {
-  return metadata.workspace;
-}
-
 export function isAuthenticatedWorkspacePrincipalId(principalId: string): boolean {
   const match = /^(local|web|feishu|app):(.+)$/u.exec(principalId);
   if (!match) return false;
   const kind = match[1]!;
   const externalId = match[2]!;
   if (externalId !== externalId.trim()) return false;
-  if (
-    Buffer.byteLength(externalId, 'utf8') > 256
-    || /[\u0000-\u001f\u007f]/u.test(externalId)
-  ) return false;
+  if (Buffer.byteLength(externalId, 'utf8') > 256 || /[\u0000-\u001f\u007f]/u.test(externalId)) {
+    return false;
+  }
   if (kind === 'local') return externalId === 'local-installation';
   if (kind === 'web') return externalId === 'local-web-user';
   if (kind === 'feishu') return /^[^:]+:[^:]+$/u.test(externalId);

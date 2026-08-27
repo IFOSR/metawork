@@ -11,7 +11,7 @@ import {
   createPlannerProposalSubmissionId,
   plannerProposalFingerprint,
 } from '../../src/planning/planner-proposal.js';
-import type { ConversationWorkspace } from '../../src/session/conversation-store.js';
+import type { ConversationWorkspaceSelection } from '../../src/workspace/conversation-workspace-service.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -280,9 +280,12 @@ describe('ConversationSession', () => {
     expect(plannerCalls).toBe(0);
   });
 
-  it('routes automatic Workspace initialization through initializeDefault', async () => {
+  it('rejects automatic Workspace selection at the Conversation seam', async () => {
     const calls: string[] = [];
-    const workspace: ConversationWorkspace = {
+    const workspace: ConversationWorkspaceSelection = {
+      workspaceId: 'workspace_repo_a',
+      boundAt: '2026-08-27T00:00:00.000Z',
+      boundByPrincipal: 'local:local-installation',
       path: '/repo-a',
       selectedAt: '2026-08-27T00:00:00.000Z',
       selectedByPrincipal: 'local:local-installation',
@@ -294,30 +297,30 @@ describe('ConversationSession', () => {
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       workspace: {
         getWorkspace: async () => null,
-        execute: async input => {
-          calls.push(`execute:${input}`);
-          return { status: 'changed', workspace };
-        },
-        initializeDefault: async (path, principalId) => {
-          calls.push(`initialize:${path}:${principalId}`);
+        bindEmptyConversation: async (workspaceId, principalId) => {
+          calls.push(`bind:${workspaceId}:${principalId}`);
           return { status: 'changed', workspace };
         },
       },
     });
 
-    const result = await session.executeGatewayCommand({
+    await expect(session.executeGatewayCommand({
       kind: 'slash_command',
       text: '/workspace /repo-a',
       workspaceMutation: 'initialize_if_unset',
-    }, { principalId: 'local:local-installation' });
+    }, { principalId: 'local:local-installation' })).rejects.toThrow(
+      'Workspace selection must be handled by ClientGateway',
+    );
 
-    expect(calls).toEqual(['initialize:/repo-a:local:local-installation']);
-    expect(result).toEqual({ status: 'changed', workspace });
+    expect(calls).toEqual([]);
   });
 
-  it('keeps explicit Workspace changes on the ordinary command path', async () => {
+  it('does not execute explicit Workspace selection inside ConversationSession', async () => {
     const calls: string[] = [];
-    const workspace: ConversationWorkspace = {
+    const workspace: ConversationWorkspaceSelection = {
+      workspaceId: 'workspace_repo_b',
+      boundAt: '2026-08-27T00:00:00.000Z',
+      boundByPrincipal: 'local:local-installation',
       path: '/repo-b',
       selectedAt: '2026-08-27T00:00:00.000Z',
       selectedByPrincipal: 'local:local-installation',
@@ -329,12 +332,8 @@ describe('ConversationSession', () => {
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       workspace: {
         getWorkspace: async () => null,
-        execute: async input => {
-          calls.push(`execute:${input}`);
-          return { status: 'changed', workspace };
-        },
-        initializeDefault: async path => {
-          calls.push(`initialize:${path}`);
+        bindEmptyConversation: async (workspaceId, principalId) => {
+          calls.push(`bind:${workspaceId}:${principalId}`);
           return { status: 'changed', workspace };
         },
       },
@@ -345,7 +344,7 @@ describe('ConversationSession', () => {
       text: '/workspace /repo-b',
     }, { principalId: 'local:local-installation' });
 
-    expect(calls).toEqual(['execute:/workspace /repo-b']);
+    expect(calls).toEqual([]);
   });
 
   it('shares account facts but not output across conversations', () => {
