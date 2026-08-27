@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach } from 'vitest';
+import { readFile } from 'node:fs/promises';
 
 let roots: string[] = [];
 afterEach(async () => {
@@ -124,5 +125,42 @@ describe('FeishuGatewayAdapter', () => {
 
     expect(duplicate).toMatchObject({ status: 'duplicate' });
     expect(submitted).toHaveLength(1);
+  });
+
+  it('routes /workspace through the shared slash-command mutation', async () => {
+    let command: unknown;
+    const adapter = new FeishuGatewayAdapter({
+      gateway: {
+        handle: async envelope => {
+          command = envelope.command;
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted',
+            conversationId: 'conv_1',
+          };
+        },
+      } as unknown as ClientGateway,
+    });
+
+    await adapter.handleMessage(
+      { tenantKey: 'tenant_1', userId: 'user_1' },
+      { chatId: 'chat_1' },
+      '/workspace /repo-a',
+      'req_workspace',
+      'idem_workspace',
+    );
+
+    expect(command).toEqual({
+      kind: 'slash_command',
+      text: '/workspace /repo-a',
+    });
+  });
+
+  it('does not own Workspace state or import Conversation storage', async () => {
+    const source = await readFile('src/gateway/feishu-gateway-adapter.ts', 'utf8');
+    expect(source).not.toContain('process.cwd');
+    expect(source).not.toContain('ConversationStore');
+    expect(source).not.toContain('conversation-store');
   });
 });

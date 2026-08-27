@@ -51,7 +51,9 @@ export class FeishuGatewayAdapter {
           ...(channel.threadId !== undefined ? { threadId: channel.threadId } : {}),
         },
       },
-      command: { kind: 'user_message', text, attachments: [] },
+      command: text.startsWith('/')
+        ? { kind: 'slash_command', text }
+        : { kind: 'user_message', text, attachments: [] },
       clientCapabilities: [],
     };
     return this.deps.gateway.handle(envelope, 'feishu', sender);
