@@ -3,6 +3,7 @@ import { HttpClient } from './api/http';
 import type {
   ArtifactProjection,
   AttachmentMetadata,
+  ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionActivationResult,
   WebSessionMetadata,
@@ -10,7 +11,12 @@ import type {
 } from './api/session-types';
 import type { ConfigurationRuntimeState, InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
-import { establishWebSession, exchangeWebCredential, loginWithPassword } from './auth';
+import {
+  establishWebSession,
+  exchangeWebCredential,
+  loginWithPassword,
+  type WebLaunchContext,
+} from './auth';
 import { ConversationView } from './components/ConversationView';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
@@ -24,11 +30,12 @@ import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
 import { useThemePreference } from './theme';
 
-let startupAuthentication: Promise<boolean> | null = null;
+let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 
 export function App() {
   const [themePreference, setThemePreference] = useThemePreference();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [startupLaunchContext, setStartupLaunchContext] = useState<WebLaunchContext | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
@@ -59,8 +66,16 @@ export function App() {
     let active = true;
     startupAuthentication ??= establishWebSession();
     void startupAuthentication
-      .then(ok => {
-        if (active) setAuthenticated(ok);
+      .then(session => {
+        if (!active) return;
+        setStartupLaunchContext(session?.launchContext ?? null);
+        if (session?.workspaceInitialization?.status === 'failed') {
+          setActivationNotice(
+            `默认 Workspace 设置失败：${session.workspaceInitialization.reason}。`
+            + ' 请执行 /workspace /absolute/path。',
+          );
+        }
+        setAuthenticated(Boolean(session));
       })
       .catch(error => {
         if (!active) return;
@@ -108,6 +123,20 @@ export function App() {
         setPreviewState({ status: 'closed' });
         setExecutionDetail(null);
         loadRecord(sessionId);
+      },
+      onWorkspaceChanged: (
+        sessionId: string,
+        workspace: ConversationWorkspaceProjection | null,
+      ) => {
+        setSessions(current => current.map(session => (
+          session.id === sessionId ? { ...session, workspace } : session
+        )));
+        setSelectedRecord(current => current?.session.id === sessionId
+          ? {
+            ...current,
+            session: { ...current.session, workspace },
+          }
+          : current);
       },
       onConversationSnapshot: turn => setLiveTurn(turn),
       onTurnStarted: (_requestId, turnId, userInput, startedAt) => {
@@ -197,7 +226,7 @@ export function App() {
     ws.connect();
     void Promise.all([http.getSessions(), http.getConfig()])
       .then(async ([catalog, config]) => {
-        const requestedConversationId = new URLSearchParams(window.location.search).get('conversation');
+        const requestedConversationId = startupLaunchContext?.conversationId ?? null;
         const requested = requestedConversationId
           ? catalog.sessions.find(session => session.id === requestedConversationId)
           : undefined;
@@ -214,7 +243,7 @@ export function App() {
       })
       .catch(() => undefined);
     return () => ws.close();
-  }, [authenticated]);
+  }, [authenticated, startupLaunchContext]);
 
   useEffect(() => {
     if (!authenticated || !httpRef.current) return;
@@ -297,7 +326,12 @@ export function App() {
     ]);
     setBrowsedSessionId(result.session.session.id);
     setSelectedRecord(result.session);
-    setActivationNotice(activationMessage(result.activation));
+    setActivationNotice(
+      result.workspaceInitialization.status === 'failed'
+        ? `默认 Workspace 设置失败：${result.workspaceInitialization.reason}。`
+          + ' 请执行 /workspace /absolute/path。'
+        : activationMessage(result.activation),
+    );
     if (result.activation.state === 'active') {
       activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);
@@ -364,10 +398,13 @@ export function App() {
 
   const handleAuth = async (token: string): Promise<boolean> => {
     try {
-      const ok = await exchangeWebCredential(token);
-      setAuthError(ok ? null : 'token 无效或已过期。');
-      if (ok) setAuthenticated(true);
-      return ok;
+      const session = await exchangeWebCredential(token);
+      setAuthError(session ? null : 'token 无效或已过期。');
+      if (session) {
+        setStartupLaunchContext(session.launchContext);
+        setAuthenticated(true);
+      }
+      return Boolean(session);
     } catch (error) {
       setAuthError((error as Error).message);
       return false;
@@ -378,7 +415,10 @@ export function App() {
     try {
       const ok = await loginWithPassword(username, password);
       setAuthError(ok ? null : '用户名或密码错误，或尝试次数过多，请稍后再试。');
-      if (ok) setAuthenticated(true);
+      if (ok) {
+        setStartupLaunchContext(null);
+        setAuthenticated(true);
+      }
       return ok;
     } catch (error) {
       setAuthError((error as Error).message);
@@ -394,6 +434,9 @@ export function App() {
   const selectedId = browsedSessionId ?? activeSessionId;
   const selectedMetadata = sessions.find(session => session.id === selectedId)
     ?? selectedRecord?.session;
+  const selectedWorkspace = selectedRecord?.session.id === selectedId
+    ? selectedRecord.session.workspace
+    : selectedMetadata?.workspace ?? null;
   const turns: ConversationTurnProjection[] = [...(selectedRecord?.turns ?? [])];
   if (selectedId === activeSessionId && liveTurn) {
     const existingIndex = turns.findIndex(turn => turn.id === liveTurn.id);
@@ -424,6 +467,7 @@ export function App() {
         selectedSessionId={selectedId}
         search={search}
         title={selectedMetadata?.title ?? 'New session'}
+        workspace={selectedWorkspace}
         tab={tab}
         connected={connected}
         themePreference={themePreference}

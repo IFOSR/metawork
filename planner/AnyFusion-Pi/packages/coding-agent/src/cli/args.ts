@@ -29,6 +29,7 @@ export interface Args {
 	sessionDir?: string;
 	gatewaySocket?: string;
 	conversationId?: string;
+	workspaceHint?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -117,6 +118,8 @@ export function parseArgs(args: string[]): Args {
 			result.gatewaySocket = args[++i];
 		} else if (arg === "--conversation-id" && i + 1 < args.length) {
 			result.conversationId = args[++i];
+		} else if (arg === "--workspace-hint" && i + 1 < args.length) {
+			result.workspaceHint = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -231,6 +234,7 @@ ${chalk.bold("Options:")}
   --session-dir <dir>    指定会话存储目录
   --gateway-socket <path> 作为 Gateway TUI 客户端启动
   --conversation-id <id>  连接到指定 Conversation
+  --workspace-hint <path> 新 Conversation 的 Client 启动目录提示
   --name, -n <name>      设置会话名称
   --offline              禁止启动期网络访问
   --help, -h             显示帮助

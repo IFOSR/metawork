@@ -5,8 +5,12 @@ import type {
   WebSessionActivationResult,
   WebSessionCreationResult,
   WebSessionMetadata,
+  WebSessionMetadataProjection,
   WebSessionRecord,
+  WebSessionRecordProjection,
+  WorkspaceInitializationResult,
 } from './web-session-types.js';
+import type { WebLaunchContextInput } from './web-launch-context.js';
 
 export interface WebSessionRuntimeCatalog {
   initialize(): Promise<void>;
@@ -85,16 +89,22 @@ export type WebSessionRuntimeEvent =
     events: InteractionTraceEvent[];
   }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
-  | { type: 'conversation_snapshot'; turn: ConversationTurnProjection };
+  | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
+  | {
+    type: 'workspace_changed';
+    sessionId: string;
+    workspace: import('./web-session-types.js').ConversationWorkspaceProjection | null;
+  };
 
 export interface ManagementWebSessionRuntime {
   readonly activeSessionId: string;
   initialize(): Promise<void>;
+  initializeClient?(context: WebLaunchContextInput): Promise<WorkspaceInitializationResult>;
   dispose(): Promise<void>;
   submit(text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
-  listSessions(query?: string): Promise<WebSessionMetadata[]>;
-  readSession(sessionId: string): Promise<WebSessionRecord | null>;
-  createSession(title?: string): Promise<WebSessionCreationResult>;
+  listSessions(query?: string): Promise<WebSessionMetadataProjection[]>;
+  readSession(sessionId: string): Promise<WebSessionRecordProjection | null>;
+  createSession(title?: string, workspaceHint?: string): Promise<WebSessionCreationResult>;
   activateSession(sessionId: string): Promise<WebSessionActivationResult>;
   /** 硬删除历史会话；活跃会话拒绝删除。 */
   deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;

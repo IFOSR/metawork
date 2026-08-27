@@ -225,13 +225,21 @@ export class ConversationGatewayRuntime {
     );
     if (!this.projected.has(conversationId)) {
       this.projected.add(conversationId);
-      this.attachProjection(conversation);
+      await this.attachProjection(conversation);
     }
     return conversation;
   }
 
-  private attachProjection(conversation: ConversationSession): void {
-    let outputLength = 0;
+  private async attachProjection(conversation: ConversationSession): Promise<void> {
+    const initialOutput = [...conversation.getOutput()];
+    const workspace = await conversation.getWorkspace();
+    await this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
+      from: 0,
+      lines: initialOutput,
+      workspace,
+    });
+
+    let outputLength = initialOutput.length;
     let traceTurnId: string | null = null;
     let traceSequence = 0;
     conversation.subscribe(snapshot => {
@@ -283,6 +291,11 @@ export class ConversationGatewayRuntime {
     const turnId = this.id('turn');
     const before = conversation.getOutput().length;
     const beforeResultDeliveries = conversation.getResultDeliveries().length;
+    const workspaceCommand = mailboxCommand.command.kind === 'slash_command'
+      && /^\/workspace(?:\s|$)/u.test(mailboxCommand.command.text);
+    const workspaceBefore = workspaceCommand
+      ? await conversation.getWorkspace()
+      : null;
     accountRuntime?.beginWork();
     try {
       await this.publish(
@@ -306,12 +319,9 @@ export class ConversationGatewayRuntime {
           ...(images && images.length > 0 ? { images } : {}),
         },
       );
-      if (
-        mailboxCommand.command.kind === 'slash_command'
-        && /^\/workspace(?:\s|$)/u.test(mailboxCommand.command.text)
-      ) {
+      if (workspaceCommand) {
         const workspace = await conversation.getWorkspace();
-        if (workspace) {
+        if (workspace && !sameWorkspace(workspaceBefore, workspace)) {
           await this.publish(
             conversation.conversationId,
             mailboxCommand.requestId,
@@ -347,6 +357,12 @@ export class ConversationGatewayRuntime {
       completion?.resolve({ status: 'completed' });
     } catch (error) {
       const reason = (error as Error).message;
+      const completionReason = (
+        'code' in (error as object)
+        && typeof (error as { code?: unknown }).code === 'string'
+      )
+        ? (error as { code: string }).code
+        : reason;
       try {
         await this.publish(
           conversation.conversationId,
@@ -361,7 +377,7 @@ export class ConversationGatewayRuntime {
           },
         );
       } finally {
-        completion?.resolve({ status: 'failed', reason });
+        completion?.resolve({ status: 'failed', reason: completionReason });
       }
       throw error;
     } finally {
@@ -561,6 +577,15 @@ export class ConversationGatewayRuntime {
   private completionKey(conversationId: string, idempotencyKey: string): string {
     return `${conversationId}\0${idempotencyKey}`;
   }
+}
+
+function sameWorkspace(
+  left: Awaited<ReturnType<ConversationSession['getWorkspace']>>,
+  right: Awaited<ReturnType<ConversationSession['getWorkspace']>>,
+): boolean {
+  return left?.path === right?.path
+    && left?.selectedAt === right?.selectedAt
+    && left?.selectedByPrincipal === right?.selectedByPrincipal;
 }
 
 function assistantOutputLines(lines: string[], command: GatewayCommand): string[] {

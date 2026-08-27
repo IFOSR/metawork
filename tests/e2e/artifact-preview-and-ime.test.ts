@@ -536,7 +536,7 @@ async function startMockServer(webDist: string): Promise<{
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === '/api/auth/session') {
-      response.writeHead(204).end();
+      json(response, { authenticated: true, launchContext: null });
       return;
     }
     if (url.pathname === '/api/ws/diagnostics') {
@@ -553,6 +553,7 @@ async function startMockServer(webDist: string): Promise<{
           updatedAt: '2026-08-24T00:00:00.000Z',
           active: true,
           archived: false,
+          workspace: null,
         }],
       });
       return;
@@ -567,6 +568,7 @@ async function startMockServer(webDist: string): Promise<{
           updatedAt: '2026-08-24T00:00:00.000Z',
           active: true,
           archived: false,
+          workspace: null,
         },
         turns: turnFixture(),
       });

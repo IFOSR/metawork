@@ -2,11 +2,13 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Status:** Approved / Ready for implementation
+**Status:** Completed
 
 **Plan date:** 2026-08-27
 
 **Review completed:** 2026-08-27; no product decisions remain open.
+
+**Completion date:** 2026-08-27
 
 **Design:** [MetaWork Client 默认 Workspace 与可见性设计](2026-08-27-client-default-workspace-design.md)
 
@@ -16,10 +18,11 @@ Conversation 恢复持久 Workspace，并在 TUI、Web 和飞书中持续展示 
 
 **Architecture:** Server 保持 Workspace-neutral。TUI launcher 和 Web launcher
 各自在启动时捕获一次 `process.cwd()`，把它作为不受信任的初始化提示；新
-Conversation 仍通过现有 `/workspace <path>` Gateway mutation 完成
-canonicalization、authorization、busy fencing、持久化和事件发布。Web 使用
-mode-`0600` 本机 Unix 通道注册短时一次性 launch context，Browser URL 只携带
-随机 bootstrap token，不携带 Workspace path。
+Conversation 通过带 `workspaceMutation: initialize_if_unset` 降权标记的现有
+`/workspace <path>` Gateway mutation 完成 canonicalization、authorization、
+busy fencing、持久化和事件发布，ClientGateway 等待 terminal completion 后才
+确认默认初始化成功。Web 使用 mode-`0600` 本机 Unix 通道注册短时一次性 launch
+context，Browser URL 只携带随机 bootstrap token，不携带 Workspace path。
 
 **Tech Stack:** Node 22.19+, TypeScript ESM, Unix socket JSONL, loopback
 HTTP/WebSocket, React, AnyFusion-Pi native TUI, Vitest.
@@ -710,16 +713,46 @@ git add scripts tests/integration docs
 git commit -m "test: validate client default workspace lifecycle"
 ```
 
-## 交付占位
+## 交付记录
 
-> Implementation status: Not started
+> Implementation status: Completed
 >
-> Completion date: 待填写。
+> Completion date: 2026-08-27
 >
-> Delivered behavior: 待填写。
+> Delivered behavior: Tasks 1-6 delivered the amended ADR authority, idempotent
+> Server-owned Workspace initialization, TUI startup hints, secure Web launch
+> context, Web Workspace initialization/projection, and Feishu confirmation.
+> Task 7 added multi-Client/Conversation lifecycle coverage, expanded the unified
+> Gateway smoke, and completed the native release fixtures required after Web
+> static assets became part of an installable release. Review closure added a
+> reduced-authority `initialize_if_unset` protocol marker, terminal-completion
+> receipts for automatic defaults, actual-change-only Workspace events, concrete
+> startup-created Web Conversation identity, and fail-closed production
+> Principal admission.
 >
-> Validation: 待填写。
+> Validation: review-closure focused gate passed (7 files, 82 tests); vendored
+> Client/Gateway/TUI gate passed (5 files, 105 tests); installer regression gate
+> passed (2 files, 18 tests); Planner supervisor passed (33 tests);
+> `npm run lint`, `npm run build`,
+> `npm run build:offline --prefix planner/AnyFusion-Pi`,
+> `npm run smoke:gateway` (14 files, 66 tests), and `npm run smoke:clients`
+> (3 tests) passed. Full root suite passed with 349 files passed, 7 skipped,
+> 1643 tests passed, and 18 skipped. Browser E2E passed 3/3 with
+> `RUN_BROWSER_E2E=1`. The real Unix Gateway integration uses the actual
+> Workspace service, Conversation runtime, ClientGateway, journal and socket
+> server to prove first-default-wins, replay/broadcast, Conversation isolation,
+> path-free manifests and Server survival after Client exit.
 >
-> Residual risks: 待填写。
+> Residual risks: live Feishu bot acceptance remains external. A second live
+> host Runtime could not be started because the user's existing Server and TUI
+> occupied fixed port `8788`; they were intentionally not interrupted. Native
+> lifecycle and presentation behavior remain covered by Unix Gateway smoke,
+> vendored TUI tests, and real Chrome E2E. The complete vendored upstream suite
+> was also attempted: 156 files passed, 1 skipped, and 6 failed (35 failed
+> tests). Representative failures reproduce unchanged on `main`, primarily
+> because Anthropic credentials are absent and upstream RPC tests still supply
+> fork-prohibited `--provider/--model` flags; the touched 5-file vendored release
+> gate passed 105/105.
 >
-> Closing commit: 待填写。
+> Closing commit: `fix: enforce idempotent client workspace initialization`
+> (this closing commit).

@@ -7,6 +7,7 @@ import type {
   ConfigurationRuntimeState,
 } from './types';
 import type {
+  ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionMetadata,
 } from './session-types';
@@ -15,6 +16,10 @@ export interface WsHandlers {
   onHello?: (sessionId: string) => void;
   onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
   onActiveSessionChanged?: (sessionId: string) => void;
+  onWorkspaceChanged?: (
+    sessionId: string,
+    workspace: ConversationWorkspaceProjection | null,
+  ) => void;
   onConversationSnapshot?: (turn: ConversationTurnProjection) => void;
   onTurnStarted?: (
     requestId: string,
@@ -99,6 +104,9 @@ export class WsClient {
           break;
         case 'active_session_changed':
           this.handlers.onActiveSessionChanged?.(message.sessionId);
+          break;
+        case 'workspace_changed':
+          this.handlers.onWorkspaceChanged?.(message.sessionId, message.workspace);
           break;
         case 'conversation_snapshot':
           this.handlers.onConversationSnapshot?.(message.turn);

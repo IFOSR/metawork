@@ -285,6 +285,8 @@ function fixtureRelease(
   mkdirSync(join(sourceRoot, 'node_modules'), { recursive: true });
   writeFileSync(join(sourceRoot, 'dist', 'index.js'), runtime);
   writeFileSync(join(sourceRoot, 'package.json'), '{"name":"anyfusion"}\n');
+  mkdirSync(join(sourceRoot, 'web', 'dist'), { recursive: true });
+  writeFileSync(join(sourceRoot, 'web', 'dist', 'index.html'), 'web\n');
   mkdirSync(join(plannerRoot, 'packages', 'coding-agent', 'dist'), { recursive: true });
   mkdirSync(join(plannerRoot, 'node_modules'), { recursive: true });
   writeFileSync(join(plannerRoot, 'packages', 'coding-agent', 'dist', 'cli.js'), 'planner\n');

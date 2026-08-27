@@ -33,6 +33,7 @@ interface GatewayClientPort {
 	createConversation?(): Promise<string>;
 	submitUserInput(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitSlashCommand(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
+	initializeWorkspace(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitPermissionResolution(
 		requestId: string,
 		resolution: "approve" | "deny",
@@ -53,6 +54,7 @@ export class AnyFusionClientModeController {
 	private readonly deps: {
 		gateway: GatewayClientPort;
 		conversationId?: string;
+		workspaceHint?: string;
 		view: AnyFusionClientModeView;
 	};
 	private selection: ConversationSelection;
@@ -66,6 +68,7 @@ export class AnyFusionClientModeController {
 			deps: {
 				gateway: GatewayClientPort;
 				conversationId?: string;
+				workspaceHint?: string;
 				view: AnyFusionClientModeView;
 			},
 		) {
@@ -101,6 +104,19 @@ export class AnyFusionClientModeController {
 		} else {
 			this.conversationId = await this.deps.gateway.createConversation();
 			this.selection = { mode: "attach", conversationId: this.conversationId };
+			const workspaceHint = this.deps.workspaceHint?.trim();
+			if (workspaceHint) {
+				const receipt = await this.deps.gateway.initializeWorkspace(
+					`/workspace ${workspaceHint}`,
+					this.selection,
+				);
+				if (receipt.status === "rejected") {
+					this.deps.view.showError(
+						`默认 Workspace 设置失败：${receipt.reason ?? "Gateway rejected the command"}。`
+							+ " 请使用 /workspace /absolute/path 手动设置。",
+					);
+				}
+			}
 		}
 		this.deps.view.setConnectionState("connected");
 	}
@@ -220,6 +236,7 @@ class TerminalClientView implements AnyFusionClientModeView {
 export async function runAnyFusionClientMode(input: {
 	socketPath: string;
 	conversationId?: string;
+	workspaceHint?: string;
 }): Promise<void> {
 	const ui = new TUI(new ProcessTerminal());
 	const editor = new Editor(ui, getEditorTheme(), { paddingX: 1 });
@@ -229,6 +246,7 @@ export async function runAnyFusionClientMode(input: {
 	const controller = new AnyFusionClientModeController({
 		gateway,
 		conversationId: input.conversationId,
+		workspaceHint: input.workspaceHint,
 		view,
 	});
 	let stopped = false;

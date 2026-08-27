@@ -426,6 +426,112 @@ describe('ConversationGatewayRuntime', () => {
     expect(conversationCalls).toEqual(['attach', 'detach']);
   });
 
+  it('publishes the Server-confirmed Workspace in the initial Conversation snapshot', async () => {
+    const fixture = createFixture();
+    const workspace = {
+      path: '/repo-a',
+      selectedAt: '2026-08-27T00:00:00.000Z',
+      selectedByPrincipal: 'local:installation',
+    };
+    fixture.registry.getOrActivate = async () => ({
+      accountId: 'local-default',
+      getConversationPort: () => null as never,
+      initialize: async () => undefined,
+      beginWork: () => undefined,
+      endWork: () => undefined,
+      attachClient: () => undefined,
+      detachClient: () => undefined,
+      closeWhenIdle: async () => 'closed',
+    });
+    fixture.conversationFactory = conversationId => {
+      const session = new FakeConversationSession(
+        conversationId,
+        async () => undefined,
+      );
+      session.workspace = workspace;
+      return session as unknown as ConversationSession;
+    };
+
+    const detach = await fixture.runtime.attachClient('conv_workspace');
+    await waitFor(async () => {
+      const replay = await fixture.journal.replay('local-default', 'conv_workspace');
+      return replay.snapshot.some(event => (
+        event.kind === 'conversation_snapshot'
+        && (event.payload as { workspace?: unknown }).workspace !== undefined
+      ));
+    });
+    const replay = await fixture.journal.replay('local-default', 'conv_workspace');
+
+    expect(replay.snapshot).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'conversation_snapshot',
+        payload: expect.objectContaining({ workspace }),
+      }),
+    ]));
+    detach();
+  });
+
+  it('publishes one Workspace change when concurrent defaults target the same Conversation', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      if (
+        command.kind !== 'slash_command'
+        || command.workspaceMutation !== 'initialize_if_unset'
+      ) {
+        return undefined;
+      }
+      if (session.workspace) {
+        return { status: 'unchanged' as const, workspace: session.workspace };
+      }
+      session.workspace = {
+        path: command.text.slice('/workspace '.length),
+        selectedAt: '2026-08-27T09:00:00.000Z',
+        selectedByPrincipal: 'local:local-installation',
+      };
+      return { status: 'changed' as const, workspace: session.workspace };
+    });
+    const events = fixture.capture('conv_workspace_default');
+    const commandA: GatewayCommand = {
+      kind: 'slash_command',
+      text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
+    };
+    const commandB: GatewayCommand = {
+      kind: 'slash_command',
+      text: '/workspace /repo-b',
+      workspaceMutation: 'initialize_if_unset',
+    };
+
+    const [first, second] = await Promise.all([
+      fixture.runtime.submit(
+        'conv_workspace_default',
+        'req_workspace_a',
+        'idem_workspace_a',
+        commandA,
+        'local:local-installation',
+      ),
+      fixture.runtime.submit(
+        'conv_workspace_default',
+        'req_workspace_b',
+        'idem_workspace_b',
+        commandB,
+        'web:local-web-user',
+      ),
+    ]);
+    await Promise.all([first.completion, second.completion]);
+
+    const changes = events.filter(event => event.kind === 'workspace_changed');
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      payload: {
+        workspace: {
+          path: expect.stringMatching(/^\/repo-[ab]$/u),
+          selectedAt: '2026-08-27T09:00:00.000Z',
+          selectedByPrincipal: 'local:local-installation',
+        },
+      },
+    });
+  });
+
   it('invalidates a pending attach when admission closes without leaking counts', async () => {
     const activation = deferred<AccountRuntimeHandle>();
     const accountCalls: string[] = [];
@@ -493,7 +599,7 @@ function createFixture(
     conversationId: string,
     command: GatewayCommand,
     session: FakeConversationSession,
-  ) => Promise<void> | null = null,
+  ) => Promise<unknown> | null = null,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'anyfusion-conversation-gateway-'));
   roots.push(root);
@@ -565,10 +671,15 @@ class FakeConversationSession {
     certification: 'certified' | 'uncertified';
   }> = [];
   private readonly mailbox: ConversationInputMailbox;
+  workspace: {
+    path: string;
+    selectedAt: string;
+    selectedByPrincipal: string;
+  } | null = null;
 
   constructor(
     readonly conversationId: string,
-    private readonly execute: (command: GatewayCommand) => Promise<void>,
+    private readonly execute: (command: GatewayCommand) => Promise<unknown>,
     private readonly turnIds: Array<string | null> = [],
   ) {
     this.mailbox = new ConversationInputMailbox({ execute: async () => undefined });
@@ -585,10 +696,10 @@ class FakeConversationSession {
   async executeGatewayCommand(
     command: GatewayCommand,
     options: { interactionTurnId?: string; images?: unknown } = {},
-  ): Promise<void> {
+  ): Promise<unknown> {
     this.lastExecuteOptions.push({ ...options });
     this.turnIds.push(options.interactionTurnId ?? null);
-    await this.execute(command);
+    return this.execute(command);
   }
 
   getOutput(): string[] {
@@ -601,6 +712,10 @@ class FakeConversationSession {
 
   getResultDeliveries(): FakeConversationSession['resultDeliveries'] {
     return [...this.resultDeliveries];
+  }
+
+  async getWorkspace(): Promise<FakeConversationSession['workspace']> {
+    return this.workspace;
   }
 
   subscribe(): () => void {
@@ -709,9 +824,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() - startedAt > timeoutMs) throw new Error('waitFor timeout');
     await new Promise(resolve => setTimeout(resolve, 5));
   }

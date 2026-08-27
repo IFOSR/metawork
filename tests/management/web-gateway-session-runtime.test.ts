@@ -12,6 +12,279 @@ import type { WebSessionRecord } from '../../src/management/web-session-types.js
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
+  it('initializes only the startup-created empty Conversation from the Web launch hint', async () => {
+    const submitted: Array<{
+      conversationId: string;
+      text: string;
+      workspaceMutation?: string;
+    }> = [];
+    const created = sessionRecord('conv_new', true);
+    const catalog: WebSessionRuntimeCatalog = {
+      initialize: async () => undefined,
+      create: async () => created,
+      list: async () => [],
+      search: async () => [],
+      read: async sessionId => sessionId === 'conv_new' ? created : null,
+      setActive: async () => created,
+      appendTurn: async () => created,
+      deleteSession: async () => false,
+      clearAll: async () => 0,
+    };
+    const gateway = gatewayFixture({
+      replay: async () => ({
+        lastSequence: 1,
+        snapshot: [workspaceSnapshot('conv_new', null, 1)],
+        deltas: [],
+      }),
+      submit: async envelope => {
+        submitted.push({
+          conversationId: envelope.conversation.mode === 'attach'
+            ? envelope.conversation.conversationId
+            : '',
+          text: envelope.command.text,
+          workspaceMutation: envelope.command.kind === 'slash_command'
+            ? envelope.command.workspaceMutation
+            : undefined,
+        });
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: envelope.idempotencyKey,
+          status: 'accepted' as const,
+          conversationId: 'conv_new',
+        };
+      },
+    });
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog,
+      gateway,
+    });
+
+    await runtime.initialize();
+    await runtime.initializeClient({ workspaceHint: '/repo-a' });
+
+    expect(submitted).toEqual([{
+      conversationId: 'conv_new',
+      text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
+    }]);
+  });
+
+  it('never applies a launch hint to an existing active Conversation', async () => {
+    const submitted: unknown[] = [];
+    const historical = sessionRecord('conv_history', true);
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(historical),
+      gateway: gatewayFixture({
+        replay: async () => ({
+          lastSequence: 1,
+          snapshot: [workspaceSnapshot('conv_history', {
+            path: '/repo-history',
+            selectedAt: '2026-08-26T08:00:00.000Z',
+          }, 1)],
+          deltas: [],
+        }),
+        submit: async envelope => {
+          submitted.push(envelope);
+          throw new Error('launch hint must not be submitted');
+        },
+      }),
+    });
+
+    await runtime.initialize();
+    await runtime.initializeClient({ workspaceHint: '/repo-new' });
+
+    expect(submitted).toEqual([]);
+    await expect(runtime.readSession('conv_history')).resolves.toMatchObject({
+      session: {
+        workspace: {
+          path: '/repo-history',
+          selectedAt: '2026-08-26T08:00:00.000Z',
+        },
+      },
+    });
+  });
+
+  it('does not let a startup-created Conversation marker migrate to a historical activation', async () => {
+    const created = sessionRecord('conv_startup', true);
+    const historical = sessionRecord('conv_history', false);
+    const records = new Map([
+      [created.session.id, created],
+      [historical.session.id, historical],
+    ]);
+    const submitted: unknown[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        initialize: async () => undefined,
+        create: async () => created,
+        list: async () => [],
+        search: async () => [],
+        read: async sessionId => records.get(sessionId) ?? null,
+        setActive: async sessionId => records.get(sessionId) ?? null,
+        appendTurn: async sessionId => records.get(sessionId) ?? null,
+        deleteSession: async () => false,
+        clearAll: async () => 0,
+      },
+      gateway: gatewayFixture({
+        replay: async (_accountId, conversationId) => ({
+          lastSequence: 1,
+          snapshot: [workspaceSnapshot(
+            conversationId,
+            null,
+            1,
+          )],
+          deltas: [],
+        }),
+        submit: async envelope => {
+          submitted.push(envelope);
+          throw new Error('historical Conversation must not receive the launch hint');
+        },
+      }),
+    });
+
+    await runtime.initialize();
+    await runtime.initializeClient({
+      workspaceHint: '/repo-launch-a',
+      conversationId: 'conv_history',
+    });
+    await runtime.activateSession('conv_history');
+    await runtime.initializeClient({ workspaceHint: '/repo-launch-b' });
+
+    expect(runtime.activeSessionId).toBe('conv_history');
+    expect(submitted).toEqual([]);
+  });
+
+  it('uses the current browser launch hint only when creating a new Conversation', async () => {
+    const active = sessionRecord('conv_active', true);
+    const created = sessionRecord('conv_created', false);
+    const records = new Map([
+      ['conv_active', active],
+      ['conv_created', created],
+    ]);
+    const submitted: Array<{ conversationId: string; text: string }> = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        initialize: async () => undefined,
+        create: async () => created,
+        list: async () => [active.session],
+        search: async () => [active.session],
+        read: async sessionId => records.get(sessionId) ?? null,
+        setActive: async sessionId => records.get(sessionId) ?? null,
+        appendTurn: async sessionId => records.get(sessionId) ?? null,
+        deleteSession: async () => false,
+        clearAll: async () => 0,
+      },
+      gateway: gatewayFixture({
+        replay: async (_accountId, conversationId) => ({
+          lastSequence: 1,
+          snapshot: [workspaceSnapshot(
+            conversationId,
+            conversationId === 'conv_active'
+              ? {
+                path: '/repo-active',
+                selectedAt: '2026-08-26T08:00:00.000Z',
+              }
+              : null,
+            1,
+          )],
+          deltas: [],
+        }),
+        submit: async envelope => {
+          submitted.push({
+            conversationId: envelope.conversation.mode === 'attach'
+              ? envelope.conversation.conversationId
+              : '',
+            text: envelope.command.text,
+          });
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted' as const,
+            conversationId: 'conv_created',
+          };
+        },
+      }),
+    });
+
+    await runtime.initialize();
+    const result = await runtime.createSession('New conversation', '/repo-browser');
+
+    expect(result.workspaceInitialization).toEqual({ status: 'accepted' });
+    expect(submitted).toEqual([{
+      conversationId: 'conv_created',
+      text: '/workspace /repo-browser',
+    }]);
+  });
+
+  it('projects replayed and live Workspace state without persisting a second authority', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    const record = sessionRecord('conv_1', true);
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+        replay: async () => ({
+          lastSequence: 1,
+          snapshot: [workspaceSnapshot('conv_1', {
+            path: '/repo-a',
+            selectedAt: '2026-08-27T08:00:00.000Z',
+          }, 1)],
+          deltas: [],
+        }),
+      }),
+    });
+    const events: unknown[] = [];
+    runtime.subscribe(event => events.push(event));
+
+    await runtime.initialize();
+    expect(runtime.getReplayEvents()).toContainEqual({
+      type: 'workspace_changed',
+      sessionId: 'conv_1',
+      workspace: {
+        path: '/repo-a',
+        selectedAt: '2026-08-27T08:00:00.000Z',
+      },
+    });
+    await expect(runtime.listSessions()).resolves.toMatchObject([{
+      id: 'conv_1',
+      workspace: {
+        path: '/repo-a',
+        selectedAt: '2026-08-27T08:00:00.000Z',
+      },
+    }]);
+
+    listener!(workspaceChanged('conv_1', '/repo-b', 2));
+
+    expect(events).toContainEqual({
+      type: 'workspace_changed',
+      sessionId: 'conv_1',
+      workspace: {
+        path: '/repo-b',
+        selectedAt: '2026-08-27T09:00:00.000Z',
+      },
+    });
+    await expect(runtime.readSession('conv_1')).resolves.toMatchObject({
+      session: {
+        workspace: {
+          path: '/repo-b',
+          selectedAt: '2026-08-27T09:00:00.000Z',
+        },
+      },
+    });
+    expect(record.session).not.toHaveProperty('workspace');
+  });
+
   it('subscribes before replay and merges buffered events without duplicates', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
     let resolveReplay!: (replay: GatewayReplay) => void;
@@ -625,19 +898,23 @@ describe('WebGatewaySessionRuntime', () => {
 });
 
 function catalogFixture(): WebSessionRuntimeCatalog {
-  const record: WebSessionRecord = {
+  const record = sessionRecord('conv_1', true);
+  return catalogForRecord(record);
+}
+
+function sessionRecord(id: string, active: boolean): WebSessionRecord {
+  return {
     version: 1,
     session: {
-      id: 'conv_1',
+      id,
       title: 'Conversation',
       createdAt: '2026-08-19T00:00:00.000Z',
       updatedAt: '2026-08-19T00:00:00.000Z',
-      active: true,
+      active,
       archived: false,
     },
     turns: [],
   };
-  return catalogForRecord(record);
 }
 
 function catalogForRecord(record: WebSessionRecord): WebSessionRuntimeCatalog {
@@ -669,6 +946,55 @@ function outputEvent(
     payload: { from: 0, lines },
     occurredAt: '2026-08-19T00:00:00.000Z',
   };
+}
+
+function workspaceSnapshot(
+  conversationId: string,
+  workspace: { path: string; selectedAt: string } | null,
+  sequence: number,
+): GatewayEventEnvelope {
+  return {
+    ...outputEvent(`workspace_snapshot_${sequence}`, sequence, []),
+    conversationId,
+    payload: { from: 0, lines: [], workspace },
+  };
+}
+
+function workspaceChanged(
+  conversationId: string,
+  path: string,
+  sequence: number,
+): GatewayEventEnvelope {
+  return {
+    ...workspaceSnapshot(conversationId, null, sequence),
+    eventId: `workspace_changed_${sequence}`,
+    kind: 'workspace_changed',
+    payload: {
+      workspace: {
+        path,
+        selectedAt: '2026-08-27T09:00:00.000Z',
+      },
+    },
+  };
+}
+
+function gatewayFixture(
+  overrides: Partial<WebGatewayAdapter> = {},
+): WebGatewayAdapter {
+  return {
+    attachClient: async () => () => undefined,
+    subscribe: () => () => undefined,
+    replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+    submit: async envelope => ({
+      requestId: envelope.requestId,
+      idempotencyKey: envelope.idempotencyKey,
+      status: 'accepted',
+      conversationId: envelope.conversation.mode === 'attach'
+        ? envelope.conversation.conversationId
+        : 'conv_new',
+    }),
+    ...overrides,
+  } as WebGatewayAdapter;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

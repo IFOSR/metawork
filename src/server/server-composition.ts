@@ -65,7 +65,10 @@ import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationRecord,
 } from '../session/conversation-store.js';
-import { ConversationWorkspaceService } from '../workspace/conversation-workspace-service.js';
+import {
+  ConversationWorkspaceService,
+  isAuthenticatedWorkspacePrincipalId,
+} from '../workspace/conversation-workspace-service.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -94,13 +97,14 @@ import {
   stopInstanceForRestart,
   type InstanceLock,
 } from '../management/lock.js';
-import { buildWebStartupPresentation } from '../management/token.js';
+import { formatWebAccessTokenLine } from '../management/token.js';
 import { ManagementServer, type ConfigQuery, type ExecutionQuery } from '../management/server.js';
 import { ArtifactPreviewService } from '../management/artifact-preview-service.js';
 import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
 import { ExecutionProjector } from '../management/execution-projector.js';
 import { WorkGraphPresentationProjector } from '../management/work-graph-presentation-projector.js';
 import { WebAuthService } from '../management/web-auth.js';
+import { WebLaunchContextService } from '../management/web-launch-context.js';
 import { resolveLoginCredentials } from '../management/login-credentials.js';
 import { FileWebSessionStore } from '../storage/file-web-session-store.js';
 import { FileAttachmentStore } from '../storage/file-attachment-store.js';
@@ -203,8 +207,8 @@ async function startWebMode(options: {
   };
   attachmentStore?: FileAttachmentStore;
   artifactQuery: ArtifactPreviewService;
+  webAuth: WebAuthService;
 }): Promise<ManagementServer> {
-  const webAuth = new WebAuthService();
   const loginCredentials = resolveLoginCredentials(process.env);
   if (loginCredentials.generated && loginCredentials.password) {
     process.stdout.write(
@@ -217,8 +221,8 @@ async function startWebMode(options: {
   const managementServer = new ManagementServer({
     port: options.port,
     webDistDir,
-    token: webAuth.manualAccessToken,
-    webAuth,
+    token: options.webAuth.manualAccessToken,
+    webAuth: options.webAuth,
     runningRevisionId: options.runningRevisionId,
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
@@ -229,13 +233,10 @@ async function startWebMode(options: {
     artifactQuery: options.artifactQuery,
   });
   await managementServer.start();
-  const presentation = buildWebStartupPresentation(
-    managementServer.address,
-    webAuth.bootstrapToken,
-    webAuth.manualAccessToken,
-    options.noOpen,
-  );
-  process.stdout.write(`${presentation.terminalLines.join('\n')}\n`);
+  process.stdout.write([
+    `MetaWork Web: ${managementServer.address}`,
+    formatWebAccessTokenLine(options.webAuth.manualAccessToken),
+  ].join('\n') + '\n');
   return managementServer;
 }
 
@@ -785,7 +786,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       store: conversationStore,
       conversationId,
       principalId: 'unknown',
-      authorize: async () => true,
+      authorize: async (_path, principalId) => (
+        isAuthenticatedWorkspacePrincipalId(principalId)
+      ),
       isBusy: () => {
         if (!conversation) return false;
         const switching = conversation.getSwitchingState();
@@ -958,6 +961,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       return conversationGatewayRuntime.attachClient(conversationId);
     },
   });
+  const webLaunchContexts = new WebLaunchContextService();
+  const webAuth = new WebAuthService({ launchContexts: webLaunchContexts });
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
@@ -972,6 +977,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       return conversationGatewayRuntime.attachClient(conversationId);
     },
     onConversationCreated: rememberConversation,
+    registerWebLaunch: input => Promise.resolve(webLaunchContexts.issue(input)),
   });
   let managementServer: ManagementServer | null = null;
   const taskPoolReviewTimer = setInterval(() => {
@@ -1056,6 +1062,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             .flatMap(conversation => conversation.workspace?.path ? [conversation.workspace.path] : [])
         ),
       }),
+      webAuth,
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,

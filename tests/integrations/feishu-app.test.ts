@@ -221,6 +221,49 @@ describe('FeishuAppClient', () => {
 });
 
 describe('Feishu app helpers', () => {
+  it('delivers Gateway Workspace confirmation before the final Feishu reply', async () => {
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: {
+        onProgress: (text: string) => void;
+      }) => {
+        input.onProgress('当前 Workspace：/repo-a');
+        return ['任务已完成'];
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_workspace',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"run task"}',
+      },
+    }, {
+      session: session as never,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(client.sendMarkdownCardToChat).toHaveBeenNthCalledWith(
+      1,
+      'oc_chat',
+      '当前 Workspace：/repo-a',
+    );
+    expect(client.sendMarkdownCardToChat).toHaveBeenNthCalledWith(
+      2,
+      'oc_chat',
+      '任务已完成',
+    );
+  });
+
   it('parses text message content payloads', () => {
     expect(parseFeishuTextContent('{"text":"hi metaclaw"}')).toBe('hi metaclaw');
   });

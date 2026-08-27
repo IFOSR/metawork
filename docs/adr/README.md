@@ -68,16 +68,19 @@ admission, concrete Planner/Executor Auto routing, configuration completion,
 and read-only Work Graph routing presentation.
 
 ADR-0034 governs the accepted independent Server/Client process lifecycle,
-endpoint discovery, Conversation-scoped Workspace admission, and Server-owned
-Feishu transport lifecycle. It amends the foreground-surface implementation
-evidence in ADR-0031 without changing ADR-0031's AccountRuntime, Conversation,
-Gateway, identity, or account-isolation domain ownership.
+endpoint discovery, Client-assisted initialization and Conversation-scoped
+Workspace admission, and Server-owned Feishu transport lifecycle. Its
+2026-08-27 amendment treats Client startup cwd only as an untrusted default for
+new Conversations; attached Conversations retain their durable Workspace. It
+amends the foreground-surface implementation evidence in ADR-0031 without
+changing ADR-0031's AccountRuntime, Conversation, Gateway, identity, or
+account-isolation domain ownership.
 
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
-| Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
+| Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, completion facts, and read-only DAG projection |
 | Account Runtime and unified client Gateway | [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | Account/Conversation/connection cardinality, account-scoped Runtime and Kernel ownership, client Gateway ingress/egress, identity mapping and account data isolation |
 | Result-first delivery and completion certification | [ADR-0032](0032-result-first-delivery-and-completion-certification.md) | Safe result delivery, Completion Protocol v4, Result Objects, edge-scoped references, partial results and completion certification separation |

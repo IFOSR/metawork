@@ -14,6 +14,7 @@ export interface WorkspaceAuthorization {
 
 export type WorkspaceCommandResult =
   | { readonly status: 'changed'; readonly workspace: ConversationWorkspace }
+  | { readonly status: 'unchanged'; readonly workspace: ConversationWorkspace }
   | {
       readonly status: 'rejected';
       readonly code: WorkspaceRejectionCode;
@@ -37,6 +38,7 @@ export interface ConversationWorkspaceServiceDeps extends WorkspaceAuthorization
 export interface ConversationWorkspacePort {
   getWorkspace(): Promise<ConversationWorkspace | null>;
   execute(input: string, principalId?: string): Promise<WorkspaceCommandResult>;
+  initializeDefault(path: string, principalId?: string): Promise<WorkspaceCommandResult>;
 }
 
 export class ConversationWorkspaceService {
@@ -52,13 +54,29 @@ export class ConversationWorkspaceService {
     if (!rawPath) {
       return rejected('workspace_command_invalid', '用法: /workspace /absolute/path');
     }
-    if (!isAbsolute(rawPath)) {
+    return this.changeWorkspace(rawPath, principalId);
+  }
+
+  async initializeDefault(
+    path: string,
+    principalId = this.deps.principalId,
+  ): Promise<WorkspaceCommandResult> {
+    const existing = await this.getWorkspace();
+    if (existing) return { status: 'unchanged', workspace: existing };
+    return this.changeWorkspace(path, principalId);
+  }
+
+  private async changeWorkspace(
+    path: string,
+    principalId: string,
+  ): Promise<WorkspaceCommandResult> {
+    if (!isAbsolute(path)) {
       return rejected('workspace_path_invalid', 'Workspace 必须是绝对路径');
     }
 
     let canonicalPath: string;
     try {
-      canonicalPath = await realpath(rawPath);
+      canonicalPath = await realpath(path);
       if (!(await stat(canonicalPath)).isDirectory()) {
         return rejected('workspace_path_invalid', 'Workspace 必须是目录');
       }
@@ -118,4 +136,20 @@ export function conversationMetadataWorkspace(
   metadata: ConversationMetadata,
 ): ConversationWorkspace | null {
   return metadata.workspace;
+}
+
+export function isAuthenticatedWorkspacePrincipalId(principalId: string): boolean {
+  const match = /^(local|web|feishu|app):(.+)$/u.exec(principalId);
+  if (!match) return false;
+  const kind = match[1]!;
+  const externalId = match[2]!;
+  if (externalId !== externalId.trim()) return false;
+  if (
+    Buffer.byteLength(externalId, 'utf8') > 256
+    || /[\u0000-\u001f\u007f]/u.test(externalId)
+  ) return false;
+  if (kind === 'local') return externalId === 'local-installation';
+  if (kind === 'web') return externalId === 'local-web-user';
+  if (kind === 'feishu') return /^[^:]+:[^:]+$/u.test(externalId);
+  return true;
 }

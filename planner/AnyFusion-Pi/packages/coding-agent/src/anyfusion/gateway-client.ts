@@ -65,6 +65,17 @@ export class GatewayClient {
     return this.submit({ kind: 'slash_command', text }, conversation);
   }
 
+  initializeWorkspace(
+    text: string,
+    conversation: ConversationSelection,
+  ): Promise<GatewayCommandReceipt> {
+    return this.submit({
+      kind: 'slash_command',
+      text,
+      workspaceMutation: 'initialize_if_unset',
+    }, conversation);
+  }
+
   submitPermissionResolution(
     requestId: string,
     resolution: 'approve' | 'deny',

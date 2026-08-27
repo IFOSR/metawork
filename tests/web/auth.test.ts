@@ -54,9 +54,24 @@ describe('Web Cookie authentication', () => {
   });
 
   it('exchanges a credential without browser storage', async () => {
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      authenticated: true,
+      launchContext: {
+        workspaceHint: '/repo-a',
+        conversationId: 'conv_1',
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
 
-    await expect(exchangeWebCredential('manual-token', fetchImpl)).resolves.toBe(true);
+    await expect(exchangeWebCredential('manual-token', fetchImpl)).resolves.toEqual({
+      authenticated: true,
+      launchContext: {
+        workspaceHint: '/repo-a',
+        conversationId: 'conv_1',
+      },
+    });
     expect(fetchImpl).toHaveBeenCalledWith('/api/auth/bootstrap', {
       method: 'POST',
       credentials: 'same-origin',

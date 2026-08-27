@@ -197,6 +197,7 @@ export interface ExecutorSummary {
 
 // WebSocket 消息协议
 import type {
+  ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionMetadata,
 } from './session-types';
@@ -209,6 +210,11 @@ export type ServerMessage =
       sessions: WebSessionMetadata[];
     }
   | { type: 'active_session_changed'; sessionId: string }
+  | {
+    type: 'workspace_changed';
+    sessionId: string;
+    workspace: ConversationWorkspaceProjection | null;
+  }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
   | {
     type: 'turn_started';

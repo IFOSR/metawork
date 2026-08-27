@@ -6,6 +6,7 @@ import { FileConversationStore } from '../../src/session/file-conversation-store
 import { CONVERSATION_FORMAT_VERSION, type ConversationRecord } from '../../src/session/conversation-store.js';
 import {
   ConversationWorkspaceService,
+  isAuthenticatedWorkspacePrincipalId,
   type WorkspaceAuthorization,
 } from '../../src/workspace/conversation-workspace-service.js';
 
@@ -73,6 +74,46 @@ describe('ConversationWorkspaceService', () => {
       .toBe(canonicalPath);
   });
 
+  it('initializes an empty Conversation through the same canonical Workspace mutation', async () => {
+    const value = await fixture();
+    const result = await service(value).initializeDefault(value.workspace);
+    const canonicalPath = await realpath(value.workspace);
+
+    expect(result).toEqual({
+      status: 'changed',
+      workspace: {
+        path: canonicalPath,
+        selectedAt: expect.any(String),
+        selectedByPrincipal: 'local:installation',
+      },
+    });
+    expect((await value.store.readConversation('conv_1'))?.conversation.workspace?.path)
+      .toBe(canonicalPath);
+  });
+
+  it('does not validate or replace an existing Workspace during default initialization', async () => {
+    const value = await fixture();
+    const workspaceService = service(value);
+    const changed = await workspaceService.execute(`/workspace ${value.workspace}`);
+    if (changed.status !== 'changed') throw new Error('fixture Workspace was not initialized');
+
+    const result = await service(value, {
+      authorize: () => {
+        throw new Error('existing Workspace must win before authorization');
+      },
+      isBusy: () => {
+        throw new Error('existing Workspace must win before busy fencing');
+      },
+    }).initializeDefault('/does/not/exist');
+
+    expect(result).toEqual({
+      status: 'unchanged',
+      workspace: changed.workspace,
+    });
+    expect((await value.store.readConversation('conv_1'))?.conversation.workspace)
+      .toEqual(changed.workspace);
+  });
+
   it('rejects relative, missing, file, inaccessible, or unauthorized paths', async () => {
     const value = await fixture();
     const filePath = join(value.root, 'not-a-directory');
@@ -105,5 +146,29 @@ describe('ConversationWorkspaceService', () => {
       status: 'rejected',
       code: 'workspace_command_invalid',
     });
+  });
+
+  it('accepts only authenticated Principal identifiers at the production Workspace seam', () => {
+    for (const principalId of [
+      'local:local-installation',
+      'web:local-web-user',
+      'feishu:tenant-1:user-1',
+      'app:device-1',
+    ]) {
+      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(true);
+    }
+    for (const principalId of [
+      '',
+      'unknown',
+      'system:root',
+      'local:',
+      'local:forged-installation',
+      'web:forged-user',
+      'feishu:tenant-only',
+      ':local-installation',
+      'web:local-web-user\nforged',
+    ]) {
+      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(false);
+    }
   });
 });

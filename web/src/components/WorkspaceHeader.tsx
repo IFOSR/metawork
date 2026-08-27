@@ -5,6 +5,7 @@ export type WorkspaceTab = 'conversation' | 'trajectory';
 
 export function WorkspaceHeader({
   title,
+  workspace,
   tab,
   connected,
   themePreference,
@@ -12,17 +13,25 @@ export function WorkspaceHeader({
   onThemeChange,
 }: {
   title: string;
+  workspace: { path: string; selectedAt: string } | null;
   tab: WorkspaceTab;
   connected: boolean;
   themePreference: ThemePreference;
   onTabChange: (tab: WorkspaceTab) => void;
   onThemeChange: (preference: ThemePreference) => void;
 }) {
+  const workspacePath = workspace?.path ?? null;
   return (
     <header className="workspace-header">
       <div className="workspace-title-block">
         <span className="workspace-kicker">AGENT WORKSPACE</span>
         <h1>{title}</h1>
+        <div className="workspace-path" title={workspacePath ?? undefined}>
+          <span>Workspace</span>
+          <code>
+            {workspacePath ?? '未设置 · 输入 /workspace /absolute/path'}
+          </code>
+        </div>
       </div>
       <nav className="workspace-tabs" aria-label="会话视图">
         <button data-active={tab === 'conversation'} onClick={() => onTabChange('conversation')}>

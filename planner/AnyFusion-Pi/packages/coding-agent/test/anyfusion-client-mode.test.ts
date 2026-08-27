@@ -5,7 +5,10 @@ import {
 } from "../src/modes/interactive/anyfusion-client-mode.ts";
 import type { GatewayEventEnvelope } from "../src/anyfusion/gateway-protocol.ts";
 
-function fixture() {
+function fixture(options: {
+	conversationId?: string;
+	workspaceHint?: string;
+} = { conversationId: "conv_native" }) {
 	let listener: ((event: GatewayEventEnvelope) => void) | undefined;
 	const gateway = {
 		onEvent: vi.fn((next: (event: GatewayEventEnvelope) => void) => {
@@ -13,6 +16,7 @@ function fixture() {
 			return () => undefined;
 		}),
 		resume: vi.fn(async () => ({ lastSequence: 3, snapshot: [], deltas: [] })),
+		createConversation: vi.fn(async () => "conv_new"),
 		submitUserInput: vi.fn(async () => ({
 			requestId: "req_1",
 			status: "accepted" as const,
@@ -20,6 +24,11 @@ function fixture() {
 		})),
 		submitSlashCommand: vi.fn(async () => ({
 			requestId: "req_2",
+			status: "accepted" as const,
+			conversationId: "conv_native",
+		})),
+		initializeWorkspace: vi.fn(async () => ({
+			requestId: "req_workspace",
 			status: "accepted" as const,
 			conversationId: "conv_native",
 		})),
@@ -37,13 +46,61 @@ function fixture() {
 	};
 	const controller = new AnyFusionClientModeController({
 		gateway,
-		conversationId: "conv_native",
+		conversationId: options.conversationId,
+		workspaceHint: options.workspaceHint,
 		view,
 	});
 	return { controller, gateway, view, publish: (event: GatewayEventEnvelope) => listener?.(event) };
 }
 
 describe("AnyFusionClientModeController", () => {
+	it("initializes a new Conversation from the Client startup Workspace", async () => {
+		const { controller, gateway } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+
+		await controller.start();
+
+		expect(gateway.createConversation).toHaveBeenCalledOnce();
+		expect(gateway.initializeWorkspace).toHaveBeenCalledWith(
+			"/workspace /repo-a",
+			{ mode: "attach", conversationId: "conv_new" },
+		);
+		expect(gateway.submitSlashCommand).not.toHaveBeenCalled();
+		expect(gateway.resume).not.toHaveBeenCalled();
+	});
+
+	it("never applies the startup Workspace when attaching an existing Conversation", async () => {
+		const { controller, gateway } = fixture({
+			conversationId: "conv_existing",
+			workspaceHint: "/repo-b",
+		});
+
+		await controller.start();
+
+		expect(gateway.resume).toHaveBeenCalledWith("conv_existing");
+		expect(gateway.initializeWorkspace).not.toHaveBeenCalled();
+	});
+
+	it("keeps the Client connected and prompts for a manual Workspace when defaulting is rejected", async () => {
+		const { controller, gateway, view } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+		gateway.initializeWorkspace.mockResolvedValueOnce({
+			requestId: "req_workspace",
+			status: "rejected",
+			conversationId: "conv_new",
+			reason: "workspace_unauthorized",
+		});
+
+		await controller.start();
+
+		expect(view.showError).toHaveBeenCalledWith(expect.stringContaining("/workspace /absolute/path"));
+		expect(view.setConnectionState).toHaveBeenLastCalledWith("connected");
+	});
+
 	it("submits raw editor input through Gateway without a semantic AgentSession", async () => {
 		const { controller, gateway, view } = fixture();
 		await controller.start();

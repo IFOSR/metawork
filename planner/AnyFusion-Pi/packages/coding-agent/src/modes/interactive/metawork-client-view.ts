@@ -31,6 +31,7 @@ export function renderConversation(
 		: "未设置 · 输入 /workspace /absolute/path";
 	const lines = [
 		`MetaWork  ·  ${connection}  ·  workspace: ${workspace}`,
+		...(model.workspace && width < 100 ? [`完整路径: ${model.workspace.path}`] : []),
 		"",
 		...userMessages.flatMap(message => ["你", message, ""]),
 		"任务进度",

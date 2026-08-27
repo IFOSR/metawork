@@ -54,18 +54,10 @@ export function reduceGatewayEvent(
 	}
 	const payload = record(event.payload);
 	switch (event.kind) {
-		case "workspace_changed": {
-			const workspace = record(payload.workspace);
-			if (typeof workspace.path !== "string") return next;
-			return {
-				...next,
-				workspace: {
-					path: workspace.path,
-					selectedAt: string(workspace.selectedAt),
-				},
-				composer: { blockedReason: null },
-			};
-		}
+		case "conversation_snapshot":
+			return reduceWorkspace(next, payload, false);
+		case "workspace_changed":
+			return reduceWorkspace(next, payload, true);
 		case "turn_started":
 			return {
 				...next,
@@ -93,6 +85,23 @@ export function reduceGatewayEvent(
 		default:
 			return next;
 	}
+}
+
+function reduceWorkspace(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+	clearBlock: boolean,
+): ConversationViewModel {
+	const workspace = record(payload.workspace);
+	if (typeof workspace.path !== "string") return state;
+	return {
+		...state,
+		workspace: {
+			path: workspace.path,
+			selectedAt: string(workspace.selectedAt),
+		},
+		...(clearBlock ? { composer: { blockedReason: null } } : {}),
+	};
 }
 
 function reduceTrace(

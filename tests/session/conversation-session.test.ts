@@ -264,6 +264,11 @@ describe('ConversationSession', () => {
           code: 'workspace_required' as const,
           message: 'workspace required',
         }),
+        initializeDefault: async () => ({
+          status: 'rejected' as const,
+          code: 'workspace_required' as const,
+          message: 'workspace required',
+        }),
       },
     });
 
@@ -273,6 +278,74 @@ describe('ConversationSession', () => {
       attachments: [],
     }, { rethrowErrors: true })).rejects.toThrow('workspace_required');
     expect(plannerCalls).toBe(0);
+  });
+
+  it('routes automatic Workspace initialization through initializeDefault', async () => {
+    const calls: string[] = [];
+    const workspace: ConversationWorkspace = {
+      path: '/repo-a',
+      selectedAt: '2026-08-27T00:00:00.000Z',
+      selectedByPrincipal: 'local:local-installation',
+    };
+    const session = new ConversationSession({
+      conversationId: 'conv_workspace_default',
+      plannerSessionId: 'planner_workspace_default',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      workspace: {
+        getWorkspace: async () => null,
+        execute: async input => {
+          calls.push(`execute:${input}`);
+          return { status: 'changed', workspace };
+        },
+        initializeDefault: async (path, principalId) => {
+          calls.push(`initialize:${path}:${principalId}`);
+          return { status: 'changed', workspace };
+        },
+      },
+    });
+
+    const result = await session.executeGatewayCommand({
+      kind: 'slash_command',
+      text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
+    }, { principalId: 'local:local-installation' });
+
+    expect(calls).toEqual(['initialize:/repo-a:local:local-installation']);
+    expect(result).toEqual({ status: 'changed', workspace });
+  });
+
+  it('keeps explicit Workspace changes on the ordinary command path', async () => {
+    const calls: string[] = [];
+    const workspace: ConversationWorkspace = {
+      path: '/repo-b',
+      selectedAt: '2026-08-27T00:00:00.000Z',
+      selectedByPrincipal: 'local:local-installation',
+    };
+    const session = new ConversationSession({
+      conversationId: 'conv_workspace_explicit',
+      plannerSessionId: 'planner_workspace_explicit',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      workspace: {
+        getWorkspace: async () => null,
+        execute: async input => {
+          calls.push(`execute:${input}`);
+          return { status: 'changed', workspace };
+        },
+        initializeDefault: async path => {
+          calls.push(`initialize:${path}`);
+          return { status: 'changed', workspace };
+        },
+      },
+    });
+
+    await session.executeGatewayCommand({
+      kind: 'slash_command',
+      text: '/workspace /repo-b',
+    }, { principalId: 'local:local-installation' });
+
+    expect(calls).toEqual(['execute:/workspace /repo-b']);
   });
 
   it('shares account facts but not output across conversations', () => {

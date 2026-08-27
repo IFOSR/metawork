@@ -8,6 +8,7 @@ describe('TuiClientLauncher', () => {
     const launcher = new TuiClientLauncher({
       manifestPath: '/tmp/endpoint.json',
       conversationId: 'conv_1',
+      startupWorkspacePath: '/repo-a',
       resolveEndpoint: async () => ({
         ok: true,
         manifestVersion: 1,
@@ -18,13 +19,14 @@ describe('TuiClientLauncher', () => {
     });
 
     await launcher.start();
-    expect(runUi).toHaveBeenCalledWith('/tmp/gateway.sock', 'conv_1');
+    expect(runUi).toHaveBeenCalledWith('/tmp/gateway.sock', 'conv_1', '/repo-a');
   });
 
   it('does not spawn the Client when Server is offline', async () => {
     const runUi = vi.fn(async () => undefined);
     const launcher = new TuiClientLauncher({
       manifestPath: '/tmp/endpoint.json',
+      startupWorkspacePath: '/repo-a',
       resolveEndpoint: async () => ({
         ok: false,
         code: 'server_unavailable',
@@ -41,6 +43,7 @@ describe('TuiClientLauncher', () => {
     const runUi = vi.fn(async () => undefined);
     const launcher = new TuiClientLauncher({
       manifestPath: '/tmp/endpoint.json',
+      startupWorkspacePath: '/repo-a',
       resolveEndpoint: async () => ({
         ok: true,
         manifestVersion: 1,
@@ -52,7 +55,7 @@ describe('TuiClientLauncher', () => {
 
     await launcher.start();
 
-    expect(runUi).toHaveBeenCalledWith('/tmp/gateway.sock', undefined);
+    expect(runUi).toHaveBeenCalledWith('/tmp/gateway.sock', undefined, '/repo-a');
   });
 
   it('does not require a client-generated Conversation ID for the vendored client', async () => {
@@ -64,6 +67,7 @@ describe('TuiClientLauncher', () => {
     const launcher = new TuiClientLauncher({
       manifestPath: '/tmp/endpoint.json',
       command: '/tmp/pi-client',
+      startupWorkspacePath: '/repo-a',
       resolveEndpoint: async () => ({
         ok: true,
         manifestVersion: 1,
@@ -77,8 +81,14 @@ describe('TuiClientLauncher', () => {
 
     expect(spawnProcess).toHaveBeenCalledWith(
       '/tmp/pi-client',
-      ['--gateway-socket', '/tmp/gateway.sock'],
-      expect.objectContaining({ stdio: 'inherit' }),
+      ['--gateway-socket', '/tmp/gateway.sock', '--workspace-hint', '/repo-a'],
+      expect.objectContaining({
+        cwd: '/repo-a',
+        stdio: 'inherit',
+        env: expect.not.objectContaining({
+          ANYFUSION_PLANNER_WORKSPACE: expect.anything(),
+        }),
+      }),
     );
   });
 });

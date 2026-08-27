@@ -739,10 +739,27 @@ export class ConversationSession {
   async executeGatewayCommand(
     command: GatewayCommand,
     options: InputControllerSubmitOptions & { principalId?: string } = {},
-  ): Promise<void> {
+  ): Promise<WorkspaceCommandResult | void> {
     switch (command.kind) {
       case 'user_message':
+        await this.submitUserInput(command.text, options);
+        return;
       case 'slash_command':
+        if (command.workspaceMutation === 'initialize_if_unset') {
+          if (!this.deps.workspace) {
+            throw workspaceError('workspace_command_invalid', 'Workspace 服务未连接');
+          }
+          const path = command.text.slice('/workspace'.length).trim();
+          const result = await this.deps.workspace.initializeDefault(
+            path,
+            options.principalId,
+          );
+          if (result.status === 'rejected') {
+            throw workspaceError(result.code, result.message);
+          }
+          this.appendOutput(`Workspace 已设置为: ${result.workspace.path}`);
+          return result;
+        }
         await this.submitUserInput(command.text, options);
         return;
       case 'permission_resolution':

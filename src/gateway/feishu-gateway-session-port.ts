@@ -5,6 +5,10 @@ import type { EventJournal } from './event-journal.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import { ResultStreamAssembler } from './result-stream-assembler.js';
+import {
+  formatFeishuWorkspaceConfirmation,
+  formatFeishuWorkspaceRequired,
+} from './feishu-events.js';
 
 export interface FeishuGatewaySessionPortDeps {
   readonly accountId: string;
@@ -18,6 +22,11 @@ export interface FeishuGatewaySessionPortDeps {
 }
 
 export class FeishuGatewaySessionPort implements FeishuSessionPort {
+  private readonly workspaceConfirmationCursors = new Map<
+    string,
+    { sequence: number; eventId: string }
+  >();
+
   constructor(private readonly deps: FeishuGatewaySessionPortDeps) {}
 
   get runtimePaths(): FeishuSessionPort['runtimePaths'] {
@@ -70,12 +79,19 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     );
     if ('kind' in receipt) throw new Error(receipt.message);
     if (receipt.status === 'rejected' || !receipt.conversationId) {
+      if (receipt.reason === 'workspace_required') {
+        return [formatFeishuWorkspaceRequired()];
+      }
       throw new Error(receipt.reason ?? 'Feishu Gateway command was rejected');
     }
     const conversationId = receipt.conversationId;
     const terminal = this.waitForTerminal(conversationId, input.requestId, input.onProgress);
     const replay = await this.deps.journal.replay(this.deps.accountId, conversationId);
-    for (const event of orderedUniqueReplayEvents(replay)) {
+    const replayEvents = orderedUniqueReplayEvents(replay);
+    const latestWorkspaceEvent = replayEvents.filter(isWorkspaceProjectionEvent).at(-1);
+    if (latestWorkspaceEvent) terminal.consume(latestWorkspaceEvent);
+    for (const event of replayEvents) {
+      if (isWorkspaceProjectionEvent(event)) continue;
       const result = terminal.consume(event);
       if (result) return result;
     }
@@ -128,9 +144,14 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       progressFlushTimer.unref?.();
     };
     const consume = (event: GatewayEventEnvelope): string[] | null => {
-      if (settled || event.requestId !== requestId) return null;
+      if (settled) return null;
       if (seenEventIds.has(event.eventId)) return null;
       seenEventIds.add(event.eventId);
+      if (isWorkspaceProjectionEvent(event)) {
+        this.confirmWorkspace(event, onProgress);
+        return null;
+      }
+      if (event.requestId !== requestId) return null;
       if (
         event.kind === 'result_delivery_available'
         || event.kind === 'result_chunk'
@@ -175,9 +196,16 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       }
       if (event.kind === 'terminal_error') {
         flushProgress();
+        const message = (event.payload as { message?: string }).message
+          ?? 'Gateway execution failed';
         settled = true;
         cleanup();
-        rejectPromise(new Error((event.payload as { message?: string }).message ?? 'Gateway execution failed'));
+        if (/workspace_required|workspace (?:is )?not (?:selected|set)/iu.test(message)) {
+          const lines = [formatFeishuWorkspaceRequired()];
+          resolvePromise(lines);
+          return lines;
+        }
+        rejectPromise(new Error(message));
         return null;
       }
       if (event.kind === 'final_answer') {
@@ -212,6 +240,29 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     timeout.unref?.();
     return { promise, consume };
   }
+
+  private confirmWorkspace(
+    event: GatewayEventEnvelope,
+    onProgress: (text: string) => void,
+  ): void {
+    const path = workspacePathFromEvent(event);
+    if (!path) return;
+    const cursor = this.workspaceConfirmationCursors.get(event.conversationId);
+    if (
+      cursor
+      && (
+        event.sequence < cursor.sequence
+        || (event.sequence === cursor.sequence && event.eventId <= cursor.eventId)
+      )
+    ) {
+      return;
+    }
+    this.workspaceConfirmationCursors.set(event.conversationId, {
+      sequence: event.sequence,
+      eventId: event.eventId,
+    });
+    onProgress(formatFeishuWorkspaceConfirmation(path));
+  }
 }
 
 function orderedUniqueReplayEvents(replay: GatewayReplay): GatewayEventEnvelope[] {
@@ -223,4 +274,23 @@ function orderedUniqueReplayEvents(replay: GatewayReplay): GatewayEventEnvelope[
       seen.add(event.eventId);
       return true;
     });
+}
+
+function isWorkspaceProjectionEvent(event: GatewayEventEnvelope): boolean {
+  if (event.kind !== 'conversation_snapshot' && event.kind !== 'workspace_changed') {
+    return false;
+  }
+  return typeof event.payload === 'object'
+    && event.payload !== null
+    && 'workspace' in event.payload;
+}
+
+function workspacePathFromEvent(event: GatewayEventEnvelope): string | null {
+  if (!isWorkspaceProjectionEvent(event)) return null;
+  const payload = event.payload as {
+    workspace?: { path?: unknown } | null;
+  };
+  return typeof payload.workspace?.path === 'string' && payload.workspace.path.length > 0
+    ? payload.workspace.path
+    : null;
 }

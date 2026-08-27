@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFeishuInboundEvent } from '../../src/gateway/feishu-events.js';
+import {
+  formatFeishuWorkspaceConfirmation,
+  formatFeishuWorkspaceRequired,
+  normalizeFeishuInboundEvent,
+} from '../../src/gateway/feishu-events.js';
 
 describe('normalizeFeishuInboundEvent', () => {
   it('normalizes Feishu text messages into GatewayInboundEvent', () => {
@@ -42,5 +46,12 @@ describe('normalizeFeishuInboundEvent', () => {
         content: '{"text":"hello"}',
       },
     }, { transport: 'webhook' })).toBeNull();
+  });
+
+  it('formats canonical Workspace confirmation and an executable missing-Workspace prompt', () => {
+    expect(formatFeishuWorkspaceConfirmation('/repo-a')).toBe(
+      '当前 Workspace：/repo-a',
+    );
+    expect(formatFeishuWorkspaceRequired()).toContain('/workspace /absolute/path');
   });
 });

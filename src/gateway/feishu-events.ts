@@ -1,5 +1,13 @@
 import type { GatewayInboundEvent } from './types.js';
 
+export function formatFeishuWorkspaceConfirmation(path: string): string {
+  return `当前 Workspace：${path}`;
+}
+
+export function formatFeishuWorkspaceRequired(): string {
+  return '当前 Conversation 尚未设置 Workspace。请输入 /workspace /absolute/path 后再执行任务。';
+}
+
 export interface FeishuRawMessageEvent {
   sender?: {
     sender_id?: {

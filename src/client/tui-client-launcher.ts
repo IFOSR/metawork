@@ -10,17 +10,26 @@ import { fileURLToPath } from 'node:url';
 export interface TuiClientLauncherDeps {
   readonly manifestPath: string;
   readonly conversationId?: string;
+  readonly startupWorkspacePath?: string;
   readonly resolveEndpoint?: (
     manifestPath: string,
     protocolVersion: number,
   ) => Promise<ClientEndpointResult>;
-  readonly runUi?: (socketPath: string, conversationId?: string) => Promise<void>;
+  readonly runUi?: (
+    socketPath: string,
+    conversationId: string | undefined,
+    workspaceHint: string,
+  ) => Promise<void>;
   readonly command?: string;
   readonly spawn?: typeof spawn;
 }
 
 export class TuiClientLauncher {
-  constructor(private readonly deps: TuiClientLauncherDeps) {}
+  private readonly startupWorkspacePath: string;
+
+  constructor(private readonly deps: TuiClientLauncherDeps) {
+    this.startupWorkspacePath = deps.startupWorkspacePath ?? process.cwd();
+  }
 
   async start(): Promise<void> {
     const resolveEndpoint = this.deps.resolveEndpoint
@@ -28,13 +37,18 @@ export class TuiClientLauncher {
     const endpoint = await resolveEndpoint(this.deps.manifestPath, 1);
     if (!endpoint.ok) throw new Error(endpoint.message);
     if (this.deps.runUi) {
-      await this.deps.runUi(endpoint.socketPath, this.deps.conversationId);
+      await this.deps.runUi(
+        endpoint.socketPath,
+        this.deps.conversationId,
+        this.startupWorkspacePath,
+      );
       return;
     }
     await runVendoredPlannerClient(
       this.deps.command ?? findVendoredPlannerCommand(),
       endpoint.socketPath,
       this.deps.conversationId,
+      this.startupWorkspacePath,
       this.deps.spawn ?? spawn,
     );
   }
@@ -44,17 +58,24 @@ async function runVendoredPlannerClient(
   command: string,
   socketPath: string,
   conversationId: string | undefined,
+  workspaceHint: string,
   spawnProcess: typeof spawn,
 ): Promise<void> {
+  const {
+    ANYFUSION_PLANNER_WORKSPACE: _plannerWorkspace,
+    ...clientEnvironment
+  } = process.env;
   const child = spawnProcess(command, [
     '--gateway-socket',
     socketPath,
     ...(conversationId ? ['--conversation-id', conversationId] : []),
+    '--workspace-hint',
+    workspaceHint,
   ], {
-    cwd: process.cwd(),
+    cwd: workspaceHint,
     stdio: 'inherit',
     env: {
-      ...process.env,
+      ...clientEnvironment,
       ANYFUSION_PLANNER_MODE: '1',
       METACLAW_GATEWAY_SOCKET: socketPath,
     },

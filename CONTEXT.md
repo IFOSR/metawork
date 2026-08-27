@@ -166,14 +166,16 @@ See `docs/adr/0031-account-runtime-and-unified-client-gateway.md`,
 ADR-0034 makes the process topology explicit. Server startup is
 Workspace-neutral and persistent; TUI and Web are independently launched
 Clients, and configured Feishu connectivity is owned by Server with no
-standalone command. Every Conversation starts with `workspace: null`. Before a
-semantic message can start Planner, an authorized Principal must submit the
-same `/workspace /absolute/path` Gateway command used by every surface. Server
-canonicalizes and authorizes the path, persists it on the Conversation, rejects
-active-work changes with `workspace_busy`, and rejects semantic admission with
-`workspace_required` while unset. Different Conversations may use different
-Workspaces on the same Server, and each admitted Turn retains its fixed
-Workspace reference.
+standalone command. Existing Conversations restore their durable Workspace.
+For a new local TUI/Web Conversation only, the Client startup directory is an
+untrusted initialization hint applied through the same Server-owned Workspace
+mutation as `/workspace /absolute/path`; it never overrides attach/replay.
+Server canonicalizes and authorizes the path, persists it on the Conversation,
+rejects active-work changes with `workspace_busy`, and rejects semantic
+admission with `workspace_required` while unset or when default initialization
+fails. `/workspace <path>` remains the explicit mutation command used by every
+surface. Different Conversations may use different Workspaces on the same
+Server, and each admitted Turn retains its fixed Workspace reference.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 

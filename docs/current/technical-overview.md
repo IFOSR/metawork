@@ -81,8 +81,10 @@ domain model. `metawork server start` is the only Runtime-owning startup path
 and remains alive independently of all Clients. Bare `metawork` launches only
 the TUI Client, `metawork web` only opens the existing Server-owned loopback
 Web origin, and configured Feishu connectivity is owned by Server. Server
-startup is Workspace-neutral. Each Conversation must establish its durable
-Workspace with `/workspace /absolute/path` before semantic admission.
+startup is Workspace-neutral. Existing Conversations restore their durable
+Workspace. A new local TUI/Web Conversation uses the Client startup directory
+only as an untrusted default applied through the same Server-owned mutation as
+`/workspace /absolute/path`; attach/replay never applies that hint.
 
 Runtime-wide KernelWorkflow, execution and startup recovery are constructed once
 per AccountRuntime. One account Kernel coordinator owns durable
@@ -589,18 +591,27 @@ TUI and Web resolve the atomic endpoint manifest and fail with a concrete
 `metawork server start` instruction when no compatible ready Server exists.
 Closing a terminal or browser does not stop Server or accepted Task work.
 
-Server startup never binds a user Workspace. A new Conversation rejects
-semantic input with `workspace_required` until every Client surface uses the
-same command:
+Server startup never binds a user Workspace. Existing Conversations restore
+their durable Workspace. A new local TUI/Web Conversation applies the Client
+startup directory through the same Server-owned mutation as the command:
 
 ```text
 /workspace /absolute/path/to/project
 ```
 
 Server canonicalizes and authorizes the path, persists it on the Conversation,
-and returns `workspace_busy` when active work prevents a change. The existing
-Web Composer submits this command; no Web-only Workspace selector or mutation
-API exists.
+and returns `workspace_busy` when active work prevents a change. A rejected or
+unavailable default leaves `workspace: null`, returns `workspace_required`
+before Planner startup, and prompts for the explicit command. Attach/replay
+never overwrites a persisted Workspace with the current Client directory. The
+existing Web Composer submits explicit changes; no Web-only Workspace selector
+or mutation API exists.
+
+`metawork web` registers its startup directory in a short-lived single-use
+Server launch context. The URL contains only an opaque bootstrap fragment and
+never contains a Workspace path. HTTP snapshots, WebSocket replay, and live
+`workspace_changed` events expose the Server-confirmed canonical Workspace to
+the existing Web interface without narrowing its richer projections.
 
 The Web surface binds only to `127.0.0.1`. Normal startup opens a short-lived,
 single-use URL-fragment bootstrap that is exchanged for an HttpOnly,

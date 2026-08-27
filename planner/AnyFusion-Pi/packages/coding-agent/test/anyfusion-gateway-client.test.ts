@@ -55,6 +55,21 @@ function fixture() {
 }
 
 describe("GatewayClient", () => {
+	it("marks automatic Workspace initialization as initialize-if-unset", async () => {
+		const { client, submitted } = fixture();
+
+		await client.initializeWorkspace(
+			"/workspace /repo-a",
+			{ mode: "attach", conversationId: "conv_native" },
+		);
+
+		expect(submitted[0]?.command).toEqual({
+			kind: "slash_command",
+			text: "/workspace /repo-a",
+			workspaceMutation: "initialize_if_unset",
+		});
+	});
+
 	it("submits permission decisions as versioned Gateway commands", async () => {
 		const { client, submitted } = fixture();
 
