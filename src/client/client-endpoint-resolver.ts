@@ -102,28 +102,36 @@ async function probeGatewaySocket(socketPath: string): Promise<void> {
         clearTimeout(timer);
         socket.off('error', reject);
         socket.off('close', onClose);
+        socket.off('data', onData);
       };
       const onClose = () => {
         cleanup();
         reject(new Error('Gateway health probe closed before hello'));
       };
-      socket.once('error', reject);
-      socket.once('close', onClose);
-      socket.on('data', chunk => {
+      const onData = (chunk: Buffer) => {
         buffer += chunk.toString();
-        const newline = buffer.indexOf('\n');
-        if (newline < 0) return;
-        const message = JSON.parse(buffer.slice(0, newline)) as { type?: string };
-        if (message.type !== 'hello') {
+        while (buffer.includes('\n')) {
+          const newline = buffer.indexOf('\n');
+          const raw = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!raw) continue;
+          const message = JSON.parse(raw) as { type?: string };
+          if (message.type === 'hello') {
+            cleanup();
+            resolve();
+            socket.end();
+            return;
+          }
+          if (message.type === 'event' || message.type === 'output') continue;
           cleanup();
           reject(new Error('Gateway health probe returned an invalid hello'));
           socket.destroy();
           return;
         }
-        cleanup();
-        resolve();
-        socket.end();
-      });
+      };
+      socket.once('error', reject);
+      socket.once('close', onClose);
+      socket.on('data', onData);
     });
   } finally {
     socket.destroy();

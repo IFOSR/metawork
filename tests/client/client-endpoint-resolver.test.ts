@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,6 +19,59 @@ afterEach(async () => {
 });
 
 describe('resolveClientEndpoint', () => {
+  it('waits through initial replay events for the Gateway hello', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-client-endpoint-'));
+    roots.push(root);
+    const manifestPath = join(root, 'endpoint.json');
+    const socketPath = join(root, 'gateway.sock');
+    const server = createServer(socket => {
+      socket.write(`${JSON.stringify({
+        type: 'event',
+        event: {
+          protocolVersion: 1,
+          eventId: 'event_snapshot',
+          sequence: 1,
+          accountId: 'local-default',
+          conversationId: 'conv_probe',
+          requestId: null,
+          turnId: null,
+          kind: 'conversation_snapshot',
+          payload: { workspace: null, from: 0, lines: [], truncated: false },
+          occurredAt: '2026-08-27T00:00:00.000Z',
+        },
+      })}\n`);
+      socket.end(`${JSON.stringify({
+        type: 'hello',
+        sessionId: 'conv_probe',
+      })}\n`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    await writeEndpointManifest(manifestPath, {
+      manifestVersion: ENDPOINT_MANIFEST_VERSION,
+      serverVersion: '1.2.0',
+      gatewayProtocolVersion: 1,
+      pid: process.pid,
+      startedAt: '2026-08-27T00:00:00.000Z',
+      state: 'ready',
+      unixSocketPath: socketPath,
+      webOrigin: 'http://127.0.0.1:8788',
+    });
+
+    try {
+      await expect(resolveClientEndpoint(manifestPath, 1)).resolves.toMatchObject({
+        ok: true,
+        socketPath,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
+  });
+
   it('resolves a ready compatible Server endpoint', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-client-endpoint-'));
     roots.push(root);
