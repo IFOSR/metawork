@@ -240,9 +240,91 @@ e2e('Settings workbench browser flow', () => {
       await rm(profile, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('restores credentialed discovered Providers without duplicating the active Kimi endpoint', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const webDist = join(root, 'web', 'dist');
+    await stat(join(webDist, 'index.html'));
+    const server = await startMockServer(webDist, 'provider-recovery');
+    const profile = await mkdtemp(join(tmpdir(), 'metawork-provider-recovery-chrome-'));
+    let chrome: ChildProcess | null = null;
+    try {
+      chrome = spawn(chromePath, [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--window-size=1440,1000',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profile}`,
+        `http://127.0.0.1:${server.port}/`,
+      ], { stdio: 'ignore' });
+      const debuggingPort = await waitForDebuggingPort(profile);
+      const target = await waitForPageTarget(debuggingPort);
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await cdp.send('Runtime.enable');
+        await cdp.send('Page.enable');
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await waitForExpression(
+          cdp,
+          `document.querySelectorAll('.provider-card').length === 3`,
+        );
+
+        const providers = await cdp.evaluate(`(() => (
+          [...document.querySelectorAll('.provider-card')].map(card => ({
+            name: card.querySelector('h4')?.textContent ?? '',
+            baseUrl: card.querySelector('.mono')?.textContent ?? '',
+            credentialConfigured: card.textContent.includes('凭据已由 SecretStore'),
+          }))
+        ))()`) as Array<{
+          name: string;
+          baseUrl: string;
+          credentialConfigured: boolean;
+        }>;
+        expect(providers.map(provider => provider.name).sort()).toEqual([
+          'Code CLI',
+          'DeepSeek',
+          'Kimi',
+        ]);
+        expect(providers.filter(provider => provider.name === 'Kimi')).toHaveLength(1);
+        expect(providers.every(provider => provider.credentialConfigured)).toBe(true);
+        expect(providers.map(provider => provider.baseUrl).sort()).toEqual([
+          'https://api.deepseek.com/v1',
+          'https://api.kimi.com/coding/v1',
+          'https://www.code-cli.cn/v1',
+        ]);
+      } finally {
+        cdp.close();
+      }
+    } finally {
+      if (chrome) {
+        chrome.kill('SIGTERM');
+        await new Promise<void>(resolvePromise => {
+          if (chrome!.exitCode !== null) {
+            resolvePromise();
+            return;
+          }
+          chrome!.once('exit', () => resolvePromise());
+        });
+      }
+      await server.close();
+      await rm(profile, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 async function startMockServer(webDist: string): Promise<{
+  port: number;
+  close(): Promise<void>;
+  getActivationPayload(): unknown;
+  setBusy(value: boolean): void;
+}>;
+async function startMockServer(
+  webDist: string,
+  mode?: 'provider-recovery',
+): Promise<{
   port: number;
   close(): Promise<void>;
   getActivationPayload(): unknown;
@@ -296,11 +378,13 @@ async function startMockServer(webDist: string): Promise<{
       return;
     }
     if (url.pathname === '/api/config/secrets/status') {
-      json(response, { 'code-cli': true, deepseek: true });
+      json(response, mode === 'provider-recovery'
+        ? { provider: false, 'code-cli': true, deepseek: true, kimi: true }
+        : { 'code-cli': true, deepseek: true });
       return;
     }
     if (url.pathname === '/api/config/completion') {
-      json(response, {
+      json(response, mode === 'provider-recovery' ? providerRecoveryCompletion() : {
         providers: {
           'code-cli': {
             displayName: 'Code CLI',
@@ -335,7 +419,9 @@ async function startMockServer(webDist: string): Promise<{
       return;
     }
     if (url.pathname === '/api/config') {
-      json(response, configuration());
+      json(response, mode === 'provider-recovery'
+        ? providerRecoveryConfiguration()
+        : configuration());
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/config/activate') {
@@ -363,6 +449,76 @@ async function startMockServer(webDist: string): Promise<{
     }),
     getActivationPayload: () => activationPayload,
     setBusy: value => { busy = value; },
+  };
+}
+
+function providerRecoveryCompletion() {
+  return {
+    providers: {
+      'code-cli': {
+        displayName: 'Code CLI',
+        baseUrl: 'https://www.code-cli.cn/v1',
+        credentialState: '缺失',
+        modelIds: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+      },
+      deepseek: {
+        displayName: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        credentialState: '缺失',
+        modelIds: ['deepseek-chat', 'deepseek-reasoner'],
+      },
+      kimi: {
+        displayName: 'Kimi',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        credentialState: '缺失',
+        modelIds: ['k3', 'k3-256k'],
+      },
+      provider: {
+        displayName: 'Kimi',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        credentialState: '已自动发现',
+        modelIds: ['k3'],
+      },
+    },
+    providerPresets: [],
+    models: {},
+    requiredFields: [],
+  };
+}
+
+function providerRecoveryConfiguration() {
+  const current = configuration();
+  const defaultModel = model(
+    'provider',
+    'k3',
+    ['coding', 'planning', 'structured-output', 'tools'],
+  );
+  return {
+    ...current,
+    config: {
+      ...current.config,
+      providers: {
+        provider: {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          apiKeyRef: 'file-secret:anyfusion/provider',
+          region: 'international',
+          enabled: true,
+        },
+      },
+      models: {
+        'default-model': defaultModel,
+      },
+      agentClasses: Object.fromEntries(
+        Object.entries(current.config.agentClasses).map(([ref, value]) => [
+          ref,
+          {
+            ...value,
+            modelPolicy: { mode: 'fixed', modelRef: 'default-model' },
+          },
+        ]),
+      ),
+    },
   };
 }
 

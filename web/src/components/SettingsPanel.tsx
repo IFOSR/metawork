@@ -52,6 +52,10 @@ function stringList(value: unknown): string[] {
     : [];
 }
 
+function normalizeProviderUrl(value: string): string {
+  return value.trim().replace(/\/+$/u, '').toLowerCase();
+}
+
 function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResult): CatalogDraft {
   const rawProviders = asRecord(config.providers);
   const rawModels = asRecord(config.models);
@@ -81,6 +85,30 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       },
     ];
   }));
+  const configuredUrls = new Set(
+    Object.values(providers).map(provider => normalizeProviderUrl(provider.baseUrl)),
+  );
+  for (const [providerRef, completed] of Object.entries(completionProviders)) {
+    const baseUrl = completed.baseUrl ?? '';
+    const normalizedUrl = normalizeProviderUrl(baseUrl);
+    if (
+      providers[providerRef]
+      || completed.credentialState === '缺失'
+      || (normalizedUrl && configuredUrls.has(normalizedUrl))
+    ) {
+      continue;
+    }
+    providers[providerRef] = {
+      providerRef,
+      displayName: completed.displayName,
+      baseUrl,
+      modelIds: completed.modelIds,
+      apiKey: '',
+      credentialState: completed.credentialState,
+      enabled: true,
+    };
+    if (normalizedUrl) configuredUrls.add(normalizedUrl);
+  }
   const models = Object.fromEntries(Object.entries(rawModels).map(([ref, raw]) => {
     const model = asRecord(raw);
     const capabilities = stringList(model.capabilities);
@@ -254,7 +282,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
               ...provider,
               credentialState: provider.apiKey
                 ? provider.credentialState
-                : existence[ref] ? '已自动发现' : '缺失',
+                : existence[ref] ? '已自动发现' : provider.credentialState,
             },
           ])),
         }
@@ -267,12 +295,25 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
 
   useEffect(() => {
     if (!http) return;
-    void Promise.all([
-      http.getConfig(),
-      http.getConfigurationCompletion(),
-    ]).then(([snapshot, completion]) => {
-      applyConfigSnapshot(snapshot, completion);
-    }).catch(error => setLoadError((error as Error).message));
+    void (async () => {
+      const [snapshot, completion] = await Promise.all([
+        http.getConfig(),
+        http.getConfigurationCompletion(),
+      ]);
+      const existence = await http.getSecretStatus(Object.keys(completion.providers))
+        .catch(() => ({} as Record<string, boolean>));
+      applyConfigSnapshot(snapshot, {
+        ...completion,
+        providers: Object.fromEntries(
+          Object.entries(completion.providers).map(([providerRef, provider]) => [
+            providerRef,
+            existence[providerRef]
+              ? { ...provider, credentialState: '已自动发现' as const }
+              : provider,
+          ]),
+        ),
+      });
+    })().catch(error => setLoadError((error as Error).message));
   }, [http]);
 
   const draftValidationIssues = draft && catalog
