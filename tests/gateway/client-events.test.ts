@@ -12,9 +12,9 @@ import { GATEWAY_PROTOCOL_VERSION } from '../../src/gateway/client-protocol.js';
 
 describe('gateway event protocol', () => {
   it('exports a complete event kind contract', () => {
-    expect(GATEWAY_PROTOCOL_VERSION).toBe(1);
-    expect(GATEWAY_EVENT_KINDS).toHaveLength(14);
-    expect(new Set(GATEWAY_EVENT_KINDS).size).toBe(14);
+    expect(GATEWAY_PROTOCOL_VERSION).toBe(2);
+    expect(GATEWAY_EVENT_KINDS).toHaveLength(20);
+    expect(new Set(GATEWAY_EVENT_KINDS).size).toBe(20);
   });
 
   it('identifies terminal event kinds', () => {
@@ -30,7 +30,7 @@ describe('gateway event protocol', () => {
 
   it('carries account, conversation and request identity', () => {
     const event: GatewayEventEnvelope = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'evt_1',
       sequence: 1,
       accountId: 'local-default',
@@ -49,7 +49,7 @@ describe('gateway event protocol', () => {
 
   it('keeps sequence monotonic within one conversation stream', () => {
     const events: GatewayEventEnvelope[] = [1, 2, 3].map(sequence => ({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: `evt_${sequence}`,
       sequence,
       accountId: 'local-default',

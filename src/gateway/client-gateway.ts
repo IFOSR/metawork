@@ -45,6 +45,15 @@ export interface ClientGatewayDeps {
     command: GatewayCommand,
     principalId?: string,
   ): Promise<ConversationSubmissionResult>;
+  handleWorkspaceCommand?(
+    command: Extract<GatewayCommand, {
+      kind: 'select_workspace'
+        | 'list_workspace_conversations'
+        | 'create_conversation'
+        | 'archive_conversation';
+    }>,
+    context: { accountId: string; principalId: string; connectionId: string },
+  ): Promise<{ status: 'accepted' | 'rejected'; conversationId?: string; reason?: string }>;
   commandAdmissionStore?: CommandAdmissionStore;
   now?: () => string;
 }
@@ -135,8 +144,9 @@ export class ClientGateway {
       idempotencyKey: envelope.idempotencyKey,
       fingerprint,
       requestId: envelope.requestId,
+      connectionId: envelope.connectionId,
       principalId: `${principal.kind}:${principal.id}`,
-      conversation: envelope.conversation,
+      scope: envelope.scope,
       command: envelope.command,
       conversationId: null,
       now: this.now(),
@@ -198,10 +208,34 @@ export class ClientGateway {
     let admission = initial;
     try {
       await this.deps.activateAccount(admission.accountId);
+      if (admission.scope.kind === 'workspace') {
+        admission = await this.admissionStore.markSubmitted(
+          admission.accountId,
+          admission.idempotencyKey,
+          admission.fingerprint,
+          this.now(),
+        );
+        const handler = this.deps.handleWorkspaceCommand;
+        const result = handler && isWorkspaceCommand(admission.command)
+          ? await handler(admission.command, {
+              accountId: admission.accountId,
+              principalId: admission.principalId ?? 'unknown',
+              connectionId: admission.connectionId,
+            })
+          : { status: 'rejected' as const, reason: 'workspace_command_unavailable' };
+        return this.persistTerminal(admission, {
+          requestId: admission.requestId,
+          idempotencyKey: admission.idempotencyKey,
+          status: result.status,
+          conversationId: result.conversationId ?? null,
+          ...(result.reason ? { reason: result.reason } : {}),
+        });
+      }
       if (!admission.conversationId) {
         const conversation = await this.deps.conversationResolver.resolve(
           admission.accountId,
-          admission.conversation,
+          admission.scope.selection,
+          admission.principalId,
         );
         if (conversation.status === 'denied') {
           return this.persistTerminal(admission, {
@@ -246,20 +280,6 @@ export class ClientGateway {
       }
       if (!submission.completion) {
         return this.persistTerminal(admission, receipt);
-      }
-
-      if (isWorkspaceInitializationCommand(admission.command)) {
-        const completion = await submission.completion;
-        return this.persistTerminal(
-          admission,
-          completion.status === 'completed'
-            ? receipt
-            : {
-                ...receipt,
-                status: 'rejected',
-                reason: completion.reason ?? 'command_execution_failed',
-              },
-        );
       }
 
       void submission.completion.then(
@@ -321,9 +341,18 @@ export class ClientGateway {
   }
 }
 
-function isWorkspaceInitializationCommand(command: GatewayCommand): boolean {
-  return command.kind === 'slash_command'
-    && command.workspaceMutation === 'initialize_if_unset';
+function isWorkspaceCommand(command: GatewayCommand): command is Extract<GatewayCommand, {
+  kind: 'select_workspace'
+    | 'list_workspace_conversations'
+    | 'create_conversation'
+    | 'archive_conversation';
+}> {
+  return [
+    'select_workspace',
+    'list_workspace_conversations',
+    'create_conversation',
+    'archive_conversation',
+  ].includes(command.kind);
 }
 
 function requestIdFromUntrustedEnvelope(input: unknown): string | null {
@@ -379,7 +408,7 @@ function admissionKey(accountId: string, idempotencyKey: string): string {
 function commandFingerprint(envelope: GatewayCommandEnvelope): string {
   return createHash('sha256')
     .update(stableJson({
-      conversation: envelope.conversation,
+      scope: envelope.scope,
       command: envelope.command,
     }))
     .digest('hex');

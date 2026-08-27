@@ -71,6 +71,8 @@ import {
   isAuthenticatedWorkspacePrincipalId,
 } from '../workspace/conversation-workspace-service.js';
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
+import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
+import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -488,6 +490,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }).migrate();
   await workspaceCatalogStore.initialize();
   await conversationStore.initialize();
+  const workspaceDirectory = new WorkspaceDirectoryService({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    workspaceCatalog: workspaceCatalogStore,
+    conversationStore,
+    authorize: (_path, principalId) => isAuthenticatedWorkspacePrincipalId(principalId),
+    createConversationId: () => `conv_${nanoid(12)}`,
+  });
   const notifier = createNotificationService(config);
   const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
     ?? process.env.METACLAW_PLANNER_TUI_SOCKET
@@ -915,6 +924,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       return conversationId;
     },
     verifyOwnership: authorizeConversationAttach,
+    createInWorkspace: async (accountId, workspaceId, principalId) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) {
+        throw new Error('workspace_unauthorized');
+      }
+      const conversation = await workspaceDirectory.createConversation(
+        workspaceId,
+        principalId,
+      );
+      rememberConversation(accountId, conversation.id);
+      return conversation.id;
+    },
   });
   const gatewaySubscriptions = new GatewaySubscriptions();
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
@@ -925,6 +945,40 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
     attachments: webAttachmentStore,
+    readHistory: async (conversationId, cursor, requestedLimit) => {
+      const record = await conversationStore.readConversation(conversationId);
+      if (!record) throw new Error('conversation_not_found');
+      const limit = Math.min(Math.max(requestedLimit ?? 10, 1), 50);
+      const offset = decodeHistoryCursor(cursor);
+      const ordered = [...record.turns].reverse();
+      const turns = ordered.slice(offset, offset + limit);
+      return {
+        turns,
+        previousCursor: offset > 0
+          ? encodeHistoryCursor(Math.max(0, offset - limit))
+          : null,
+        nextCursor: offset + turns.length < ordered.length
+          ? encodeHistoryCursor(offset + turns.length)
+          : null,
+      };
+    },
+  });
+  const workspaceGatewayRuntime = new WorkspaceGatewayRuntime(workspaceDirectory, {
+    publish: async (kind, workspaceId, payload) => {
+      const event = await eventJournal.append({
+        protocolVersion: 2,
+        eventId: `event_${nanoid(12)}`,
+        sequence: 0,
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        conversationId: `workspace:${workspaceId}`,
+        requestId: null,
+        turnId: null,
+        kind,
+        payload: { workspaceId, ...asPayloadRecord(payload) },
+        occurredAt: new Date().toISOString(),
+      });
+      gatewaySubscriptions.publish(event);
+    },
   });
   const clientGateway = new ClientGateway({
     authenticator: {
@@ -959,6 +1013,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         command,
         principalId,
       ),
+    handleWorkspaceCommand: (command, context) =>
+      workspaceGatewayRuntime.handle(command, context),
   });
   const webGatewayAdapter = new WebGatewayAdapter({
     gateway: clientGateway,
@@ -1417,7 +1473,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       writeManifest: endpoints => writeEndpointManifest(endpointManifestPath, {
         manifestVersion: 1,
         serverVersion: process.env.METAWORK_VERSION ?? 'development',
-        gatewayProtocolVersion: 1,
+        gatewayProtocolVersion: 2,
         pid: process.pid,
         startedAt: new Date().toISOString(),
         state: 'ready',
@@ -1431,4 +1487,21 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     await new Promise(() => undefined);
     return;
 }
+}
+
+function encodeHistoryCursor(offset: number): string {
+  return Buffer.from(String(offset), 'utf8').toString('base64url');
+}
+
+function decodeHistoryCursor(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  const offset = Number(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid_cursor');
+  return offset;
+}
+
+function asPayloadRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+    ? value as Record<string, unknown>
+    : { value };
 }

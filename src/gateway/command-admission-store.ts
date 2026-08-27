@@ -1,9 +1,8 @@
 import { readdir, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
-import type { ConversationSelection } from '../session/conversation-types.js';
 import type { CommandReceipt } from './command-admission.js';
-import type { GatewayCommand } from './client-protocol.js';
+import type { GatewayCommand, GatewayScope } from './client-protocol.js';
 
 export type CommandAdmissionState = 'pending' | 'submitted' | 'terminal' | 'uncertain';
 
@@ -12,8 +11,9 @@ export interface StoredCommandAdmission {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
   readonly requestId: string;
+  readonly connectionId: string;
   readonly principalId?: string;
-  readonly conversation: ConversationSelection;
+  readonly scope: GatewayScope;
   readonly command: GatewayCommand;
   readonly conversationId: string | null;
   readonly state: CommandAdmissionState;
@@ -28,8 +28,9 @@ export interface ReserveCommandAdmissionInput {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
   readonly requestId: string;
+  readonly connectionId: string;
   readonly principalId?: string;
-  readonly conversation: ConversationSelection;
+  readonly scope: GatewayScope;
   readonly command: GatewayCommand;
   readonly conversationId: string | null;
   readonly now: string;
@@ -190,7 +191,7 @@ export class MemoryCommandAdmissionStore implements CommandAdmissionStore {
 }
 
 interface CommandAdmissionFile {
-  readonly version: 1;
+  readonly version: 2;
   readonly admissions: StoredCommandAdmission[];
 }
 
@@ -366,7 +367,7 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
       return parsed;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { version: 1, admissions: [] };
+        return { version: 2, admissions: [] };
       }
       throw error;
     }
@@ -394,7 +395,7 @@ function assertFingerprint(admission: StoredCommandAdmission, fingerprint: strin
 function isCommandAdmissionFile(value: unknown, accountId: string): value is CommandAdmissionFile {
   if (typeof value !== 'object' || value === null) return false;
   const file = value as Partial<CommandAdmissionFile>;
-  return file.version === 1
+  return file.version === 2
     && Array.isArray(file.admissions)
     && file.admissions.every(item => isStoredCommandAdmission(item, accountId));
 }
@@ -406,8 +407,9 @@ function isStoredCommandAdmission(value: unknown, accountId: string): value is S
     && typeof item.idempotencyKey === 'string'
     && typeof item.fingerprint === 'string'
     && typeof item.requestId === 'string'
-    && typeof item.conversation === 'object'
-    && item.conversation !== null
+    && typeof item.connectionId === 'string'
+    && typeof item.scope === 'object'
+    && item.scope !== null
     && typeof item.command === 'object'
     && item.command !== null
     && (item.conversationId === null || typeof item.conversationId === 'string')

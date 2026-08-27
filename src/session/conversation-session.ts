@@ -745,12 +745,6 @@ export class ConversationSession {
         await this.submitUserInput(command.text, options);
         return;
       case 'slash_command':
-        if (command.workspaceMutation === 'initialize_if_unset') {
-          throw workspaceError(
-            'workspace_command_invalid',
-            'Workspace selection must be handled by ClientGateway',
-          );
-        }
         await this.submitUserInput(command.text, options);
         return;
       case 'permission_resolution':

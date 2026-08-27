@@ -226,11 +226,14 @@ export class MetaclawGatewayServer {
         ? { kind: 'slash_command', text: message.text }
         : { kind: 'user_message', text: message.text, attachments: [] };
       void this.deps.gateway.handle({
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: message.requestId ?? `req_${nanoid(12)}`,
         idempotencyKey: message.idempotencyKey ?? `idem_${nanoid(12)}`,
         connectionId: `unix_${nanoid(8)}`,
-        conversation: { mode: 'attach', conversationId: selectedConversationId },
+        scope: {
+          kind: 'conversation',
+          selection: { mode: 'attach', conversationId: selectedConversationId },
+        },
         command,
         clientCapabilities: ['trace_v1'],
       }, 'local').then(receipt => {

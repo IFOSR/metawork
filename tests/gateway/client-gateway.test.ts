@@ -19,11 +19,11 @@ afterEach(async () => {
 });
 
 const envelope: GatewayCommandEnvelope = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   requestId: 'req_1',
   idempotencyKey: 'idem_1',
   connectionId: 'conn_1',
-  conversation: { mode: 'new' },
+  scope: { kind: 'conversation', selection: { mode: 'new', workspaceId: 'workspace_repo' } },
   command: { kind: 'user_message', text: 'hello', attachments: [] },
   clientCapabilities: [],
 };
@@ -110,33 +110,19 @@ describe('ClientGateway', () => {
     expect(submitted).toEqual(['conv_1']);
   });
 
-  it('waits for automatic Workspace initialization to complete before accepting it', async () => {
-    const completion = deferredCompletion();
+  it('handles Workspace selection outside the Conversation mailbox', async () => {
     const gateway = new ClientGateway({
       authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
       accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
       conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
       activateAccount: async () => undefined,
-      submitToConversation: async () => ({
-        status: 'accepted',
-        completion: completion.promise,
+      submitToConversation: async () => { throw new Error('must not submit'); },
+      handleWorkspaceCommand: async command => ({
+        status: command.kind === 'select_workspace' ? 'accepted' : 'rejected',
       }),
     });
-
-    let settled = false;
-    const pending = gateway.handle(workspaceInitializationEnvelope(), 'local')
-      .then(result => {
-        settled = true;
-        return result;
-      });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
-    completion.resolve({ status: 'completed' });
-    await expect(pending).resolves.toMatchObject({
-      status: 'accepted',
-      conversationId: 'conv_1',
-    });
+    await expect(gateway.handle(workspaceInitializationEnvelope(), 'local'))
+      .resolves.toMatchObject({ status: 'accepted', conversationId: null });
   });
 
   it('returns the structured Workspace rejection when automatic initialization fails', async () => {
@@ -145,19 +131,17 @@ describe('ClientGateway', () => {
       accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
       conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
       activateAccount: async () => undefined,
-      submitToConversation: async () => ({
-        status: 'accepted',
-        completion: Promise.resolve({
-          status: 'failed',
-          reason: 'workspace_unauthorized',
-        }),
+      submitToConversation: async () => { throw new Error('must not submit'); },
+      handleWorkspaceCommand: async () => ({
+        status: 'rejected',
+        reason: 'workspace_unauthorized',
       }),
     });
 
     await expect(gateway.handle(workspaceInitializationEnvelope(), 'local'))
       .resolves.toMatchObject({
         status: 'rejected',
-        conversationId: 'conv_1',
+        conversationId: null,
         reason: 'workspace_unauthorized',
       });
   });
@@ -409,11 +393,8 @@ function workspaceInitializationEnvelope(): GatewayCommandEnvelope {
     ...envelope,
     requestId: 'req_workspace',
     idempotencyKey: 'idem_workspace',
-    command: {
-      kind: 'slash_command',
-      text: '/workspace /repo-a',
-      workspaceMutation: 'initialize_if_unset',
-    },
+    scope: { kind: 'workspace' },
+    command: { kind: 'select_workspace', path: '/repo-a' },
   };
 }
 

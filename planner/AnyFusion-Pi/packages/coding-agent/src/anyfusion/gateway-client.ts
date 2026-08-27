@@ -12,6 +12,7 @@ import type {
   GatewayCommandReceipt,
   GatewayEventEnvelope,
   GatewayReplay,
+  GatewayScope,
 } from './gateway-protocol.js';
 
 export interface GatewayClientDeps {
@@ -58,22 +59,25 @@ export class GatewayClient {
     text: string,
     conversation: ConversationSelection,
   ): Promise<GatewayCommandReceipt> {
-    return this.submit({ kind: 'user_message', text, attachments: [] }, conversation);
+    return this.submit(
+      { kind: 'user_message', text, attachments: [] },
+      { kind: 'conversation', selection: conversation },
+    );
   }
 
   submitSlashCommand(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt> {
-    return this.submit({ kind: 'slash_command', text }, conversation);
+    return this.submit(
+      { kind: 'slash_command', text },
+      { kind: 'conversation', selection: conversation },
+    );
   }
 
   initializeWorkspace(
     text: string,
-    conversation: ConversationSelection,
+    _conversation: ConversationSelection,
   ): Promise<GatewayCommandReceipt> {
-    return this.submit({
-      kind: 'slash_command',
-      text,
-      workspaceMutation: 'initialize_if_unset',
-    }, conversation);
+    const path = text.replace(/^\/workspace\s+/u, '').trim();
+    return this.submit({ kind: 'select_workspace', path }, { kind: 'workspace' });
   }
 
   submitPermissionResolution(
@@ -81,11 +85,17 @@ export class GatewayClient {
     resolution: 'approve' | 'deny',
     conversation: ConversationSelection,
   ): Promise<GatewayCommandReceipt> {
-    return this.submit({ kind: 'permission_resolution', requestId, resolution }, conversation);
+    return this.submit(
+      { kind: 'permission_resolution', requestId, resolution },
+      { kind: 'conversation', selection: conversation },
+    );
   }
 
   cancelTurn(turnId: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt> {
-    return this.submit({ kind: 'cancel_turn', turnId }, conversation);
+    return this.submit(
+      { kind: 'cancel_turn', turnId },
+      { kind: 'conversation', selection: conversation },
+    );
   }
 
   onEvent(listener: (event: GatewayEventEnvelope) => void): () => void {
@@ -144,17 +154,17 @@ export class GatewayClient {
 
   private async submit(
     command: GatewayCommandEnvelope['command'],
-    conversation: ConversationSelection,
+    scope: GatewayScope,
   ): Promise<GatewayCommandReceipt> {
     await this.awaitReconnect();
     const requestId = this.createId('req');
     const idempotencyKey = this.createId('idem');
     const receipt = await this.deps.submit({
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId,
       idempotencyKey,
       connectionId: 'tui',
-      conversation,
+      scope,
       command,
       clientCapabilities: ['trace_v1'],
     });

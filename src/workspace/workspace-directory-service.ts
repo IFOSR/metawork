@@ -156,6 +156,37 @@ export class WorkspaceDirectoryService {
     return metadata;
   }
 
+  async archiveConversation(
+    conversationId: string,
+    workspaceId: string,
+    _principalId: string,
+  ): Promise<void> {
+    const record = await this.deps.conversationStore.readConversation(conversationId);
+    if (!record || record.conversation.workspaceBinding?.workspaceId !== workspaceId) {
+      throw new Error('conversation_not_in_workspace');
+    }
+    if (record.turns.some(turn => turn.status === 'blocked')) {
+      throw new Error('workspace_busy');
+    }
+    const updatedAt = this.deps.now?.() ?? new Date().toISOString();
+    const metadata: ConversationMetadata = {
+      ...record.conversation,
+      archived: true,
+      updatedAt,
+    };
+    await this.deps.conversationStore.writeConversation({
+      ...record,
+      conversation: metadata,
+    });
+    const catalog = await this.deps.conversationStore.readCatalog();
+    await this.deps.conversationStore.writeCatalog({
+      ...catalog,
+      conversations: catalog.conversations.map(item => (
+        item.id === conversationId ? metadata : item
+      )),
+    });
+  }
+
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.mutation;
     let release!: () => void;

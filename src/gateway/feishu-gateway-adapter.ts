@@ -39,16 +39,19 @@ export class FeishuGatewayAdapter {
     idempotencyKey: string,
   ): Promise<ClientGatewayResult> {
     const envelope: GatewayCommandEnvelope = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId,
       idempotencyKey,
       connectionId: 'feishu',
-      conversation: {
-        mode: 'bound',
-        binding: {
-          platform: 'feishu',
-          channelId: channel.chatId,
-          ...(channel.threadId !== undefined ? { threadId: channel.threadId } : {}),
+      scope: {
+        kind: 'conversation',
+        selection: {
+          mode: 'bound',
+          binding: {
+            platform: 'feishu',
+            channelId: channel.chatId,
+            ...(channel.threadId !== undefined ? { threadId: channel.threadId } : {}),
+          },
         },
       },
       command: text.startsWith('/')

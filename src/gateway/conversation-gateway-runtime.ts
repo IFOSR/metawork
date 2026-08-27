@@ -31,6 +31,15 @@ export interface ConversationGatewayRuntimeDeps {
   readonly subscriptions: GatewaySubscriptions;
   /** 会话附件存储；提供后 user_message 的附件引用会解析为 Planner 多模态图片。 */
   readonly attachments?: GatewayAttachmentStore;
+  readonly readHistory?: (
+    conversationId: string,
+    cursor?: string,
+    limit?: number,
+  ) => Promise<{
+    readonly turns: unknown[];
+    readonly previousCursor: string | null;
+    readonly nextCursor: string | null;
+  }>;
   readonly now?: () => string;
   readonly createId?: (prefix: string) => string;
 }
@@ -197,6 +206,45 @@ export class ConversationGatewayRuntime {
       idempotencyKey,
     );
     if (recovered) return recovered;
+
+    if (command.kind === 'attach_conversation') {
+      return {
+        requestId,
+        idempotencyKey,
+        status: 'accepted',
+        completion: Promise.resolve({ status: 'completed' }),
+      };
+    }
+    if (command.kind === 'get_conversation_history') {
+      if (!this.deps.readHistory || command.conversationId !== conversationId) {
+        const reason = 'conversation_history_unavailable';
+        return {
+          requestId,
+          idempotencyKey,
+          status: 'rejected',
+          reason,
+          completion: Promise.resolve({ status: 'failed', reason }),
+        };
+      }
+      const page = await this.deps.readHistory(
+        conversationId,
+        command.cursor,
+        command.limit,
+      );
+      await this.publish(
+        conversationId,
+        requestId,
+        null,
+        'conversation_history_page',
+        page,
+      );
+      return {
+        requestId,
+        idempotencyKey,
+        status: 'accepted',
+        completion: Promise.resolve({ status: 'completed' }),
+      };
+    }
 
     const conversation = await this.open(conversationId);
     const completion = deferredCompletion();
@@ -449,7 +497,7 @@ export class ConversationGatewayRuntime {
     payload: unknown,
   ): Promise<GatewayEventEnvelope> {
     const appended = await this.deps.journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: this.id('event'),
       sequence: 0,
       accountId: this.deps.accountId,
@@ -522,7 +570,7 @@ export class ConversationGatewayRuntime {
     events: Array<{ kind: GatewayEventKind; payload: unknown }>,
   ): Promise<GatewayEventEnvelope[]> {
     const envelopes = events.map(event => ({
-      protocolVersion: 1 as const,
+      protocolVersion: 2 as const,
       eventId: this.id('event'),
       sequence: 0,
       accountId: this.deps.accountId,

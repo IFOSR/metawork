@@ -152,11 +152,14 @@ export class WebGatewaySessionRuntime {
       ? { kind: 'slash_command', text: effectiveText }
       : { kind: 'user_message', text: effectiveText, attachments };
     const receipt = await this.deps.gateway.submit({
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId,
       idempotencyKey: this.id('idem'),
       connectionId: 'web',
-      conversation: { mode: 'attach', conversationId: this.activeSessionId },
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: this.activeSessionId },
+      },
       command,
       clientCapabilities: ['trace_v1'],
     });
@@ -439,16 +442,12 @@ export class WebGatewaySessionRuntime {
     try {
       const requestId = this.id('req');
       const receipt = await this.deps.gateway.submit({
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId,
         idempotencyKey: this.id('idem'),
         connectionId: 'web',
-        conversation: { mode: 'attach', conversationId: sessionId },
-        command: {
-          kind: 'slash_command',
-          text: `/workspace ${workspaceHint}`,
-          workspaceMutation: 'initialize_if_unset',
-        },
+        scope: { kind: 'workspace' },
+        command: { kind: 'select_workspace', path: workspaceHint },
         clientCapabilities: ['trace_v1'],
       });
       if ('kind' in receipt || receipt.status === 'rejected') {

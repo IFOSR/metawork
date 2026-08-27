@@ -14,13 +14,22 @@ export type ConversationResolution =
   | { readonly status: 'denied'; readonly reason: string };
 
 export interface ConversationResolver {
-  resolve(accountId: string, selection: ConversationSelection): Promise<ConversationResolution>;
+  resolve(
+    accountId: string,
+    selection: ConversationSelection,
+    principalId?: string,
+  ): Promise<ConversationResolution>;
 }
 
 export interface BindingConversationResolverDeps {
   bindings: ConversationBindingRepository;
   createId: () => string;
   verifyOwnership?: (accountId: string, conversationId: string) => Promise<boolean>;
+  createInWorkspace?: (
+    accountId: string,
+    workspaceId: string,
+    principalId: string,
+  ) => Promise<string>;
 }
 
 export class BindingConversationResolver implements ConversationResolver {
@@ -29,6 +38,7 @@ export class BindingConversationResolver implements ConversationResolver {
   async resolve(
     accountId: string,
     selection: ConversationSelection,
+    principalId = 'unknown',
   ): Promise<ConversationResolution> {
     if (selection.mode === 'attach') {
       if (this.deps.verifyOwnership) {
@@ -61,6 +71,16 @@ export class BindingConversationResolver implements ConversationResolver {
       return { status: 'created', conversationId: created };
     }
 
-    return { status: 'created', conversationId: this.deps.createId() };
+    if (!this.deps.createInWorkspace) {
+      return { status: 'denied', reason: 'workspace directory is unavailable' };
+    }
+    return {
+      status: 'created',
+      conversationId: await this.deps.createInWorkspace(
+        accountId,
+        selection.workspaceId,
+        principalId,
+      ),
+    };
   }
 }

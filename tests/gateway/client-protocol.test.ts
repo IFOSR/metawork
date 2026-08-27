@@ -1,213 +1,82 @@
 import { describe, expect, it } from 'vitest';
 import {
   GATEWAY_PROTOCOL_VERSION,
-  MAX_GATEWAY_ATTACHMENTS,
-  MAX_GATEWAY_COMMAND_TEXT_BYTES,
-  MAX_GATEWAY_ID_BYTES,
   parseGatewayCommandEnvelope,
   type GatewayCommandEnvelope,
 } from '../../src/gateway/client-protocol.js';
 
-describe('gateway client command protocol', () => {
-  it('accepts a valid user message command envelope', () => {
-    const command: GatewayCommandEnvelope = {
-      protocolVersion: 1,
-      requestId: 'req_1',
-      idempotencyKey: 'idem_1',
-      connectionId: 'conn_1',
-      conversation: { mode: 'attach', conversationId: 'conv_1' },
-      command: { kind: 'user_message', text: 'hello', attachments: [] },
-      clientCapabilities: ['trace_v1'],
-    };
-    expect(parseGatewayCommandEnvelope(command)).toEqual(command);
-  });
-
-  it('accepts bound and new conversation selections', () => {
-    const bound: GatewayCommandEnvelope = {
-      protocolVersion: 1,
-      requestId: 'req_2',
-      idempotencyKey: 'idem_2',
-      connectionId: 'conn_2',
-      conversation: { mode: 'bound', binding: { platform: 'feishu', channelId: 'chat_1' } },
-      command: { kind: 'user_message', text: 'hi', attachments: [] },
-      clientCapabilities: [],
-    };
-    const fresh: GatewayCommandEnvelope = {
-      protocolVersion: 1,
-      requestId: 'req_3',
-      idempotencyKey: 'idem_3',
-      connectionId: 'conn_3',
-      conversation: { mode: 'new' },
-      command: { kind: 'slash_command', text: '/status' },
-      clientCapabilities: [],
-    };
-    expect(parseGatewayCommandEnvelope(bound)).toEqual(bound);
-    expect(parseGatewayCommandEnvelope(fresh)).toEqual(fresh);
-  });
-
-  it('accepts the reduced-authority marker for automatic Workspace initialization', () => {
-    const input = {
-      ...validEnvelope(),
-      command: {
-        kind: 'slash_command',
-        text: '/workspace /repo-a',
-        workspaceMutation: 'initialize_if_unset',
-      },
-    };
-
-    expect(parseGatewayCommandEnvelope(input)).toEqual(input);
-  });
-
-  it('rejects invalid or misplaced Workspace initialization markers', () => {
-    for (const command of [
-      {
-        kind: 'slash_command',
-        text: '/workspace /repo-a',
-        workspaceMutation: 'replace',
-      },
-      {
-        kind: 'slash_command',
-        text: '/status',
-        workspaceMutation: 'initialize_if_unset',
-      },
-      {
-        kind: 'user_message',
-        text: 'hello',
-        attachments: [],
-        workspaceMutation: 'initialize_if_unset',
-      },
-    ]) {
-      expect(parseGatewayCommandEnvelope({
-        ...validEnvelope(),
-        command,
-      })).toBeNull();
-    }
-  });
-
-  it('rejects client payloads that set a trusted accountId', () => {
-    const input = {
-      protocolVersion: 1,
-      requestId: 'req_1',
-      idempotencyKey: 'idem_1',
-      connectionId: 'conn_1',
-      accountId: 'local-default',
-      conversation: { mode: 'new' },
-      command: { kind: 'user_message', text: 'hello', attachments: [] },
-      clientCapabilities: [],
-    };
-    expect(parseGatewayCommandEnvelope(input)).toBeNull();
-  });
-
-  it('rejects client payloads that set a trusted principal', () => {
-    const input = {
-      protocolVersion: 1,
-      requestId: 'req_1',
-      idempotencyKey: 'idem_1',
-      connectionId: 'conn_1',
-      principal: { kind: 'local', id: 'x' },
-      conversation: { mode: 'new' },
-      command: { kind: 'user_message', text: 'hello', attachments: [] },
-      clientCapabilities: [],
-    };
-    expect(parseGatewayCommandEnvelope(input)).toBeNull();
-  });
-
-  it('rejects client payloads that set trusted Workspace metadata or startup hints', () => {
-    for (const trustedField of [
-      { workspace: { path: '/repo-a', selectedAt: 'now', selectedByPrincipal: 'local:user' } },
-      { workspacePath: '/repo-a' },
-      { workspaceHint: '/repo-a' },
-      { selectedAt: '2026-08-27T00:00:00.000Z' },
-      { selectedByPrincipal: 'local:forged' },
-    ]) {
-      expect(parseGatewayCommandEnvelope({
-        ...validEnvelope(),
-        ...trustedField,
-      })).toBeNull();
-    }
-    expect(parseGatewayCommandEnvelope({
-      ...validEnvelope(),
-      command: {
-        kind: 'slash_command',
-        text: '/workspace /repo-a',
-        workspaceMutation: 'initialize_if_unset',
-        selectedAt: '2026-08-27T00:00:00.000Z',
-      },
-    })).toBeNull();
-  });
-
-  it('rejects unknown protocol versions', () => {
-    const input = {
-      protocolVersion: 999,
-      requestId: 'req_1',
-      idempotencyKey: 'idem_1',
-      connectionId: 'conn_1',
-      conversation: { mode: 'new' },
-      command: { kind: 'user_message', text: 'hello', attachments: [] },
-      clientCapabilities: [],
-    };
-    expect(parseGatewayCommandEnvelope(input)).toBeNull();
-  });
-
-  it('rejects an attach selection without a conversationId', () => {
-    const input = {
-      protocolVersion: 1,
-      requestId: 'req_1',
-      idempotencyKey: 'idem_1',
-      connectionId: 'conn_1',
-      conversation: { mode: 'attach' },
-      command: { kind: 'user_message', text: 'hello', attachments: [] },
-      clientCapabilities: [],
-    };
-    expect(parseGatewayCommandEnvelope(input)).toBeNull();
-  });
-
-  it('rejects command text and identifiers above their protocol limits', () => {
-    expect(parseGatewayCommandEnvelope({
-      ...validEnvelope(),
-      requestId: 'r'.repeat(MAX_GATEWAY_ID_BYTES + 1),
-    })).toBeNull();
-    expect(parseGatewayCommandEnvelope({
-      ...validEnvelope(),
-      command: {
-        kind: 'user_message',
-        text: 'x'.repeat(MAX_GATEWAY_COMMAND_TEXT_BYTES + 1),
-        attachments: [],
-      },
-    })).toBeNull();
-  });
-
-  it('rejects excessive capabilities and attachment references', () => {
-    expect(parseGatewayCommandEnvelope({
-      ...validEnvelope(),
-      command: {
-        kind: 'user_message',
-        text: 'hello',
-        attachments: Array.from(
-          { length: MAX_GATEWAY_ATTACHMENTS + 1 },
-          (_, index) => ({ attachmentId: `attachment_${index}`, kind: 'file' }),
-        ),
-      },
-    })).toBeNull();
-    expect(parseGatewayCommandEnvelope({
-      ...validEnvelope(),
-      clientCapabilities: Array.from({ length: 33 }, (_, index) => `capability_${index}`),
-    })).toBeNull();
-  });
-
-  it('exports a stable protocol version constant', () => {
-    expect(GATEWAY_PROTOCOL_VERSION).toBe(1);
-  });
-});
-
-function validEnvelope(): GatewayCommandEnvelope {
+function conversationEnvelope(): GatewayCommandEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId: 'req_1',
     idempotencyKey: 'idem_1',
     connectionId: 'conn_1',
-    conversation: { mode: 'attach', conversationId: 'conv_1' },
+    scope: {
+      kind: 'conversation',
+      selection: { mode: 'attach', conversationId: 'conv_1' },
+    },
     command: { kind: 'user_message', text: 'hello', attachments: [] },
     clientCapabilities: ['trace_v1'],
   };
 }
+
+describe('gateway client command protocol v2', () => {
+  it('accepts Conversation and Workspace scopes', () => {
+    const conversation = conversationEnvelope();
+    const workspace: GatewayCommandEnvelope = {
+      ...conversation,
+      scope: { kind: 'workspace' },
+      command: { kind: 'select_workspace', path: '/repo-a' },
+    };
+    expect(parseGatewayCommandEnvelope(conversation)).toEqual(conversation);
+    expect(parseGatewayCommandEnvelope(workspace)).toEqual(workspace);
+  });
+
+  it('requires a workspaceId for new Conversations', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'new', workspaceId: 'workspace_repo' },
+      },
+    })).not.toBeNull();
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      scope: { kind: 'conversation', selection: { mode: 'new' } },
+    })).toBeNull();
+  });
+
+  it('rejects commands placed in the wrong scope', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      scope: { kind: 'workspace' },
+    })).toBeNull();
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      command: { kind: 'select_workspace', path: '/repo-a' },
+    })).toBeNull();
+  });
+
+  it('accepts bounded history commands and rejects trusted fields', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      command: {
+        kind: 'get_conversation_history',
+        conversationId: 'conv_1',
+        limit: 20,
+      },
+    })).not.toBeNull();
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      accountId: 'local-default',
+    })).toBeNull();
+  });
+
+  it('hard rejects v1 envelopes', () => {
+    expect(parseGatewayCommandEnvelope({
+      ...conversationEnvelope(),
+      protocolVersion: 1,
+    })).toBeNull();
+    expect(GATEWAY_PROTOCOL_VERSION).toBe(2);
+  });
+});

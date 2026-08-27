@@ -27,10 +27,11 @@ export interface ConversationBinding {
 }
 
 /**
- * 会话选择：attach 恢复已知会话，bound 按平台绑定解析，new 创建新会话。
+ * 会话选择：attach 恢复已知会话，bound 按平台绑定解析，new 在已选择
+ * Workspace 中创建新会话。
  * 仅凭同一个 accountId 不足以合并两个 Conversation。
  */
 export type ConversationSelection =
   | { readonly mode: 'attach'; readonly conversationId: ConversationId }
   | { readonly mode: 'bound'; readonly binding: ConversationBinding }
-  | { readonly mode: 'new' };
+  | { readonly mode: 'new'; readonly workspaceId: string };

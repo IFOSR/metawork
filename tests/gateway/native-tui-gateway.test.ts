@@ -34,7 +34,7 @@ function makeClient() {
 
   return { client, submitted, replayed, publish: (kind: string, sequence: number) => {
     publish({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: `evt_${sequence}`,
       sequence,
       accountId: 'local-default',
@@ -51,17 +51,17 @@ function makeClient() {
 describe('native TUI gateway client', () => {
   it('submits raw user input as a user_message command', async () => {
     const { client, submitted } = makeClient();
-    await client.submitUserInput('hello', { mode: 'new' });
+    await client.submitUserInput('hello', { mode: 'new', workspaceId: 'workspace_repo' });
 
     expect(submitted).toHaveLength(1);
     expect(submitted[0].command).toEqual({ kind: 'user_message', text: 'hello', attachments: [] });
     expect(submitted[0].connectionId).toBe('tui');
-    expect(submitted[0].protocolVersion).toBe(1);
+    expect(submitted[0].protocolVersion).toBe(2);
   });
 
   it('submits slash commands with a versioned command kind', async () => {
     const { client, submitted } = makeClient();
-    await client.submitSlashCommand('/status', { mode: 'new' });
+    await client.submitSlashCommand('/status', { mode: 'new', workspaceId: 'workspace_repo' });
 
     expect(submitted[0].command).toEqual({ kind: 'slash_command', text: '/status' });
   });

@@ -5,11 +5,17 @@
  * 客户端只提交非信任字段；账户/Principal 身份由服务端注入。
  */
 
-export const GATEWAY_PROTOCOL_VERSION = 1;
+export const GATEWAY_PROTOCOL_VERSION = 2;
 
 export type GatewayEventKind =
   | 'conversation_snapshot'
   | 'workspace_changed'
+  | 'workspace_directory_snapshot'
+  | 'workspace_conversation_upserted'
+  | 'workspace_conversation_removed'
+  | 'workspace_activity_changed'
+  | 'workspace_availability_changed'
+  | 'conversation_history_page'
   | 'turn_started'
   | 'trace_delta'
   | 'task_projection'
@@ -29,26 +35,32 @@ export interface GatewayAttachmentRef {
 }
 
 export type GatewayCommand =
+  | { readonly kind: 'select_workspace'; readonly path: string }
+  | { readonly kind: 'list_workspace_conversations'; readonly workspaceId: string; readonly cursor?: string; readonly query?: string }
+  | { readonly kind: 'create_conversation'; readonly workspaceId: string }
+  | { readonly kind: 'archive_conversation'; readonly conversationId: string }
+  | { readonly kind: 'attach_conversation'; readonly conversationId: string }
+  | { readonly kind: 'get_conversation_history'; readonly conversationId: string; readonly cursor?: string; readonly limit?: number }
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
-  | {
-      readonly kind: 'slash_command';
-      readonly text: string;
-      readonly workspaceMutation?: 'initialize_if_unset';
-    }
+  | { readonly kind: 'slash_command'; readonly text: string }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
   | { readonly kind: 'cancel_turn'; readonly turnId: string };
 
 export type ConversationSelection =
   | { readonly mode: 'attach'; readonly conversationId: string }
   | { readonly mode: 'bound'; readonly binding: { platform: string; channelId: string; threadId?: string } }
-  | { readonly mode: 'new' };
+  | { readonly mode: 'new'; readonly workspaceId: string };
+
+export type GatewayScope =
+  | { readonly kind: 'workspace' }
+  | { readonly kind: 'conversation'; readonly selection: ConversationSelection };
 
 export interface GatewayCommandEnvelope {
   readonly protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
   readonly requestId: string;
   readonly idempotencyKey: string;
   readonly connectionId: string;
-  readonly conversation: ConversationSelection;
+  readonly scope: GatewayScope;
   readonly command: GatewayCommand;
   readonly resumeFromSequence?: number;
   readonly clientCapabilities: string[];

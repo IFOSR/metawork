@@ -21,6 +21,9 @@ async function makeResolver(): Promise<{
     verifyOwnership: async (accountId, conversationId) => (
       accountId === 'local-default' && conversationId === 'conv_1'
     ),
+    createInWorkspace: async (_accountId, workspaceId) => (
+      workspaceId === 'workspace_repo' ? 'conv_new' : Promise.reject(new Error('bad workspace'))
+    ),
   });
   return { resolver, bindings };
 }
@@ -66,7 +69,10 @@ describe('BindingConversationResolver', () => {
 
   it('creates a fresh conversation for new mode', async () => {
     const { resolver } = await makeResolver();
-    const result = await resolver.resolve('local-default', { mode: 'new' });
+    const result = await resolver.resolve('local-default', {
+      mode: 'new',
+      workspaceId: 'workspace_repo',
+    });
     expect(result).toEqual({ status: 'created', conversationId: 'conv_new' });
   });
 
