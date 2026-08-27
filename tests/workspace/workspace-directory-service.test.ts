@@ -70,4 +70,35 @@ describe('WorkspaceDirectoryService', () => {
     await expect(service.selectByPath(value.repo, 'local:local-installation'))
       .rejects.toThrow('workspace_unauthorized');
   });
+
+  it('authorizes Conversation membership through the Workspace directory boundary', async () => {
+    const value = await fixture();
+    const selected = await value.service.selectByPath(
+      value.repo,
+      'feishu:tenant:user',
+    );
+    const conversation = await value.service.createConversation(
+      selected.workspace.id,
+      'feishu:tenant:user',
+    );
+
+    await expect(value.service.resolveConversationWorkspace(
+      conversation.id,
+      'feishu:tenant:user',
+    )).resolves.toBe(selected.workspace.id);
+    await expect(value.service.isConversationInWorkspace(
+      selected.workspace.id,
+      conversation.id,
+      'feishu:tenant:user',
+    )).resolves.toBe(true);
+    await expect(value.service.isConversationInWorkspace(
+      'workspace_other',
+      conversation.id,
+      'feishu:tenant:user',
+    )).resolves.toBe(false);
+    await expect(value.service.resolveConversationWorkspace(
+      'conv_missing',
+      'feishu:tenant:user',
+    )).resolves.toBeNull();
+  });
 });

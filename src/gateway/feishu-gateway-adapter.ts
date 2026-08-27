@@ -9,6 +9,11 @@
 import type { Principal } from '../account/types.js';
 import type { ClientGateway, ClientGatewayResult } from './client-gateway.js';
 import type { GatewayCommandEnvelope } from './client-protocol.js';
+import type {
+  FeishuConversationCardAction,
+  FeishuConversationRouteResult,
+  FeishuConversationRouting,
+} from './feishu-conversation-routing.js';
 
 export interface FeishuSenderIdentity {
   readonly tenantKey: string;
@@ -22,6 +27,7 @@ export interface FeishuChannelBinding {
 
 export interface FeishuGatewayAdapterDeps {
   gateway: ClientGateway;
+  routing?: FeishuConversationRouting;
 }
 
 export class FeishuGatewayAdapter {
@@ -37,7 +43,16 @@ export class FeishuGatewayAdapter {
     text: string,
     requestId: string,
     idempotencyKey: string,
-  ): Promise<ClientGatewayResult> {
+  ): Promise<FeishuConversationRouteResult> {
+    if (this.deps.routing) {
+      return this.deps.routing.routeMessage(
+        sender,
+        channel,
+        text,
+        requestId,
+        idempotencyKey,
+      );
+    }
     const envelope: GatewayCommandEnvelope = {
       protocolVersion: 2,
       requestId,
@@ -60,5 +75,30 @@ export class FeishuGatewayAdapter {
       clientCapabilities: [],
     };
     return this.deps.gateway.handle(envelope, 'feishu', sender);
+  }
+
+  handleCardAction(
+    sender: FeishuSenderIdentity,
+    channel: FeishuChannelBinding,
+    action: FeishuConversationCardAction,
+    requestId: string,
+    idempotencyKey: string,
+  ): Promise<FeishuConversationRouteResult> {
+    if (!this.deps.routing) {
+      return Promise.resolve({
+        requestId,
+        idempotencyKey,
+        status: 'rejected',
+        conversationId: null,
+        reason: 'feishu_card_action_unavailable',
+      });
+    }
+    return this.deps.routing.routeCardAction(
+      sender,
+      channel,
+      action,
+      requestId,
+      idempotencyKey,
+    );
   }
 }

@@ -49,6 +49,7 @@ import { resolveGatewaySocketPath } from '../gateway/gateway-paths.js';
 import { MarkdownPreviewServer } from '../integrations/markdown-preview.js';
 import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
+import { FeishuConversationRouting } from '../gateway/feishu-conversation-routing.js';
 import { FeishuGatewaySessionPort } from '../gateway/feishu-gateway-session-port.js';
 import { ClientGateway } from '../gateway/client-gateway.js';
 import { BindingConversationResolver } from '../gateway/conversation-resolver.js';
@@ -1072,9 +1073,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     resolveConversationWorkspaceId: async (accountId, conversationId) => {
       if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
-      const binding = (await conversationStore.readConversation(conversationId))
-        ?.conversation.workspaceBinding;
-      return binding?.workspaceId ?? null;
+      return workspaceDirectory.resolveConversationWorkspace(
+        conversationId,
+        'local:local-installation',
+      );
     },
     activateConnectionWorkspace: (connectionId, workspaceId) => {
       workspaceGatewayRuntime.restoreConnectionWorkspace(connectionId, workspaceId);
@@ -1125,10 +1127,35 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   await gatewayServer.start();
   if (cliCommand.kind === 'server') {
+    const feishuRouting = new FeishuConversationRouting({
+      accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      gateway: clientGateway,
+      bindings: conversationBindings,
+      restoreWorkspace: (connectionId, workspaceId, principalId) =>
+        workspaceGatewayRuntime.activateWorkspace(
+          connectionId,
+          workspaceId,
+          principalId,
+        ),
+      resolveConversationWorkspace: async (
+        accountId,
+        conversationId,
+        principalId,
+      ) => {
+        if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
+        return workspaceDirectory.resolveConversationWorkspace(
+          conversationId,
+          principalId,
+        );
+      },
+    });
     const feishuPort = new FeishuGatewaySessionPort({
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       tenantKey: config.gateway?.platforms?.feishu?.app_id ?? 'local-feishu-app',
-      adapter: new FeishuGatewayAdapter({ gateway: clientGateway }),
+      adapter: new FeishuGatewayAdapter({
+        gateway: clientGateway,
+        routing: feishuRouting,
+      }),
       journal: eventJournal,
       subscriptions: gatewaySubscriptions,
       onSystemMessage: (...lines) => console.log(lines.join('\n')),

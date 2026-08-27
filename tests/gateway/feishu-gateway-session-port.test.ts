@@ -254,6 +254,310 @@ describe('FeishuGatewaySessionPort', () => {
       onProgress: () => undefined,
     })).resolves.toEqual(answer.split('\n'));
   });
+
+  it('renders the selected Workspace directory without replaying Conversation details', async () => {
+    const replayedStreams: string[] = [];
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter: {
+        handleMessage: async () => ({
+          requestId: 'req_list',
+          idempotencyKey: 'feishu:req_list',
+          status: 'accepted',
+          conversationId: null,
+          workspaceId: 'workspace_repo',
+          routeKind: 'workspace_directory',
+          connectionId: 'feishu_chat',
+        }),
+      } as unknown as FeishuGatewayAdapter,
+      journal: {
+        append: async event => event,
+        replay: async (_accountId, streamId) => {
+          replayedStreams.push(streamId);
+          return {
+            lastSequence: 1,
+            snapshot: [],
+            deltas: [
+              workspaceDirectoryEvent({
+                nextCursor: 'cursor_old',
+                items: [
+                  conversationSummary('conv_old', 'Old page', 'idle', null),
+                ],
+              }),
+              workspaceDirectoryPageEvent({
+                nextCursor: 'cursor_next',
+                items: [
+                  conversationSummary('conv_running', 'Fix release', 'idle', null),
+                  conversationSummary('conv_idle', 'Review docs', 'idle', null),
+                ],
+              }),
+              workspaceActivityEvent('conv_running', 'executing', 'task_1'),
+            ],
+          };
+        },
+      },
+      subscriptions: new GatewaySubscriptions(),
+      timeoutMs: 100,
+    });
+
+    await expect(port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      threadId: 'thread_1',
+      text: '/conversations',
+      requestId: 'req_list',
+      onProgress: () => undefined,
+    })).resolves.toEqual({
+      lines: [
+        '# Workspace: MetaWork',
+        '路径：/repo',
+        '1. Fix release [executing] · Task task_1 · conv_running',
+        '2. Review docs [idle] · conv_idle',
+      ],
+      actions: [{
+        label: '下一页',
+        value: {
+          kind: 'workspace_conversations',
+          cursor: 'cursor_next',
+          threadId: 'thread_1',
+        },
+      }],
+    });
+    expect(replayedStreams).toEqual(['workspace_directory_workspace_repo']);
+  });
+
+  it('renders an attach summary with activity, current Task and only the latest three turns', async () => {
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter: {
+        handleMessage: async () => ({
+          requestId: 'req_attach',
+          idempotencyKey: 'feishu:req_attach',
+          status: 'accepted',
+          conversationId: 'conv_1',
+          workspaceId: 'workspace_repo',
+          routeKind: 'conversation_attached',
+          connectionId: 'feishu_chat',
+        }),
+      } as unknown as FeishuGatewayAdapter,
+      journal: {
+        append: async event => event,
+        replay: async (_accountId, streamId) => {
+          if (streamId === 'workspace_directory_workspace_repo') {
+            return {
+              lastSequence: 1,
+              snapshot: [],
+              deltas: [workspaceDirectoryEvent({
+                nextCursor: null,
+                items: [conversationSummary('conv_1', 'Implement routing', 'planning', 'task_9')],
+              })],
+            };
+          }
+          return {
+            lastSequence: 2,
+            snapshot: [],
+            deltas: [historyPageEvent([
+              turn('turn_4', 'four', 'answer four'),
+              turn('turn_3', 'three', 'answer three'),
+              turn('turn_2', 'two', 'answer two'),
+            ], null, 'cursor_older')],
+          };
+        },
+      },
+      subscriptions: new GatewaySubscriptions(),
+      timeoutMs: 100,
+    });
+
+    const response = await port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      text: '/conversation conv_1',
+      requestId: 'req_attach',
+      onProgress: () => undefined,
+    });
+
+    expect(response).toMatchObject({
+      lines: [
+        '# Implement routing',
+        '状态：planning',
+        '当前 Task：task_9',
+        '最近对话：',
+        '用户：four',
+        'MetaWork：answer four',
+        '用户：three',
+        'MetaWork：answer three',
+        '用户：two',
+        'MetaWork：answer two',
+      ],
+    });
+    expect(JSON.stringify(response)).not.toContain('turn_1');
+  });
+
+  it('renders bounded history and forwards Server cursors as card actions', async () => {
+    const replayedStreams: string[] = [];
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter: {
+        handleMessage: async () => ({
+          requestId: 'req_history',
+          idempotencyKey: 'feishu:req_history',
+          status: 'accepted',
+          conversationId: 'conv_1',
+          workspaceId: 'workspace_repo',
+          routeKind: 'conversation_history',
+          connectionId: 'feishu_chat',
+        }),
+      } as unknown as FeishuGatewayAdapter,
+      journal: {
+        append: async event => event,
+        replay: async (_accountId, streamId) => {
+          replayedStreams.push(streamId);
+          return {
+            lastSequence: 1,
+            snapshot: [],
+            deltas: [
+              historyPageEvent(
+                [turn('turn_2', 'question', 'answer')],
+                'cursor_newer',
+                'cursor_older',
+                'req_history',
+                1,
+              ),
+              historyPageEvent(
+                [turn('turn_other', 'other request', 'wrong page')],
+                null,
+                null,
+                'req_other',
+                2,
+              ),
+            ],
+          };
+        },
+      },
+      subscriptions: new GatewaySubscriptions(),
+      timeoutMs: 100,
+    });
+
+    await expect(port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      text: '/history 10',
+      requestId: 'req_history',
+      onProgress: () => undefined,
+    })).resolves.toEqual({
+      lines: [
+        '# Conversation History',
+        '用户：question',
+        'MetaWork：answer',
+      ],
+      actions: [
+        {
+          label: '上一页',
+          value: {
+            kind: 'conversation_history',
+            cursor: 'cursor_newer',
+            limit: 10,
+          },
+        },
+        {
+          label: '下一页',
+          value: {
+            kind: 'conversation_history',
+            cursor: 'cursor_older',
+            limit: 10,
+          },
+        },
+      ],
+    });
+    expect(replayedStreams).toEqual(['conv_1']);
+  });
+
+  it('keeps an attached Conversation subscribed for external live progress and results', async () => {
+    const subscriptions = new GatewaySubscriptions();
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter: {
+        handleMessage: async () => ({
+          requestId: 'req_attach',
+          idempotencyKey: 'feishu:req_attach',
+          status: 'accepted',
+          conversationId: 'conv_1',
+          workspaceId: 'workspace_repo',
+          routeKind: 'conversation_attached',
+          connectionId: 'feishu_chat',
+        }),
+      } as unknown as FeishuGatewayAdapter,
+      journal: {
+        append: async event => event,
+        replay: async (_accountId, streamId) => (
+          streamId === 'workspace_directory_workspace_repo'
+            ? {
+                lastSequence: 1,
+                snapshot: [],
+                deltas: [workspaceDirectoryEvent({
+                  nextCursor: null,
+                  items: [conversationSummary('conv_1', 'Live task', 'idle', null)],
+                })],
+              }
+            : {
+                lastSequence: 1,
+                snapshot: [],
+                deltas: [historyPageEvent([], null, null, 'attach_history')],
+              }
+        ),
+      },
+      subscriptions,
+      timeoutMs: 100,
+    });
+    const deliveries: unknown[] = [];
+    const unsubscribe = port.subscribeGatewayDelivery(delivery => {
+      deliveries.push(delivery);
+    });
+
+    await port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      threadId: 'thread_1',
+      text: '/conversation conv_1',
+      requestId: 'req_attach',
+      onProgress: () => undefined,
+    });
+    subscriptions.publish({
+      ...progressEvent(),
+      eventId: 'event_external_progress',
+      requestId: 'req_web',
+      conversationId: 'conv_1',
+    });
+    subscriptions.publish({
+      ...finalEventFor('req_web', 3),
+      eventId: 'event_external_final',
+      conversationId: 'conv_1',
+      payload: { lines: ['external answer'] },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(deliveries).toEqual([
+      {
+        senderId: 'user_1',
+        chatId: 'chat_1',
+        threadId: 'thread_1',
+        kind: 'progress',
+        reply: { lines: ['Planning：Inspecting context'] },
+      },
+      {
+        senderId: 'user_1',
+        chatId: 'chat_1',
+        threadId: 'thread_1',
+        kind: 'final',
+        reply: { lines: ['external answer'] },
+      },
+    ]);
+    unsubscribe();
+  });
 });
 
 function finalEvent(): GatewayEventEnvelope {
@@ -346,5 +650,137 @@ function resultEvent(
     kind,
     payload,
     occurredAt: '2026-08-21T00:00:00.000Z',
+  };
+}
+
+function workspaceDirectoryEvent(page: {
+  items: unknown[];
+  nextCursor: string | null;
+}): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId: 'event_workspace_directory',
+    sequence: 1,
+    accountId: 'local-default',
+    conversationId: 'workspace_directory_workspace_repo',
+    requestId: null,
+    turnId: null,
+    kind: 'workspace_directory_snapshot',
+    payload: {
+      workspaceId: 'workspace_repo',
+      workspace: {
+        id: 'workspace_repo',
+        displayName: 'MetaWork',
+        canonicalPath: '/repo',
+        availability: 'available',
+      },
+      page,
+    },
+    occurredAt: '2026-08-27T00:00:00.000Z',
+  };
+}
+
+function conversationSummary(
+  conversationId: string,
+  title: string,
+  state: string,
+  taskId: string | null,
+): Record<string, unknown> {
+  return {
+    conversationId,
+    workspaceId: 'workspace_repo',
+    title,
+    createdAt: '2026-08-27T00:00:00.000Z',
+    updatedAt: '2026-08-27T01:00:00.000Z',
+    archived: false,
+    preview: title,
+    activity: {
+      state,
+      taskId,
+      updatedAt: '2026-08-27T01:00:00.000Z',
+    },
+  };
+}
+
+function historyPageEvent(
+  turns: unknown[],
+  previousCursor: string | null,
+  nextCursor: string | null,
+  requestId = 'req_history',
+  sequence = 1,
+): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId: `event_history_${sequence}`,
+    sequence,
+    accountId: 'local-default',
+    conversationId: 'conv_1',
+    requestId,
+    turnId: null,
+    kind: 'conversation_history_page',
+    payload: {
+      turns,
+      previousCursor,
+      nextCursor,
+    },
+    occurredAt: '2026-08-27T00:00:00.000Z',
+  };
+}
+
+function workspaceDirectoryPageEvent(page: {
+  items: unknown[];
+  nextCursor: string | null;
+}): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId: 'event_workspace_page',
+    sequence: 2,
+    accountId: 'local-default',
+    conversationId: 'workspace_directory_workspace_repo',
+    requestId: null,
+    turnId: null,
+    kind: 'workspace_directory_snapshot',
+    payload: {
+      workspaceId: 'workspace_repo',
+      page,
+    },
+    occurredAt: '2026-08-27T01:00:00.000Z',
+  };
+}
+
+function workspaceActivityEvent(
+  conversationId: string,
+  state: string,
+  taskId: string | null,
+): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId: 'event_workspace_activity',
+    sequence: 3,
+    accountId: 'local-default',
+    conversationId: 'workspace_directory_workspace_repo',
+    requestId: null,
+    turnId: null,
+    kind: 'workspace_activity_changed',
+    payload: {
+      workspaceId: 'workspace_repo',
+      conversationId,
+      activity: {
+        state,
+        taskId,
+        updatedAt: '2026-08-27T02:00:00.000Z',
+      },
+    },
+    occurredAt: '2026-08-27T02:00:00.000Z',
+  };
+}
+
+function turn(id: string, userInput: string, finalAnswer: string): Record<string, unknown> {
+  return {
+    id,
+    conversationId: 'conv_1',
+    userInput,
+    finalAnswer,
+    status: 'completed',
   };
 }

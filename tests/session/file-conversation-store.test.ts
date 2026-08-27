@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -165,26 +165,34 @@ describe('FileConversationStore', () => {
 });
 
 describe('ConversationBindingRepository', () => {
-  it('binds and resolves platform/channel/thread within one account', async () => {
+  it('persists Workspace and optional Conversation selection per platform channel/thread', async () => {
     const root = await makeRoot();
     const repository = new ConversationBindingRepository(join(root, 'bindings.json'));
     await repository.initialize();
 
-    await repository.bind({
+    await repository.set({
       accountId: 'local-default',
       platform: 'feishu',
       channelId: 'chat_1',
-      conversationId: 'conv_1',
+      workspaceId: 'workspace_repo',
+      conversationId: null,
     });
-    await repository.bind({
+    await repository.set({
       accountId: 'local-default',
       platform: 'feishu',
       channelId: 'chat_1',
       threadId: 'thread_1',
+      workspaceId: 'workspace_repo',
       conversationId: 'conv_2',
     });
 
-    expect(await repository.resolve('local-default', 'feishu', 'chat_1')).toBe('conv_1');
+    expect(await repository.resolveBinding('local-default', 'feishu', 'chat_1')).toEqual({
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_1',
+      workspaceId: 'workspace_repo',
+      conversationId: null,
+    });
     expect(await repository.resolve('local-default', 'feishu', 'chat_1', 'thread_1')).toBe('conv_2');
     expect(await repository.resolve('local-default', 'feishu', 'chat_1', 'thread_other')).toBeNull();
   });
@@ -194,14 +202,49 @@ describe('ConversationBindingRepository', () => {
     const repository = new ConversationBindingRepository(join(root, 'bindings.json'));
     await repository.initialize();
 
-    await repository.bind({
+    await repository.set({
       accountId: 'acct-one',
       platform: 'feishu',
       channelId: 'chat_1',
+      workspaceId: 'workspace_repo',
       conversationId: 'conv_1',
     });
 
     expect(await repository.resolve('acct-one', 'feishu', 'chat_1')).toBe('conv_1');
+    expect(await repository.resolveBinding('acct-two', 'feishu', 'chat_1')).toBeNull();
     expect(await repository.resolve('acct-two', 'feishu', 'chat_1')).toBeNull();
+  });
+
+  it('migrates legacy Conversation-only bindings without losing the selection', async () => {
+    const root = await makeRoot();
+    const path = join(root, 'bindings.json');
+    await writeFile(path, JSON.stringify([{
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_legacy',
+      conversationId: 'conv_legacy',
+    }]));
+
+    const repository = new ConversationBindingRepository(path);
+    await repository.initialize();
+
+    expect(await repository.resolveBinding(
+      'local-default',
+      'feishu',
+      'chat_legacy',
+    )).toEqual({
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_legacy',
+      workspaceId: null,
+      conversationId: 'conv_legacy',
+    });
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual([{
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_legacy',
+      workspaceId: null,
+      conversationId: 'conv_legacy',
+    }]);
   });
 });

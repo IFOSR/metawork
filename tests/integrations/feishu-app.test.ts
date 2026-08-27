@@ -18,9 +18,11 @@ import {
   formatFeishuProgressReply,
   formatFeishuStreamingProgressReplies,
   formatFeishuReply,
+  handleFeishuCardActionEvent,
   handleFeishuMessageEvent,
   parseFeishuTextContent,
   resolveAppSecret,
+  subscribeFeishuGatewayDeliveries,
 } from '../../src/integrations/feishu-app.js';
 
 afterEach(() => {
@@ -39,6 +41,57 @@ function encryptFeishuTestPayload(payload: Record<string, unknown>, encryptKey: 
 }
 
 describe('FeishuAppClient', () => {
+  it('sends action cards whose buttons preserve opaque Gateway cursor values', async () => {
+    const postJson = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, tenant_access_token: 'tenant-token', expire: 7200 }),
+        text: async () => 'ok',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0 }),
+        text: async () => 'ok',
+      });
+    const client = new FeishuAppClient(
+      { app_id: 'cli_test', app_secret: 'secret' },
+      { postJson },
+    );
+
+    await client.sendActionCardToChat('oc_chat', '# History', [{
+      label: '下一页',
+      value: {
+        kind: 'conversation_history',
+        cursor: 'opaque_server_cursor',
+        limit: 10,
+      },
+    }]);
+
+    const body = postJson.mock.calls[1]?.[1] as { msg_type: string; content: string };
+    expect(body.msg_type).toBe('interactive');
+    expect(JSON.parse(body.content)).toMatchObject({
+      schema: '2.0',
+      body: {
+        elements: [
+          {
+            tag: 'action',
+            actions: [{
+              tag: 'button',
+              text: { tag: 'plain_text', content: '下一页' },
+              value: {
+                kind: 'conversation_history',
+                cursor: 'opaque_server_cursor',
+                limit: 10,
+              },
+            }],
+          },
+        ],
+      },
+    });
+  });
+
   it('fetches tenant access token, sends Markdown cards, and manages reactions', async () => {
     const postJson = vi.fn()
       .mockResolvedValueOnce({
@@ -221,6 +274,272 @@ describe('FeishuAppClient', () => {
 });
 
 describe('Feishu app helpers', () => {
+  it('sends Workspace directory replies as action cards with opaque Server cursors', async () => {
+    const session = {
+      submitGatewayMessage: vi.fn().mockResolvedValue({
+        lines: ['# Workspace: MetaWork', '1. Running task [executing]'],
+        actions: [{
+          label: '下一页',
+          value: {
+            kind: 'workspace_conversations',
+            cursor: 'cursor_next',
+          },
+        }],
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendActionCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendActionCardToThread: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_directory',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"/conversations"}',
+        root_id: 'om_thread_root',
+      },
+    }, {
+      session: session as never,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(session.submitGatewayMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatId: 'oc_chat',
+      threadId: 'om_thread_root',
+    }));
+    expect(client.sendActionCardToThread).toHaveBeenCalledWith(
+      'om_thread_root',
+      '# Workspace: MetaWork\n1. Running task [executing]',
+      [{
+        label: '下一页',
+        value: {
+          kind: 'workspace_conversations',
+          cursor: 'cursor_next',
+        },
+      }],
+    );
+    expect(client.sendMarkdownCardToChat).not.toHaveBeenCalledWith(
+      'oc_chat',
+      expect.stringContaining('Workspace: MetaWork'),
+    );
+  });
+
+  it('delivers external attached-Conversation events through the bridge target', async () => {
+    let listener: ((delivery: {
+      senderId: string;
+      chatId: string;
+      threadId?: string;
+      chatType?: 'dm' | 'group' | 'unknown';
+      kind: 'progress' | 'final';
+      reply: {
+        lines: string[];
+        actions?: Array<{
+          label: string;
+          value: {
+            kind: 'workspace_conversations' | 'conversation_history';
+            cursor: string;
+          };
+        }>;
+      };
+    }) => void) | null = null;
+    const unsubscribe = vi.fn();
+    const session = {
+      subscribeGatewayDelivery: vi.fn((next: typeof listener) => {
+        listener = next;
+        return unsubscribe;
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToThread: vi.fn().mockResolvedValue(undefined),
+      sendActionCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendActionCardToThread: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const stop = subscribeFeishuGatewayDeliveries({
+      session: session as never,
+      client,
+      accessPolicy: {
+        dmPolicy: 'allow_all',
+        allowedUsers: [],
+        groupPolicy: 'open',
+        requireMention: false,
+      },
+    });
+    listener?.({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      threadId: 'om_thread_root',
+      chatType: 'group',
+      kind: 'final',
+      reply: { lines: ['external answer'] },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(client.sendMarkdownCardToThread).toHaveBeenCalledWith(
+      'om_thread_root',
+      'external answer',
+    );
+    stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Gateway task progress and final replies inside the originating thread', async () => {
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: {
+        onProgress: (text: string) => void;
+      }) => {
+        input.onProgress('Planning：Inspecting context');
+        return ['thread answer'];
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToThread: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownPostToThread: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_thread_task',
+        chat_id: 'oc_chat',
+        chat_type: 'group',
+        message_type: 'text',
+        content: '{"text":"run task"}',
+        root_id: 'om_thread_root',
+      },
+    }, {
+      session: session as never,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(client.sendMarkdownCardToThread).toHaveBeenCalledWith(
+      'om_thread_root',
+      'Planning：Inspecting context',
+    );
+    expect(client.sendMarkdownCardToThread).toHaveBeenCalledWith(
+      'om_thread_root',
+      'thread answer',
+    );
+    expect(client.sendMarkdownCardToChat).not.toHaveBeenCalledWith(
+      'oc_chat',
+      expect.stringContaining('thread answer'),
+    );
+  });
+
+  it('forwards card pagination actions to the Gateway without parsing the cursor', async () => {
+    const session = {
+      submitGatewayAction: vi.fn().mockResolvedValue({
+        lines: ['# Conversation History', '用户：previous'],
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToThread: vi.fn().mockResolvedValue(undefined),
+      sendActionCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(handleFeishuCardActionEvent({
+      context: {
+        open_message_id: 'om_card',
+        open_chat_id: 'oc_chat',
+      },
+      operator: {
+        open_id: 'ou_user',
+      },
+      action: {
+        tag: 'button',
+        value: {
+          kind: 'conversation_history',
+          cursor: 'opaque_server_cursor',
+          limit: 10,
+          threadId: 'thread_1',
+        },
+      },
+    }, {
+      session: session as never,
+      client,
+      seenMessageIds: new Set<string>(),
+    })).resolves.toBe(true);
+
+    expect(session.submitGatewayAction).toHaveBeenCalledWith({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      action: {
+        kind: 'conversation_history',
+        cursor: 'opaque_server_cursor',
+        limit: 10,
+        threadId: 'thread_1',
+      },
+      threadId: 'thread_1',
+      requestId: expect.stringMatching(/^card_/),
+    });
+    expect(client.sendMarkdownCardToThread).toHaveBeenCalledWith(
+      'thread_1',
+      '# Conversation History\n用户：previous',
+    );
+    expect(client.sendMarkdownCardToChat).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Feishu access policy before executing a stale card action', async () => {
+    const session = {
+      submitGatewayAction: vi.fn(),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(handleFeishuCardActionEvent({
+      context: {
+        open_message_id: 'om_card_denied',
+        open_chat_id: 'oc_chat',
+      },
+      operator: {
+        open_id: 'ou_revoked',
+      },
+      action: {
+        tag: 'button',
+        value: {
+          kind: 'conversation_history',
+          cursor: 'cursor_stale',
+          chatType: 'dm',
+        },
+      },
+    }, {
+      session: session as never,
+      client,
+      seenMessageIds: new Set<string>(),
+      accessPolicy: {
+        dmPolicy: 'allowlist',
+        allowedUsers: ['ou_allowed'],
+        groupPolicy: 'open',
+        requireMention: false,
+      },
+    })).resolves.toBe(true);
+
+    expect(session.submitGatewayAction).not.toHaveBeenCalled();
+    expect(session.appendSystemMessage).toHaveBeenCalledWith(
+      '→ 飞书卡片动作已被 Gateway 策略拦截: dm_allowlist_denied',
+    );
+  });
+
   it('delivers Gateway Workspace confirmation before the final Feishu reply', async () => {
     const session = {
       submitGatewayMessage: vi.fn(async (input: {

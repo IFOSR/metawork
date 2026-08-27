@@ -9,6 +9,7 @@ import type { AccountKernelCoordinator } from '../../src/account/account-kernel-
 import { ClientGateway } from '../../src/gateway/client-gateway.js';
 import { BindingConversationResolver } from '../../src/gateway/conversation-resolver.js';
 import { FeishuGatewayAdapter } from '../../src/gateway/feishu-gateway-adapter.js';
+import { FeishuConversationRouting } from '../../src/gateway/feishu-conversation-routing.js';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
 import { ConversationBindingRepository } from '../../src/session/conversation-binding-repository.js';
@@ -45,9 +46,17 @@ async function makeComposition() {
   const bindings = new ConversationBindingRepository(join(root, 'bindings.json'));
   await bindings.initialize();
   let conversationCounter = 0;
+  const conversationWorkspaces = new Map<string, string>();
+  const createConversation = (workspaceId: string) => {
+    conversationCounter += 1;
+    const conversationId = `conv_${conversationCounter}`;
+    conversationWorkspaces.set(conversationId, workspaceId);
+    return conversationId;
+  };
   const resolver = new BindingConversationResolver({
     bindings,
-    createId: () => { conversationCounter += 1; return `conv_${conversationCounter}`; },
+    createId: () => createConversation('workspace_repo'),
+    createInWorkspace: async (_accountId, workspaceId) => createConversation(workspaceId),
   });
 
   const journal = new FileEventJournal(join(root, 'journal'));
@@ -74,10 +83,43 @@ async function makeComposition() {
       submitted.push({ conversationId, requestId, idempotencyKey });
       return { requestId, idempotencyKey, status: 'accepted' };
     },
+    handleWorkspaceCommand: async command => {
+      if (command.kind === 'select_workspace') {
+        return { status: 'accepted', workspaceId: 'workspace_repo' };
+      }
+      if (command.kind === 'create_conversation') {
+        return {
+          status: 'accepted',
+          workspaceId: command.workspaceId,
+          conversationId: createConversation(command.workspaceId),
+        };
+      }
+      return {
+        status: 'accepted',
+        workspaceId: 'workspaceId' in command
+          ? command.workspaceId
+          : 'workspace_repo',
+      };
+    },
   });
 
   const webAdapter = new WebGatewayAdapter({ gateway, journal, subscriptions });
-  const feishuAdapter = new FeishuGatewayAdapter({ gateway });
+  const selectedWorkspaces = new Map<string, string>();
+  const feishuRouting = new FeishuConversationRouting({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    gateway,
+    bindings,
+    restoreWorkspace: async (connectionId, workspaceId) => {
+      selectedWorkspaces.set(connectionId, workspaceId);
+    },
+    resolveConversationWorkspace: async (_accountId, conversationId) => (
+      conversationWorkspaces.get(conversationId) ?? null
+    ),
+  });
+  const feishuAdapter = new FeishuGatewayAdapter({
+    gateway,
+    routing: feishuRouting,
+  });
 
   return {
     registry,
@@ -106,13 +148,17 @@ async function makeComposition() {
   };
 }
 
-function webEnvelope(requestId: string, idempotencyKey: string, conversation: GatewayCommandEnvelope['conversation']): GatewayCommandEnvelope {
+function webEnvelope(
+  requestId: string,
+  idempotencyKey: string,
+  selection: Extract<GatewayCommandEnvelope['scope'], { kind: 'conversation' }>['selection'],
+): GatewayCommandEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId,
     idempotencyKey,
     connectionId: 'web',
-    conversation,
+    scope: { kind: 'conversation', selection },
     command: { kind: 'user_message', text: 'hello', attachments: [] },
     clientCapabilities: [],
   };
@@ -121,8 +167,23 @@ function webEnvelope(requestId: string, idempotencyKey: string, conversation: Ga
 describe('unified client runtime integration', () => {
   it('activates the account runtime once across surfaces', async () => {
     const c = await makeComposition();
-    await c.webAdapter.submit(webEnvelope('req_1', 'idem_1', { mode: 'new' }));
-    await c.webAdapter.submit(webEnvelope('req_2', 'idem_2', { mode: 'new' }));
+    await c.webAdapter.submit(webEnvelope(
+      'req_1',
+      'idem_1',
+      { mode: 'new', workspaceId: 'workspace_repo' },
+    ));
+    await c.webAdapter.submit(webEnvelope(
+      'req_2',
+      'idem_2',
+      { mode: 'new', workspaceId: 'workspace_repo' },
+    ));
+    await c.feishuAdapter.handleMessage(
+      { tenantKey: 'tenant', userId: 'user' },
+      { chatId: 'chat_1' },
+      '/workspace /repo',
+      'req_workspace',
+      'idem_workspace',
+    );
     await c.feishuAdapter.handleMessage(
       { tenantKey: 'tenant', userId: 'user' },
       { chatId: 'chat_1' },
@@ -138,7 +199,18 @@ describe('unified client runtime integration', () => {
 
   it('isolates conversations across surfaces', async () => {
     const c = await makeComposition();
-    await c.webAdapter.submit(webEnvelope('req_1', 'idem_1', { mode: 'new' }));
+    await c.webAdapter.submit(webEnvelope(
+      'req_1',
+      'idem_1',
+      { mode: 'new', workspaceId: 'workspace_repo' },
+    ));
+    await c.feishuAdapter.handleMessage(
+      { tenantKey: 'tenant', userId: 'user' },
+      { chatId: 'chat_a' },
+      '/workspace /repo',
+      'req_workspace',
+      'idem_workspace',
+    );
     await c.feishuAdapter.handleMessage(
       { tenantKey: 'tenant', userId: 'user' },
       { chatId: 'chat_a' },
@@ -153,6 +225,13 @@ describe('unified client runtime integration', () => {
 
   it('keeps a duplicate feishu event from creating a second turn', async () => {
     const c = await makeComposition();
+    await c.feishuAdapter.handleMessage(
+      { tenantKey: 'tenant', userId: 'user' },
+      { chatId: 'chat_1' },
+      '/workspace /repo',
+      'req_workspace',
+      'idem_workspace',
+    );
     await c.feishuAdapter.handleMessage(
       { tenantKey: 'tenant', userId: 'user' },
       { chatId: 'chat_1' },

@@ -48,6 +48,27 @@ describe('normalizeFeishuInboundEvent', () => {
     }, { transport: 'webhook' })).toBeNull();
   });
 
+  it('uses the Feishu thread/root id as the Gateway thread binding', () => {
+    expect(normalizeFeishuInboundEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_thread_reply',
+        chat_id: 'oc_chat',
+        chat_type: 'group',
+        message_type: 'text',
+        content: '{"text":"continue"}',
+        root_id: 'om_thread_root',
+      },
+    }, {
+      transport: 'websocket',
+      receivedAt: '2026-08-27T00:00:00.000Z',
+    })).toMatchObject({
+      chatId: 'oc_chat',
+      threadId: 'om_thread_root',
+      text: 'continue',
+    });
+  });
+
   it('formats canonical Workspace confirmation and an executable missing-Workspace prompt', () => {
     expect(formatFeishuWorkspaceConfirmation('/repo-a')).toBe(
       '当前 Workspace：/repo-a',

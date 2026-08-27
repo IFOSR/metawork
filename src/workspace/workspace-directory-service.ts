@@ -165,6 +165,27 @@ export class WorkspaceDirectoryService {
     return metadata;
   }
 
+  async resolveConversationWorkspace(
+    conversationId: string,
+    _principalId: string,
+  ): Promise<string | null> {
+    const record = await this.deps.conversationStore.readConversation(conversationId);
+    if (!record || record.conversation.accountId !== this.deps.accountId) return null;
+    const workspaceId = record.conversation.workspaceBinding?.workspaceId;
+    if (!workspaceId) return null;
+    const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
+    return workspace?.accountId === this.deps.accountId ? workspaceId : null;
+  }
+
+  async isConversationInWorkspace(
+    workspaceId: string,
+    conversationId: string,
+    principalId: string,
+  ): Promise<boolean> {
+    return await this.resolveConversationWorkspace(conversationId, principalId)
+      === workspaceId;
+  }
+
   async archiveConversation(
     conversationId: string,
     workspaceId: string,

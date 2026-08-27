@@ -23,6 +23,9 @@ export interface FeishuRawMessageEvent {
     chat_type?: unknown;
     message_type?: unknown;
     content?: unknown;
+    root_id?: unknown;
+    parent_id?: unknown;
+    thread_id?: unknown;
     mentions?: Array<{
       id?: {
         open_id?: unknown;
@@ -62,6 +65,16 @@ export function normalizeFeishuInboundEvent(
       .filter(mention => mention.id.length > 0),
     raw: event,
     receivedAt: input.receivedAt ?? new Date().toISOString(),
+    ...(stringValue(event.message?.thread_id)
+      ?? stringValue(event.message?.root_id)
+      ?? stringValue(event.message?.parent_id)
+      ? {
+          threadId: stringValue(event.message?.thread_id)
+            ?? stringValue(event.message?.root_id)
+            ?? stringValue(event.message?.parent_id)
+            ?? undefined,
+        }
+      : {}),
     ...(stringValue(event.sender?.sender_id?.open_id)
       ?? stringValue(event.sender?.sender_id?.user_id)
       ?? stringValue(event.sender?.sender_id?.union_id)
