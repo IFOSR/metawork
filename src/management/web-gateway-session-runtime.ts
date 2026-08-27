@@ -11,12 +11,17 @@ import type { WebGatewayAdapter } from './web-gateway-adapter.js';
 import type {
   WebSessionActivationResult,
   WebSessionCreationResult,
+  ConversationWorkspaceProjection,
   ConversationTurn,
   WebSessionMetadata,
+  WebSessionMetadataProjection,
   WebSessionRecord,
+  WebSessionRecordProjection,
+  WorkspaceInitializationResult,
 } from './web-session-types.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+import type { WebLaunchContextInput } from './web-launch-context.js';
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
 const MAX_ENRICHMENT_BYTES = 16 * 1024;
@@ -65,6 +70,7 @@ export class WebGatewaySessionRuntime {
   private readonly completedResults = new Map<string, string>();
   private readonly turnStates = new Map<string, RuntimeTurnState>();
   private readonly persistedTurnIds = new Set<string>();
+  private readonly workspaces = new Map<string, ConversationWorkspaceProjection | null>();
   private unsubscribe: (() => void) | null = null;
   private detachClient: (() => void) | null = null;
   private replayEvents: WebSessionRuntimeEvent[] = [];
@@ -73,6 +79,7 @@ export class WebGatewaySessionRuntime {
   private readonly pendingAttaches = new Set<Promise<void>>();
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
+  private startupCreatedSession = false;
 
   constructor(private readonly deps: WebGatewaySessionRuntimeDeps) {}
 
@@ -87,12 +94,22 @@ export class WebGatewaySessionRuntime {
     await this.deps.catalog.initialize();
     const sessions = await this.deps.catalog.list();
     const active = sessions.find(session => session.active && !session.archived);
+    this.startupCreatedSession = !active;
     const record = active
       ? await this.deps.catalog.read(active.id)
       : await this.deps.catalog.create({ active: true });
     if (!record) throw new Error('Active Web conversation is unavailable');
     if (!record.session.active) await this.deps.catalog.setActive(record.session.id);
     await this.attach(record.session.id);
+  }
+
+  async initializeClient(context: WebLaunchContextInput): Promise<WorkspaceInitializationResult> {
+    if (context.conversationId || !this.startupCreatedSession) {
+      return { status: 'not_requested' };
+    }
+    this.startupCreatedSession = false;
+    if (this.workspaces.get(this.activeSessionId)) return { status: 'not_requested' };
+    return this.initializeWorkspace(this.activeSessionId, context.workspaceHint);
   }
 
   dispose(): Promise<void> {
@@ -110,6 +127,7 @@ export class WebGatewaySessionRuntime {
     this.completedResults.clear();
     this.turnStates.clear();
     this.persistedTurnIds.clear();
+    this.workspaces.clear();
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
     return this.disposePromise;
   }
@@ -174,20 +192,29 @@ export class WebGatewaySessionRuntime {
     ].join('\n');
   }
 
-  listSessions(query = ''): Promise<WebSessionMetadata[]> {
-    return query.trim() ? this.deps.catalog.search(query) : this.deps.catalog.list();
+  async listSessions(query = ''): Promise<WebSessionMetadataProjection[]> {
+    const sessions = query.trim()
+      ? await this.deps.catalog.search(query)
+      : await this.deps.catalog.list();
+    return Promise.all(sessions.map(session => this.projectMetadata(session)));
   }
-  async readSession(sessionId: string): Promise<WebSessionRecord | null> {
+  async readSession(sessionId: string): Promise<WebSessionRecordProjection | null> {
     const record = await this.deps.catalog.read(sessionId);
-    return record ? this.enrichRecord(record) : null;
+    if (!record) return null;
+    return this.projectRecord(this.enrichRecord(record));
   }
 
-  async createSession(title?: string): Promise<WebSessionCreationResult> {
+  async createSession(title?: string, workspaceHint?: string): Promise<WebSessionCreationResult> {
     const created = await this.deps.catalog.create({ title, active: false });
     const activation = await this.activateSession(created.session.id);
+    const workspaceInitialization = activation.state === 'active' && workspaceHint
+      ? await this.initializeWorkspace(created.session.id, workspaceHint)
+      : { status: 'not_requested' as const };
     return {
-      session: await this.deps.catalog.read(created.session.id) ?? created,
+      session: await this.readSession(created.session.id)
+        ?? await this.projectRecord(created),
       activation,
+      workspaceInitialization,
     };
   }
 
@@ -202,7 +229,7 @@ export class WebGatewaySessionRuntime {
     this.emit({
       type: 'session_catalog',
       activeSessionId: sessionId,
-      sessions: await this.deps.catalog.list(),
+      sessions: await this.listSessions(),
     });
     return { state: 'active', sessionId };
   }
@@ -215,7 +242,7 @@ export class WebGatewaySessionRuntime {
       this.emit({
         type: 'session_catalog',
         activeSessionId: this._activeSessionId,
-        sessions: await this.deps.catalog.list(),
+        sessions: await this.listSessions(),
       });
     }
     return 'deleted';
@@ -227,7 +254,7 @@ export class WebGatewaySessionRuntime {
       this.emit({
         type: 'session_catalog',
         activeSessionId: this._activeSessionId,
-        sessions: await this.deps.catalog.list(),
+        sessions: await this.listSessions(),
       });
     }
     return { deleted };
@@ -335,10 +362,16 @@ export class WebGatewaySessionRuntime {
       seen.add(event.eventId);
       this.consume(event, true);
     }
+    if (!this.workspaces.has(sessionId)) this.workspaces.set(sessionId, null);
     replaying = false;
   }
 
   private consume(event: GatewayEventEnvelope, replay: boolean): void {
+    const workspaceEvent = this.consumeWorkspaceEvent(event);
+    if (workspaceEvent) {
+      if (replay) this.replayEvents.push(workspaceEvent);
+      else this.emit(workspaceEvent);
+    }
     const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
     const state = this.rememberTurnEvent(event, userInput);
     const presentationEvent = event.kind === 'trace_delta' && state
@@ -373,6 +406,87 @@ export class WebGatewaySessionRuntime {
       this.pendingInputs.delete(event.requestId);
       void this.persistTerminalTurn(event, []);
     }
+  }
+
+  private consumeWorkspaceEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
+    if (event.kind !== 'conversation_snapshot' && event.kind !== 'workspace_changed') {
+      return null;
+    }
+    const payload = asRecord(event.payload);
+    if (!('workspace' in payload)) return null;
+    const workspace = workspaceProjection(payload.workspace);
+    this.workspaces.set(event.conversationId, workspace);
+    return {
+      type: 'workspace_changed',
+      sessionId: event.conversationId,
+      workspace,
+    };
+  }
+
+  private async initializeWorkspace(
+    sessionId: string,
+    workspaceHint: string,
+  ): Promise<WorkspaceInitializationResult> {
+    try {
+      const requestId = this.id('req');
+      const receipt = await this.deps.gateway.submit({
+        protocolVersion: 1,
+        requestId,
+        idempotencyKey: this.id('idem'),
+        connectionId: 'web',
+        conversation: { mode: 'attach', conversationId: sessionId },
+        command: {
+          kind: 'slash_command',
+          text: `/workspace ${workspaceHint}`,
+        },
+        clientCapabilities: ['trace_v1'],
+      });
+      if ('kind' in receipt || receipt.status === 'rejected') {
+        return {
+          status: 'failed',
+          reason: 'kind' in receipt
+            ? receipt.message
+            : receipt.reason ?? 'Gateway rejected Workspace initialization',
+        };
+      }
+      return { status: 'accepted' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async projectMetadata(
+    metadata: WebSessionMetadata,
+  ): Promise<WebSessionMetadataProjection> {
+    return {
+      ...structuredClone(metadata),
+      workspace: await this.workspaceFor(metadata.id),
+    };
+  }
+
+  private async projectRecord(record: WebSessionRecord): Promise<WebSessionRecordProjection> {
+    return {
+      ...structuredClone(record),
+      session: await this.projectMetadata(record.session),
+    };
+  }
+
+  private async workspaceFor(
+    sessionId: string,
+  ): Promise<ConversationWorkspaceProjection | null> {
+    if (this.workspaces.has(sessionId)) return this.workspaces.get(sessionId) ?? null;
+    const replay = await this.deps.gateway.replay(this.deps.accountId, sessionId);
+    let workspace: ConversationWorkspaceProjection | null = null;
+    for (const event of orderedUniqueReplayEvents(replay)) {
+      if (event.kind !== 'conversation_snapshot' && event.kind !== 'workspace_changed') continue;
+      const payload = asRecord(event.payload);
+      if ('workspace' in payload) workspace = workspaceProjection(payload.workspace);
+    }
+    this.workspaces.set(sessionId, workspace);
+    return workspace;
   }
 
   private rememberTurnEvent(
@@ -777,6 +891,13 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function workspaceProjection(value: unknown): ConversationWorkspaceProjection | null {
+  const workspace = asRecord(value);
+  const path = stringValue(workspace.path);
+  const selectedAt = stringValue(workspace.selectedAt);
+  return path && selectedAt ? { path, selectedAt } : null;
 }
 
 function stringValue(value: unknown): string | null {

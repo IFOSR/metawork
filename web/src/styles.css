@@ -1854,6 +1854,31 @@ select {
   white-space: nowrap;
 }
 
+.workspace-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  color: #647068;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+}
+
+.workspace-path span {
+  flex: 0 0 auto;
+  color: #829087;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-path code {
+  overflow: hidden;
+  color: #aab5ad;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace-tabs {
   display: flex;
   gap: 3px;

@@ -3,6 +3,7 @@ import { HttpClient } from './api/http';
 import type {
   ArtifactProjection,
   AttachmentMetadata,
+  ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionActivationResult,
   WebSessionMetadata,
@@ -68,6 +69,12 @@ export function App() {
       .then(session => {
         if (!active) return;
         setStartupLaunchContext(session?.launchContext ?? null);
+        if (session?.workspaceInitialization?.status === 'failed') {
+          setActivationNotice(
+            `默认 Workspace 设置失败：${session.workspaceInitialization.reason}。`
+            + ' 请执行 /workspace /absolute/path。',
+          );
+        }
         setAuthenticated(Boolean(session));
       })
       .catch(error => {
@@ -116,6 +123,20 @@ export function App() {
         setPreviewState({ status: 'closed' });
         setExecutionDetail(null);
         loadRecord(sessionId);
+      },
+      onWorkspaceChanged: (
+        sessionId: string,
+        workspace: ConversationWorkspaceProjection | null,
+      ) => {
+        setSessions(current => current.map(session => (
+          session.id === sessionId ? { ...session, workspace } : session
+        )));
+        setSelectedRecord(current => current?.session.id === sessionId
+          ? {
+            ...current,
+            session: { ...current.session, workspace },
+          }
+          : current);
       },
       onConversationSnapshot: turn => setLiveTurn(turn),
       onTurnStarted: (_requestId, turnId, userInput, startedAt) => {
@@ -305,7 +326,12 @@ export function App() {
     ]);
     setBrowsedSessionId(result.session.session.id);
     setSelectedRecord(result.session);
-    setActivationNotice(activationMessage(result.activation));
+    setActivationNotice(
+      result.workspaceInitialization.status === 'failed'
+        ? `默认 Workspace 设置失败：${result.workspaceInitialization.reason}。`
+          + ' 请执行 /workspace /absolute/path。'
+        : activationMessage(result.activation),
+    );
     if (result.activation.state === 'active') {
       activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);
@@ -408,6 +434,9 @@ export function App() {
   const selectedId = browsedSessionId ?? activeSessionId;
   const selectedMetadata = sessions.find(session => session.id === selectedId)
     ?? selectedRecord?.session;
+  const selectedWorkspace = selectedRecord?.session.id === selectedId
+    ? selectedRecord.session.workspace
+    : selectedMetadata?.workspace ?? null;
   const turns: ConversationTurnProjection[] = [...(selectedRecord?.turns ?? [])];
   if (selectedId === activeSessionId && liveTurn) {
     const existingIndex = turns.findIndex(turn => turn.id === liveTurn.id);
@@ -438,6 +467,7 @@ export function App() {
         selectedSessionId={selectedId}
         search={search}
         title={selectedMetadata?.title ?? 'New session'}
+        workspace={selectedWorkspace}
         tab={tab}
         connected={connected}
         themePreference={themePreference}

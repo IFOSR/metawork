@@ -430,6 +430,13 @@ describe('ManagementServer WebSocket authentication', () => {
         headers: { cookie },
       });
       expect(guarded.status).toBe(200);
+      const authSession = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+        headers: { cookie },
+      });
+      await expect(authSession.json()).resolves.toEqual({
+        authenticated: true,
+        launchContext: null,
+      });
 
       // 连续失败 5 次后锁定（第 6 次即使密码正确也 429）。
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -720,6 +727,61 @@ describe('ManagementServer WebSocket authentication', () => {
           conversationId: 'conv_b',
         },
       });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('uses the authenticated browser launch hint only for initial and newly created Conversations', async () => {
+    const port = await reservePort();
+    const launchContexts = new WebLaunchContextService({
+      generateToken: () => 'launch-browser',
+    });
+    const launch = launchContexts.issue({ workspaceHint: '/repo-browser' });
+    const initializations: Array<{ workspaceHint: string; conversationId?: string }> = [];
+    const createdHints: Array<string | undefined> = [];
+    const createdRecord = {
+      version: 1 as const,
+      session: {
+        ...metadataFixture('session_new', true),
+        workspace: null,
+      },
+      turns: [],
+    };
+    const sessionRuntime = createSessionRuntime({
+      initializeClient: async context => {
+        initializations.push(context);
+        return { status: 'accepted' };
+      },
+      createSession: async (_title, workspaceHint) => {
+        createdHints.push(workspaceHint);
+        return {
+          session: createdRecord,
+          activation: { state: 'active', sessionId: 'session_new' },
+          workspaceInitialization: { status: 'accepted' },
+        };
+      },
+    });
+    const server = createManagementServer(port, {
+      launchContexts,
+      sessionRuntime,
+    });
+    await server.start();
+
+    try {
+      const cookie = await exchangeToken(port, launch.token);
+      expect(initializations).toEqual([{ workspaceHint: '/repo-browser' }]);
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ title: 'New browser session' }),
+      });
+      expect(created.status).toBe(201);
+      expect(createdHints).toEqual(['/repo-browser']);
     } finally {
       await server.stop();
     }

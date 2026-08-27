@@ -26,6 +26,15 @@ export interface WebSessionMetadata {
   archived: boolean;
 }
 
+export interface ConversationWorkspaceProjection {
+  path: string;
+  selectedAt: string;
+}
+
+export interface WebSessionMetadataProjection extends WebSessionMetadata {
+  workspace: ConversationWorkspaceProjection | null;
+}
+
 export interface ConversationTurn {
   id: string;
   sessionId: string;
@@ -54,6 +63,11 @@ export interface WebSessionRecord {
   turns: ConversationTurn[];
 }
 
+export interface WebSessionRecordProjection
+  extends Omit<WebSessionRecord, 'session'> {
+  session: WebSessionMetadataProjection;
+}
+
 export type WebSessionActivationResult =
   | { state: 'active'; sessionId: string }
   | { state: 'browsable'; sessionId: string }
@@ -64,9 +78,15 @@ export type WebSessionActivationResult =
   };
 
 export interface WebSessionCreationResult {
-  session: WebSessionRecord;
+  session: WebSessionRecordProjection;
   activation: WebSessionActivationResult;
+  workspaceInitialization: WorkspaceInitializationResult;
 }
+
+export type WorkspaceInitializationResult =
+  | { status: 'not_requested' }
+  | { status: 'accepted' }
+  | { status: 'failed'; reason: string };
 
 export function boundWebSessionTurns(turns: ConversationTurn[]): ConversationTurn[] {
   return turns.slice(-MAX_WEB_SESSION_TURNS);

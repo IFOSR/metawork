@@ -8,6 +8,7 @@ export interface WebLaunchContext {
 export interface WebAuthSession {
   authenticated: true;
   launchContext: WebLaunchContext | null;
+  workspaceInitialization?: { status: 'failed'; reason: string };
 }
 
 export function bootstrapTokenFromHash(hash = window.location.hash): string | null {

@@ -54,6 +54,9 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
         });
         await cdp.send('Page.navigate', { url: `http://127.0.0.1:${server.port}/` });
         await waitForWorkspace(cdp);
+        expect(await cdp.evaluate(
+          `document.querySelector('.workspace-path code')?.textContent`,
+        )).toBe('/repo-browser-e2e');
 
         expect(await cdp.evaluate(
           `document.documentElement.dataset.themePreference`,
@@ -383,7 +386,10 @@ async function startMockServer(webDist: string): Promise<{
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === '/api/auth/session') {
-      response.writeHead(204).end();
+      json(response, {
+        authenticated: true,
+        launchContext: null,
+      });
       return;
     }
     if (url.pathname === '/api/ws/diagnostics') {
@@ -400,6 +406,10 @@ async function startMockServer(webDist: string): Promise<{
           updatedAt: '2026-08-25T08:01:00.000Z',
           active: true,
           archived: false,
+          workspace: {
+            path: '/repo-browser-e2e',
+            selectedAt: '2026-08-25T08:00:00.000Z',
+          },
         }],
       });
       return;
@@ -414,6 +424,10 @@ async function startMockServer(webDist: string): Promise<{
           updatedAt: '2026-08-25T08:01:00.000Z',
           active: true,
           archived: false,
+          workspace: {
+            path: '/repo-browser-e2e',
+            selectedAt: '2026-08-25T08:00:00.000Z',
+          },
         },
         turns: [historicalTurnFixture()],
       });

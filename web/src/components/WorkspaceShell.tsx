@@ -11,6 +11,7 @@ export function WorkspaceShell({
   selectedSessionId,
   search,
   title,
+  workspace,
   tab,
   connected,
   themePreference,
@@ -43,6 +44,7 @@ export function WorkspaceShell({
   selectedSessionId: string | null;
   search: string;
   title: string;
+  workspace: { path: string; selectedAt: string } | null;
   tab: WorkspaceTab;
   connected: boolean;
   themePreference: ThemePreference;
@@ -90,6 +92,7 @@ export function WorkspaceShell({
       <main className="workspace-main">
         <WorkspaceHeader
           title={title}
+          workspace={workspace}
           tab={tab}
           connected={connected}
           themePreference={themePreference}

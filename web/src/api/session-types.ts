@@ -23,6 +23,12 @@ export interface WebSessionMetadata {
   updatedAt: string;
   active: boolean;
   archived: boolean;
+  workspace: ConversationWorkspaceProjection | null;
+}
+
+export interface ConversationWorkspaceProjection {
+  path: string;
+  selectedAt: string;
 }
 
 export interface ArtifactProjection {
@@ -79,6 +85,10 @@ export type WebSessionActivationResult =
 export interface WebSessionCreationResult {
   session: WebSessionRecord;
   activation: WebSessionActivationResult;
+  workspaceInitialization:
+    | { status: 'not_requested' }
+    | { status: 'accepted' }
+    | { status: 'failed'; reason: string };
 }
 
 export interface AttachmentMetadata {

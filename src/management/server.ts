@@ -385,6 +385,10 @@ export class ManagementServer {
         this.sendJson(response, 401, { error: 'unauthorized' });
         return;
       }
+      const workspaceInitialization = session.launchContext
+        ? await this.deps.sessionRuntime.initializeClient?.(session.launchContext)
+          ?? { status: 'not_requested' as const }
+        : { status: 'not_requested' as const };
       response.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
@@ -392,6 +396,9 @@ export class ManagementServer {
       response.end(`${JSON.stringify({
         authenticated: true,
         launchContext: session.launchContext,
+        ...(workspaceInitialization.status === 'failed'
+          ? { workspaceInitialization }
+          : {}),
       })}\n`);
       return;
     }
@@ -481,10 +488,16 @@ export class ManagementServer {
 
     if (request.method === 'POST' && url.pathname === '/api/sessions') {
       const body = await readRequestBody(request);
+      const launchContext = this.deps.webAuth
+        .getSession(request.headers.cookie)
+        ?.launchContext;
       this.sendJson(
         response,
         201,
-        await this.deps.sessionRuntime.createSession(body.title),
+        await this.deps.sessionRuntime.createSession(
+          body.title,
+          launchContext?.workspaceHint,
+        ),
       );
       return;
     }

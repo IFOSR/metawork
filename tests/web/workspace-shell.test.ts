@@ -27,12 +27,17 @@ describe('Web workspace shell', () => {
     expect(sidebar).not.toContain("active ? ' · 运行中' : ''");
     expect(header).toContain('对话');
     expect(header).toContain('轨迹');
+    expect(header).toContain('workspace');
+    expect(header).toContain('workspacePath');
+    expect(header).toContain('/workspace /absolute/path');
     expect(composer).toContain('<textarea');
     expect(app).toContain('activeSessionId');
     expect(app).toContain('browsedSessionId');
     expect(app).toContain('onTurnStarted');
     expect(app).toContain('onFinalAnswer');
     expect(app).toContain('onTraceDelta');
+    expect(app).toContain('selectedWorkspace');
+    expect(app).toContain('onWorkspaceChanged');
     expect(app).toContain("composerVisible={tab === 'conversation'}");
     expect(styles).toContain('@media (max-width: 860px)');
     expect(styles).toContain('.workspace-sidebar');
