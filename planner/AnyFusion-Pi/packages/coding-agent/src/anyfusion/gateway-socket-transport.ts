@@ -393,6 +393,7 @@ function isGatewayEvent(value: unknown): value is GatewayEventEnvelope {
 function isGatewayEventKind(value: unknown): boolean {
 	return [
 		"conversation_snapshot",
+		"workspace_changed",
 		"turn_started",
 		"trace_delta",
 		"task_projection",

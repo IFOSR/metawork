@@ -308,6 +308,61 @@ describe("GatewayClient", () => {
 		}
 	});
 
+	itIfUnix("accepts workspace_changed events from the Server", async () => {
+		const socketPath = join(
+			tmpdir(),
+			`anyfusion-gateway-workspace-${process.pid}-${Date.now()}.sock`,
+		);
+		const sockets = new Set<Socket>();
+		const server = createServer((socket) => {
+			sockets.add(socket);
+			socket.once("close", () => sockets.delete(socket));
+			socket.setEncoding("utf8");
+			socket.write(`${JSON.stringify({ type: "hello", sessionId: "conv_fresh" })}\n`);
+			readJsonLines(socket, (message) => {
+				if (message.type !== "attach") return;
+				socket.write(`${JSON.stringify({
+					type: "event",
+					event: {
+						protocolVersion: 1,
+						eventId: "event_workspace_1",
+						sequence: 1,
+						accountId: "local-default",
+						conversationId: message.conversationId,
+						requestId: "req_workspace_1",
+						turnId: null,
+						kind: "workspace_changed",
+						payload: { path: "/tmp/workspace" },
+						occurredAt: "2026-08-27T00:00:00.000Z",
+					},
+				})}\n`);
+				socket.write(`${JSON.stringify({
+					type: "hello",
+					sessionId: message.conversationId,
+				})}\n`);
+			});
+		});
+		server.listen(socketPath);
+		await once(server, "listening");
+		const transport = new GatewaySocketTransport(socketPath);
+		const events: GatewayEventEnvelope[] = [];
+		transport.subscribe((event) => events.push(event));
+		try {
+			await transport.replay("conv_native", 0);
+			expect(events).toEqual([
+				expect.objectContaining({
+					eventId: "event_workspace_1",
+					kind: "workspace_changed",
+				}),
+			]);
+		} finally {
+			transport.close();
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await rm(socketPath, { force: true });
+		}
+	});
+
 	itIfUnix("rejects an oversized inbound JSONL frame without an uncaught socket callback error", async () => {
 		const socketPath = join(
 			tmpdir(),
