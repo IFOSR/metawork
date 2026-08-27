@@ -2,17 +2,22 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-26
+- **Amended:** 2026-08-27
 - **Scope:** Server process lifecycle, independent Client launch, endpoint
-  discovery, Conversation Workspace admission, and Server-owned Feishu
-  transport lifecycle
+  discovery, Client-assisted Conversation Workspace initialization and
+  admission, and Server-owned Feishu transport lifecycle
 - **Amends:** ADR-0031
 - **Preserves:** ADR-0011, ADR-0015, ADR-0020, ADR-0022, ADR-0023, ADR-0024,
   ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0029, ADR-0030, ADR-0032,
   ADR-0033
 - **Related design:**
   `docs/plans/2026-08-26-independent-server-client-and-tui-experience-design.md`
+- **Workspace initialization amendment design:**
+  `docs/plans/2026-08-27-client-default-workspace-design.md`
 - **Implementation plan:**
   `docs/plans/2026-08-26-independent-server-client-and-tui-experience-implementation-plan.md`
+- **Workspace initialization amendment plan:**
+  `docs/plans/2026-08-27-client-default-workspace-implementation-plan.md`
 - **Governed by:** ADR-0020
 
 ## Context
@@ -116,8 +121,8 @@ shutdown and startup-failure cleanup.
 ### 5. Server Startup Is Workspace-Neutral
 
 Server startup does not accept, infer, persist, or publish a user Workspace.
-Process `cwd` is not an execution authority. Account-internal storage such as
-`workspace-store/` remains an account runtime path and is not the
+Server process `cwd` is not an execution authority. Account-internal storage
+such as `workspace-store/` remains an account runtime path and is not the
 user-selected repository Workspace.
 
 Each Conversation has one durable nullable Workspace:
@@ -129,24 +134,45 @@ workspace:
   selectedByPrincipal
 ```
 
-New Conversations start with `workspace: null`. The only mutation command on
-every Client surface is:
+Conversation Workspace resolution uses this priority:
+
+1. an existing durable Conversation Workspace restored by attach or replay;
+2. for a new Conversation only, the Client startup directory as an untrusted
+   initialization hint;
+3. otherwise `workspace: null`, with semantic admission returning
+   `workspace_required`.
+
+Bare `metawork`, `metawork tui`, and `metawork web` capture their Client startup
+directory once. That value is not Workspace authority and may not overwrite an
+attached Conversation. A new Conversation applies the hint through the same
+Server-owned mutation semantics as the explicit command:
 
 ```text
 /workspace /absolute/path
 ```
 
-Gateway treats the path as untrusted input. The Server resolves and canonicalizes
-it with `realpath`, verifies that it is an accessible directory, applies
+`/workspace <path>` remains the only user-visible Workspace mutation command on
+every Client surface. Gateway treats both an automatic hint and an explicit
+path as untrusted input. The Server resolves and canonicalizes it with
+`realpath`, verifies that it is an accessible directory, applies
 Principal/account authorization, fences active Turn/Task work, atomically
 persists the Conversation metadata, and emits `workspace_changed`.
 
 Relative, missing, non-directory, inaccessible, or unauthorized paths fail
 closed. An active Turn or Task returns `workspace_busy`. A semantic user message
 without a Workspace returns `workspace_required` before Planner startup.
-Attach and replay restore the durable Workspace. Different Conversations on the
-same Server may bind different Workspaces. Each admitted Turn retains the
-Workspace reference fixed at admission.
+Automatic initialization failure leaves `workspace: null` and presents the
+explicit `/workspace /absolute/path` recovery command. Attach and replay restore
+the durable Workspace without applying the current Client hint. Different
+Conversations on the same Server may bind different Workspaces. Each admitted
+Turn retains the Workspace reference fixed at admission.
+
+`metawork web` registers its startup hint through a short-lived, single-use
+Server bootstrap context. The Browser URL carries only an opaque token fragment;
+the Workspace path never enters a query, fragment, endpoint manifest, Referer,
+or browser history. The authenticated Web session may reuse that launch hint
+for later new Conversations, but historical Conversation activation always
+retains its durable Workspace.
 
 ### 6. Feishu Lifecycle Is Server-Owned
 
@@ -215,8 +241,11 @@ process-lifecycle guarantee.
 - Users explicitly start one Server and independently open or close multiple
   TUI and Web clients.
 - Client exit cannot interrupt accepted Runtime work.
-- Workspace authority becomes explicit, durable, Conversation-scoped, and
-  authorization-checked.
+- Workspace authority remains explicit, durable, Conversation-scoped, and
+  authorization-checked while new local Conversations avoid a redundant manual
+  setup step.
+- Attached Conversations retain their durable Workspace even when the current
+  Client starts in another directory.
 - Server process management requires a shared manifest, health validation,
   lock ownership, draining, and stale-state recovery.
 - CLI behavior is a deliberate hard cut; removed lifecycle commands are not
@@ -240,8 +269,17 @@ allows different clients to race to construct Runtime.
 Rejected because one Server must serve Conversations using different
 Workspaces, and process launch context is not user authorization.
 
+### Put Workspace In A Client URL
+
+Rejected because absolute local paths would leak into browser history, logs,
+screenshots, shared links, or Referer data.
+
+### Keep A Server-Global Last Workspace
+
+Rejected because one Server serves multiple Clients and Conversations; a
+global mutable default creates races and cross-Conversation contamination.
+
 ### Separate Feishu Runner
 
 Rejected because it creates another lifecycle command and risks a
 transport-specific path around the unified Gateway.
-

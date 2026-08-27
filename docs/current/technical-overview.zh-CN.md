@@ -78,8 +78,10 @@ ADR-0034 已于 2026 年 8 月 26 日接受，固定了该领域模型的进程�
 `metawork server start` 是唯一拥有 Runtime 的启动路径，并独立于所有 Client
 持续运行。裸 `metawork` 只启动 TUI Client，`metawork web` 只打开已有
 Server 的 loopback Web origin，飞书连接由 Server 按配置持有。Server 启动时
-不绑定 Workspace；每个 Conversation 必须先通过
-`/workspace /absolute/path` 建立持久 Workspace 才能进入语义准入。
+不绑定 Workspace。已有 Conversation 在 attach/replay 时恢复持久 Workspace；
+仅新建的本地 TUI/Web Conversation 把 Client 命令启动目录作为不受信任的默认值，
+并通过与 `/workspace /absolute/path` 相同的 Server mutation 完成初始化，绝不
+覆盖历史 Conversation。
 
 KernelWorkflow、Execution Runtime 和启动恢复等账号级服务由
 `AccountRuntime` 单例持有。每个 Account 只有一个 Kernel coordinator
@@ -587,16 +589,24 @@ Web 读取同一份原子 endpoint manifest；没有兼容且 ready 的 Server �
 提示执行 `metawork server start`。关闭终端或浏览器不会停止 Server 或已接纳
 的 Task。
 
-Server 启动时不绑定用户 Workspace。新 Conversation 在所有 Client 中都会先
-返回 `workspace_required`，直到用户提交同一条命令：
+Server 启动时不绑定用户 Workspace。已有 Conversation 恢复持久 Workspace；
+新建的本地 TUI/Web Conversation 通过同一条 Server-owned mutation 自动应用
+Client 启动目录：
 
 ```text
 /workspace /absolute/path/to/project
 ```
 
 Server 对路径做 canonicalize 和授权并持久化到 Conversation；活动工作期间切换
-返回 `workspace_busy`。Web 继续使用现有 Composer 提交该命令，不增加 Web
-专属 Workspace selector 或 mutation API。
+返回 `workspace_busy`。默认值不可用或被拒绝时保持 `workspace: null`，在
+Planner 启动前返回 `workspace_required` 并提示显式命令。attach/replay 绝不使用
+当前 Client 目录覆盖历史 Workspace。Web 继续使用现有 Composer 提交显式变更，
+不增加 Web 专属 Workspace selector 或 mutation API。
+
+`metawork web` 通过短时、单次使用的 Server launch context 传递启动目录；URL
+只包含不透明 bootstrap fragment，不包含 Workspace 路径。HTTP snapshot、
+WebSocket replay 和 live `workspace_changed` 都向现有 Web 界面返回 Server
+确认的 canonical Workspace，且不缩减现有 Web projection。
 
 Web 交互面只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
 fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的

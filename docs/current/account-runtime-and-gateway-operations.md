@@ -38,8 +38,10 @@ and script mode fail closed and point to the canonical commands above.
 
 ## Conversation Workspace
 
-Every new Conversation starts without a user Workspace. Before submitting a
-semantic task, use the same Gateway command from TUI, Web Composer, or Feishu:
+Existing Conversations restore their durable Workspace during attach and
+replay. A new local TUI or Web Conversation uses the directory where that
+Client command started as an untrusted initialization hint. The Server applies
+the hint through the same Workspace mutation used by the explicit command:
 
 ```text
 /workspace /absolute/path/to/project
@@ -47,9 +49,16 @@ semantic task, use the same Gateway command from TUI, Web Composer, or Feishu:
 
 Server resolves and canonicalizes the path, verifies an accessible directory,
 authorizes the Principal, and atomically persists it on the Conversation.
-Missing Workspace returns `workspace_required`; an active Turn or Task returns
-`workspace_busy`. Attach and replay restore the selected Workspace. Different
-Conversations may use different Workspaces on the same Server.
+The Client hint never overwrites an attached Conversation. Missing or rejected
+Workspace initialization returns `workspace_required`; an active Turn or Task
+returns `workspace_busy`. `/workspace <path>` remains the explicit override on
+TUI, Web Composer, and Feishu. Different Conversations may use different
+Workspaces on the same Server.
+
+`metawork web` transfers its startup hint through a short-lived, single-use
+bootstrap context. The Browser URL contains only an opaque token fragment, not
+the Workspace path. The Server-confirmed canonical Workspace is visible in
+each Client and `workspace_changed` updates every attachment.
 
 ## Account Data
 
