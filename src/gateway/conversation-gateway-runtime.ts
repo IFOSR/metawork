@@ -279,6 +279,7 @@ export class ConversationGatewayRuntime {
   }
 
   private async attachProjection(conversation: ConversationSession): Promise<void> {
+    const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const initialOutput = [...conversation.getOutput()];
     const workspace = await conversation.getWorkspace();
     await this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
@@ -291,6 +292,12 @@ export class ConversationGatewayRuntime {
     let traceTurnId: string | null = null;
     let traceSequence = 0;
     conversation.subscribe(snapshot => {
+      accountRuntime?.setConversationPlannerActive?.(
+        conversation.conversationId,
+        snapshot.plannerState.status === 'running',
+      );
+      void accountRuntime?.refreshConversationActivity?.(conversation.conversationId)
+        .catch(() => undefined);
       const from = Math.min(outputLength, snapshot.output.length);
       const lines = snapshot.output.slice(from);
       outputLength = snapshot.output.length;

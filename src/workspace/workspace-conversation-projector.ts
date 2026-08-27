@@ -1,4 +1,5 @@
 import type { ConversationMetadata } from '../session/conversation-store.js';
+import type { ConversationActivityProjection } from './conversation-activity-projector.js';
 
 export type ConversationActivityState = 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
 
@@ -18,6 +19,10 @@ export interface WorkspaceConversationSummary {
 }
 
 export class WorkspaceConversationProjector {
+  constructor(private readonly activity?: {
+    project(conversationId: string, fallbackUpdatedAt: string): ConversationActivityProjection;
+  }) {}
+
   project(metadata: ConversationMetadata): WorkspaceConversationSummary | null {
     const binding = metadata.workspaceBinding;
     if (!binding) return null;
@@ -29,10 +34,8 @@ export class WorkspaceConversationProjector {
       updatedAt: metadata.updatedAt,
       archived: metadata.archived,
       preview: metadata.title.slice(0, 240),
-      activity: {
-        state: 'idle',
-        taskId: null,
-        updatedAt: metadata.updatedAt,
+      activity: this.activity?.project(metadata.id, metadata.updatedAt) ?? {
+        state: 'idle', taskId: null, updatedAt: metadata.updatedAt,
       },
     };
   }

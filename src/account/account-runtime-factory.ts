@@ -25,6 +25,7 @@ import type { AccountCoordinatorServices } from './account-coordinator-services.
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountPermissionService } from './account-permission-service.js';
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
+import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 
 export interface AccountRuntimeFactoryDeps {
   buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
@@ -40,6 +41,11 @@ export interface AccountRuntimeFactoryDeps {
   configurationActivationGate?: ConfigurationActivationGate;
   recoverDurableStartup(accountId: string): Promise<void>;
   reviewTaskPoolOnTimer?(accountId: string, nowMs: number): Promise<boolean>;
+  onConversationActivityChanged?(
+    accountId: string,
+    conversationId: string,
+    activity: ConversationActivityProjection,
+  ): Promise<void> | void;
   dispose?(accountId: string): Promise<void>;
 }
 
@@ -85,6 +91,13 @@ export class AccountRuntimeFactory {
       recoverDurableStartup: () => this.deps.recoverDurableStartup(accountId),
       reviewTaskPoolOnTimer: this.deps.reviewTaskPoolOnTimer
         ? nowMs => this.deps.reviewTaskPoolOnTimer!(accountId, nowMs)
+        : undefined,
+      onConversationActivityChanged: this.deps.onConversationActivityChanged
+        ? (conversationId, activity) => this.deps.onConversationActivityChanged!(
+          accountId,
+          conversationId,
+          activity,
+        )
         : undefined,
       dispose: this.deps.dispose
         ? () => this.deps.dispose!(accountId)

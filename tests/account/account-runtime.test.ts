@@ -107,6 +107,41 @@ describe('AccountRuntime', () => {
     expect(disposed).toBe(1);
   });
 
+  it('publishes Conversation-owned planning activity through the factory callback', async () => {
+    const published: Array<{ accountId: string; conversationId: string; state: string }> = [];
+    const factory = new AccountRuntimeFactory({
+      buildKernelCoordinator: () => makeMockCoordinator(),
+      recoverDurableStartup: async () => undefined,
+      onConversationActivityChanged: (accountId, conversationId, activity) => {
+        published.push({ accountId, conversationId, state: activity.state });
+      },
+    });
+    const runtime = factory.create('local-default');
+
+    runtime.setConversationPlannerActive('conv_origin', true);
+    await Promise.resolve();
+    runtime.setConversationPlannerActive('conv_origin', false);
+    await Promise.resolve();
+
+    expect(published).toEqual([
+      { accountId: 'local-default', conversationId: 'conv_origin', state: 'planning' },
+      { accountId: 'local-default', conversationId: 'conv_origin', state: 'idle' },
+    ]);
+  });
+
+  it('does not treat generic account work as an active Planner turn', () => {
+    const factory = new AccountRuntimeFactory({
+      buildKernelCoordinator: () => makeMockCoordinator(),
+      recoverDurableStartup: async () => undefined,
+    });
+    const runtime = factory.create('local-default');
+
+    runtime.beginWork();
+
+    expect(runtime.getConversationActivity('conv_origin', '2026-08-27T08:00:00.000Z'))
+      .toMatchObject({ state: 'idle', taskId: null });
+  });
+
   it('single-flights account periodic recovery and waits for it before disposal', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });

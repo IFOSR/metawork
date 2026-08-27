@@ -27,6 +27,7 @@ import type { ExecutorRecoveryRefreshTrigger } from '../kernel/executor-status-p
 import type {
   ConfigurationActivationStatusSnapshot,
 } from '../configuration/configuration-activation-gate.js';
+import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 
 /** AccountRuntime 暴露给 Application Shell 的窄句柄。 */
 export interface AccountRuntimeHandle {
@@ -37,6 +38,16 @@ export interface AccountRuntimeHandle {
   detachClient(): void;
   beginWork(): void;
   endWork(): void;
+  setConversationPlannerActive?(
+    conversationId: string,
+    active: boolean,
+    updatedAt?: string,
+  ): void;
+  getConversationActivity?(
+    conversationId: string,
+    fallbackUpdatedAt: string,
+  ): ConversationActivityProjection;
+  refreshConversationActivity?(conversationId: string): Promise<void>;
   getConfigurationActivationStatus?(): ConfigurationActivationStatusSnapshot;
   closeWhenIdle(): Promise<'closed' | 'busy'>;
 }

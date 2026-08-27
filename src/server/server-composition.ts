@@ -73,6 +73,7 @@ import {
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
+import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -490,12 +491,22 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }).migrate();
   await workspaceCatalogStore.initialize();
   await conversationStore.initialize();
+  let publishWorkspaceActivity: (
+    conversationId: string,
+    activity: ConversationActivityProjection,
+  ) => Promise<void> = async () => undefined;
   const workspaceDirectory = new WorkspaceDirectoryService({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     workspaceCatalog: workspaceCatalogStore,
     conversationStore,
     authorize: (_path, principalId) => isAuthenticatedWorkspacePrincipalId(principalId),
     createConversationId: () => `conv_${nanoid(12)}`,
+    getConversationActivity: (conversationId, fallbackUpdatedAt) => (
+      accountRuntimeComposition?.accountRuntime.getConversationActivity(
+        conversationId,
+        fallbackUpdatedAt,
+      ) ?? { state: 'idle', taskId: null, updatedAt: fallbackUpdatedAt }
+    ),
   });
   const notifier = createNotificationService(config);
   const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
@@ -626,6 +637,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       config.orchestration.blocked_recheck_interval ?? 60,
       5,
     ) * 1000,
+    onConversationActivityChanged: (conversationId, activity) => (
+      publishWorkspaceActivity(conversationId, activity)
+    ),
   });
   const accountRegistry = new RuntimeRegistry({
     // The composition helper has already bound all account-scoped services to
@@ -980,6 +994,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       gatewaySubscriptions.publish(event);
     },
   });
+  publishWorkspaceActivity = async (conversationId, activity) => {
+    const binding = (await conversationStore.readConversation(conversationId))
+      ?.conversation.workspaceBinding;
+    if (!binding) return;
+    await workspaceGatewayRuntime.publishActivity(binding.workspaceId, {
+      conversationId,
+      activity,
+    });
+  };
   const clientGateway = new ClientGateway({
     authenticator: {
       authenticate: async ({ transport, credential }) => {

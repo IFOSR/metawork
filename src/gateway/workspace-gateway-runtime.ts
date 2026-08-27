@@ -18,7 +18,8 @@ export interface WorkspaceGatewayRuntimeOptions {
   readonly publish?: (
     kind: 'workspace_directory_snapshot'
       | 'workspace_conversation_upserted'
-      | 'workspace_conversation_removed',
+      | 'workspace_conversation_removed'
+      | 'workspace_activity_changed',
     workspaceId: string,
     payload: unknown,
   ) => Promise<void> | void;
@@ -42,6 +43,13 @@ export class WorkspaceGatewayRuntime {
 
   closeConnection(connectionId: string): void {
     this.activeWorkspaceByConnection.delete(connectionId);
+  }
+
+  async publishActivity(
+    workspaceId: string,
+    payload: { conversationId: string; activity: unknown },
+  ): Promise<void> {
+    await this.options.publish?.('workspace_activity_changed', workspaceId, payload);
   }
 
   async handle(

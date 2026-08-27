@@ -64,10 +64,17 @@ describe('unified server composition', () => {
 
   it('asserts the actual production composition root activates the registry', () => {
     const index = readFileSync(join(process.cwd(), 'src', 'server', 'server-composition.ts'), 'utf8');
+    const workspaceRuntime = readFileSync(
+      join(process.cwd(), 'src', 'gateway', 'workspace-gateway-runtime.ts'),
+      'utf8',
+    );
     expect(index).toContain('accountRegistry.getOrActivate');
     expect(index).toContain('new ConversationGatewayRuntime');
     expect(index).toContain('new ClientGateway');
     expect(index).not.toContain('new MetaclawSession');
+    expect(index).toContain('getConversationActivity');
+    expect(index).toContain('publishWorkspaceActivity');
+    expect(workspaceRuntime).toContain("'workspace_activity_changed'");
   });
 
   it('starts shared adapters before selecting the foreground client', () => {

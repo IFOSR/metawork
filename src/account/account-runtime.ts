@@ -24,6 +24,10 @@ import {
   ConfigurationActivationGate,
   type ConfigurationActivationStatusSnapshot,
 } from '../configuration/configuration-activation-gate.js';
+import {
+  ConversationActivityProjector,
+  type ConversationActivityProjection,
+} from '../workspace/conversation-activity-projector.js';
 
 export interface AccountRuntimeDeps {
   readonly accountId: string;
@@ -40,6 +44,10 @@ export interface AccountRuntimeDeps {
   readonly configurationActivationGate?: ConfigurationActivationGate;
   readonly recoverDurableStartup: () => Promise<void>;
   readonly reviewTaskPoolOnTimer?: (nowMs: number) => Promise<boolean>;
+  readonly onConversationActivityChanged?: (
+    conversationId: string,
+    activity: ConversationActivityProjection,
+  ) => Promise<void> | void;
   readonly dispose?: () => Promise<void>;
 }
 
@@ -50,6 +58,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
   private closing: Promise<void> | null = null;
   private attachedClients = 0;
   private activeWorkCount = 0;
+  private readonly activePlannerTurns = new Map<string, { count: number; updatedAt: string }>();
   private periodicReview: Promise<boolean> | null = null;
   private readonly configurationActivationGate: ConfigurationActivationGate;
 
@@ -136,6 +145,54 @@ export class AccountRuntime implements AccountRuntimeHandle {
 
   endWork(): void {
     this.activeWorkCount = Math.max(0, this.activeWorkCount - 1);
+  }
+
+  setConversationPlannerActive(
+    conversationId: string,
+    active: boolean,
+    updatedAt = new Date().toISOString(),
+  ): void {
+    if (active) {
+      this.activePlannerTurns.set(conversationId, { count: 1, updatedAt });
+    } else {
+      this.activePlannerTurns.delete(conversationId);
+    }
+    void this.publishConversationActivity(conversationId).catch(() => undefined);
+  }
+
+  getConversationActivity(
+    conversationId: string,
+    fallbackUpdatedAt: string,
+  ): ConversationActivityProjection {
+    const taskRuntimeService = this.deps.taskServices?.taskRuntimeService;
+    const tasks = taskRuntimeService?.listTasks() ?? [];
+    const activeAttemptTaskIds = taskRuntimeService
+      ? [
+          ...(this.deps.runtimeExecutionServices?.dispatchItemRepo.listBlocking() ?? [])
+            .map(item => item.taskId),
+          ...this.deps.workspaceServices.attemptExecutionRepository.listActive()
+            .map(item => item.taskId),
+        ]
+      : [];
+    const projector = new ConversationActivityProjector({
+      plannerTurns: [...this.activePlannerTurns.entries()].map(([id, turn]) => ({
+        conversationId: id,
+        updatedAt: turn.updatedAt,
+      })),
+      tasks: tasks.map(task => ({
+        id: task.id,
+        originConversationId: this.originConversationId(task.id),
+        status: task.status,
+        dependencies: task.dependencies,
+        updatedAt: task.updatedAt,
+      })),
+      activeAttemptTaskIds,
+    });
+    return projector.project(conversationId, fallbackUpdatedAt);
+  }
+
+  refreshConversationActivity(conversationId: string): Promise<void> {
+    return this.publishConversationActivity(conversationId);
   }
 
   getConfigurationActivationStatus(): ConfigurationActivationStatusSnapshot {
@@ -301,5 +358,18 @@ export class AccountRuntime implements AccountRuntimeHandle {
           }
         : null,
     };
+  }
+
+  private originConversationId(taskId: string): string | null {
+    const decisions = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId);
+    return decisions.find(decision => decision.sessionId)?.sessionId ?? null;
+  }
+
+  private async publishConversationActivity(conversationId: string): Promise<void> {
+    if (!this.deps.onConversationActivityChanged) return;
+    await this.deps.onConversationActivityChanged(
+      conversationId,
+      this.getConversationActivity(conversationId, new Date().toISOString()),
+    );
   }
 }

@@ -12,6 +12,7 @@ import {
   WorkspaceConversationProjector,
   type WorkspaceConversationSummary,
 } from './workspace-conversation-projector.js';
+import type { ConversationActivityProjection } from './conversation-activity-projector.js';
 
 export interface WorkspaceSelectionResult {
   readonly workspace: WorkspaceRecord;
@@ -41,6 +42,10 @@ export interface WorkspaceDirectoryServiceDeps {
   readonly createConversationId?: () => string;
   readonly now?: () => string;
   readonly projector?: WorkspaceConversationProjector;
+  readonly getConversationActivity?: (
+    conversationId: string,
+    fallbackUpdatedAt: string,
+  ) => ConversationActivityProjection;
 }
 
 export class WorkspaceDirectoryService {
@@ -48,7 +53,11 @@ export class WorkspaceDirectoryService {
   private readonly projector: WorkspaceConversationProjector;
 
   constructor(private readonly deps: WorkspaceDirectoryServiceDeps) {
-    this.projector = deps.projector ?? new WorkspaceConversationProjector();
+    this.projector = deps.projector ?? new WorkspaceConversationProjector(
+      deps.getConversationActivity
+        ? { project: deps.getConversationActivity }
+        : undefined,
+    );
   }
 
   async selectByPath(path: string, principalId: string): Promise<WorkspaceSelectionResult> {

@@ -47,6 +47,7 @@ import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
 import { createSqliteAccountPermissionService } from './sqlite-account-permission-service.js';
 import { AccountStartupRecoveryService } from './account-startup-recovery-service.js';
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
+import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -92,6 +93,10 @@ export function buildAccountRuntimeComposition(deps: {
   blockedRecheckIntervalMs?: number;
   buildKernelCoordinator?(accountId: string): AccountKernelCoordinator;
   recoverDurableStartup?(accountId: string): Promise<void>;
+  onConversationActivityChanged?(
+    conversationId: string,
+    activity: ConversationActivityProjection,
+  ): Promise<void> | void;
   configurationActivationGate?: ConfigurationActivationGate;
 }): AccountRuntimeComposition {
   const kernelServices = buildAccountKernelServices(deps.db);
@@ -287,6 +292,9 @@ export function buildAccountRuntimeComposition(deps: {
       ? () => deps.recoverDurableStartup!(deps.accountId)
       : () => startupRecovery.recover(),
     reviewTaskPoolOnTimer: (_accountId, nowMs) => startupRecovery.recoverPeriodic(nowMs),
+    onConversationActivityChanged: (_accountId, conversationId, activity) => (
+      deps.onConversationActivityChanged?.(conversationId, activity)
+    ),
     dispose: async () => {
       await kernelExecutionServices.kernelExecutionRuntime.dispose();
       if (deps.db.open) deps.db.close();
