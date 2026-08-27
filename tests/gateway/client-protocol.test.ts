@@ -45,6 +45,45 @@ describe('gateway client command protocol', () => {
     expect(parseGatewayCommandEnvelope(fresh)).toEqual(fresh);
   });
 
+  it('accepts the reduced-authority marker for automatic Workspace initialization', () => {
+    const input = {
+      ...validEnvelope(),
+      command: {
+        kind: 'slash_command',
+        text: '/workspace /repo-a',
+        workspaceMutation: 'initialize_if_unset',
+      },
+    };
+
+    expect(parseGatewayCommandEnvelope(input)).toEqual(input);
+  });
+
+  it('rejects invalid or misplaced Workspace initialization markers', () => {
+    for (const command of [
+      {
+        kind: 'slash_command',
+        text: '/workspace /repo-a',
+        workspaceMutation: 'replace',
+      },
+      {
+        kind: 'slash_command',
+        text: '/status',
+        workspaceMutation: 'initialize_if_unset',
+      },
+      {
+        kind: 'user_message',
+        text: 'hello',
+        attachments: [],
+        workspaceMutation: 'initialize_if_unset',
+      },
+    ]) {
+      expect(parseGatewayCommandEnvelope({
+        ...validEnvelope(),
+        command,
+      })).toBeNull();
+    }
+  });
+
   it('rejects client payloads that set a trusted accountId', () => {
     const input = {
       protocolVersion: 1,
@@ -78,12 +117,23 @@ describe('gateway client command protocol', () => {
       { workspace: { path: '/repo-a', selectedAt: 'now', selectedByPrincipal: 'local:user' } },
       { workspacePath: '/repo-a' },
       { workspaceHint: '/repo-a' },
+      { selectedAt: '2026-08-27T00:00:00.000Z' },
+      { selectedByPrincipal: 'local:forged' },
     ]) {
       expect(parseGatewayCommandEnvelope({
         ...validEnvelope(),
         ...trustedField,
       })).toBeNull();
     }
+    expect(parseGatewayCommandEnvelope({
+      ...validEnvelope(),
+      command: {
+        kind: 'slash_command',
+        text: '/workspace /repo-a',
+        workspaceMutation: 'initialize_if_unset',
+        selectedAt: '2026-08-27T00:00:00.000Z',
+      },
+    })).toBeNull();
   });
 
   it('rejects unknown protocol versions', () => {

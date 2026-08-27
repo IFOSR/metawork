@@ -27,6 +27,11 @@ function fixture(options: {
 			status: "accepted" as const,
 			conversationId: "conv_native",
 		})),
+		initializeWorkspace: vi.fn(async () => ({
+			requestId: "req_workspace",
+			status: "accepted" as const,
+			conversationId: "conv_native",
+		})),
 		submitPermissionResolution: vi.fn(async () => ({
 			requestId: "req_3",
 			status: "accepted" as const,
@@ -58,10 +63,11 @@ describe("AnyFusionClientModeController", () => {
 		await controller.start();
 
 		expect(gateway.createConversation).toHaveBeenCalledOnce();
-		expect(gateway.submitSlashCommand).toHaveBeenCalledWith(
+		expect(gateway.initializeWorkspace).toHaveBeenCalledWith(
 			"/workspace /repo-a",
 			{ mode: "attach", conversationId: "conv_new" },
 		);
+		expect(gateway.submitSlashCommand).not.toHaveBeenCalled();
 		expect(gateway.resume).not.toHaveBeenCalled();
 	});
 
@@ -74,7 +80,7 @@ describe("AnyFusionClientModeController", () => {
 		await controller.start();
 
 		expect(gateway.resume).toHaveBeenCalledWith("conv_existing");
-		expect(gateway.submitSlashCommand).not.toHaveBeenCalled();
+		expect(gateway.initializeWorkspace).not.toHaveBeenCalled();
 	});
 
 	it("keeps the Client connected and prompts for a manual Workspace when defaulting is rejected", async () => {
@@ -82,7 +88,7 @@ describe("AnyFusionClientModeController", () => {
 			conversationId: undefined,
 			workspaceHint: "/repo-a",
 		});
-		gateway.submitSlashCommand.mockResolvedValueOnce({
+		gateway.initializeWorkspace.mockResolvedValueOnce({
 			requestId: "req_workspace",
 			status: "rejected",
 			conversationId: "conv_new",

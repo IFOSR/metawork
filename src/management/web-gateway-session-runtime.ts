@@ -79,7 +79,7 @@ export class WebGatewaySessionRuntime {
   private readonly pendingAttaches = new Set<Promise<void>>();
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
-  private startupCreatedSession = false;
+  private startupCreatedSessionId: string | null = null;
 
   constructor(private readonly deps: WebGatewaySessionRuntimeDeps) {}
 
@@ -94,22 +94,30 @@ export class WebGatewaySessionRuntime {
     await this.deps.catalog.initialize();
     const sessions = await this.deps.catalog.list();
     const active = sessions.find(session => session.active && !session.archived);
-    this.startupCreatedSession = !active;
     const record = active
       ? await this.deps.catalog.read(active.id)
       : await this.deps.catalog.create({ active: true });
     if (!record) throw new Error('Active Web conversation is unavailable');
+    this.startupCreatedSessionId = active ? null : record.session.id;
     if (!record.session.active) await this.deps.catalog.setActive(record.session.id);
     await this.attach(record.session.id);
   }
 
   async initializeClient(context: WebLaunchContextInput): Promise<WorkspaceInitializationResult> {
-    if (context.conversationId || !this.startupCreatedSession) {
+    if (context.conversationId) {
+      this.startupCreatedSessionId = null;
       return { status: 'not_requested' };
     }
-    this.startupCreatedSession = false;
-    if (this.workspaces.get(this.activeSessionId)) return { status: 'not_requested' };
-    return this.initializeWorkspace(this.activeSessionId, context.workspaceHint);
+    const startupCreatedSessionId = this.startupCreatedSessionId;
+    this.startupCreatedSessionId = null;
+    if (
+      !startupCreatedSessionId
+      || this.activeSessionId !== startupCreatedSessionId
+      || this.workspaces.get(startupCreatedSessionId)
+    ) {
+      return { status: 'not_requested' };
+    }
+    return this.initializeWorkspace(startupCreatedSessionId, context.workspaceHint);
   }
 
   dispose(): Promise<void> {
@@ -121,6 +129,7 @@ export class WebGatewaySessionRuntime {
     this.detachClient?.();
     this.detachClient = null;
     this._activeSessionId = null;
+    this.startupCreatedSessionId = null;
     this.replayEvents = [];
     this.pendingInputs.clear();
     this.resultAssemblies.clear();
@@ -438,6 +447,7 @@ export class WebGatewaySessionRuntime {
         command: {
           kind: 'slash_command',
           text: `/workspace ${workspaceHint}`,
+          workspaceMutation: 'initialize_if_unset',
         },
         clientCapabilities: ['trace_v1'],
       });

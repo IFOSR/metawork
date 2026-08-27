@@ -12,8 +12,15 @@ const acceptanceFiles = [
   'tests/integration/unified-client-runtime.integration.test.ts',
   'tests/security/gateway-account-isolation.test.ts',
   'tests/gateway/server-lifecycle.test.ts',
+  'tests/gateway/feishu-gateway-session-port.test.ts',
   'tests/integration/independent-client-lifecycle.integration.test.ts',
+  'tests/client/tui-client-launcher.test.ts',
+  'tests/client/web-client-launcher.test.ts',
+  'tests/workspace/conversation-workspace-service.test.ts',
+  'tests/management/web-launch-context.test.ts',
   'tests/management/web-gateway-session-runtime.test.ts',
+  'tests/server/server-endpoint-manifest.test.ts',
+  'tests/web/workspace-shell.test.ts',
 ];
 
 try {

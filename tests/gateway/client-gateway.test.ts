@@ -110,6 +110,78 @@ describe('ClientGateway', () => {
     expect(submitted).toEqual(['conv_1']);
   });
 
+  it('waits for automatic Workspace initialization to complete before accepting it', async () => {
+    const completion = deferredCompletion();
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({
+        status: 'accepted',
+        completion: completion.promise,
+      }),
+    });
+
+    let settled = false;
+    const pending = gateway.handle(workspaceInitializationEnvelope(), 'local')
+      .then(result => {
+        settled = true;
+        return result;
+      });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    completion.resolve({ status: 'completed' });
+    await expect(pending).resolves.toMatchObject({
+      status: 'accepted',
+      conversationId: 'conv_1',
+    });
+  });
+
+  it('returns the structured Workspace rejection when automatic initialization fails', async () => {
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({
+        status: 'accepted',
+        completion: Promise.resolve({
+          status: 'failed',
+          reason: 'workspace_unauthorized',
+        }),
+      }),
+    });
+
+    await expect(gateway.handle(workspaceInitializationEnvelope(), 'local'))
+      .resolves.toMatchObject({
+        status: 'rejected',
+        conversationId: 'conv_1',
+        reason: 'workspace_unauthorized',
+      });
+  });
+
+  it('keeps ordinary semantic commands asynchronously accepted', async () => {
+    const completion = deferredCompletion();
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({
+        status: 'accepted',
+        completion: completion.promise,
+      }),
+    });
+
+    await expect(gateway.handle(envelope, 'local')).resolves.toMatchObject({
+      status: 'accepted',
+      conversationId: 'conv_1',
+    });
+    completion.resolve({ status: 'completed' });
+  });
+
   it('returns duplicate for a repeated idempotency key', async () => {
     let submits = 0;
     const gateway = new ClientGateway({
@@ -331,3 +403,30 @@ describe('ClientGateway', () => {
     await draining;
   });
 });
+
+function workspaceInitializationEnvelope(): GatewayCommandEnvelope {
+  return {
+    ...envelope,
+    requestId: 'req_workspace',
+    idempotencyKey: 'idem_workspace',
+    command: {
+      kind: 'slash_command',
+      text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
+    },
+  };
+}
+
+function deferredCompletion() {
+  let resolve!: (value: {
+    status: 'completed' | 'failed';
+    reason?: string;
+  }) => void;
+  const promise = new Promise<{
+    status: 'completed' | 'failed';
+    reason?: string;
+  }>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}

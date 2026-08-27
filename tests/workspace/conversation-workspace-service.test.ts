@@ -6,6 +6,7 @@ import { FileConversationStore } from '../../src/session/file-conversation-store
 import { CONVERSATION_FORMAT_VERSION, type ConversationRecord } from '../../src/session/conversation-store.js';
 import {
   ConversationWorkspaceService,
+  isAuthenticatedWorkspacePrincipalId,
   type WorkspaceAuthorization,
 } from '../../src/workspace/conversation-workspace-service.js';
 
@@ -145,5 +146,29 @@ describe('ConversationWorkspaceService', () => {
       status: 'rejected',
       code: 'workspace_command_invalid',
     });
+  });
+
+  it('accepts only authenticated Principal identifiers at the production Workspace seam', () => {
+    for (const principalId of [
+      'local:local-installation',
+      'web:local-web-user',
+      'feishu:tenant-1:user-1',
+      'app:device-1',
+    ]) {
+      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(true);
+    }
+    for (const principalId of [
+      '',
+      'unknown',
+      'system:root',
+      'local:',
+      'local:forged-installation',
+      'web:forged-user',
+      'feishu:tenant-only',
+      ':local-installation',
+      'web:local-web-user\nforged',
+    ]) {
+      expect(isAuthenticatedWorkspacePrincipalId(principalId)).toBe(false);
+    }
   });
 });

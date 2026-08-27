@@ -1,8 +1,9 @@
 # MetaWork Client 默认 Workspace 与可见性设计
 
-> Status: Approved / Ready for implementation
+> Status: Completed
 > Design date: 2026-08-27
 > Review completed: 2026-08-27
+> Completion date: 2026-08-27
 > Review owner: Product / Architecture
 > Governing decisions: ADR-0020, ADR-0031, ADR-0034
 > Required decision update: 修订 ADR-0034 的新 Conversation Workspace 初始化规则
@@ -87,6 +88,21 @@ Client startup cwd
 ```
 
 这次变更只自动触发现有 Workspace mutation，不创建第二套初始化或授权路径。
+
+自动初始化的 Gateway 命令携带一个只会降低权限的加法标记：
+
+```text
+kind: slash_command
+text: /workspace <client-startup-cwd>
+workspaceMutation: initialize_if_unset
+```
+
+该标记是不受信任的 Client 输入，但它只能把显式替换收窄为“Conversation 尚未
+设置 Workspace 时初始化”。Server 只允许它出现在 `/workspace` 命令上，拒绝
+未知值、其他命令和 Client 提交的 `selectedAt`、`selectedByPrincipal` 等权威
+metadata。自动初始化必须等待 Conversation mailbox 的 terminal completion；
+只有 canonicalization、授权、busy fencing 和持久化全部成功后，Client 才收到
+accepted 回执。普通语义命令继续保持异步 accepted 语义。
 
 ## 5. TUI 行为
 
@@ -336,11 +352,40 @@ Conversation 连续性并可能在错误仓库执行。
 
 ## 14. 交付记录
 
-> Implementation status: Not started
+> Implementation status: Completed
 >
-> Delivered behavior: 待实施完成后填写。
+> Delivered behavior: Server 保持 Workspace-neutral；新 TUI/Web Conversation
+> 通过带 `initialize_if_unset` 降权标记的统一 Gateway Workspace mutation 使用
+> Client 启动目录，且 ClientGateway 等待 mailbox terminal completion 后才确认
+> 成功；attach/follow Conversation 只恢复其持久 Workspace。TUI、Web 和飞书消费
+> Server-confirmed Workspace projection；同一 Conversation 上的 Client 共享变化，
+> 不同 Conversation 隔离。Web launch context 使用 mode-`0600` Unix 通道、短时
+> 一次性 token 和 browser-bound HttpOnly session，URL 与 endpoint manifest
+> 不包含 Workspace path；启动创建状态绑定具体 Conversation ID，不能漂移到历史
+> Conversation。生产 Workspace admission 拒绝 `unknown`、伪造或畸形 Principal。
+> Web 既有 Conversation、Trajectory、Execution、Artifact、Settings 和 Composer
+> 结构保持不变。
 >
-> Validation: 待实施完成后填写聚焦测试、全量测试和真实 TUI/Web/Feishu
-> acceptance 结果。
+> Validation: 审查关闭聚焦门通过（7 files, 82 tests）；vendored
+> Client/Gateway/TUI 回归门通过（5 files, 105 tests）；安装器门通过（2 files,
+> 18 tests）；Planner supervisor 通过（33 tests）；`npm run lint`、
+> `npm run build`、`npm run build:offline --prefix planner/AnyFusion-Pi`、
+> `npm run smoke:gateway`（14 files, 66 tests）和 `npm run smoke:clients`
+> （3 tests）通过。根仓库全量测试通过（349 files passed, 7 skipped;
+> 1643 tests passed, 18 skipped）。显式启用的 Browser E2E 通过（3/3），覆盖
+> Web 路由/身份/主题、Artifact/IME 和 Settings Workbench。真实临时 Unix
+> Gateway 集成链验证 first-default-wins、多 Client replay/广播、跨 Conversation
+> 隔离、manifest path privacy 和 Client 退出后 Server 存活。
 >
-> Closing commit: 待实施完成后填写。
+> Residual risks: 线上飞书机器人验收未执行；宿主机已有用户 Server/TUI 占用固定
+> `127.0.0.1:8788`，为避免中断现有会话，未并行执行第二套真实宿主机 TUI/Web
+> 启动验收。对应行为由真实 Unix Gateway lifecycle smoke、vendored TUI 测试和
+> 启用 Chrome 的 Browser E2E 覆盖。完整 vendored 上游套件另行执行时为
+> 156 files passed、1 skipped、6 failed（35 failed tests）；代表性失败在 `main`
+> 完全复现，失败文件与本分支无源码差异，主要由缺少 Anthropic API key 和上游
+> RPC 测试仍传入该 fork 已禁止的 `--provider/--model` 导致，另有两个既有
+> render/timing 回归。它们不属于 MetaWork Client/Gateway release gate，本次相关
+> 5-file vendored 门为 105/105 通过。
+>
+> Closing commit: `fix: enforce idempotent client workspace initialization`
+> （本次收尾提交）。

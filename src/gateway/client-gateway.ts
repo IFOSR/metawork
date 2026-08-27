@@ -248,6 +248,20 @@ export class ClientGateway {
         return this.persistTerminal(admission, receipt);
       }
 
+      if (isWorkspaceInitializationCommand(admission.command)) {
+        const completion = await submission.completion;
+        return this.persistTerminal(
+          admission,
+          completion.status === 'completed'
+            ? receipt
+            : {
+                ...receipt,
+                status: 'rejected',
+                reason: completion.reason ?? 'command_execution_failed',
+              },
+        );
+      }
+
       void submission.completion.then(
         result => {
           const terminal = result.status === 'completed'
@@ -305,6 +319,11 @@ export class ClientGateway {
   private now(): string {
     return this.deps.now?.() ?? new Date().toISOString();
   }
+}
+
+function isWorkspaceInitializationCommand(command: GatewayCommand): boolean {
+  return command.kind === 'slash_command'
+    && command.workspaceMutation === 'initialize_if_unset';
 }
 
 function requestIdFromUntrustedEnvelope(input: unknown): string | null {

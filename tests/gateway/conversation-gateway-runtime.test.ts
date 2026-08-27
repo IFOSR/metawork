@@ -471,6 +471,67 @@ describe('ConversationGatewayRuntime', () => {
     detach();
   });
 
+  it('publishes one Workspace change when concurrent defaults target the same Conversation', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      if (
+        command.kind !== 'slash_command'
+        || command.workspaceMutation !== 'initialize_if_unset'
+      ) {
+        return undefined;
+      }
+      if (session.workspace) {
+        return { status: 'unchanged' as const, workspace: session.workspace };
+      }
+      session.workspace = {
+        path: command.text.slice('/workspace '.length),
+        selectedAt: '2026-08-27T09:00:00.000Z',
+        selectedByPrincipal: 'local:local-installation',
+      };
+      return { status: 'changed' as const, workspace: session.workspace };
+    });
+    const events = fixture.capture('conv_workspace_default');
+    const commandA: GatewayCommand = {
+      kind: 'slash_command',
+      text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
+    };
+    const commandB: GatewayCommand = {
+      kind: 'slash_command',
+      text: '/workspace /repo-b',
+      workspaceMutation: 'initialize_if_unset',
+    };
+
+    const [first, second] = await Promise.all([
+      fixture.runtime.submit(
+        'conv_workspace_default',
+        'req_workspace_a',
+        'idem_workspace_a',
+        commandA,
+        'local:local-installation',
+      ),
+      fixture.runtime.submit(
+        'conv_workspace_default',
+        'req_workspace_b',
+        'idem_workspace_b',
+        commandB,
+        'web:local-web-user',
+      ),
+    ]);
+    await Promise.all([first.completion, second.completion]);
+
+    const changes = events.filter(event => event.kind === 'workspace_changed');
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      payload: {
+        workspace: {
+          path: expect.stringMatching(/^\/repo-[ab]$/u),
+          selectedAt: '2026-08-27T09:00:00.000Z',
+          selectedByPrincipal: 'local:local-installation',
+        },
+      },
+    });
+  });
+
   it('invalidates a pending attach when admission closes without leaking counts', async () => {
     const activation = deferred<AccountRuntimeHandle>();
     const accountCalls: string[] = [];
@@ -538,7 +599,7 @@ function createFixture(
     conversationId: string,
     command: GatewayCommand,
     session: FakeConversationSession,
-  ) => Promise<void> | null = null,
+  ) => Promise<unknown> | null = null,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'anyfusion-conversation-gateway-'));
   roots.push(root);
@@ -618,7 +679,7 @@ class FakeConversationSession {
 
   constructor(
     readonly conversationId: string,
-    private readonly execute: (command: GatewayCommand) => Promise<void>,
+    private readonly execute: (command: GatewayCommand) => Promise<unknown>,
     private readonly turnIds: Array<string | null> = [],
   ) {
     this.mailbox = new ConversationInputMailbox({ execute: async () => undefined });
@@ -635,10 +696,10 @@ class FakeConversationSession {
   async executeGatewayCommand(
     command: GatewayCommand,
     options: { interactionTurnId?: string; images?: unknown } = {},
-  ): Promise<void> {
+  ): Promise<unknown> {
     this.lastExecuteOptions.push({ ...options });
     this.turnIds.push(options.interactionTurnId ?? null);
-    await this.execute(command);
+    return this.execute(command);
   }
 
   getOutput(): string[] {

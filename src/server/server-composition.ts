@@ -65,7 +65,10 @@ import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationRecord,
 } from '../session/conversation-store.js';
-import { ConversationWorkspaceService } from '../workspace/conversation-workspace-service.js';
+import {
+  ConversationWorkspaceService,
+  isAuthenticatedWorkspacePrincipalId,
+} from '../workspace/conversation-workspace-service.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -783,7 +786,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       store: conversationStore,
       conversationId,
       principalId: 'unknown',
-      authorize: async () => true,
+      authorize: async (_path, principalId) => (
+        isAuthenticatedWorkspacePrincipalId(principalId)
+      ),
       isBusy: () => {
         if (!conversation) return false;
         const switching = conversation.getSwitchingState();

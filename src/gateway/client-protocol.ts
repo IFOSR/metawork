@@ -26,7 +26,11 @@ export interface GatewayAttachmentRef {
 
 export type GatewayCommand =
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
-  | { readonly kind: 'slash_command'; readonly text: string }
+  | {
+      readonly kind: 'slash_command';
+      readonly text: string;
+      readonly workspaceMutation?: 'initialize_if_unset';
+    }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
   | { readonly kind: 'cancel_turn'; readonly turnId: string };
 
@@ -51,14 +55,16 @@ export function parseGatewayCommandEnvelope(input: unknown): GatewayCommandEnvel
   if (typeof input !== 'object' || input === null) return null;
   const candidate = input as Record<string, unknown>;
 
-  // 客户端绝不能携带受信身份或 Workspace authority 字段。
-  if (
-    'accountId' in candidate
-    || 'principal' in candidate
-    || 'workspace' in candidate
-    || 'workspacePath' in candidate
-    || 'workspaceHint' in candidate
-  ) return null;
+  if (!hasOnlyKeys(candidate, [
+    'protocolVersion',
+    'requestId',
+    'idempotencyKey',
+    'connectionId',
+    'conversation',
+    'command',
+    'resumeFromSequence',
+    'clientCapabilities',
+  ])) return null;
 
   if (candidate.protocolVersion !== GATEWAY_PROTOCOL_VERSION) return null;
   if (!isGatewayIdentifier(candidate.requestId)) return null;
@@ -105,15 +111,19 @@ function parseConversationSelection(input: unknown): ConversationSelection | nul
   const candidate = input as Record<string, unknown>;
 
   if (candidate.mode === 'new') {
+    if (!hasOnlyKeys(candidate, ['mode'])) return null;
     return { mode: 'new' };
   }
   if (candidate.mode === 'attach') {
+    if (!hasOnlyKeys(candidate, ['mode', 'conversationId'])) return null;
     if (!isGatewayIdentifier(candidate.conversationId)) return null;
     return { mode: 'attach', conversationId: candidate.conversationId };
   }
   if (candidate.mode === 'bound') {
+    if (!hasOnlyKeys(candidate, ['mode', 'binding'])) return null;
     if (typeof candidate.binding !== 'object' || candidate.binding === null) return null;
     const binding = candidate.binding as Record<string, unknown>;
+    if (!hasOnlyKeys(binding, ['platform', 'channelId', 'threadId'])) return null;
     if (!isGatewayIdentifier(binding.platform) || !isGatewayIdentifier(binding.channelId)) return null;
     if (binding.threadId !== undefined && !isGatewayIdentifier(binding.threadId)) return null;
     return {
@@ -133,6 +143,7 @@ function parseGatewayCommand(input: unknown): GatewayCommand | null {
   const candidate = input as Record<string, unknown>;
 
   if (candidate.kind === 'user_message') {
+    if (!hasOnlyKeys(candidate, ['kind', 'text', 'attachments'])) return null;
     if (!isGatewayCommandText(candidate.text)) return null;
     if (!Array.isArray(candidate.attachments)
       || candidate.attachments.length > MAX_GATEWAY_ATTACHMENTS
@@ -146,10 +157,26 @@ function parseGatewayCommand(input: unknown): GatewayCommand | null {
     };
   }
   if (candidate.kind === 'slash_command') {
+    if (!hasOnlyKeys(candidate, ['kind', 'text', 'workspaceMutation'])) return null;
     if (!isGatewayCommandText(candidate.text)) return null;
-    return { kind: 'slash_command', text: candidate.text };
+    if (candidate.workspaceMutation !== undefined) {
+      if (
+        candidate.workspaceMutation !== 'initialize_if_unset'
+        || !/^\/workspace(?:\s|$)/u.test(candidate.text)
+      ) {
+        return null;
+      }
+    }
+    return {
+      kind: 'slash_command',
+      text: candidate.text,
+      ...(candidate.workspaceMutation === 'initialize_if_unset'
+        ? { workspaceMutation: candidate.workspaceMutation }
+        : {}),
+    };
   }
   if (candidate.kind === 'permission_resolution') {
+    if (!hasOnlyKeys(candidate, ['kind', 'requestId', 'resolution'])) return null;
     if (!isGatewayIdentifier(candidate.requestId)) return null;
     if (candidate.resolution !== 'approve' && candidate.resolution !== 'deny') return null;
     return {
@@ -159,6 +186,7 @@ function parseGatewayCommand(input: unknown): GatewayCommand | null {
     };
   }
   if (candidate.kind === 'cancel_turn') {
+    if (!hasOnlyKeys(candidate, ['kind', 'turnId'])) return null;
     if (!isGatewayIdentifier(candidate.turnId)) return null;
     return { kind: 'cancel_turn', turnId: candidate.turnId };
   }
@@ -168,7 +196,8 @@ function parseGatewayCommand(input: unknown): GatewayCommand | null {
 function isValidAttachmentRef(input: unknown): boolean {
   if (typeof input !== 'object' || input === null) return false;
   const candidate = input as Record<string, unknown>;
-  return isGatewayIdentifier(candidate.attachmentId)
+  return hasOnlyKeys(candidate, ['attachmentId', 'kind'])
+    && isGatewayIdentifier(candidate.attachmentId)
     && isBoundedNonEmptyString(candidate.kind, MAX_GATEWAY_CAPABILITY_BYTES);
 }
 
@@ -184,4 +213,9 @@ function isBoundedNonEmptyString(value: unknown, maxBytes: number): value is str
   return typeof value === 'string'
     && value.length > 0
     && Buffer.byteLength(value, 'utf8') <= maxBytes;
+}
+
+function hasOnlyKeys(candidate: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(candidate).every(key => allowedKeys.has(key));
 }

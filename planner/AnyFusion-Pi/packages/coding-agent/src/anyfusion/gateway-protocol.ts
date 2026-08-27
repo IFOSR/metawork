@@ -30,7 +30,11 @@ export interface GatewayAttachmentRef {
 
 export type GatewayCommand =
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
-  | { readonly kind: 'slash_command'; readonly text: string }
+  | {
+      readonly kind: 'slash_command';
+      readonly text: string;
+      readonly workspaceMutation?: 'initialize_if_unset';
+    }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
   | { readonly kind: 'cancel_turn'; readonly turnId: string };
 

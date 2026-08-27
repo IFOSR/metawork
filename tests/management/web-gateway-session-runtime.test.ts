@@ -13,7 +13,11 @@ import type { ExecutionTimeline } from '../../src/management/execution-projector
 
 describe('WebGatewaySessionRuntime', () => {
   it('initializes only the startup-created empty Conversation from the Web launch hint', async () => {
-    const submitted: Array<{ conversationId: string; text: string }> = [];
+    const submitted: Array<{
+      conversationId: string;
+      text: string;
+      workspaceMutation?: string;
+    }> = [];
     const created = sessionRecord('conv_new', true);
     const catalog: WebSessionRuntimeCatalog = {
       initialize: async () => undefined,
@@ -38,6 +42,9 @@ describe('WebGatewaySessionRuntime', () => {
             ? envelope.conversation.conversationId
             : '',
           text: envelope.command.text,
+          workspaceMutation: envelope.command.kind === 'slash_command'
+            ? envelope.command.workspaceMutation
+            : undefined,
         });
         return {
           requestId: envelope.requestId,
@@ -59,6 +66,7 @@ describe('WebGatewaySessionRuntime', () => {
     expect(submitted).toEqual([{
       conversationId: 'conv_new',
       text: '/workspace /repo-a',
+      workspaceMutation: 'initialize_if_unset',
     }]);
   });
 
@@ -96,6 +104,56 @@ describe('WebGatewaySessionRuntime', () => {
         },
       },
     });
+  });
+
+  it('does not let a startup-created Conversation marker migrate to a historical activation', async () => {
+    const created = sessionRecord('conv_startup', true);
+    const historical = sessionRecord('conv_history', false);
+    const records = new Map([
+      [created.session.id, created],
+      [historical.session.id, historical],
+    ]);
+    const submitted: unknown[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        initialize: async () => undefined,
+        create: async () => created,
+        list: async () => [],
+        search: async () => [],
+        read: async sessionId => records.get(sessionId) ?? null,
+        setActive: async sessionId => records.get(sessionId) ?? null,
+        appendTurn: async sessionId => records.get(sessionId) ?? null,
+        deleteSession: async () => false,
+        clearAll: async () => 0,
+      },
+      gateway: gatewayFixture({
+        replay: async (_accountId, conversationId) => ({
+          lastSequence: 1,
+          snapshot: [workspaceSnapshot(
+            conversationId,
+            null,
+            1,
+          )],
+          deltas: [],
+        }),
+        submit: async envelope => {
+          submitted.push(envelope);
+          throw new Error('historical Conversation must not receive the launch hint');
+        },
+      }),
+    });
+
+    await runtime.initialize();
+    await runtime.initializeClient({
+      workspaceHint: '/repo-launch-a',
+      conversationId: 'conv_history',
+    });
+    await runtime.activateSession('conv_history');
+    await runtime.initializeClient({ workspaceHint: '/repo-launch-b' });
+
+    expect(runtime.activeSessionId).toBe('conv_history');
+    expect(submitted).toEqual([]);
   });
 
   it('uses the current browser launch hint only when creating a new Conversation', async () => {

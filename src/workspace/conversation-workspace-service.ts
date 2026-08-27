@@ -137,3 +137,19 @@ export function conversationMetadataWorkspace(
 ): ConversationWorkspace | null {
   return metadata.workspace;
 }
+
+export function isAuthenticatedWorkspacePrincipalId(principalId: string): boolean {
+  const match = /^(local|web|feishu|app):(.+)$/u.exec(principalId);
+  if (!match) return false;
+  const kind = match[1]!;
+  const externalId = match[2]!;
+  if (externalId !== externalId.trim()) return false;
+  if (
+    Buffer.byteLength(externalId, 'utf8') > 256
+    || /[\u0000-\u001f\u007f]/u.test(externalId)
+  ) return false;
+  if (kind === 'local') return externalId === 'local-installation';
+  if (kind === 'web') return externalId === 'local-web-user';
+  if (kind === 'feishu') return /^[^:]+:[^:]+$/u.test(externalId);
+  return true;
+}

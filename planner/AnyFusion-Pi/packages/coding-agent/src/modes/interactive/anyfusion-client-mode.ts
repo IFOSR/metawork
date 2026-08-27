@@ -33,6 +33,7 @@ interface GatewayClientPort {
 	createConversation?(): Promise<string>;
 	submitUserInput(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitSlashCommand(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
+	initializeWorkspace(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitPermissionResolution(
 		requestId: string,
 		resolution: "approve" | "deny",
@@ -105,7 +106,7 @@ export class AnyFusionClientModeController {
 			this.selection = { mode: "attach", conversationId: this.conversationId };
 			const workspaceHint = this.deps.workspaceHint?.trim();
 			if (workspaceHint) {
-				const receipt = await this.deps.gateway.submitSlashCommand(
+				const receipt = await this.deps.gateway.initializeWorkspace(
 					`/workspace ${workspaceHint}`,
 					this.selection,
 				);
