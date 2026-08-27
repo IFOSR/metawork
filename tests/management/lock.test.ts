@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   isInstanceRunning,
+  removeInstanceLockOnExit,
   stopInstanceForRestart,
 } from '../../src/management/lock.js';
 
@@ -17,6 +18,18 @@ describe('isInstanceRunning', () => {
     );
 
     await expect(isInstanceRunning(lockPath)).resolves.toBe(true);
+  });
+});
+
+describe('removeInstanceLockOnExit', () => {
+  it('is idempotent after normal shutdown already released the lock', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-27T00:00:00.000Z"}\n');
+
+    removeInstanceLockOnExit(lockPath);
+
+    expect(() => removeInstanceLockOnExit(lockPath)).not.toThrow();
   });
 });
 

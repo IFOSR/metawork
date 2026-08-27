@@ -1,7 +1,7 @@
 // Server application entrypoint. Client launchers live in src/client and never
 // construct the Runtime composition below.
 import { dirname, join, resolve } from 'path';
-import { mkdirSync, existsSync, unlinkSync } from 'fs';
+import { mkdirSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 import { createDatabase } from '../storage/database.js';
@@ -94,6 +94,7 @@ import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js'
 import {
   acquireInstanceLock,
   isInstanceRunning,
+  removeInstanceLockOnExit,
   stopInstanceForRestart,
   type InstanceLock,
 } from '../management/lock.js';
@@ -359,7 +360,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     instanceLockPath = resolve(dataDir, 'runtime.lock');
     instanceLock = await acquireInstanceLock(instanceLockPath);
     process.once('exit', () => {
-      if (instanceLockPath) unlinkSync(instanceLockPath);
+      if (instanceLockPath) removeInstanceLockOnExit(instanceLockPath);
     });
   }
 

@@ -1,4 +1,5 @@
 import { open, readFile, unlink } from 'node:fs/promises';
+import { unlinkSync } from 'node:fs';
 
 export interface InstanceLock {
   release(): Promise<void>;
@@ -103,6 +104,14 @@ export async function stopInstanceForRestart(
   }
 
   throw new Error(`MetaWork 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
+}
+
+export function removeInstanceLockOnExit(lockPath: string): void {
+  try {
+    unlinkSync(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 
 async function tryAcquire(lockPath: string, content: string): Promise<boolean> {
