@@ -143,7 +143,7 @@ e2e('Settings workbench browser flow', () => {
 
         await cdp.evaluate(`(() => {
           const card = [...document.querySelectorAll('.agent-route-card')]
-            .find(item => item.textContent.includes('Pi Agent'));
+            .find(item => item.textContent.includes('Pi Research'));
           const selects = card.querySelectorAll('select');
           const select = selects[selects.length - 1];
           select.value = 'code-gpt-56';
@@ -211,7 +211,7 @@ e2e('Settings workbench browser flow', () => {
           mode: 'fixed',
           modelRef: 'code-gpt-56',
         });
-        expect(activated.config?.agentClasses?.['pi-agent']?.modelPolicy).toEqual({
+        expect(activated.config?.agentClasses?.['pi-research']?.modelPolicy).toEqual({
           mode: 'fixed',
           modelRef: 'code-gpt-56',
         });
@@ -295,6 +295,52 @@ e2e('Settings workbench browser flow', () => {
           'https://api.kimi.com/coding/v1',
           'https://www.code-cli.cn/v1',
         ]);
+
+        await cdp.evaluate(`(() => {
+          const card = [...document.querySelectorAll('.provider-card')]
+            .find(item => item.querySelector('h4')?.textContent === 'DeepSeek');
+          const line = [...card.querySelectorAll('.provider-model-line')]
+            .find(item => item.querySelector('span')?.textContent === 'deepseek-chat');
+          line.querySelector('button').click();
+          for (const displayName of ['Code CLI', 'Pi Research']) {
+            const routeCard = [...document.querySelectorAll('.agent-route-card')]
+              .find(item => item.textContent.includes(displayName));
+            const mode = routeCard.querySelector('.route-policy-heading select');
+            mode.value = 'auto';
+            mode.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        })()`);
+        await waitForExpression(cdp, `
+          ['Code CLI', 'Pi Research'].every(displayName => {
+            const card = [...document.querySelectorAll('.agent-route-card')]
+              .find(item => item.textContent.includes(displayName));
+            return [...card.querySelectorAll('.model-option')].some(
+              option => option.textContent.includes('deepseek-chat')
+            );
+          })
+        `);
+        const deepseekEligibility = await cdp.evaluate(`(() => {
+          const eligibilityFor = displayName => {
+            const card = [...document.querySelectorAll('.agent-route-card')]
+              .find(item => item.textContent.includes(displayName));
+            const option = [...card.querySelectorAll('.model-option')]
+              .find(item => item.textContent.includes('deepseek-chat'));
+            return {
+              disabled: option.querySelector('input').disabled,
+              detail: option.textContent,
+            };
+          };
+          return {
+            codex: eligibilityFor('Code CLI'),
+            pi: eligibilityFor('Pi Research'),
+          };
+        })()`) as {
+          codex: { disabled: boolean; detail: string };
+          pi: { disabled: boolean; detail: string };
+        };
+        expect(deepseekEligibility.codex.disabled).toBe(true);
+        expect(deepseekEligibility.codex.detail).toContain('缺少 gpt-family');
+        expect(deepseekEligibility.pi.disabled).toBe(false);
       } finally {
         cdp.close();
       }
@@ -579,7 +625,7 @@ function configuration() {
           },
           ['workspace-read-write', 'workspace-command-validation'],
         ),
-        'pi-agent': agentClass(
+        'pi-research': agentClass(
           'executor',
           'pi-cli',
           ['current-web-research'],

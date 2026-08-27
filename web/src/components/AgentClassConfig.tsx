@@ -128,7 +128,6 @@ export function AgentClassConfig({
                   const checked = draft.allowedModelRefs.includes(model.ref);
                   const compatibility = modelCompatibility.get(model.ref)!;
                   const canSelect = facts.kind === 'planner'
-                    || facts.agentClassRef === 'pi-agent'
                     || compatibility.eligible;
                   return (
                     <label
@@ -216,7 +215,6 @@ export function AgentClassConfig({
               {enabledModels.map(model => {
                 const compatibility = modelCompatibility.get(model.ref)!;
                 const canSelect = facts.kind === 'planner'
-                  || facts.agentClassRef === 'pi-agent'
                   || compatibility.eligible;
                 return (
                   <option

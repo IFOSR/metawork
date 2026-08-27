@@ -203,14 +203,14 @@ export function evaluateModelCompatibility(
     required.add('gpt-family');
   } else if (
     facts.kind === 'executor'
-    && facts.agentClassRef !== 'pi-agent'
+    && facts.harnessRef !== 'pi-cli'
     && facts.routingCapabilities.includes('workspace-engineering')
   ) {
     required.add('coding');
     required.add('tools');
   } else if (
     facts.kind === 'executor'
-    && facts.agentClassRef !== 'pi-agent'
+    && facts.harnessRef !== 'pi-cli'
     && facts.routingCapabilities.includes('current-web-research')
   ) {
     required.add('tools');

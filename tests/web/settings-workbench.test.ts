@@ -131,10 +131,40 @@ describe('Settings workbench model semantics', () => {
       capabilities: [],
     }, {
       ...codexFacts,
-      agentClassRef: 'pi-agent',
+      agentClassRef: 'pi-research',
       harnessRef: 'pi-cli',
       routingCapabilities: ['current-web-research'],
     }).eligible).toBe(true);
+  });
+
+  it('allows Provider candidates without confirmed capabilities for the Pi harness', () => {
+    const piFacts: AgentClassRoutingFacts = {
+      agentClassRef: 'pi-research',
+      displayName: 'Pi Research',
+      kind: 'executor',
+      harnessRef: 'pi-cli',
+      harnessLabel: 'Pi CLI',
+      transport: 'local-cli',
+      driverId: 'pi-cli',
+      primaryUseCases: ['current public-web research'],
+      avoidUseCases: [],
+      routingCapabilities: ['current-web-research'],
+      capabilityContracts: [],
+      affordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
+    };
+
+    expect(evaluateModelCompatibility({
+      ref: 'deepseek-chat',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-chat',
+      capabilities: [],
+      capabilityState: '需要确认',
+      enabled: true,
+    }, piFacts)).toEqual({
+      eligible: true,
+      requiredCapabilities: [],
+      missingCapabilities: [],
+    });
   });
 
   it('does not carry model A metadata into model B after a Provider catalog switch', () => {
