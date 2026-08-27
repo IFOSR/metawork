@@ -461,15 +461,22 @@ type WorkspaceGatewayCommand =
   | { kind: 'list_workspace_conversations'; workspaceId: string; cursor?: string; query?: string }
   | { kind: 'create_conversation'; workspaceId: string }
   | { kind: 'archive_conversation'; conversationId: string };
+
+type ConversationGatewayCommand =
+  | { kind: 'attach_conversation'; conversationId: string }
+  | { kind: 'get_conversation_history'; conversationId: string; cursor?: string; limit?: number };
 ```
 
 Conversation `new` selection 必须携带 Server-authorized workspaceId；attach 时验证
-Conversation 属于目标 Workspace。
+Conversation 属于目标 Workspace。`get_conversation_history` 只允许对已授权 attach
+的 Conversation 执行，Server 负责 limit 裁剪并返回 opaque previous/next cursor。
 
 测试拒绝：
 
 - workspace command 带 conversation-only fields；
 - conversation command 缺 workspace binding；
+- history command 访问未 attach、cross-account 或 cross-workspace Conversation；
+- history limit 超界后绕过 Server 裁剪，或 Client 自行合成 cursor；
 - Client 注入 accountId、Principal、canonical path metadata 或 activity；
 - v1 envelope；
 - root/mirror 协议不一致。
@@ -492,6 +499,8 @@ workspace_availability_changed
 - payload 有界、脱敏；
 - Workspace subscriber 不收到 final answer/result chunks/trace；
 - Conversation attach subscriber 继续收到现有详细事件；
+- Conversation history page 只返回 bounded user-visible turns，不返回 hidden
+  reasoning、credential、raw protocol payload 或其他 Conversation 内容；
 - stale cursor 回退到 Workspace directory snapshot；
 - duplicate delta 被 eventId 去重。
 
@@ -520,6 +529,8 @@ Expected: FAIL。
 - `select_workspace` 完成后把选择保存在 authenticated ClientConnection；
 - Feishu binding 由后续任务持久化选择；
 - Conversation command 使用当前/显式 workspaceId resolve；
+- history command 从 Conversation replay projection 读取，不经过 Client adapter 或
+  Workspace Directory persistence；
 - directory subscribe 和 Conversation attach 使用独立 subscription filter；
 - Workspace command admission 仍使用 requestId/idempotencyKey 和 durable admission。
 
@@ -811,6 +822,8 @@ git commit -m "feat(web): organize conversations by workspace"
 
 - cwd hint 选择 Workspace，不自动创建 Conversation；
 - TUI 收到 directory snapshot 后显示 recent/running；
+- selector row 展示 title、activity、current task 摘要和最近更新时间；
+- `↑`/`↓` 改变选择，`/` 搜索当前 Workspace，`r` 刷新目录；
 - `n` 创建 Conversation；
 - Enter attach selected Conversation；
 - `/conversations` 打开 selector；
@@ -818,6 +831,7 @@ git commit -m "feat(web): organize conversations by workspace"
 - `/workspace <path>` 切换 Workspace，不移动当前历史；
 - `--conversation <id>` 直接 attach 并恢复它的 Workspace；
 - workspace delta 更新列表但不写聊天 transcript；
+- selector 操作和 Workspace 切换不写 Planner transcript；
 - attached Conversation detailed event rendering 不回归。
 
 **Step 2: 运行测试确认 RED**
@@ -848,7 +862,9 @@ conversationTranscript
 ```
 
 Workspace directory 状态不得写进 Planner transcript。Selector 使用 current
-AnyFusion-Pi interactive component patterns，不恢复 Ink standby UI。
+AnyFusion-Pi interactive component patterns，不恢复 Ink standby UI。普通入口
+`cd <workspace-path> && metawork` 使用 cwd 作为 Workspace selection hint；
+`metawork tui --conversation <id>` 则以 Conversation binding 为准。
 
 **Step 4: 运行测试确认 GREEN**
 
@@ -892,12 +908,17 @@ conversationId | null
 测试证明：
 
 - `/workspace path` 选择 Workspace 并返回目录；
-- `/conversations` 返回有界 recent/running list；
+- `/conversations` 返回有界 recent/running list 和 Server cursor；
 - `/conversation id` 验证 Account + Workspace 后 attach；
+- attach 成功响应包含 title、activity、current task 和最近 3 turns；
+- `/history` 返回当前 Conversation 最近一页历史；
+- `/history <limit>` 使用有界页大小，上一页/下一页卡片动作转发 Server cursor；
+- history pagination 只读取 attached Conversation replay projection；
 - 无 active Conversation 的普通消息在 selected Workspace 创建；
 - 无 Workspace 返回 `workspace_required`；
 - Workspace delta 更新卡片摘要；
 - 未 attach 不发送其他 Conversation 的完整 answer/trace；
+- attach 后只发送当前 Conversation 的 replay、progress 和 result；
 - 猜测 ID、cross-account 和 cross-workspace attach fail closed；
 - restart 后恢复 binding。
 
@@ -917,9 +938,11 @@ Expected: FAIL。
 
 **Step 3: 实现 adapter**
 
-Feishu adapter 只把文本命令/卡片动作归一化成 Gateway v2 command。Workspace 和
+Feishu adapter 只把 `/workspace`、`/conversations`、`/conversation`、
+`/history [limit]` 和卡片 cursor 动作归一化成 Gateway v2 command。Workspace 和
 Conversation binding 由 Server repository 持久化；adapter 不访问 Workspace
-Catalog 或 ConversationStore。
+Catalog 或 ConversationStore，不缓存完整目录或 transcript。attach 摘要和历史页
+都由 Gateway 的 bounded projection 生成。
 
 **Step 4: 运行测试确认 GREEN**
 
@@ -1040,8 +1063,11 @@ Smoke 必须：
 7. B 未 attach 时不收到详细 result；
 8. B attach 后收到 replay 和 live completion；
 9. TUI client C 从 Workspace B path 启动且目录隔离；
-10. Server restart 后目录、binding、activity 和 history 恢复；
-11. 显式 `server stop` 完成 drain。
+10. TUI selector 的搜索、刷新、新建和 attach 不污染 Planner transcript；
+11. 飞书进入 Workspace A 后看到同一目录，attach 卡片包含规定摘要；
+12. 飞书 `/history` 与 cursor 分页只返回 attached Conversation 的有界历史；
+13. Server restart 后目录、binding、activity 和 history 恢复；
+14. 显式 `server stop` 完成 drain。
 
 **Step 2: 运行 focused validation**
 

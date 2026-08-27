@@ -316,6 +316,28 @@ workspace_availability_changed
 - preview 和目录状态必须有独立大小上限；
 - 历史完整内容仍从具体 Conversation replay/read 获取。
 
+### 6.4 Conversation 历史分页
+
+Gateway 提供 Conversation-scoped、只读、有界的 history page：
+
+```text
+ConversationHistoryPage:
+  conversationId
+  turns: bounded user-visible turns
+  previousCursor: string | null
+  nextCursor: string | null
+```
+
+规则：
+
+- 调用方必须已通过 Account、Workspace 和 Conversation attach authorization；
+- `limit` 由 Client 提示，Server 负责默认值、最大值和最终裁剪；
+- cursor 是 opaque Server cursor，Client 和 adapter 不解析、不合成；
+- history page 只包含允许回放的用户可见 Turn，不包含 hidden reasoning、credential、
+  raw protocol payload 或其他 Conversation 的内容；
+- attach 初始摘要的最近 3 turns 与 `/history` 使用同一 replay projection；
+- history pagination 不创建 Turn、不改变 activity，也不写 Planner transcript。
+
 ## 7. Client 行为
 
 ### 7.1 Web
@@ -348,17 +370,23 @@ Settings
 
 普通 `metawork`/`metawork tui` 启动后进入 Workspace 范围：
 
+- 用户可通过 `cd <workspace-path> && metawork` 从启动 cwd 选择/创建 Workspace；
 - Header 展示 Workspace displayName 和可访问的完整 path；
 - 启动时显示有界的 recent/running Conversation selector；
-- 用户可以 attach、创建新 Conversation、搜索或刷新；
+- selector 至少展示 title、activity state、current task 摘要和最近更新时间；
+- `↑`/`↓` 选择 Conversation，`Enter` attach，`n` 在当前 Workspace 新建
+  Conversation，`/` 搜索当前 Workspace，`r` 刷新目录；
 - `/conversations` 打开当前 Workspace 的 Conversation selector；
 - `/conversation <id>` 显式 attach 已授权 Conversation；
 - `/workspace <path>` 选择其他 Workspace 并刷新目录；
 - `--conversation <id>` 继续直接 attach，不先显示 selector；
+- `metawork tui --conversation <id>` 必须恢复该 Conversation 的 Workspace，
+  不应用启动 cwd；
 - attach 后的 Planner TUI 对话、工具限制和 Gateway-only Runtime 规则不变。
 
 TUI selector 是 Client presentation，不得读取文件存储、Task repository 或
-ConversationStore。
+ConversationStore，也不得把 Workspace directory、selector 操作或 Workspace
+切换记录写入 Planner transcript。
 
 ### 7.3 飞书
 
@@ -366,15 +394,24 @@ ConversationStore。
 
 - `/workspace <path>` 为当前 chat/thread binding 选择 Workspace；
 - 选择成功后返回当前 Workspace、最近 Conversation 和运行状态；
-- `/conversations` 查看当前 Workspace 的有界目录；
+- `/conversations` 查看当前 Workspace 的有界、可分页目录，卡片分页继续使用
+  Server cursor，不在 adapter 内缓存完整目录；
 - `/conversation <id>` attach 当前 Workspace 下的已授权 Conversation；
+- attach 成功卡片至少返回 title、activity state、current task 和最近 3 个
+  Conversation turns，避免在聊天中自动展开完整 transcript；
+- `/history` 返回当前 Conversation 最近一页历史，`/history <limit>` 设置本次
+  有界页大小，卡片“上一页/下一页”动作使用 Server cursor 分页；
 - 普通消息在没有 active Conversation 时，于当前 Workspace 创建新 Conversation；
 - 没有 Workspace selection 时返回 `workspace_required` 和明确命令；
 - 飞书卡片只展示摘要，进入/继续具体 Conversation 后才接收其详细进度；
+- attach 后只订阅该 Conversation 的 detailed replay 和 live events，不订阅同一
+  Workspace 下其他 Conversation 的完整历史、trace 或 result chunks；
 - 不允许仅凭猜测的 Conversation ID 跨 Account 或跨未授权 Workspace attach。
 
 平台 chat/thread 到 Workspace/Conversation 的选择由 Server binding repository
-持久化，Feishu adapter 不自行保存权威状态。
+持久化，Feishu adapter 不自行保存权威状态。历史页由 Gateway 从
+Conversation-scoped replay projection 读取；飞书 adapter 只负责卡片呈现和 cursor
+动作转发。
 
 ### 7.4 多 Client 一致性
 
@@ -576,7 +613,11 @@ workspace_busy
 13. Workspace path 不出现在 URL、endpoint manifest 或未授权事件中。
 14. Server 重启后 Workspace Catalog、Client attach 和 Conversation activity
     projection 可恢复。
-15. 完整测试、native multi-client smoke 和真实浏览器验收通过。
+15. TUI selector 支持键盘选择、新建、当前 Workspace 搜索和直接 attach，且目录
+    状态不污染 Planner transcript。
+16. 飞书 attach 摘要包含 title、activity、current task 和最近 3 turns；
+    `/history [limit]` 与卡片 cursor 可以有界翻页且不泄露其他 Conversation。
+17. 完整测试、native multi-client smoke 和真实浏览器验收通过。
 
 ## 14. 文档与决策要求
 
@@ -591,4 +632,3 @@ workspace_busy
    `2026-08-27-client-default-workspace-design.md` 中
    “Workspace 的 Conversation 级可变所有权”部分，但保留安全 launch hint、
    Server-neutral 和 path-free Web bootstrap 规则。
-
