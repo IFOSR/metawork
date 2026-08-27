@@ -21,6 +21,8 @@ describe("independent client ownership boundary", () => {
       /RuntimeRegistry/u,
       /PlannerProcessSupervisor/u,
       /ControlKernel/u,
+      /FileWorkspaceCatalogStore/u,
+      /file-workspace-catalog-store/u,
       /better-sqlite3/u,
       /\.shutdown\(/u,
       /accountPaths\.(database|secrets)/u,
@@ -64,6 +66,7 @@ describe("independent client ownership boundary", () => {
     for (const file of roots.flatMap(root => root.endsWith(".ts") ? [root] : filesUnder(root))) {
       const source = readFileSync(file, "utf8");
       expect(source).not.toMatch(/from ["'][^"']*(storage|kernel|execution|account-runtime|conversation-session)[^"']*["']/u);
+      expect(source).not.toMatch(/from ["'][^"']*workspace-catalog-store[^"']*["']/u);
     }
   });
 });

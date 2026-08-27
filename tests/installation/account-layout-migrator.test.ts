@@ -84,6 +84,7 @@ describe('account layout migration', () => {
     expect((await lstat(accountPaths.database)).isSymbolicLink()).toBe(true);
     expect(await readlink(accountPaths.database)).toMatch(/^database-revisions\//u);
     expect(await readdir(accountPaths.plannerSessions)).toContain('session_1.jsonl');
+    expect((await lstat(accountPaths.workspaceCatalog)).isDirectory()).toBe(true);
     const manifest = JSON.parse(
       await readFile(join(accountPaths.root, 'account-layout-manifest.json'), 'utf8'),
     ) as { schemaVersion: number; entries: unknown[] };

@@ -203,6 +203,7 @@ export class AccountLayoutMigrator {
       accountPaths.plannerRuntime.replace(accountPaths.root, stageRoot),
       accountPaths.plannerSessions.replace(accountPaths.root, stageRoot),
       accountPaths.conversations.replace(accountPaths.root, stageRoot),
+      accountPaths.workspaceCatalog.replace(accountPaths.root, stageRoot),
       accountPaths.workspaceStore.replace(accountPaths.root, stageRoot),
       accountPaths.attempts.replace(accountPaths.root, stageRoot),
       accountPaths.gateway.replace(accountPaths.root, stageRoot),

@@ -2,6 +2,8 @@ import type { ConversationMetadata } from '../session/conversation-store.js';
 import type { ConversationActivityProjection } from './conversation-activity-projector.js';
 
 export type ConversationActivityState = 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
+const MAX_CONVERSATION_SUMMARY_TITLE_LENGTH = 160;
+const MAX_CONVERSATION_SUMMARY_PREVIEW_LENGTH = 240;
 
 export interface WorkspaceConversationSummary {
   readonly conversationId: string;
@@ -29,11 +31,11 @@ export class WorkspaceConversationProjector {
     return {
       conversationId: metadata.id,
       workspaceId: binding.workspaceId,
-      title: metadata.title,
+      title: metadata.title.slice(0, MAX_CONVERSATION_SUMMARY_TITLE_LENGTH),
       createdAt: metadata.createdAt,
       updatedAt: metadata.updatedAt,
       archived: metadata.archived,
-      preview: metadata.title.slice(0, 240),
+      preview: metadata.title.slice(0, MAX_CONVERSATION_SUMMARY_PREVIEW_LENGTH),
       activity: this.activity?.project(metadata.id, metadata.updatedAt) ?? {
         state: 'idle', taskId: null, updatedAt: metadata.updatedAt,
       },

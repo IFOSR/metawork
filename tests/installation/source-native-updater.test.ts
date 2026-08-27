@@ -33,6 +33,7 @@ afterEach(() => {
 describe('SourceNativeUpdater', () => {
   it('backs up and clones the database, then activates one complete candidate set', async () => {
     const fixture = await installedFixture();
+    seedWorkspaceConversationState(fixture.accountPaths);
     const previousDatabaseTarget = readlinkSync(fixture.accountPaths.database);
     const previousConfigurationTarget = readlinkSync(fixture.accountPaths.configActive);
     const previousGeneratedTarget = readlinkSync(fixture.accountPaths.generatedCurrent);
@@ -59,6 +60,7 @@ describe('SourceNativeUpdater', () => {
     expect(readlinkSync(fixture.accountPaths.configActive))
       .toBe(previousConfigurationTarget);
     expect(readlinkSync(fixture.accountPaths.generatedCurrent)).toBe(previousGeneratedTarget);
+    expectWorkspaceConversationState(fixture.accountPaths);
     expect(() => readlinkSync(fixture.paths.database)).toThrow();
     const journal = JSON.parse(readFileSync(result.journalPath, 'utf8')) as {
       phase: string;
@@ -197,6 +199,7 @@ describe('SourceNativeUpdater', () => {
 
   it('rolls back to the exact previously journaled compatible pointer set', async () => {
     const fixture = await installedFixture();
+    seedWorkspaceConversationState(fixture.accountPaths);
     const initialTargets = {
       database: readlinkSync(fixture.accountPaths.database),
       configuration: readlinkSync(fixture.accountPaths.configActive),
@@ -228,6 +231,7 @@ describe('SourceNativeUpdater', () => {
     expect(readlinkSync(fixture.accountPaths.generatedCurrent)).not.toBe(initialTargets.generated);
     expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
       .toBe('runtime-initial\n');
+    expectWorkspaceConversationState(fixture.accountPaths);
     const repository = new FileConfigurationRepository(fixture.accountPaths.config);
     const rollbackSnapshot = await repository.getActiveSnapshot();
     const originalSnapshot = await repository.readSnapshot(
@@ -353,4 +357,44 @@ function makeWritable(path: string): void {
   } catch {
     return;
   }
+}
+
+function seedWorkspaceConversationState(
+  accountPaths: ReturnType<typeof resolveAccountPaths>,
+): void {
+  mkdirSync(accountPaths.workspaceCatalog, { recursive: true });
+  writeFileSync(
+    join(accountPaths.workspaceCatalog, 'catalog.json'),
+    '{"version":1,"workspaces":[{"id":"workspace_repo"}]}\n',
+  );
+  const conversations = join(accountPaths.conversations, 'gateway');
+  mkdirSync(join(conversations, 'records'), { recursive: true });
+  writeFileSync(
+    join(conversations, 'catalog.json'),
+    '{"version":3,"conversations":[{"id":"conv_preserved"}]}\n',
+  );
+  writeFileSync(
+    join(conversations, 'records', 'conv_preserved.json'),
+    '{"version":3,"conversation":{"id":"conv_preserved"},"turns":[]}\n',
+  );
+}
+
+function expectWorkspaceConversationState(
+  accountPaths: ReturnType<typeof resolveAccountPaths>,
+): void {
+  expect(readFileSync(join(accountPaths.workspaceCatalog, 'catalog.json'), 'utf8'))
+    .toContain('workspace_repo');
+  expect(readFileSync(
+    join(accountPaths.conversations, 'gateway', 'catalog.json'),
+    'utf8',
+  )).toContain('conv_preserved');
+  expect(readFileSync(
+    join(
+      accountPaths.conversations,
+      'gateway',
+      'records',
+      'conv_preserved.json',
+    ),
+    'utf8',
+  )).toContain('"version":3');
 }

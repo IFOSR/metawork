@@ -49,6 +49,12 @@ interface LegacyRecord {
   readonly turns: ConversationTurn[];
 }
 
+interface PreparedMigrationJournal {
+  readonly version: 1;
+  readonly state: 'prepared';
+  readonly stageRoot: string;
+}
+
 export class WorkspaceConversationMigrator {
   private readonly conversationsRoot: string;
   private readonly workspaceCatalogRoot: string;
@@ -59,6 +65,7 @@ export class WorkspaceConversationMigrator {
   }
 
   async migrate(): Promise<void> {
+    await this.recoverPreparedMigration();
     const catalogPath = join(this.conversationsRoot, 'catalog.json');
     let raw: string;
     try {
@@ -177,6 +184,65 @@ export class WorkspaceConversationMigrator {
     await rm(stageRoot, { recursive: true, force: true });
     await unlink(journalPath).catch(() => undefined);
   }
+
+  private async recoverPreparedMigration(): Promise<void> {
+    const journalPath = join(this.workspaceCatalogRoot, 'migration.json');
+    let journal: PreparedMigrationJournal;
+    try {
+      journal = JSON.parse(await readFile(journalPath, 'utf8')) as PreparedMigrationJournal;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    const stageRoot = resolve(journal.stageRoot);
+    if (
+      journal.version !== 1
+      || journal.state !== 'prepared'
+      || !stageRoot.startsWith(`${this.workspaceCatalogRoot}/.migration-`)
+    ) {
+      throw new Error('Invalid Workspace migration journal');
+    }
+
+    const stagedWorkspaceCatalog = join(stageRoot, 'workspace-catalog.json');
+    const workspaceCatalog = join(this.workspaceCatalogRoot, 'catalog.json');
+    await movePreparedFile(stagedWorkspaceCatalog, workspaceCatalog);
+    const stagedConversationCatalog = join(stageRoot, 'conversations', 'catalog.json');
+    const conversationCatalog = join(this.conversationsRoot, 'catalog.json');
+    await movePreparedFile(stagedConversationCatalog, conversationCatalog);
+
+    const catalog = JSON.parse(await readFile(conversationCatalog, 'utf8')) as {
+      version?: unknown;
+      conversations?: Array<{ id?: unknown }>;
+    };
+    if (
+      catalog.version !== CONVERSATION_FORMAT_VERSION
+      || !Array.isArray(catalog.conversations)
+    ) {
+      throw new Error('Invalid prepared Conversation catalog');
+    }
+    await mkdir(join(this.conversationsRoot, 'records'), { recursive: true, mode: 0o700 });
+    for (const conversation of catalog.conversations) {
+      if (typeof conversation.id !== 'string') {
+        throw new Error('Invalid prepared Conversation metadata');
+      }
+      await movePreparedFile(
+        join(stageRoot, 'conversations', 'records', `${conversation.id}.json`),
+        join(this.conversationsRoot, 'records', `${conversation.id}.json`),
+      );
+      const record = JSON.parse(await readFile(
+        join(this.conversationsRoot, 'records', `${conversation.id}.json`),
+        'utf8',
+      )) as { version?: unknown; conversation?: { id?: unknown } };
+      if (
+        record.version !== CONVERSATION_FORMAT_VERSION
+        || record.conversation?.id !== conversation.id
+      ) {
+        throw new Error(`Invalid prepared Conversation record: ${conversation.id}`);
+      }
+    }
+    await rm(stageRoot, { recursive: true, force: true });
+    await unlink(journalPath).catch(() => undefined);
+  }
 }
 
 function parseLegacyCatalog(raw: string): { conversations: LegacyMetadata[] } {
@@ -210,5 +276,14 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);
     throw error;
+  }
+}
+
+async function movePreparedFile(source: string, destination: string): Promise<void> {
+  try {
+    await rename(source, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await access(destination);
   }
 }

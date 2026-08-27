@@ -26,6 +26,7 @@ interface JournalFile {
 }
 
 const MAX_EVENTS_PER_CONVERSATION = 200;
+const MAX_WORKSPACE_ACTIVITY_SNAPSHOTS = 100;
 
 export class FileEventJournal implements EventJournal {
   private readonly appendTails = new Map<string, Promise<void>>();
@@ -199,6 +200,12 @@ function boundHistoricalPayload(payload: unknown): unknown {
 function buildReplaySnapshot(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
   const snapshot = events.filter(event => isTerminalGatewayEvent(event.kind));
   snapshot.push(...retainedResultEvents(events));
+  const workspaceDirectory = findLast(
+    events,
+    event => event.kind === 'workspace_directory_snapshot',
+  );
+  if (workspaceDirectory) snapshot.push(workspaceDirectory);
+  snapshot.push(...latestWorkspaceActivityEvents(events));
   const conversationSnapshot = buildConversationSnapshot(events);
   if (conversationSnapshot) snapshot.push(conversationSnapshot);
   const taskProjection = findLast(events, event => event.kind === 'task_projection');
@@ -217,6 +224,8 @@ function compactEvents(events: readonly GatewayEventEnvelope[]): GatewayEventEnv
     .slice(-MAX_EVENTS_PER_CONVERSATION);
   const retainedIds = new Set(retained.map(event => event.eventId));
   const snapshots = [
+    findLast(events, event => event.kind === 'workspace_directory_snapshot'),
+    ...latestWorkspaceActivityEvents(events),
     buildConversationSnapshot(events),
     findLast(events, event => event.kind === 'task_projection'),
     buildTraceSnapshot(events),
@@ -224,6 +233,26 @@ function compactEvents(events: readonly GatewayEventEnvelope[]): GatewayEventEnv
     .filter(event => !retainedIds.has(event.eventId));
   return [...retained, ...resultEvents, ...snapshots]
     .sort((left, right) => left.sequence - right.sequence);
+}
+
+function latestWorkspaceActivityEvents(
+  events: readonly GatewayEventEnvelope[],
+): GatewayEventEnvelope[] {
+  const latestByConversation = new Map<string, GatewayEventEnvelope>();
+  for (const event of events) {
+    if (event.kind !== 'workspace_activity_changed' || !isRecord(event.payload)) continue;
+    const workspaceId = stringValue(event.payload.workspaceId);
+    const conversationId = stringValue(event.payload.conversationId);
+    if (!workspaceId || !conversationId) continue;
+    latestByConversation.set(`${workspaceId}\0${conversationId}`, event);
+  }
+  return [...latestByConversation.values()]
+    .filter(event => {
+      if (!isRecord(event.payload) || !isRecord(event.payload.activity)) return false;
+      return event.payload.activity.state !== 'idle';
+    })
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-MAX_WORKSPACE_ACTIVITY_SNAPSHOTS);
 }
 
 function retainedResultEvents(

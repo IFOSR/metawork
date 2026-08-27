@@ -70,6 +70,9 @@ export class WorkspaceDirectoryService {
     return this.mutate(async () => {
       const existing = await this.deps.workspaceCatalog.findByCanonicalPath(canonicalPath);
       if (existing) {
+        if (existing.accountId !== this.deps.accountId) {
+          throw new Error('workspace_unauthorized');
+        }
         if (existing.archived || existing.availability !== 'available') {
           throw new Error('workspace_unavailable');
         }
@@ -96,23 +99,29 @@ export class WorkspaceDirectoryService {
     });
   }
 
-  async listWorkspaces(_principalId: string): Promise<WorkspaceSummary[]> {
-    return (await this.deps.workspaceCatalog.readCatalog()).workspaces
-      .filter(workspace => !workspace.archived)
+  async listWorkspaces(principalId: string): Promise<WorkspaceSummary[]> {
+    const workspaces = (await this.deps.workspaceCatalog.readCatalog()).workspaces
+      .filter(workspace => workspace.accountId === this.deps.accountId)
+      .filter(workspace => !workspace.archived);
+    const authorized = await Promise.all(workspaces.map(async workspace => (
+      await this.canAccessWorkspace(workspace, principalId) ? workspace : null
+    )));
+    return authorized
+      .filter((workspace): workspace is WorkspaceRecord => workspace !== null)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   async listConversations(
     workspaceId: string,
-    _principalId: string,
+    principalId: string,
     page: WorkspaceConversationPageRequest = {},
   ): Promise<WorkspaceConversationPage> {
-    const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
-    if (!workspace || workspace.archived) throw new Error('workspace_unauthorized');
+    await this.requireWorkspaceAccess(workspaceId, principalId);
     const limit = Math.min(Math.max(page.limit ?? 50, 1), 100);
     const offset = decodeCursor(page.cursor);
     const query = page.query?.trim().toLocaleLowerCase();
     const items = (await this.deps.conversationStore.readCatalog()).conversations
+      .filter(metadata => metadata.accountId === this.deps.accountId)
       .map(metadata => this.projector.project(metadata))
       .filter((item): item is WorkspaceConversationSummary => item !== null)
       .filter(item => item.workspaceId === workspaceId)
@@ -132,8 +141,8 @@ export class WorkspaceDirectoryService {
     workspaceId: string,
     principalId: string,
   ): Promise<ConversationMetadata> {
-    const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
-    if (!workspace || workspace.archived || workspace.availability !== 'available') {
+    const workspace = await this.requireWorkspaceAccess(workspaceId, principalId);
+    if (workspace.availability !== 'available') {
       throw new Error('workspace_unavailable');
     }
     const now = this.deps.now?.() ?? new Date().toISOString();
@@ -167,14 +176,22 @@ export class WorkspaceDirectoryService {
 
   async resolveConversationWorkspace(
     conversationId: string,
-    _principalId: string,
+    principalId: string,
   ): Promise<string | null> {
     const record = await this.deps.conversationStore.readConversation(conversationId);
     if (!record || record.conversation.accountId !== this.deps.accountId) return null;
     const workspaceId = record.conversation.workspaceBinding?.workspaceId;
     if (!workspaceId) return null;
     const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
-    return workspace?.accountId === this.deps.accountId ? workspaceId : null;
+    if (
+      !workspace
+      || workspace.accountId !== this.deps.accountId
+      || workspace.archived
+      || !(await this.canAccessWorkspace(workspace, principalId))
+    ) {
+      return null;
+    }
+    return workspaceId;
   }
 
   async isConversationInWorkspace(
@@ -189,10 +206,15 @@ export class WorkspaceDirectoryService {
   async archiveConversation(
     conversationId: string,
     workspaceId: string,
-    _principalId: string,
+    principalId: string,
   ): Promise<void> {
+    await this.requireWorkspaceAccess(workspaceId, principalId);
     const record = await this.deps.conversationStore.readConversation(conversationId);
-    if (!record || record.conversation.workspaceBinding?.workspaceId !== workspaceId) {
+    if (
+      !record
+      || record.conversation.accountId !== this.deps.accountId
+      || record.conversation.workspaceBinding?.workspaceId !== workspaceId
+    ) {
       throw new Error('conversation_not_in_workspace');
     }
     if (record.turns.some(turn => turn.status === 'blocked')) {
@@ -226,6 +248,33 @@ export class WorkspaceDirectoryService {
       return await operation();
     } finally {
       release();
+    }
+  }
+
+  private async requireWorkspaceAccess(
+    workspaceId: string,
+    principalId: string,
+  ): Promise<WorkspaceRecord> {
+    const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
+    if (
+      !workspace
+      || workspace.accountId !== this.deps.accountId
+      || workspace.archived
+      || !(await this.canAccessWorkspace(workspace, principalId))
+    ) {
+      throw new Error('workspace_unauthorized');
+    }
+    return workspace;
+  }
+
+  private async canAccessWorkspace(
+    workspace: WorkspaceRecord,
+    principalId: string,
+  ): Promise<boolean> {
+    try {
+      return await this.deps.authorize(workspace.canonicalPath, principalId);
+    } catch {
+      return false;
     }
   }
 }

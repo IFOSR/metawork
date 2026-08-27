@@ -74,6 +74,8 @@ describe('unified server composition', () => {
     expect(index).not.toContain('new MetaclawSession');
     expect(index).toContain('getConversationActivity');
     expect(index).toContain('publishWorkspaceActivity');
+    expect(index).toContain('new FileWorkspaceCatalogStore(accountPaths.workspaceCatalog)');
+    expect(index).not.toContain('new FileWorkspaceCatalogStore(accountPaths.workspaceStore)');
     expect(workspaceRuntime).toContain("'workspace_activity_changed'");
   });
 

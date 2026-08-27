@@ -55,6 +55,76 @@ function metaclawSessionConstructorSites(): string[] {
 }
 
 describe('no direct client session paths', () => {
+  it('keeps Workspace Catalog persistence behind Server composition', () => {
+    const sourceRoot = join(process.cwd(), 'src');
+    const clientRoots = ['gateway', 'management', 'integrations', 'tui-bridge'];
+    for (const root of clientRoots) {
+      const files: string[] = [];
+      walk(join(sourceRoot, root), files);
+      for (const file of files) {
+        const source = readFileSync(file, 'utf8');
+        expect(source, relative(sourceRoot, file))
+          .not.toMatch(/storage\/file-workspace-catalog-store/u);
+      }
+    }
+
+    const gatewayFiles: string[] = [];
+    walk(join(sourceRoot, 'gateway'), gatewayFiles);
+    for (const file of gatewayFiles) {
+      expect(readFileSync(file, 'utf8'), relative(sourceRoot, file))
+        .not.toMatch(/from ['"][^'"]*storage\/file-/u);
+    }
+  });
+
+  it('keeps Workspace Directory independent from Kernel, Executor, and Gateway protocol', () => {
+    const directory = readFileSync(
+      join(process.cwd(), 'src', 'workspace', 'workspace-directory-service.ts'),
+      'utf8',
+    );
+    expect(directory).not.toMatch(/from ['"][^'"]*(kernel|executor|execution)\//u);
+
+    for (const root of ['planning', 'kernel', 'executor']) {
+      const files: string[] = [];
+      walk(join(process.cwd(), 'src', root), files);
+      for (const file of files) {
+        expect(readFileSync(file, 'utf8'), relative(join(process.cwd(), 'src'), file))
+          .not.toMatch(/from ['"][^'"]*gateway\/(client-protocol|workspace-gateway-runtime)/u);
+      }
+    }
+  });
+
+  it('keeps the Web session catalog as a Workspace Directory adapter, not metadata authority', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'src', 'management', 'web-session-catalog.ts'),
+      'utf8',
+    );
+    expect(source).toContain('directory.listConversations');
+    expect(source).toContain('directory.listWorkspaces');
+    expect(source).not.toMatch(/FileWorkspaceCatalogStore|workspaceBinding\s*:\s*\{/u);
+  });
+
+  it('keeps Workspace paths out of endpoint manifests, launch URLs, and audit fields', () => {
+    const endpointManifest = readFileSync(
+      join(process.cwd(), 'src', 'server', 'server-endpoint-manifest.ts'),
+      'utf8',
+    );
+    expect(endpointManifest).not.toMatch(/canonicalPath|workspacePath|workspaceId/u);
+
+    const audit = readFileSync(
+      join(process.cwd(), 'src', 'gateway', 'audit.ts'),
+      'utf8',
+    );
+    expect(audit).not.toMatch(/canonicalPath|workspacePath|workspaceId/u);
+
+    const launcher = readFileSync(
+      join(process.cwd(), 'src', 'client', 'web-client-launcher.ts'),
+      'utf8',
+    );
+    const urlLine = launcher.split('\n').find(line => line.includes('const url =')) ?? '';
+    expect(urlLine).toContain('#bootstrap=');
+    expect(urlLine).not.toMatch(/workspace|canonical|startupWorkspacePath/u);
+  });
+
   it('keeps ConversationSession behind narrow account facades', () => {
     const source = readFileSync(
       join(process.cwd(), 'src', 'session', 'conversation-session.ts'),
