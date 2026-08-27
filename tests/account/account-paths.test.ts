@@ -23,6 +23,7 @@ describe('account-scoped paths', () => {
     expect(paths.plannerRuntime).toBe(`${base}/planner/runtime`);
     expect(paths.plannerSessions).toBe(`${base}/planner/sessions`);
     expect(paths.conversations).toBe(`${base}/conversations`);
+    expect(paths.workspaceCatalog).toBe(`${base}/workspace-catalog`);
     expect(paths.workspaceStore).toBe(`${base}/workspace-store`);
     expect(paths.attempts).toBe(`${base}/attempts`);
     expect(paths.results).toBe(`${base}/data/results`);

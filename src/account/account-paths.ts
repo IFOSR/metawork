@@ -29,6 +29,7 @@ export interface AccountPaths {
   readonly backups: string;
   readonly plannerSessions: string;
   readonly conversations: string;
+  readonly workspaceCatalog: string;
   readonly workspaceStore: string;
   readonly attempts: string;
   readonly results: string;
@@ -63,6 +64,7 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     backups: resolve(data, 'backups'),
     plannerSessions: resolve(planner, 'sessions'),
     conversations: resolve(root, 'conversations'),
+    workspaceCatalog: resolve(root, 'workspace-catalog'),
     workspaceStore: resolve(root, 'workspace-store'),
     attempts: resolve(root, 'attempts'),
     results: resolve(data, 'results'),
