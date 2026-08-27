@@ -5,6 +5,7 @@ import type {
   GatewayCommandEnvelope,
   GatewayEventEnvelope,
 } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/gateway-protocol.js';
+import { parseGatewayClientMessage } from '../../src/gateway/protocol.js';
 
 function makeClient() {
   const submitted: GatewayCommandEnvelope[] = [];
@@ -111,5 +112,22 @@ describe('native TUI gateway client', () => {
       .toBeLessThan(mainSource.indexOf('createAgentSessionRuntime(createRuntime'));
     expect(clientModeSource).not.toContain('AgentSession');
     expect(clientModeSource).not.toContain('.prompt(');
+  });
+
+  it('accepts only the untrusted Web launch hint on the local control message', () => {
+    expect(parseGatewayClientMessage({
+      type: 'register_web_launch',
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    })).toEqual({
+      type: 'register_web_launch',
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    });
+    expect(parseGatewayClientMessage({
+      type: 'register_web_launch',
+      workspaceHint: '/repo-a',
+      selectedAt: '2026-08-27T08:00:00.000Z',
+    })).toBeNull();
   });
 });

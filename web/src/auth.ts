@@ -1,5 +1,15 @@
 type FetchLike = typeof fetch;
 
+export interface WebLaunchContext {
+  workspaceHint: string;
+  conversationId?: string;
+}
+
+export interface WebAuthSession {
+  authenticated: true;
+  launchContext: WebLaunchContext | null;
+}
+
 export function bootstrapTokenFromHash(hash = window.location.hash): string | null {
   return new URLSearchParams(hash.replace(/^#/u, '')).get('bootstrap');
 }
@@ -14,16 +24,16 @@ export function clearBootstrapFragment(
 export async function exchangeWebCredential(
   token: string,
   fetchImpl: FetchLike = fetch,
-): Promise<boolean> {
+): Promise<WebAuthSession | null> {
   const response = await fetchImpl('/api/auth/bootstrap', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   });
-  if (response.status === 401) return false;
+  if (response.status === 401) return null;
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  return true;
+  return response.json() as Promise<WebAuthSession>;
 }
 
 export async function loginWithPassword(
@@ -42,16 +52,16 @@ export async function loginWithPassword(
   return true;
 }
 
-export async function hasWebSession(fetchImpl: FetchLike = fetch): Promise<boolean> {
+export async function hasWebSession(fetchImpl: FetchLike = fetch): Promise<WebAuthSession | null> {
   const response = await fetchImpl('/api/auth/session', {
     credentials: 'same-origin',
   });
-  if (response.status === 401) return false;
+  if (response.status === 401) return null;
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  return true;
+  return response.json() as Promise<WebAuthSession>;
 }
 
-export async function establishWebSession(): Promise<boolean> {
+export async function establishWebSession(): Promise<WebAuthSession | null> {
   const bootstrap = bootstrapTokenFromHash();
   if (bootstrap) {
     clearBootstrapFragment();

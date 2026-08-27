@@ -1,5 +1,5 @@
 import { createConnection, type Socket } from 'node:net';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -283,12 +283,52 @@ describe('MetaclawGatewayServer lifecycle', () => {
     ]);
     await fixture.server.stop();
   });
+
+  it('registers Web launch context only through the mode-0600 local socket', async () => {
+    const registrations: Array<{ workspaceHint: string; conversationId?: string }> = [];
+    const fixture = await createFixture({
+      registerWebLaunch: async input => {
+        registrations.push(input);
+        return {
+          token: 'opaque-token',
+          expiresAt: '2026-08-27T08:01:00.000Z',
+        };
+      },
+    });
+    await fixture.server.start();
+    const socketMode = (await stat(fixture.socketPath)).mode & 0o777;
+    const client = await connect(fixture.socketPath);
+
+    client.socket.write(encodeJsonLine({
+      type: 'register_web_launch',
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    }));
+
+    await expect(client.next(message => message.type === 'web_launch_registered'))
+      .resolves.toEqual({
+        type: 'web_launch_registered',
+        token: 'opaque-token',
+        expiresAt: '2026-08-27T08:01:00.000Z',
+      });
+    expect(socketMode).toBe(0o600);
+    expect(registrations).toEqual([{
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    }]);
+
+    client.socket.destroy();
+    await fixture.server.stop();
+  });
 });
 
 async function createFixture(options: {
   authorizeAttach?: (accountId: string, conversationId: string) => Promise<boolean>;
   journal?: EventJournal;
   attachClient?: (accountId: string, conversationId: string) => Promise<() => void>;
+  registerWebLaunch?: (
+    input: { workspaceHint: string; conversationId?: string },
+  ) => Promise<{ token: string; expiresAt: string }>;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'anyfusion-gateway-server-'));
   roots.push(root);
@@ -314,6 +354,7 @@ async function createFixture(options: {
       subscriptions,
       authorizeAttach: options.authorizeAttach ?? (async () => true),
       attachClient: options.attachClient,
+      registerWebLaunch: options.registerWebLaunch,
     }),
   };
 }

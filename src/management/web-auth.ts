@@ -1,4 +1,8 @@
 import { generateToken, tokenMatches } from './token.js';
+import type {
+  WebLaunchContextInput,
+  WebLaunchContextService,
+} from './web-launch-context.js';
 
 export const WEB_SESSION_COOKIE = 'anyfusion_web_session';
 
@@ -6,12 +10,17 @@ const MAX_LOGIN_FAILURES = 5;
 const LOCKOUT_MS = 30_000;
 
 export interface WebAuthServiceOptions {
-  bootstrapToken?: string;
   manualAccessToken?: string;
-  sessionToken?: string;
-  bootstrapTtlMs?: number;
-  now?: () => number;
-  createdAt?: number;
+  launchContexts: WebLaunchContextService;
+  createSessionToken?: () => string;
+}
+
+export interface WebAuthSessionState {
+  readonly launchContext: WebLaunchContextInput | null;
+}
+
+export interface WebAuthExchangeResult extends WebAuthSessionState {
+  readonly sessionToken: string;
 }
 
 /** 内存级登录防爆破：同 IP 连续失败 5 次锁定 30 秒。 */
@@ -49,45 +58,72 @@ export class LoginThrottle {
 }
 
 export class WebAuthService {
-  readonly bootstrapToken: string;
   readonly manualAccessToken: string;
-  private readonly sessionToken: string;
-  private readonly expiresAt: number;
-  private readonly now: () => number;
-  private bootstrapConsumed = false;
+  private readonly sessions = new Map<string, WebAuthSessionState>();
+  private readonly createSessionToken: () => string;
 
-  constructor(options: WebAuthServiceOptions = {}) {
-    this.now = options.now ?? Date.now;
-    this.bootstrapToken = options.bootstrapToken ?? generateToken();
+  constructor(private readonly options: WebAuthServiceOptions) {
     this.manualAccessToken = options.manualAccessToken ?? generateToken();
-    this.sessionToken = options.sessionToken ?? generateToken();
-    this.expiresAt = (options.createdAt ?? this.now()) + (options.bootstrapTtlMs ?? 60_000);
+    this.createSessionToken = options.createSessionToken ?? generateToken;
   }
 
-  exchange(token: string): boolean {
-    if (tokenMatches(this.manualAccessToken, token)) return true;
-    if (
-      this.bootstrapConsumed
-      || this.now() > this.expiresAt
-      || !tokenMatches(this.bootstrapToken, token)
-    ) {
-      return false;
+  exchange(token: string): WebAuthExchangeResult | null {
+    const launch = this.options.launchContexts.consume(token);
+    if (launch) {
+      return this.createSession({
+        workspaceHint: launch.workspaceHint,
+        ...(launch.conversationId ? { conversationId: launch.conversationId } : {}),
+      });
     }
-    this.bootstrapConsumed = true;
-    return true;
+    if (!tokenMatches(this.manualAccessToken, token)) return null;
+    return this.createSession();
+  }
+
+  createSession(launchContext: WebLaunchContextInput | null = null): WebAuthExchangeResult {
+    const sessionToken = this.uniqueSessionToken();
+    const state = {
+      launchContext: launchContext
+        ? {
+          workspaceHint: launchContext.workspaceHint,
+          ...(launchContext.conversationId
+            ? { conversationId: launchContext.conversationId }
+            : {}),
+        }
+        : null,
+    };
+    this.sessions.set(sessionToken, state);
+    return { sessionToken, ...state };
   }
 
   hasSession(cookieHeader: string | undefined): boolean {
-    const provided = cookieValue(cookieHeader, WEB_SESSION_COOKIE);
-    return Boolean(provided && tokenMatches(this.sessionToken, provided));
+    return this.getSession(cookieHeader) !== null;
   }
 
-  sessionCookie(): string {
-    return `${WEB_SESSION_COOKIE}=${this.sessionToken}; HttpOnly; SameSite=Strict; Path=/`;
+  getSession(cookieHeader: string | undefined): WebAuthSessionState | null {
+    const token = cookieValue(cookieHeader, WEB_SESSION_COOKIE);
+    if (!token) return null;
+    return this.sessions.get(token) ?? null;
+  }
+
+  sessionCookie(sessionToken: string): string {
+    return `${WEB_SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/`;
+  }
+
+  revokeSession(cookieHeader: string | undefined): void {
+    const token = cookieValue(cookieHeader, WEB_SESSION_COOKIE);
+    if (token) this.sessions.delete(token);
   }
 
   clearSessionCookie(): string {
     return `${WEB_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+  }
+
+  private uniqueSessionToken(): string {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const token = this.createSessionToken();
+      if (!this.sessions.has(token)) return token;
+    }
+    throw new Error('Unable to create a unique Web session');
   }
 }
 

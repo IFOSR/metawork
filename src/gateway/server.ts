@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from 'fs';
+import { chmodSync, existsSync, unlinkSync } from 'fs';
 import { createServer, type Server, type Socket } from 'net';
 import { nanoid } from 'nanoid';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
@@ -21,6 +21,9 @@ interface GatewayServerDeps {
   authorizeAttach(accountId: string, conversationId: string): Promise<boolean>;
   attachClient?(accountId: string, conversationId: string): Promise<() => void>;
   onConversationCreated?(accountId: string, conversationId: string): void;
+  registerWebLaunch?(
+    input: { workspaceHint: string; conversationId?: string },
+  ): Promise<{ token: string; expiresAt: string }>;
   accountId?: string;
 }
 
@@ -51,6 +54,7 @@ export class MetaclawGatewayServer {
         resolve();
       });
     });
+    chmodSync(this.deps.socketPath, 0o600);
   }
 
   async stop(): Promise<void> {
@@ -176,6 +180,25 @@ export class MetaclawGatewayServer {
       }
       if (message.type === 'attach') {
         void attach(message.conversationId, message.resumeFromSequence).catch(error => {
+          send({ type: 'error', message: (error as Error).message });
+        });
+        return;
+      }
+      if (message.type === 'register_web_launch') {
+        if (!this.deps.registerWebLaunch) {
+          send({ type: 'error', message: 'Web launch registration is unavailable' });
+          return;
+        }
+        void this.deps.registerWebLaunch({
+          workspaceHint: message.workspaceHint,
+          ...(message.conversationId ? { conversationId: message.conversationId } : {}),
+        }).then(launch => {
+          send({
+            type: 'web_launch_registered',
+            token: launch.token,
+            expiresAt: launch.expiresAt,
+          });
+        }).catch(error => {
           send({ type: 'error', message: (error as Error).message });
         });
         return;

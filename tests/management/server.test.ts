@@ -10,6 +10,7 @@ import {
   type ManagementWebSessionRuntime,
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
+import { WebLaunchContextService } from '../../src/management/web-launch-context.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 import {
   resolveLoginCredentials,
@@ -635,25 +636,110 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('issues a session cookie and consumes the automatic bootstrap token once', async () => {
+  it('binds an automatic launch context to one session cookie and consumes its token once', async () => {
+    const port = await reservePort();
+    const launchContexts = new WebLaunchContextService({
+      generateToken: () => 'bootstrap-token',
+    });
+    const launch = launchContexts.issue({
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    });
+    const server = createManagementServer(port, { launchContexts });
+    await server.start();
+
+    try {
+      const first = await exchangeTokenResponse(port, launch.token);
+      expect(first.status).toBe(200);
+      expect(first.headers.get('set-cookie')).toContain(
+        'anyfusion_web_session=session-token-1; HttpOnly; SameSite=Strict; Path=/',
+      );
+      await expect(first.json()).resolves.toEqual({
+        authenticated: true,
+        launchContext: {
+          workspaceHint: '/repo-a',
+          conversationId: 'conv_1',
+        },
+      });
+      const reused = await exchangeTokenResponse(port, launch.token);
+      expect(reused.status).toBe(401);
+
+      const cookie = first.headers.get('set-cookie')!.split(';', 1)[0]!;
+      const authSession = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+        headers: { cookie },
+      });
+      expect(authSession.status).toBe(200);
+      await expect(authSession.json()).resolves.toEqual({
+        authenticated: true,
+        launchContext: {
+          workspaceHint: '/repo-a',
+          conversationId: 'conv_1',
+        },
+      });
+      const config = await fetch(`http://127.0.0.1:${port}/api/config`, {
+        headers: { cookie },
+      });
+      expect(config.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('isolates launch contexts between browser sessions', async () => {
+    const port = await reservePort();
+    const tokens = ['launch-a', 'launch-b'];
+    const launchContexts = new WebLaunchContextService({
+      generateToken: () => tokens.shift()!,
+    });
+    const firstLaunch = launchContexts.issue({ workspaceHint: '/repo-a' });
+    const secondLaunch = launchContexts.issue({
+      workspaceHint: '/repo-b',
+      conversationId: 'conv_b',
+    });
+    const server = createManagementServer(port, { launchContexts });
+    await server.start();
+
+    try {
+      const firstCookie = await exchangeToken(port, firstLaunch.token);
+      const secondCookie = await exchangeToken(port, secondLaunch.token);
+      const [first, second] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+          headers: { cookie: firstCookie },
+        }),
+        fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+          headers: { cookie: secondCookie },
+        }),
+      ]);
+
+      await expect(first.json()).resolves.toMatchObject({
+        launchContext: { workspaceHint: '/repo-a' },
+      });
+      await expect(second.json()).resolves.toMatchObject({
+        launchContext: {
+          workspaceHint: '/repo-b',
+          conversationId: 'conv_b',
+        },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('does not expose an HTTP endpoint that registers a launch Workspace', async () => {
     const port = await reservePort();
     const server = createManagementServer(port);
     await server.start();
 
     try {
-      const first = await exchangeTokenResponse(port, 'bootstrap-token');
-      expect(first.status).toBe(204);
-      expect(first.headers.get('set-cookie')).toContain(
-        'anyfusion_web_session=session-token; HttpOnly; SameSite=Strict; Path=/',
-      );
-      const reused = await exchangeTokenResponse(port, 'bootstrap-token');
-      expect(reused.status).toBe(401);
-
-      const cookie = first.headers.get('set-cookie')!.split(';', 1)[0]!;
-      const config = await fetch(`http://127.0.0.1:${port}/api/config`, {
-        headers: { cookie },
+      const response = await fetch(`http://127.0.0.1:${port}/api/web-launch/register`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workspaceHint: '/repo-private' }),
       });
-      expect(config.status).toBe(200);
+      expect(response.status).toBe(404);
     } finally {
       await server.stop();
     }
@@ -1106,16 +1192,18 @@ interface ManagementServerTestOverrides {
   readonly loginCredentials?: LoginCredentials;
   readonly attachmentStore?: FileAttachmentStore;
   readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
+  readonly launchContexts?: WebLaunchContextService;
 }
 
 function createManagementServer(
   port: number,
   overrides: ManagementServerTestOverrides = {},
 ): ManagementServer {
+  let sessionCounter = 0;
   const webAuth = new WebAuthService({
-    bootstrapToken: 'bootstrap-token',
     manualAccessToken: 'manual-token',
-    sessionToken: 'session-token',
+    launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
+    createSessionToken: () => `session-token-${sessionCounter += 1}`,
   });
   return new ManagementServer({
     port,
@@ -1264,7 +1352,7 @@ function upgradeRequest(port: number, origin: string, cookie?: string): string {
 
 async function exchangeToken(port: number, token: string): Promise<string> {
   const response = await exchangeTokenResponse(port, token);
-  if (response.status !== 204) throw new Error(`exchange failed with ${response.status}`);
+  if (response.status !== 200) throw new Error(`exchange failed with ${response.status}`);
   return response.headers.get('set-cookie')!.split(';', 1)[0]!;
 }
 

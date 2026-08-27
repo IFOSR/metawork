@@ -10,7 +10,12 @@ import type {
 } from './api/session-types';
 import type { ConfigurationRuntimeState, InteractionTrace, InteractionTraceEvent } from './api/types';
 import { WsClient } from './api/ws';
-import { establishWebSession, exchangeWebCredential, loginWithPassword } from './auth';
+import {
+  establishWebSession,
+  exchangeWebCredential,
+  loginWithPassword,
+  type WebLaunchContext,
+} from './auth';
 import { ConversationView } from './components/ConversationView';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
@@ -24,11 +29,12 @@ import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
 import { useThemePreference } from './theme';
 
-let startupAuthentication: Promise<boolean> | null = null;
+let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 
 export function App() {
   const [themePreference, setThemePreference] = useThemePreference();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [startupLaunchContext, setStartupLaunchContext] = useState<WebLaunchContext | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
@@ -59,8 +65,10 @@ export function App() {
     let active = true;
     startupAuthentication ??= establishWebSession();
     void startupAuthentication
-      .then(ok => {
-        if (active) setAuthenticated(ok);
+      .then(session => {
+        if (!active) return;
+        setStartupLaunchContext(session?.launchContext ?? null);
+        setAuthenticated(Boolean(session));
       })
       .catch(error => {
         if (!active) return;
@@ -197,7 +205,7 @@ export function App() {
     ws.connect();
     void Promise.all([http.getSessions(), http.getConfig()])
       .then(async ([catalog, config]) => {
-        const requestedConversationId = new URLSearchParams(window.location.search).get('conversation');
+        const requestedConversationId = startupLaunchContext?.conversationId ?? null;
         const requested = requestedConversationId
           ? catalog.sessions.find(session => session.id === requestedConversationId)
           : undefined;
@@ -214,7 +222,7 @@ export function App() {
       })
       .catch(() => undefined);
     return () => ws.close();
-  }, [authenticated]);
+  }, [authenticated, startupLaunchContext]);
 
   useEffect(() => {
     if (!authenticated || !httpRef.current) return;
@@ -364,10 +372,13 @@ export function App() {
 
   const handleAuth = async (token: string): Promise<boolean> => {
     try {
-      const ok = await exchangeWebCredential(token);
-      setAuthError(ok ? null : 'token 无效或已过期。');
-      if (ok) setAuthenticated(true);
-      return ok;
+      const session = await exchangeWebCredential(token);
+      setAuthError(session ? null : 'token 无效或已过期。');
+      if (session) {
+        setStartupLaunchContext(session.launchContext);
+        setAuthenticated(true);
+      }
+      return Boolean(session);
     } catch (error) {
       setAuthError((error as Error).message);
       return false;
@@ -378,7 +389,10 @@ export function App() {
     try {
       const ok = await loginWithPassword(username, password);
       setAuthError(ok ? null : '用户名或密码错误，或尝试次数过多，请稍后再试。');
-      if (ok) setAuthenticated(true);
+      if (ok) {
+        setStartupLaunchContext(null);
+        setAuthenticated(true);
+      }
       return ok;
     } catch (error) {
       setAuthError((error as Error).message);

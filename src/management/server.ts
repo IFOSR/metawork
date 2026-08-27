@@ -332,7 +332,10 @@ export class ManagementServer {
       return;
     }
     throttle.registerSuccess(clientKey);
-    response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.sessionCookie() });
+    const session = this.deps.webAuth.createSession();
+    response.writeHead(204, {
+      'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
+    });
     response.end();
   }
 
@@ -377,12 +380,19 @@ export class ManagementServer {
         return;
       }
       const body = await readRequestBody(request);
-      if (!body.token || !this.deps.webAuth.exchange(body.token)) {
+      const session = body.token ? this.deps.webAuth.exchange(body.token) : null;
+      if (!session) {
         this.sendJson(response, 401, { error: 'unauthorized' });
         return;
       }
-      response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.sessionCookie() });
-      response.end();
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
+      });
+      response.end(`${JSON.stringify({
+        authenticated: true,
+        launchContext: session.launchContext,
+      })}\n`);
       return;
     }
 
@@ -392,12 +402,15 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/auth/session') {
-      if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
+      const session = this.deps.webAuth.getSession(request.headers.cookie);
+      if (!session) {
         this.sendJson(response, 401, { error: 'unauthorized' });
         return;
       }
-      response.writeHead(204);
-      response.end();
+      this.sendJson(response, 200, {
+        authenticated: true,
+        launchContext: session.launchContext,
+      });
       return;
     }
 
@@ -416,6 +429,7 @@ export class ManagementServer {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
         return;
       }
+      this.deps.webAuth.revokeSession(request.headers.cookie);
       response.writeHead(204, { 'Set-Cookie': this.deps.webAuth.clearSessionCookie() });
       response.end();
       return;

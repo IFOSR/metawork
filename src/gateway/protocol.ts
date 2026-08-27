@@ -25,6 +25,11 @@ export type GatewayClientMessage =
       envelope: GatewayCommandEnvelope;
     }
   | {
+      type: 'register_web_launch';
+      workspaceHint: string;
+      conversationId?: string;
+    }
+  | {
       type: 'close';
     };
 
@@ -47,6 +52,11 @@ export type GatewayServerMessage =
       receipt: CommandReceipt;
     }
   | {
+      type: 'web_launch_registered';
+      token: string;
+      expiresAt: string;
+    }
+  | {
       type: 'exit';
     }
   | {
@@ -61,6 +71,26 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
   const candidate = input as Record<string, unknown>;
 
   if (candidate.type === 'close') return { type: 'close' };
+  if (candidate.type === 'register_web_launch') {
+    const allowedKeys = new Set(['type', 'workspaceHint', 'conversationId']);
+    if (Object.keys(candidate).some(key => !allowedKeys.has(key))) return null;
+    if (
+      typeof candidate.workspaceHint !== 'string'
+      || candidate.workspaceHint.length === 0
+      || candidate.workspaceHint.length > 16_384
+    ) return null;
+    if (
+      candidate.conversationId !== undefined
+      && !isGatewayIdentifier(candidate.conversationId)
+    ) return null;
+    return {
+      type: 'register_web_launch',
+      workspaceHint: candidate.workspaceHint,
+      ...(candidate.conversationId !== undefined
+        ? { conversationId: candidate.conversationId as string }
+        : {}),
+    };
+  }
   if (candidate.type === 'attach') {
     if (!isGatewayIdentifier(candidate.conversationId)) return null;
     if (
