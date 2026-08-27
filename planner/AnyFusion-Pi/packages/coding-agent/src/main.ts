@@ -496,6 +496,7 @@ export async function main(args: string[], _options?: MainOptions) {
 			await runAnyFusionClientMode({
 				socketPath: clientParsed.gatewaySocket,
 				conversationId: clientParsed.conversationId?.trim(),
+				workspaceHint: clientParsed.workspaceHint?.trim(),
 			});
 		} finally {
 			stopThemeWatcher();

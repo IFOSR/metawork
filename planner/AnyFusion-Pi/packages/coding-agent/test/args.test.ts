@@ -91,9 +91,12 @@ describe("parseArgs", () => {
 				"/tmp/anyfusion-gateway.sock",
 				"--conversation-id",
 				"conv_native",
+				"--workspace-hint",
+				"/repo-a",
 			]);
 			expect(result.gatewaySocket).toBe("/tmp/anyfusion-gateway.sock");
 			expect(result.conversationId).toBe("conv_native");
+			expect(result.workspaceHint).toBe("/repo-a");
 			expect(result.unknownFlags.size).toBe(0);
 		});
 

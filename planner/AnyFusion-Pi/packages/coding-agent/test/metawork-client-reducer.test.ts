@@ -94,6 +94,21 @@ describe("MetaWork client reducer", () => {
 		expect(state.notices.at(-1)?.text).toContain("/workspace");
 	});
 
+	it("restores Workspace from a Conversation snapshot before live changes", () => {
+		const state = reduceGatewayEvent(baseState(), event("conversation_snapshot", {
+			lines: [],
+			workspace: {
+				path: "/repo-a",
+				selectedAt: "2026-08-27T00:00:00.000Z",
+			},
+		}, 1));
+
+		expect(state.workspace).toEqual({
+			path: "/repo-a",
+			selectedAt: "2026-08-27T00:00:00.000Z",
+		});
+	});
+
 	it("merges routing facts into authorization instead of a separate stage", () => {
 		const state = reduceGatewayEvent(baseState(), event("trace_delta", {
 			events: [{ phase: "routing", actor: "kernel", title: "Codex authorized" }],

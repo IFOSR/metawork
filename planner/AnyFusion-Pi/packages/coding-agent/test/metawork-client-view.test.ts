@@ -75,6 +75,6 @@ describe("MetaWork client view", () => {
 
 		expect(rendered).toContain("reconnecting");
 		expect(rendered).toContain("metawork");
-		expect(rendered).not.toContain("/Users/example/projects/metawork");
+		expect(rendered).toContain("/Users/example/projects/metawork");
 	});
 });
