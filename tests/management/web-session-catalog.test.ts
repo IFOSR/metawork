@@ -140,6 +140,34 @@ describe('WebSessionCatalog', () => {
     ]);
   });
 
+  it('uses the first ordinary user query instead of a supplied or command title', async () => {
+    const catalog = await makeCatalog([
+      '2026-08-17T08:00:00.000Z',
+      '2026-08-17T08:00:01.000Z',
+      '2026-08-17T08:00:02.000Z',
+      '2026-08-17T08:00:03.000Z',
+    ]);
+    const record = await catalog.create({ title: 'Temporary test label' });
+
+    await catalog.appendTurn(
+      record.session.id,
+      makeTurn(record.session.id, 1, '/workspace /repo-a'),
+    );
+    await catalog.appendTurn(
+      record.session.id,
+      makeTurn(record.session.id, 2, '分析这个项目的模块边界'),
+    );
+    await catalog.appendTurn(
+      record.session.id,
+      makeTurn(record.session.id, 3, '继续检查测试覆盖率'),
+    );
+
+    expect((await catalog.read(record.session.id))?.session.title)
+      .toBe('分析这个项目的模块边界');
+    expect((await catalog.list())[0]?.title)
+      .toBe('分析这个项目的模块边界');
+  });
+
   it('bounds retained turns and each turn trace while deriving an initial title', async () => {
     const catalog = await makeCatalog(
       Array.from(

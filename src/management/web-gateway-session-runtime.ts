@@ -588,7 +588,7 @@ export class WebGatewaySessionRuntime {
     const artifacts = taskId
       ? this.deps.projectTaskArtifacts?.(taskId) ?? []
       : [];
-    await this.deps.catalog.appendTurn(event.conversationId, {
+    const appended = await this.deps.catalog.appendTurn(event.conversationId, {
       id: state.id,
       sessionId: event.conversationId,
       userInput: state.userInput,
@@ -601,6 +601,14 @@ export class WebGatewaySessionRuntime {
       executionTimeline,
       artifactRefs: artifacts.map(artifact => artifact.relativePath),
       artifacts,
+    });
+    if (!appended || this.disposed || !this._activeSessionId) return;
+    const sessions = await this.listSessions();
+    if (this.disposed || !this._activeSessionId) return;
+    this.emit({
+      type: 'session_catalog',
+      activeSessionId: this._activeSessionId,
+      sessions,
     });
   }
 

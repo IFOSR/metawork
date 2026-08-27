@@ -7,7 +7,10 @@ import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/clie
 import type { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 import { WebGatewaySessionRuntime } from '../../src/management/web-gateway-session-runtime.js';
-import type { WebSessionRuntimeCatalog } from '../../src/management/web-session-runtime-types.js';
+import type {
+  WebSessionRuntimeCatalog,
+  WebSessionRuntimeEvent,
+} from '../../src/management/web-session-runtime-types.js';
 import type { WebSessionRecord } from '../../src/management/web-session-types.js';
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
@@ -639,6 +642,76 @@ describe('WebGatewaySessionRuntime', () => {
         cursor: 'turn_1:1',
       })],
       executionTimeline: timeline,
+    });
+  });
+
+  it('publishes the first-query session title after persisting a terminal turn', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let record = sessionRecord('conv_1', true);
+    const catalog: WebSessionRuntimeCatalog = {
+      initialize: async () => undefined,
+      create: async () => record,
+      list: async () => [record.session],
+      search: async () => [record.session],
+      read: async () => record,
+      setActive: async () => record,
+      appendTurn: async (_sessionId, turn) => {
+        record = {
+          ...record,
+          session: {
+            ...record.session,
+            title: turn.userInput,
+          },
+          turns: [...record.turns, turn],
+        };
+        return record;
+      },
+      deleteSession: async () => false,
+      clearAll: async () => 0,
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog,
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+      createId: prefix => `${prefix}_1`,
+    });
+    const events: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe(event => events.push(event));
+
+    await runtime.initialize();
+    await runtime.submit('分析这个项目的模块边界');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'final_answer',
+      payload: { lines: ['分析完成'] },
+    });
+
+    await waitFor(() => events.some(event => event.type === 'session_catalog'));
+    expect(events).toContainEqual({
+      type: 'session_catalog',
+      activeSessionId: 'conv_1',
+      sessions: [expect.objectContaining({
+        id: 'conv_1',
+        title: '分析这个项目的模块边界',
+      })],
     });
   });
 

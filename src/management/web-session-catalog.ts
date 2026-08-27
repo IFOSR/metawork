@@ -11,6 +11,7 @@ import {
 } from './interaction-trace.js';
 import {
   WEB_SESSION_FORMAT_VERSION,
+  MAX_WEB_SESSION_TURNS,
   boundConversationTraceEvents,
   boundWebSessionTurns,
   type ConversationTurn,
@@ -79,7 +80,11 @@ export class WebSessionCatalog {
   async list(): Promise<WebSessionMetadata[]> {
     await this.ensureInitialized();
     const catalog = await this.store.readCatalog();
-    return [...catalog.sessions].sort(compareUpdatedAt);
+    const sessions = await Promise.all(catalog.sessions.map(async metadata => {
+      const record = await this.store.readSession(metadata.id);
+      return record ? metadataWithFirstQueryTitle(record) : metadata;
+    }));
+    return sessions.sort(compareUpdatedAt);
   }
 
   async search(query: string): Promise<WebSessionMetadata[]> {
@@ -111,6 +116,7 @@ export class WebSessionCatalog {
     return record
       ? {
           ...record,
+          session: metadataWithFirstQueryTitle(record),
           turns: record.turns.map(turn => this.normalizeTurn(turn)),
         }
       : null;
@@ -126,17 +132,16 @@ export class WebSessionCatalog {
 
     const safeTurn = this.normalizeTurn(sanitizeConversationTurn(turn, sessionId));
     const timestamp = this.now();
-    const shouldDeriveTitle = record.session.title === DEFAULT_SESSION_TITLE;
+    const turns = boundWebSessionTurns([...record.turns, safeTurn]);
+    const firstQueryTitle = resolvedFirstQueryTitle(record, safeTurn);
     const updated: WebSessionRecord = {
       ...record,
       session: {
         ...record.session,
-        title: shouldDeriveTitle
-          ? normalizeSessionTitle(safeTurn.userInput)
-          : record.session.title,
+        title: firstQueryTitle ?? record.session.title,
         updatedAt: timestamp,
       },
-      turns: boundWebSessionTurns([...record.turns, safeTurn]),
+      turns,
     };
     await this.store.writeSession(updated);
     await this.upsertMetadata(updated.session);
@@ -224,6 +229,39 @@ function normalizeSessionTitle(value?: string): string {
     .trim();
   if (!normalized) return DEFAULT_SESSION_TITLE;
   return normalized.slice(0, MAX_SESSION_TITLE_LENGTH).trimEnd();
+}
+
+function metadataWithFirstQueryTitle(record: WebSessionRecord): WebSessionMetadata {
+  const title = resolvedFirstQueryTitle(record);
+  return title
+    ? { ...record.session, title }
+    : record.session;
+}
+
+function resolvedFirstQueryTitle(
+  record: WebSessionRecord,
+  incoming?: ConversationTurn,
+): string | null {
+  const existingQueryTitles = record.turns
+    .filter(turn => isOrdinaryUserQuery(turn.userInput))
+    .map(turn => normalizeSessionTitle(turn.userInput));
+  if (existingQueryTitles.includes(record.session.title)) {
+    return record.session.title;
+  }
+  if (record.turns.length >= MAX_WEB_SESSION_TURNS) {
+    return record.session.title;
+  }
+  return firstUserQueryTitle(incoming ? [...record.turns, incoming] : record.turns);
+}
+
+function firstUserQueryTitle(turns: ConversationTurn[]): string | null {
+  const query = turns.find(turn => isOrdinaryUserQuery(turn.userInput))?.userInput;
+  return query ? normalizeSessionTitle(query) : null;
+}
+
+function isOrdinaryUserQuery(value: string): boolean {
+  const normalized = value.trim();
+  return normalized.length > 0 && !normalized.startsWith('/');
 }
 
 function normalizeSearchText(value: string): string {
