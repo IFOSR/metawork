@@ -17,6 +17,7 @@ export type GatewayClientMessage =
     }
   | {
       type: 'attach';
+      connectionId: string;
       conversationId: string;
       resumeFromSequence?: number;
     }
@@ -37,6 +38,7 @@ export type GatewayServerMessage =
   | {
       type: 'hello';
       sessionId: string;
+      attached: boolean;
     }
   | {
       type: 'output';
@@ -92,7 +94,10 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
     };
   }
   if (candidate.type === 'attach') {
-    if (!isGatewayIdentifier(candidate.conversationId)) return null;
+    if (
+      !isGatewayIdentifier(candidate.connectionId)
+      || !isGatewayIdentifier(candidate.conversationId)
+    ) return null;
     if (
       candidate.resumeFromSequence !== undefined
       && (
@@ -105,6 +110,7 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
     }
     return {
       type: 'attach',
+      connectionId: candidate.connectionId,
       conversationId: candidate.conversationId,
       ...(candidate.resumeFromSequence !== undefined
         ? { resumeFromSequence: candidate.resumeFromSequence as number }

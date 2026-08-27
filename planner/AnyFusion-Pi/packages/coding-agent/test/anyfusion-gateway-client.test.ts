@@ -55,19 +55,16 @@ function fixture() {
 }
 
 describe("GatewayClient", () => {
-	it("marks automatic Workspace initialization as initialize-if-unset", async () => {
+	it("selects the startup Workspace through the Workspace scope", async () => {
 		const { client, submitted } = fixture();
 
-		await client.initializeWorkspace(
-			"/workspace /repo-a",
-			{ mode: "attach", conversationId: "conv_native" },
-		);
+		await client.initializeWorkspace("/workspace /repo-a");
 
 		expect(submitted[0]?.command).toEqual({
-			kind: "slash_command",
-			text: "/workspace /repo-a",
-			workspaceMutation: "initialize_if_unset",
+			kind: "select_workspace",
+			path: "/repo-a",
 		});
+		expect(submitted[0]?.scope).toEqual({ kind: "workspace" });
 	});
 
 	it("submits permission decisions as versioned Gateway commands", async () => {
@@ -84,7 +81,7 @@ describe("GatewayClient", () => {
 			requestId: "permission_1",
 			resolution: "approve",
 		});
-		expect(submitted[0]?.protocolVersion).toBe(1);
+		expect(submitted[0]?.protocolVersion).toBe(2);
 	});
 
 	it("uses one transport subscription for multiple view listeners", () => {
@@ -95,7 +92,7 @@ describe("GatewayClient", () => {
 		client.onEvent(second);
 
 		publish({
-			protocolVersion: 1,
+			protocolVersion: 2,
 			eventId: "event_1",
 			sequence: 1,
 			accountId: "local-default",
@@ -117,7 +114,7 @@ describe("GatewayClient", () => {
 		client.onEvent(() => undefined);
 		await client.resume("conv_native");
 		publish({
-			protocolVersion: 1,
+			protocolVersion: 2,
 			eventId: "event_7",
 			sequence: 7,
 			accountId: "local-default",
@@ -130,7 +127,11 @@ describe("GatewayClient", () => {
 		});
 
 		disconnect();
-		await vi.waitFor(() => expect(replay).toHaveBeenLastCalledWith("conv_native", 7));
+		await vi.waitFor(() => expect(replay).toHaveBeenLastCalledWith(
+			"conv_native",
+			7,
+			expect.stringMatching(/^tui_/u),
+		));
 	});
 
 	it("waits for reconnect replay before submitting to the active Conversation", async () => {
@@ -224,7 +225,8 @@ describe("GatewayClient", () => {
 			socket.setEncoding("utf8");
 			socket.write(`${JSON.stringify({
 				type: "hello",
-				sessionId: `conv_fresh_${connectionNumber}`,
+				sessionId: `connection_${connectionNumber}`,
+				attached: false,
 			})}\n`);
 			readJsonLines(socket, (message) => {
 				if (connectionNumber === 2) secondSocketMessages.push(message);
@@ -232,6 +234,7 @@ describe("GatewayClient", () => {
 					const acknowledge = () => socket.write(`${JSON.stringify({
 						type: "hello",
 						sessionId: message.conversationId,
+						attached: true,
 					})}\n`);
 					if (connectionNumber === 2) {
 						void releaseSecondAttach.promise.then(acknowledge);
@@ -302,7 +305,11 @@ describe("GatewayClient", () => {
 			sockets.add(socket);
 			socket.once("close", () => sockets.delete(socket));
 			socket.setEncoding("utf8");
-			socket.write(`${JSON.stringify({ type: "hello", sessionId: "conv_fresh" })}\n`);
+			socket.write(`${JSON.stringify({
+				type: "hello",
+				sessionId: "connection_fresh",
+				attached: false,
+			})}\n`);
 			readJsonLines(socket, (message) => {
 				if (message.type === "attach") socket.write("{not-json}\n");
 			});
@@ -333,13 +340,17 @@ describe("GatewayClient", () => {
 			sockets.add(socket);
 			socket.once("close", () => sockets.delete(socket));
 			socket.setEncoding("utf8");
-			socket.write(`${JSON.stringify({ type: "hello", sessionId: "conv_fresh" })}\n`);
+			socket.write(`${JSON.stringify({
+				type: "hello",
+				sessionId: "connection_fresh",
+				attached: false,
+			})}\n`);
 			readJsonLines(socket, (message) => {
 				if (message.type !== "attach") return;
 				socket.write(`${JSON.stringify({
 					type: "event",
 					event: {
-						protocolVersion: 1,
+						protocolVersion: 2,
 						eventId: "event_workspace_1",
 						sequence: 1,
 						accountId: "local-default",
@@ -354,6 +365,7 @@ describe("GatewayClient", () => {
 				socket.write(`${JSON.stringify({
 					type: "hello",
 					sessionId: message.conversationId,
+					attached: true,
 				})}\n`);
 			});
 		});
@@ -388,12 +400,17 @@ describe("GatewayClient", () => {
 			sockets.add(socket);
 			socket.once("close", () => sockets.delete(socket));
 			socket.setEncoding("utf8");
-			socket.write(`${JSON.stringify({ type: "hello", sessionId: "conv_fresh" })}\n`);
+			socket.write(`${JSON.stringify({
+				type: "hello",
+				sessionId: "connection_fresh",
+				attached: false,
+			})}\n`);
 			readJsonLines(socket, (message) => {
 				if (message.type === "attach") {
 					socket.write(`${JSON.stringify({
 						type: "hello",
 						sessionId: message.conversationId,
+						attached: true,
 					})}\n`);
 				}
 				if (message.type === "command") socket.write("x".repeat(257));
@@ -419,11 +436,14 @@ describe("GatewayClient", () => {
 
 function commandEnvelope(requestId: string): GatewayCommandEnvelope {
 	return {
-		protocolVersion: 1,
+		protocolVersion: 2,
 		requestId,
 		idempotencyKey: `idem_${requestId}`,
 		connectionId: "tui",
-		conversation: { mode: "attach", conversationId: "conv_native" },
+		scope: {
+			kind: "conversation",
+			selection: { mode: "attach", conversationId: "conv_native" },
+		},
 		command: { kind: "user_message", text: "hello", attachments: [] },
 		clientCapabilities: ["trace_v1"],
 	};

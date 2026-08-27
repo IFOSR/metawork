@@ -55,7 +55,7 @@ describe('native TUI gateway client', () => {
 
     expect(submitted).toHaveLength(1);
     expect(submitted[0].command).toEqual({ kind: 'user_message', text: 'hello', attachments: [] });
-    expect(submitted[0].connectionId).toBe('tui');
+    expect(submitted[0].connectionId).toMatch(/^tui_/u);
     expect(submitted[0].protocolVersion).toBe(2);
   });
 

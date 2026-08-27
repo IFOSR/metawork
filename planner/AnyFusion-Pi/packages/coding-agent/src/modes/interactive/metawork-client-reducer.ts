@@ -16,6 +16,12 @@ export type { ConversationViewModel } from "./metawork-client-model.ts";
 const KNOWN_EVENT_KINDS = new Set([
 	"conversation_snapshot",
 	"workspace_changed",
+	"workspace_directory_snapshot",
+	"workspace_conversation_upserted",
+	"workspace_conversation_removed",
+	"workspace_activity_changed",
+	"workspace_availability_changed",
+	"conversation_history_page",
 	"turn_started",
 	"trace_delta",
 	"task_projection",
@@ -41,12 +47,17 @@ export function reduceGatewayEvent(
 	event: GatewayEventEnvelope,
 ): ConversationViewModel {
 	if (state.seenEventIds.includes(event.eventId)) return state;
-	if (event.sequence <= state.lastSequence) {
+	const streamSequence = state.streamSequences[event.conversationId] ?? 0;
+	if (event.sequence <= streamSequence) {
 		return { ...state, connection: "resync_required" };
 	}
 	const next = {
 		...state,
-		lastSequence: event.sequence,
+		lastSequence: Math.max(state.lastSequence, event.sequence),
+		streamSequences: {
+			...state.streamSequences,
+			[event.conversationId]: event.sequence,
+		},
 		seenEventIds: [...state.seenEventIds, event.eventId],
 	};
 	if (!KNOWN_EVENT_KINDS.has(event.kind)) {
@@ -55,9 +66,19 @@ export function reduceGatewayEvent(
 	const payload = record(event.payload);
 	switch (event.kind) {
 		case "conversation_snapshot":
-			return reduceWorkspace(next, payload, false);
+			return reduceConversationSnapshot(next, event, payload);
 		case "workspace_changed":
-			return reduceWorkspace(next, payload, true);
+			return reduceAttachedWorkspace(next, payload);
+		case "workspace_directory_snapshot":
+			return reduceWorkspaceDirectory(next, payload);
+		case "workspace_conversation_upserted":
+			return reduceConversationUpsert(next, payload);
+		case "workspace_conversation_removed":
+			return reduceConversationRemoved(next, payload);
+		case "workspace_activity_changed":
+			return reduceConversationActivity(next, payload);
+		case "workspace_availability_changed":
+			return reduceWorkspaceAvailability(next, payload);
 		case "turn_started":
 			return {
 				...next,
@@ -87,20 +108,127 @@ export function reduceGatewayEvent(
 	}
 }
 
-function reduceWorkspace(
+function reduceConversationSnapshot(
+	state: ConversationViewModel,
+	event: GatewayEventEnvelope,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	const workspace = record(payload.workspace);
+	return {
+		...state,
+		activeConversationId: event.conversationId,
+		...(typeof workspace.path === "string"
+			? {
+				activeWorkspace: {
+					id: string(workspace.id, state.activeWorkspace?.id ?? ""),
+					displayName: string(
+						workspace.displayName,
+						basename(workspace.path),
+					),
+					path: workspace.path,
+					availability: workspace.availability === "unavailable"
+						? "unavailable" as const
+						: "available" as const,
+				},
+			}
+			: {}),
+	};
+}
+
+function reduceAttachedWorkspace(
 	state: ConversationViewModel,
 	payload: Record<string, unknown>,
-	clearBlock: boolean,
 ): ConversationViewModel {
 	const workspace = record(payload.workspace);
 	if (typeof workspace.path !== "string") return state;
 	return {
 		...state,
-		workspace: {
+		activeWorkspace: {
+			id: string(workspace.id, state.activeWorkspace?.id ?? ""),
+			displayName: string(workspace.displayName, basename(workspace.path)),
 			path: workspace.path,
-			selectedAt: string(workspace.selectedAt),
+			availability: workspace.availability === "unavailable" ? "unavailable" : "available",
 		},
-		...(clearBlock ? { composer: { blockedReason: null } } : {}),
+		composer: { blockedReason: null },
+	};
+}
+
+function reduceWorkspaceDirectory(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	const workspace = workspaceView(payload.workspace, string(payload.workspaceId));
+	const page = record(payload.page);
+	const items = Array.isArray(page.items)
+		? page.items.map(conversationSummary).filter((item): item is NonNullable<typeof item> => item !== null)
+		: [];
+	return {
+		...state,
+		activeWorkspace: workspace ?? state.activeWorkspace,
+		conversationSummaries: items,
+		conversationDirectoryCursor: typeof page.nextCursor === "string" ? page.nextCursor : null,
+	};
+}
+
+function reduceConversationUpsert(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	const summary = conversationSummary(payload.conversation);
+	if (!summary) return state;
+	return {
+		...state,
+		conversationSummaries: sortConversationSummaries([
+			...state.conversationSummaries.filter(item => item.conversationId !== summary.conversationId),
+			summary,
+		]),
+	};
+}
+
+function reduceConversationRemoved(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	const conversationId = string(payload.conversationId);
+	return conversationId
+		? {
+				...state,
+				conversationSummaries: state.conversationSummaries
+					.filter(item => item.conversationId !== conversationId),
+			}
+		: state;
+}
+
+function reduceConversationActivity(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	const conversationId = string(payload.conversationId);
+	const activity = activityView(payload.activity);
+	if (!conversationId || !activity) return state;
+	return {
+		...state,
+		conversationSummaries: sortConversationSummaries(
+			state.conversationSummaries.map(item => (
+				item.conversationId === conversationId ? { ...item, activity } : item
+			)),
+		),
+	};
+}
+
+function reduceWorkspaceAvailability(
+	state: ConversationViewModel,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	if (!state.activeWorkspace || string(payload.workspaceId) !== state.activeWorkspace.id) {
+		return state;
+	}
+	return {
+		...state,
+		activeWorkspace: {
+			...state.activeWorkspace,
+			availability: payload.availability === "unavailable" ? "unavailable" : "available",
+		},
 	};
 }
 
@@ -410,4 +538,75 @@ function number(value: unknown, fallback = 0): number {
 
 function unique(values: string[]): string[] {
 	return [...new Set(values)];
+}
+
+function workspaceView(value: unknown, fallbackId: string) {
+	const workspace = record(value);
+	const id = string(workspace.id, fallbackId);
+	const path = string(workspace.canonicalPath, string(workspace.path));
+	if (!id || !path) return null;
+	return {
+		id,
+		displayName: string(workspace.displayName, basename(path)),
+		path,
+		availability: workspace.availability === "unavailable"
+			? "unavailable" as const
+			: "available" as const,
+	};
+}
+
+function conversationSummary(value: unknown) {
+	const item = record(value);
+	const conversationId = string(item.conversationId, string(item.id));
+	const workspaceId = string(item.workspaceId);
+	if (!conversationId || !workspaceId) return null;
+	return {
+		conversationId,
+		workspaceId,
+		title: string(item.title, "New conversation"),
+		preview: string(item.preview),
+		updatedAt: string(item.updatedAt),
+		activity: activityView(item.activity) ?? {
+			state: "idle" as const,
+			taskId: null,
+			updatedAt: string(item.updatedAt),
+		},
+	};
+}
+
+function activityView(value: unknown) {
+	const activity = record(value);
+	const state = string(activity.state);
+	if (!["idle", "planning", "executing", "waiting", "blocked"].includes(state)) {
+		return null;
+	}
+	return {
+		state: state as "idle" | "planning" | "executing" | "waiting" | "blocked",
+		taskId: typeof activity.taskId === "string" ? activity.taskId : null,
+		updatedAt: string(activity.updatedAt),
+	};
+}
+
+function sortConversationSummaries<T extends {
+	activity: { state: string };
+	updatedAt: string;
+	conversationId: string;
+}>(items: T[]): T[] {
+	const priority: Record<string, number> = {
+		blocked: 5,
+		executing: 4,
+		waiting: 3,
+		planning: 2,
+		idle: 1,
+	};
+	return [...items].sort((left, right) => (
+		(priority[right.activity.state] ?? 0) - (priority[left.activity.state] ?? 0)
+		|| right.updatedAt.localeCompare(left.updatedAt)
+		|| left.conversationId.localeCompare(right.conversationId)
+	));
+}
+
+function basename(path: string): string {
+	const normalized = path.replaceAll("\\", "/").replace(/\/+$/u, "");
+	return normalized.slice(normalized.lastIndexOf("/") + 1) || "/";
 }

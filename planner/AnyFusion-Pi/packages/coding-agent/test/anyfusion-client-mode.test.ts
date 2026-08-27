@@ -10,13 +10,31 @@ function fixture(options: {
 	workspaceHint?: string;
 } = { conversationId: "conv_native" }) {
 	let listener: ((event: GatewayEventEnvelope) => void) | undefined;
+	let selectorActions: Parameters<AnyFusionClientModeView["showConversationSelector"]>[0] | undefined;
 	const gateway = {
+		connect: vi.fn(async () => undefined),
 		onEvent: vi.fn((next: (event: GatewayEventEnvelope) => void) => {
 			listener = next;
 			return () => undefined;
 		}),
 		resume: vi.fn(async () => ({ lastSequence: 3, snapshot: [], deltas: [] })),
-		createConversation: vi.fn(async () => "conv_new"),
+		createConversation: vi.fn(async () => ({
+			requestId: "req_create",
+			status: "accepted" as const,
+			conversationId: "conv_new",
+			workspaceId: "workspace_repo",
+		})),
+		attachConversation: vi.fn(async (conversationId: string) => ({
+			requestId: "req_attach",
+			status: "accepted" as const,
+			conversationId,
+		})),
+		listWorkspaceConversations: vi.fn(async () => ({
+			requestId: "req_list",
+			status: "accepted" as const,
+			conversationId: null,
+			workspaceId: "workspace_repo",
+		})),
 		submitUserInput: vi.fn(async () => ({
 			requestId: "req_1",
 			status: "accepted" as const,
@@ -30,7 +48,8 @@ function fixture(options: {
 		initializeWorkspace: vi.fn(async () => ({
 			requestId: "req_workspace",
 			status: "accepted" as const,
-			conversationId: "conv_native",
+			conversationId: null,
+			workspaceId: "workspace_repo",
 		})),
 		submitPermissionResolution: vi.fn(async () => ({
 			requestId: "req_3",
@@ -42,6 +61,10 @@ function fixture(options: {
 		setConnectionState: vi.fn(),
 		appendUserInput: vi.fn(),
 		appendGatewayEvent: vi.fn(),
+		showConversationSelector: vi.fn(actions => {
+			selectorActions = actions;
+		}),
+		hideConversationSelector: vi.fn(),
 		showError: vi.fn(),
 	};
 	const controller = new AnyFusionClientModeController({
@@ -50,23 +73,33 @@ function fixture(options: {
 		workspaceHint: options.workspaceHint,
 		view,
 	});
-	return { controller, gateway, view, publish: (event: GatewayEventEnvelope) => listener?.(event) };
+	return {
+		controller,
+		gateway,
+		view,
+		publish: (event: GatewayEventEnvelope) => listener?.(event),
+		selectorActions: () => selectorActions,
+	};
 }
 
 describe("AnyFusionClientModeController", () => {
-	it("initializes a new Conversation from the Client startup Workspace", async () => {
-		const { controller, gateway } = fixture({
+	it("opens the Workspace home without creating a Conversation", async () => {
+		const { controller, gateway, view } = fixture({
 			conversationId: undefined,
 			workspaceHint: "/repo-a",
 		});
 
 		await controller.start();
 
-		expect(gateway.createConversation).toHaveBeenCalledOnce();
+		expect(gateway.createConversation).not.toHaveBeenCalled();
 		expect(gateway.initializeWorkspace).toHaveBeenCalledWith(
 			"/workspace /repo-a",
-			{ mode: "attach", conversationId: "conv_new" },
 		);
+		expect(gateway.listWorkspaceConversations).toHaveBeenCalledWith(
+			"workspace_repo",
+			undefined,
+		);
+		expect(view.showConversationSelector).toHaveBeenCalledOnce();
 		expect(gateway.submitSlashCommand).not.toHaveBeenCalled();
 		expect(gateway.resume).not.toHaveBeenCalled();
 	});
@@ -91,7 +124,7 @@ describe("AnyFusionClientModeController", () => {
 		gateway.initializeWorkspace.mockResolvedValueOnce({
 			requestId: "req_workspace",
 			status: "rejected",
-			conversationId: "conv_new",
+			conversationId: null,
 			reason: "workspace_unauthorized",
 		});
 
@@ -119,7 +152,7 @@ describe("AnyFusionClientModeController", () => {
 		await controller.start();
 		await controller.submit("/task list");
 		const event: GatewayEventEnvelope = {
-			protocolVersion: 1,
+			protocolVersion: 2,
 			eventId: "event_trace",
 			sequence: 4,
 			accountId: "local-default",
@@ -143,7 +176,7 @@ describe("AnyFusionClientModeController", () => {
 		const { controller, gateway, publish } = fixture();
 		await controller.start();
 		publish({
-			protocolVersion: 1,
+			protocolVersion: 2,
 			eventId: "event_permission",
 			sequence: 5,
 			accountId: "local-default",
@@ -163,5 +196,53 @@ describe("AnyFusionClientModeController", () => {
 			{ mode: "attach", conversationId: "conv_native" },
 		);
 		expect(gateway.submitSlashCommand).not.toHaveBeenCalled();
+	});
+
+	it("creates and attaches a Conversation from the Workspace selector", async () => {
+		const { controller, gateway, selectorActions } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+		await controller.start();
+
+		selectorActions()?.create();
+		await vi.waitFor(() => expect(gateway.createConversation).toHaveBeenCalledWith("workspace_repo"));
+		await vi.waitFor(() => expect(gateway.attachConversation).toHaveBeenCalledWith("conv_new"));
+		expect(gateway.resume).toHaveBeenCalledWith("conv_new");
+	});
+
+	it("attaches /conversation only when it is in the current Workspace directory", async () => {
+		const { controller, gateway, publish, view } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+		await controller.start();
+		publish({
+			protocolVersion: 2,
+			eventId: "event_directory",
+			sequence: 1,
+			accountId: "local-default",
+			conversationId: "workspace_directory_workspace_repo",
+			requestId: null,
+			turnId: null,
+			kind: "workspace_directory_snapshot",
+			payload: {
+				workspaceId: "workspace_repo",
+				page: {
+					items: [{
+						conversationId: "conv_allowed",
+						workspaceId: "workspace_repo",
+					}],
+				},
+			},
+			occurredAt: "2026-08-28T00:00:00.000Z",
+		});
+
+		await controller.submit("/conversation conv_allowed");
+		expect(gateway.attachConversation).toHaveBeenCalledWith("conv_allowed");
+
+		await controller.submit("/conversation conv_other");
+		expect(view.showError).toHaveBeenCalledWith("conversation_not_in_workspace");
+		expect(gateway.attachConversation).not.toHaveBeenCalledWith("conv_other");
 	});
 });

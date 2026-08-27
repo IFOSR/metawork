@@ -35,6 +35,7 @@ export class GatewayFrameError extends Error {
 }
 
 interface PendingAttach {
+	connectionId: string;
 	conversationId: string;
 	afterSequence: number;
 	promise: Promise<void>;
@@ -47,7 +48,9 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private connecting: Promise<void> | null = null;
 	private buffer = "";
 	private currentConversationId: string | null = null;
+	private connectionReady = false;
 	private desiredConversationId: string | null = null;
+	private desiredConnectionId = "tui";
 	private desiredAfterSequence = 0;
 	private readonly pendingReceipts = new Map<
 		string,
@@ -61,7 +64,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private readonly disconnectListeners = new Set<() => void>();
 	private readonly deliveredEventIds = new Set<string>();
 	private readonly helloWaiters = new Set<{
-		resolve(conversationId: string): void;
+		resolve(): void;
 		reject(error: Error): void;
 	}>();
 	private readonly socketPath: string;
@@ -90,24 +93,29 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		});
 	}
 
-	async replay(conversationId: string, afterSequence = 0): Promise<GatewayReplay> {
+	async connect(): Promise<void> {
+		await this.ensureConnected();
+		if (this.connectionReady) return;
+		return new Promise<void>((resolve, reject) => {
+			this.helloWaiters.add({ resolve, reject });
+		});
+	}
+
+	async replay(
+		conversationId: string,
+		afterSequence = 0,
+		connectionId = "tui",
+	): Promise<GatewayReplay> {
 		this.desiredConversationId = conversationId;
+		this.desiredConnectionId = connectionId;
 		this.desiredAfterSequence = afterSequence;
 		await this.ensureConnected();
-		await this.ensureAttached(conversationId, afterSequence);
+		await this.ensureAttached(connectionId, conversationId, afterSequence);
 		return {
 			lastSequence: afterSequence,
 			snapshot: [],
 			deltas: [],
 		};
-	}
-
-	async createConversation(): Promise<string> {
-		await this.ensureConnected();
-		if (this.currentConversationId) return this.currentConversationId;
-		return new Promise<string>((resolve, reject) => {
-			this.helloWaiters.add({ resolve, reject });
-		});
 	}
 
 	subscribe(listener: (event: GatewayEventEnvelope) => void): () => void {
@@ -191,10 +199,11 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 
 	private handleMessage(message: GatewayWireServerMessage): void {
 		if (message.type === "hello") {
-			this.currentConversationId = message.sessionId;
-			for (const waiter of this.helloWaiters) waiter.resolve(message.sessionId);
+			this.connectionReady = true;
+			if (message.attached) this.currentConversationId = message.sessionId;
+			for (const waiter of this.helloWaiters) waiter.resolve();
 			this.helloWaiters.clear();
-			if (this.pendingAttach?.conversationId === message.sessionId) {
+			if (message.attached && this.pendingAttach?.conversationId === message.sessionId) {
 				if (this.desiredConversationId === message.sessionId) {
 					this.desiredAfterSequence = 0;
 				}
@@ -247,10 +256,18 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 
 	private ensureDesiredAttachment(): Promise<void> {
 		if (!this.desiredConversationId) return Promise.resolve();
-		return this.ensureAttached(this.desiredConversationId, this.desiredAfterSequence);
+		return this.ensureAttached(
+			this.desiredConnectionId,
+			this.desiredConversationId,
+			this.desiredAfterSequence,
+		);
 	}
 
-	private ensureAttached(conversationId: string, afterSequence: number): Promise<void> {
+	private ensureAttached(
+		connectionId: string,
+		conversationId: string,
+		afterSequence: number,
+	): Promise<void> {
 		if (this.pendingAttach) {
 			if (
 				this.pendingAttach.conversationId === conversationId
@@ -272,6 +289,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			reject = fail;
 		});
 		this.pendingAttach = {
+			connectionId,
 			conversationId,
 			afterSequence,
 			promise,
@@ -281,6 +299,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		try {
 			this.write({
 				type: "attach",
+				connectionId,
 				conversationId,
 				resumeFromSequence: afterSequence,
 			});
@@ -307,6 +326,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.socket = null;
 		this.buffer = "";
 		this.currentConversationId = null;
+		this.connectionReady = false;
 		const error = new Error("Gateway connection closed");
 		for (const waiter of this.helloWaiters) waiter.reject(error);
 		this.helloWaiters.clear();
@@ -351,7 +371,9 @@ function malformedFrame(frameBytes: number, maxFrameBytes: number): GatewayFrame
 
 function isGatewayWireServerMessage(value: unknown): value is GatewayWireServerMessage {
 	if (!isRecord(value) || typeof value.type !== "string") return false;
-	if (value.type === "hello") return isNonEmptyString(value.sessionId);
+	if (value.type === "hello") {
+		return isNonEmptyString(value.sessionId) && typeof value.attached === "boolean";
+	}
 	if (value.type === "receipt") return isGatewayReceipt(value.receipt);
 	if (value.type === "event") return isGatewayEvent(value.event);
 	if (value.type === "output") {
@@ -372,12 +394,17 @@ function isGatewayReceipt(value: unknown): value is GatewayCommandReceipt {
 	return isNonEmptyString(value.requestId)
 		&& ["accepted", "duplicate", "rejected"].includes(String(value.status))
 		&& (value.conversationId === null || typeof value.conversationId === "string")
+		&& (
+			value.workspaceId === undefined
+			|| value.workspaceId === null
+			|| typeof value.workspaceId === "string"
+		)
 		&& (value.reason === undefined || typeof value.reason === "string");
 }
 
 function isGatewayEvent(value: unknown): value is GatewayEventEnvelope {
 	if (!isRecord(value)) return false;
-	return value.protocolVersion === 1
+	return value.protocolVersion === 2
 		&& isNonEmptyString(value.eventId)
 		&& typeof value.sequence === "number"
 		&& Number.isSafeInteger(value.sequence)
@@ -394,6 +421,12 @@ function isGatewayEventKind(value: unknown): boolean {
 	return [
 		"conversation_snapshot",
 		"workspace_changed",
+		"workspace_directory_snapshot",
+		"workspace_conversation_upserted",
+		"workspace_conversation_removed",
+		"workspace_activity_changed",
+		"workspace_availability_changed",
+		"conversation_history_page",
 		"turn_started",
 		"trace_delta",
 		"task_projection",

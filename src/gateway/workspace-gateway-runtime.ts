@@ -42,6 +42,30 @@ export class WorkspaceGatewayRuntime {
     this.activeWorkspaceByConnection.set(connectionId, workspaceId);
   }
 
+  async activateWorkspace(
+    connectionId: string,
+    workspaceId: string,
+    principalId: string,
+  ): Promise<void> {
+    this.restoreConnectionWorkspace(connectionId, workspaceId);
+    await this.publishWorkspaceSnapshot(workspaceId, principalId);
+  }
+
+  async publishWorkspaceSnapshot(
+    workspaceId: string,
+    principalId: string,
+  ): Promise<void> {
+    const workspace = (await this.directory.listWorkspaces(principalId))
+      .find(item => item.id === workspaceId);
+    if (!workspace) throw new Error('workspace_unauthorized');
+    const page = await this.directory.listConversations(workspaceId, principalId, {});
+    await this.options.publish?.(
+      'workspace_directory_snapshot',
+      workspaceId,
+      { workspace, page },
+    );
+  }
+
   closeConnection(connectionId: string): void {
     this.activeWorkspaceByConnection.delete(connectionId);
   }

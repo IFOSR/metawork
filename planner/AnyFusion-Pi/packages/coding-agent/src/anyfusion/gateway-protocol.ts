@@ -70,6 +70,7 @@ export interface GatewayCommandReceipt {
   readonly requestId: string;
   readonly status: 'accepted' | 'duplicate' | 'rejected';
   readonly conversationId: string | null;
+  readonly workspaceId?: string | null;
   readonly reason?: string;
 }
 
@@ -94,11 +95,20 @@ export interface GatewayReplay {
 
 export type GatewayWireClientMessage =
   | { readonly type: 'command'; readonly envelope: GatewayCommandEnvelope }
-  | { readonly type: 'attach'; readonly conversationId: string; readonly resumeFromSequence?: number }
+  | {
+      readonly type: 'attach';
+      readonly connectionId: string;
+      readonly conversationId: string;
+      readonly resumeFromSequence?: number;
+    }
   | { readonly type: 'close' };
 
 export type GatewayWireServerMessage =
-  | { readonly type: 'hello'; readonly sessionId: string }
+  | {
+      readonly type: 'hello';
+      readonly sessionId: string;
+      readonly attached: boolean;
+    }
   | { readonly type: 'event'; readonly event: GatewayEventEnvelope }
   | { readonly type: 'output'; readonly lines: string[]; readonly event: GatewayEventEnvelope }
   | { readonly type: 'receipt'; readonly receipt: GatewayCommandReceipt }

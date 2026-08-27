@@ -34,7 +34,7 @@ export class TuiClientLauncher {
   async start(): Promise<void> {
     const resolveEndpoint = this.deps.resolveEndpoint
       ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion));
-    const endpoint = await resolveEndpoint(this.deps.manifestPath, 1);
+    const endpoint = await resolveEndpoint(this.deps.manifestPath, 2);
     if (!endpoint.ok) throw new Error(endpoint.message);
     if (this.deps.runUi) {
       await this.deps.runUi(

@@ -26,12 +26,17 @@ export function renderConversation(
 	width: number,
 ): string {
 	const turn = model.currentTurn;
-	const workspace = model.workspace
-		? width < 100 ? basename(model.workspace.path) : model.workspace.path
+	const workspace = model.activeWorkspace
+		? width < 100 ? model.activeWorkspace.displayName : model.activeWorkspace.path
 		: "未设置 · 输入 /workspace /absolute/path";
 	const lines = [
 		`MetaWork  ·  ${connection}  ·  workspace: ${workspace}`,
-		...(model.workspace && width < 100 ? [`完整路径: ${model.workspace.path}`] : []),
+		...(model.activeWorkspace && width < 100
+			? [`完整路径: ${model.activeWorkspace.path}`]
+			: []),
+		...(model.activeConversationId
+			? [`conversation: ${model.activeConversationId}`]
+			: ["Workspace home · 使用 /conversations 浏览会话"]),
 		"",
 		...userMessages.flatMap(message => ["你", message, ""]),
 		"任务进度",
@@ -66,9 +71,4 @@ function renderStepper(active: MetaWorkStage | undefined): string {
 		const marker = stage.key === active ? "◉" : active && stages.findIndex(item => item.key === active) > stages.indexOf(stage) ? "●" : "○";
 		return `${marker} ${stage.label}`;
 	}).join("  ");
-}
-
-function basename(path: string): string {
-	const normalized = path.replaceAll("\\", "/").replace(/\/+$/u, "");
-	return normalized.slice(normalized.lastIndexOf("/") + 1) || "/";
 }

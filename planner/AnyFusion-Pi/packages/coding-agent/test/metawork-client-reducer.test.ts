@@ -13,11 +13,11 @@ function event(
 	overrides: Partial<GatewayEventEnvelope> = {},
 ): GatewayEventEnvelope {
 	return {
-		protocolVersion: 1,
+		protocolVersion: 2,
 		eventId: overrides.eventId ?? `event_${sequence}`,
 		sequence,
 		accountId: "local-default",
-		conversationId: "conv_1",
+		conversationId: overrides.conversationId ?? "conv_1",
 		requestId: overrides.requestId ?? "req_1",
 		turnId: overrides.turnId ?? "turn_1",
 		kind,
@@ -85,7 +85,7 @@ describe("MetaWork client reducer", () => {
 		let state = reduceGatewayEvent(baseState(), event("workspace_changed", {
 			workspace: { path: "/repo", selectedAt: "2026-08-26T00:00:00.000Z" },
 		}, 1));
-		expect(state.workspace?.path).toBe("/repo");
+		expect(state.activeWorkspace?.path).toBe("/repo");
 		state = reduceGatewayEvent(state, event("terminal_error", {
 			code: "workspace_required",
 			message: "请先设置 Workspace",
@@ -103,9 +103,73 @@ describe("MetaWork client reducer", () => {
 			},
 		}, 1));
 
-		expect(state.workspace).toEqual({
+		expect(state.activeWorkspace).toEqual({
+			id: "",
+			displayName: "repo-a",
 			path: "/repo-a",
-			selectedAt: "2026-08-27T00:00:00.000Z",
+			availability: "available",
+		});
+		expect(state.activeConversationId).toBe("conv_1");
+	});
+
+	it("keeps Workspace directory state separate from the attached transcript", () => {
+		const state = reduceGatewayEvent(baseState(), event("workspace_directory_snapshot", {
+			workspaceId: "workspace_repo",
+			workspace: {
+				id: "workspace_repo",
+				displayName: "MetaWork",
+				canonicalPath: "/repo",
+				availability: "available",
+			},
+			page: {
+				items: [{
+					conversationId: "conv_running",
+					workspaceId: "workspace_repo",
+					title: "检查构建",
+					preview: "检查构建",
+					updatedAt: "2026-08-28T00:00:00.000Z",
+					activity: {
+						state: "executing",
+						taskId: "task_1",
+						updatedAt: "2026-08-28T00:00:00.000Z",
+					},
+				}],
+				nextCursor: null,
+			},
+		}, 1, {
+			conversationId: "workspace_directory_workspace_repo",
+			turnId: null,
+			requestId: null,
+		}));
+
+		expect(state.activeWorkspace?.id).toBe("workspace_repo");
+		expect(state.conversationSummaries[0]).toMatchObject({
+			conversationId: "conv_running",
+			title: "检查构建",
+			activity: { state: "executing", taskId: "task_1" },
+		});
+		expect(state.activeConversationId).toBeNull();
+		expect(state.currentTurn).toBeNull();
+		expect(state.notices).toEqual([]);
+	});
+
+	it("tracks independent Workspace and Conversation sequence cursors", () => {
+		let state = reduceGatewayEvent(baseState(), event("conversation_snapshot", {
+			lines: [],
+		}, 5));
+		state = reduceGatewayEvent(state, event("workspace_directory_snapshot", {
+			workspaceId: "workspace_repo",
+			page: { items: [], nextCursor: null },
+		}, 1, {
+			conversationId: "workspace_directory_workspace_repo",
+			turnId: null,
+			requestId: null,
+		}));
+
+		expect(state.connection).toBe("connected");
+		expect(state.streamSequences).toEqual({
+			conv_1: 5,
+			workspace_directory_workspace_repo: 1,
 		});
 	});
 

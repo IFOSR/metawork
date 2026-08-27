@@ -31,6 +31,7 @@ export function GatewayClientApp(props: GatewayClientAppProps) {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const connectionIdRef = useRef(`ink_${process.pid}_${Date.now()}`);
 
   useEffect(() => {
     const socket = createConnection(props.socketPath);
@@ -67,6 +68,7 @@ export function GatewayClientApp(props: GatewayClientAppProps) {
       if (props.conversationId) {
         socket.write(encodeJsonLine({
           type: 'attach',
+          connectionId: connectionIdRef.current,
           conversationId: props.conversationId,
           resumeFromSequence: 0,
         }));

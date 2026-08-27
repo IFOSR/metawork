@@ -52,15 +52,43 @@ export interface MetaWorkTurnView {
 	readonly error: string | null;
 }
 
+export type MetaWorkConversationActivity =
+	| "idle"
+	| "planning"
+	| "executing"
+	| "waiting"
+	| "blocked";
+
+export interface MetaWorkWorkspaceView {
+	readonly id: string;
+	readonly displayName: string;
+	readonly path: string;
+	readonly availability: "available" | "unavailable";
+}
+
+export interface MetaWorkConversationSummary {
+	readonly conversationId: string;
+	readonly workspaceId: string;
+	readonly title: string;
+	readonly preview: string;
+	readonly updatedAt: string;
+	readonly activity: {
+		readonly state: MetaWorkConversationActivity;
+		readonly taskId: string | null;
+		readonly updatedAt: string;
+	};
+}
+
 export interface ConversationViewModel {
 	readonly connection: "connected" | "resync_required";
 	readonly lastSequence: number;
+	readonly streamSequences: Record<string, number>;
 	readonly seenEventIds: string[];
 	readonly seenEventKeys: string[];
-	readonly workspace: {
-		readonly path: string;
-		readonly selectedAt: string;
-	} | null;
+	readonly activeWorkspace: MetaWorkWorkspaceView | null;
+	readonly conversationSummaries: MetaWorkConversationSummary[];
+	readonly conversationDirectoryCursor: string | null;
+	readonly activeConversationId: string | null;
 	readonly currentTurn: MetaWorkTurnView | null;
 	readonly composer: {
 		readonly blockedReason: string | null;
@@ -76,9 +104,13 @@ export function emptyConversationViewModel(): ConversationViewModel {
 	return {
 		connection: "connected",
 		lastSequence: 0,
+		streamSequences: {},
 		seenEventIds: [],
 		seenEventKeys: [],
-		workspace: null,
+		activeWorkspace: null,
+		conversationSummaries: [],
+		conversationDirectoryCursor: null,
+		activeConversationId: null,
 		currentTurn: null,
 		composer: { blockedReason: null },
 		notices: [],

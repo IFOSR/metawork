@@ -10,7 +10,13 @@ describe("MetaWork client view", () => {
 		const base = emptyConversationViewModel();
 		const model = {
 			...base,
-			workspace: { path: "/workspace/metawork", selectedAt: "2026-08-26T00:00:00.000Z" },
+			activeWorkspace: {
+				id: "workspace_metawork",
+				displayName: "metawork",
+				path: "/workspace/metawork",
+				availability: "available" as const,
+			},
+			activeConversationId: "conv_1",
 			currentTurn: {
 				id: "turn_internal",
 				requestId: "req_internal",
@@ -66,7 +72,12 @@ describe("MetaWork client view", () => {
 		const rendered = renderConversation(
 			{
 				...emptyConversationViewModel(),
-				workspace: { path: "/Users/example/projects/metawork", selectedAt: "2026-08-26T00:00:00.000Z" },
+				activeWorkspace: {
+					id: "workspace_metawork",
+					displayName: "metawork",
+					path: "/Users/example/projects/metawork",
+					availability: "available",
+				},
 			},
 			[],
 			"reconnecting",

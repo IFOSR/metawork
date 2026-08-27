@@ -12,6 +12,7 @@ import {
   parseGatewayClientMessage,
   type GatewayServerMessage,
 } from './protocol.js';
+import { workspaceEventStreamId } from './workspace-event-stream.js';
 
 interface GatewayServerDeps {
   socketPath: string;
@@ -20,7 +21,13 @@ interface GatewayServerDeps {
   subscriptions: GatewaySubscriptions;
   authorizeAttach(accountId: string, conversationId: string): Promise<boolean>;
   attachClient?(accountId: string, conversationId: string): Promise<() => void>;
-  onConversationCreated?(accountId: string, conversationId: string): void;
+  resolveConversationWorkspaceId?(
+    accountId: string,
+    conversationId: string,
+  ): Promise<string | null>;
+  activateConnectionWorkspace?(connectionId: string, workspaceId: string): void;
+  publishWorkspaceSnapshot?(workspaceId: string): Promise<void>;
+  closeConnection?(connectionId: string): void;
   registerWebLaunch?(
     input: { workspaceHint: string; conversationId?: string },
   ): Promise<{ token: string; expiresAt: string }>;
@@ -73,16 +80,60 @@ export class MetaclawGatewayServer {
 
   private handleConnection(socket: Socket): void {
     const accountId = this.deps.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID;
-    let conversationId = `conv_gateway_${nanoid(10)}`;
+    const socketConnectionId = `connection_${nanoid(10)}`;
+    let conversationId: string | null = null;
     let unsubscribe: (() => void) | null = null;
+    let workspaceUnsubscribe: (() => void) | null = null;
+    let activeWorkspaceId: string | null = null;
     let latestAttachRequest = 0;
+    let latestWorkspaceRequest = 0;
     let activeAttachment: { readonly token: object; detachClient(): void } | null = null;
-    this.deps.onConversationCreated?.(accountId, conversationId);
+    const clientConnectionIds = new Set<string>();
 
     const send = (message: GatewayServerMessage) => {
       if (!socket.destroyed) socket.write(encodeJsonLine(message));
     };
+    const attachWorkspace = async (workspaceId: string, workspaceRequest: number) => {
+      if (activeWorkspaceId === workspaceId && workspaceUnsubscribe) return;
+      const channelId = workspaceEventStreamId(workspaceId);
+      const buffered: GatewayEventEnvelope[] = [];
+      const deliveredEventIds = new Set<string>();
+      let replaying = true;
+      const sendWorkspaceEvent = (event: GatewayEventEnvelope) => {
+        if (deliveredEventIds.has(event.eventId)) return;
+        deliveredEventIds.add(event.eventId);
+        this.sendEvent(send, event);
+      };
+      const nextUnsubscribe = this.deps.subscriptions.subscribe({
+        accountId,
+        conversationId: channelId,
+        listener: event => {
+          if (replaying) buffered.push(event);
+          else sendWorkspaceEvent(event);
+        },
+      });
+      let replay: GatewayReplay;
+      try {
+        replay = await this.deps.journal.replay(accountId, channelId, 0);
+      } catch (error) {
+        nextUnsubscribe();
+        throw error;
+      }
+      if (workspaceRequest !== latestWorkspaceRequest) {
+        nextUnsubscribe();
+        return;
+      }
+      workspaceUnsubscribe?.();
+      workspaceUnsubscribe = nextUnsubscribe;
+      activeWorkspaceId = workspaceId;
+      for (const event of orderedUniqueReplayEvents(replay)) sendWorkspaceEvent(event);
+      replaying = false;
+      for (const event of orderedUniqueEvents(buffered)) {
+        if (event.sequence > replay.lastSequence) sendWorkspaceEvent(event);
+      }
+    };
     const attach = async (
+      connectionId: string,
       nextConversationId: string,
       resumeFromSequence = 0,
       authorize = true,
@@ -93,6 +144,24 @@ export class MetaclawGatewayServer {
           throw new Error('conversation attach denied');
         }
         return;
+      }
+      if (request !== latestAttachRequest) return;
+
+      clientConnectionIds.add(connectionId);
+      const workspaceId = await this.deps.resolveConversationWorkspaceId?.(
+        accountId,
+        nextConversationId,
+      ) ?? null;
+      if (request !== latestAttachRequest) return;
+      if (workspaceId) {
+        const workspaceRequest = latestWorkspaceRequest += 1;
+        this.deps.activateConnectionWorkspace?.(connectionId, workspaceId);
+        await attachWorkspace(workspaceId, workspaceRequest);
+        if (
+          request !== latestAttachRequest
+          || workspaceRequest !== latestWorkspaceRequest
+        ) return;
+        await this.deps.publishWorkspaceSnapshot?.(workspaceId);
       }
       if (request !== latestAttachRequest) return;
 
@@ -152,18 +221,22 @@ export class MetaclawGatewayServer {
       for (const event of orderedUniqueEvents(buffered)) {
         if (event.sequence > replay.lastSequence) sendAttachedEvent(event);
       }
-      send({ type: 'hello', sessionId: nextConversationId });
+      send({ type: 'hello', sessionId: nextConversationId, attached: true });
     };
 
-    void attach(conversationId, 0, false).catch(error => {
-      send({ type: 'error', message: (error as Error).message });
-    });
+    send({ type: 'hello', sessionId: socketConnectionId, attached: false });
     const cleanup = () => {
       latestAttachRequest += 1;
       activeAttachment?.detachClient();
       activeAttachment = null;
       unsubscribe?.();
       unsubscribe = null;
+      workspaceUnsubscribe?.();
+      workspaceUnsubscribe = null;
+      for (const connectionId of clientConnectionIds) {
+        this.deps.closeConnection?.(connectionId);
+      }
+      clientConnectionIds.clear();
     };
     socket.on('close', cleanup);
     socket.on('error', cleanup);
@@ -179,7 +252,11 @@ export class MetaclawGatewayServer {
         return;
       }
       if (message.type === 'attach') {
-        void attach(message.conversationId, message.resumeFromSequence).catch(error => {
+        void attach(
+          message.connectionId,
+          message.conversationId,
+          message.resumeFromSequence,
+        ).catch(error => {
           send({ type: 'error', message: (error as Error).message });
         });
         return;
@@ -205,12 +282,20 @@ export class MetaclawGatewayServer {
       }
       if (message.type === 'command') {
         const envelope = message.envelope;
+        clientConnectionIds.add(envelope.connectionId);
         void this.deps.gateway.handle(envelope, 'local').then(receipt => {
           if ('kind' in receipt) {
             send({ type: 'error', message: receipt.message, requestId: envelope.requestId });
             return;
           }
-          send({ type: 'receipt', receipt });
+          const sendReceipt = async () => {
+            if (receipt.status === 'accepted' && receipt.workspaceId) {
+              const workspaceRequest = latestWorkspaceRequest += 1;
+              await attachWorkspace(receipt.workspaceId, workspaceRequest);
+            }
+            send({ type: 'receipt', receipt });
+          };
+          return sendReceipt();
         }).catch(error => {
           send({
             type: 'error',
@@ -222,6 +307,10 @@ export class MetaclawGatewayServer {
       }
       if (message.type !== 'input') return;
       const selectedConversationId = message.conversationId ?? conversationId;
+      if (!selectedConversationId) {
+        send({ type: 'error', message: 'conversation_required' });
+        return;
+      }
       const command: GatewayCommand = message.text.startsWith('/')
         ? { kind: 'slash_command', text: message.text }
         : { kind: 'user_message', text: message.text, attachments: [] };

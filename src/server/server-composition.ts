@@ -73,6 +73,7 @@ import {
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
+import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
@@ -988,7 +989,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         eventId: `event_${nanoid(12)}`,
         sequence: 0,
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
-        conversationId: `workspace:${workspaceId}`,
+        conversationId: workspaceEventStreamId(workspaceId),
         requestId: null,
         turnId: null,
         kind,
@@ -1069,7 +1070,24 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       }
       return conversationGatewayRuntime.attachClient(conversationId);
     },
-    onConversationCreated: rememberConversation,
+    resolveConversationWorkspaceId: async (accountId, conversationId) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
+      const binding = (await conversationStore.readConversation(conversationId))
+        ?.conversation.workspaceBinding;
+      return binding?.workspaceId ?? null;
+    },
+    activateConnectionWorkspace: (connectionId, workspaceId) => {
+      workspaceGatewayRuntime.restoreConnectionWorkspace(connectionId, workspaceId);
+    },
+    publishWorkspaceSnapshot: workspaceId => {
+      return workspaceGatewayRuntime.publishWorkspaceSnapshot(
+        workspaceId,
+        'local:local-installation',
+      );
+    },
+    closeConnection: connectionId => {
+      workspaceGatewayRuntime.closeConnection(connectionId);
+    },
     registerWebLaunch: input => Promise.resolve(webLaunchContexts.issue(input)),
   });
   let managementServer: ManagementServer | null = null;

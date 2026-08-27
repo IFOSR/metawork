@@ -39,13 +39,12 @@ describe('MetaclawGatewayServer lifecycle', () => {
     const fixture = await createFixture();
     await fixture.server.start();
     const first = await connect(fixture.socketPath);
-    const hello = await first.next(message => message.type === 'hello');
-    expect(hello.type).toBe('hello');
-    const conversationId = hello.type === 'hello' ? hello.sessionId : '';
+    await first.next(message => message.type === 'hello');
+    const conversationId = 'conv_reconnect';
     first.socket.destroy();
 
     const appended = await fixture.journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'event_reconnect',
       sequence: 0,
       accountId: 'local-default',
@@ -61,6 +60,7 @@ describe('MetaclawGatewayServer lifecycle', () => {
     await second.next(message => message.type === 'hello');
     second.socket.write(encodeJsonLine({
       type: 'attach',
+      connectionId: 'native_tui',
       conversationId,
       resumeFromSequence: appended.sequence - 1,
     }));
@@ -94,6 +94,7 @@ describe('MetaclawGatewayServer lifecycle', () => {
 
     client.socket.write(encodeJsonLine({
       type: 'attach',
+      connectionId: 'native_tui',
       conversationId: 'conv_denied',
     }));
 
@@ -136,13 +137,25 @@ describe('MetaclawGatewayServer lifecycle', () => {
     const client = await connect(fixture.socketPath);
     await client.next(message => message.type === 'hello');
 
-    client.socket.write(encodeJsonLine({ type: 'attach', conversationId: 'conv_old' }));
+    client.socket.write(encodeJsonLine({
+      type: 'attach',
+      connectionId: 'native_tui',
+      conversationId: 'conv_old',
+    }));
     await oldReplayStarted;
-    client.socket.write(encodeJsonLine({ type: 'attach', conversationId: 'conv_new' }));
+    client.socket.write(encodeJsonLine({
+      type: 'attach',
+      connectionId: 'native_tui',
+      conversationId: 'conv_new',
+    }));
 
     await expect(client.next(message => (
       message.type === 'hello' && message.sessionId === 'conv_new'
-    ))).resolves.toMatchObject({ type: 'hello', sessionId: 'conv_new' });
+    ))).resolves.toMatchObject({
+      type: 'hello',
+      sessionId: 'conv_new',
+      attached: true,
+    });
     releaseOld();
     await new Promise(resolve => setTimeout(resolve, 25));
 
@@ -171,6 +184,7 @@ describe('MetaclawGatewayServer lifecycle', () => {
 
     client.socket.write(encodeJsonLine({
       type: 'attach',
+      connectionId: 'native_tui',
       conversationId: 'conv_terminal',
     }));
     await client.next(message => (
@@ -189,11 +203,21 @@ describe('MetaclawGatewayServer lifecycle', () => {
     const fixture = await createFixture();
     await fixture.server.start();
     const client = await connect(fixture.socketPath);
-    const hello = await client.next(message => message.type === 'hello');
-    const conversationId = hello.type === 'hello' ? hello.sessionId : '';
+    await client.next(message => message.type === 'hello');
+    const conversationId = 'conv_stream';
+    client.socket.write(encodeJsonLine({
+      type: 'attach',
+      connectionId: 'native_tui',
+      conversationId,
+    }));
+    await client.next(message => (
+      message.type === 'hello'
+      && message.attached
+      && message.sessionId === conversationId
+    ));
 
     const traceEvent: GatewayEventEnvelope = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'event_trace',
       sequence: 1,
       accountId: 'local-default',
@@ -215,11 +239,14 @@ describe('MetaclawGatewayServer lifecycle', () => {
     client.socket.write(encodeJsonLine({
       type: 'command',
       envelope: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: 'req_command',
         idempotencyKey: 'idem_command',
         connectionId: 'native_tui',
-        conversation: { mode: 'attach', conversationId },
+        scope: {
+          kind: 'conversation',
+          selection: { mode: 'attach', conversationId },
+        },
         command: { kind: 'user_message', text: 'hello', attachments: [] },
         clientCapabilities: ['trace_v1'],
       },
@@ -270,8 +297,18 @@ describe('MetaclawGatewayServer lifecycle', () => {
     });
     await fixture.server.start();
     const client = await connect(fixture.socketPath);
-    const hello = await client.next(message => message.type === 'hello');
-    const conversationId = hello.type === 'hello' ? hello.sessionId : '';
+    await client.next(message => message.type === 'hello');
+    const conversationId = 'conv_lifecycle';
+    client.socket.write(encodeJsonLine({
+      type: 'attach',
+      connectionId: 'native_tui',
+      conversationId,
+    }));
+    await client.next(message => (
+      message.type === 'hello'
+      && message.attached
+      && message.sessionId === conversationId
+    ));
 
     client.socket.destroy();
     await new Promise<void>(resolve => client.socket.once('close', () => resolve()));
@@ -435,7 +472,7 @@ function outputEvent(
   lines: string[],
 ): GatewayEventEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     eventId,
     sequence: 1,
     accountId: 'local-default',

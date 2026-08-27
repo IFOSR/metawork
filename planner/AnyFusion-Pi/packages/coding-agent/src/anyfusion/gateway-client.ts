@@ -17,8 +17,8 @@ import type {
 
 export interface GatewayClientDeps {
 	submit(envelope: GatewayCommandEnvelope): Promise<GatewayCommandReceipt>;
-	replay(conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
-	createConversation?(): Promise<string>;
+	replay(conversationId: string, afterSequence?: number, connectionId?: string): Promise<GatewayReplay>;
+	connect?(): Promise<void>;
   subscribe(listener: (event: GatewayEventEnvelope) => void): () => void;
   onDisconnect?(listener: () => void): () => void;
   createId?(prefix: string): string;
@@ -29,9 +29,10 @@ let sequenceCounter = 0;
 export class GatewayClient {
   private readonly deps: GatewayClientDeps;
   private lastSequence = 0;
-	private readonly listeners = new Set<(event: GatewayEventEnvelope) => void>();
+  private readonly listeners = new Set<(event: GatewayEventEnvelope) => void>();
 	private readonly disconnectListeners = new Set<() => void>();
   private readonly createId: (prefix: string) => string;
+  private readonly connectionId: string;
   private transportUnsubscribe: (() => void) | null = null;
   private disconnectUnsubscribe: (() => void) | null = null;
   private activeConversationId: string | null = null;
@@ -42,12 +43,17 @@ export class GatewayClient {
 	constructor(deps: GatewayClientDeps) {
     this.deps = deps;
     this.createId = deps.createId ?? (prefix => `${prefix}_${Date.now()}_${sequenceCounter += 1}`);
+    this.connectionId = this.createId('tui');
 		this.disconnectUnsubscribe = deps.onDisconnect?.(() => {
 			this.reconnectRequired = this.activeConversationId !== null;
 			this.reconnectFailure = null;
 			for (const listener of this.disconnectListeners) listener();
 			void this.reconnect();
 		}) ?? null;
+	}
+
+	connect(): Promise<void> {
+		return this.deps.connect?.() ?? Promise.resolve();
 	}
 
 	onDisconnect(listener: () => void): () => void {
@@ -72,12 +78,39 @@ export class GatewayClient {
     );
   }
 
-  initializeWorkspace(
-    text: string,
-    _conversation: ConversationSelection,
-  ): Promise<GatewayCommandReceipt> {
+  initializeWorkspace(text: string): Promise<GatewayCommandReceipt> {
     const path = text.replace(/^\/workspace\s+/u, '').trim();
     return this.submit({ kind: 'select_workspace', path }, { kind: 'workspace' });
+  }
+
+  listWorkspaceConversations(
+    workspaceId: string,
+    query?: string,
+    cursor?: string,
+  ): Promise<GatewayCommandReceipt> {
+    return this.submit({
+      kind: 'list_workspace_conversations',
+      workspaceId,
+      ...(cursor ? { cursor } : {}),
+      ...(query ? { query } : {}),
+    }, { kind: 'workspace' });
+  }
+
+  createConversation(workspaceId: string): Promise<GatewayCommandReceipt> {
+    return this.submit(
+      { kind: 'create_conversation', workspaceId },
+      { kind: 'workspace' },
+    );
+  }
+
+  attachConversation(conversationId: string): Promise<GatewayCommandReceipt> {
+    return this.submit(
+      { kind: 'attach_conversation', conversationId },
+      {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId },
+      },
+    );
   }
 
   submitPermissionResolution(
@@ -102,7 +135,9 @@ export class GatewayClient {
     this.listeners.add(listener);
     this.transportUnsubscribe ??= this.deps.subscribe(event => {
       this.lastSequence = Math.max(this.lastSequence, event.sequence);
-      this.activeConversationId = event.conversationId;
+      if (!isWorkspaceEvent(event.kind)) {
+        this.activeConversationId = event.conversationId;
+      }
       for (const item of this.listeners) item(event);
     });
     return () => {
@@ -117,7 +152,11 @@ export class GatewayClient {
 	async resume(conversationId: string): Promise<GatewayReplay> {
     this.activeConversationId = conversationId;
     try {
-      const replay = await this.deps.replay(conversationId, this.lastSequence);
+      const replay = await this.deps.replay(
+        conversationId,
+        this.lastSequence,
+        this.connectionId,
+      );
       this.lastSequence = Math.max(this.lastSequence, replay.lastSequence);
       this.reconnectRequired = false;
       this.reconnectFailure = null;
@@ -128,16 +167,6 @@ export class GatewayClient {
 	      throw this.reconnectFailure;
 	    }
 	  }
-
-	createConversation(): Promise<string> {
-		if (!this.deps.createConversation) {
-			return Promise.reject(new Error("Gateway transport cannot create a Conversation"));
-	}
-		return this.deps.createConversation().then((conversationId) => {
-			this.activeConversationId = conversationId;
-			return conversationId;
-		});
-	}
 
   get currentSequence(): number {
     return this.lastSequence;
@@ -163,7 +192,7 @@ export class GatewayClient {
       protocolVersion: 2,
       requestId,
       idempotencyKey,
-      connectionId: 'tui',
+      connectionId: this.connectionId,
       scope,
       command,
       clientCapabilities: ['trace_v1'],
@@ -192,6 +221,7 @@ export class GatewayClient {
     const replay = this.deps.replay(
       conversationId,
       this.lastSequence,
+      this.connectionId,
     ).then(result => {
       if (this.activeConversationId === conversationId) {
         this.lastSequence = Math.max(this.lastSequence, result.lastSequence);
@@ -212,4 +242,14 @@ export class GatewayClient {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function isWorkspaceEvent(kind: GatewayEventEnvelope['kind']): boolean {
+  return [
+    'workspace_directory_snapshot',
+    'workspace_conversation_upserted',
+    'workspace_conversation_removed',
+    'workspace_activity_changed',
+    'workspace_availability_changed',
+  ].includes(kind);
 }

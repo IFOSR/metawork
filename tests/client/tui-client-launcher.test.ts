@@ -5,20 +5,22 @@ import { TuiClientLauncher } from '../../src/client/tui-client-launcher.js';
 describe('TuiClientLauncher', () => {
   it('connects only after endpoint resolution and passes Conversation attach', async () => {
     const runUi = vi.fn(async () => undefined);
+    const resolveEndpoint = vi.fn(async () => ({
+      ok: true as const,
+      manifestVersion: 1,
+      socketPath: '/tmp/gateway.sock',
+      webOrigin: 'http://127.0.0.1:8788',
+    }));
     const launcher = new TuiClientLauncher({
       manifestPath: '/tmp/endpoint.json',
       conversationId: 'conv_1',
       startupWorkspacePath: '/repo-a',
-      resolveEndpoint: async () => ({
-        ok: true,
-        manifestVersion: 1,
-        socketPath: '/tmp/gateway.sock',
-        webOrigin: 'http://127.0.0.1:8788',
-      }),
+      resolveEndpoint,
       runUi,
     });
 
     await launcher.start();
+    expect(resolveEndpoint).toHaveBeenCalledWith('/tmp/endpoint.json', 2);
     expect(runUi).toHaveBeenCalledWith('/tmp/gateway.sock', 'conv_1', '/repo-a');
   });
 

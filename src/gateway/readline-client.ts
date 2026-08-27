@@ -24,12 +24,18 @@ export async function runGatewayReadlineClient(
   };
 
   if (conversationId) {
-    send({ type: 'attach', conversationId, resumeFromSequence: 0 });
+    send({
+      type: 'attach',
+      connectionId: `readline_${process.pid}`,
+      conversationId,
+      resumeFromSequence: 0,
+    });
   }
 
   const parse = createJsonLineParser<GatewayServerMessage>((message) => {
     if (message.type === 'hello') {
-      process.stdout.write(`→ 已连接 Metaclaw Gateway（session: ${message.sessionId}）\n`);
+      const target = message.attached ? `Conversation: ${message.sessionId}` : 'Client';
+      process.stdout.write(`→ 已连接 MetaWork Gateway（${target}）\n`);
       readline.prompt();
       return;
     }

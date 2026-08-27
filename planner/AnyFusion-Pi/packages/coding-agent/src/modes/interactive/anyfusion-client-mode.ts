@@ -25,15 +25,26 @@ import {
 	renderConversation,
 	type ClientConnectionState,
 } from "./metawork-client-view.ts";
+import {
+	MetaWorkConversationSelector,
+	type MetaWorkConversationSelectorActions,
+} from "./components/metawork-conversation-selector.ts";
 
 interface GatewayClientPort {
+	connect?(): Promise<void>;
 	onEvent(listener: (event: GatewayEventEnvelope) => void): () => void;
 	onDisconnect?(listener: () => void): () => void;
 	resume(conversationId: string): Promise<GatewayReplay>;
-	createConversation?(): Promise<string>;
+	createConversation(workspaceId: string): Promise<GatewayCommandReceipt>;
+	attachConversation(conversationId: string): Promise<GatewayCommandReceipt>;
+	listWorkspaceConversations(
+		workspaceId: string,
+		query?: string,
+		cursor?: string,
+	): Promise<GatewayCommandReceipt>;
 	submitUserInput(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
 	submitSlashCommand(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
-	initializeWorkspace(text: string, conversation: ConversationSelection): Promise<GatewayCommandReceipt>;
+	initializeWorkspace(text: string): Promise<GatewayCommandReceipt>;
 	submitPermissionResolution(
 		requestId: string,
 		resolution: "approve" | "deny",
@@ -47,6 +58,8 @@ export interface AnyFusionClientModeView {
 	setConnectionState(state: ClientConnectionState): void;
 	appendUserInput(text: string): void;
 	appendGatewayEvent(event: GatewayEventEnvelope): void;
+	showConversationSelector(actions: MetaWorkConversationSelectorActions): void;
+	hideConversationSelector(): void;
 	showError(message: string): void;
 }
 
@@ -57,12 +70,14 @@ export class AnyFusionClientModeController {
 		workspaceHint?: string;
 		view: AnyFusionClientModeView;
 	};
-	private selection: ConversationSelection;
+	private selection: ConversationSelection | null;
 	private conversationId: string | undefined;
+	private activeWorkspaceId: string | null = null;
 	private unsubscribe: (() => void) | null = null;
 	private disconnectUnsubscribe: (() => void) | null = null;
 	private pendingPermissionRequestId: string | null = null;
 	private currentTurnId: string | null = null;
+	private readonly workspaceConversationIds = new Set<string>();
 
 	constructor(
 			deps: {
@@ -76,7 +91,7 @@ export class AnyFusionClientModeController {
 		this.conversationId = deps.conversationId;
 		this.selection = deps.conversationId
 			? { mode: "attach", conversationId: deps.conversationId }
-			: { mode: "new" };
+			: null;
 	}
 
 	async start(): Promise<void> {
@@ -85,6 +100,41 @@ export class AnyFusionClientModeController {
 			this.deps.view.setConnectionState("reconnecting");
 		}) ?? null;
 		this.unsubscribe = this.deps.gateway.onEvent((event) => {
+			if (event.kind === "workspace_directory_snapshot") {
+				const payload = isRecord(event.payload) ? event.payload : {};
+				const workspace = isRecord(payload.workspace) ? payload.workspace : {};
+				const page = isRecord(payload.page) ? payload.page : {};
+				this.workspaceConversationIds.clear();
+				for (const item of Array.isArray(page.items) ? page.items : []) {
+					if (!isRecord(item)) continue;
+					const conversationId = stringValue(item.conversationId, stringValue(item.id));
+					if (conversationId) this.workspaceConversationIds.add(conversationId);
+				}
+				this.activeWorkspaceId = stringValue(
+					workspace.id,
+					stringValue(payload.workspaceId, this.activeWorkspaceId ?? ""),
+				) || this.activeWorkspaceId;
+			}
+			if (event.kind === "workspace_conversation_upserted") {
+				const payload = isRecord(event.payload) ? event.payload : {};
+				const conversation = isRecord(payload.conversation) ? payload.conversation : {};
+				const conversationId = stringValue(
+					conversation.conversationId,
+					stringValue(conversation.id),
+				);
+				if (conversationId) this.workspaceConversationIds.add(conversationId);
+			}
+			if (event.kind === "workspace_conversation_removed") {
+				const payload = isRecord(event.payload) ? event.payload : {};
+				this.workspaceConversationIds.delete(stringValue(payload.conversationId));
+			}
+			if (
+				!isWorkspaceDirectoryEvent(event.kind)
+				&& event.kind === "conversation_snapshot"
+			) {
+				this.conversationId = event.conversationId;
+				this.selection = { mode: "attach", conversationId: event.conversationId };
+			}
 			if (event.turnId) this.currentTurnId = event.turnId;
 			if (event.kind === "permission_request") {
 				const payload = event.payload as { requestId?: unknown };
@@ -94,28 +144,28 @@ export class AnyFusionClientModeController {
 			}
 			this.deps.view.appendGatewayEvent(event);
 		});
+		await this.deps.gateway.connect?.();
 		if (this.conversationId) {
 			const replay = await this.deps.gateway.resume(this.conversationId);
 			for (const event of [...replay.snapshot, ...replay.deltas].sort((left, right) => left.sequence - right.sequence)) {
 				this.deps.view.appendGatewayEvent(event);
 			}
-		} else if (!this.deps.gateway.createConversation) {
-			throw new Error("Gateway client cannot create a Conversation");
 		} else {
-			this.conversationId = await this.deps.gateway.createConversation();
-			this.selection = { mode: "attach", conversationId: this.conversationId };
 			const workspaceHint = this.deps.workspaceHint?.trim();
 			if (workspaceHint) {
-				const receipt = await this.deps.gateway.initializeWorkspace(
-					`/workspace ${workspaceHint}`,
-					this.selection,
-				);
+				const receipt = await this.deps.gateway.initializeWorkspace(`/workspace ${workspaceHint}`);
 				if (receipt.status === "rejected") {
 					this.deps.view.showError(
 						`默认 Workspace 设置失败：${receipt.reason ?? "Gateway rejected the command"}。`
-							+ " 请使用 /workspace /absolute/path 手动设置。",
+						+ " 请使用 /workspace /absolute/path 手动设置。",
 					);
+				} else if (receipt.workspaceId) {
+					this.activeWorkspaceId = receipt.workspaceId;
+					await this.refreshConversations();
+					this.openConversationSelector();
 				}
+			} else {
+				this.deps.view.showError("请先使用 /workspace /absolute/path 选择 Workspace。");
 			}
 		}
 		this.deps.view.setConnectionState("connected");
@@ -124,12 +174,41 @@ export class AnyFusionClientModeController {
 	async submit(text: string): Promise<void> {
 		const input = text.trim();
 		if (!input) return;
+		if (input === "/conversations") {
+			await this.refreshConversations();
+			this.openConversationSelector();
+			return;
+		}
+		if (input.startsWith("/conversation ")) {
+			try {
+				await this.attachConversation(input.slice("/conversation ".length).trim());
+			} catch (error) {
+				this.deps.view.showError(error instanceof Error ? error.message : String(error));
+			}
+			return;
+		}
+		if (input.startsWith("/workspace ")) {
+			const receipt = await this.deps.gateway.initializeWorkspace(input);
+			if (receipt.status === "rejected" || !receipt.workspaceId) {
+				this.deps.view.showError(receipt.reason ?? "Workspace selection failed");
+				return;
+			}
+			this.activeWorkspaceId = receipt.workspaceId;
+			await this.refreshConversations();
+			this.openConversationSelector();
+			return;
+		}
+		if (!this.selection) {
+			this.deps.view.showError("请先从当前 Workspace 新建或选择 Conversation。");
+			this.openConversationSelector();
+			return;
+		}
 		this.deps.view.appendUserInput(input);
 		let receipt: GatewayCommandReceipt;
 		if ((input === "/approve" || input === "a") && this.pendingPermissionRequestId) {
 			receipt = await this.deps.gateway.submitPermissionResolution(
 				this.pendingPermissionRequestId,
-				input === "/approve" ? "approve" : "deny",
+				"approve",
 				this.selection,
 			);
 		} else if ((input === "/deny" || input === "x") && this.pendingPermissionRequestId) {
@@ -150,6 +229,74 @@ export class AnyFusionClientModeController {
 		if (receipt.status === "rejected") {
 			this.deps.view.showError(receipt.reason ?? "Gateway rejected the command");
 		}
+	}
+
+	private openConversationSelector(): void {
+		if (!this.activeWorkspaceId) {
+			this.deps.view.showError("请先使用 /workspace /absolute/path 选择 Workspace。");
+			return;
+		}
+		this.deps.view.showConversationSelector({
+			attach: conversationId => {
+				void this.attachConversation(conversationId).catch(error => {
+					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+				});
+			},
+			create: () => {
+				void this.createConversation().catch(error => {
+					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+				});
+			},
+			refresh: query => {
+				void this.refreshConversations(query).catch(error => {
+					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+				});
+			},
+			cancel: () => this.deps.view.hideConversationSelector(),
+		});
+	}
+
+	private async refreshConversations(query?: string): Promise<void> {
+		if (!this.activeWorkspaceId) return;
+		const receipt = await this.deps.gateway.listWorkspaceConversations(
+			this.activeWorkspaceId,
+			query,
+		);
+		if (receipt.status === "rejected") {
+			throw new Error(receipt.reason ?? "Conversation directory refresh failed");
+		}
+	}
+
+	private async createConversation(): Promise<void> {
+		if (!this.activeWorkspaceId) {
+			throw new Error("workspace_required");
+		}
+		const receipt = await this.deps.gateway.createConversation(this.activeWorkspaceId);
+		if (receipt.status === "rejected" || !receipt.conversationId) {
+			throw new Error(receipt.reason ?? "Conversation creation failed");
+		}
+		await this.attachConversation(receipt.conversationId, false);
+	}
+
+	private async attachConversation(
+		conversationId: string,
+		validateCurrentWorkspace = true,
+	): Promise<void> {
+		if (!conversationId) throw new Error("Conversation ID is required");
+		if (validateCurrentWorkspace && !this.activeWorkspaceId) {
+			throw new Error("workspace_required");
+		}
+		if (validateCurrentWorkspace && !this.workspaceConversationIds.has(conversationId)) {
+			throw new Error("conversation_not_in_workspace");
+		}
+		const receipt = await this.deps.gateway.attachConversation(conversationId);
+		if (receipt.status === "rejected") {
+			throw new Error(receipt.reason ?? "Conversation attach failed");
+		}
+		this.conversationId = conversationId;
+		this.selection = { mode: "attach", conversationId };
+		await this.deps.gateway.resume(conversationId);
+		this.deps.view.hideConversationSelector();
 	}
 
 	stop(): void {
@@ -174,6 +321,9 @@ class TerminalClientView implements AnyFusionClientModeView {
 	private readonly userMessages: string[] = [];
 	private readonly timelineText = new Text("", 1, 0);
 	private readonly statusText = new Text("", 1, 0);
+	private readonly editorContainer: Container;
+	private readonly editor: Editor;
+	private selector: MetaWorkConversationSelector | null = null;
 
 	constructor(
 		ui: TUI,
@@ -182,19 +332,20 @@ class TerminalClientView implements AnyFusionClientModeView {
 		editor: Editor,
 	) {
 		this.ui = ui;
+		this.editor = editor;
 		this.conversationId = conversationId ?? "new";
-		const editorContainer = new Container();
-		editorContainer.addChild(
+		this.editorContainer = new Container();
+		this.editorContainer.addChild(
 			new Text(
 				theme.fg("dim", "输入 /approve 或 /deny 处理权限请求，/exit 退出"),
 				1,
 				0,
 			),
 		);
-		editorContainer.addChild(editor);
+		this.editorContainer.addChild(editor);
 		ui.addChild(this.timelineText);
 		ui.addChild(this.statusText);
-		ui.addChild(editorContainer);
+		ui.addChild(this.editorContainer);
 	}
 
 	setConnectionState(state: ClientConnectionState): void {
@@ -215,7 +366,29 @@ class TerminalClientView implements AnyFusionClientModeView {
 
 	appendGatewayEvent(event: GatewayEventEnvelope): void {
 		this.model = reduceGatewayEvent(this.model, event);
+		this.selector?.update(this.model.activeWorkspace, this.model.conversationSummaries);
 		this.refreshView();
+	}
+
+	showConversationSelector(actions: MetaWorkConversationSelectorActions): void {
+		this.selector = new MetaWorkConversationSelector(
+			this.model.activeWorkspace,
+			this.model.conversationSummaries,
+			actions,
+		);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.selector);
+		this.ui.setFocus(this.selector);
+		this.ui.requestRender();
+	}
+
+	hideConversationSelector(): void {
+		if (!this.selector) return;
+		this.selector = null;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.editor);
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
 	}
 
 	showError(message: string): void {
@@ -352,4 +525,14 @@ function stringValue(value: unknown, fallback = ""): string {
 			.join(" ");
 	}
 	return fallback;
+}
+
+function isWorkspaceDirectoryEvent(kind: GatewayEventEnvelope["kind"]): boolean {
+	return [
+		"workspace_directory_snapshot",
+		"workspace_conversation_upserted",
+		"workspace_conversation_removed",
+		"workspace_activity_changed",
+		"workspace_availability_changed",
+	].includes(kind);
 }
