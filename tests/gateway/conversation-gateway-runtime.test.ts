@@ -426,6 +426,51 @@ describe('ConversationGatewayRuntime', () => {
     expect(conversationCalls).toEqual(['attach', 'detach']);
   });
 
+  it('publishes the Server-confirmed Workspace in the initial Conversation snapshot', async () => {
+    const fixture = createFixture();
+    const workspace = {
+      path: '/repo-a',
+      selectedAt: '2026-08-27T00:00:00.000Z',
+      selectedByPrincipal: 'local:installation',
+    };
+    fixture.registry.getOrActivate = async () => ({
+      accountId: 'local-default',
+      getConversationPort: () => null as never,
+      initialize: async () => undefined,
+      beginWork: () => undefined,
+      endWork: () => undefined,
+      attachClient: () => undefined,
+      detachClient: () => undefined,
+      closeWhenIdle: async () => 'closed',
+    });
+    fixture.conversationFactory = conversationId => {
+      const session = new FakeConversationSession(
+        conversationId,
+        async () => undefined,
+      );
+      session.workspace = workspace;
+      return session as unknown as ConversationSession;
+    };
+
+    const detach = await fixture.runtime.attachClient('conv_workspace');
+    await waitFor(async () => {
+      const replay = await fixture.journal.replay('local-default', 'conv_workspace');
+      return replay.snapshot.some(event => (
+        event.kind === 'conversation_snapshot'
+        && (event.payload as { workspace?: unknown }).workspace !== undefined
+      ));
+    });
+    const replay = await fixture.journal.replay('local-default', 'conv_workspace');
+
+    expect(replay.snapshot).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'conversation_snapshot',
+        payload: expect.objectContaining({ workspace }),
+      }),
+    ]));
+    detach();
+  });
+
   it('invalidates a pending attach when admission closes without leaking counts', async () => {
     const activation = deferred<AccountRuntimeHandle>();
     const accountCalls: string[] = [];
@@ -565,6 +610,11 @@ class FakeConversationSession {
     certification: 'certified' | 'uncertified';
   }> = [];
   private readonly mailbox: ConversationInputMailbox;
+  workspace: {
+    path: string;
+    selectedAt: string;
+    selectedByPrincipal: string;
+  } | null = null;
 
   constructor(
     readonly conversationId: string,
@@ -601,6 +651,10 @@ class FakeConversationSession {
 
   getResultDeliveries(): FakeConversationSession['resultDeliveries'] {
     return [...this.resultDeliveries];
+  }
+
+  async getWorkspace(): Promise<FakeConversationSession['workspace']> {
+    return this.workspace;
   }
 
   subscribe(): () => void {
@@ -709,9 +763,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() - startedAt > timeoutMs) throw new Error('waitFor timeout');
     await new Promise(resolve => setTimeout(resolve, 5));
   }

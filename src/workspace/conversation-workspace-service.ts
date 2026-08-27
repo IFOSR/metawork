@@ -14,6 +14,7 @@ export interface WorkspaceAuthorization {
 
 export type WorkspaceCommandResult =
   | { readonly status: 'changed'; readonly workspace: ConversationWorkspace }
+  | { readonly status: 'unchanged'; readonly workspace: ConversationWorkspace }
   | {
       readonly status: 'rejected';
       readonly code: WorkspaceRejectionCode;
@@ -37,6 +38,7 @@ export interface ConversationWorkspaceServiceDeps extends WorkspaceAuthorization
 export interface ConversationWorkspacePort {
   getWorkspace(): Promise<ConversationWorkspace | null>;
   execute(input: string, principalId?: string): Promise<WorkspaceCommandResult>;
+  initializeDefault(path: string, principalId?: string): Promise<WorkspaceCommandResult>;
 }
 
 export class ConversationWorkspaceService {
@@ -52,13 +54,29 @@ export class ConversationWorkspaceService {
     if (!rawPath) {
       return rejected('workspace_command_invalid', '用法: /workspace /absolute/path');
     }
-    if (!isAbsolute(rawPath)) {
+    return this.changeWorkspace(rawPath, principalId);
+  }
+
+  async initializeDefault(
+    path: string,
+    principalId = this.deps.principalId,
+  ): Promise<WorkspaceCommandResult> {
+    const existing = await this.getWorkspace();
+    if (existing) return { status: 'unchanged', workspace: existing };
+    return this.changeWorkspace(path, principalId);
+  }
+
+  private async changeWorkspace(
+    path: string,
+    principalId: string,
+  ): Promise<WorkspaceCommandResult> {
+    if (!isAbsolute(path)) {
       return rejected('workspace_path_invalid', 'Workspace 必须是绝对路径');
     }
 
     let canonicalPath: string;
     try {
-      canonicalPath = await realpath(rawPath);
+      canonicalPath = await realpath(path);
       if (!(await stat(canonicalPath)).isDirectory()) {
         return rejected('workspace_path_invalid', 'Workspace 必须是目录');
       }

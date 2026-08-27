@@ -225,13 +225,21 @@ export class ConversationGatewayRuntime {
     );
     if (!this.projected.has(conversationId)) {
       this.projected.add(conversationId);
-      this.attachProjection(conversation);
+      await this.attachProjection(conversation);
     }
     return conversation;
   }
 
-  private attachProjection(conversation: ConversationSession): void {
-    let outputLength = 0;
+  private async attachProjection(conversation: ConversationSession): Promise<void> {
+    const initialOutput = [...conversation.getOutput()];
+    const workspace = await conversation.getWorkspace();
+    await this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
+      from: 0,
+      lines: initialOutput,
+      workspace,
+    });
+
+    let outputLength = initialOutput.length;
     let traceTurnId: string | null = null;
     let traceSequence = 0;
     conversation.subscribe(snapshot => {

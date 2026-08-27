@@ -73,6 +73,46 @@ describe('ConversationWorkspaceService', () => {
       .toBe(canonicalPath);
   });
 
+  it('initializes an empty Conversation through the same canonical Workspace mutation', async () => {
+    const value = await fixture();
+    const result = await service(value).initializeDefault(value.workspace);
+    const canonicalPath = await realpath(value.workspace);
+
+    expect(result).toEqual({
+      status: 'changed',
+      workspace: {
+        path: canonicalPath,
+        selectedAt: expect.any(String),
+        selectedByPrincipal: 'local:installation',
+      },
+    });
+    expect((await value.store.readConversation('conv_1'))?.conversation.workspace?.path)
+      .toBe(canonicalPath);
+  });
+
+  it('does not validate or replace an existing Workspace during default initialization', async () => {
+    const value = await fixture();
+    const workspaceService = service(value);
+    const changed = await workspaceService.execute(`/workspace ${value.workspace}`);
+    if (changed.status !== 'changed') throw new Error('fixture Workspace was not initialized');
+
+    const result = await service(value, {
+      authorize: () => {
+        throw new Error('existing Workspace must win before authorization');
+      },
+      isBusy: () => {
+        throw new Error('existing Workspace must win before busy fencing');
+      },
+    }).initializeDefault('/does/not/exist');
+
+    expect(result).toEqual({
+      status: 'unchanged',
+      workspace: changed.workspace,
+    });
+    expect((await value.store.readConversation('conv_1'))?.conversation.workspace)
+      .toEqual(changed.workspace);
+  });
+
   it('rejects relative, missing, file, inaccessible, or unauthorized paths', async () => {
     const value = await fixture();
     const filePath = join(value.root, 'not-a-directory');

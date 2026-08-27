@@ -73,6 +73,19 @@ describe('gateway client command protocol', () => {
     expect(parseGatewayCommandEnvelope(input)).toBeNull();
   });
 
+  it('rejects client payloads that set trusted Workspace metadata or startup hints', () => {
+    for (const trustedField of [
+      { workspace: { path: '/repo-a', selectedAt: 'now', selectedByPrincipal: 'local:user' } },
+      { workspacePath: '/repo-a' },
+      { workspaceHint: '/repo-a' },
+    ]) {
+      expect(parseGatewayCommandEnvelope({
+        ...validEnvelope(),
+        ...trustedField,
+      })).toBeNull();
+    }
+  });
+
   it('rejects unknown protocol versions', () => {
     const input = {
       protocolVersion: 999,

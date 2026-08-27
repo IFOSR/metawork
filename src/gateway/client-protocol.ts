@@ -51,8 +51,14 @@ export function parseGatewayCommandEnvelope(input: unknown): GatewayCommandEnvel
   if (typeof input !== 'object' || input === null) return null;
   const candidate = input as Record<string, unknown>;
 
-  // 客户端绝不能携带受信身份字段。
-  if ('accountId' in candidate || 'principal' in candidate) return null;
+  // 客户端绝不能携带受信身份或 Workspace authority 字段。
+  if (
+    'accountId' in candidate
+    || 'principal' in candidate
+    || 'workspace' in candidate
+    || 'workspacePath' in candidate
+    || 'workspaceHint' in candidate
+  ) return null;
 
   if (candidate.protocolVersion !== GATEWAY_PROTOCOL_VERSION) return null;
   if (!isGatewayIdentifier(candidate.requestId)) return null;
