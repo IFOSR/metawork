@@ -76,10 +76,16 @@ amends the foreground-surface implementation evidence in ADR-0031 without
 changing ADR-0031's AccountRuntime, Conversation, Gateway, identity, or
 account-isolation domain ownership.
 
+ADR-0035 makes Workspace a first-class Account-scoped product container with
+an immutable `workspaceId`. Clients select a Workspace before discovering or
+creating Conversations; `/workspace` changes that Client selection and never
+reparents a Conversation after its first ordinary Query.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, completion facts, and read-only DAG projection |
 | Account Runtime and unified client Gateway | [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | Account/Conversation/connection cardinality, account-scoped Runtime and Kernel ownership, client Gateway ingress/egress, identity mapping and account data isolation |

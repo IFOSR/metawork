@@ -127,7 +127,8 @@ neither owns routing or execution.
 
 ADR-0031 was implemented on 2026-08-19. Production startup constructs one
 `RuntimeRegistry`, one `AccountRuntime` for `local-default`, one
-`ConversationRegistry`, and one transport-neutral `ClientGateway`. Production
+`WorkspaceDirectory`, one `ConversationRegistry`, and one transport-neutral
+`ClientGateway`. Production
 client adapters do not construct `MetaclawSession`; that class remains only as
 a compatibility/test shell while its standby Ink source is preserved.
 
@@ -137,9 +138,11 @@ The active ownership hierarchy is:
 ServerProcess
   -> RuntimeRegistry
     -> AccountRuntime
-      -> ConversationRegistry
-        -> ConversationSession
-          -> ClientConnection
+      -> WorkspaceDirectory
+        -> Workspace
+          -> ConversationRegistry references
+            -> ConversationSession
+              -> ClientConnection
 ```
 
 TUI, Web conversation, Feishu and Unix clients use one versioned Gateway
@@ -163,19 +166,19 @@ See `docs/adr/0031-account-runtime-and-unified-client-gateway.md`,
 `docs/plans/2026-08-18-account-runtime-unified-gateway-design.md`, and
 `docs/plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md`.
 
-ADR-0034 makes the process topology explicit. Server startup is
+ADR-0034 makes the process topology explicit. ADR-0035 makes Workspace a
+first-class Account-scoped product container with immutable `workspaceId`.
+Server startup is
 Workspace-neutral and persistent; TUI and Web are independently launched
 Clients, and configured Feishu connectivity is owned by Server with no
-standalone command. Existing Conversations restore their durable Workspace.
-For a new local TUI/Web Conversation only, the Client startup directory is an
-untrusted initialization hint applied through the same Server-owned Workspace
-mutation as `/workspace /absolute/path`; it never overrides attach/replay.
-Server canonicalizes and authorizes the path, persists it on the Conversation,
-rejects active-work changes with `workspace_busy`, and rejects semantic
-admission with `workspace_required` while unset or when default initialization
-fails. `/workspace <path>` remains the explicit mutation command used by every
-surface. Different Conversations may use different Workspaces on the same
-Server, and each admitted Turn retains its fixed Workspace reference.
+standalone command. Existing Conversations restore their immutable Workspace
+binding. Local Client cwd is an untrusted Workspace selection hint.
+`/workspace <path>` selects the Client or platform binding's active Workspace
+and never reparents a Conversation after its first ordinary Query. New
+Conversations are created in the selected Workspace. TUI, Web and Feishu share
+one bounded Workspace Conversation Directory; detailed history, trace and
+results remain Conversation-scoped and require attach. Each admitted Turn
+retains its authorized `workspaceId` and canonical path.
 
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 

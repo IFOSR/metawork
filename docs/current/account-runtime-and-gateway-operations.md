@@ -2,9 +2,9 @@
 
 ADR-0031 and ADR-0034 define the MetaWork production composition. One persistent
 Server process owns a `RuntimeRegistry`, one loaded `AccountRuntime` for
-`local-default`, a `ConversationRegistry`, and one transport-neutral
-`ClientGateway`. Server startup is Workspace-neutral and independent of every
-Client lifecycle.
+`local-default`, one `WorkspaceDirectory`, a `ConversationRegistry`, and one
+transport-neutral `ClientGateway`. Server startup is Workspace-neutral and
+independent of every Client lifecycle.
 
 ## Runtime Commands
 
@@ -36,29 +36,28 @@ Conversation, Planner, Task, and Executor work running.
 Removed forms such as `gateway run`, `--connect`, foreground Web, `feishu run`,
 and script mode fail closed and point to the canonical commands above.
 
-## Conversation Workspace
+## Workspace And Conversations
 
-Existing Conversations restore their durable Workspace during attach and
-replay. A new local TUI or Web Conversation uses the directory where that
-Client command started as an untrusted initialization hint. The Server applies
-the hint through the same Workspace mutation used by the explicit command:
+Workspace is a first-class Account container identified by immutable
+`workspaceId`. Existing Conversations restore their Workspace binding during
+attach and replay. A local TUI or Web Client uses its startup directory as an
+untrusted Workspace selection hint. The Server applies the hint through:
 
 ```text
 /workspace /absolute/path/to/project
 ```
 
-Server resolves and canonicalizes the path, verifies an accessible directory,
-authorizes the Principal, and atomically persists it on the Conversation.
-The Client hint never overwrites an attached Conversation. Missing or rejected
-Workspace initialization returns `workspace_required`; an active Turn or Task
-returns `workspace_busy`. `/workspace <path>` remains the explicit override on
-TUI, Web Composer, and Feishu. Different Conversations may use different
-Workspaces on the same Server.
+Server resolves and canonicalizes the path, authorizes the Principal, and finds
+or creates one Workspace in the Account Catalog. `/workspace <path>` updates
+only the current Client or platform binding's `activeWorkspaceId`; it never
+moves an existing Conversation. New Conversations are created in the selected
+Workspace. Missing or rejected selection returns `workspace_required`.
 
 `metawork web` transfers its startup hint through a short-lived, single-use
 bootstrap context. The Browser URL contains only an opaque token fragment, not
-the Workspace path. The Server-confirmed canonical Workspace is visible in
-each Client and `workspace_changed` updates every attachment.
+the Workspace path. TUI, Web and Feishu read the same bounded Workspace
+Conversation Directory. Full history, trace and results require attaching to
+one Conversation.
 
 ## Account Data
 
@@ -78,6 +77,7 @@ The default account root is:
 │   └── backups/
 ├── planner/sessions/
 ├── conversations/
+├── workspace-catalog/
 ├── workspace-store/
 ├── attempts/
 └── gateway/

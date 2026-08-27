@@ -19,6 +19,7 @@
 - **Workspace initialization amendment plan:**
   `docs/plans/2026-08-27-client-default-workspace-implementation-plan.md`
 - **Governed by:** ADR-0020
+- **Workspace organization amended by:** ADR-0035
 
 ## Context
 
@@ -125,47 +126,43 @@ Server process `cwd` is not an execution authority. Account-internal storage
 such as `workspace-store/` remains an account runtime path and is not the
 user-selected repository Workspace.
 
-Each Conversation has one durable nullable Workspace:
+Each Account has a durable Workspace Catalog. Workspace identity is an opaque
+immutable `workspaceId`; the canonical path is only its authorized local
+binding. Each Client connection or platform binding has a transient selection:
 
 ```text
-workspace:
-  path
-  selectedAt
-  selectedByPrincipal
+activeWorkspaceId: workspace_<opaque-id> | null
 ```
 
-Conversation Workspace resolution uses this priority:
+Workspace selection uses this priority:
 
-1. an existing durable Conversation Workspace restored by attach or replay;
-2. for a new Conversation only, the Client startup directory as an untrusted
-   initialization hint;
-3. otherwise `workspace: null`, with semantic admission returning
+1. explicit Conversation attach restores its immutable Workspace binding;
+2. an existing Client/platform Workspace selection;
+3. local Client cwd as an untrusted selection hint;
+4. otherwise no active Workspace, with creation/admission returning
    `workspace_required`.
 
 Bare `metawork`, `metawork tui`, and `metawork web` capture their Client startup
 directory once. That value is not Workspace authority and may not overwrite an
-attached Conversation. A new Conversation applies the hint through the same
-Server-owned mutation semantics as the explicit command:
+attached Conversation. The Server applies it through the same selection
+semantics as:
 
 ```text
 /workspace /absolute/path
 ```
 
-`/workspace <path>` remains the only user-visible Workspace mutation command on
-every Client surface. Gateway treats both an automatic hint and an explicit
-path as untrusted input. The Server resolves and canonicalizes it with
-`realpath`, verifies that it is an accessible directory, applies
-Principal/account authorization, fences active Turn/Task work, atomically
-persists the Conversation metadata, and emits `workspace_changed`.
+`/workspace <path>` is the user-visible Workspace selection command on every
+Client surface. The Server resolves and authorizes the path, finds or creates
+the Account Workspace, and updates only that Client or platform binding's
+`activeWorkspaceId`.
 
 Relative, missing, non-directory, inaccessible, or unauthorized paths fail
-closed. An active Turn or Task returns `workspace_busy`. A semantic user message
-without a Workspace returns `workspace_required` before Planner startup.
-Automatic initialization failure leaves `workspace: null` and presents the
-explicit `/workspace /absolute/path` recovery command. Attach and replay restore
-the durable Workspace without applying the current Client hint. Different
-Conversations on the same Server may bind different Workspaces. Each admitted
-Turn retains the Workspace reference fixed at admission.
+closed. A semantic message without an attached Conversation and selected
+Workspace returns `workspace_required`. Selection failure leaves
+`activeWorkspaceId: null`. Attach restores the Conversation Workspace and
+ignores cwd. `/workspace` never moves an existing Conversation; a new
+Conversation is created in the selected Workspace. Each admitted Turn retains
+the Workspace identity and canonical path fixed at admission.
 
 `metawork web` registers its startup hint through a short-lived, single-use
 Server bootstrap context. The Browser URL carries only an opaque token fragment;
@@ -241,10 +238,10 @@ process-lifecycle guarantee.
 - Users explicitly start one Server and independently open or close multiple
   TUI and Web clients.
 - Client exit cannot interrupt accepted Runtime work.
-- Workspace authority remains explicit, durable, Conversation-scoped, and
-  authorization-checked while new local Conversations avoid a redundant manual
-  setup step.
-- Attached Conversations retain their durable Workspace even when the current
+- Workspace authority remains explicit, Account-scoped and authorization
+  checked while new local Clients avoid a redundant manual setup step.
+- Attached Conversations retain their immutable Workspace binding when the
+  current
   Client starts in another directory.
 - Server process management requires a shared manifest, health validation,
   lock ownership, draining, and stale-state recovery.

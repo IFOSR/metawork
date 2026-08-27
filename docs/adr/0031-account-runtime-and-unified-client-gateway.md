@@ -10,6 +10,7 @@
 - **Implementation plan**: `docs/plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md`
 - **Governed by**: ADR-0020
 - **Lifecycle amended by**: ADR-0034
+- **Workspace organization amended by**: ADR-0035
 
 ## Context
 
@@ -50,9 +51,11 @@ The target ownership hierarchy is:
 ServerProcess
   -> RuntimeRegistry
     -> AccountRuntime (one live instance per loaded Account)
-      -> ConversationRegistry
-        -> ConversationSession (many per AccountRuntime)
-          -> ClientConnection (many attachments)
+      -> WorkspaceDirectory
+        -> Workspace (many per AccountRuntime)
+          -> ConversationRegistry references
+            -> ConversationSession (many per AccountRuntime)
+              -> ClientConnection (many attachments)
 ```
 
 The terms have these meanings:
@@ -67,8 +70,13 @@ The terms have these meanings:
   Task admission, execution supervision, configuration binding and event
   publication.
 - **Conversation**: a durable user interaction thread inside one Account. It
-  owns one stable Planner session identity and bounded user-facing conversation
-  projections.
+  belongs to one Workspace and owns one stable Planner session identity and
+  bounded user-facing conversation projections.
+- **Workspace**: a stable Account-scoped product container identified by an
+  immutable `workspaceId`; its canonical local path is a binding, not identity.
+- **WorkspaceDirectory**: the Account-scoped Application service that owns
+  Workspace identity, path binding, Conversation summaries and directory
+  events. It does not own Runtime or scheduling policy.
 - **ConversationSession**: the live Application-Shell object for one
   Conversation. It owns input serialization, Planner turn state, focus,
   presentation output and safe trace projection. It does not own Kernel,
@@ -81,9 +89,9 @@ The terms have these meanings:
   client command, and streams bounded user-visible events back to attached
   clients.
 
-One Account may have many Conversations. One Conversation may be attached from
-many client surfaces. Sharing an AccountRuntime does not imply sharing Planner
-conversation history.
+One Account may have many Workspaces, and one Workspace may have many
+Conversations. One Conversation may be attached from many client surfaces.
+Sharing an AccountRuntime or Workspace does not merge Planner history.
 
 ### 2. AccountRuntime Is The Runtime Ownership Boundary
 
@@ -167,15 +175,16 @@ Unknown, revoked, cross-tenant or ambiguous mappings fail closed. Pairing grants
 access to an Account; it does not merge conversations or make a platform user
 the Account ID.
 
-### 7. Conversation Resolution And Cross-Surface Continuity
+### 7. Workspace And Conversation Resolution
 
-Gateway resolves one stable `conversationId` after account authorization.
-Conversation selection follows these rules:
+Gateway resolves Workspace and Conversation identity after account
+authorization:
 
-- an explicit authorized conversation attachment resumes that Conversation;
-- otherwise a transport binding may map a platform chat/thread to a stable
-  Conversation inside the Account;
-- otherwise Gateway creates a new Conversation;
+- an explicit authorized Conversation attachment restores its immutable
+  Workspace binding and resumes that Conversation;
+- otherwise the Client or platform binding selects an authorized Workspace;
+- otherwise a local Client cwd may be resolved as an untrusted Workspace hint;
+- a new Conversation is created only inside the selected Workspace;
 - the same Account alone is not sufficient to merge two conversations.
 
 Feishu group, DM and thread identities must not share Planner history unless an
@@ -261,6 +270,7 @@ layout is:
       data/anyfusion.db
       planner/sessions/
       conversations/
+      workspace-catalog/
       workspace-store/
       attempts/
       gateway/

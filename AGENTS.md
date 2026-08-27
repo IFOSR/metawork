@@ -34,6 +34,7 @@ Architecture shortcuts:
 - Execution backends/resources: [ADR-0024](docs/adr/0024-resource-partition-sandbox-and-runtime-elevation.md), [runtime security](docs/current/phase-5-runtime-security.md)
 - Single-Task boundary: [ADR-0011](docs/adr/0011-single-active-task-admission-gate.md), [future roadmap](docs/plans/future-multi-task-scheduling-roadmap.md)
 - Accounts, Conversations, and client Gateway: [ADR-0031](docs/adr/0031-account-runtime-and-unified-client-gateway.md), [approved design](docs/plans/2026-08-18-account-runtime-unified-gateway-design.md)
+- Workspace-scoped Conversation organization: [ADR-0035](docs/adr/0035-workspace-scoped-conversation-organization.md), [approved design](docs/plans/2026-08-27-workspace-scoped-conversation-organization-design.md)
 
 ## Repository Map
 
@@ -46,6 +47,7 @@ the composition root. Detailed ownership and dependency rules live in
 | Planning and AnyFusion-Pi session | [`src/planning/`](src/planning/) |
 | Pure policy and graph rules | [`src/kernel/`](src/kernel/), [`src/work-graph/`](src/work-graph/) |
 | Application Shell | [`src/session/`](src/session/) |
+| Workspace Catalog and Conversation directory | [`src/workspace/`](src/workspace/) |
 | Attempts, recovery, execution backends, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
 | Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |

@@ -73,7 +73,8 @@ The active cardinality is:
 
 ```text
 ServerProcess -> RuntimeRegistry -> AccountRuntime
-  -> ConversationRegistry -> ConversationSession -> ClientConnection
+  -> WorkspaceDirectory -> Workspace
+    -> ConversationRegistry references -> ConversationSession -> ClientConnection
 ```
 
 ADR-0034, accepted on August 26, 2026, fixes the process lifecycle around that
@@ -81,10 +82,10 @@ domain model. `metawork server start` is the only Runtime-owning startup path
 and remains alive independently of all Clients. Bare `metawork` launches only
 the TUI Client, `metawork web` only opens the existing Server-owned loopback
 Web origin, and configured Feishu connectivity is owned by Server. Server
-startup is Workspace-neutral. Existing Conversations restore their durable
-Workspace. A new local TUI/Web Conversation uses the Client startup directory
-only as an untrusted default applied through the same Server-owned mutation as
-`/workspace /absolute/path`; attach/replay never applies that hint.
+startup is Workspace-neutral. Existing Conversations restore their immutable
+Workspace binding. Local TUI/Web cwd is an untrusted Workspace selection hint.
+`/workspace /absolute/path` selects the Client Workspace and never reparents an
+existing Conversation; attach/replay restores the Conversation binding.
 
 Runtime-wide KernelWorkflow, execution and startup recovery are constructed once
 per AccountRuntime. One account Kernel coordinator owns durable
@@ -592,20 +593,19 @@ TUI and Web resolve the atomic endpoint manifest and fail with a concrete
 Closing a terminal or browser does not stop Server or accepted Task work.
 
 Server startup never binds a user Workspace. Existing Conversations restore
-their durable Workspace. A new local TUI/Web Conversation applies the Client
-startup directory through the same Server-owned mutation as the command:
+their immutable Workspace binding. A local TUI/Web Client applies its startup
+directory through the same Server-owned selection as:
 
 ```text
 /workspace /absolute/path/to/project
 ```
 
-Server canonicalizes and authorizes the path, persists it on the Conversation,
-and returns `workspace_busy` when active work prevents a change. A rejected or
-unavailable default leaves `workspace: null`, returns `workspace_required`
-before Planner startup, and prompts for the explicit command. Attach/replay
-never overwrites a persisted Workspace with the current Client directory. The
-existing Web Composer submits explicit changes; no Web-only Workspace selector
-or mutation API exists.
+Server canonicalizes and authorizes the path, finds or creates one Account
+Workspace, and updates the Client's `activeWorkspaceId`. A rejected hint leaves
+no selected Workspace, returns `workspace_required` before Conversation
+creation, and prompts for the explicit command. Attach/replay restores the
+Conversation Workspace and ignores cwd. `/workspace` never moves an existing
+Conversation.
 
 `metawork web` registers its startup directory in a short-lived single-use
 Server launch context. The URL contains only an opaque bootstrap fragment and
@@ -708,8 +708,9 @@ structured transport uncertainty and partial tool audit.
 
 The native AnyFusion-Pi TUI remains the default Client for bare `metawork`.
 Web and TUI own only connection and presentation state; both attach to the same
-persistent Server-owned RuntimeRegistry, AccountRuntime, ConversationRegistry
-and ClientGateway. `anyfusion` and `metaclaw` remain compatibility CLI aliases,
+persistent Server-owned RuntimeRegistry, AccountRuntime, WorkspaceDirectory,
+ConversationRegistry and ClientGateway. `anyfusion` and `metaclaw` remain
+compatibility CLI aliases,
 but removed lifecycle forms such as `gateway run`, `--connect`, foreground Web
 and script mode are rejected.
 
@@ -763,6 +764,7 @@ The native launcher stores account-owned state under:
 │   └── backups/
 ├── planner/sessions/
 ├── conversations/
+├── workspace-catalog/
 ├── gateway/
 ├── workspace-store/
 └── attempts/
