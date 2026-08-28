@@ -26,6 +26,7 @@ export function renderConversation(
 	width: number,
 ): string {
 	const turn = model.currentTurn;
+	const command = model.currentCommand;
 	const workspace = model.activeWorkspace
 		? width < 100 ? model.activeWorkspace.displayName : model.activeWorkspace.path
 		: "未设置 · 输入 /workspace /absolute/path";
@@ -39,9 +40,21 @@ export function renderConversation(
 			: ["Workspace home · 使用 /conversations 浏览会话"]),
 		"",
 		...userMessages.flatMap(message => ["你", message, ""]),
-		"任务进度",
-		renderStepper(turn?.stage),
 	];
+
+	if (command) {
+		if (command.status === "running") lines.push("命令执行中");
+		if (command.status === "completed") {
+			lines.push("命令结果");
+			if (command.output) lines.push(command.output);
+		}
+		if (command.status === "failed") {
+			lines.push("命令失败");
+			if (command.error) lines.push(command.error);
+		}
+	} else if (turn) {
+		lines.push("任务进度", renderStepper(turn.stage));
+	}
 
 	if (turn) {
 		for (const subtask of Object.values(turn.subtasks)) {
@@ -62,7 +75,7 @@ export function renderConversation(
 	}
 
 	for (const notice of model.notices.slice(-3)) lines.push(notice.text);
-	lines.push("", `${connection} · ${turn ? turn.status : "idle"} · 输入 /help 查看命令`);
+	lines.push("", `${connection} · ${turn?.status ?? command?.status ?? "idle"} · 输入 /help 查看命令`);
 	return lines.join("\n");
 }
 

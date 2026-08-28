@@ -8,6 +8,7 @@ import {
 	type ConversationViewModel,
 	type MetaWorkResultView,
 	type MetaWorkStage,
+	type MetaWorkSystemCommandView,
 	type MetaWorkTurnView,
 } from "./metawork-client-model.ts";
 
@@ -80,11 +81,7 @@ export function reduceGatewayEvent(
 		case "workspace_availability_changed":
 			return reduceWorkspaceAvailability(next, payload);
 		case "turn_started":
-			return {
-				...next,
-				currentTurn: newTurn(event),
-				composer: { blockedReason: null },
-			};
+			return reduceTurnStarted(next, event, payload);
 		case "trace_delta":
 			return reduceTrace(next, event, payload);
 		case "execution_delta":
@@ -106,6 +103,27 @@ export function reduceGatewayEvent(
 		default:
 			return next;
 	}
+}
+
+function reduceTurnStarted(
+	state: ConversationViewModel,
+	event: GatewayEventEnvelope,
+	payload: Record<string, unknown>,
+): ConversationViewModel {
+	if (payload.commandKind === "user_message") {
+		return {
+			...state,
+			currentCommand: null,
+			currentTurn: newTurn(event),
+			composer: { blockedReason: null },
+		};
+	}
+	return {
+		...state,
+		currentCommand: newCommand(event),
+		currentTurn: null,
+		composer: { blockedReason: null },
+	};
 }
 
 function reduceConversationSnapshot(
@@ -237,6 +255,8 @@ function reduceTrace(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	if (matchesCommand(state.currentCommand, event)) return state;
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	let next = state;
 	for (const raw of Array.isArray(payload.events) ? payload.events : []) {
 		const item = record(raw);
@@ -280,6 +300,8 @@ function reduceExecution(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	if (matchesCommand(state.currentCommand, event)) return state;
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const subtaskId = string(payload.subtaskId);
 	if (!subtaskId) return state;
 	const turn = ensureTurn(state.currentTurn, event);
@@ -307,6 +329,8 @@ function reducePermission(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	if (matchesCommand(state.currentCommand, event)) return state;
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	return {
 		...state,
@@ -329,6 +353,20 @@ function reduceResultAvailable(
 ): ConversationViewModel {
 	const resultId = string(payload.resultId);
 	if (!resultId) return state;
+	const command = commandForEvent(state.currentCommand, event);
+	if (command) {
+		return {
+			...state,
+			currentCommand: {
+				...command,
+				resultId,
+				contentHash: string(payload.contentHash),
+				byteLength: number(payload.byteLength),
+				output: "",
+			},
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	return {
 		...state,
@@ -352,15 +390,19 @@ function reduceResultChunk(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	const command = commandForEvent(state.currentCommand, event);
+	if (command && command.resultId === payload.resultId) {
+		const output = appendChunk(command.output, payload);
+		return {
+			...state,
+			currentCommand: { ...command, output },
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	const result = turn.result;
 	if (!result || result.resultId !== payload.resultId) return state;
-	const offset = number(payload.offset);
-	const chunk = string(payload.chunk);
-	const bytes = Buffer.from(result.content, "utf8");
-	const content = offset > bytes.byteLength
-		? result.content
-		: bytes.subarray(0, offset).toString("utf8") + chunk;
+	const content = appendChunk(result.content, payload);
 	return {
 		...state,
 		currentTurn: {
@@ -377,6 +419,21 @@ function reduceResultCompleted(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	const command = commandForEvent(state.currentCommand, event);
+	if (command && command.resultId === payload.resultId) {
+		const verified = verifyResult(command.output, payload);
+		return {
+			...state,
+			currentCommand: {
+				...command,
+				status: verified ? "completed" : "failed",
+				contentHash: string(payload.contentHash, command.contentHash),
+				byteLength: number(payload.byteLength, command.byteLength),
+				error: verified ? null : "命令结果校验失败",
+			},
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	const result = turn.result;
 	if (!result || result.resultId !== payload.resultId) return state;
@@ -407,6 +464,20 @@ function reduceFinalAnswer(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
+	const command = commandForEvent(state.currentCommand, event);
+	if (command) {
+		const lines = answerLines(payload);
+		return {
+			...state,
+			currentCommand: {
+				...command,
+				status: "completed",
+				output: command.output || lines.join("\n"),
+				error: null,
+			},
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	const resultId = string(payload.resultId);
 	if (turn.result && resultId === turn.result.resultId) {
@@ -415,9 +486,7 @@ function reduceFinalAnswer(
 			currentTurn: { ...turn, status: "completed", stage: "delivery" },
 		};
 	}
-	const lines = Array.isArray(payload.lines)
-		? payload.lines.filter((line): line is string => typeof line === "string")
-		: [];
+	const lines = answerLines(payload);
 	return {
 		...state,
 		currentTurn: {
@@ -437,6 +506,18 @@ function reduceTerminalError(
 ): ConversationViewModel {
 	const code = string(payload.code);
 	const message = string(payload.message, "Gateway execution failed");
+	const command = commandForEvent(state.currentCommand, event);
+	if (command) {
+		return {
+			...state,
+			currentCommand: {
+				...command,
+				status: "failed",
+				error: message,
+			},
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	let next: ConversationViewModel = {
 		...state,
@@ -465,6 +546,7 @@ function ensureTurn(
 
 function newTurn(event: GatewayEventEnvelope): MetaWorkTurnView {
 	return {
+		interactionKind: "ai_turn",
 		id: event.turnId ?? `turn_at_${event.sequence}`,
 		requestId: event.requestId,
 		status: "running",
@@ -478,6 +560,56 @@ function newTurn(event: GatewayEventEnvelope): MetaWorkTurnView {
 		answerSources: [],
 		error: null,
 	};
+}
+
+function newCommand(event: GatewayEventEnvelope): MetaWorkSystemCommandView {
+	return {
+		interactionKind: "system_command",
+		id: event.turnId ?? `turn_at_${event.sequence}`,
+		requestId: event.requestId,
+		status: "running",
+		resultId: null,
+		contentHash: "",
+		byteLength: 0,
+		output: "",
+		error: null,
+	};
+}
+
+function matchesCommand(
+	command: MetaWorkSystemCommandView | null,
+	event: GatewayEventEnvelope,
+): boolean {
+	return commandForEvent(command, event) !== null;
+}
+
+function commandForEvent(
+	command: MetaWorkSystemCommandView | null,
+	event: GatewayEventEnvelope,
+): MetaWorkSystemCommandView | null {
+	return command?.id === event.turnId ? command : null;
+}
+
+function hasDifferentTurn(
+	turn: MetaWorkTurnView | null,
+	event: GatewayEventEnvelope,
+): boolean {
+	return turn !== null && turn.id !== event.turnId;
+}
+
+function answerLines(payload: Record<string, unknown>): string[] {
+	return Array.isArray(payload.lines)
+		? payload.lines.filter((line): line is string => typeof line === "string")
+		: [];
+}
+
+function appendChunk(content: string, payload: Record<string, unknown>): string {
+	const offset = number(payload.offset);
+	const chunk = string(payload.chunk);
+	const bytes = Buffer.from(content, "utf8");
+	return offset > bytes.byteLength
+		? content
+		: bytes.subarray(0, offset).toString("utf8") + chunk;
 }
 
 function stageForPhase(phase: string): MetaWorkStage {

@@ -6,6 +6,8 @@ export type MetaWorkStage =
 	| "verification"
 	| "delivery";
 
+export type MetaWorkInteractionKind = "system_command" | "ai_turn";
+
 export interface MetaWorkTraceItem {
 	readonly eventKey: string | null;
 	readonly stage: MetaWorkStage;
@@ -38,6 +40,7 @@ export interface MetaWorkResultView {
 }
 
 export interface MetaWorkTurnView {
+	readonly interactionKind: "ai_turn";
 	readonly id: string;
 	readonly requestId: string | null;
 	readonly status: "running" | "completed" | "failed" | "cancelled";
@@ -49,6 +52,18 @@ export interface MetaWorkTurnView {
 	readonly result: MetaWorkResultView | null;
 	readonly answer: string;
 	readonly answerSources: Array<"result_stream" | "final_answer">;
+	readonly error: string | null;
+}
+
+export interface MetaWorkSystemCommandView {
+	readonly interactionKind: "system_command";
+	readonly id: string;
+	readonly requestId: string | null;
+	readonly status: "running" | "completed" | "failed";
+	readonly resultId: string | null;
+	readonly contentHash: string;
+	readonly byteLength: number;
+	readonly output: string;
 	readonly error: string | null;
 }
 
@@ -89,6 +104,7 @@ export interface ConversationViewModel {
 	readonly conversationSummaries: MetaWorkConversationSummary[];
 	readonly conversationDirectoryCursor: string | null;
 	readonly activeConversationId: string | null;
+	readonly currentCommand: MetaWorkSystemCommandView | null;
 	readonly currentTurn: MetaWorkTurnView | null;
 	readonly composer: {
 		readonly blockedReason: string | null;
@@ -111,6 +127,7 @@ export function emptyConversationViewModel(): ConversationViewModel {
 		conversationSummaries: [],
 		conversationDirectoryCursor: null,
 		activeConversationId: null,
+		currentCommand: null,
 		currentTurn: null,
 		composer: { blockedReason: null },
 		notices: [],

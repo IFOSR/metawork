@@ -18,6 +18,7 @@ describe("MetaWork client view", () => {
 			},
 			activeConversationId: "conv_1",
 			currentTurn: {
+				interactionKind: "ai_turn" as const,
 				id: "turn_internal",
 				requestId: "req_internal",
 				status: "completed" as const,
@@ -66,6 +67,57 @@ describe("MetaWork client view", () => {
 		expect(rendered.match(/最终报告正文/g)).toHaveLength(1);
 		expect(rendered).not.toContain("turn_internal");
 		expect(rendered).not.toContain("result_internal");
+	});
+
+	it("renders a completed system command without AI task stages", () => {
+		const rendered = renderConversation(
+			{
+				...emptyConversationViewModel(),
+				currentCommand: {
+					interactionKind: "system_command",
+					id: "turn_command",
+					requestId: "req_command",
+					status: "completed",
+					resultId: null,
+					output: "当前没有正在执行的任务",
+					error: null,
+				},
+			},
+			["/task list"],
+			"connected",
+			80,
+		);
+
+		expect(rendered).toContain("命令结果");
+		expect(rendered).toContain("当前没有正在执行的任务");
+		expect(rendered).not.toContain("任务进度");
+		expect(rendered).not.toContain("最终结果");
+		expect(rendered).not.toContain("结果已验证");
+	});
+
+	it("renders a failed system command as a compact command failure", () => {
+		const rendered = renderConversation(
+			{
+				...emptyConversationViewModel(),
+				currentCommand: {
+					interactionKind: "system_command",
+					id: "turn_command",
+					requestId: "req_command",
+					status: "failed",
+					resultId: null,
+					output: "",
+					error: "未知命令：does-not-exist",
+				},
+			},
+			["/does-not-exist"],
+			"connected",
+			80,
+		);
+
+		expect(rendered).toContain("命令失败");
+		expect(rendered).toContain("未知命令：does-not-exist");
+		expect(rendered).not.toContain("任务未完成");
+		expect(rendered).not.toContain("任务进度");
 	});
 
 	it("uses a compact workspace label on narrow terminals and exposes connection state", () => {

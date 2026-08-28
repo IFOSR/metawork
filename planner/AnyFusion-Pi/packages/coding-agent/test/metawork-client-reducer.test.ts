@@ -31,6 +31,137 @@ function baseState(): ConversationViewModel {
 }
 
 describe("MetaWork client reducer", () => {
+	it.each(["slash_command", "permission_resolution", "cancel_turn"])(
+		"classifies %s as a system command",
+		(commandKind) => {
+			const state = reduceGatewayEvent(
+				baseState(),
+				event("turn_started", { commandKind }, 1),
+			);
+
+			expect(state.currentCommand).toMatchObject({
+				interactionKind: "system_command",
+				status: "running",
+				output: "",
+				error: null,
+			});
+			expect(state.currentTurn).toBeNull();
+		},
+	);
+
+	it("stores system command output without creating an AI turn", () => {
+		let state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "slash_command" }, 1),
+		);
+		state = reduceGatewayEvent(state, event("final_answer", {
+			lines: ["当前没有正在执行的任务"],
+		}, 2));
+
+		expect(state.currentCommand).toMatchObject({
+			status: "completed",
+			output: "当前没有正在执行的任务",
+			error: null,
+		});
+		expect(state.currentTurn).toBeNull();
+	});
+
+	it("stores system command failures without creating an AI turn", () => {
+		let state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "slash_command" }, 1),
+		);
+		state = reduceGatewayEvent(state, event("terminal_error", {
+			message: "未知命令：does-not-exist",
+		}, 2));
+
+		expect(state.currentCommand).toMatchObject({
+			status: "failed",
+			output: "",
+			error: "未知命令：does-not-exist",
+		});
+		expect(state.currentTurn).toBeNull();
+	});
+
+	it("classifies user messages as AI turns", () => {
+		const state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "user_message" }, 1),
+		);
+
+		expect(state.currentTurn).toMatchObject({
+			interactionKind: "ai_turn",
+			status: "running",
+			stage: "understanding",
+		});
+		expect(state.currentCommand).toBeNull();
+	});
+
+	it("does not carry command output into a later AI turn", () => {
+		let state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "slash_command" }, 1),
+		);
+		state = reduceGatewayEvent(state, event("final_answer", {
+			lines: ["命令结果"],
+		}, 2));
+		state = reduceGatewayEvent(state, event("turn_started", {
+			commandKind: "user_message",
+		}, 3, {
+			requestId: "req_2",
+			turnId: "turn_2",
+		}));
+
+		expect(state.currentCommand).toBeNull();
+		expect(state.currentTurn).toMatchObject({
+			id: "turn_2",
+			answer: "",
+			error: null,
+		});
+	});
+
+	it("ignores a late command result after a newer AI turn starts", () => {
+		let state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "slash_command" }, 1),
+		);
+		state = reduceGatewayEvent(state, event("turn_started", {
+			commandKind: "user_message",
+		}, 2, {
+			requestId: "req_2",
+			turnId: "turn_2",
+		}));
+		state = reduceGatewayEvent(state, event("final_answer", {
+			lines: ["迟到的命令结果"],
+		}, 3, {
+			requestId: "req_1",
+			turnId: "turn_1",
+		}));
+
+		expect(state.currentTurn).toMatchObject({
+			id: "turn_2",
+			status: "running",
+			answer: "",
+		});
+	});
+
+	it("rebuilds system commands identically from replay and live events", () => {
+		const events = [
+			event("turn_started", { commandKind: "slash_command" }, 1),
+			event("final_answer", { lines: ["帮助内容"] }, 2),
+		];
+		const replay: GatewayReplay = {
+			lastSequence: 2,
+			snapshot: events.slice(0, 1),
+			deltas: events.slice(1),
+		};
+
+		expect(rebuildFromReplay(replay)).toEqual(
+			events.reduce(reduceGatewayEvent, baseState()),
+		);
+		expect(rebuildFromReplay(replay).currentCommand?.output).toBe("帮助内容");
+	});
+
 	it("rebuilds replay and live delivery to the same presentation state", () => {
 		const events = [
 			event("turn_started", { commandKind: "user_message" }, 1),
