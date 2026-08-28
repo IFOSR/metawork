@@ -172,12 +172,11 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 			const selected = index === this.selectedIndex;
 			const marker = selected ? theme.fg("accent", "›") : " ";
 			const activity = activityLabel(item.activity.state);
-			const task = item.activity.taskId ? ` · ${item.activity.taskId}` : "";
 			const age = relativeTime(item.updatedAt);
 			const title = truncateToWidth(item.title || "New conversation", 72, "…");
 			this.list.addChild(new Text(
 				`${marker} ${selected ? theme.bold(title) : title}`
-					+ `  ${theme.fg(activity.color, activity.label)}${task} · ${age}`,
+					+ `  ${theme.fg(activity.color, activity.label)} · ${age}`,
 				0,
 				0,
 			));

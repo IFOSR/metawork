@@ -40,7 +40,7 @@ const conversations = [
 ];
 
 describe("MetaWork Conversation selector", () => {
-	it("renders title, activity, current task, and recent update", () => {
+	it("renders title, activity, and recent update without internal IDs", () => {
 		const selector = new MetaWorkConversationSelector(
 			workspace,
 			conversations,
@@ -56,7 +56,8 @@ describe("MetaWork Conversation selector", () => {
 		expect(output).toContain("MetaWork");
 		expect(output).toContain("实现 Workspace 目录");
 		expect(output).toContain("执行中");
-		expect(output).toContain("task_1");
+		expect(output).not.toContain("task_1");
+		expect(output).not.toContain("conv_running");
 		expect(output).toContain("检查文档");
 	});
 

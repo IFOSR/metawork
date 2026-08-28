@@ -22,7 +22,7 @@ import {
 	type ConversationViewModel,
 } from "./metawork-client-reducer.ts";
 import {
-	renderConversation,
+	renderConversationViewport,
 	type ClientConnectionState,
 } from "./metawork-client-view.ts";
 import {
@@ -60,6 +60,7 @@ export interface AnyFusionClientModeView {
 	appendGatewayEvent(event: GatewayEventEnvelope): void;
 	showConversationSelector(actions: MetaWorkConversationSelectorActions): void;
 	hideConversationSelector(): void;
+	focusEditor(): void;
 	showError(message: string): void;
 }
 
@@ -183,7 +184,7 @@ export class AnyFusionClientModeController {
 			try {
 				await this.attachConversation(input.slice("/conversation ".length).trim());
 			} catch (error) {
-				this.deps.view.showError(error instanceof Error ? error.message : String(error));
+				this.deps.view.showError(formatClientError(error));
 			}
 			return;
 		}
@@ -227,7 +228,7 @@ export class AnyFusionClientModeController {
 			receipt = await this.deps.gateway.submitUserInput(input, this.selection);
 		}
 		if (receipt.status === "rejected") {
-			this.deps.view.showError(receipt.reason ?? "Gateway rejected the command");
+			this.deps.view.showError(formatClientError(receipt.reason ?? "Gateway rejected the command"));
 		}
 	}
 
@@ -239,20 +240,20 @@ export class AnyFusionClientModeController {
 		this.deps.view.showConversationSelector({
 			attach: conversationId => {
 				void this.attachConversation(conversationId).catch(error => {
-					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+					this.deps.view.showError(formatClientError(error));
 				});
 			},
 			create: () => {
 				void this.createConversation().catch(error => {
-					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+					this.deps.view.showError(formatClientError(error));
 				});
 			},
 			refresh: query => {
 				void this.refreshConversations(query).catch(error => {
-					this.deps.view.showError(error instanceof Error ? error.message : String(error));
+					this.deps.view.showError(formatClientError(error));
 				});
 			},
-			cancel: () => this.deps.view.hideConversationSelector(),
+			cancel: () => this.closeConversationSelector(),
 		});
 	}
 
@@ -296,7 +297,12 @@ export class AnyFusionClientModeController {
 		this.conversationId = conversationId;
 		this.selection = { mode: "attach", conversationId };
 		await this.deps.gateway.resume(conversationId);
+		this.closeConversationSelector();
+	}
+
+	private closeConversationSelector(): void {
 		this.deps.view.hideConversationSelector();
+		this.deps.view.focusEditor();
 	}
 
 	stop(): void {
@@ -320,7 +326,6 @@ class TerminalClientView implements AnyFusionClientModeView {
 	});
 	private readonly userMessages: string[] = [];
 	private readonly timelineText = new Text("", 1, 0);
-	private readonly statusText = new Text("", 1, 0);
 	private readonly editorContainer: Container;
 	private readonly editor: Editor;
 	private selector: MetaWorkConversationSelector | null = null;
@@ -344,16 +349,11 @@ class TerminalClientView implements AnyFusionClientModeView {
 		);
 		this.editorContainer.addChild(editor);
 		ui.addChild(this.timelineText);
-		ui.addChild(this.statusText);
 		ui.addChild(this.editorContainer);
 	}
 
 	setConnectionState(state: ClientConnectionState): void {
 		this.connectionState = state;
-		this.statusText.setText(theme.fg(
-			state === "connected" ? "success" : state === "offline" || state === "closed" ? "warning" : "muted",
-			`${state} · 输入 /help 查看命令`,
-		));
 		this.refreshView();
 		this.ui.requestRender();
 	}
@@ -387,6 +387,10 @@ class TerminalClientView implements AnyFusionClientModeView {
 		this.selector = null;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
+		this.ui.requestRender();
+	}
+
+	focusEditor(): void {
 		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	}
@@ -400,9 +404,31 @@ class TerminalClientView implements AnyFusionClientModeView {
 	}
 
 	private refreshView(): void {
-		const rendered = renderConversation(this.model, this.userMessages, this.connectionState, 120);
-		this.timelineText.setText(rendered);
+		const width = this.ui.terminal.columns;
+		const maxTimelineLines = Math.max(6, this.ui.terminal.rows - 8);
+		const rendered = renderConversationViewport(
+			this.model,
+			this.userMessages,
+			this.connectionState,
+			width,
+			maxTimelineLines,
+		);
+		this.timelineText.setText(rendered.join("\n"));
 		this.ui.requestRender();
+	}
+}
+
+export function formatClientError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	switch (message) {
+		case "workspace_required":
+			return "请先使用 /workspace /absolute/path 选择 Workspace。";
+		case "conversation_not_in_workspace":
+			return "该 Conversation 不在当前 Workspace，请使用 /conversations 重新选择。";
+		case "Gateway rejected the command":
+			return "命令未被 Server 接受，请重试。";
+		default:
+			return message;
 	}
 }
 

@@ -41,8 +41,17 @@ export function isAppleTerminalSession(): boolean {
 	return process.platform === "darwin" && process.env.TERM_PROGRAM === "Apple_Terminal";
 }
 
+export function isOrcaTerminalSession(): boolean {
+	return process.env.TERM_PROGRAM?.toLowerCase() === "orca";
+}
+
 export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boolean, isShiftPressed: boolean): string {
 	if (isAppleTerminal && data === "\r" && isShiftPressed) return APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE;
+	return data;
+}
+
+export function normalizeOrcaTerminalInput(data: string, isOrcaTerminal: boolean): string {
+	if (isOrcaTerminal && data === "\n") return "\r";
 	return data;
 }
 
@@ -309,12 +318,12 @@ export class ProcessTerminal implements Terminal {
 	private forwardInputSequence(sequence: string): void {
 		if (!this.inputHandler) return;
 		const isAppleTerminal = sequence === "\r" && isAppleTerminalSession();
-		const input = normalizeAppleTerminalInput(
+		const appleNormalizedInput = normalizeAppleTerminalInput(
 			sequence,
 			isAppleTerminal,
 			isAppleTerminal && isNativeModifierPressed("shift"),
 		);
-		this.inputHandler(input);
+		this.inputHandler(normalizeOrcaTerminalInput(appleNormalizedInput, isOrcaTerminalSession()));
 	}
 
 	private enableModifyOtherKeys(): void {

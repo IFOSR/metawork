@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emptyConversationViewModel } from "../src/modes/interactive/metawork-client-model.ts";
 import {
 	renderConversation,
+	renderConversationViewport,
 	type ClientConnectionState,
 } from "../src/modes/interactive/metawork-client-view.ts";
 
@@ -65,6 +66,7 @@ describe("MetaWork client view", () => {
 		}
 		expect(rendered).toContain("检查 README");
 		expect(rendered.match(/最终报告正文/g)).toHaveLength(1);
+		expect(rendered).not.toContain("conv_1");
 		expect(rendered).not.toContain("turn_internal");
 		expect(rendered).not.toContain("result_internal");
 	});
@@ -139,5 +141,42 @@ describe("MetaWork client view", () => {
 		expect(rendered).toContain("reconnecting");
 		expect(rendered).toContain("metawork");
 		expect(rendered).toContain("/Users/example/projects/metawork");
+	});
+
+	it("renders connection state once and keeps long command output inside the viewport", () => {
+		const rendered = renderConversationViewport(
+			{
+				...emptyConversationViewModel(),
+				activeWorkspace: {
+					id: "workspace_metawork",
+					displayName: "metawork",
+					path: "/Users/example/projects/metawork",
+					availability: "available",
+				},
+				currentCommand: {
+					interactionKind: "system_command",
+					id: "turn_config",
+					requestId: "req_config",
+					status: "completed",
+					resultId: null,
+					contentHash: "",
+					byteLength: 0,
+					output: Array.from({ length: 40 }, (_, index) => `配置项 ${index + 1}: 中文值`).join("\n"),
+					error: null,
+				},
+			},
+			["/config"],
+			"connected",
+			80,
+			12,
+		);
+
+		expect(rendered).toHaveLength(12);
+		expect(rendered[0]).toContain("已省略");
+		expect(rendered[0]).toContain("行");
+		expect(rendered).toContain("命令结果");
+		expect(rendered.join("\n").match(/connected/g)).toHaveLength(1);
+		expect(rendered.join("\n")).toContain("配置项 40");
+		expect(rendered.join("\n")).not.toContain("/Users/example/projects/metawork");
 	});
 });

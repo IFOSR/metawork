@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { describe, it, mock } from "node:test";
 import { setKittyProtocolActive } from "../src/keys.ts";
-import { normalizeAppleTerminalInput, ProcessTerminal } from "../src/terminal.ts";
+import { normalizeAppleTerminalInput, normalizeOrcaTerminalInput, ProcessTerminal } from "../src/terminal.ts";
 
 describe("normalizeAppleTerminalInput", () => {
 	it("rewrites Apple Terminal Return to CSI-u Shift+Enter when Shift is pressed", () => {
@@ -19,6 +19,35 @@ describe("normalizeAppleTerminalInput", () => {
 	it("leaves non-Return input unchanged", () => {
 		assert.equal(normalizeAppleTerminalInput("\x1b[13;2u", true, true), "\x1b[13;2u");
 		assert.equal(normalizeAppleTerminalInput("a", true, true), "a");
+	});
+});
+
+describe("normalizeOrcaTerminalInput", () => {
+	it("rewrites Orca line feed to Return so Enter confirms and submits", () => {
+		assert.equal(normalizeOrcaTerminalInput("\n", true), "\r");
+	});
+
+	it("leaves line feed unchanged outside Orca", () => {
+		assert.equal(normalizeOrcaTerminalInput("\n", false), "\n");
+	});
+
+	it("leaves other Orca input unchanged", () => {
+		assert.equal(normalizeOrcaTerminalInput("\r", true), "\r");
+		assert.equal(normalizeOrcaTerminalInput("\x1b[13;2u", true), "\x1b[13;2u");
+		assert.equal(normalizeOrcaTerminalInput("\x1b[13u", true), "\x1b[13u");
+		assert.equal(normalizeOrcaTerminalInput("\x1b[200~a\nb\x1b[201~", true), "\x1b[200~a\nb\x1b[201~");
+	});
+});
+
+describe("terminal Enter compatibility", () => {
+	it("keeps standard Return, Apple Shift+Enter, Kitty Enter, and bracketed paste distinct", () => {
+		assert.equal(normalizeAppleTerminalInput("\r", false, false), "\r");
+		assert.equal(normalizeAppleTerminalInput("\r", true, true), "\x1b[13;2u");
+		assert.equal(normalizeOrcaTerminalInput("\x1b[13u", true), "\x1b[13u");
+		assert.equal(
+			normalizeOrcaTerminalInput("\x1b[200~first\nsecond\x1b[201~", true),
+			"\x1b[200~first\nsecond\x1b[201~",
+		);
 	});
 });
 

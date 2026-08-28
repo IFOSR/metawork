@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	AnyFusionClientModeController,
+	formatClientError,
 	type AnyFusionClientModeView,
 } from "../src/modes/interactive/anyfusion-client-mode.ts";
 import type { GatewayEventEnvelope } from "../src/anyfusion/gateway-protocol.ts";
@@ -65,6 +66,7 @@ function fixture(options: {
 			selectorActions = actions;
 		}),
 		hideConversationSelector: vi.fn(),
+		focusEditor: vi.fn(),
 		showError: vi.fn(),
 	};
 	const controller = new AnyFusionClientModeController({
@@ -199,7 +201,7 @@ describe("AnyFusionClientModeController", () => {
 	});
 
 	it("creates and attaches a Conversation from the Workspace selector", async () => {
-		const { controller, gateway, selectorActions } = fixture({
+		const { controller, gateway, view, selectorActions } = fixture({
 			conversationId: undefined,
 			workspaceHint: "/repo-a",
 		});
@@ -209,6 +211,46 @@ describe("AnyFusionClientModeController", () => {
 		await vi.waitFor(() => expect(gateway.createConversation).toHaveBeenCalledWith("workspace_repo"));
 		await vi.waitFor(() => expect(gateway.attachConversation).toHaveBeenCalledWith("conv_new"));
 		expect(gateway.resume).toHaveBeenCalledWith("conv_new");
+		await vi.waitFor(() => expect(view.focusEditor).toHaveBeenCalled());
+	});
+
+	it("restores Editor focus when the Conversation selector is cancelled", async () => {
+		const { controller, view, selectorActions } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+		await controller.start();
+
+		selectorActions()?.cancel();
+
+		expect(view.hideConversationSelector).toHaveBeenCalled();
+		expect(view.focusEditor).toHaveBeenCalled();
+	});
+
+	it("restores Editor focus after attaching an existing Conversation", async () => {
+		const { controller, view, publish, selectorActions } = fixture({
+			conversationId: undefined,
+			workspaceHint: "/repo-a",
+		});
+		await controller.start();
+		publish({
+			protocolVersion: 2,
+			eventId: "event_directory_focus",
+			sequence: 1,
+			accountId: "local-default",
+			conversationId: "workspace_directory_workspace_repo",
+			requestId: null,
+			turnId: null,
+			kind: "workspace_directory_snapshot",
+			payload: {
+				workspaceId: "workspace_repo",
+				page: { items: [{ conversationId: "conv_allowed", workspaceId: "workspace_repo" }] },
+			},
+			occurredAt: "2026-08-28T00:00:00.000Z",
+		});
+
+		selectorActions()?.attach("conv_allowed");
+		await vi.waitFor(() => expect(view.focusEditor).toHaveBeenCalled());
 	});
 
 	it("attaches /conversation only when it is in the current Workspace directory", async () => {
@@ -242,7 +284,16 @@ describe("AnyFusionClientModeController", () => {
 		expect(gateway.attachConversation).toHaveBeenCalledWith("conv_allowed");
 
 		await controller.submit("/conversation conv_other");
-		expect(view.showError).toHaveBeenCalledWith("conversation_not_in_workspace");
+		expect(view.showError).toHaveBeenCalledWith(
+			"该 Conversation 不在当前 Workspace，请使用 /conversations 重新选择。",
+		);
 		expect(gateway.attachConversation).not.toHaveBeenCalledWith("conv_other");
+	});
+
+	it("translates known internal errors into actionable user messages", () => {
+		expect(formatClientError("workspace_required")).toContain("/workspace /absolute/path");
+		expect(formatClientError("conversation_not_in_workspace")).toContain("当前 Workspace");
+		expect(formatClientError("Gateway rejected the command")).toBe("命令未被 Server 接受，请重试。");
+		expect(formatClientError("specific safe message")).toBe("specific safe message");
 	});
 });

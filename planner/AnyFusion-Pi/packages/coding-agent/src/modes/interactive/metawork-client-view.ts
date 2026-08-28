@@ -2,6 +2,7 @@ import type {
 	ConversationViewModel,
 	MetaWorkStage,
 } from "./metawork-client-model.ts";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type ClientConnectionState =
 	| "connecting"
@@ -31,12 +32,12 @@ export function renderConversation(
 		? width < 100 ? model.activeWorkspace.displayName : model.activeWorkspace.path
 		: "未设置 · 输入 /workspace /absolute/path";
 	const lines = [
-		`MetaWork  ·  ${connection}  ·  workspace: ${workspace}`,
+		`MetaWork  ·  workspace: ${workspace}`,
 		...(model.activeWorkspace && width < 100
 			? [`完整路径: ${model.activeWorkspace.path}`]
 			: []),
 		...(model.activeConversationId
-			? [`conversation: ${model.activeConversationId}`]
+			? ["当前 Conversation"]
 			: ["Workspace home · 使用 /conversations 浏览会话"]),
 		"",
 		...userMessages.flatMap(message => ["你", message, ""]),
@@ -77,6 +78,39 @@ export function renderConversation(
 	for (const notice of model.notices.slice(-3)) lines.push(notice.text);
 	lines.push("", `${connection} · ${turn?.status ?? command?.status ?? "idle"} · 输入 /help 查看命令`);
 	return lines.join("\n");
+}
+
+export function renderConversationViewport(
+	model: ConversationViewModel,
+	userMessages: readonly string[],
+	connection: ClientConnectionState,
+	width: number,
+	maxLines: number,
+): string[] {
+	const safeWidth = Math.max(1, width);
+	const safeMaxLines = Math.max(2, maxLines);
+	const lines = wrapTextWithAnsi(
+		renderConversation(model, userMessages, connection, safeWidth),
+		safeWidth,
+	);
+	if (lines.length <= safeMaxLines) return lines;
+	const interactionLabel = model.currentCommand
+		? commandLabel(model.currentCommand.status)
+		: model.currentTurn ? "任务进度" : null;
+	const reservedLines = interactionLabel ? 2 : 1;
+	const visible = lines.slice(-(safeMaxLines - reservedLines));
+	const omitted = lines.length - visible.length - (interactionLabel ? 1 : 0);
+	return [
+		`… 已省略 ${Math.max(1, omitted)} 行，显示最近输出`,
+		...(interactionLabel ? [interactionLabel] : []),
+		...visible,
+	];
+}
+
+function commandLabel(status: "running" | "completed" | "failed"): string {
+	if (status === "running") return "命令执行中";
+	if (status === "failed") return "命令失败";
+	return "命令结果";
 }
 
 function renderStepper(active: MetaWorkStage | undefined): string {
