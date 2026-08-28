@@ -280,6 +280,30 @@ describe('ConversationSession', () => {
     expect(plannerCalls).toBe(0);
   });
 
+  it('handles /help without calling Planner', async () => {
+    let plannerCalls = 0;
+    const session = makeSession(
+      'conv_help',
+      'planner_help',
+      'local-default',
+      makePort('local-default', {
+        planning: {
+          submit: async () => {
+            plannerCalls += 1;
+            throw new Error('Planner must not start');
+          },
+        } as never,
+      }),
+    );
+
+    await expect(session.executeGatewayCommand({
+      kind: 'slash_command',
+      text: '/help',
+    }, { rethrowErrors: true })).resolves.toBeUndefined();
+
+    expect(plannerCalls).toBe(0);
+  });
+
   it('rejects automatic Workspace selection at the Conversation seam', async () => {
     const calls: string[] = [];
     const workspace: ConversationWorkspaceSelection = {

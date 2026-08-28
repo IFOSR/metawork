@@ -367,7 +367,7 @@ export class ConversationGatewayRuntime {
       await conversation.executeGatewayCommand(
         mailboxCommand.command,
         {
-          awaitAsyncWork: true,
+          awaitAsyncWork: mailboxCommand.command.kind === 'user_message',
           rethrowErrors: true,
           interactionTurnId: turnId,
           principalId: mailboxCommand.principalId,

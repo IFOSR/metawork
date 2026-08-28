@@ -143,6 +143,42 @@ describe('ConversationGatewayRuntime', () => {
     expect(fixture.turnIds).toEqual([started?.turnId]);
   });
 
+  it('does not wait for semantic background work after a slash command', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      session.output.push(`command:${commandText(command)}`);
+    });
+
+    const receipt = await fixture.runtime.submit('conv_1', 'req_help', 'idem_help', {
+      kind: 'slash_command',
+      text: '/help',
+    });
+
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
+      awaitAsyncWork: false,
+    });
+  });
+
+  it('keeps user messages waiting for their semantic background work', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      session.output.push(`answer:${commandText(command)}`);
+    });
+    const events = fixture.capture('conv_1');
+
+    const receipt = await fixture.runtime.submit(
+      'conv_1',
+      'req_user',
+      'idem_user',
+      userMessage('hello'),
+    );
+
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
+      awaitAsyncWork: true,
+    });
+    expect(events.some(event => event.kind === 'final_answer')).toBe(true);
+  });
+
   it('publishes only assistant output in the final answer payload', async () => {
     const fixture = createFixture(async (_conversationId, command, session) => {
       session.output.push('', `> ${commandText(command)}`, 'answer only');
@@ -618,6 +654,7 @@ function createFixture(
   const fixture = {
     executions: [] as string[],
     turnIds: [] as Array<string | null>,
+    sessions: [] as FakeConversationSession[],
     journal,
     subscriptions,
     registry: {
@@ -649,6 +686,16 @@ function createFixture(
     fixture.executions.push(`${conversationId}:${commandText(command)}`);
     session.output.push(`answer:${commandText(command)}`);
   });
+  conversationFactory = conversationId => {
+    let session!: FakeConversationSession;
+    session = new FakeConversationSession(
+      conversationId,
+      command => operation(conversationId, command, session),
+      fixture.turnIds,
+    );
+    fixture.sessions.push(session);
+    return session as unknown as ConversationSession;
+  };
   fixture.runtime = new ConversationGatewayRuntime({
     accountId: 'local-default',
     registry: fixture.registry,
