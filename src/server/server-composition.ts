@@ -75,6 +75,8 @@ import { WorkspaceConversationMigrator } from '../workspace/workspace-conversati
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
+import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
+import { resolveServerWebPort } from './server-web-port.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
@@ -999,6 +1001,21 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       });
       gatewaySubscriptions.publish(event);
     },
+    publishConnection: async (kind, connectionId, payload, requestId) => {
+      const event = await eventJournal.append({
+        protocolVersion: 2,
+        eventId: `event_${nanoid(12)}`,
+        sequence: 0,
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        conversationId: clientConnectionEventStreamId(connectionId),
+        requestId: requestId ?? null,
+        turnId: null,
+        kind,
+        payload: asPayloadRecord(payload),
+        occurredAt: new Date().toISOString(),
+      });
+      gatewaySubscriptions.publish(event);
+    },
   });
   publishWorkspaceActivity = async (conversationId, activity) => {
     const binding = (await conversationStore.readConversation(conversationId))
@@ -1183,7 +1200,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     });
     const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
-      port: 8788,
+      port: resolveServerWebPort(process.env),
       noOpen: true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
       attachmentStore: webAttachmentStore,

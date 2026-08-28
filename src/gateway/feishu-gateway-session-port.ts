@@ -122,6 +122,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       routeKind?: string;
       workspaceId?: string | null;
       projectionRequestId?: string;
+      projectionStreamId?: string;
       connectionId?: string;
     };
     const connectionId = routed.connectionId
@@ -134,6 +135,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         routed.workspaceId,
         input.threadId,
         input.chatType,
+        routed.projectionStreamId,
+        routed.projectionRequestId,
       );
     }
     if (routed.routeKind === 'conversation_attached' && routed.workspaceId) {
@@ -217,12 +220,15 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       routeKind?: string;
       workspaceId?: string | null;
       projectionRequestId?: string;
+      projectionStreamId?: string;
     };
     if (routed.routeKind === 'workspace_directory' && routed.workspaceId) {
       return this.workspaceDirectoryReply(
         routed.workspaceId,
         input.threadId,
         input.action.chatType,
+        routed.projectionStreamId,
+        routed.projectionRequestId,
       );
     }
     if (routed.routeKind === 'conversation_history' && receipt.conversationId) {
@@ -241,12 +247,14 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     workspaceId: string,
     threadId?: string,
     chatType?: 'dm' | 'group' | 'unknown',
+    projectionStreamId?: string,
+    projectionRequestId?: string,
   ): Promise<FeishuGatewayReply> {
     const replay = await this.deps.journal.replay(
       this.deps.accountId,
-      workspaceEventStreamId(workspaceId),
+      projectionStreamId ?? workspaceEventStreamId(workspaceId),
     );
-    const projection = projectWorkspaceDirectory(replay);
+    const projection = projectWorkspaceDirectory(replay, projectionRequestId);
     if (!projection) throw new Error('workspace_directory_unavailable');
     const lines = [
       `# Workspace: ${projection.workspace.displayName}`,
@@ -675,9 +683,11 @@ interface FeishuWorkspaceDirectoryProjection {
 
 function projectWorkspaceDirectory(
   replay: GatewayReplay,
+  requestId?: string,
 ): FeishuWorkspaceDirectoryProjection | null {
   let projection: FeishuWorkspaceDirectoryProjection | null = null;
   for (const event of orderedUniqueReplayEvents(replay)) {
+    if (requestId && event.requestId !== requestId) continue;
     if (event.kind === 'workspace_directory_snapshot') {
       const payload = asRecord(event.payload);
       const page = parseWorkspaceDirectoryPage(payload?.page);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceGatewayRuntime } from '../../src/gateway/workspace-gateway-runtime.js';
 
 function directory() {
@@ -10,6 +10,11 @@ function directory() {
         calls.push(`select:${path}`);
         return { created: false, workspace: { id: 'workspace_repo' } };
       },
+      listWorkspaces: async () => [{
+        id: 'workspace_repo',
+        displayName: 'repo',
+        canonicalPath: '/repo',
+      }],
       listConversations: async (workspaceId: string) => {
         calls.push(`list:${workspaceId}`);
         return { items: [], nextCursor: null };
@@ -81,5 +86,39 @@ describe('WorkspaceGatewayRuntime', () => {
       principalId: 'local:local-installation',
       connectionId: 'conn_b',
     })).resolves.toMatchObject({ status: 'rejected', reason: 'workspace_required' });
+  });
+
+  it('publishes filtered directory pages only to the requesting connection', async () => {
+    const fixture = directory();
+    const publishWorkspace = vi.fn(async () => undefined);
+    const publishConnection = vi.fn(async () => undefined);
+    const runtime = new WorkspaceGatewayRuntime(fixture.value as never, {
+      publish: publishWorkspace,
+      publishConnection,
+    } as never);
+    const context = {
+      principalId: 'local:local-installation',
+      connectionId: 'conn_a',
+      requestId: 'req_list',
+    };
+    await runtime.handle({ kind: 'select_workspace', path: '/repo' }, context);
+    publishWorkspace.mockClear();
+
+    await runtime.handle({
+      kind: 'list_workspace_conversations',
+      workspaceId: 'workspace_repo',
+      query: 'needle',
+    }, context);
+
+    expect(publishWorkspace).not.toHaveBeenCalled();
+    expect(publishConnection).toHaveBeenCalledWith(
+      'workspace_directory_snapshot',
+      'conn_a',
+      expect.objectContaining({
+        workspaceId: 'workspace_repo',
+        page: expect.any(Object),
+      }),
+      'req_list',
+    );
   });
 });

@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientGateway } from '../../src/gateway/client-gateway.js';
+import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
+import { clientConnectionEventStreamId } from '../../src/gateway/client-connection-event-stream.js';
 import type { EventJournal } from '../../src/gateway/event-journal.js';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
@@ -265,6 +267,166 @@ describe('MetaclawGatewayServer lifecycle', () => {
     await fixture.server.stop();
   });
 
+  it('delivers filtered Workspace query results only to the requesting connection', async () => {
+    let subscriptions: GatewaySubscriptions;
+    const fixture = await createFixture({
+      handleGateway: async envelope => {
+        if (envelope.command.kind === 'list_workspace_conversations') {
+          subscriptions.publish({
+            protocolVersion: 2,
+            eventId: `event_${envelope.requestId}`,
+            sequence: 1,
+            accountId: 'local-default',
+            conversationId: clientConnectionEventStreamId(envelope.connectionId),
+            requestId: envelope.requestId,
+            turnId: null,
+            kind: 'workspace_directory_snapshot',
+            payload: {
+              workspaceId: envelope.command.workspaceId,
+              page: { items: [], nextCursor: null },
+            },
+            occurredAt: '2026-08-28T00:00:00.000Z',
+          });
+        }
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: envelope.idempotencyKey,
+          status: 'accepted' as const,
+          conversationId: null,
+          workspaceId: 'workspace_repo',
+        };
+      },
+    });
+    subscriptions = fixture.subscriptions;
+    await fixture.server.start();
+    const first = await connect(fixture.socketPath);
+    const second = await connect(fixture.socketPath);
+    await first.next(message => message.type === 'hello');
+    await second.next(message => message.type === 'hello');
+
+    first.socket.write(encodeJsonLine({
+      type: 'command',
+      envelope: {
+        protocolVersion: 2,
+        requestId: 'req_list_first',
+        idempotencyKey: 'idem_list_first',
+        connectionId: 'client_first',
+        scope: { kind: 'workspace' },
+        command: {
+          kind: 'list_workspace_conversations',
+          workspaceId: 'workspace_repo',
+          query: 'only-first',
+        },
+        clientCapabilities: [],
+      },
+    }));
+
+    await first.next(message => (
+      message.type === 'receipt' && message.receipt.requestId === 'req_list_first'
+    ));
+    await waitFor(() => first.messages().some(message => (
+      message.type === 'event' && message.event.requestId === 'req_list_first'
+    )));
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(second.messages().some(message => (
+      message.type === 'event' && message.event.requestId === 'req_list_first'
+    ))).toBe(false);
+
+    first.socket.destroy();
+    second.socket.destroy();
+    await fixture.server.stop();
+  });
+
+  it('binds one unique Client connection ID to each socket', async () => {
+    const fixture = await createFixture();
+    await fixture.server.start();
+    const first = await connect(fixture.socketPath);
+    const second = await connect(fixture.socketPath);
+    await first.next(message => message.type === 'hello');
+    await second.next(message => message.type === 'hello');
+
+    first.socket.write(encodeJsonLine(workspaceCommandEnvelope(
+      'req_first',
+      'shared_connection',
+    )));
+    await first.next(message => (
+      message.type === 'receipt' && message.receipt.requestId === 'req_first'
+    ));
+
+    second.socket.write(encodeJsonLine(workspaceCommandEnvelope(
+      'req_collision',
+      'shared_connection',
+    )));
+    await waitFor(() => second.messages().some(message => (
+      (message.type === 'error' && message.requestId === 'req_collision')
+      || (message.type === 'receipt' && message.receipt.requestId === 'req_collision')
+    )));
+    expect(second.messages()).toContainEqual(expect.objectContaining({
+      type: 'error',
+      requestId: 'req_collision',
+      message: 'connection_id_in_use',
+    }));
+
+    first.socket.write(encodeJsonLine(workspaceCommandEnvelope(
+      'req_changed',
+      'different_connection',
+    )));
+    await waitFor(() => first.messages().some(message => (
+      (message.type === 'error' && message.requestId === 'req_changed')
+      || (message.type === 'receipt' && message.receipt.requestId === 'req_changed')
+    )));
+    expect(first.messages()).toContainEqual(expect.objectContaining({
+      type: 'error',
+      requestId: 'req_changed',
+      message: 'connection_id_locked',
+    }));
+
+    first.socket.destroy();
+    second.socket.destroy();
+    await fixture.server.stop();
+  });
+
+  it('does not let an old socket cleanup clear a reclaimed connection ID', async () => {
+    const closedConnections: string[] = [];
+    const fixture = await createFixture({
+      closeConnection: connectionId => closedConnections.push(connectionId),
+    });
+    await fixture.server.start();
+    const first = await connect(fixture.socketPath);
+    await first.next(message => message.type === 'hello');
+    first.socket.write(encodeJsonLine(workspaceCommandEnvelope(
+      'req_first_reclaim',
+      'reclaimable_connection',
+    )));
+    await first.next(message => (
+      message.type === 'receipt' && message.receipt.requestId === 'req_first_reclaim'
+    ));
+
+    first.socket.destroy();
+    await waitFor(() => closedConnections.length === 1);
+    expect(closedConnections).toEqual(['reclaimable_connection']);
+
+    const second = await connect(fixture.socketPath);
+    await second.next(message => message.type === 'hello');
+    second.socket.write(encodeJsonLine(workspaceCommandEnvelope(
+      'req_second_reclaim',
+      'reclaimable_connection',
+    )));
+    await second.next(message => (
+      message.type === 'receipt' && message.receipt.requestId === 'req_second_reclaim'
+    ));
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    expect(closedConnections).toEqual(['reclaimable_connection']);
+    second.socket.destroy();
+    await waitFor(() => closedConnections.length === 2);
+    expect(closedConnections).toEqual([
+      'reclaimable_connection',
+      'reclaimable_connection',
+    ]);
+    await fixture.server.stop();
+  });
+
   it('closes only the offending socket for malformed JSON and keeps serving', async () => {
     const fixture = await createFixture();
     await fixture.server.start();
@@ -366,6 +528,17 @@ async function createFixture(options: {
   registerWebLaunch?: (
     input: { workspaceHint: string; conversationId?: string },
   ) => Promise<{ token: string; expiresAt: string }>;
+  handleGateway?: (
+    envelope: GatewayCommandEnvelope,
+  ) => Promise<{
+    requestId: string;
+    idempotencyKey: string;
+    status: 'accepted' | 'duplicate' | 'rejected';
+    conversationId: string | null;
+    workspaceId?: string | null;
+    reason?: string;
+  }>;
+  closeConnection?: (connectionId: string) => void;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'anyfusion-gateway-server-'));
   roots.push(root);
@@ -373,12 +546,12 @@ async function createFixture(options: {
   const journal = options.journal ?? new FileEventJournal(join(root, 'journal'));
   const subscriptions = new GatewaySubscriptions();
   const gateway = {
-    handle: async (envelope: { requestId: string; idempotencyKey: string }) => ({
+    handle: options.handleGateway ?? (async (envelope: GatewayCommandEnvelope) => ({
       requestId: envelope.requestId,
       idempotencyKey: envelope.idempotencyKey,
-      status: 'accepted',
+      status: 'accepted' as const,
       conversationId: 'conv_1',
-    }),
+    })),
   } as unknown as ClientGateway;
   return {
     socketPath,
@@ -392,7 +565,32 @@ async function createFixture(options: {
       authorizeAttach: options.authorizeAttach ?? (async () => true),
       attachClient: options.attachClient,
       registerWebLaunch: options.registerWebLaunch,
+      closeConnection: options.closeConnection,
     }),
+  };
+}
+
+function workspaceCommandEnvelope(
+  requestId: string,
+  connectionId: string,
+): {
+  type: 'command';
+  envelope: GatewayCommandEnvelope;
+} {
+  return {
+    type: 'command',
+    envelope: {
+      protocolVersion: 2,
+      requestId,
+      idempotencyKey: `idem_${requestId}`,
+      connectionId,
+      scope: { kind: 'workspace' },
+      command: {
+        kind: 'list_workspace_conversations',
+        workspaceId: 'workspace_repo',
+      },
+      clientCapabilities: [],
+    },
   };
 }
 

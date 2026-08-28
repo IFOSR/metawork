@@ -6,6 +6,12 @@
 export type GatewayEventKind =
   | 'conversation_snapshot'
   | 'workspace_changed'
+  | 'workspace_directory_snapshot'
+  | 'workspace_conversation_upserted'
+  | 'workspace_conversation_removed'
+  | 'workspace_activity_changed'
+  | 'workspace_availability_changed'
+  | 'conversation_history_page'
   | 'turn_started'
   | 'trace_delta'
   | 'task_projection'
@@ -22,6 +28,12 @@ export type GatewayEventKind =
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_snapshot',
   'workspace_changed',
+  'workspace_directory_snapshot',
+  'workspace_conversation_upserted',
+  'workspace_conversation_removed',
+  'workspace_activity_changed',
+  'workspace_availability_changed',
+  'conversation_history_page',
   'turn_started',
   'trace_delta',
   'task_projection',
@@ -37,7 +49,7 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
 ];
 
 export interface GatewayEventEnvelope {
-  readonly protocolVersion: 1;
+  readonly protocolVersion: 2;
   readonly eventId: string;
   readonly sequence: number;
   readonly accountId: string;
@@ -53,6 +65,6 @@ export function isKnownGatewayEventKind(kind: string): kind is GatewayEventKind 
   return (GATEWAY_EVENT_KINDS as readonly string[]).includes(kind);
 }
 
-export function isSupportedGatewayProtocolVersion(version: unknown): version is 1 {
-  return version === 1;
+export function isSupportedGatewayProtocolVersion(version: unknown): version is 2 {
+  return version === 2;
 }

@@ -92,7 +92,8 @@ describe('production composition root', () => {
 
     expect(index).toContain('verifyOwnership: authorizeConversationAttach');
     expect(index.match(/authorizeAttach: authorizeConversationAttach/g)).toHaveLength(1);
-    expect(index.match(/onConversationCreated: rememberConversation/g)).toHaveLength(1);
+    expect(index).toContain('createInWorkspace: async (accountId, workspaceId, principalId)');
+    expect(index).toContain('rememberConversation(accountId, conversation.id)');
   });
 
   it('runs account recovery timers and drains commands before runtime disposal', () => {

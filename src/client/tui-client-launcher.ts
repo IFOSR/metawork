@@ -83,8 +83,12 @@ async function runVendoredPlannerClient(
   await waitForExit(child);
 }
 
-function findVendoredPlannerCommand(): string {
-  const relative = join(
+export function resolveVendoredPlannerCommand(
+  moduleRoot = dirname(fileURLToPath(import.meta.url)),
+  workspaceHint = process.cwd(),
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  const sourceRelative = join(
     'planner',
     'AnyFusion-Pi',
     'packages',
@@ -92,17 +96,29 @@ function findVendoredPlannerCommand(): string {
     'dist',
     'cli.js',
   );
-  const moduleRoot = dirname(fileURLToPath(import.meta.url));
+  const installedRelative = join(
+    'planner',
+    'packages',
+    'coding-agent',
+    'dist',
+    'cli.js',
+  );
   const candidates = [
-    resolve(process.cwd(), relative),
-    resolve(moduleRoot, '../../', relative),
-    resolve(moduleRoot, '../', relative),
+    resolve(workspaceHint, sourceRelative),
+    resolve(process.cwd(), sourceRelative),
+    resolve(moduleRoot, '..', installedRelative),
+    resolve(moduleRoot, '..', sourceRelative),
+    resolve(moduleRoot, '../..', sourceRelative),
   ];
-  const command = candidates.find(candidate => existsSync(candidate));
+  const command = candidates.find(candidate => pathExists(candidate));
   if (!command) {
     throw new Error('Vendored AnyFusion-Pi Client is unavailable; rebuild the Planner package');
   }
   return command;
+}
+
+function findVendoredPlannerCommand(): string {
+  return resolveVendoredPlannerCommand();
 }
 
 function waitForExit(child: ChildProcess): Promise<void> {

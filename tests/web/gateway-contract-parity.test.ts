@@ -18,7 +18,8 @@ describe('web gateway contract parity', () => {
   });
 
   it('rejects unknown protocol versions', () => {
-    expect(isSupportedGatewayProtocolVersion(1)).toBe(true);
+    expect(isSupportedGatewayProtocolVersion(2)).toBe(true);
+    expect(isSupportedGatewayProtocolVersion(1)).toBe(false);
     expect(isSupportedGatewayProtocolVersion(999)).toBe(false);
     expect(isSupportedGatewayProtocolVersion('1')).toBe(false);
     expect(isSupportedGatewayProtocolVersion(undefined)).toBe(false);

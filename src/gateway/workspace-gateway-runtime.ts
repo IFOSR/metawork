@@ -24,6 +24,12 @@ export interface WorkspaceGatewayRuntimeOptions {
     workspaceId: string,
     payload: unknown,
   ) => Promise<void> | void;
+  readonly publishConnection?: (
+    kind: 'workspace_directory_snapshot',
+    connectionId: string,
+    payload: unknown,
+    requestId?: string,
+  ) => Promise<void> | void;
 }
 
 export class WorkspaceGatewayRuntime {
@@ -79,7 +85,7 @@ export class WorkspaceGatewayRuntime {
 
   async handle(
     command: WorkspaceGatewayCommand,
-    context: { principalId: string; connectionId: string },
+    context: { principalId: string; connectionId: string; requestId?: string },
   ): Promise<WorkspaceGatewayRuntimeResult> {
     try {
       if (command.kind === 'select_workspace') {
@@ -105,14 +111,18 @@ export class WorkspaceGatewayRuntime {
         return { status: 'rejected', reason: 'workspace_not_selected' };
       }
       if (command.kind === 'list_workspace_conversations') {
+        const workspace = (await this.directory.listWorkspaces(context.principalId))
+          .find(item => item.id === activeWorkspaceId);
+        if (!workspace) throw new Error('workspace_unauthorized');
         const page = await this.directory.listConversations(activeWorkspaceId, context.principalId, {
           ...(command.cursor ? { cursor: command.cursor } : {}),
           ...(command.query ? { query: command.query } : {}),
         });
-        await this.options.publish?.(
+        await this.options.publishConnection?.(
           'workspace_directory_snapshot',
-          activeWorkspaceId,
-          { page },
+          context.connectionId,
+          { workspaceId: activeWorkspaceId, workspace, page },
+          context.requestId,
         );
         return { status: 'accepted', workspaceId: activeWorkspaceId };
       }

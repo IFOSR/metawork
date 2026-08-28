@@ -138,8 +138,12 @@ describe('Web image to Planner end-to-end path', () => {
       gateway: {
         handle: async envelope => {
           gatewayCalls.push('handle');
+          const conversationId = envelope.scope.kind === 'conversation'
+            && envelope.scope.selection.mode === 'attach'
+            ? envelope.scope.selection.conversationId
+            : 'conv_e2e_image';
           const receipt = await gatewayRuntime.submit(
-            envelope.conversation.conversationId,
+            conversationId,
             envelope.requestId,
             envelope.idempotencyKey,
             envelope.command,
@@ -161,8 +165,11 @@ describe('Web image to Planner end-to-end path', () => {
     });
 
     try {
-      await webRuntime.initialize();
-      await webRuntime.submit('请分析这张截图', [{
+      await webRuntime.initializeClient('browser-a', {
+        workspaceHint: '/repo',
+        conversationId: 'conv_e2e_image',
+      });
+      await webRuntime.submit('browser-a', '请分析这张截图', [{
         attachmentId: image.attachmentId,
         kind: 'image',
       }]);
@@ -275,15 +282,39 @@ function catalogFixture(): WebSessionRuntimeCatalog {
       updatedAt: '2026-08-22T00:00:00.000Z',
       active: true,
       archived: false,
+      workspaceId: 'workspace_repo',
+      workspace: null,
     },
     turns: [],
   };
   return {
     initialize: async () => undefined,
     create: async () => record,
-    list: async () => [record.session],
-    search: async () => [record.session],
+    list: async () => [{
+      ...record.session,
+      workspaceId: 'workspace_repo',
+      workspace: null,
+    }],
+    search: async () => [{
+      ...record.session,
+      workspaceId: 'workspace_repo',
+      workspace: null,
+    }],
     read: async () => record,
+    workspaceIdForConversation: async () => 'workspace_repo',
+    listWorkspaces: async () => [{
+      id: 'workspace_repo',
+      accountId: 'local-default',
+      displayName: 'repo',
+      canonicalPath: '/repo',
+      availability: 'available',
+      createdAt: '2026-08-22T00:00:00.000Z',
+      updatedAt: '2026-08-22T00:00:00.000Z',
+      createdByPrincipal: 'web:browser-a',
+      archived: false,
+    }],
+    archive: async () => true,
+    clearWorkspace: async () => 0,
     setActive: async () => record,
     appendTurn: async () => record,
   };

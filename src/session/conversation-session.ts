@@ -745,6 +745,12 @@ export class ConversationSession {
         await this.submitUserInput(command.text, options);
         return;
       case 'slash_command':
+        if (
+          'workspaceMutation' in command
+          && (command as unknown as { workspaceMutation?: unknown }).workspaceMutation
+        ) {
+          throw new Error('Workspace selection must be handled by ClientGateway');
+        }
         await this.submitUserInput(command.text, options);
         return;
       case 'permission_resolution':

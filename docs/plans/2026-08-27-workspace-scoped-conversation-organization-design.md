@@ -1,8 +1,9 @@
 # MetaWork Workspace 级 Conversation 组织设计
 
-> Status: Approved
+> Status: Completed
 > Design date: 2026-08-27
 > Review completed: 2026-08-27
+> Completion date: 2026-08-28
 > Review owner: Product / Architecture
 > Governing decisions: ADR-0020, ADR-0031, ADR-0034
 > Required decision update: 新增 ADR-0035，修订 ADR-0031 与 ADR-0034 的
@@ -632,3 +633,71 @@ workspace_busy
    `2026-08-27-client-default-workspace-design.md` 中
    “Workspace 的 Conversation 级可变所有权”部分，但保留安全 launch hint、
    Server-neutral 和 path-free Web bootstrap 规则。
+
+## 15. 交付记录
+
+MetaWork 已按本设计完成 Workspace-first Conversation 组织：
+
+- Account-scoped Workspace Catalog 成为产品 Workspace identity 的唯一权威，
+  `workspaceId` 与 canonical path 解耦；
+- Conversation v3 只保存 immutable `workspaceBinding`，第一条普通用户 Query
+  准入后不允许 `/workspace` 重新归类；
+- TUI、Web 和飞书通过 Gateway v2 共享 Workspace Directory、Conversation 摘要、
+  activity 和 bounded history，完整历史、trace、result chunks 仍只对已 attach
+  Conversation 的 Client 返回；
+- Client replay cursor 按 Workspace/Conversation stream 独立维护，切换
+  Conversation 不会用其他 stream 的 sequence 请求回放；筛选、搜索和分页产生的
+  Workspace directory snapshot 使用 connection-scoped projection stream，只返回
+  请求该页面的 Client，不污染共享 Workspace journal；
+- TUI 提供 Workspace home、Conversation selector、搜索、新建、刷新和 attach；
+  Web 使用 Server-owned Workspace rail，同时保留 Conversation、Trajectory、
+  Execution、Artifact、Settings 和 Composer；飞书提供 `/conversations`、
+  `/conversation` 和 `/history`；
+- Server 保持 Workspace-neutral 和常驻，TUI/Web 独立启动；Client 启动目录只作为
+  Server 验证的 Workspace hint，Web bootstrap URL 不包含本地 path；
+- root 与 vendored Planner 协议统一升级，native release 能从同一 release 的
+  `planner/packages/coding-agent/dist/cli.js` 启动 TUI。
+
+迁移通过一次性 v2-to-v3 migrator 完成：相同 legacy path 幂等归入同一 Workspace，
+不可访问 path 保留为 unavailable Workspace，catalog、Conversation records 和
+migration journal 以原子切换恢复；运行态不保留 legacy path 双读双写。
+
+验证证据：
+
+- `npm run lint`、`npm run build`、`npm run smoke:clients` 和
+  `npm run smoke:gateway` 通过；
+- 根仓库默认三 worker 全量测试完成：354 files passed、8 skipped、13 个既有
+  Planner/Executor/TUI 长耗时用例因资源竞争超时或 timing assertion 失败；这些
+  失败不在 Workspace/Gateway 改动路径。随后将受影响的 4 个文件改为单 worker
+  顺序复核，62 tests passed、4 environment-skipped，包含此前全部失败用例；本次
+  Workspace/Gateway focused tests、Browser E2E、Client smoke、native process
+  smoke、lint 和 build 均通过。
+- 显式 Browser E2E 通过：2 files、3 tests，覆盖 Workspace Conversation directory
+  多浏览器摘要共享与 attach 隔离，以及 Provider/Model Settings 回归；
+- `npm run smoke:gateway` 先通过 root 21 files/105 tests 和 vendored Planner
+  3 files/21 tests，再安装真实隔离 native release：`server start` 未启动 Client，
+  macOS PTY launcher 从 Workspace A 启动 TUI，三个真实 Gateway Client 验证
+  Workspace identity 共享、Workspace B 隔离、未 attach detail isolation 和 attach
+  replay，Web Client 独立连接同一 Server 并生成 path-free opaque bootstrap URL；
+- 同一 native smoke 继续执行 `server status`、`server restart`、Workspace/
+  Conversation durable recovery 和真实异步 `server stop`；随机 Web port、短 Unix
+  socket root、实际 HTTP Web probe 和 immutable revision cleanup 保证验收不干扰
+  用户 Server 且可重复；
+- Account isolation、path secrecy、pagination/event bounds、migration recovery、
+  Server restart recovery 和未 attach detail isolation 均由 focused/full smoke
+  覆盖。
+
+最终独立 review 关闭了四项实现风险：TUI 不再跨 stream 复用 replay cursor；
+filtered/paginated Workspace 页面不再广播到共享 journal；Web Gateway mirror 只接受
+protocol v2；Gateway smoke 从静态测试集合升级为真实安装和进程生命周期验收。随后
+又关闭了 Unix socket `connectionId` 碰撞/旧 socket cleanup 竞态，以及随机 Web port
+manifest 不可访问的问题。
+
+交付提交为 `093691b`、`7688cfc`、`ba144db`、`78345fd`、`29bc66b`、
+`2f0a30f`、`7d72d0b`、`d22d7c7`、`c5fbd79`、`1b5b39c`，以及最终收尾提交
+`docs: close workspace conversation organization delivery`。
+
+剩余非目标不变：不合并 Conversation 详细时间线，不把 Workspace 变成 Runtime/
+Kernel ownership boundary，不自动合并 clone/worktree，不放宽 Account 单 Task
+约束。线上真实飞书机器人和真实 Provider 任务执行仍属于部署环境验收；本次本机
+验收使用隔离配置验证协议、生命周期、目录、回放和 UI，不使用生产凭据。

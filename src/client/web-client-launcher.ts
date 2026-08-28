@@ -32,7 +32,7 @@ export class WebClientLauncher {
   async start(options: { conversationId?: string; noOpen: boolean }): Promise<string> {
     const resolveEndpoint = this.deps.resolveEndpoint
       ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion));
-    const endpoint = await resolveEndpoint(this.deps.manifestPath, 1);
+    const endpoint = await resolveEndpoint(this.deps.manifestPath, 2);
     if (!endpoint.ok) throw new Error(endpoint.message);
     const registerLaunch = this.deps.registerLaunch ?? registerWebLaunchContext;
     const launch = await registerLaunch(endpoint.socketPath, {

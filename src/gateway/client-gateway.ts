@@ -52,7 +52,12 @@ export interface ClientGatewayDeps {
         | 'create_conversation'
         | 'archive_conversation';
     }>,
-    context: { accountId: string; principalId: string; connectionId: string },
+    context: {
+      accountId: string;
+      principalId: string;
+      connectionId: string;
+      requestId: string;
+    },
   ): Promise<{
     status: 'accepted' | 'rejected';
     workspaceId?: string;
@@ -226,6 +231,7 @@ export class ClientGateway {
               accountId: admission.accountId,
               principalId: admission.principalId ?? 'unknown',
               connectionId: admission.connectionId,
+              requestId: admission.requestId,
             })
           : { status: 'rejected' as const, reason: 'workspace_command_unavailable' };
         return this.persistTerminal(admission, {

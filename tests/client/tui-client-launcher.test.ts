@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { TuiClientLauncher } from '../../src/client/tui-client-launcher.js';
+import {
+  TuiClientLauncher,
+  resolveVendoredPlannerCommand,
+} from '../../src/client/tui-client-launcher.js';
 
 describe('TuiClientLauncher', () => {
   it('connects only after endpoint resolution and passes Conversation attach', async () => {
@@ -92,5 +95,15 @@ describe('TuiClientLauncher', () => {
         }),
       }),
     );
+  });
+
+  it('resolves the staged Planner layout from an installed release', () => {
+    const installedPlannerCommand = '/install/app/releases/1.2.0-preview.0/planner/packages/coding-agent/dist/cli.js';
+
+    expect(resolveVendoredPlannerCommand(
+      '/install/app/releases/1.2.0-preview.0/dist',
+      '/workspace-a',
+      path => path === installedPlannerCommand,
+    )).toBe(installedPlannerCommand);
   });
 });

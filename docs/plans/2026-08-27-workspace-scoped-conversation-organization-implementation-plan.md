@@ -2,11 +2,13 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Status:** Approved; not started
+**Status:** Completed
 
 **Plan date:** 2026-08-27
 
 **Review completed:** 2026-08-27; no product decisions remain open.
+
+**Completion date:** 2026-08-28
 
 **Design:** [MetaWork Workspace 级 Conversation 组织设计](2026-08-27-workspace-scoped-conversation-organization-design.md)
 
@@ -1153,6 +1155,79 @@ cd /path/to/workspace-a && metawork web
 git add scripts tests/scripts README.md README.zh-CN.md AGENTS.md CONTEXT.md docs
 git commit -m "docs: close workspace conversation organization delivery"
 ```
+
+## 交付记录
+
+**Delivered behavior:** Tasks 1-11 delivered ADR-0035 and the amended ADR-0031/
+ADR-0034 authority, the Account Workspace Catalog, atomic Conversation v3
+migration, Workspace Directory/activity projection, Gateway v2, Workspace-first
+Web navigation, native TUI selector, Feishu navigation, and architecture/security/
+recovery gates. Task 12 expanded the unified Gateway smoke, aligned Web Client
+endpoint resolution with Gateway v2, restored installed-release Planner discovery
+for native TUI, and closed source/native acceptance. Final review also separated
+Gateway replay sequence state per Workspace/Conversation stream, moved filtered
+and paginated Workspace query results onto connection-scoped projection streams,
+and fixed the Web protocol mirror at Gateway v2.
+
+**Migration evidence:** Focused migration and recovery tests prove stable IDs for
+repeated legacy paths, idempotent reruns, unavailable Workspace retention, atomic
+pointer/journal recovery, update/rollback preservation, and no production v3
+legacy-path dual write. Account isolation and unavailable Workspace admission fail
+closed.
+
+**Validation:**
+
+- `npm run lint` and `npm run build`: PASS;
+- `npm run smoke:clients`: PASS, 3 tests;
+- `npm run smoke:gateway`: PASS, including root Gateway/Workspace security,
+  recovery, load and Client launcher gates (21 files, 105 tests), vendored Planner
+  TUI acceptance (3 files, 21 tests), and a real installed-release process
+  lifecycle;
+- default three-worker full root suite: 354 files passed, 8 skipped, and 13
+  pre-existing long-running Planner/Executor/TUI acceptance failures caused by
+  resource-contention timeouts or timing assertions; the affected four files
+  were rerun sequentially with one worker and passed with 62 tests and 4
+  environment-skipped tests, including all previously failing cases;
+  Workspace/Gateway focused tests, Browser E2E, Client smoke, native process
+  smoke, lint, and build passed.
+- `RUN_BROWSER_E2E=1` Workspace directory and Settings Workbench: 2 files,
+  3 tests passed;
+- isolated native install: persistent Server started without a Client; installed
+  TUI found the release-local Planner and showed the launcher cwd as canonical
+  Workspace; Web connected independently through an opaque, path-free bootstrap
+  URL; three real Gateway Clients proved same-Workspace directory sharing,
+  cross-Workspace isolation, attach-only detail replay and restart recovery;
+  `server status`, `server restart`, and asynchronous `server stop` completed
+  without touching the user's real Server.
+
+**Review closure:** The final independent review found and closed four important
+gaps: replay cursors are now stream-scoped instead of shared across Workspace and
+Conversation subscriptions; filtered/paginated directory pages are projected only
+to the requesting connection instead of the shared Workspace journal; the Web
+Gateway contract mirror accepts protocol v2 only; and `smoke:gateway` now exercises
+a native install, independent Server/TUI/Web processes, restart recovery and real
+stop/cleanup. The process smoke uses an isolated random Web port, a macOS-safe short
+socket root, asynchronous stop observation and writable cleanup for immutable
+configuration revisions. A follow-up review also closed caller-controlled Unix
+`connectionId` collisions and stale-socket cleanup races, and made the smoke probe the
+actual ephemeral Web HTTP endpoint instead of only checking printed output.
+
+**Full-suite note:** The default three-worker full-suite run completed with 354 files
+passed, 8 skipped, and 13 failures among pre-existing long-running Planner/Executor/
+TUI acceptance cases; the failures were 600-second resource-contention timeouts or
+timing assertions, not Workspace/Gateway failures. The affected four files were then
+rerun sequentially with one worker: 62 tests passed and 4 environment-skipped tests,
+including all previously failing cases. Workspace/Gateway focused tests, browser E2E,
+Client smoke, native process smoke, lint, and build all passed after the final fixes.
+
+**Closing commits:** `093691b`, `7688cfc`, `ba144db`, `78345fd`, `29bc66b`,
+`2f0a30f`, `7d72d0b`, `d22d7c7`, `c5fbd79`, `1b5b39c`, and
+`docs: close workspace conversation organization delivery`.
+
+**External validation:** A live Feishu bot and a real Provider-backed task were not
+run with production credentials. Their protocol, bounded history, activity,
+replay/live isolation, Provider catalog, and multi-Client behavior are covered by
+focused Gateway tests, browser E2E, native launch acceptance, and the full suite.
 
 ## 最终完成门
 

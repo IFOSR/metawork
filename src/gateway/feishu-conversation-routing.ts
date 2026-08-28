@@ -10,6 +10,7 @@ import type {
   FeishuChannelBinding,
   FeishuSenderIdentity,
 } from './feishu-gateway-adapter.js';
+import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
 
 export type FeishuConversationRouteKind =
   | 'workspace_directory'
@@ -21,6 +22,7 @@ export interface FeishuConversationRouteReceipt extends CommandReceipt {
   readonly routeKind: FeishuConversationRouteKind;
   readonly connectionId: string;
   readonly projectionRequestId?: string;
+  readonly projectionStreamId?: string;
 }
 
 export type FeishuConversationRouteResult =
@@ -228,6 +230,8 @@ export class FeishuConversationRouting {
           workspaceId: context.binding.workspaceId,
           routeKind: 'workspace_directory',
           connectionId: context.connectionId,
+          projectionRequestId: requestId,
+          projectionStreamId: clientConnectionEventStreamId(context.connectionId),
         }
       : result;
   }

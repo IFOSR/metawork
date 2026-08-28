@@ -18,11 +18,14 @@ afterEach(async () => {
 });
 
 const envelope: GatewayCommandEnvelope = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   requestId: 'req_1',
   idempotencyKey: 'idem_1',
   connectionId: 'conn_1',
-  conversation: { mode: 'new' },
+  scope: {
+    kind: 'conversation',
+    selection: { mode: 'new', workspaceId: 'workspace_repo' },
+  },
   command: { kind: 'user_message', text: 'hello', attachments: [] },
   clientCapabilities: [],
 };

@@ -5,6 +5,7 @@ import type { EventJournal } from '../../src/gateway/event-journal.js';
 import type { FeishuGatewayAdapter } from '../../src/gateway/feishu-gateway-adapter.js';
 import { FeishuGatewaySessionPort } from '../../src/gateway/feishu-gateway-session-port.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
+import { clientConnectionEventStreamId } from '../../src/gateway/client-connection-event-stream.js';
 
 describe('FeishuGatewaySessionPort', () => {
   it('confirms a restored Workspace once across repeated Conversation replay', async () => {
@@ -269,6 +270,8 @@ describe('FeishuGatewaySessionPort', () => {
           workspaceId: 'workspace_repo',
           routeKind: 'workspace_directory',
           connectionId: 'feishu_chat',
+          projectionRequestId: 'req_list',
+          projectionStreamId: clientConnectionEventStreamId('feishu_chat'),
         }),
       } as unknown as FeishuGatewayAdapter,
       journal: {
@@ -288,10 +291,10 @@ describe('FeishuGatewaySessionPort', () => {
               workspaceDirectoryPageEvent({
                 nextCursor: 'cursor_next',
                 items: [
-                  conversationSummary('conv_running', 'Fix release', 'idle', null),
+                  conversationSummary('conv_running', 'Fix release', 'executing', 'task_1'),
                   conversationSummary('conv_idle', 'Review docs', 'idle', null),
                 ],
-              }),
+              }, 'req_list', clientConnectionEventStreamId('feishu_chat')),
               workspaceActivityEvent('conv_running', 'executing', 'task_1'),
             ],
           };
@@ -324,7 +327,7 @@ describe('FeishuGatewaySessionPort', () => {
         },
       }],
     });
-    expect(replayedStreams).toEqual(['workspace_directory_workspace_repo']);
+    expect(replayedStreams).toEqual([clientConnectionEventStreamId('feishu_chat')]);
   });
 
   it('renders an attach summary with activity, current Task and only the latest three turns', async () => {
@@ -730,18 +733,24 @@ function historyPageEvent(
 function workspaceDirectoryPageEvent(page: {
   items: unknown[];
   nextCursor: string | null;
-}): GatewayEventEnvelope {
+}, requestId: string | null = null, streamId = 'workspace_directory_workspace_repo'): GatewayEventEnvelope {
   return {
     protocolVersion: 2,
     eventId: 'event_workspace_page',
     sequence: 2,
     accountId: 'local-default',
-    conversationId: 'workspace_directory_workspace_repo',
-    requestId: null,
+    conversationId: streamId,
+    requestId,
     turnId: null,
     kind: 'workspace_directory_snapshot',
     payload: {
       workspaceId: 'workspace_repo',
+      workspace: {
+        id: 'workspace_repo',
+        displayName: 'MetaWork',
+        canonicalPath: '/repo',
+        availability: 'available',
+      },
       page,
     },
     occurredAt: '2026-08-27T01:00:00.000Z',

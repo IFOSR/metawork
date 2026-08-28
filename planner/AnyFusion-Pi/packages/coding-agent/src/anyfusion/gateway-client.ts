@@ -28,7 +28,7 @@ let sequenceCounter = 0;
 
 export class GatewayClient {
   private readonly deps: GatewayClientDeps;
-  private lastSequence = 0;
+  private readonly streamSequences = new Map<string, number>();
   private readonly listeners = new Set<(event: GatewayEventEnvelope) => void>();
 	private readonly disconnectListeners = new Set<() => void>();
   private readonly createId: (prefix: string) => string;
@@ -134,7 +134,10 @@ export class GatewayClient {
   onEvent(listener: (event: GatewayEventEnvelope) => void): () => void {
     this.listeners.add(listener);
     this.transportUnsubscribe ??= this.deps.subscribe(event => {
-      this.lastSequence = Math.max(this.lastSequence, event.sequence);
+      this.streamSequences.set(
+        event.conversationId,
+        Math.max(this.streamSequences.get(event.conversationId) ?? 0, event.sequence),
+      );
       if (!isWorkspaceEvent(event.kind)) {
         this.activeConversationId = event.conversationId;
       }
@@ -154,10 +157,13 @@ export class GatewayClient {
     try {
       const replay = await this.deps.replay(
         conversationId,
-        this.lastSequence,
+        this.streamSequences.get(conversationId) ?? 0,
         this.connectionId,
       );
-      this.lastSequence = Math.max(this.lastSequence, replay.lastSequence);
+      this.streamSequences.set(
+        conversationId,
+        Math.max(this.streamSequences.get(conversationId) ?? 0, replay.lastSequence),
+      );
       this.reconnectRequired = false;
       this.reconnectFailure = null;
       return replay;
@@ -169,7 +175,9 @@ export class GatewayClient {
 	  }
 
   get currentSequence(): number {
-    return this.lastSequence;
+    return this.activeConversationId
+      ? this.streamSequences.get(this.activeConversationId) ?? 0
+      : 0;
   }
 
   dispose(): void {
@@ -220,11 +228,14 @@ export class GatewayClient {
     const conversationId = this.activeConversationId;
     const replay = this.deps.replay(
       conversationId,
-      this.lastSequence,
+      this.streamSequences.get(conversationId) ?? 0,
       this.connectionId,
     ).then(result => {
       if (this.activeConversationId === conversationId) {
-        this.lastSequence = Math.max(this.lastSequence, result.lastSequence);
+        this.streamSequences.set(
+          conversationId,
+          Math.max(this.streamSequences.get(conversationId) ?? 0, result.lastSequence),
+        );
         this.reconnectRequired = false;
         this.reconnectFailure = null;
       }

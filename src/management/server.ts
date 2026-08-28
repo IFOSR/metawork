@@ -182,6 +182,10 @@ export class ManagementServer {
   }
 
   get address(): string {
+    const address = this.server?.address();
+    if (address && typeof address !== 'string') {
+      return `http://127.0.0.1:${address.port}`;
+    }
     return `http://127.0.0.1:${this.deps.port}`;
   }
 

@@ -134,6 +134,31 @@ describe("GatewayClient", () => {
 		));
 	});
 
+	it("keeps Workspace and Conversation replay cursors independent", async () => {
+		const { client, publish, replay } = fixture();
+		client.onEvent(() => undefined);
+		publish({
+			protocolVersion: 2,
+			eventId: "event_workspace_100",
+			sequence: 100,
+			accountId: "local-default",
+			conversationId: "workspace_directory_workspace_repo",
+			requestId: null,
+			turnId: null,
+			kind: "workspace_directory_snapshot",
+			payload: {},
+			occurredAt: "2026-08-28T00:00:00.000Z",
+		});
+
+		await client.resume("conv_native");
+
+		expect(replay).toHaveBeenLastCalledWith(
+			"conv_native",
+			0,
+			expect.stringMatching(/^tui_/u),
+		);
+	});
+
 	it("waits for reconnect replay before submitting to the active Conversation", async () => {
 		let disconnect: () => void = () => undefined;
 		const replayGate = deferred<GatewayReplay>();

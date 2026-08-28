@@ -109,6 +109,20 @@ class RawWebSocketClient {
 }
 
 describe('ManagementServer WebSocket authentication', () => {
+  it('reports and serves the actual ephemeral port when configured with port zero', async () => {
+    const server = createManagementServer(0);
+    await server.start();
+
+    try {
+      expect(server.address).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(server.address).not.toBe('http://127.0.0.1:0');
+      const response = await fetch(`${server.address}/api/auth/session`);
+      expect(response.status).toBe(401);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('stops accepting connections before waiting for the session runtime to dispose', async () => {
     const port = await reservePort();
     const disposal = deferred<void>();

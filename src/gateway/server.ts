@@ -8,6 +8,7 @@ import type { GatewayCommand } from './client-protocol.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
+import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
 import {
   parseGatewayClientMessage,
   type GatewayServerMessage,
@@ -37,6 +38,7 @@ interface GatewayServerDeps {
 export class MetaclawGatewayServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
+  private readonly connectionOwners = new Map<string, Socket>();
   private stopping = false;
 
   constructor(private readonly deps: GatewayServerDeps) {}
@@ -75,6 +77,7 @@ export class MetaclawGatewayServer {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     await closed;
+    this.connectionOwners.clear();
     if (existsSync(this.deps.socketPath)) unlinkSync(this.deps.socketPath);
   }
 
@@ -88,10 +91,29 @@ export class MetaclawGatewayServer {
     let latestAttachRequest = 0;
     let latestWorkspaceRequest = 0;
     let activeAttachment: { readonly token: object; detachClient(): void } | null = null;
-    const clientConnectionIds = new Set<string>();
+    let boundConnectionId: string | null = null;
+    let connectionUnsubscribe: (() => void) | null = null;
 
     const send = (message: GatewayServerMessage) => {
       if (!socket.destroyed) socket.write(encodeJsonLine(message));
+    };
+    const bindClientConnection = (
+      connectionId: string,
+    ): 'connection_id_in_use' | 'connection_id_locked' | null => {
+      if (boundConnectionId) {
+        return boundConnectionId === connectionId ? null : 'connection_id_locked';
+      }
+      const owner = this.connectionOwners.get(connectionId);
+      if (owner && owner !== socket && !owner.destroyed) return 'connection_id_in_use';
+      if (owner?.destroyed) this.connectionOwners.delete(connectionId);
+      boundConnectionId = connectionId;
+      this.connectionOwners.set(connectionId, socket);
+      connectionUnsubscribe = this.deps.subscriptions.subscribe({
+        accountId,
+        conversationId: clientConnectionEventStreamId(connectionId),
+        listener: event => this.sendEvent(send, event),
+      });
+      return null;
     };
     const attachWorkspace = async (workspaceId: string, workspaceRequest: number) => {
       if (activeWorkspaceId === workspaceId && workspaceUnsubscribe) return;
@@ -147,7 +169,6 @@ export class MetaclawGatewayServer {
       }
       if (request !== latestAttachRequest) return;
 
-      clientConnectionIds.add(connectionId);
       const workspaceId = await this.deps.resolveConversationWorkspaceId?.(
         accountId,
         nextConversationId,
@@ -233,10 +254,15 @@ export class MetaclawGatewayServer {
       unsubscribe = null;
       workspaceUnsubscribe?.();
       workspaceUnsubscribe = null;
-      for (const connectionId of clientConnectionIds) {
-        this.deps.closeConnection?.(connectionId);
+      connectionUnsubscribe?.();
+      connectionUnsubscribe = null;
+      if (boundConnectionId) {
+        if (this.connectionOwners.get(boundConnectionId) === socket) {
+          this.connectionOwners.delete(boundConnectionId);
+          this.deps.closeConnection?.(boundConnectionId);
+        }
+        boundConnectionId = null;
       }
-      clientConnectionIds.clear();
     };
     socket.on('close', cleanup);
     socket.on('error', cleanup);
@@ -252,6 +278,11 @@ export class MetaclawGatewayServer {
         return;
       }
       if (message.type === 'attach') {
+        const connectionError = bindClientConnection(message.connectionId);
+        if (connectionError) {
+          send({ type: 'error', message: connectionError });
+          return;
+        }
         void attach(
           message.connectionId,
           message.conversationId,
@@ -282,7 +313,15 @@ export class MetaclawGatewayServer {
       }
       if (message.type === 'command') {
         const envelope = message.envelope;
-        clientConnectionIds.add(envelope.connectionId);
+        const connectionError = bindClientConnection(envelope.connectionId);
+        if (connectionError) {
+          send({
+            type: 'error',
+            message: connectionError,
+            requestId: envelope.requestId,
+          });
+          return;
+        }
         void this.deps.gateway.handle(envelope, 'local').then(receipt => {
           if ('kind' in receipt) {
             send({ type: 'error', message: receipt.message, requestId: envelope.requestId });
@@ -314,11 +353,17 @@ export class MetaclawGatewayServer {
       const command: GatewayCommand = message.text.startsWith('/')
         ? { kind: 'slash_command', text: message.text }
         : { kind: 'user_message', text: message.text, attachments: [] };
+      const connectionId = boundConnectionId ?? socketConnectionId;
+      const connectionError = bindClientConnection(connectionId);
+      if (connectionError) {
+        send({ type: 'error', message: connectionError, requestId: message.requestId });
+        return;
+      }
       void this.deps.gateway.handle({
         protocolVersion: 2,
         requestId: message.requestId ?? `req_${nanoid(12)}`,
         idempotencyKey: message.idempotencyKey ?? `idem_${nanoid(12)}`,
-        connectionId: `unix_${nanoid(8)}`,
+        connectionId,
         scope: {
           kind: 'conversation',
           selection: { mode: 'attach', conversationId: selectedConversationId },
