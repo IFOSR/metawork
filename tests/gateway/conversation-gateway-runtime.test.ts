@@ -132,6 +132,32 @@ describe('ConversationGatewayRuntime', () => {
     expect(events.at(-1)?.payload).toEqual({ message: 'planner failed' });
   });
 
+  it('publishes an invalid slash command as a terminal command failure', async () => {
+    const error = Object.assign(new Error(
+      '未知命令节点: does-not-exist。 输入 /help 查看命令树。',
+    ), { code: 'command_invalid' });
+    const fixture = createFixture(async () => {
+      throw error;
+    });
+    const events = fixture.capture('conv_1');
+
+    const receipt = await fixture.runtime.submit('conv_1', 'req_invalid', 'idem_invalid', {
+      kind: 'slash_command',
+      text: '/does-not-exist',
+    });
+
+    await expect(receipt.completion).resolves.toEqual({
+      status: 'failed',
+      reason: 'command_invalid',
+    });
+    expect(events.filter(event => event.kind !== 'conversation_snapshot').map(event => event.kind))
+      .toEqual(['turn_started', 'terminal_error']);
+    expect(events.at(-1)?.payload).toEqual({
+      message: '未知命令节点: does-not-exist。 输入 /help 查看命令树。',
+      code: 'command_invalid',
+    });
+  });
+
   it('passes the Gateway turn identity into Conversation execution', async () => {
     const fixture = createFixture();
     const events = fixture.capture('conv_1');
@@ -147,6 +173,7 @@ describe('ConversationGatewayRuntime', () => {
     const fixture = createFixture(async (_conversationId, command, session) => {
       session.output.push(`command:${commandText(command)}`);
     });
+    const events = fixture.capture('conv_1');
 
     const receipt = await fixture.runtime.submit('conv_1', 'req_help', 'idem_help', {
       kind: 'slash_command',
@@ -157,6 +184,21 @@ describe('ConversationGatewayRuntime', () => {
     expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
       awaitAsyncWork: false,
     });
+    expect(events.find(event => event.kind === 'turn_started')?.payload).toEqual({
+      commandKind: 'slash_command',
+    });
+    expect(events.find(event => event.kind === 'result_delivery_available')).toBeDefined();
+    expect(events.find(event => event.kind === 'result_completed')).toBeDefined();
+    expect(events.find(event => event.kind === 'final_answer')?.payload).toMatchObject({
+      lines: ['command:/help'],
+    });
+
+    const replay = await fixture.journal.replay('local-default', 'conv_1', 0);
+    const replayed = [...replay.snapshot, ...replay.deltas];
+    expect(replayed.find(event => event.kind === 'turn_started')?.payload).toEqual({
+      commandKind: 'slash_command',
+    });
+    expect(replayed.some(event => event.kind === 'final_answer')).toBe(true);
   });
 
   it('keeps user messages waiting for their semantic background work', async () => {
@@ -175,6 +217,9 @@ describe('ConversationGatewayRuntime', () => {
     await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
     expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
       awaitAsyncWork: true,
+    });
+    expect(events.find(event => event.kind === 'turn_started')?.payload).toEqual({
+      commandKind: 'user_message',
     });
     expect(events.some(event => event.kind === 'final_answer')).toBe(true);
   });

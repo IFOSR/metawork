@@ -1277,6 +1277,9 @@ export class ConversationSession {
       await this.deps.runtimePort.commands.refreshExecutors({ trigger: 'task_recovery' });
     }
     const result = await commandCatalog.execute(input, this.getCommandContext());
+    if (result.type === 'error') {
+      throw commandError(result.code, result.content);
+    }
     this.appendOutput(result.content);
     if (/^\/executor\s+(register|unregister)\b/iu.test(input)) {
       await this.deps.runtimePort.commands.refreshExecutors({ trigger: 'executor_changed' });
@@ -1820,6 +1823,12 @@ export class ConversationSession {
 
 function workspaceError(code: string, message: string): Error & { code: string } {
   const error = new Error(`${code}: ${message}`) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function commandError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
   error.code = code;
   return error;
 }

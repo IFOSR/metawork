@@ -108,7 +108,7 @@ describe("MetaWork client view", () => {
 					status: "failed",
 					resultId: null,
 					output: "",
-					error: "未知命令：does-not-exist",
+					error: "未知命令节点: does-not-exist。 输入 /help 查看命令树。",
 				},
 			},
 			["/does-not-exist"],
@@ -117,9 +117,12 @@ describe("MetaWork client view", () => {
 		);
 
 		expect(rendered).toContain("命令失败");
-		expect(rendered).toContain("未知命令：does-not-exist");
+		expect(rendered).toContain("未知命令节点: does-not-exist");
 		expect(rendered).not.toContain("任务未完成");
 		expect(rendered).not.toContain("任务进度");
+		for (const label of ["理解", "规划", "授权", "执行", "验证", "交付"]) {
+			expect(rendered).not.toContain(label);
+		}
 	});
 
 	it("uses a compact workspace label on narrow terminals and exposes connection state", () => {

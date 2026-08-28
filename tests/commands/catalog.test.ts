@@ -156,6 +156,16 @@ describe('CommandCatalog', () => {
     expect((await catalog.execute('/patch', context)).content).toContain('未知命令节点: patch');
   });
 
+  it('returns a structured error for an invalid command path', async () => {
+    const result = await createDefaultCommandCatalog().execute('/does-not-exist', context);
+
+    expect(result).toMatchObject({
+      type: 'error',
+      code: 'command_invalid',
+    });
+    expect(result.content).toContain('未知命令节点: does-not-exist');
+  });
+
   it('offers a nearest command node as a Tab replacement without making the typo executable', () => {
     const catalog = createCatalog();
     const rootTypo = catalog.complete({ text: '/taks', cursor: 5, context });

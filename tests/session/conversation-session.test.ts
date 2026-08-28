@@ -12,6 +12,7 @@ import {
   plannerProposalFingerprint,
 } from '../../src/planning/planner-proposal.js';
 import type { ConversationWorkspaceSelection } from '../../src/workspace/conversation-workspace-service.js';
+import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 
 function mockCoordinator(): AccountKernelCoordinator {
   return {
@@ -300,6 +301,38 @@ describe('ConversationSession', () => {
       kind: 'slash_command',
       text: '/help',
     }, { rethrowErrors: true })).resolves.toBeUndefined();
+
+    expect(plannerCalls).toBe(0);
+  });
+
+  it('rejects an invalid slash command without calling Planner', async () => {
+    let plannerCalls = 0;
+    const session = new ConversationSession({
+      conversationId: 'conv_invalid_command',
+      plannerSessionId: 'planner_invalid_command',
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async () => {
+            plannerCalls += 1;
+            throw new Error('Planner must not start');
+          },
+        } as never,
+        execution: {
+          activeExecutions: {},
+          listExecutorAgentClassNames: () => [],
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      commandCatalog: createDefaultCommandCatalog(),
+    });
+
+    await expect(session.executeGatewayCommand({
+      kind: 'slash_command',
+      text: '/does-not-exist',
+    }, { rethrowErrors: true })).rejects.toMatchObject({
+      message: expect.stringContaining('未知命令节点: does-not-exist'),
+      code: 'command_invalid',
+    });
 
     expect(plannerCalls).toBe(0);
   });

@@ -72,13 +72,14 @@ describe("MetaWork client reducer", () => {
 			event("turn_started", { commandKind: "slash_command" }, 1),
 		);
 		state = reduceGatewayEvent(state, event("terminal_error", {
-			message: "未知命令：does-not-exist",
+			code: "command_invalid",
+			message: "未知命令节点: does-not-exist。 输入 /help 查看命令树。",
 		}, 2));
 
 		expect(state.currentCommand).toMatchObject({
 			status: "failed",
 			output: "",
-			error: "未知命令：does-not-exist",
+			error: "未知命令节点: does-not-exist。 输入 /help 查看命令树。",
 		});
 		expect(state.currentTurn).toBeNull();
 	});

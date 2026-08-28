@@ -55,6 +55,11 @@ export type CommandResult =
       payload?: unknown;
     }
   | {
+      type: 'error';
+      content: string;
+      code: 'command_invalid';
+    }
+  | {
       type: 'directive';
       content: string;
       directive: CommandDirective;
@@ -475,19 +480,18 @@ export class CommandCatalog {
 
   async execute(input: string, context: CommandContext): Promise<CommandResult> {
     const trimmed = input.trim();
-    if (!trimmed.startsWith('/')) return { type: 'text', content: '无效命令' };
+    if (!trimmed.startsWith('/')) return commandInvalid('无效命令');
     const tokens = lexCommand(trimmed);
     if (tokens.some(token => !token.closed)) {
-      return { type: 'text', content: '命令包含未闭合的引号。' };
+      return commandInvalid('命令包含未闭合的引号。');
     }
     const values = tokens.map((token, index) => index === 0 ? token.value.replace(/^\//, '') : token.value);
     const resolved = this.resolvePath(values);
     if (resolved.error || !resolved.action) {
       const suggestion = resolved.nearest ? ` 你是否想输入 /${[...resolved.path, resolved.nearest].join(' ')}？` : '';
-      return {
-        type: 'text',
-        content: `${resolved.error ?? `命令不完整: /${values.join(' ')}`}。${suggestion} 输入 /help 查看命令树。`,
-      };
+      return commandInvalid(
+        `${resolved.error ?? `命令不完整: /${values.join(' ')}`}。${suggestion} 输入 /help 查看命令树。`,
+      );
     }
 
     const parsed = this.parseAction(
@@ -498,7 +502,7 @@ export class CommandCatalog {
       new Map(),
     );
     if (parsed.state !== 'executable') {
-      return { type: 'text', content: parsed.error ?? parsed.hint ?? `命令不完整: /${values.join(' ')}` };
+      return commandInvalid(parsed.error ?? parsed.hint ?? `命令不完整: /${values.join(' ')}`);
     }
 
     const commandPath = `/${resolved.path.join(' ')}`;
@@ -509,7 +513,7 @@ export class CommandCatalog {
       };
     }
     if (!resolved.action.execute) {
-      return { type: 'text', content: `命令没有执行实现: ${commandPath}` };
+      return commandInvalid(`命令没有执行实现: ${commandPath}`);
     }
     return resolved.action.execute(parsed.args, context);
   }
@@ -921,4 +925,8 @@ export class CommandCatalog {
   private invalid(error: string): ParseActionResult {
     return { state: 'invalid', args: { positionals: {}, options: {} }, hint: null, error };
   }
+}
+
+function commandInvalid(content: string): CommandResult {
+  return { type: 'error', content, code: 'command_invalid' };
 }
