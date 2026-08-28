@@ -2,9 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Status:** Approved, pending implementation
+**Status:** Completed
 
 **Plan date:** 2026-08-28
+
+**Completion date:** 2026-08-29
 
 **Review completed:** 2026-08-28; no product decisions remain open.
 
@@ -212,3 +214,34 @@ metawork tui
 - replay 分类稳定，Web 生产代码不变且 build 通过。
 - `metawork build` 后真实 Server/TUI/Web 联调通过。
 - 文档完成记录已补齐，没有推送 GitHub。
+
+## Completion Record
+
+### Delivered Behavior
+
+- Gateway now sets `awaitAsyncWork` only for `user_message`; system command handlers complete without waiting for unrelated Conversation background work.
+- The Pi reducer and view classify all non-`user_message` operations as `system_command`, keep command output/errors separate from `ai_turn`, and apply the same classification to replay and live events.
+- System commands render compact command progress/results/failures, while only AI turns render the six-stage lifecycle, final result, and verification state. Invalid commands are reported as command failures.
+- Existing Pi TUI interaction defects were closed for terminal width, long-output viewport/composer visibility, duplicate connection status, stale output inheritance, selector focus and internal-ID presentation, reconnect/replay isolation, and Orca/standard Return submission.
+- Web production sources were unchanged. Web session identity is separate from the fixed Workspace authorization principal, preserving the existing Gateway v2 event and payload contract.
+
+### Validation
+
+- `npm run lint`
+- Root focused Gateway/Session/Catalog/Web runtime/Workspace tests: 61 passed
+- Pi TUI test suite: 694 passed
+- Pi coding-agent focused tests: 43 passed
+- `npm --prefix planner/AnyFusion-Pi run build:offline`
+- `npm run build --prefix web`
+- `git diff -- web/src` was empty for production changes
+
+### Real Acceptance
+
+- Native 80x24 TUI: `/help` and invalid commands showed only command result/failure; ordinary read-only input showed Planner/Kernel progress, final answer, and result verification.
+- Native TUI: selector attach/create/Esc restored Editor focus; selector presentation did not expose Conversation/Task internal IDs; `/exit` left the independent Server running.
+- Web: a fresh `metawork web --no-open` bootstrap exchanged successfully for an HttpOnly session cookie; `/api/auth/session`, `/api/workspaces`, and `/api/ws/diagnostics` returned success; a Conversation was created and activated.
+- WebSocket: `/help` emitted result/final payloads without trace or execution events; the ordinary Workspace-name request emitted Planner trace, `result_delivery_available`, `result_chunk`, certified `result_completed`, and `final_answer` with `metawork`.
+
+### Closing Commits
+
+`22f2a2d`, `4ea15dd`, `600db39`, `aeaa585`, and `e554bac`.

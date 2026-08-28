@@ -1,8 +1,9 @@
 # MetaWork Pi TUI 系统命令与 AI 任务分离设计
 
-> Status: Approved, pending implementation
+> Status: Completed
 > Design date: 2026-08-28
 > Review completed: 2026-08-28
+> Implementation completed: 2026-08-29
 > Review owner: Product / Architecture
 > Governing decisions: ADR-0020, ADR-0031, ADR-0034
 
@@ -179,3 +180,19 @@ Web Client 不改页面、组件、样式和交互。本次不删除或改名现
 
 保留现有 `pi-tui` 和 Gateway v2，只通过已有 `commandKind` 区分系统命令与 AI
 对话/任务，修正系统命令等待策略，并修复已复现的基础交互 Bug。
+
+## 9. 交付记录
+
+本设计已于 2026-08-29 完成落地。交付行为包括：
+
+- Gateway 仅为 `user_message` 等待 Conversation 语义异步工作；系统命令仍等待自身 handler 完成，但不等待无关后台任务。
+- Pi TUI reducer/view 以 `commandKind` 稳定分类 `system_command` 与 `ai_turn`，系统命令独立投影命令输出/错误，不创建或污染 AI Turn。
+- `/help`、`/config`、`/task list`、无效 slash command、权限决定、取消操作以及本地系统操作不显示 AI 六阶段、最终结果或结果验证；无效命令以“命令失败”展示。
+- 修复终端尺寸、长输出 viewport、Composer 可见性、连接状态去重、selector 焦点/内部标识展示、replay/live 隔离和 Orca/标准 Return 输入交互问题。
+- Web Client 生产代码保持不变；Web session identity 与 Workspace authorization principal 解耦，保留既有 Gateway v2 事件和 payload。
+
+自动化验证已通过：根仓库 `npm run lint`；Gateway/Session/Catalog/Web runtime/Workspace 聚焦测试 61 tests；Pi TUI 全套 694 tests；Pi coding-agent 聚焦测试 43 tests；`npm --prefix planner/AnyFusion-Pi run build:offline`；`npm run build --prefix web`；并确认 `git diff -- web/src` 无生产代码变更。
+
+真实验收已通过：80x24 TUI 中系统命令仅显示命令结果/失败，普通只读请求显示真实 Planner/Kernel 生命周期和“结果已验证”，selector 返回后 Editor 焦点恢复，`/exit` 不停止 Server；最新 Web bootstrap/session、Workspace API、WebSocket diagnostics 均成功，`/help` 未产生 trace/execution 事件，普通只读请求产生 Planner trace、结果交付事件、`result_completed(certification=certified)` 和 `final_answer`。
+
+Closing commits: `22f2a2d`, `4ea15dd`, `600db39`, `aeaa585`, `e554bac`.
