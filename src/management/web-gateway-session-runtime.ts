@@ -28,6 +28,7 @@ import type { WebLaunchContextInput } from './web-launch-context.js';
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
 const MAX_ENRICHMENT_BYTES = 16 * 1024;
 const EXCERPT_MAX_LINES = 64;
+const WEB_WORKSPACE_PRINCIPAL = 'web:local-web-user';
 
 function formatByteSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -123,7 +124,7 @@ class WebGatewayClientSession {
   }
 
   listWorkspaces() {
-    return this.deps.catalog.listWorkspaces(`web:${this.clientId}`);
+    return this.deps.catalog.listWorkspaces(WEB_WORKSPACE_PRINCIPAL);
   }
 
   selectWorkspace(path: string): Promise<WorkspaceInitializationResult> {
@@ -220,7 +221,7 @@ class WebGatewayClientSession {
     if (!this.activeWorkspaceId) return [];
     const input = {
       workspaceId: this.activeWorkspaceId,
-      principalId: `web:${this.clientId}`,
+      principalId: WEB_WORKSPACE_PRINCIPAL,
       activeConversationId: this._activeSessionId,
       ...(query.trim() ? { query } : {}),
     };
@@ -291,7 +292,7 @@ class WebGatewayClientSession {
     const deleted = await this.deps.catalog.archive(
       sessionId,
       this.activeWorkspaceId,
-      `web:${this.clientId}`,
+      WEB_WORKSPACE_PRINCIPAL,
     );
     if (!deleted) return 'not_found';
     if (this._activeSessionId) {
@@ -308,7 +309,7 @@ class WebGatewayClientSession {
     const deleted = this.activeWorkspaceId
       ? await this.deps.catalog.clearWorkspace(
           this.activeWorkspaceId,
-          `web:${this.clientId}`,
+          WEB_WORKSPACE_PRINCIPAL,
           this._activeSessionId ?? undefined,
         )
       : 0;

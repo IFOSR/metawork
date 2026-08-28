@@ -43,6 +43,31 @@ describe('WebGatewaySessionRuntime', () => {
     expect(submitted).toEqual([{ connectionId: 'web:browser-a', kind: 'select_workspace' }]);
   });
 
+  it('keeps the Web connection id separate from the Workspace authorization principal', async () => {
+    const principals: string[] = [];
+    const record = sessionRecord('conv_1', false);
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogForRecord(record),
+        listWorkspaces: async principalId => {
+          principals.push(principalId);
+          return [];
+        },
+        list: async input => {
+          principals.push(input.principalId);
+          return [];
+        },
+      },
+      gateway: gatewayFixture(),
+    });
+
+    await runtime.initializeClient('random-session-token', { workspaceHint: '/repo-a' });
+    await runtime.listWorkspaces('random-session-token');
+
+    expect(principals).toEqual(['web:local-web-user', 'web:local-web-user']);
+  });
+
   it('direct attach restores the Conversation Workspace and ignores cwd', async () => {
     const gateway = gatewayFixture();
     const runtime = new WebGatewaySessionRuntime({
