@@ -1222,7 +1222,7 @@ Client smoke, native process smoke, lint, and build all passed after the final f
 
 **Closing commits:** `093691b`, `7688cfc`, `ba144db`, `78345fd`, `29bc66b`,
 `2f0a30f`, `7d72d0b`, `d22d7c7`, `c5fbd79`, `1b5b39c`, and
-`docs: close workspace conversation organization delivery`.
+`35c697d` (`feat: complete workspace conversation organization`).
 
 **External validation:** A live Feishu bot and a real Provider-backed task were not
 run with production credentials. Their protocol, bounded history, activity,

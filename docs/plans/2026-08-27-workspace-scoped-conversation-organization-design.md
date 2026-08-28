@@ -694,8 +694,8 @@ protocol v2；Gateway smoke 从静态测试集合升级为真实安装和进程�
 manifest 不可访问的问题。
 
 交付提交为 `093691b`、`7688cfc`、`ba144db`、`78345fd`、`29bc66b`、
-`2f0a30f`、`7d72d0b`、`d22d7c7`、`c5fbd79`、`1b5b39c`，以及最终收尾提交
-`docs: close workspace conversation organization delivery`。
+`2f0a30f`、`7d72d0b`、`d22d7c7`、`c5fbd79`、`1b5b39c`，以及最终实现提交
+`35c697d`。
 
 剩余非目标不变：不合并 Conversation 详细时间线，不把 Workspace 变成 Runtime/
 Kernel ownership boundary，不自动合并 clone/worktree，不放宽 Account 单 Task
