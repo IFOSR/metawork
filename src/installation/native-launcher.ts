@@ -95,7 +95,16 @@ exec node "$METAWORK_INSTALL_ROOT/app/current/dist/index.js" "$@"
 }
 
 function isManagedLauncher(content: string): boolean {
-  return content.includes(MANAGED_MARKER) || content.includes(LEGACY_MANAGED_MARKER);
+  return content.includes(MANAGED_MARKER)
+    || content.includes(LEGACY_MANAGED_MARKER)
+    || isLegacyMetaWorkLauncher(content);
+}
+
+/** 旧版（引入托管标记之前）的 MetaWork launcher 是纯 bash 脚本，没有 marker；
+ *  通过其专属环境变量与运行时入口识别，避免老版本升级时被误判为用户脚本而拒绝。 */
+function isLegacyMetaWorkLauncher(content: string): boolean {
+  return /METACLAW_PLANNER_COMMAND=/u.test(content)
+    && /exec\s+node\s+[^\n]*dist\/index\.js/u.test(content);
 }
 
 function shellDoubleQuoted(value: string): string {

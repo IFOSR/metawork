@@ -54,4 +54,36 @@ describe('renderNativeLauncher', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('recognizes the pre-marker legacy MetaWork launcher for upgrade', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-launcher-legacy-'));
+    const path = join(root, 'anyfusion');
+    try {
+      writeFileSync(path, [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'ANYFUSION_SOURCE_ROOT="/old/install"',
+        'export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"',
+        'exec node "$ANYFUSION_SOURCE_ROOT/dist/index.js" "$@"',
+      ].join('\n'));
+      await expect(assertLauncherAvailable(path)).resolves.toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still refuses an unrelated script that merely mentions METACLAW', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-launcher-unowned-'));
+    const path = join(root, 'anyfusion');
+    try {
+      writeFileSync(path, [
+        '#!/bin/sh',
+        'export METACLAW_PLANNER_COMMAND="user-script"',
+        'echo not a managed launcher',
+      ].join('\n'));
+      await expect(assertLauncherAvailable(path)).rejects.toThrow(/not managed by MetaWork/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
