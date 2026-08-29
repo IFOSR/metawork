@@ -87,6 +87,12 @@ every authorized surface still recovers the complete Account/Conversation
 history through origin-unfiltered replay after attach, refresh, switch or
 reconnect.
 
+ADR-0037 supersedes the account-wide single-active-Task restriction with
+durable Conversation execution slots and account-scoped scheduling. It governs
+same-Conversation queueing, cross-Conversation parallelism, capacity,
+fairness, immutable Task routing, recovery isolation and bounded Workspace
+summaries.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
@@ -101,8 +107,9 @@ reconnect.
 | AgentClass, Model and Harness routing | [ADR-0028](0028-agentclass-model-and-harness-routing-contract.md) | Authorized binding tuple, model policy, health identities, fallback attempt identity and Permission Profile ownership |
 | Future remote Executor transport | [ADR-0029](0029-executor-transport-and-a2a-boundary.md) | A2A transport-only boundary, authorized envelope and explicit deferral from the current release |
 | Native release trust and upgrade transaction | [ADR-0030](0030-native-release-trust-and-upgrade-transaction.md) | Signed manifest trust, update locking, quiescence, database backup/migration, activation, health checks and rollback |
-| Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair |
-| Phase 6 single-Task reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination, multi-attempt recovery/completion closure, and deferral of multi-Task scheduling |
+| Multi-Conversation Task parallelism | [ADR-0037](0037-multi-conversation-task-parallelism.md) | Conversation slots, same-Conversation queueing, cross-Conversation scheduling, immutable routing, recovery isolation and bounded summaries |
+| Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair, extended by ADR-0037 across top-level Tasks |
+| Phase 6 reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination and multi-attempt recovery/completion fences, extended by ADR-0037 to multiple Conversation-owned Tasks |
 | Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |
 | Core modules and dependencies | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) | Planner/Kernel/Runtime control loop, module owners, Application Shell, persistence adapters and phase design gates |
 | Durable Kernel workflow and recovery | [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md) | Durable inbox/application/outbox, structured failure, retry/fallback, deferred availability, Executor recovery, continuation and revisions |
@@ -111,7 +118,7 @@ reconnect.
 | Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome/recovery projection, static/dynamic fact split, and `error` versus `disabled` semantics |
 | Planner semantics and context | [ADR-0015](0015-planner-owned-semantics-and-tool-mediated-context.md) | semantic ownership, isolated planner runner, bounded/tool-mediated read-only context and fail-closed behavior |
-| Single-active top-level Task | [ADR-0011](0011-single-active-task-admission-gate.md), [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | current product constraint; ADR-0031 scopes the unchanged one-Task rule per AccountRuntime |
+| Conversation Task serialization | [ADR-0037](0037-multi-conversation-task-parallelism.md) | One executing/cleaning-up top-level Task per Conversation; later same-Conversation Tasks queue; different Conversations may run in parallel |
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 

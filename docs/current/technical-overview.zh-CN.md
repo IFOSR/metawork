@@ -10,8 +10,9 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
 > 以及支持事务式 30→31→32→33 升级路径的 SQLite schema v33。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
-> 内并行启动最多四个隔离 attempt。ADR-0011 保持有效；多顶层 Task 调度
-> 属于未来独立路线图。
+> 内并行启动最多四个隔离 attempt。ADR-0037 已将顶层 Task 并行扩展为
+> Conversation 级单 slot：不同 Conversation 可并行，同一 Conversation 的后续
+> Task 持久化排队。
 
 > ADR-0027 至 ADR-0030 约束当前生效的 Configuration Control Plane、
 > generation 级 AgentClass/Model/Harness 绑定、future A2A transport seam，
@@ -86,8 +87,9 @@ Conversation。
 
 KernelWorkflow、Execution Runtime 和启动恢复等账号级服务由
 `AccountRuntime` 单例持有。每个 Account 只有一个 Kernel coordinator
-负责 durable decision/application drain，ADR-0011 继续保持每个
-AccountRuntime 只允许一个活跃顶层 Task。不同 Account 使用独立数据根和
+负责 durable decision/application drain。每个 Conversation 只有一个执行或清理
+中的顶层 Task slot；不同 Conversation 可以并行，同一 Conversation 的后续 Task
+排队。不同 Account 使用独立数据根和
 SQLite；现有安装以 `local-default` Account 激活。参见
 [ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md)、
 [已批准设计](../plans/2026-08-18-account-runtime-unified-gateway-design.md)和
@@ -208,9 +210,9 @@ flowchart LR
   Done -->|冲突| Repair[Kernel 授权原 AgentClass repair]
 ```
 
-这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0011 仍保持一个已接纳的顶层任务，但该 Task 内互不依赖的 Subtasks 已可并行。
+这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0037 允许不同 Conversation 的顶层 Task 并行，同时每个 Task 内互不依赖的 Subtasks 仍可并行。
 
-当前自然语言路径有一个明确约束：同一时间只接纳一个活跃顶层任务。普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务本身的请求仍然允许通过。新的无关顶层任务由 `ControlKernel` 拒绝并给出可见提示，直到当前任务完成，或取消后的容器与 lease 清理完毕。多 Task candidate、优先级、公平性和饥饿保护不属于已完成的 Phase 6，统一移入未来独立路线图。
+当前自然语言路径由 Conversation slot 约束：同一 Conversation 同时只能有一个执行或清理中的顶层 Task，后续 Task 持久化排队；不同 Conversation 的 Task 由 AccountRuntime 统一调度并可并行。普通问答、澄清、状态查询和清理命令仍可通过。调度受系统配置的 Task/attempt 上限、优先级、aging 和公平性约束，采用非抢占策略；跨 Conversation 详细上下文仍严格隔离。
 
 ### 飞书和进度展示路径
 
@@ -916,9 +918,9 @@ MetaWork 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可�
 
 ## 单 Task 并发调度模型
 
-MetaWork 当前只调度一个活跃顶层 Task。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；Kernel v5 在全局上限四个 slot 内一次授权 batch。`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item，因此 sibling 的启动 race、容量不足或失败不会取消其余 item。
+MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。AccountRuntime 的 Kernel scheduler 从不同 Conversation 选择候选，并受 `maxConcurrentTasks`、`maxConcurrentAttempts`、每 Task attempt 上限、aging 和公平性控制；同一 Conversation 的后续 Task 保持排队。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item。
 
-当一个顶层任务正在运行时，`ControlKernel` 会拒绝新的无关自然语言 durable task，以及针对其他任务的执行请求。它仍允许普通问答、澄清、状态查询、清理任务命令，以及明确指向当前活跃任务的请求。Slash command 和确定性执行入口也进入统一 Kernel seam。第二个顶层任务的排队、紧急抢占和自动恢复在当前范围内刻意关闭；ADR-0011 把这记录为一个可逆决策。
+当当前 Conversation 的顶层任务正在运行或清理时，`ControlKernel` 会将新的 durable Task 持久化排队，而不会并行启动；不同 Conversation 的 Task 可在账户容量允许时调度。Slash command 和确定性执行入口也进入统一 Kernel seam。调度不强制抢占，Task 取消、恢复和跨 Conversation 详细事件均按 immutable Task/Conversation identity 隔离。
 
 单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命 Executor 进程一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
 

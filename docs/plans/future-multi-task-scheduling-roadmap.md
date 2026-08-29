@@ -2,10 +2,15 @@
 
 ## 状态
 
-- 状态：延期，未激活
+- 状态：已启动；原路线图已由 ADR-0037 supersede
 - 记录日期：2026-07-28
 - 前置能力：Phase 6 单 Task 并发可靠性已完成
-- 当前约束：ADR-0011 保持有效
+- 当前约束：ADR-0037 生效；同一 Conversation 单 Task slot，不同 Conversation 可并行
+
+本路线图的延期状态已于 2026-08-29 结束。新的执行权威是
+[ADR-0037](../adr/0037-multi-conversation-task-parallelism.md) 和
+[实施计划](2026-08-29-multi-conversation-parallel-task-implementation-plan.md)。
+本文保留为历史路线图索引，不再作为实现依据。
 
 ## 边界
 

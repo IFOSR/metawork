@@ -12,7 +12,9 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
-Phase 6 is complete at the single-Task boundary. The active path is `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while up to four child attempts may run asynchronously inside the one admitted top-level Task. Every attempt owns a Task-generation/Subtask Git worktree that persists across retry, fallback, takeover and merge repair. The default backend runs the canonical Codex/Pi CLIs as child processes in those worktrees; the Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. ADR-0011 remains an intentional product boundary; multi-top-level-Task scheduling belongs to a future independent roadmap.
+Phase 6 established the durable attempt, publication and recovery substrate, and
+ADR-0037 now extends it to parallel top-level Tasks across Conversations. The
+active path remains `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while independent top-level Tasks from different Conversations may run concurrently within configured account limits. A Conversation has one durable execution slot; its later Tasks queue and never overlap its executing or cleaning-up Task. Every attempt owns a Task-generation/Subtask Git worktree that persists across retry, fallback, takeover and merge repair. The default backend runs the canonical Codex/Pi CLIs as child processes in those worktrees; the Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. See ADR-0037 and the active implementation plan for the multi-Conversation rollout.
 
 `src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; MetaWork does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaWork MCP tools. Semantic RPC turns expose only those MCP tools plus the native proposal tool; Pi-native `read`, `grep`, `find` and `ls` are disabled in this mode. The interactive client-only TUI may retain those read-only repository tools for workspace questions; shell, edit and write remain disabled. MetaWork remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission; there is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.
 
@@ -177,9 +179,10 @@ state. Sharing an Account never implicitly merges Planner history.
 
 Runtime-wide KernelWorkflow, Execution Runtime, startup recovery, attempt,
 publication and timer services are single-owner AccountRuntime services. One
-account-scoped Kernel coordinator is
-the only Application-layer drainer of durable Kernel events and applications.
-ADR-0011 remains one active top-level Task per AccountRuntime.
+account-scoped Kernel coordinator is the only Application-layer drainer of
+durable Kernel events and applications. AccountRuntime scheduling is
+Account-wide, but each Conversation owns one durable Task execution slot;
+different Conversations may run in parallel and same-Conversation Tasks queue.
 
 Accounts use physically separate data roots and SQLite databases. The existing
 installation migrates transactionally into the reserved `local-default`
@@ -343,9 +346,11 @@ _Avoid_: transport user ID, chat ID, browser cookie, client connection
 
 **AccountRuntime**:
 The single live application/runtime coordinator for one loaded Account. It owns
-account-wide Kernel sequencing, Task admission, Execution Runtime, recovery,
-timers and the Conversation registry. ADR-0011 permits one active top-level Task
-per AccountRuntime.
+account-wide Kernel sequencing, Task admission and scheduling, Execution
+Runtime, recovery, timers and the Conversation registry. Different
+Conversations may have active top-level Tasks concurrently within configured
+account limits; each Conversation permits only one executing or cleaning-up
+top-level Task.
 _Avoid_: conversation, MetaclawSession, Web tab, Gateway connection
 
 **Conversation**:
@@ -375,7 +380,13 @@ production surfaces all use this Gateway contract.
 _Avoid_: semantic router, Runtime owner, Executor transport, shared Session
 
 **Task**:
-A durable top-level unit of user work. ADR-0011 admits at most one active top-level Task; Phase 6 allows independent Subtasks inside it to execute concurrently and keeps the Task's single-active slot occupied while cancellation cleanup still owns containers or leases.
+A durable top-level unit of user work. Its owner tuple is immutable and includes
+Account, Conversation, Workspace, Planner session and generation identity.
+Independent Subtasks inside one Task may execute concurrently. A Conversation
+may execute or clean up only one top-level Task at a time; Tasks from different
+Conversations may run concurrently. The Task's Conversation slot remains
+occupied while cancellation, publication, container, WorkUnit or lease cleanup
+is active or uncertain.
 _Avoid_: request, prompt, executor run, browser tab
 
 **Subtask**:
