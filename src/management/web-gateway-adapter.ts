@@ -40,8 +40,14 @@ export class WebGatewayAdapter {
     accountId: string,
     conversationId: string | null,
     listener: (event: GatewayEventEnvelope) => void,
+    liveConnectionId?: string,
   ): () => void {
-    return this.deps.subscriptions.subscribe({ accountId, conversationId, listener });
+    return this.deps.subscriptions.subscribe({
+      accountId,
+      conversationId,
+      liveConnectionId,
+      listener,
+    });
   }
 
   attachClient(accountId: string, conversationId: string): Promise<() => void> {

@@ -37,9 +37,9 @@ describe('ConversationGatewayRuntime', () => {
     const fixture = createFixture();
     const command = userMessage('hello');
 
-    expect(await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', command))
+    expect(await fixture.submit('conv_1', 'req_1', 'idem_1', command))
       .toMatchObject({ status: 'accepted' });
-    expect(await fixture.runtime.submit('conv_1', 'req_2', 'idem_1', command))
+    expect(await fixture.submit('conv_1', 'req_2', 'idem_1', command))
       .toMatchObject({ status: 'duplicate' });
     await waitFor(() => fixture.executions.length === 1);
   });
@@ -53,8 +53,8 @@ describe('ConversationGatewayRuntime', () => {
     });
 
     const [first, duplicate] = await Promise.all([
-      fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('hello')),
-      fixture.runtime.submit('conv_1', 'req_2', 'idem_1', userMessage('hello')),
+      fixture.submit('conv_1', 'req_1', 'idem_1', userMessage('hello')),
+      fixture.submit('conv_1', 'req_2', 'idem_1', userMessage('hello')),
     ]);
 
     expect(first.status).toBe('accepted');
@@ -79,8 +79,8 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('first'));
-    await fixture.runtime.submit('conv_1', 'req_2', 'idem_2', userMessage('second'));
+    await fixture.submit('conv_1', 'req_1', 'idem_1', userMessage('first'));
+    await fixture.submit('conv_1', 'req_2', 'idem_2', userMessage('second'));
     await waitFor(() => events.some(event => event.kind === 'turn_started'));
 
     expect(fixture.executions).toEqual(['conv_1:first']);
@@ -102,8 +102,8 @@ describe('ConversationGatewayRuntime', () => {
       session.output.push(`answer:${commandText(command)}`);
     });
 
-    await fixture.runtime.submit('conv_a', 'req_a', 'idem_a', userMessage('slow'));
-    const receiptB = await fixture.runtime.submit(
+    await fixture.submit('conv_a', 'req_a', 'idem_a', userMessage('slow'));
+    const receiptB = await fixture.submit(
       'conv_b',
       'req_b',
       'idem_b',
@@ -123,7 +123,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('fail'));
+    await fixture.submit('conv_1', 'req_1', 'idem_1', userMessage('fail'));
     await waitFor(() => events.some(event => event.kind === 'terminal_error'));
 
     expect(events.filter(event => ['turn_started', 'terminal_error'].includes(event.kind))
@@ -141,7 +141,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    const receipt = await fixture.runtime.submit('conv_1', 'req_invalid', 'idem_invalid', {
+    const receipt = await fixture.submit('conv_1', 'req_invalid', 'idem_invalid', {
       kind: 'slash_command',
       text: '/does-not-exist',
     });
@@ -162,7 +162,7 @@ describe('ConversationGatewayRuntime', () => {
     const fixture = createFixture();
     const events = fixture.capture('conv_1');
 
-    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
+    await fixture.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
     await waitFor(() => events.some(event => event.kind === 'final_answer'));
 
     const started = events.find(event => event.kind === 'turn_started');
@@ -175,7 +175,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    const receipt = await fixture.runtime.submit('conv_1', 'req_help', 'idem_help', {
+    const receipt = await fixture.submit('conv_1', 'req_help', 'idem_help', {
       kind: 'slash_command',
       text: '/help',
     });
@@ -201,13 +201,34 @@ describe('ConversationGatewayRuntime', () => {
     expect(replayed.some(event => event.kind === 'final_answer')).toBe(true);
   });
 
+  it('marks a slash command result as continuing when it started background task work', async () => {
+    const fixture = createFixture(async (_conversationId, command, session) => {
+      if (commandText(command) === '/task resume task_background') {
+        session.backgroundWorkPending = true;
+      }
+      session.output.push('已发起任务恢复');
+    });
+    const events = fixture.capture('conv_1');
+
+    const receipt = await fixture.submit('conv_1', 'req_resume', 'idem_resume', {
+      kind: 'slash_command',
+      text: '/task resume task_background',
+    });
+
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    expect(events.find(event => event.kind === 'final_answer')?.payload).toMatchObject({
+      lines: ['已发起任务恢复'],
+      backgroundWorkPending: true,
+    });
+  });
+
   it('keeps user messages waiting for their semantic background work', async () => {
     const fixture = createFixture(async (_conversationId, command, session) => {
       session.output.push(`answer:${commandText(command)}`);
     });
     const events = fixture.capture('conv_1');
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_user',
       'idem_user',
@@ -230,7 +251,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    await fixture.runtime.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
+    await fixture.submit('conv_1', 'req_1', 'idem_1', userMessage('hello'));
     await waitFor(() => events.some(event => event.kind === 'final_answer'));
 
     expect(events.find(event => event.kind === 'final_answer')?.payload)
@@ -244,7 +265,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -295,7 +316,7 @@ describe('ConversationGatewayRuntime', () => {
     });
     const events = fixture.capture('conv_1');
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -330,7 +351,7 @@ describe('ConversationGatewayRuntime', () => {
     const events = fixture.capture('conv_1');
     const assembler = new (await import('../../src/gateway/result-stream-assembler.js')).ResultStreamAssembler();
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -361,7 +382,7 @@ describe('ConversationGatewayRuntime', () => {
       session.output.push('done');
     });
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -377,7 +398,7 @@ describe('ConversationGatewayRuntime', () => {
   it('fails closed without a second execution when a durable turn already started', async () => {
     const fixture = createFixture();
     await fixture.journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'event_started',
       sequence: 0,
       accountId: 'local-default',
@@ -389,7 +410,7 @@ describe('ConversationGatewayRuntime', () => {
       occurredAt: '2026-08-19T00:00:00.000Z',
     });
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -416,7 +437,7 @@ describe('ConversationGatewayRuntime', () => {
   it('does not re-execute a command whose final event is already durable', async () => {
     const fixture = createFixture();
     await fixture.journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'event_final',
       sequence: 0,
       accountId: 'local-default',
@@ -428,7 +449,7 @@ describe('ConversationGatewayRuntime', () => {
       occurredAt: '2026-08-19T00:00:00.000Z',
     });
 
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -446,7 +467,7 @@ describe('ConversationGatewayRuntime', () => {
       await release.promise;
       session.output.push('done');
     });
-    const receipt = await fixture.runtime.submit(
+    const receipt = await fixture.submit(
       'conv_1',
       'req_1',
       'idem_1',
@@ -454,7 +475,7 @@ describe('ConversationGatewayRuntime', () => {
     );
 
     fixture.runtime.closeAdmission();
-    await expect(fixture.runtime.submit(
+    await expect(fixture.submit(
       'conv_1',
       'req_2',
       'idem_2',
@@ -583,14 +604,14 @@ describe('ConversationGatewayRuntime', () => {
     };
 
     const [first, second] = await Promise.all([
-      fixture.runtime.submit(
+      fixture.submit(
         'conv_workspace_default',
         'req_workspace_a',
         'idem_workspace_a',
         commandA,
         'local:local-installation',
       ),
-      fixture.runtime.submit(
+      fixture.submit(
         'conv_workspace_default',
         'req_workspace_b',
         'idem_workspace_b',
@@ -718,9 +739,27 @@ function createFixture(
       subscriptions.subscribe({
         accountId: 'local-default',
         conversationId,
+        liveConnectionId: 'capture_conn',
         listener: event => events.push(event),
       });
       return events;
+    },
+    submit(
+      conversationId: string,
+      requestId: string,
+      idempotencyKey: string,
+      command: GatewayCommand,
+      principalId?: string,
+      origin?: import('../../src/gateway/gateway-delivery-context.js').GatewayTurnOrigin,
+    ): ReturnType<ConversationGatewayRuntime['submit']> {
+      return fixture.runtime.submit(
+        conversationId,
+        requestId,
+        idempotencyKey,
+        command,
+        principalId,
+        origin ?? { connectionId: 'capture_conn', surface: 'local' },
+      );
     },
   };
   const operation = execute ?? (async (
@@ -768,6 +807,7 @@ class FakeConversationSession {
     selectedAt: string;
     selectedByPrincipal: string;
   } | null = null;
+  backgroundWorkPending = false;
 
   constructor(
     readonly conversationId: string,
@@ -806,16 +846,37 @@ class FakeConversationSession {
     return [...this.resultDeliveries];
   }
 
+  hasBackgroundWork(): boolean {
+    return this.backgroundWorkPending;
+  }
+
   async getWorkspace(): Promise<FakeConversationSession['workspace']> {
     return this.workspace;
   }
 
-  subscribe(): () => void {
-    return () => undefined;
+  private snapshotListener: ((snapshot: unknown) => void) | null = null;
+  private traceListener: ((trace: unknown) => void) | null = null;
+
+  subscribe(listener: (snapshot: unknown) => void): () => void {
+    this.snapshotListener = listener;
+    return () => {
+      this.snapshotListener = null;
+    };
   }
 
-  subscribeInteractionTrace(): () => void {
-    return () => undefined;
+  subscribeInteractionTrace(listener: (trace: unknown) => void): () => void {
+    this.traceListener = listener;
+    return () => {
+      this.traceListener = null;
+    };
+  }
+
+  fireSnapshot(snapshot: unknown): void {
+    this.snapshotListener?.(snapshot);
+  }
+
+  fireTrace(trace: unknown): void {
+    this.traceListener?.(trace);
   }
 
   attachClient(): void {}
@@ -903,6 +964,153 @@ it('resolves image attachment refs into planner multimodal images', async () => 
 function commandText(command: GatewayCommand): string {
   return 'text' in command ? command.text : command.kind;
 }
+
+describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
+  it('publishes turn events targeted only to the originating connection', async () => {
+    const fixture = createFixture(async (conversationId, command, session) => {
+      fixture.executions.push(`${conversationId}:${commandText(command)}`);
+      session.output.push(`answer:${commandText(command)}`);
+    });
+    const webEvents: GatewayEventEnvelope[] = [];
+    const tuiEvents: GatewayEventEnvelope[] = [];
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      liveConnectionId: 'web_a',
+      listener: event => webEvents.push(event),
+    });
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      liveConnectionId: 'tui_b',
+      listener: event => tuiEvents.push(event),
+    });
+
+    const receipt = await fixture.submit(
+      'conv_1',
+      'req_1',
+      'idem_1',
+      userMessage('hello'),
+      'principal',
+      { connectionId: 'web_a', surface: 'web' },
+    );
+    await receipt.completion;
+
+    const kinds = events => events.map(event => event.kind);
+    expect(kinds(webEvents)).toEqual(expect.arrayContaining([
+      'turn_started',
+      'result_completed',
+      'final_answer',
+    ]));
+    expect(kinds(tuiEvents)).toEqual([]);
+  });
+
+  it('keeps untargeted detailed events durable and history-only', async () => {
+    const fixture = createFixture(async (conversationId, command, session) => {
+      fixture.executions.push(`${conversationId}:${commandText(command)}`);
+      session.output.push(`answer:${commandText(command)}`);
+    });
+    const liveEvents: GatewayEventEnvelope[] = [];
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      liveConnectionId: 'web_a',
+      listener: event => liveEvents.push(event),
+    });
+
+    const receipt = await fixture.runtime.submit(
+      'conv_1',
+      'req_1',
+      'idem_1',
+      userMessage('hello'),
+    );
+    await receipt.completion;
+
+    expect(liveEvents).toEqual([]);
+    const replay = await fixture.journal.replay('local-default', 'conv_1');
+    const kinds = [...replay.snapshot, ...replay.deltas].map(event => event.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['turn_started', 'final_answer']));
+  });
+
+  it('accepts two commands in one Conversation from different origins', async () => {
+    const fixture = createFixture(async (conversationId, command, session) => {
+      fixture.executions.push(`${conversationId}:${commandText(command)}`);
+      session.output.push(`answer:${commandText(command)}`);
+    });
+
+    const web = await fixture.submit(
+      'conv_1', 'req_1', 'idem_1', userMessage('from-web'), 'principal',
+      { connectionId: 'web_a', surface: 'web' },
+    );
+    const tui = await fixture.submit(
+      'conv_1', 'req_2', 'idem_2', userMessage('from-tui'), 'principal',
+      { connectionId: 'tui_b', surface: 'tui' },
+    );
+
+    expect(web.status).toBe('accepted');
+    expect(tui.status).toBe('accepted');
+    await Promise.all([web.completion, tui.completion]);
+    expect(fixture.executions).toEqual(['conv_1:from-web', 'conv_1:from-tui']);
+  });
+
+  it('keeps streaming trace and task projection to the origin after the command returns', async () => {
+    const fixture = createFixture(async (conversationId, command, session) => {
+      fixture.executions.push(`${conversationId}:${commandText(command)}`);
+      session.output.push(`answer:${commandText(command)}`);
+    });
+    const webEvents: GatewayEventEnvelope[] = [];
+    const tuiEvents: GatewayEventEnvelope[] = [];
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      liveConnectionId: 'web_a',
+      listener: event => webEvents.push(event),
+    });
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      liveConnectionId: 'tui_b',
+      listener: event => tuiEvents.push(event),
+    });
+
+    const receipt = await fixture.submit(
+      'conv_1', 'req_1', 'idem_1', userMessage('hello'), 'principal',
+      { connectionId: 'web_a', surface: 'web' },
+    );
+    await receipt.completion;
+
+    // 命令已返回，后台投影继续流式推送给发起来源。
+    const session = fixture.sessions[0]!;
+    session.fireTrace({
+      turnId: 'turn_background',
+      taskId: 'task_1',
+      status: 'running',
+      completedAt: null,
+      events: [{ sequence: 1, phase: 'executor', message: 'subtask running' }],
+    });
+    session.fireSnapshot({
+      output: ['answer:hello'],
+      currentTaskId: 'task_1',
+      runtimeState: {
+        runningTaskId: 'task_1',
+        runningExecutorName: 'pi-agent',
+        readyTaskIds: [],
+        blockedTaskIds: [],
+        parkedTaskIds: [],
+        lastEvent: null,
+      },
+      plannerState: { status: 'running' },
+    });
+
+    await waitFor(() => webEvents.some(event => event.kind === 'trace_delta'));
+    expect(webEvents.map(event => event.kind)).toEqual(
+      expect.arrayContaining(['trace_delta', 'task_projection']),
+    );
+    expect(tuiEvents.filter(event => (
+      event.kind === 'trace_delta' || event.kind === 'task_projection'
+    ))).toEqual([]);
+  });
+});
 
 function hash(content: string): string {
   return `sha256:${createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex')}`;

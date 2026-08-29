@@ -37,7 +37,7 @@ function makeEvent(
   conversationId = 'conv_1',
 ): GatewayEventEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     eventId: id,
     sequence: 0,
     accountId,
@@ -109,7 +109,7 @@ describe('WebGatewayAdapter', () => {
     expect(replay.snapshot.map(event => event.eventId)).toEqual(['e2']);
   });
 
-  it('filters subscriptions by account and conversation', () => {
+  it('filters subscriptions by account, conversation and live origin', () => {
     const subscriptions = new GatewaySubscriptions();
     const received: string[] = [];
     const adapter = new WebGatewayAdapter({
@@ -118,10 +118,23 @@ describe('WebGatewayAdapter', () => {
       subscriptions,
     });
 
-    adapter.subscribe('local-default', 'conv_1', event => received.push(event.eventId));
-    subscriptions.publish(makeEvent('e1', 'turn_started', 'local-default', 'conv_1'));
-    subscriptions.publish(makeEvent('e2', 'turn_started', 'local-default', 'conv_2'));
-    subscriptions.publish(makeEvent('e3', 'turn_started', 'acct-other', 'conv_1'));
+    adapter.subscribe('local-default', 'conv_1', event => received.push(event.eventId), 'conn_1');
+    subscriptions.publish(
+      makeEvent('e1', 'turn_started', 'local-default', 'conv_1'),
+      { connectionId: 'conn_1', surface: 'web' },
+    );
+    subscriptions.publish(
+      makeEvent('e2', 'turn_started', 'local-default', 'conv_2'),
+      { connectionId: 'conn_1', surface: 'web' },
+    );
+    subscriptions.publish(
+      makeEvent('e3', 'turn_started', 'acct-other', 'conv_1'),
+      { connectionId: 'conn_1', surface: 'web' },
+    );
+    subscriptions.publish(
+      makeEvent('e4', 'turn_started', 'local-default', 'conv_1'),
+      { connectionId: 'conn_2', surface: 'web' },
+    );
 
     expect(received).toEqual(['e1']);
   });

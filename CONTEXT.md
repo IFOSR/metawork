@@ -102,6 +102,13 @@ generation replan request, generation identity and adjacent graph revision all
 match. ControlKernel still authorizes the retry; no other uncertain application
 or external effect is retried automatically.
 
+Task-control command acknowledgement is not execution authority. `/task resume`
+reports that execution started only after the first authoritative Kernel Decision
+is `resume_task`; `no_op`, `block_work`, and `park_for_replan` report that no new
+Executor was launched and retain the Decision reason. The command result may
+coexist with later Task/Executor trace, but `Command completed` alone never means
+that a Task resumed or completed.
+
 Planner convergence is bounded independently from the wall-clock RPC timeout.
 Runtime, Kernel, recovery, scheduling and Executor semantics come only from the
 seven authoritative MCP queries and the live proposal schema; Planner may not
@@ -122,6 +129,21 @@ safe projections; attaching a Web client opens or resumes the corresponding
 `ConversationSession` without constructing a Web-owned Runtime. Conversation
 and Trajectory remain two views of the same trace and execution projection;
 neither owns routing or execution.
+
+Live delivery is origin-scoped under ADR-0036. Detailed turn events
+(`turn_started`, `trace_delta`, `task_projection`, `execution_delta`,
+`permission_request`, `artifact`, result delivery events, `final_answer`,
+`terminal_error`, and turn-scoped `delivery_status`) stream only to the
+authenticated connection that initiated the turn; Conversation snapshots and
+history pages are attach/replay/read projections rather than cross-client live
+notifications. A detailed event without a live origin — a startup recovery
+projection or a background Task fact after the originating client is gone — is
+durable history only and is never broadcast to every Conversation attachment.
+Replay remains Account/Conversation complete and origin-unfiltered, so Web,
+Feishu and TUI all recover every authorized turn after attach, refresh, switch
+or reconnect. Workspace directory activity remains a bounded shared summary,
+not a detailed Conversation stream. Turn origin is internal delivery metadata
+only and never Account/Conversation authorization or Conversation ownership.
 
 ## Account Runtime And Unified Gateway
 
@@ -231,6 +253,13 @@ configuration/generated/application revisions, revisioned database files and
 durable activation journals. Until an online management transaction can prove
 admission closure and dispatch drain, the native updater fails closed when the
 Server is running and requires it to be stopped before pointer mutation.
+`metawork build` is the directory-independent source build and activation
+entrypoint. It reads one installation-level source checkout record, rebuilds
+Runtime, Planner and Web, generates a unique release identity and activates one
+coherent `app/current` release through the native update transaction. It never
+starts Server or a Client and fails closed while Server is running. Server
+publishes that release identity in the endpoint manifest; TUI and Web reject a
+different or missing Server identity before opening a Gateway connection.
 
 Application releases and activation journals remain installation-global.
 Database, configuration, SecretStore and generated-runtime authority is

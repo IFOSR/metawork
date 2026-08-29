@@ -12,6 +12,12 @@ describe('parseCliArgs', () => {
     }
   });
 
+  it('parses the directory-independent build command', () => {
+    expect(parseCliArgs(['build'])).toEqual({ kind: 'build' });
+    expect(() => parseCliArgs(['build', '--source-root', '/tmp/source']))
+      .toThrow('未知 build 参数');
+  });
+
   it('parses TUI client selection without Server surface flags', () => {
     expect(parseCliArgs(['tui'])).toEqual({ kind: 'tui' });
     expect(parseCliArgs(['tui', '--conversation', 'conv_1'])).toEqual({

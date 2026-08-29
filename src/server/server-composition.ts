@@ -137,10 +137,12 @@ import { ConfigurationCompletionService } from '../configuration/configuration-c
 import { PUBLIC_PROVIDER_PRESETS } from '../configuration/public-provider-catalog.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 import {
+  classifyServerReadiness,
   writeEndpointManifest,
   readEndpointManifest,
   removeEndpointManifest,
 } from '../server/server-endpoint-manifest.js';
+import { readReleaseIdentity } from '../installation/release-identity.js';
 import {
   createServerApplication,
 } from './server-application.js';
@@ -272,11 +274,24 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   const runtimeLockPath = resolve(paths.data, 'runtime.lock');
   if (cliCommand.kind === 'server' && cliCommand.action === 'status') {
-    process.stdout.write(
-      await isInstanceRunning(runtimeLockPath)
-        ? 'MetaWork Server 正在运行。\n'
-        : 'MetaWork Server 未运行。请执行 `metawork server start`。\n',
-    );
+    const instanceRunning = await isInstanceRunning(runtimeLockPath);
+    const manifest = await readEndpointManifest(endpointManifestPath).catch(() => null);
+    const readiness = classifyServerReadiness(manifest, instanceRunning, {
+      isProcessAlive: pid => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+        }
+      },
+      socketExists: existsSync,
+    });
+    process.stdout.write(readiness === 'ready'
+      ? 'MetaWork Server 正在运行。\n'
+      : readiness === 'starting_or_failed'
+        ? 'MetaWork Server 尚未就绪：正在启动或启动失败，请检查 Server terminal。\n'
+        : 'MetaWork Server 未运行。请执行 `metawork server start`。\n');
     return;
   }
 
@@ -576,7 +591,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             ),
           };
         })),
-        requirements: inputProfile,
+        requirements: {
+          preferredCapabilities: inputProfile.preferredCapabilities,
+          contextTokens: inputProfile.contextTokens,
+          requiresStructuredOutput: inputProfile.requiresStructuredOutput,
+        },
       });
       if (!resolution.binding) throw new Error('Planner Auto routing returned no binding');
       const model = activeSnapshot.config.models[resolution.binding.modelRef];
@@ -1051,13 +1070,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       resolve(accountPaths.gateway, 'command-admissions'),
     ),
     activateAccount: accountId => conversationGatewayRuntime.activateAccount(accountId).then(() => undefined),
-    submitToConversation: (conversationId, requestId, idempotencyKey, command, principalId) =>
+    submitToConversation: (conversationId, requestId, idempotencyKey, command, principalId, origin) =>
       conversationGatewayRuntime.submit(
         conversationId,
         requestId,
         idempotencyKey,
         command,
         principalId,
+        origin,
       ),
     handleWorkspaceCommand: (command, context) =>
       workspaceGatewayRuntime.handle(command, context),
@@ -1559,16 +1579,20 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           });
         }
       },
-      writeManifest: endpoints => writeEndpointManifest(endpointManifestPath, {
-        manifestVersion: 1,
-        serverVersion: process.env.METAWORK_VERSION ?? 'development',
-        gatewayProtocolVersion: 2,
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        state: 'ready',
-        unixSocketPath: endpoints.unixSocketPath,
-        webOrigin: endpoints.webOrigin,
-      }),
+      writeManifest: async endpoints => {
+        const identity = await readReleaseIdentity(join(applicationRoot, 'release-identity.json'));
+        await writeEndpointManifest(endpointManifestPath, {
+          manifestVersion: 1,
+          ...(identity ? { releaseId: identity.releaseId } : {}),
+          serverVersion: process.env.METAWORK_VERSION ?? identity?.releaseId ?? 'development',
+          gatewayProtocolVersion: 2,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          state: 'ready',
+          unixSocketPath: endpoints.unixSocketPath,
+          webOrigin: endpoints.webOrigin,
+        });
+      },
       removeManifest: () => removeEndpointManifest(endpointManifestPath),
     });
     await serverApplication.start();

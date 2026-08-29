@@ -57,6 +57,7 @@ export interface ConversationTurn {
   id: string;
   sessionId: string;
   userInput: string;
+  interactionKind?: 'system_command' | 'ai_turn';
   status: ConversationTurnStatus;
   finalAnswer: string | null;
   taskId: string | null;

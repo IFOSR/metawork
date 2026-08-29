@@ -81,10 +81,17 @@ an immutable `workspaceId`. Clients select a Workspace before discovering or
 creating Conversations; `/workspace` changes that Client selection and never
 reparents a Conversation after its first ordinary Query.
 
+ADR-0036 makes detailed Gateway live delivery origin-scoped: a turn's detailed
+events stream only to the authenticated connection that initiated it, while
+every authorized surface still recovers the complete Account/Conversation
+history through origin-unfiltered replay after attach, refresh, switch or
+reconnect.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Origin-scoped live delivery and replay | [ADR-0036](0036-origin-scoped-live-delivery-and-replay.md) | Detailed live events deliver only to the turn's origin connection; durable history replays every authorized origin on attach/refresh/reconnect |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, completion facts, and read-only DAG projection |

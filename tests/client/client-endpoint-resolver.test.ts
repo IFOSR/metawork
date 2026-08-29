@@ -137,4 +137,31 @@ describe('resolveClientEndpoint', () => {
       code: 'protocol_mismatch',
     });
   });
+
+  it('fails closed on release mismatch before a Client starts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-client-endpoint-'));
+    roots.push(root);
+    const manifestPath = join(root, 'endpoint.json');
+    await writeEndpointManifest(manifestPath, {
+      manifestVersion: ENDPOINT_MANIFEST_VERSION,
+      releaseId: 'release-server',
+      serverVersion: '1.2.0',
+      gatewayProtocolVersion: 2,
+      pid: process.pid,
+      startedAt: '2026-08-26T00:00:00.000Z',
+      state: 'ready',
+      unixSocketPath: join(root, 'gateway.sock'),
+      webOrigin: 'http://127.0.0.1:8788',
+    });
+
+    await expect(resolveClientEndpoint(manifestPath, 2, {
+      releaseId: 'release-client',
+      isProcessAlive: () => true,
+      socketExists: () => true,
+      socketProbe: async () => undefined,
+    })).resolves.toMatchObject({
+      ok: false,
+      code: 'release_mismatch',
+    });
+  });
 });

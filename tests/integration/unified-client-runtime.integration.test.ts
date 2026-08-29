@@ -132,7 +132,7 @@ async function makeComposition() {
     recoveryCount: () => recoveryCount,
     appendEvent: (id: string, kind: GatewayEventKind, conversationId = 'conv_1') => {
       const event: GatewayEventEnvelope = {
-        protocolVersion: 1,
+        protocolVersion: 2,
         eventId: id,
         sequence: 0,
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,

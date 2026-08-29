@@ -25,5 +25,16 @@ describe('source setup product environment', () => {
     expect(source).toContain('METAWORK_PROVIDER_REGION');
     expect(source).toContain('MetaWork native installation failed');
     expect(source).toContain('ANYFUSION_PI_SOURCE_ROOT');
+    expect(source).toContain("const installCommand = existsSync(join(installRoot, 'app', 'current'))");
+    expect(source).toContain('installCommand,');
+  });
+
+  it('updates an existing installation instead of retrying clean install', () => {
+    const source = readFileSync('setup.sh', 'utf8');
+
+    expect(source).toContain('INSTALL_COMMAND=update');
+    expect(source).toContain('export METAWORK_INSTALL_ROOT="$INSTALL_ROOT"');
+    expect(source).toContain('export ANYFUSION_INSTALL_ROOT="$INSTALL_ROOT"');
+    expect(source).toContain('"$INSTALL_COMMAND" "$RELEASE_ID"');
   });
 });

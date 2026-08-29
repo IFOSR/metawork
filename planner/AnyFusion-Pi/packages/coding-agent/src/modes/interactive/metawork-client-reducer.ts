@@ -255,7 +255,37 @@ function reduceTrace(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
-	if (matchesCommand(state.currentCommand, event)) return state;
+	const command = commandForEvent(state.currentCommand, event);
+	if (command) {
+		let execution = command.execution;
+		for (const raw of Array.isArray(payload.events) ? payload.events : []) {
+			const item = record(raw);
+			const eventKey = typeof item.eventKey === "string" ? item.eventKey : null;
+			if (eventKey && state.seenEventKeys.includes(eventKey)) continue;
+			const stage = stageForPhase(string(item.phase));
+			const title = string(item.title, string(item.message, "Progress"));
+			const summary = string(item.summary);
+			const turn = ensureTurn(execution, event);
+			execution = appendTraceToTurn(
+				turn,
+				item,
+				eventKey,
+				stage,
+				title,
+				summary,
+			);
+			state = {
+				...state,
+				seenEventKeys: eventKey
+					? [...state.seenEventKeys, eventKey]
+					: state.seenEventKeys,
+			};
+		}
+		return {
+			...state,
+			currentCommand: { ...command, execution },
+		};
+	}
 	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	let next = state;
 	for (const raw of Array.isArray(payload.events) ? payload.events : []) {
@@ -266,30 +296,10 @@ function reduceTrace(
 		const title = string(item.title, string(item.message, "Progress"));
 		const summary = string(item.summary);
 		const turn = ensureTurn(next.currentTurn, event);
-		const authorization = stage === "authorization" && title
-			? unique([...turn.authorization, title])
-			: turn.authorization;
-		const permission = (
-			turn.permission
-			&& stage === "authorization"
-			&& /批准|拒绝|resolved|approved|denied/iu.test(title)
-		) ? { ...turn.permission, status: "resolved" as const } : turn.permission;
 		next = {
 			...next,
 			seenEventKeys: eventKey ? [...next.seenEventKeys, eventKey] : next.seenEventKeys,
-			currentTurn: {
-				...turn,
-				stage,
-				authorization,
-				permission,
-				trace: [...turn.trace, {
-					eventKey,
-					stage,
-					actor: string(item.actor, "runtime"),
-					title,
-					summary,
-				}].slice(-80),
-			},
+			currentTurn: appendTraceToTurn(turn, item, eventKey, stage, title, summary),
 		};
 	}
 	return next;
@@ -300,10 +310,33 @@ function reduceExecution(
 	event: GatewayEventEnvelope,
 	payload: Record<string, unknown>,
 ): ConversationViewModel {
-	if (matchesCommand(state.currentCommand, event)) return state;
-	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const subtaskId = string(payload.subtaskId);
 	if (!subtaskId) return state;
+	const command = commandForEvent(state.currentCommand, event);
+	if (command) {
+		const turn = ensureTurn(command.execution, event);
+		return {
+			...state,
+			currentCommand: {
+				...command,
+				execution: {
+					...turn,
+					stage: "execution",
+					subtasks: {
+						...turn.subtasks,
+						[subtaskId]: {
+							id: subtaskId,
+							title: string(payload.title, turn.subtasks[subtaskId]?.title ?? "Subtask"),
+							status: string(payload.status, turn.subtasks[subtaskId]?.status ?? "running"),
+							progress: string(payload.progress, turn.subtasks[subtaskId]?.progress ?? ""),
+							heartbeat: payload.heartbeat === true,
+						},
+					},
+				},
+			},
+		};
+	}
+	if (hasDifferentTurn(state.currentTurn, event)) return state;
 	const turn = ensureTurn(state.currentTurn, event);
 	return {
 		...state,
@@ -573,6 +606,7 @@ function newCommand(event: GatewayEventEnvelope): MetaWorkSystemCommandView {
 		byteLength: 0,
 		output: "",
 		error: null,
+		execution: null,
 	};
 }
 
@@ -595,6 +629,37 @@ function hasDifferentTurn(
 	event: GatewayEventEnvelope,
 ): boolean {
 	return turn !== null && turn.id !== event.turnId;
+}
+
+function appendTraceToTurn(
+	turn: MetaWorkTurnView,
+	item: Record<string, unknown>,
+	eventKey: string | null,
+	stage: MetaWorkStage,
+	title: string,
+	summary: string,
+): MetaWorkTurnView {
+	const authorization = stage === "authorization" && title
+		? unique([...turn.authorization, title])
+		: turn.authorization;
+	const permission = (
+		turn.permission
+		&& stage === "authorization"
+		&& /批准|拒绝|resolved|approved|denied/iu.test(title)
+	) ? { ...turn.permission, status: "resolved" as const } : turn.permission;
+	return {
+		...turn,
+		stage,
+		authorization,
+		permission,
+		trace: [...turn.trace, {
+			eventKey,
+			stage,
+			actor: string(item.actor, "runtime"),
+			title,
+			summary,
+		}].slice(-80),
+	};
 }
 
 function answerLines(payload: Record<string, unknown>): string[] {

@@ -33,6 +33,11 @@ afterEach(() => {
 describe('SourceNativeUpdater', () => {
   it('backs up and clones the database, then activates one complete candidate set', async () => {
     const fixture = await installedFixture();
+    writeFileSync(
+      fixture.paths.launcher,
+      '#!/usr/bin/env bash\n# MetaWork managed launcher\nexec node old-runtime.js "$@"\n',
+      { mode: 0o755 },
+    );
     seedWorkspaceConversationState(fixture.accountPaths);
     const previousDatabaseTarget = readlinkSync(fixture.accountPaths.database);
     const previousConfigurationTarget = readlinkSync(fixture.accountPaths.configActive);
@@ -56,6 +61,13 @@ describe('SourceNativeUpdater', () => {
     expect(result.outcome).toBe('committed');
     expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
       .toBe('runtime-next\n');
+    expect(readFileSync(fixture.paths.launcher, 'utf8')).toContain('METAWORK_RELEASE_ID');
+    expect(JSON.parse(readFileSync(
+      join(fixture.paths.appCurrent, 'release-identity.json'),
+      'utf8',
+    ))).toMatchObject({ releaseId: '1.2.1-preview.0', gatewayProtocolVersion: 2 });
+    expect(JSON.parse(readFileSync(join(fixture.paths.root, 'build-source.json'), 'utf8')))
+      .toMatchObject({ sourceRoot: nextSource, plannerRoot: nextPlanner });
     expect(readlinkSync(fixture.accountPaths.database)).not.toBe(previousDatabaseTarget);
     expect(readlinkSync(fixture.accountPaths.configActive))
       .toBe(previousConfigurationTarget);

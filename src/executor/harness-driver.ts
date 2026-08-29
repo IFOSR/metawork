@@ -1,4 +1,5 @@
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import type { ExecutorAffordanceId } from '../routing/types.js';
 
 export interface HarnessProbeResult {
   available: boolean;
@@ -45,6 +46,7 @@ export interface RuntimeHomeInput {
   attemptId: string;
   revisionId: string;
   agentClassId: string;
+  executorAffordances?: readonly ExecutorAffordanceId[];
   bindingFingerprint: string;
   attemptsRoot: string;
   environment: Record<string, string>;

@@ -175,6 +175,21 @@ describe('PlannerDataReader', () => {
     expect(reader.getTaskContext('missing')).toEqual({ found: false, taskId: 'missing' });
   });
 
+  it('excludes cancelled tasks from the current runtime snapshot', () => {
+    const { taskEngine, reader } = createHarness();
+    const task = taskEngine.create({
+      title: '烧碱产业链与价格走势研究分析',
+      goal: '研究当前公开信息',
+    });
+    taskEngine.cancel(task.id, 'durable cancellation fence authorized');
+
+    const runtime = reader.getRuntimeState();
+
+    expect(runtime.taskCounts).toMatchObject({ cancelled: 1 });
+    expect(runtime.activeTasks).toEqual([]);
+    expect(JSON.stringify(runtime.activeTasks)).not.toContain('烧碱');
+  });
+
   it('binds session context to the trusted host session', () => {
     const { db, reader } = createHarness('sess_current');
     const insert = db.prepare(`

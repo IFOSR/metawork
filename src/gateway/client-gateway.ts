@@ -23,6 +23,7 @@ import {
   type CommandAdmissionStore,
   type StoredCommandAdmission,
 } from './command-admission-store.js';
+import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
 
 export interface ConversationSubmissionResult {
   readonly status: 'accepted' | 'duplicate' | 'rejected';
@@ -44,6 +45,7 @@ export interface ClientGatewayDeps {
     idempotencyKey: string,
     command: GatewayCommand,
     principalId?: string,
+    origin?: GatewayTurnOrigin,
   ): Promise<ConversationSubmissionResult>;
   handleWorkspaceCommand?(
     command: Extract<GatewayCommand, {
@@ -180,7 +182,7 @@ export class ClientGateway {
     const active = this.inFlight.get(key);
     if (active) return replayReceipt(await active, envelope.requestId);
 
-    const execution = this.executeAdmission(reservation);
+    const execution = this.executeAdmission(reservation, false, transport);
     this.inFlight.set(key, execution);
     try {
       const receipt = await execution;
@@ -214,6 +216,7 @@ export class ClientGateway {
   private async executeAdmission(
     initial: StoredCommandAdmission,
     recovering = false,
+    transport?: AuthenticatorTransport,
   ): Promise<CommandReceipt> {
     let admission = initial;
     try {
@@ -285,6 +288,9 @@ export class ClientGateway {
         admission.idempotencyKey,
         admission.command,
         admission.principalId,
+        transport
+          ? { connectionId: admission.connectionId, surface: gatewaySurfaceForTransport(transport) }
+          : undefined,
       );
       const receipt = commandReceipt(admission, submission);
       if (submission.status === 'rejected') {
@@ -371,6 +377,13 @@ function requestIdFromUntrustedEnvelope(input: unknown): string | null {
   if (typeof input !== 'object' || input === null) return null;
   const requestId = (input as Record<string, unknown>).requestId;
   return isGatewayIdentifier(requestId) ? requestId : null;
+}
+
+function gatewaySurfaceForTransport(transport: AuthenticatorTransport): GatewayTurnOrigin['surface'] {
+  if (transport === 'feishu') return 'feishu';
+  if (transport === 'web') return 'web';
+  if (transport === 'app') return 'unknown';
+  return 'local';
 }
 
 function commandReceipt(

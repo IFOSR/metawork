@@ -285,10 +285,13 @@ function resumeRecoveryCandidates(input: {
   return candidates.length > 0 ? candidates : undefined;
 }
 
-function classifyResumeBlocker(
+export function classifyResumeBlocker(
   reason: string | undefined,
 ): import('../kernel/control-kernel.js').KernelResumeBlockerCategory {
   const normalized = reason?.toLowerCase() ?? '';
+  // 启动恢复对“活跃但无 authorized dispatch”的 Subtask 只做 fail-closed 手动阻塞；
+  // 描述里的 "authorized" 指 dispatch 授权，而不是缺材料/权限，不能归为 explicit_resource。
+  if (normalized.includes('without authorized dispatch')) return 'manual';
   if (normalized.includes('capacity') || normalized.includes('资源')) return 'capacity';
   if (
     normalized.includes('retry')
@@ -328,6 +331,8 @@ export interface KernelExecutionRuntimeInput {
   taskId: string;
   request: QueuedExecutionRequest;
   recoveryOnly?: boolean;
+  /** Application-Shell acknowledgement for the first authoritative execution decision. */
+  onInitialDecision?(decision: KernelDecision): void;
 }
 
 export interface PreparedKernelExecutionInput extends KernelExecutionRuntimeInput {
@@ -2251,7 +2256,17 @@ export class KernelExecutionRuntime {
       else await workflow.recover();
     } else {
       if (retrySafeRecovery) await workflow.submit(retrySafeRecovery);
-      await workflow.submit(initialEvent);
+      const initialResult = await workflow.submit(initialEvent);
+      const initialDecision = initialResult.decisions.find(
+        decision => decision.eventId === initialEvent.id,
+      );
+      if (initialDecision) {
+        try {
+          input.onInitialDecision?.(initialDecision);
+        } catch {
+          // A presentation acknowledgement cannot change durable execution.
+        }
+      }
     }
     await this.attemptSupervisor.drain(taskId);
     await this.drainPublications({

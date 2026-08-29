@@ -85,7 +85,12 @@ export class CodexCliDriver implements HarnessDriver {
       command: 'codex',
       // The attempt worktree is the trust boundary; codex still defaults to a
       // read-only sandbox for `exec`, so workspace writes must be explicit.
-      args: buildCodexNonInteractiveArgs(input.prompt, { json: true }),
+      args: buildCodexNonInteractiveArgs(input.prompt, {
+        json: true,
+        ...(input.providerRef && input.modelId
+          ? { providerRef: input.providerRef, modelId: input.modelId }
+          : {}),
+      }),
       cwd: input.cwd,
       environment: { CODEX_HOME: input.runtimeHomePath },
     };

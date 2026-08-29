@@ -18,6 +18,19 @@ metawork server restart
 metawork server stop
 ```
 
+Rebuild and activate the latest source release from any directory:
+
+```bash
+metawork server stop
+metawork build
+metawork server start
+```
+
+`build` uses the installation's recorded source checkout, rebuilds Runtime,
+Planner, and Web, and atomically activates one `app/current` release. It does
+not start a Server or Client and refuses to run while the persistent Server is
+active. Server and all Clients then resolve the same activated release.
+
 Launch independent Clients after Server is ready:
 
 ```bash
@@ -121,6 +134,16 @@ event sequence; the Server replays missing snapshot/delta events and then
 continues with live events without duplicating event IDs. A disconnect does not
 destroy the Conversation, Planner history, AccountRuntime, Task, or Executor
 work.
+
+Detailed live delivery is origin-scoped (ADR-0036): a turn's detailed events
+stream only to the authenticated connection that submitted it. Web does not
+receive Feishu or TUI live detailed events, Feishu receives events only from its
+own chat/thread, and the native TUI receives only its own live turn. A detailed
+event without a retained live origin is durable history only, not an
+all-attachment broadcast. Replay and explicit history reads are never
+origin-filtered, so every authorized surface reconstructs the complete
+Conversation from all origins after attach, refresh, switch or reconnect.
+Workspace directory activity remains a bounded shared summary projection.
 
 If the cursor predates retained history, the Server returns a new bounded
 Conversation/Task/terminal snapshot and only the deltas after that snapshot.

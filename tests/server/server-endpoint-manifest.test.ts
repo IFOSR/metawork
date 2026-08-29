@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  classifyServerReadiness,
   ENDPOINT_MANIFEST_VERSION,
   readEndpointManifest,
   removeEndpointManifest,
@@ -25,6 +26,7 @@ async function fixture(): Promise<{ root: string; path: string; manifest: Endpoi
     path: join(root, 'endpoint.json'),
     manifest: {
       manifestVersion: ENDPOINT_MANIFEST_VERSION,
+      releaseId: '1.2.0-preview.0+build.1',
       serverVersion: '1.2.0',
       gatewayProtocolVersion: 2,
       pid: 1234,
@@ -37,6 +39,21 @@ async function fixture(): Promise<{ root: string; path: string; manifest: Endpoi
 }
 
 describe('server endpoint manifest', () => {
+  it('reports ready only when a live instance has a valid ready endpoint', async () => {
+    const value = await fixture();
+
+    expect(classifyServerReadiness(value.manifest, true, {
+      isProcessAlive: () => true,
+      socketExists: () => true,
+    })).toBe('ready');
+    expect(classifyServerReadiness(null, true)).toBe('starting_or_failed');
+    expect(classifyServerReadiness(value.manifest, true, {
+      isProcessAlive: () => true,
+      socketExists: () => false,
+    })).toBe('starting_or_failed');
+    expect(classifyServerReadiness(value.manifest, false)).toBe('not_running');
+  });
+
   it('writes and reads an atomic mode-restricted manifest without Workspace data', async () => {
     const value = await fixture();
     await writeEndpointManifest(value.path, value.manifest);
@@ -63,6 +80,15 @@ describe('server endpoint manifest', () => {
     })).toMatchObject({
       ok: false,
       code: 'protocol_mismatch',
+    });
+    expect(validateEndpointManifest(value.manifest, {
+      protocolVersion: 2,
+      releaseId: '1.2.0-preview.0+build.2',
+      isProcessAlive: () => true,
+      socketExists: () => true,
+    })).toMatchObject({
+      ok: false,
+      code: 'release_mismatch',
     });
     expect(validateEndpointManifest(value.manifest, {
       protocolVersion: 2,

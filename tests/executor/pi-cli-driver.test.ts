@@ -303,6 +303,77 @@ describe('PiCliDriver', () => {
     }
   });
 
+  it('installs the web extension only for a Pi AgentClass with web affordances', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-web-extension-'));
+    try {
+      const extensionSource = join(root, 'pi-attempt-tools.ts');
+      await writeFile(extensionSource, 'export const testExtension = true;\n');
+      const driver = new PiCliDriver({
+        probeCommand: vi.fn(),
+        webExtensionSourcePath: extensionSource,
+      });
+
+      const researchHome = await driver.materializeHome({
+        attemptId: 'research-attempt',
+        revisionId: 'revision-1',
+        agentClassId: 'pi-agent',
+        executorAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+      expect(await readFile(
+        join(researchHome.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'),
+        'utf8',
+      )).toContain('testExtension');
+
+      const ordinaryHome = await driver.materializeHome({
+        attemptId: 'ordinary-attempt',
+        revisionId: 'revision-1',
+        agentClassId: 'pi-agent',
+        executorAffordances: [],
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+      await expect(stat(
+        join(ordinaryHome.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'),
+      )).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the built web extension from the active install root when env is absent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-install-root-'));
+    try {
+      const extensionSource = join(root, 'app', 'current', 'dist', 'pi-attempt-tools.ts');
+      await mkdir(join(root, 'app', 'current', 'dist'), { recursive: true });
+      await writeFile(extensionSource, 'export const installedExtension = true;\n');
+      vi.stubEnv('METAWORK_INSTALL_ROOT', root);
+      vi.stubEnv('ANYFUSION_INSTALL_ROOT', root);
+
+      const driver = new PiCliDriver({ probeCommand: vi.fn() });
+      const home = await driver.materializeHome({
+        attemptId: 'research-attempt',
+        revisionId: 'revision-1',
+        agentClassId: 'pi-research',
+        executorAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+
+      expect(await readFile(
+        join(home.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'),
+        'utf8',
+      )).toContain('installedExtension');
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the assigned template is missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-driver-'));
     try {

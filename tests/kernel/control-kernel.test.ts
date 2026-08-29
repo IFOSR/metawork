@@ -334,6 +334,86 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('does not require model tools capability for Pi current-web-research routing', () => {
+    const proposal = workGraphPlan({
+      goal: 'Research the latest public web information',
+      executor: 'pi-agent',
+      deliveryKind: 'report',
+    });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+
+    const deepseekConfiguration = structuredClone(kernelConfiguration);
+    deepseekConfiguration.models['pi-model'] = {
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+      capabilities: [],
+      reasoning: 'high',
+      enabled: true,
+    };
+    deepseekConfiguration.agentClasses['pi-agent']!.modelPolicy = {
+      mode: 'fixed',
+      modelRef: 'pi-model',
+    };
+
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_pi_current_web_research',
+      proposal,
+      generationId: 'generation_pi_current_web_research',
+      targetGraphRevision: 1,
+    }, {
+      ...snapshot,
+      kernelConfiguration: deepseekConfiguration,
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      authorizedBindingsBySubtask: {
+        subtask_execute: [{
+          agentClassRef: 'pi-agent',
+          providerRef: 'deepseek',
+          modelRef: 'pi-model',
+        }],
+      },
+    });
+    expect(decision.reason).toBe('work graph authorized');
+  });
+
+  it('does not reject a workspace model merely because its capability profile is empty', () => {
+    const proposal = workGraphPlan({
+      goal: 'Implement the requested workspace change',
+      executor: 'codex-cli',
+    });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+
+    const configuration = structuredClone(kernelConfiguration);
+    configuration.models['codex-model'] = {
+      ...configuration.models['codex-model']!,
+      capabilities: [],
+    };
+
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_empty_model_profile',
+      proposal,
+      generationId: 'generation_empty_model_profile',
+      targetGraphRevision: 1,
+    }, {
+      ...snapshot,
+      kernelConfiguration: configuration,
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      authorizedBindingsBySubtask: {
+        subtask_execute: [{
+          agentClassRef: 'codex-cli',
+          modelRef: 'codex-model',
+        }],
+      },
+    });
+  });
+
   it('rejects an empty non-null task reference instead of authorizing it as a new Task', () => {
     const proposal = workGraphPlan({ goal: 'Create an artifact' });
     proposal.task.taskId = '';
@@ -876,7 +956,7 @@ describe('ControlKernel', () => {
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
-  it('authorizes one metadata correction and then keeps a safe result awaiting decision', () => {
+  it('authorizes one metadata correction and then blocks when correction is exhausted', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
       type: 'execution_result_observed',
@@ -900,7 +980,36 @@ describe('ControlKernel', () => {
       })],
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
-      type: 'no_op',
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+    });
+  });
+
+  it('blocks a safe result when its AgentClass does not support response-only correction', () => {
+    const event = runtimeEvent({
+      type: 'execution_result_observed',
+      attemptId: 'attempt_pi',
+      workUnitId: 'wu_pi',
+      authorizedBinding: piBinding,
+      bindingFingerprint: piFingerprint,
+      contract: { schemaVersion: 2 },
+      violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
+      receiptCount: 1,
+      responseBytes: 100,
+      resultId: 'result_pi_safe',
+      deliverability: 'deliverable',
+      certification: 'uncertified',
+      safety: 'safe',
+    });
+
+    expect(new ControlKernel().decide(
+      event,
+      dispatchSnapshot([], 'awaiting_decision'),
+    ).action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
     });
   });
 
@@ -935,7 +1044,7 @@ describe('ControlKernel', () => {
     });
   });
 
-  it('does not permanently block when a metadata correction attempt fails', () => {
+  it('blocks when a metadata correction attempt fails', () => {
     const event = runtimeEvent({
       type: 'execution_outcome',
       attemptId: 'attempt_correction',
@@ -955,7 +1064,11 @@ describe('ControlKernel', () => {
     expect(new ControlKernel().decide(
       event,
       dispatchSnapshot([], 'awaiting_decision'),
-    ).action).toEqual({ type: 'no_op' });
+    ).action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+    });
   });
 
   it('lets the merge conflict observation own repair failure policy', () => {

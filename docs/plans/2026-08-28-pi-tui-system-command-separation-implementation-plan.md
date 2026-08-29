@@ -242,6 +242,35 @@ metawork tui
 - Web: a fresh `metawork web --no-open` bootstrap exchanged successfully for an HttpOnly session cookie; `/api/auth/session`, `/api/workspaces`, and `/api/ws/diagnostics` returned success; a Conversation was created and activated.
 - WebSocket: `/help` emitted result/final payloads without trace or execution events; the ordinary Workspace-name request emitted Planner trace, `result_delivery_available`, `result_chunk`, certified `result_completed`, and `final_answer` with `metawork`.
 
+### Follow-up Correction (2026-08-29)
+
+The first real acceptance did not cover a slash command that starts background Task work.
+That exposed a lifecycle projection defect: `final_answer` was treated as the Task terminal
+event, while the Executor continued asynchronously. The correction now registers background
+work before launch, marks command results with `backgroundWorkPending` only when applicable,
+forwards safe trace status metadata, and keeps the command result beside the live
+Task/Executor/Subtask projection in both Web and Pi TUI. Historical Web turns retain the
+`interactionKind` needed to render system command output separately. The strict
+`completion_malformed` fail-closed contract is unchanged.
+
+Real Web acceptance then exposed a second presentation defect in the same command boundary:
+the command catalog emitted “resume submitted” and success Guidance before Kernel returned
+`no_op`. The execution application now exposes the first authoritative resume Decision without
+waiting for the Executor attempt to finish. Only `resume_task` reports that execution started;
+`no_op`, `block_work`, and `park_for_replan` report that no new Executor was launched and retain
+the Kernel reason. Background registration is also allowed to settle before a no-op command turn
+is finalized, so Web does not show a false live state.
+
+Follow-up validation passed: root lint; 59 focused Gateway/Session/Web runtime tests; Web
+production build; 32 focused Pi coding-agent reducer/view tests; and Planner offline build.
+
+The authoritative resume acknowledgement correction passed 121 focused root Session,
+Gateway/Web, Kernel/recovery, and startup-recovery tests plus the 32 Pi TUI tests, production
+build, and an installation-level `metawork build`. Real Web acceptance against the same
+`awaiting_decision` weather Task showed `resume has no recoverable Subtask`, explicitly stated
+that no new Executor launched, retained the prior attempt history, and emitted no optimistic
+resume Guidance.
+
 ### Closing Commits
 
 `22f2a2d`, `4ea15dd`, `600db39`, `aeaa585`, and `e554bac`.

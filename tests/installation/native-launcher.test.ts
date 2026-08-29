@@ -30,6 +30,18 @@ describe('renderNativeLauncher', () => {
     expect(launcher).toContain(
       'export ANYFUSION_WEB_PASSWORD="${ANYFUSION_WEB_PASSWORD:-123456}"',
     );
+    expect(launcher).toContain(
+      'export METAWORK_RELEASE_ID="$(node -p',
+    );
+    expect(launcher).not.toContain('${METAWORK_RELEASE_ID:-');
+    expect(launcher).toContain(
+      '$METAWORK_INSTALL_ROOT/app/current/release-identity.json',
+    );
+    expect(launcher).not.toContain('package.json\") }"');
+    expect(launcher).toContain(
+      'if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then',
+    );
+    expect(launcher).not.toContain('require(process.argv[2]).version');
   });
 
   it('continues to recognize the previous AnyFusion managed marker', async () => {

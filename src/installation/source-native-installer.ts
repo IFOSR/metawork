@@ -28,6 +28,8 @@ import {
   installNativeLauncher,
   removeManagedLauncher,
 } from './native-launcher.js';
+import { writeBuildSourceMetadata, buildSourceMetadataPath } from './build-source.js';
+import { writeReleaseIdentity } from './release-identity.js';
 
 const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
@@ -102,7 +104,7 @@ export class SourceNativeInstaller {
     let secretStored = false;
     let compiledRuntimeRoot: string | null = null;
     try {
-      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
+      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot, input.releaseId);
       await this.dependencies.secretStore.put(secretReference, input.provider.apiKey);
       secretStored = true;
       await service.initialize();
@@ -154,6 +156,10 @@ export class SourceNativeInstaller {
       if (!activated.ok) {
         throw new Error('configuration activation conflicted during clean installation');
       }
+      await writeBuildSourceMetadata(buildSourceMetadataPath(paths.root), {
+        sourceRoot: input.sourceRoot,
+        plannerRoot: input.plannerRoot,
+      });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       await collectCleanupError(
@@ -336,6 +342,7 @@ export async function stageSourceRelease(
   sourceRoot: string,
   plannerRoot: string,
   releaseRoot: string,
+  releaseId: string,
 ): Promise<void> {
   const stageRoot = `${releaseRoot}.stage-${randomUUID()}`;
   await mkdir(stageRoot, { recursive: true, mode: 0o700 });
@@ -349,6 +356,7 @@ export async function stageSourceRelease(
         recursive: true,
         filter: source => basename(source) !== '.git',
       }),
+      writeReleaseIdentity(stageRoot, releaseId),
     ]);
     await mkdir(dirname(releaseRoot), { recursive: true, mode: 0o700 });
     await rename(stageRoot, releaseRoot);

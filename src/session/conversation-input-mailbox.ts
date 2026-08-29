@@ -9,12 +9,15 @@
  */
 
 import type { GatewayCommand } from '../gateway/client-protocol.js';
+import type { GatewayTurnOrigin } from '../gateway/gateway-delivery-context.js';
 
 export interface MailboxCommand {
   readonly requestId: string;
   readonly idempotencyKey: string;
   readonly principalId?: string;
   readonly command?: GatewayCommand;
+  /** 内部实时投递上下文（ADR-0036）；绝不进入公开事件载荷。 */
+  readonly origin?: GatewayTurnOrigin;
 }
 
 export interface MailboxReceipt {

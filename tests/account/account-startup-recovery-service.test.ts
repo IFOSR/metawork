@@ -548,7 +548,7 @@ function executionBinding(db: Database.Database): ConversationExecutionBinding {
       appendGuidance: () => undefined,
       refreshRuntimeState: () => undefined,
       startBackgroundExecution: (_taskId, launch) => {
-        void launch();
+        return launch();
       },
     },
     sessionKernelCallbacks: {

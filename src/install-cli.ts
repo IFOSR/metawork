@@ -14,6 +14,7 @@ import { InstallerCore } from './installation/installer-core.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
+import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
 import {
   ProductRootMigrator,
   type ProductRootMigration,
@@ -81,10 +82,14 @@ export async function runNativeInstallCli(
   const paths = rootMigration?.paths
     ?? resolveMetaWorkPaths(env.HOME, productEnvironment.installRoot);
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+  const activeSecretReferences = args.command === 'install'
+    ? []
+    : await readActiveSecretReferences(accountPaths.config);
   const secretStore = createProductionSecretStore({
     platform: dependencies.platform,
     secretsRoot: accountPaths.secrets,
     env,
+    references: activeSecretReferences,
   });
   const detectCommand = dependencies.detectCommand
     ?? (command => commandExistsOnPath(command, env.PATH ?? ''));
@@ -177,6 +182,15 @@ export async function runNativeInstallCli(
     await rootMigration?.rollback();
     throw error;
   }
+}
+
+async function readActiveSecretReferences(configRoot: string): Promise<string[]> {
+  const repository = new FileConfigurationRepository(configRoot);
+  await repository.initialize();
+  const recovery = await repository.recover();
+  if (recovery.status === 'empty') return [];
+  const snapshot = await repository.getActiveSnapshot();
+  return Object.values(snapshot.config.providers).map(provider => provider.apiKeyRef);
 }
 
 async function prepareProductRootMigration(

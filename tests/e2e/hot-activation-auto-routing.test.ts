@@ -95,7 +95,7 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
         },
       ],
       requirements: {
-        requiredCapabilities: ['planning', 'structured-output', 'vision'],
+        preferredCapabilities: ['planning', 'structured-output', 'vision'],
         contextTokens: 2_000,
         requiresStructuredOutput: true,
       },
@@ -138,7 +138,7 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
         routing: [{
           agentClassRef: 'codex-cli',
           binding: newBinding,
-          rejectedCandidates: [{ providerRef: 'provider', modelRef: 'text', reason: 'missing_capability:vision' }],
+          rejectedCandidates: [],
           scoreBreakdown: null,
           policyVersion: 'auto-model-routing-v1',
         }],
@@ -156,7 +156,7 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
         providerDisplayName: 'Provider',
       },
     });
-    expect(projection.nodes[0]?.routing[0]?.rejectedCandidates).toHaveLength(1);
+    expect(projection.nodes[0]?.routing[0]?.rejectedCandidates).toHaveLength(0);
   });
 });
 

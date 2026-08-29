@@ -4,6 +4,7 @@ export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor';
 
 export type CliCommand =
   | { kind: 'server'; action: ServerAction }
+  | { kind: 'build' }
   | { kind: 'tui'; conversationId?: string }
   | { kind: 'web'; conversationId?: string; noOpen?: boolean }
   | { kind: 'admin'; command: AdminCommand }
@@ -27,6 +28,10 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
 
   const [namespace, ...rest] = argv;
   if (namespace === 'server') return parseServerArgs(rest);
+  if (namespace === 'build') {
+    if (rest.length > 0) throw new Error(`未知 build 参数: ${rest[0]}`);
+    return { kind: 'build' };
+  }
   if (namespace === 'tui') return parseClientArgs('tui', rest);
   if (namespace === 'web') return parseClientArgs('web', rest);
 
@@ -49,6 +54,9 @@ export function formatCliHelp(): string {
     '  metawork server restart',
     '  metawork server status',
     '  metawork server doctor',
+    '',
+    '构建并激活最新版本（不启动 Server 或 Client）:',
+    '  metawork build',
     '',
     'Clients（连接已有 Server）:',
     '  metawork',

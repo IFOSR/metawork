@@ -230,7 +230,7 @@ describe('MetaclawGatewayServer lifecycle', () => {
       payload: { events: [{ phase: 'planner', message: 'Planner parsed intent' }] },
       occurredAt: '2026-08-19T00:00:00.000Z',
     };
-    fixture.subscriptions.publish(traceEvent);
+    fixture.subscriptions.publish(traceEvent, { connectionId: 'native_tui', surface: 'local' });
     await expect(client.next(message => (
       message.type === 'event' && message.event.eventId === 'event_trace'
     ))).resolves.toMatchObject({

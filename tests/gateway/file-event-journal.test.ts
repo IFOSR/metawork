@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -39,7 +39,7 @@ function makeEvent(
   conversationId = 'conv_1',
 ): GatewayEventEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     eventId: id,
     sequence: 0,
     accountId,
@@ -53,6 +53,61 @@ function makeEvent(
 }
 
 describe('FileEventJournal', () => {
+  it('rejects appending a legacy envelope to the current journal', async () => {
+    const journal = await makeJournal();
+
+    await expect(journal.append({
+      ...makeEvent('legacy_append', 'turn_started'),
+      protocolVersion: 1,
+    } as GatewayEventEnvelope)).rejects.toThrow(
+      'Gateway event protocol version must be 2',
+    );
+  });
+
+  it('atomically migrates mixed legacy event envelopes before v2 replay', async () => {
+    const { journal, root } = await makeJournalFixture();
+    const directory = join(root, 'local-default');
+    const path = join(directory, 'conv_1.json');
+    await mkdir(directory, { recursive: true });
+    const legacy = {
+      ...makeEvent('legacy_event', 'turn_started'),
+      protocolVersion: 1,
+      sequence: 1,
+      requestId: 'req_legacy',
+      turnId: 'turn_legacy',
+      payload: { phase: 'planning', safe: 'preserved' },
+    };
+    const current = {
+      ...makeEvent('current_event', 'final_answer'),
+      sequence: 2,
+      requestId: 'req_current',
+      turnId: 'turn_current',
+      payload: { lines: ['current answer'] },
+    };
+    await writeFile(path, `${JSON.stringify({
+      version: 1,
+      lastSequence: 2,
+      events: [legacy, current],
+    })}\n`);
+
+    const replay = await journal.replay('local-default', 'conv_1');
+    const events = [...replay.snapshot, ...replay.deltas]
+      .sort((left, right) => left.sequence - right.sequence);
+
+    expect(events).toEqual([
+      { ...legacy, protocolVersion: 2 },
+      current,
+    ]);
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+      version: 2,
+      lastSequence: 2,
+      events: [
+        { ...legacy, protocolVersion: 2 },
+        current,
+      ],
+    });
+  });
+
   it('assigns monotonic sequences', async () => {
     const journal = await makeJournal();
     await journal.append(makeEvent('e1', 'turn_started'));

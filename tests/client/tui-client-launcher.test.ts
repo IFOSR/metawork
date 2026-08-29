@@ -106,4 +106,15 @@ describe('TuiClientLauncher', () => {
       path => path === installedPlannerCommand,
     )).toBe(installedPlannerCommand);
   });
+
+  it('does not select a Planner binary from the Client startup directory', () => {
+    const installedPlannerCommand = '/install/app/current/planner/packages/coding-agent/dist/cli.js';
+    const workspacePlannerCommand = '/workspace-a/planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js';
+
+    expect(resolveVendoredPlannerCommand(
+      '/install/app/current/dist',
+      '/workspace-a',
+      path => path === installedPlannerCommand || path === workspacePlannerCommand,
+    )).toBe(installedPlannerCommand);
+  });
 });

@@ -228,6 +228,7 @@ export type ServerMessage =
     turnId: string;
     userInput: string;
     startedAt: string;
+    interactionKind?: 'system_command' | 'ai_turn';
   }
   | {
     type: 'final_answer';
@@ -235,6 +236,7 @@ export type ServerMessage =
     turnId: string;
     lines: string[];
     completedAt: string;
+    backgroundWorkPending?: boolean;
   }
   | {
     type: 'terminal_error';
@@ -282,6 +284,8 @@ export type ServerMessage =
       turnId: string;
       fromSequence: number;
       events: InteractionTraceEvent[];
+      status?: InteractionTraceStatus;
+      completedAt?: string | null;
     }
   | { type: 'error'; message: string };
 

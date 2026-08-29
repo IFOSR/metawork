@@ -44,7 +44,7 @@ describe('gateway load bounds', () => {
     // 追加超过保留上限的事件。
     for (let index = 0; index < 250; index += 1) {
       await journal.append({
-        protocolVersion: 1,
+        protocolVersion: 2,
         eventId: `evt_${index}`,
         sequence: 0,
         accountId: 'local-default',

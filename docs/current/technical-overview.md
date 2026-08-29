@@ -93,6 +93,18 @@ decision/application draining, and ADR-0011 remains one active top-level Task
 per AccountRuntime. Accounts use separate data roots and SQLite databases; the
 current installation is activated as `local-default`.
 
+Detailed Gateway live delivery is origin-scoped (ADR-0036). A turn's
+`turn_started`, trace, task/execution projection, permission, artifact, result
+and terminal events stream only to the authenticated connection that initiated
+the turn. Conversation snapshots and history pages are attach/replay/read
+projections rather than cross-client live notifications. A detailed event
+without a live origin — a startup recovery projection or a background fact after
+the originating client disconnected — remains durable history only and is not
+broadcast to every attached client. Replay and explicit history reads remain
+Account/Conversation complete and origin-unfiltered, so Web, Feishu and TUI
+recover every authorized turn after attach, refresh, switch or reconnect.
+Workspace directory activity remains a bounded shared summary.
+
 The production composition below is the executable baseline.
 See [ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md), the
 [approved design](../plans/2026-08-18-account-runtime-unified-gateway-design.md),
@@ -464,14 +476,14 @@ Required routing fields:
 
 - `name`: stable executor name, such as `research-bot` or `finance-research-agent`.
 - `domains`: where the executor fits, such as `research`, `finance`, or `software`.
-- `capabilities`: what the executor can do, such as `research`, `report_generation`, `multi_tool`, `coding`, or `tests`.
+- `capabilities`: the executor's configured strengths and routing preferences, such as `research`, `report_generation`, `multi_tool`, `coding`, or `tests`. An omitted label is not a hard prohibition; provider/model availability, harness compatibility, permissions, and Runtime affordances remain the actual execution constraints.
 
 Recommended routing fields:
 
 - `inputTypes`: supported input types, such as `text`, `files`, or `image`.
 - `outputTypes`: expected outputs, such as `markdown`, `report`, `code`, `patch`, or `json`.
-- `primaryUseCases`: examples of tasks that should route to this executor.
-- `avoidUseCases`: examples of tasks that should not route to this executor.
+- `primaryUseCases`: examples of tasks that should preferentially route to this executor.
+- `avoidUseCases`: examples of tasks that are less preferred for this executor, not physically disabled operations.
 - `riskLevel`: `low`, `medium`, or `high`.
 - `intentAffinity`: route-intent affinity by keys such as `repo_execution`, `research_workflow`, `memory_agent_ops`, and `general`.
 - `projectUrl`: source repository or documentation URL.
@@ -569,6 +581,21 @@ Start the persistent Server before launching a Client:
 metawork server start
 metawork server status
 ```
+
+To rebuild every shipped component and activate one coherent release from any
+directory, run:
+
+```bash
+metawork server stop
+metawork build
+metawork server start
+```
+
+The build source is installation metadata, not the user's current Workspace.
+The command rebuilds Runtime, Planner, and Web, preserves account data, and
+atomically switches `app/current`. It fails while Server is running. Server,
+TUI, and Web validate the same release identity before connecting, so old and
+new releases cannot silently mix.
 
 Launch independent Clients:
 
@@ -686,6 +713,13 @@ as a bounded structured materialization diagnostic. Explicit Task resume enters
 the Kernel as `task_resume_requested`; only the resulting Kernel-authorized
 `resume_task` application may restore Task/Subtask readiness and dispatch a
 new attempt.
+
+The `/task resume` command result is a projection of the first authoritative
+Kernel Decision, not an optimistic acknowledgement. Only `resume_task` is
+reported as execution started. `no_op`, `block_work`, and `park_for_replan`
+explicitly state that no new Executor was launched and include the safe Kernel
+reason. `Command completed` means only that command handling settled; any actual
+background work remains visible through the Task/Subtask/Executor trace.
 
 Account startup and explicit Resume also repair one known legacy pre-apply
 failure: a replan `authorize_task_plan` application made uncertain only because

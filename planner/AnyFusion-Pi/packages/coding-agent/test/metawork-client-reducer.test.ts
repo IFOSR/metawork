@@ -84,6 +84,51 @@ describe("MetaWork client reducer", () => {
 		expect(state.currentTurn).toBeNull();
 	});
 
+	it("keeps task execution attached to a system command after its command result", () => {
+		let state = reduceGatewayEvent(
+			baseState(),
+			event("turn_started", { commandKind: "slash_command" }, 1),
+		);
+		state = reduceGatewayEvent(state, event("final_answer", {
+			lines: ["已发起任务恢复"],
+		}, 2));
+		state = reduceGatewayEvent(state, event("trace_delta", {
+			events: [{
+				eventKey: "attempt_resume:started",
+				phase: "execution",
+				actor: "executor",
+				title: "Executor dispatch started",
+				summary: "恢复任务已开始执行",
+				taskId: "task_resume",
+			}],
+		}, 3));
+		state = reduceGatewayEvent(state, event("execution_delta", {
+			subtaskId: "subtask_resume",
+			title: "重新执行天气查询",
+			status: "running",
+			progress: "正在启动 Executor",
+		}, 4));
+
+		expect(state.currentTurn).toBeNull();
+		expect(state.currentCommand).toMatchObject({
+			status: "completed",
+			output: "已发起任务恢复",
+			execution: {
+				stage: "execution",
+				trace: [expect.objectContaining({
+					title: "Executor dispatch started",
+				})],
+				subtasks: {
+					subtask_resume: {
+						title: "重新执行天气查询",
+						status: "running",
+						progress: "正在启动 Executor",
+					},
+				},
+			},
+		});
+	});
+
 	it("classifies user messages as AI turns", () => {
 		const state = reduceGatewayEvent(
 			baseState(),

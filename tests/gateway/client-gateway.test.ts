@@ -110,6 +110,45 @@ describe('ClientGateway', () => {
     expect(submitted).toEqual(['conv_1']);
   });
 
+  it('propagates the authenticated transport origin into the Conversation mailbox', async () => {
+    const origins: Array<{ connectionId: string; surface: string }> = [];
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async (_conversationId, _requestId, _idempotencyKey, _command, _principalId, origin) => {
+        if (origin) origins.push(origin);
+        return { status: 'accepted' };
+      },
+    });
+
+    await gateway.handle({
+      ...envelope,
+      requestId: 'req_web',
+      idempotencyKey: 'idem_web',
+      connectionId: 'web_a',
+    }, 'web');
+    await gateway.handle({
+      ...envelope,
+      requestId: 'req_feishu',
+      idempotencyKey: 'idem_feishu',
+      connectionId: 'feishu_b',
+    }, 'feishu');
+    await gateway.handle({
+      ...envelope,
+      requestId: 'req_tui',
+      idempotencyKey: 'idem_tui',
+      connectionId: 'tui_c',
+    }, 'local');
+
+    expect(origins).toEqual([
+      { connectionId: 'web_a', surface: 'web' },
+      { connectionId: 'feishu_b', surface: 'feishu' },
+      { connectionId: 'tui_c', surface: 'local' },
+    ]);
+  });
+
   it('handles Workspace selection outside the Conversation mailbox', async () => {
     const gateway = new ClientGateway({
       authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },

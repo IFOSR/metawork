@@ -16,6 +16,7 @@ import {
 } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
 import type { GatewayAttachmentStore } from './attachment-store-port.js';
 import type { PlannerImageAttachment } from '../planning/planning-types.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
@@ -64,6 +65,9 @@ export class ConversationGatewayRuntime {
   private readonly submissions = new Map<string, Promise<ConversationCommandReceipt>>();
   private readonly pendingAttachments = new Set<Promise<() => void>>();
   private readonly activeAttachments = new Set<Promise<void>>();
+  /** 每个 Conversation 最近一次 turn 的来源（ADR-0036），用于投影事件定向；
+   *  命令返回后保留，供后台 Task/Executor 投影继续定向到发起来源，直到下一个 turn 覆盖。 */
+  private readonly activeOrigins = new Map<string, GatewayTurnOrigin>();
   private admissionClosed = false;
 
   constructor(private readonly deps: ConversationGatewayRuntimeDeps) {}
@@ -81,6 +85,7 @@ export class ConversationGatewayRuntime {
     idempotencyKey: string,
     command: GatewayCommand,
     principalId = 'unknown',
+    origin?: GatewayTurnOrigin,
   ): Promise<ConversationCommandReceipt> {
     if (this.admissionClosed) {
       const reason = 'gateway_closing';
@@ -114,6 +119,7 @@ export class ConversationGatewayRuntime {
       idempotencyKey,
       command,
       principalId,
+      origin,
     );
     this.submissions.set(completionKey, submission);
     try {
@@ -198,12 +204,14 @@ export class ConversationGatewayRuntime {
     idempotencyKey: string,
     command: GatewayCommand,
     principalId: string,
+    origin?: GatewayTurnOrigin,
   ): Promise<ConversationCommandReceipt> {
     const completionKey = this.completionKey(conversationId, idempotencyKey);
     const recovered = await this.recoverDurableSubmission(
       conversationId,
       requestId,
       idempotencyKey,
+      origin,
     );
     if (recovered) return recovered;
 
@@ -237,6 +245,7 @@ export class ConversationGatewayRuntime {
         null,
         'conversation_history_page',
         page,
+        origin,
       );
       return {
         requestId,
@@ -254,6 +263,7 @@ export class ConversationGatewayRuntime {
       idempotencyKey,
       principalId,
       command,
+      origin,
     });
     if (receipt.status === 'rejected') {
       completion.resolve({ status: 'failed', reason: receipt.reason });
@@ -280,13 +290,14 @@ export class ConversationGatewayRuntime {
 
   private async attachProjection(conversation: ConversationSession): Promise<void> {
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
+    const activeOrigin = () => this.activeOrigins.get(conversation.conversationId);
     const initialOutput = [...conversation.getOutput()];
     const workspace = await conversation.getWorkspace();
     await this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
       from: 0,
       lines: initialOutput,
       workspace,
-    });
+    }, activeOrigin());
 
     let outputLength = initialOutput.length;
     let traceTurnId: string | null = null;
@@ -306,13 +317,13 @@ export class ConversationGatewayRuntime {
           from,
           lines,
           currentTaskId: snapshot.currentTaskId,
-        });
+        }, activeOrigin());
       }
       void this.publish(conversation.conversationId, null, null, 'task_projection', {
         currentTaskId: snapshot.currentTaskId,
         runtimeState: snapshot.runtimeState,
         plannerState: snapshot.plannerState,
-      });
+      }, activeOrigin());
     });
     conversation.subscribeInteractionTrace(trace => {
       if (!trace) return;
@@ -324,8 +335,11 @@ export class ConversationGatewayRuntime {
       if (events.length > 0) {
         void this.publish(conversation.conversationId, null, trace.turnId, 'trace_delta', {
           turnId: trace.turnId,
+          taskId: trace.taskId,
+          status: trace.status,
+          completedAt: trace.completedAt,
           events,
-        });
+        }, activeOrigin());
       }
     });
   }
@@ -342,6 +356,8 @@ export class ConversationGatewayRuntime {
       mailboxCommand.idempotencyKey,
     );
     const completion = this.completions.get(completionKey);
+    const origin = mailboxCommand.origin;
+    if (origin) this.activeOrigins.set(conversation.conversationId, origin);
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const turnId = this.id('turn');
     const before = conversation.getOutput().length;
@@ -359,6 +375,7 @@ export class ConversationGatewayRuntime {
         turnId,
         'turn_started',
         { commandKind: mailboxCommand.command.kind },
+        origin,
       );
       const images = await this.resolvePlannerImages(
         conversation.conversationId,
@@ -393,6 +410,7 @@ export class ConversationGatewayRuntime {
       const projectedResult = conversation.getResultDeliveries()
         .slice(beforeResultDeliveries)
         .at(-1);
+      const backgroundWorkPending = conversation.hasBackgroundWork();
       const result = await this.publishResultDelivery(
         conversation.conversationId,
         mailboxCommand.requestId,
@@ -401,13 +419,15 @@ export class ConversationGatewayRuntime {
         projectedResult?.certification ?? 'certified',
         projectedResult?.completeness ?? 'complete',
         projectedResult?.resultId,
+        origin,
       );
       await this.publish(
         conversation.conversationId,
         mailboxCommand.requestId,
         turnId,
         'final_answer',
-        finalAnswerPayload(projectedResult ? [] : lines, result),
+        finalAnswerPayload(projectedResult ? [] : lines, result, backgroundWorkPending),
+        origin,
       );
       completion?.resolve({ status: 'completed' });
     } catch (error) {
@@ -430,6 +450,7 @@ export class ConversationGatewayRuntime {
               ? { code: (error as { code: string }).code }
               : {}),
           },
+          origin,
         );
       } finally {
         completion?.resolve({ status: 'failed', reason: completionReason });
@@ -447,6 +468,7 @@ export class ConversationGatewayRuntime {
     conversationId: string,
     requestId: string,
     idempotencyKey: string,
+    origin?: GatewayTurnOrigin,
   ): Promise<ConversationCommandReceipt | null> {
     const replay = await this.deps.journal.replay(this.deps.accountId, conversationId);
     const events = uniqueEvents([...replay.snapshot, ...replay.deltas])
@@ -486,6 +508,7 @@ export class ConversationGatewayRuntime {
         code: reason,
         message: 'Command execution was interrupted after it started; it was not executed again.',
       },
+      origin,
     );
     return {
       requestId,
@@ -502,6 +525,7 @@ export class ConversationGatewayRuntime {
     turnId: string | null,
     kind: GatewayEventKind,
     payload: unknown,
+    target?: GatewayTurnOrigin,
   ): Promise<GatewayEventEnvelope> {
     const appended = await this.deps.journal.append({
       protocolVersion: 2,
@@ -515,7 +539,7 @@ export class ConversationGatewayRuntime {
       payload,
       occurredAt: this.now(),
     });
-    this.deps.subscriptions.publish(appended);
+    this.deps.subscriptions.publish(appended, target);
     return appended;
   }
 
@@ -527,6 +551,7 @@ export class ConversationGatewayRuntime {
     certification: 'certified' | 'uncertified',
     completeness: 'complete' | 'partial' | 'incomplete',
     persistedResultId?: string,
+    target?: GatewayTurnOrigin,
   ): Promise<ResultDeliveryMetadata> {
     // The journal applies the same redaction before persistence. Hash the
     // projected content so clients can verify exactly what they receive.
@@ -566,6 +591,7 @@ export class ConversationGatewayRuntime {
       requestId,
       turnId,
       events,
+      target,
     );
     return metadata;
   }
@@ -575,6 +601,7 @@ export class ConversationGatewayRuntime {
     requestId: string | null,
     turnId: string | null,
     events: Array<{ kind: GatewayEventKind; payload: unknown }>,
+    target?: GatewayTurnOrigin,
   ): Promise<GatewayEventEnvelope[]> {
     const envelopes = events.map(event => ({
       protocolVersion: 2 as const,
@@ -591,7 +618,7 @@ export class ConversationGatewayRuntime {
     const appended = this.deps.journal.appendBatch
       ? await this.deps.journal.appendBatch(envelopes)
       : await appendSequentially(this.deps.journal, envelopes);
-    for (const event of appended) this.deps.subscriptions.publish(event);
+    for (const event of appended) this.deps.subscriptions.publish(event, target);
     return appended;
   }
 
@@ -676,17 +703,23 @@ interface ResultDeliveryMetadata {
   certification: 'certified' | 'uncertified';
 }
 
-function finalAnswerPayload(lines: string[], result: ResultDeliveryMetadata): {
+function finalAnswerPayload(
+  lines: string[],
+  result: ResultDeliveryMetadata,
+  backgroundWorkPending: boolean,
+): {
   lines: string[];
   resultId: string;
   contentHash: string;
   byteLength: number;
+  backgroundWorkPending?: boolean;
 } {
   const full = { lines: lines.flatMap(splitGatewayLines) };
   const metadata = {
     resultId: result.resultId,
     contentHash: result.contentHash,
     byteLength: result.byteLength,
+    ...(backgroundWorkPending ? { backgroundWorkPending: true } : {}),
   };
   if (payloadFits({ ...full, ...metadata })) {
     return { ...full, ...metadata };

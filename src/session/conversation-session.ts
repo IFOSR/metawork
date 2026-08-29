@@ -14,7 +14,11 @@
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { Config } from '../core/types.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
-import type { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
+import {
+  formatTaskResumeDecision,
+  type SessionTaskExecutionApplicationService,
+  type TaskExecutionStart,
+} from './session-task-execution-application-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
@@ -610,13 +614,20 @@ export class ConversationSession {
     if (attemptId) this.runningExecutorsByAttempt.delete(attemptId);
   }
 
-  startBackgroundExecution(_taskId: string, launch: () => Promise<void>): void {
-    const promise = launch()
+  startBackgroundExecution(_taskId: string, launch: () => Promise<void>): Promise<void> {
+    let promise!: Promise<void>;
+    promise = Promise.resolve()
+      .then(launch)
       .catch(() => undefined)
       .finally(() => {
         this.backgroundWork.delete(promise);
       });
     this.backgroundWork.add(promise);
+    return promise;
+  }
+
+  hasBackgroundWork(): boolean {
+    return this.backgroundWork.size > 0;
   }
 
   deliverDirectReply(userInput: string, reply: string): void {
@@ -1280,7 +1291,9 @@ export class ConversationSession {
     if (result.type === 'error') {
       throw commandError(result.code, result.content);
     }
-    this.appendOutput(result.content);
+    if (!(result.type === 'directive' && result.directive.kind === 'resume-task')) {
+      this.appendOutput(result.content);
+    }
     if (/^\/executor\s+(register|unregister)\b/iu.test(input)) {
       await this.deps.runtimePort.commands.refreshExecutors({ trigger: 'executor_changed' });
     }
@@ -1329,7 +1342,7 @@ export class ConversationSession {
     const resumedTask = this.deps.runtimePort.queries.findTask(taskId);
     if (!resumedTask) return;
     this.setCurrentTaskId(resumedTask.id);
-    taskExecutionApplicationService.prepareTaskExecution(resumedTask.id, {
+    const started = taskExecutionApplicationService.prepareTaskExecution(resumedTask.id, {
       userPrompt: resumedTask.goal,
       contextTaskId: resumedTask.id,
       executionMode: directive.mode ?? 'resume-parked',
@@ -1345,6 +1358,14 @@ export class ConversationSession {
           })
         : undefined,
     });
+    const decision = await started.decision;
+    if (!decision) {
+      await started.completion;
+      this.appendOutput(`任务 #${taskId} 恢复请求未产生权威 Kernel 决策`);
+      return;
+    }
+    this.appendOutput(formatTaskResumeDecision(taskId, decision));
+    if (decision.action.type !== 'resume_task') await started.completion;
   }
 
   private buildRecoveryTrigger(
@@ -1710,11 +1731,11 @@ export class ConversationSession {
     return true;
   }
 
-  prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): void {
-    this.taskExecutionApplicationService?.prepareTaskExecution(taskId, {
+  prepareTaskExecution(taskId: string, request: QueuedExecutionRequest): TaskExecutionStart | null {
+    return this.taskExecutionApplicationService?.prepareTaskExecution(taskId, {
       ...request,
       workspacePath: request.workspacePath ?? this.workspacePath ?? undefined,
-    });
+    }) ?? null;
   }
 
   /** 装配账户级 Kernel 执行服务所需的三个 callbacks 对象（ADR-0031）。 */

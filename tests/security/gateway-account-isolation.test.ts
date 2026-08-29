@@ -40,7 +40,7 @@ describe('gateway account isolation', () => {
     const journal = new FileEventJournal(join(root, 'journal'));
 
     await expect(journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'e1',
       sequence: 0,
       accountId: '../evil',
@@ -53,7 +53,7 @@ describe('gateway account isolation', () => {
     })).rejects.toThrow();
 
     await expect(journal.append({
-      protocolVersion: 1,
+      protocolVersion: 2,
       eventId: 'e2',
       sequence: 0,
       accountId: 'local-default',

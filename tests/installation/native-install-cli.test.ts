@@ -215,6 +215,59 @@ describe('native install CLI', () => {
       .toThrow();
   });
 
+  it('infers the existing file SecretStore during update without environment hints', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-secret-store-'));
+    cleanup.push(root);
+    const installRoot = join(root, 'installed');
+    const initialSource = join(root, 'source-initial');
+    const initialPlanner = join(root, 'planner-initial');
+    fixtureRelease(initialSource, initialPlanner, 'runtime-initial\n');
+    await runNativeInstallCli([
+      'install',
+      '1.2.0-preview.0',
+      '--source-root',
+      initialSource,
+      '--planner-root',
+      initialPlanner,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_INSTALL_ROOT: installRoot,
+        METAWORK_SECRET_STORE: 'file',
+        METAWORK_PROVIDER_KEY: 'secret',
+        METAWORK_PROVIDER_URL: 'https://provider.example/v1',
+        METAWORK_PROVIDER_MODEL: 'model',
+        METAWORK_PROVIDER_REGION: 'international',
+      },
+      platform: 'darwin',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+    });
+    const nextSource = join(root, 'source-next');
+    const nextPlanner = join(root, 'planner-next');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-next\n');
+
+    await expect(runNativeInstallCli([
+      'update',
+      '1.2.0-preview.1',
+      '--source-root',
+      nextSource,
+      '--planner-root',
+      nextPlanner,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_INSTALL_ROOT: installRoot,
+      },
+      platform: 'darwin',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+    })).resolves.toBe(0);
+
+    expect(readFileSync(join(installRoot, 'app', 'current', 'dist', 'index.js'), 'utf8'))
+      .toBe('runtime-next\n');
+  });
+
   it('migrates a default legacy AnyFusion root before a real update commits', async () => {
     const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-root-migration-'));
     cleanup.push(root);

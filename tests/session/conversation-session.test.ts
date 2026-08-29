@@ -612,6 +612,41 @@ describe('ConversationSession', () => {
     });
   });
 
+  it('registers background task work before launching it and keeps the command trace open', async () => {
+    const release = deferred<void>();
+    let observedRegistered = false;
+    let session!: ConversationSession;
+    const trace = new InteractionTraceStream('conversation_background_command');
+    session = new ConversationSession({
+      conversationId: 'conv_background_command',
+      plannerSessionId: 'planner_background_command',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+      handleCommand: async () => {
+        session.startBackgroundExecution('task_background', async () => {
+          observedRegistered = session.hasBackgroundWork();
+          await release.promise;
+        });
+        return false;
+      },
+    });
+
+    await session.submitUserInput('/task resume task_background', {
+      interactionTurnId: 'gateway_background_command',
+    });
+
+    expect(observedRegistered).toBe(true);
+    expect(session.hasBackgroundWork()).toBe(true);
+    expect(trace.getSnapshot()?.events.some(event => event.kind === 'command_completed')).toBe(false);
+
+    release.resolve();
+    for (let attempt = 0; attempt < 20 && session.hasBackgroundWork(); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    expect(session.hasBackgroundWork()).toBe(false);
+  });
+
   it('passes Gateway image attachments into the Planner context', async () => {
     let receivedContext: PlanningContext | null = null;
     const session = new ConversationSession({
@@ -806,4 +841,12 @@ function permissionRequest(permissionRequestId: string): PlannerTuiPermissionReq
     createdAt: '2026-08-19T00:00:00.000Z',
     expiresAt: '2026-08-20T00:00:00.000Z',
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

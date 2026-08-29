@@ -31,7 +31,9 @@ export class WebClientLauncher {
 
   async start(options: { conversationId?: string; noOpen: boolean }): Promise<string> {
     const resolveEndpoint = this.deps.resolveEndpoint
-      ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion));
+      ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion, {
+        releaseId: process.env.METAWORK_RELEASE_ID,
+      }));
     const endpoint = await resolveEndpoint(this.deps.manifestPath, 2);
     if (!endpoint.ok) throw new Error(endpoint.message);
     const registerLaunch = this.deps.registerLaunch ?? registerWebLaunchContext;

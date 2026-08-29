@@ -31,6 +31,30 @@ describe('CodexCliDriver', () => {
     expect(JSON.stringify(launch)).not.toContain('.codex');
   });
 
+  it('routes the authorized model and provider into the codex invocation', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+    const launch = driver.buildLaunch({
+      prompt: 'implement change',
+      cwd: '/workspace/task',
+      runtimeHomePath: '/attempt/home',
+      providerRef: 'code-cli',
+      modelId: 'gpt-5.6-sol',
+    });
+
+    expect(launch.args).toEqual([
+      'exec',
+      '--json',
+      '--sandbox', 'workspace-write',
+      '-c', 'model="gpt-5.6-sol"',
+      '-c', 'model_provider="code-cli"',
+      '-c', 'approval_policy="never"',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--color', 'never',
+      'implement change',
+    ]);
+  });
+
   it('normalizes result output', () => {
     const driver = new CodexCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 0, stdout: 'done\n', stderr: '' }))

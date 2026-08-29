@@ -67,6 +67,12 @@ describe('SourceNativeInstaller', () => {
     expect(() => lstatSync(paths.database)).toThrow();
     expect(() => lstatSync(paths.generatedCurrent)).toThrow();
     expect(readFileSync(join(paths.appCurrent, 'dist', 'index.js'), 'utf8')).toBe('runtime\n');
+    expect(JSON.parse(readFileSync(
+      join(paths.appCurrent, 'release-identity.json'),
+      'utf8',
+    ))).toMatchObject({ releaseId: '1.2.0-preview.0', gatewayProtocolVersion: 2 });
+    expect(JSON.parse(readFileSync(join(paths.root, 'build-source.json'), 'utf8')))
+      .toMatchObject({ sourceRoot, plannerRoot });
     const plannerCliPath = join(
       paths.appCurrent,
       'planner',

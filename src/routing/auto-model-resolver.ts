@@ -27,7 +27,8 @@ export interface AutoModelCandidate {
 }
 
 export interface AutoModelRequirements {
-  requiredCapabilities: readonly ModelCapability[];
+  /** Model profile strengths used to rank candidates, not an eligibility gate. */
+  preferredCapabilities: readonly ModelCapability[];
   contextTokens: number;
   requiresStructuredOutput?: boolean;
   maxCostPerTurn?: number;
@@ -44,6 +45,8 @@ export interface RejectedModelCandidate {
 export interface ModelScoreBreakdown {
   modelRef: string;
   objective: AutoModelObjective['priority'];
+  preferredCapabilityMatchCount: number;
+  preferredCapabilityMissCount: number;
   estimatedCost: number;
   estimatedLatencyMs: number;
   qualityScore: number;
@@ -117,7 +120,9 @@ export class AutoModelResolver {
     }
 
     eligible.sort((left, right) => (
-      left.score.totalScore - right.score.totalScore
+      left.score.preferredCapabilityMissCount - right.score.preferredCapabilityMissCount
+      || right.score.preferredCapabilityMatchCount - left.score.preferredCapabilityMatchCount
+      || left.score.totalScore - right.score.totalScore
       || Number(right.candidate.modelRef === input.preferredModelRef)
         - Number(left.candidate.modelRef === input.preferredModelRef)
       || (order.get(left.candidate.modelRef) ?? Number.MAX_SAFE_INTEGER)
@@ -153,10 +158,6 @@ function rejectCandidate(
   if (candidate.capacityAvailable === false) return 'capacity_unavailable';
   if (!candidate.available || candidate.health === 'unavailable') return 'unavailable';
   if (candidate.health === 'degraded') return 'health_degraded';
-  if (requirements.requiredCapabilities.some(capability => !candidate.capabilities.includes(capability))) {
-    const missing = requirements.requiredCapabilities.find(capability => !candidate.capabilities.includes(capability));
-    return `missing_capability:${missing}`;
-  }
   if (requirements.requiresStructuredOutput && !candidate.capabilities.includes('structured-output')) {
     return 'missing_capability:structured-output';
   }
@@ -186,6 +187,11 @@ function scoreCandidate(
   ) / 1_000_000;
   const estimatedLatencyMs = latencyMs(candidate.latencyTier);
   const qualityScore = qualityRank(candidate.qualityTier);
+  const preferredCapabilityMatchCount = requirements.preferredCapabilities
+    .filter(capability => candidate.capabilities.includes(capability))
+    .length;
+  const preferredCapabilityMissCount = requirements.preferredCapabilities.length
+    - preferredCapabilityMatchCount;
   const costScore = estimatedCost * 1_000;
   const latencyScore = estimatedLatencyMs / 10;
   const qualityPenalty = (3 - qualityScore) * 100;
@@ -199,6 +205,8 @@ function scoreCandidate(
   return {
     modelRef: candidate.modelRef,
     objective,
+    preferredCapabilityMatchCount,
+    preferredCapabilityMissCount,
     estimatedCost,
     estimatedLatencyMs,
     qualityScore,

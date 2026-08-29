@@ -8,7 +8,7 @@ describe('buildPlannerInputProfile', () => {
       images: [{ name: 'diagram.png', mimeType: 'image/png', data: 'data' }],
     });
 
-    expect(profile.requiredCapabilities).toEqual([
+    expect(profile.preferredCapabilities).toEqual([
       'planning',
       'structured-output',
       'vision',
@@ -21,7 +21,7 @@ describe('buildPlannerInputProfile', () => {
   it('adds long-context requirements from structural input size', () => {
     const profile = buildPlannerInputProfile({ userInput: 'x'.repeat(64_001) });
 
-    expect(profile.requiredCapabilities).toContain('long-context');
+    expect(profile.preferredCapabilities).toContain('long-context');
     expect(profile.contextTokens).toBeGreaterThan(16_000);
     expect(profile.requiresStructuredOutput).toBe(true);
   });

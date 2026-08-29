@@ -184,7 +184,7 @@ export class ExecutorRegistry {
         permissionProfileRef: agentClass.permissionProfileRef,
         policy,
         candidates,
-        requirements: { requiredCapabilities: [], contextTokens: 1_024 },
+        requirements: { preferredCapabilities: [], contextTokens: 1_024 },
       }).binding;
     } catch {
       return null;

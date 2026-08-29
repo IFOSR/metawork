@@ -278,7 +278,7 @@ export class PlannerDataReader {
 export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   const server = new McpServer({ name: 'metaclaw-planner', version: '1.0.0' });
   server.registerTool('search_tasks', {
-    description: 'Search persisted MetaClaw tasks by text and status. All persisted tasks are durable.',
+    description: 'Search persisted MetaClaw tasks by text and status. Results are durable history; use get_runtime_state for the current active-task snapshot.',
     inputSchema: {
       query: z.string().max(500).optional(),
       statuses: z.array(z.enum(TASK_STATUSES)).max(TASK_STATUSES.length).optional(),
@@ -305,7 +305,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     },
   }, async input => toolResult(reader.getSessionInteraction(input)));
   server.registerTool('get_runtime_state', {
-    description: 'Read current task focus and active task state without changing runtime state.',
+    description: 'Read the current persisted runtime snapshot without changing runtime state. This result overrides stale Planner conversation history for active, blocked, and cancelled Task status.',
     inputSchema: {},
   }, async () => toolResult(reader.getRuntimeState()));
   server.registerTool('list_executor_status', {

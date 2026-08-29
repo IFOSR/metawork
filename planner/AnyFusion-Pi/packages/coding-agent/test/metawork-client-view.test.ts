@@ -81,9 +81,10 @@ describe("MetaWork client view", () => {
 					requestId: "req_command",
 					status: "completed",
 					resultId: null,
-					output: "当前没有正在执行的任务",
-					error: null,
-				},
+				output: "当前没有正在执行的任务",
+				error: null,
+				execution: null,
+			},
 			},
 			["/task list"],
 			"connected",
@@ -97,7 +98,7 @@ describe("MetaWork client view", () => {
 		expect(rendered).not.toContain("结果已验证");
 	});
 
-	it("renders a failed system command as a compact command failure", () => {
+	it("renders background task execution below a completed system command", () => {
 		const rendered = renderConversation(
 			{
 				...emptyConversationViewModel(),
@@ -105,11 +106,70 @@ describe("MetaWork client view", () => {
 					interactionKind: "system_command",
 					id: "turn_command",
 					requestId: "req_command",
+					status: "completed",
+					resultId: null,
+					contentHash: "",
+					byteLength: 0,
+					output: "已发起任务恢复",
+					error: null,
+					execution: {
+						interactionKind: "ai_turn",
+						id: "turn_command",
+						requestId: "req_command",
+						status: "running",
+						stage: "execution",
+						trace: [{
+							eventKey: "trace_1",
+							stage: "execution",
+							actor: "executor",
+							title: "Executor dispatch started",
+							summary: "恢复任务已开始执行",
+						}],
+						authorization: [],
+						subtasks: {
+							sub_1: {
+								id: "sub_1",
+								title: "重新执行天气查询",
+								status: "running",
+								progress: "正在启动 Executor",
+								heartbeat: false,
+							},
+						},
+						permission: null,
+						result: null,
+						answer: "",
+						answerSources: [],
+						error: null,
+					},
+				},
+			},
+			["/task resume task_resume"],
+			"connected",
+			120,
+		);
+
+		expect(rendered).toContain("命令结果");
+		expect(rendered).toContain("已发起任务恢复");
+		expect(rendered).toContain("后台任务进度");
+		expect(rendered).toContain("重新执行天气查询");
+		expect(rendered).toContain("正在启动 Executor");
+		expect(rendered).not.toContain("最终结果");
+	});
+
+	it("renders a failed system command as a compact command failure", () => {
+		const rendered = renderConversation(
+			{
+				...emptyConversationViewModel(),
+			currentCommand: {
+					interactionKind: "system_command",
+					id: "turn_command",
+					requestId: "req_command",
 					status: "failed",
 					resultId: null,
-					output: "",
-					error: "未知命令节点: does-not-exist。 输入 /help 查看命令树。",
-				},
+				output: "",
+				error: "未知命令节点: does-not-exist。 输入 /help 查看命令树。",
+				execution: null,
+			},
 			},
 			["/does-not-exist"],
 			"connected",

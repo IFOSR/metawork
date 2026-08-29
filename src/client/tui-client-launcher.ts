@@ -33,7 +33,9 @@ export class TuiClientLauncher {
 
   async start(): Promise<void> {
     const resolveEndpoint = this.deps.resolveEndpoint
-      ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion));
+      ?? ((manifestPath, protocolVersion) => resolveClientEndpoint(manifestPath, protocolVersion, {
+        releaseId: process.env.METAWORK_RELEASE_ID,
+      }));
     const endpoint = await resolveEndpoint(this.deps.manifestPath, 2);
     if (!endpoint.ok) throw new Error(endpoint.message);
     if (this.deps.runUi) {
@@ -104,11 +106,11 @@ export function resolveVendoredPlannerCommand(
     'cli.js',
   );
   const candidates = [
-    resolve(workspaceHint, sourceRelative),
-    resolve(process.cwd(), sourceRelative),
     resolve(moduleRoot, '..', installedRelative),
     resolve(moduleRoot, '..', sourceRelative),
     resolve(moduleRoot, '../..', sourceRelative),
+    resolve(process.cwd(), sourceRelative),
+    resolve(workspaceHint, sourceRelative),
   ];
   const command = candidates.find(candidate => pathExists(candidate));
   if (!command) {

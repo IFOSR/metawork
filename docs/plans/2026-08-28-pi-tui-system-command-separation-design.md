@@ -195,4 +195,34 @@ Web Client 不改页面、组件、样式和交互。本次不删除或改名现
 
 真实验收已通过：80x24 TUI 中系统命令仅显示命令结果/失败，普通只读请求显示真实 Planner/Kernel 生命周期和“结果已验证”，selector 返回后 Editor 焦点恢复，`/exit` 不停止 Server；最新 Web bootstrap/session、Workspace API、WebSocket diagnostics 均成功，`/help` 未产生 trace/execution 事件，普通只读请求产生 Planner trace、结果交付事件、`result_completed(certification=certified)` 和 `final_answer`。
 
+### 9.1 2026-08-29 后续修正
+
+补充真实验收发现：`/task resume` 这类系统命令可以快速返回命令回执，但后台
+Task/Executor 仍在继续运行。原实现把命令回执误当作任务终态，导致后续执行 trace
+在 Pi 客户端被过滤，Web 也提前结束并持久化回合。
+
+本次修正保持 Gateway v2 和严格 Completion Protocol 不变：
+
+- `ConversationSession` 在启动后台执行前先登记工作，消除命令完成判断竞态。
+- `final_answer` 在确有后台工作时携带 `backgroundWorkPending`，只表示命令回执已返回，
+  不表示 Task 已完成。
+- `trace_delta` 携带安全的 Task trace 状态与完成时间；Web/TUI 将命令输出和后台
+  Executor/Subtask 投影并行展示。
+- Web 历史回合保存 `interactionKind`，系统命令不再被渲染成普通 AI 最终答案；
+  `completion_malformed` 仍保持 fail-closed，并以执行失败/校验失败状态呈现。
+- `/task resume` 的命令回执以首个权威 Kernel Decision 为准：只有
+  `resume_task` 才显示“恢复执行已开始”；`no_op`、`block_work` 或
+  `park_for_replan` 必须明确说明没有启动新的 Executor，并保留 Kernel 原因。
+  Guidance 也只在 Kernel 实际授权 resume 后生成，不能用“上下文已恢复”掩盖
+  `running Task has no exact recoverable Subtask`。
+
+本次修正验证：根仓库 lint、Gateway/Session/Web runtime 59 个聚焦测试、Web production
+build、Planner TUI 客户端 32 个聚焦测试、Planner 离线 build 均通过。
+
+权威 resume 回执的追加验证：121 个根仓库 Session、Gateway/Web、Kernel/recovery、
+startup recovery 聚焦测试及 32 个 Planner TUI 测试通过；生产构建和安装级
+`metawork build` 通过。真实 Web 对同一 `awaiting_decision` 天气任务再次执行
+`/task resume`，页面明确显示 `resume has no recoverable Subtask`、未启动新的
+Executor，且保留原 attempt 的完整历史过程和详情入口。
+
 Closing commits: `22f2a2d`, `4ea15dd`, `600db39`, `aeaa585`, `e554bac`.

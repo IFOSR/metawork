@@ -375,6 +375,8 @@ class WebGatewayClientSession {
         completedAt: turn.completedAt,
         traceEvents: structuredClone(turn.traceEvents),
         executionTimeline: structuredClone(turn.executionTimeline),
+        interactionKind: turn.interactionKind ?? interactionKindForInput(turn.userInput),
+        backgroundWorkPending: false,
       });
     }
     const buffered: GatewayEventEnvelope[] = [];
@@ -387,6 +389,7 @@ class WebGatewayClientSession {
         if (replaying) buffered.push(event);
         else this.consume(event, false);
       },
+      this.connectionId,
     );
     const unsubscribeOnce = once(unsubscribe);
     this.unsubscribe = unsubscribeOnce;
@@ -427,6 +430,40 @@ class WebGatewayClientSession {
     }
     if (!this.workspaces.has(sessionId)) this.workspaces.set(sessionId, null);
     replaying = false;
+    this.emitInFlightTurns(sessionId);
+  }
+
+  /** 重新 attach 后，把该会话里仍未落库（仍在执行）的 turn 重新下发为实时事件，
+   *  避免会话切换时运行中的 turn 从界面里消失。 */
+  private emitInFlightTurns(sessionId: string): void {
+    for (const state of this.turnStates.values()) {
+      if (
+        state.sessionId !== sessionId
+        || state.status !== 'running'
+        || this.persistedTurnIds.has(state.id)
+      ) continue;
+      this.emit({
+        type: 'turn_started',
+        requestId: state.requestId ?? '',
+        turnId: state.id,
+        userInput: state.userInput,
+        startedAt: state.startedAt,
+        ...(state.interactionKind === 'system_command'
+          ? { interactionKind: 'system_command' as const }
+          : {}),
+      });
+      this.emit({
+        type: 'trace_delta',
+        turnId: state.id,
+        fromSequence: state.traceEvents[0]?.sequence ?? 0,
+        events: state.traceEvents,
+        status: state.status,
+        ...(state.completedAt !== null ? { completedAt: state.completedAt } : {}),
+      });
+      if (state.taskId && state.executionTimeline) {
+        this.emit({ type: 'execution', taskId: state.taskId, timeline: state.executionTimeline });
+      }
+    }
   }
 
   private consume(event: GatewayEventEnvelope, replay: boolean): void {
@@ -461,9 +498,20 @@ class WebGatewayClientSession {
       if (replay) this.replayEvents.push(execution);
       else this.emit(execution);
     }
+    if (
+      event.kind === 'trace_delta'
+      && state
+      && state.backgroundWorkPending
+      && state.status !== 'running'
+      && event.requestId
+    ) {
+      void this.persistTerminalTurn(event, []);
+    }
     if (event.kind === 'final_answer' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
-      void this.persistTerminalTurn(event, mapped?.type === 'final_answer' ? mapped.lines : []);
+      if (!state?.backgroundWorkPending) {
+        void this.persistTerminalTurn(event, mapped?.type === 'final_answer' ? mapped.lines : []);
+      }
     }
     if (event.kind === 'terminal_error' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
@@ -609,12 +657,15 @@ class WebGatewayClientSession {
       completedAt: null,
       traceEvents: [],
       executionTimeline: null,
+      interactionKind: interactionKindForEvent(event),
+      backgroundWorkPending: false,
     };
     if (userInput && !state.userInput) state.userInput = userInput;
     state.taskId ??= inferTaskId(state.userInput);
     if (event.kind === 'turn_started') {
       state.requestId = event.requestId;
       state.startedAt = event.occurredAt;
+      state.interactionKind = interactionKindForEvent(event);
     }
     if (event.kind === 'trace_delta') {
       const payload = asRecord(event.payload);
@@ -627,13 +678,21 @@ class WebGatewayClientSession {
         state.taskId = item.taskId ?? stringValue(item.details.taskId) ?? state.taskId;
       }
       state.traceEvents = [...byId.values()].sort(compareTraceEvents);
+      const traceStatus = payload.status;
+      if (isInteractionTraceStatus(traceStatus)) {
+        state.status = traceStatus;
+        state.completedAt = traceStatus === 'running' ? null : event.occurredAt;
+      }
     }
     if (event.kind === 'final_answer') {
-      state.status = 'completed';
-      state.completedAt = event.occurredAt;
       const payload = asRecord(event.payload);
+      state.backgroundWorkPending = payload.backgroundWorkPending === true;
       state.finalAnswer = arrayStringValue(payload.lines)?.join('\n')
         ?? state.finalAnswer;
+      if (!state.backgroundWorkPending) {
+        state.status = 'completed';
+        state.completedAt = event.occurredAt;
+      }
     } else if (event.kind === 'terminal_error') {
       state.status = 'failed';
       state.completedAt = event.occurredAt;
@@ -683,6 +742,7 @@ class WebGatewayClientSession {
       id: state.id,
       sessionId: event.conversationId,
       userInput: state.userInput,
+      interactionKind: state.interactionKind,
       status,
       finalAnswer,
       taskId,
@@ -1021,6 +1081,9 @@ function mapGatewayEvent(
       turnId: event.turnId,
       userInput,
       startedAt: event.occurredAt,
+      ...(interactionKindForEvent(event) === 'system_command'
+        ? { interactionKind: 'system_command' as const }
+        : {}),
     };
   }
   if (event.kind === 'conversation_snapshot') {
@@ -1032,12 +1095,21 @@ function mapGatewayEvent(
     };
   }
   if (event.kind === 'trace_delta') {
-    const payload = event.payload as { turnId?: string; events?: InteractionTraceEvent[] };
+    const payload = event.payload as {
+      turnId?: string;
+      events?: InteractionTraceEvent[];
+      status?: unknown;
+      completedAt?: string | null;
+    };
     return {
       type: 'trace_delta',
       turnId: payload.turnId ?? event.turnId ?? 'turn_unknown',
       fromSequence: payload.events?.[0]?.sequence ?? 0,
       events: payload.events ?? [],
+      ...(isInteractionTraceStatus(payload.status) ? { status: payload.status } : {}),
+      ...(typeof payload.completedAt === 'string' || payload.completedAt === null
+        ? { completedAt: payload.completedAt }
+        : {}),
     };
   }
   if (event.kind === 'terminal_error') {
@@ -1052,7 +1124,10 @@ function mapGatewayEvent(
     };
   }
   if (event.kind === 'final_answer') {
-    const payload = event.payload as { lines?: string[] };
+    const payload = event.payload as {
+      lines?: string[];
+      backgroundWorkPending?: boolean;
+    };
     if (!event.requestId || !event.turnId) return null;
     return {
       type: 'final_answer',
@@ -1062,6 +1137,9 @@ function mapGatewayEvent(
         ? payload.lines
         : completedResult?.split('\n') ?? [],
       completedAt: event.occurredAt,
+      ...(payload.backgroundWorkPending === true
+        ? { backgroundWorkPending: true }
+        : {}),
     };
   }
   return null;
@@ -1135,6 +1213,27 @@ interface RuntimeTurnState {
   completedAt: string | null;
   traceEvents: InteractionTraceEvent[];
   executionTimeline: ExecutionTimeline | null;
+  interactionKind: 'system_command' | 'ai_turn';
+  backgroundWorkPending: boolean;
+}
+
+function interactionKindForEvent(
+  event: GatewayEventEnvelope,
+): 'system_command' | 'ai_turn' {
+  return asRecord(event.payload).commandKind === 'user_message'
+    ? 'ai_turn'
+    : 'system_command';
+}
+
+function interactionKindForInput(input: string): 'system_command' | 'ai_turn' {
+  return input.trim().startsWith('/') ? 'system_command' : 'ai_turn';
+}
+
+function isInteractionTraceStatus(value: unknown): value is InteractionTraceStatus {
+  return value === 'running'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'blocked';
 }
 
 function isInteractionTraceEvent(value: unknown): value is InteractionTraceEvent {

@@ -32,6 +32,8 @@ import { createMigrationContextFromSnapshot } from './schema30-migration-context
 import { stageSourceRelease } from './source-native-installer.js';
 import { AccountLayoutMigrator } from './account-layout-migrator.js';
 import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
+import { buildSourceMetadataPath, writeBuildSourceMetadata } from './build-source.js';
+import { assertLauncherAvailable, installNativeLauncher } from './native-launcher.js';
 
 export interface SourceNativeUpdateInput {
   releaseId: string;
@@ -75,7 +77,7 @@ export class SourceNativeUpdater {
       await repository.recover();
       const snapshot = await repository.getActiveSnapshot();
 
-      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot);
+      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot, input.releaseId);
       const sourceSchema = readSchemaVersion(accountPaths.database);
       if (
         sourceSchema !== 30
@@ -137,6 +139,19 @@ export class SourceNativeUpdater {
           }
           verifyActiveDatabase(accountPaths.database);
         },
+      });
+      const launcherPaths = [
+        paths.launcher,
+        paths.anyFusionLauncher,
+        paths.metaclawLauncher,
+      ];
+      await Promise.all(launcherPaths.map(assertLauncherAvailable));
+      await Promise.all(
+        launcherPaths.map(path => installNativeLauncher(path, paths.root)),
+      );
+      await writeBuildSourceMetadata(buildSourceMetadataPath(paths.root), {
+        sourceRoot: input.sourceRoot,
+        plannerRoot: input.plannerRoot,
       });
       await activation.activate(candidateTargets);
       return { outcome: 'committed', upgradeId, journalPath };

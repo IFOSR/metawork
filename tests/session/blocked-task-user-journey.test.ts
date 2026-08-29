@@ -93,7 +93,8 @@ describe('blocked task user journey', () => {
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 已提交恢复请求`);
+    expect(output).toContain(`任务 #${blockedTask.id} 未重新执行`);
+    expect(output).toContain('阻塞条件尚未解决，未启动新的 Executor');
     expect(output).toContain('resume requires resolving the unknown blocker first');
     expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
     expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();

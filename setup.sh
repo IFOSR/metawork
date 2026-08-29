@@ -44,12 +44,21 @@ resolve_product_env METAWORK_PROVIDER_KEY ANYFUSION_PROVIDER_KEY
 resolve_product_env METAWORK_PROVIDER_URL ANYFUSION_PROVIDER_URL
 resolve_product_env METAWORK_PROVIDER_MODEL ANYFUSION_PROVIDER_MODEL gpt-5.6-terra
 resolve_product_env METAWORK_PROVIDER_REGION ANYFUSION_PROVIDER_REGION international
-: "${METAWORK_PROVIDER_KEY:?METAWORK_PROVIDER_KEY is required}"
-: "${METAWORK_PROVIDER_URL:?METAWORK_PROVIDER_URL is required}"
 if [ "$(uname -s)" != "Darwin" ]; then
   resolve_product_env METAWORK_SECRET_STORE ANYFUSION_SECRET_STORE file
 else
   resolve_product_env METAWORK_SECRET_STORE ANYFUSION_SECRET_STORE
+fi
+
+INSTALL_ROOT="${METAWORK_INSTALL_ROOT:-$HOME/.metawork}"
+export METAWORK_INSTALL_ROOT="$INSTALL_ROOT"
+export ANYFUSION_INSTALL_ROOT="$INSTALL_ROOT"
+INSTALL_COMMAND=install
+if [ -e "$INSTALL_ROOT/app/current" ]; then
+  INSTALL_COMMAND=update
+else
+  : "${METAWORK_PROVIDER_KEY:?METAWORK_PROVIDER_KEY is required}"
+  : "${METAWORK_PROVIDER_URL:?METAWORK_PROVIDER_URL is required}"
 fi
 
 PLANNER_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$SCRIPT_DIR/planner/AnyFusion-Pi}"
@@ -63,7 +72,9 @@ npm run build
 npm ci --ignore-scripts --prefix "$PLANNER_ROOT"
 npm run build:offline --prefix "$PLANNER_ROOT"
 
-RELEASE_ID="$(node -p 'require("./package.json").version')"
-exec node "$SCRIPT_DIR/dist/install-cli.js" install "$RELEASE_ID" \
+PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+REVISION="$(git rev-parse --short HEAD 2>/dev/null || printf source)"
+RELEASE_ID="${PACKAGE_VERSION}-build-${REVISION}-$(date +%s)"
+exec node "$SCRIPT_DIR/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
   --source-root "$SCRIPT_DIR" \
   --planner-root "$PLANNER_ROOT"

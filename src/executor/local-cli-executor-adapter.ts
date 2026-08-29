@@ -7,6 +7,7 @@ import { normalizeExecutorFailure } from './error-utils.js';
 import type { HarnessDriver, HarnessLaunchSpec } from './harness-driver.js';
 import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
+import type { ExecutorAffordanceId } from '../routing/types.js';
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS = 300_000;
@@ -36,6 +37,7 @@ export interface LocalCliExecutorAdapterDependencies {
   runtimeBinding: RuntimePrivateConfigurationBinding;
   authorizedBinding: AuthorizedExecutorBinding;
   modelId: string;
+  executorAffordances?: readonly ExecutorAffordanceId[];
   attemptsRoot: string;
   idleTimeoutMs?: number;
   processRunner?: LocalCliChildProcessRunner;
@@ -67,6 +69,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
   private readonly runtimeBinding: RuntimePrivateConfigurationBinding;
   private readonly authorizedBinding: AuthorizedExecutorBinding;
   private readonly modelId: string;
+  private readonly executorAffordances?: readonly ExecutorAffordanceId[];
   private readonly attemptsRoot: string;
   private readonly idleTimeoutMs: number;
   private readonly processRunner: LocalCliChildProcessRunner;
@@ -77,6 +80,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
     this.runtimeBinding = dependencies.runtimeBinding;
     this.authorizedBinding = dependencies.authorizedBinding;
     this.modelId = dependencies.modelId;
+    this.executorAffordances = dependencies.executorAffordances;
     this.attemptsRoot = dependencies.attemptsRoot;
     this.idleTimeoutMs = dependencies.idleTimeoutMs ?? DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS;
     this.processRunner = dependencies.processRunner ?? new SpawnLocalCliChildProcessRunner();
@@ -101,6 +105,9 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
+        ...(this.executorAffordances
+          ? { executorAffordances: this.executorAffordances }
+          : {}),
       });
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(input),

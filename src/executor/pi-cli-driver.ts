@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, copyFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
@@ -10,6 +10,7 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import type { ExecutorAffordanceId } from '../routing/types.js';
 import type {
   HarnessDriver,
   HarnessLaunchInput,
@@ -40,15 +41,22 @@ export class PiCliDriver implements HarnessDriver {
   private readonly explicitHomeTemplateDir?: string;
   private readonly generatedRuntimeRoot?: string;
   private readonly fallbackHomeTemplateDir?: string;
+  private readonly webExtensionSourcePath?: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
     generatedRuntimeRoot?: string;
+    webExtensionSourcePath?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
     this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
+    this.webExtensionSourcePath = emptyToUndefined(
+      dependencies.webExtensionSourcePath
+        ?? process.env.METACLAW_PI_ATTEMPT_EXTENSION
+        ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-attempt-tools.ts'),
+    );
     this.fallbackHomeTemplateDir = emptyToUndefined(
       resolveCurrentRuntimeHome(resolveMetaWorkPaths().generatedAgentRuntime, 'pi-home')
       ?? process.env.METACLAW_EXECUTOR_PI_HOME,
@@ -81,6 +89,7 @@ export class PiCliDriver implements HarnessDriver {
       homeDirectories: ['.pi/agent/sessions'],
     });
     await this.seedProviderConfig(homePath, input.revisionId);
+    await this.seedWebExtension(homePath, input.executorAffordances);
     return home;
   }
 
@@ -221,6 +230,30 @@ export class PiCliDriver implements HarnessDriver {
       await chmod(target, 0o600);
     }
   }
+
+  private async seedWebExtension(
+    homePath: string,
+    affordances: readonly ExecutorAffordanceId[] | undefined,
+  ): Promise<void> {
+    if (!this.webExtensionSourcePath || !hasWebResearchAffordances(affordances)) return;
+    const extensionsDir = join(homePath, '.pi', 'agent', 'extensions');
+    await mkdir(extensionsDir, { recursive: true, mode: 0o700 });
+    const target = join(extensionsDir, 'metawork-web-tools.ts');
+    await copyFile(this.webExtensionSourcePath, target);
+    await chmod(target, 0o600);
+  }
+}
+
+function hasWebResearchAffordances(
+  affordances: readonly ExecutorAffordanceId[] | undefined,
+): boolean {
+  const available = new Set(affordances ?? []);
+  const requiredAffordances = [
+    'public-web-search',
+    'public-web-fetch',
+    'source-citation',
+  ] as const;
+  return requiredAffordances.every(affordance => available.has(affordance));
 }
 
 function findPiTerminalError(events: Record<string, unknown>[]): string | null {

@@ -181,7 +181,12 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(input.chatType ? { chatType: input.chatType } : {}),
     });
-    const terminal = this.waitForTerminal(conversationId, input.requestId, input.onProgress);
+    const terminal = this.waitForTerminal(
+      conversationId,
+      input.requestId,
+      connectionId,
+      input.onProgress,
+    );
     const replay = await this.deps.journal.replay(this.deps.accountId, conversationId);
     const replayEvents = orderedUniqueReplayEvents(replay);
     const latestWorkspaceEvent = replayEvents.filter(isWorkspaceProjectionEvent).at(-1);
@@ -390,6 +395,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     const unsubscribe = this.deps.subscriptions.subscribe({
       accountId: this.deps.accountId,
       conversationId,
+      liveConnectionId: connectionId,
       listener: event => {
         if (event.requestId && this.activeRequestIds.has(event.requestId)) return;
         if (
@@ -456,6 +462,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
   private waitForTerminal(
     conversationId: string,
     requestId: string,
+    connectionId: string,
     onProgress: (text: string) => void,
   ): {
     promise: Promise<string[]>;
@@ -584,6 +591,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     unsubscribe = this.deps.subscriptions.subscribe({
       accountId: this.deps.accountId,
       conversationId,
+      liveConnectionId: connectionId,
       listener: consume,
     });
     timeout = setTimeout(() => {

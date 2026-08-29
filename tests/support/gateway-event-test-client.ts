@@ -14,6 +14,7 @@ export interface GatewayEventTestClientDeps {
   readonly conversationId: string;
   readonly gateway: Pick<ClientGateway, 'handle'>;
   readonly subscriptions: GatewaySubscriptions;
+  readonly connectionId?: string;
   readonly timeoutMs?: number;
   readonly createId?: (prefix: string) => string;
 }
@@ -52,6 +53,7 @@ export class GatewayEventTestClient implements ScriptedSessionTestPort {
     this.unsubscribe ??= this.deps.subscriptions.subscribe({
       accountId: this.deps.accountId,
       conversationId: this.deps.conversationId,
+      liveConnectionId: this.connectionId,
       listener: event => this.consume(event),
     });
   }
@@ -86,7 +88,7 @@ export class GatewayEventTestClient implements ScriptedSessionTestPort {
         protocolVersion: 1,
         requestId,
         idempotencyKey,
-        connectionId: 'test-client',
+        connectionId: this.connectionId,
         conversation: { mode: 'attach', conversationId: this.deps.conversationId },
         command,
         clientCapabilities: ['trace_v1'],
@@ -211,6 +213,10 @@ export class GatewayEventTestClient implements ScriptedSessionTestPort {
   private appendTerminalFallback(lines: string[]): void {
     if (lines.length === 0 || hasSuffix(this.output, lines)) return;
     this.output.push(...lines);
+  }
+
+  private get connectionId(): string {
+    return this.deps.connectionId ?? 'test-client';
   }
 
   private id(prefix: string): string {

@@ -62,6 +62,7 @@ export function buildAccountExecutionServices(deps: {
           runtimeBinding: input.runtimeBinding,
           authorizedBinding: input.authorizedBinding,
           modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
+          executorAffordances: input.agentClass.plannerAffordances,
           attemptsRoot,
           idleTimeoutMs: input.configuration.runtimePolicy.attemptTimeoutMs,
         });
@@ -72,6 +73,7 @@ export function buildAccountExecutionServices(deps: {
         runtimeBinding: input.runtimeBinding,
         authorizedBinding: input.authorizedBinding,
         modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
+        executorAffordances: input.agentClass.plannerAffordances,
         attemptsRoot,
         imageRef: containerCompatibilityImage(input.driver.id),
         backend: deps.attemptExecutionBackend,

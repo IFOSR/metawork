@@ -65,6 +65,7 @@ export interface MetaWorkSystemCommandView {
 	readonly byteLength: number;
 	readonly output: string;
 	readonly error: string | null;
+	readonly execution: MetaWorkTurnView | null;
 }
 
 export type MetaWorkConversationActivity =

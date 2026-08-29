@@ -460,6 +460,7 @@ export class AccountStartupRecoveryService {
         startBackgroundExecution: (_taskId, launch) => {
           const work = launch().finally(() => background.delete(work));
           background.add(work);
+          return work;
         },
       },
       sessionKernelCallbacks: {

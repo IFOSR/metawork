@@ -22,7 +22,7 @@ function candidate(overrides: Partial<AutoModelCandidate> = {}): AutoModelCandid
 }
 
 describe('AutoModelResolver', () => {
-  it('filters hard capability, context, health and capacity mismatches before scoring', () => {
+  it('keeps models without a preferred capability in the fallback pool', () => {
     const result = AutoModelResolver.resolve({
       configurationRevision: 'revision-1',
       agentClassRef: 'codex-cli',
@@ -39,7 +39,7 @@ describe('AutoModelResolver', () => {
         candidate({ modelRef: 'healthy', modelId: 'healthy-id', qualityTier: 'high' }),
       ],
       requirements: {
-        requiredCapabilities: ['coding'],
+        preferredCapabilities: ['coding'],
         contextTokens: 8_000,
         requiresStructuredOutput: true,
       },
@@ -55,11 +55,19 @@ describe('AutoModelResolver', () => {
     });
     expect(result.rejectedCandidates).toEqual([
       expect.objectContaining({ modelRef: 'short', reason: 'context_window_insufficient' }),
-      expect.objectContaining({ modelRef: 'vision', reason: 'missing_capability:coding' }),
     ]);
+    expect(result.fallbackCandidates.map(candidate => candidate.modelRef)).toEqual([
+      'healthy',
+      'vision',
+    ]);
+    expect(result.scoreBreakdown).toMatchObject({
+      modelRef: 'healthy',
+      preferredCapabilityMatchCount: 1,
+      preferredCapabilityMissCount: 0,
+    });
   });
 
-  it('uses deterministic score breakdown and objective tie breaking', () => {
+  it('prefers a model with a matching capability profile before the cost objective', () => {
     const result = AutoModelResolver.resolve({
       configurationRevision: 'revision-1',
       agentClassRef: 'planner',
@@ -72,19 +80,27 @@ describe('AutoModelResolver', () => {
       },
       candidates: [
         candidate({ modelRef: 'fast', costInputPerMillion: 4, costOutputPerMillion: 8, latencyTier: 'low' }),
-        candidate({ modelRef: 'cheap', costInputPerMillion: 1, costOutputPerMillion: 2, latencyTier: 'high' }),
+        candidate({
+          modelRef: 'cheap',
+          costInputPerMillion: 1,
+          costOutputPerMillion: 2,
+          latencyTier: 'high',
+          capabilities: ['structured-output', 'tools'],
+        }),
       ],
-      requirements: { requiredCapabilities: ['coding'], contextTokens: 4_000 },
+      requirements: { preferredCapabilities: ['coding'], contextTokens: 4_000 },
     });
 
-    expect(result.binding?.modelRef).toBe('cheap');
+    expect(result.binding?.modelRef).toBe('fast');
     expect(result.scoreBreakdown).toMatchObject({
-      modelRef: 'cheap',
+      modelRef: 'fast',
       objective: 'cost',
       estimatedCost: expect.any(Number),
       estimatedLatencyMs: expect.any(Number),
+      preferredCapabilityMatchCount: 1,
+      preferredCapabilityMissCount: 0,
     });
-    expect(result.fallbackCandidates.map(candidate => candidate.modelRef)).toEqual(['cheap', 'fast']);
+    expect(result.fallbackCandidates.map(candidate => candidate.modelRef)).toEqual(['fast', 'cheap']);
     expect(result.policyVersion).toBe('auto-model-routing-v1');
   });
 
@@ -96,7 +112,7 @@ describe('AutoModelResolver', () => {
       permissionProfileRef: 'workspace-engineering',
       policy: { mode: 'fixed', modelRef: 'fixed-model' },
       candidates: [candidate({ modelRef: 'fixed-model' })],
-      requirements: { requiredCapabilities: ['coding'], contextTokens: 1_000 },
+      requirements: { preferredCapabilities: ['coding'], contextTokens: 1_000 },
     });
 
     expect(result.binding?.modelRef).toBe('fixed-model');
@@ -115,7 +131,7 @@ describe('AutoModelResolver', () => {
         allowedModelRefs: ['unavailable'],
       },
       candidates: [candidate({ modelRef: 'unavailable', available: false, health: 'unavailable' })],
-      requirements: { requiredCapabilities: ['coding'], contextTokens: 1_000 },
+      requirements: { preferredCapabilities: ['coding'], contextTokens: 1_000 },
     })).toThrow('no eligible model candidate');
   });
 
@@ -143,7 +159,40 @@ describe('AutoModelResolver', () => {
           capacityAvailable: false,
         }),
       ],
-      requirements: { requiredCapabilities: ['coding'], contextTokens: 1_000 },
+      requirements: { preferredCapabilities: ['coding'], contextTokens: 1_000 },
     })).toThrow('no eligible model candidate');
+  });
+
+  it('retains the protocol hard constraint for structured Planner output', () => {
+    const result = AutoModelResolver.resolve({
+      configurationRevision: 'revision-1',
+      agentClassRef: 'planner',
+      harnessRef: 'planner-host',
+      permissionProfileRef: 'planner-none',
+      policy: {
+        mode: 'auto',
+        allowedModelRefs: ['plain', 'structured'],
+      },
+      candidates: [
+        candidate({
+          modelRef: 'plain',
+          capabilities: ['planning'],
+        }),
+        candidate({
+          modelRef: 'structured',
+          capabilities: ['planning', 'structured-output'],
+        }),
+      ],
+      requirements: {
+        preferredCapabilities: ['planning'],
+        contextTokens: 1_000,
+        requiresStructuredOutput: true,
+      },
+    });
+
+    expect(result.binding?.modelRef).toBe('structured');
+    expect(result.rejectedCandidates).toEqual([
+      { modelRef: 'plain', providerRef: 'provider-a', reason: 'missing_capability:structured-output' },
+    ]);
   });
 });

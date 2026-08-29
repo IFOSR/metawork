@@ -138,13 +138,28 @@ The launch directory becomes the read-only Planner workspace context.
 Authorized Executor changes happen in managed Task/Subtask Git worktrees and
 pass through the publication gate.
 
+### Build and runtime lifecycle
+
+Run the build command from any directory to rebuild the source checkout
+recorded for this installation. It installs dependencies, rebuilds Runtime,
+Planner, and Web, then atomically activates one release without changing
+account data. Stop the persistent Server first:
+
+```bash
+metawork server stop
+metawork build
+metawork server start
+```
+
+`metawork server start`, `metawork tui`, and `metawork web` all use the same
+activated `app/current` release. `metawork build` does not start a Server or a
+Client and refuses to run while Server is active.
+
 ### Web workspace
 
 ```bash
 metawork web
-metawork web start
-metawork web restart
-metawork web --port 9000 --no-open
+metawork web --no-open
 ```
 
 The default Web endpoint is `http://127.0.0.1:8788`. Normal startup exchanges a

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,129 @@ afterEach(async () => {
 });
 
 describe('FileCommandAdmissionStore', () => {
+  it('atomically migrates terminal v1 admissions without making them recoverable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-command-admission-'));
+    roots.push(root);
+    const path = join(root, 'local-default.json');
+    const legacyAdmission = {
+      accountId: 'local-default',
+      idempotencyKey: 'idem_legacy',
+      fingerprint: 'fingerprint_legacy',
+      requestId: 'req_legacy',
+      principalId: 'principal_legacy',
+      conversation: { mode: 'new' },
+      command: { kind: 'user_message', text: 'legacy query', attachments: [] },
+      conversationId: 'conv_legacy',
+      state: 'terminal',
+      receipt: {
+        requestId: 'req_legacy',
+        idempotencyKey: 'idem_legacy',
+        status: 'accepted',
+        conversationId: 'conv_legacy',
+      },
+      uncertaintyReason: null,
+      createdAt: '2026-08-19T00:00:00.000Z',
+      updatedAt: '2026-08-19T00:00:01.000Z',
+    };
+    await writeFile(path, `${JSON.stringify({ version: 1, admissions: [legacyAdmission] })}\n`);
+
+    const store = new FileCommandAdmissionStore(root);
+    await expect(store.listRecoverable()).resolves.toEqual([]);
+    await expect(store.find('local-default', 'idem_legacy')).resolves.toEqual({
+      accountId: 'local-default',
+      idempotencyKey: 'idem_legacy',
+      fingerprint: 'fingerprint_legacy',
+      requestId: 'req_legacy',
+      connectionId: 'legacy-req_legacy',
+      principalId: 'principal_legacy',
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: 'conv_legacy' },
+      },
+      command: legacyAdmission.command,
+      conversationId: 'conv_legacy',
+      state: 'terminal',
+      receipt: legacyAdmission.receipt,
+      uncertaintyReason: null,
+      createdAt: '2026-08-19T00:00:00.000Z',
+      updatedAt: '2026-08-19T00:00:01.000Z',
+    });
+
+    const migrated = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    expect(migrated).toMatchObject({ version: 2 });
+    expect((migrated.admissions as Array<Record<string, unknown>>)[0]).not.toHaveProperty(
+      'conversation',
+    );
+  });
+
+  it.each(['pending', 'submitted', 'uncertain'])(
+    'refuses to migrate a recoverable v1 admission in state %s',
+    async state => {
+      const root = await mkdtemp(join(tmpdir(), 'anyfusion-command-admission-'));
+      roots.push(root);
+      await writeFile(join(root, 'local-default.json'), `${JSON.stringify({
+        version: 1,
+        admissions: [{
+          accountId: 'local-default',
+          idempotencyKey: 'idem_legacy',
+          fingerprint: 'fingerprint_legacy',
+          requestId: 'req_legacy',
+          conversation: { mode: 'attach', conversationId: 'conv_legacy' },
+          command: { kind: 'user_message', text: 'legacy query', attachments: [] },
+          conversationId: 'conv_legacy',
+          state,
+          receipt: null,
+          uncertaintyReason: state === 'uncertain' ? 'legacy uncertainty' : null,
+          createdAt: '2026-08-19T00:00:00.000Z',
+          updatedAt: '2026-08-19T00:00:01.000Z',
+        }],
+      })}\n`);
+
+      const store = new FileCommandAdmissionStore(root);
+      await expect(store.listRecoverable()).rejects.toThrow(
+        'Unsafe nonterminal v1 command admission file: local-default',
+      );
+    },
+  );
+
+  it('refuses to invent a Conversation scope for a terminal v1 admission without an identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-command-admission-'));
+    roots.push(root);
+    await writeFile(join(root, 'local-default.json'), `${JSON.stringify({
+      version: 1,
+      admissions: [{
+        accountId: 'local-default',
+        idempotencyKey: 'idem_legacy',
+        fingerprint: 'fingerprint_legacy',
+        requestId: 'req_legacy',
+        conversation: { mode: 'new' },
+        command: { kind: 'user_message', text: 'legacy query', attachments: [] },
+        conversationId: null,
+        state: 'terminal',
+        receipt: null,
+        uncertaintyReason: null,
+        createdAt: '2026-08-19T00:00:00.000Z',
+        updatedAt: '2026-08-19T00:00:01.000Z',
+      }],
+    })}\n`);
+
+    const store = new FileCommandAdmissionStore(root);
+    await expect(store.listRecoverable()).rejects.toThrow(
+      'Unsafe v1 command admission without Conversation identity: local-default',
+    );
+  });
+
+  it('continues to reject malformed command admission files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-command-admission-'));
+    roots.push(root);
+    await writeFile(join(root, 'local-default.json'), '{"version":2,"admissions":[{}]}\n');
+
+    const store = new FileCommandAdmissionStore(root);
+    await expect(store.listRecoverable()).rejects.toThrow(
+      'Invalid command admission file: local-default',
+    );
+  });
+
   it('persists pending, submitted and terminal lifecycle transitions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-command-admission-'));
     roots.push(root);

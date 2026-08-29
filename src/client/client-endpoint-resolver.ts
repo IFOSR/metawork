@@ -16,7 +16,7 @@ export interface ClientEndpoint {
 
 export interface ClientEndpointError {
   readonly ok: false;
-  readonly code: 'server_unavailable' | 'protocol_mismatch' | 'server_draining' | 'invalid_manifest';
+  readonly code: 'server_unavailable' | 'protocol_mismatch' | 'release_mismatch' | 'server_draining' | 'invalid_manifest';
   readonly message: string;
 }
 
@@ -26,6 +26,7 @@ export interface ClientEndpointResolverDeps {
   readonly isProcessAlive?: (pid: number) => boolean;
   readonly socketExists?: (path: string) => boolean;
   readonly socketProbe?: (path: string) => Promise<void>;
+  readonly releaseId?: string;
 }
 
 export async function resolveClientEndpoint(
@@ -43,12 +44,16 @@ export async function resolveClientEndpoint(
 
   const validation = validateEndpointManifest(manifest, {
     protocolVersion,
+    releaseId: deps.releaseId ?? process.env.METAWORK_RELEASE_ID,
     isProcessAlive: deps.isProcessAlive ?? defaultIsProcessAlive,
     socketExists: deps.socketExists ?? existsSync,
   });
   if (!validation.ok) {
     if (validation.code === 'protocol_mismatch') {
       return { ok: false, code: 'protocol_mismatch', message: validation.message };
+    }
+    if (validation.code === 'release_mismatch') {
+      return { ok: false, code: 'release_mismatch', message: validation.message };
     }
     if (validation.code === 'server_draining') {
       return { ok: false, code: 'server_draining', message: validation.message };

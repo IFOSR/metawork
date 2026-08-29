@@ -6,6 +6,7 @@ export const ENDPOINT_MANIFEST_VERSION = 1 as const;
 
 export interface EndpointManifest {
   readonly manifestVersion: typeof ENDPOINT_MANIFEST_VERSION;
+  readonly releaseId?: string;
   readonly serverVersion: string;
   readonly gatewayProtocolVersion: number;
   readonly pid: number;
@@ -20,6 +21,7 @@ export type EndpointValidationCode =
   | 'invalid_manifest'
   | 'server_draining'
   | 'protocol_mismatch'
+  | 'release_mismatch'
   | 'server_not_running'
   | 'socket_unavailable';
 
@@ -29,9 +31,12 @@ export type EndpointValidationResult =
 
 export interface EndpointValidationDeps {
   readonly protocolVersion?: number;
+  readonly releaseId?: string;
   readonly isProcessAlive?: (pid: number) => boolean;
   readonly socketExists?: (path: string) => boolean;
 }
+
+export type ServerReadiness = 'ready' | 'starting_or_failed' | 'not_running';
 
 export async function writeEndpointManifest(
   path: string,
@@ -67,6 +72,18 @@ export async function removeEndpointManifest(path: string): Promise<void> {
   await unlink(path).catch(error => {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   });
+}
+
+export function classifyServerReadiness(
+  manifest: unknown,
+  instanceRunning: boolean,
+  deps: Pick<EndpointValidationDeps, 'isProcessAlive' | 'socketExists'> = {},
+): ServerReadiness {
+  if (!instanceRunning) return 'not_running';
+  if (!manifest) return 'starting_or_failed';
+  return validateEndpointManifest(manifest, deps).ok
+    ? 'ready'
+    : 'starting_or_failed';
 }
 
 export function validateEndpointManifest(
@@ -106,6 +123,16 @@ export function validateEndpointManifest(
       message: `Gateway protocol mismatch: client=${deps.protocolVersion}, server=${manifest.gatewayProtocolVersion}`,
     };
   }
+  if (
+    deps.releaseId !== undefined
+    && deps.releaseId !== manifest.releaseId
+  ) {
+    return {
+      ok: false,
+      code: 'release_mismatch',
+      message: `MetaWork release mismatch: client=${deps.releaseId}, server=${manifest.releaseId}; run \`metawork build\``,
+    };
+  }
   if (deps.isProcessAlive && !deps.isProcessAlive(manifest.pid)) {
     return {
       ok: false,
@@ -129,6 +156,7 @@ function assertManifest(value: unknown): asserts value is EndpointManifest {
     !isRecord(value)
     || candidate.manifestVersion !== ENDPOINT_MANIFEST_VERSION
     || typeof candidate.serverVersion !== 'string'
+    || ('releaseId' in candidate && typeof candidate.releaseId !== 'string')
     || typeof candidate.gatewayProtocolVersion !== 'number'
     || !Number.isSafeInteger(candidate.pid)
     || (candidate.pid as number) <= 0

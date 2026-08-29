@@ -15,6 +15,7 @@ const GROUPS: Array<{
 
 export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [collapsed, setCollapsed] = useState(false);
   const activeEvent = turn.status === 'running'
     ? [...turn.traceEvents].reverse().find(event => event.status === 'running')
     : undefined;
@@ -26,12 +27,22 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
   }, [turn.id, turn.status]);
 
   return (
-    <section className="execution-narrative">
+    <section className="execution-narrative" data-collapsed={collapsed || undefined}>
       <header>
-        <span>EXECUTION NARRATIVE</span>
-        <strong data-status={turn.status}>{statusLabel(turn.status)}</strong>
+        <div className="narrative-header-main">
+          <span>EXECUTION NARRATIVE</span>
+          <strong data-status={turn.status}>{statusLabel(turn.status)}</strong>
+        </div>
+        <button
+          type="button"
+          className="narrative-toggle"
+          aria-expanded={!collapsed}
+          onClick={() => setCollapsed(value => !value)}
+        >
+          {collapsed ? '展开' : '折叠'}
+        </button>
       </header>
-      {GROUPS.map(group => {
+      {!collapsed && GROUPS.map(group => {
         const events = turn.traceEvents.filter(event => group.phases.includes(event.phase));
         const stage = turn.executionTimeline?.stages.find(item => (
           group.phases.includes(item.phase as InteractionTraceEvent['phase'])

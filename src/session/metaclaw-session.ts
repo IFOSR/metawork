@@ -50,7 +50,11 @@ import { AttemptExecutionBackendReconciler } from '../execution/attempt-executio
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
 import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
-import { SessionTaskExecutionApplicationService } from './session-task-execution-application-service.js';
+import {
+  formatTaskResumeDecision,
+  SessionTaskExecutionApplicationService,
+  type TaskExecutionStart,
+} from './session-task-execution-application-service.js';
 import { type QueuedExecutionRequest } from './session-helpers.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
@@ -2152,11 +2156,11 @@ export class MetaclawSession {
   private prepareTaskExecution(
     taskId: string,
     request: QueuedExecutionRequest,
-  ): void {
+  ): TaskExecutionStart {
     return this.taskExecutionApplicationService.prepareTaskExecution(taskId, request);
   }
 
-  private startBackgroundExecution(taskId: string, launch: () => Promise<void>): void {
+  private startBackgroundExecution(taskId: string, launch: () => Promise<void>): Promise<void> {
     const scheduled = new Promise<void>(resolveWork => {
       setTimeout(() => {
         void launch().catch(error => {
@@ -2166,6 +2170,7 @@ export class MetaclawSession {
       }, 0);
     });
     this.trackBackgroundWork(scheduled);
+    return scheduled;
   }
 
   private appendOutput(...lines: string[]): void {
@@ -2239,7 +2244,9 @@ export class MetaclawSession {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
     }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
-    this.appendOutput(result.content);
+    if (!(result.type === 'directive' && result.directive.kind === 'resume-task')) {
+      this.appendOutput(result.content);
+    }
     if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
     }
@@ -2254,7 +2261,7 @@ export class MetaclawSession {
       const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
       if (resumedTask) {
         this.setCurrentTaskId(resumedTask.id);
-        await this.prepareTaskExecution(resumedTask.id, {
+        const started = this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
           executionMode: directive.mode,
@@ -2272,6 +2279,14 @@ export class MetaclawSession {
               })
             : undefined,
         });
+        const decision = await started.decision;
+        if (!decision) {
+          await started.completion;
+          this.appendOutput(`任务 #${resumedTask.id} 恢复请求未产生权威 Kernel 决策`);
+        } else {
+          this.appendOutput(formatTaskResumeDecision(resumedTask.id, decision));
+          if (decision.action.type !== 'resume_task') await started.completion;
+        }
       }
     }
 

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,15 +55,20 @@ function main() {
     throw new Error(`install-native-macos requires macOS; found ${process.platform}`);
   }
   requireNodeVersion();
-  resolveProductEnvironment('METAWORK_INSTALL_ROOT', 'ANYFUSION_INSTALL_ROOT');
-  requiredEnvironment(
-    resolveProductEnvironment('METAWORK_PROVIDER_KEY', 'ANYFUSION_PROVIDER_KEY'),
-    'METAWORK_PROVIDER_KEY',
+  const installRoot = resolveProductEnvironment(
+    'METAWORK_INSTALL_ROOT',
+    'ANYFUSION_INSTALL_ROOT',
+    join(process.env.HOME, '.metawork'),
   );
-  requiredEnvironment(
-    resolveProductEnvironment('METAWORK_PROVIDER_URL', 'ANYFUSION_PROVIDER_URL'),
-    'METAWORK_PROVIDER_URL',
-  );
+  const installCommand = existsSync(join(installRoot, 'app', 'current'))
+    ? 'update'
+    : 'install';
+  const providerKey = resolveProductEnvironment('METAWORK_PROVIDER_KEY', 'ANYFUSION_PROVIDER_KEY');
+  const providerUrl = resolveProductEnvironment('METAWORK_PROVIDER_URL', 'ANYFUSION_PROVIDER_URL');
+  if (installCommand === 'install') {
+    requiredEnvironment(providerKey, 'METAWORK_PROVIDER_KEY');
+    requiredEnvironment(providerUrl, 'METAWORK_PROVIDER_URL');
+  }
   resolveProductEnvironment(
     'METAWORK_PROVIDER_MODEL',
     'ANYFUSION_PROVIDER_MODEL',
@@ -81,12 +86,19 @@ function main() {
   run('npm', ['ci', '--ignore-scripts'], plannerRoot);
   run('npm', ['run', 'build:offline'], plannerRoot);
 
-  const releaseId = JSON.parse(
+  const packageVersion = JSON.parse(
     readFileSync(join(runtimeRoot, 'package.json'), 'utf8'),
   ).version;
+  const revision = (() => {
+    const result = spawnSync('git', ['-C', runtimeRoot, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+    });
+    return result.status === 0 ? result.stdout.trim() : 'source';
+  })();
+  const releaseId = `${packageVersion}-build-${revision || 'source'}-${Date.now()}`;
   run('node', [
     join(runtimeRoot, 'dist', 'install-cli.js'),
-    'install',
+    installCommand,
     releaseId,
     '--source-root',
     runtimeRoot,

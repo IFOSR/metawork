@@ -531,16 +531,32 @@ describe('FeishuGatewaySessionPort', () => {
     });
     subscriptions.publish({
       ...progressEvent(),
-      eventId: 'event_external_progress',
+      eventId: 'event_web_progress',
       requestId: 'req_web',
       conversationId: 'conv_1',
-    });
+    }, { connectionId: 'web_client', surface: 'web' });
     subscriptions.publish({
       ...finalEventFor('req_web', 3),
-      eventId: 'event_external_final',
+      eventId: 'event_web_final',
       conversationId: 'conv_1',
-      payload: { lines: ['external answer'] },
-    });
+      payload: { lines: ['web answer'] },
+    }, { connectionId: 'web_client', surface: 'web' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(deliveries).toEqual([]);
+
+    subscriptions.publish({
+      ...progressEvent(),
+      eventId: 'event_feishu_progress',
+      requestId: 'req_feishu',
+      conversationId: 'conv_1',
+    }, { connectionId: 'feishu_chat', surface: 'feishu' });
+    subscriptions.publish({
+      ...finalEventFor('req_feishu', 4),
+      eventId: 'event_feishu_final',
+      conversationId: 'conv_1',
+      payload: { lines: ['feishu answer'] },
+    }, { connectionId: 'feishu_chat', surface: 'feishu' });
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(deliveries).toEqual([
@@ -556,7 +572,7 @@ describe('FeishuGatewaySessionPort', () => {
         chatId: 'chat_1',
         threadId: 'thread_1',
         kind: 'final',
-        reply: { lines: ['external answer'] },
+        reply: { lines: ['feishu answer'] },
       },
     ]);
     unsubscribe();

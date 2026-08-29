@@ -131,13 +131,27 @@ metawork
 启动目录会成为 Planner 的只读工作区上下文。Executor 的获批修改发生在托管的
 Task/Subtask Git worktree 中，并经过 publication gate。
 
+### 构建与运行生命周期
+
+无论当前在哪个目录，都可以执行 `metawork build`。它使用该安装记录的固定源码
+checkout，重新安装依赖并构建 Runtime、Planner 和 Web，然后原子激活一套新
+release，不改变账号数据。构建前先停止常驻 Server：
+
+```bash
+metawork server stop
+metawork build
+metawork server start
+```
+
+`metawork server start`、`metawork tui` 和 `metawork web` 都使用同一个已激活的
+`app/current` release。`metawork build` 不启动 Server 或 Client；Server 仍在
+运行时构建会直接失败。
+
 ### Web 工作区
 
 ```bash
 metawork web
-metawork web start
-metawork web restart
-metawork web --port 9000 --no-open
+metawork web --no-open
 ```
 
 默认 Web 地址是 `http://127.0.0.1:8788`。普通启动会使用短时 URL fragment

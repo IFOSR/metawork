@@ -43,7 +43,7 @@ export function buildStagedLegacyConfiguration(input: {
     policy: planner.modelPolicy,
     candidates: modelCandidates,
     requirements: {
-      requiredCapabilities: ['planning', 'structured-output'],
+      preferredCapabilities: ['planning', 'structured-output'],
       contextTokens: 1_024,
       requiresStructuredOutput: true,
     },

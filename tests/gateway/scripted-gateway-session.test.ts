@@ -28,7 +28,7 @@ describe('ScriptedGatewaySession', () => {
         kind,
         payload,
         occurredAt: '2026-08-19T00:00:00.000Z',
-      });
+      }, { connectionId: 'test-client', surface: 'local' });
     };
     const session = new ScriptedGatewaySession({
       accountId: 'local-default',
@@ -105,7 +105,7 @@ describe('ScriptedGatewaySession', () => {
             kind: 'terminal_error',
             payload: { message: 'planner unavailable' },
             occurredAt: '2026-08-19T00:00:00.000Z',
-          });
+          }, { connectionId: envelope.connectionId, surface: 'local' });
           return {
             requestId: envelope.requestId,
             idempotencyKey: envelope.idempotencyKey,
@@ -154,7 +154,7 @@ describe('ScriptedGatewaySession', () => {
               completeness: 'complete',
               certification: 'certified',
             },
-          });
+          }, { connectionId: envelope.connectionId, surface: 'local' });
           for (const [index, chunk] of [first, second].entries()) {
             subscriptions.publish({
               ...common,
@@ -167,7 +167,7 @@ describe('ScriptedGatewaySession', () => {
                 chunk,
                 byteLength: Buffer.byteLength(chunk),
               },
-            });
+            }, { connectionId: envelope.connectionId, surface: 'local' });
           }
           subscriptions.publish({
             ...common,
@@ -181,14 +181,14 @@ describe('ScriptedGatewaySession', () => {
               completeness: 'complete',
               certification: 'certified',
             },
-          });
+          }, { connectionId: envelope.connectionId, surface: 'local' });
           subscriptions.publish({
             ...common,
             eventId: 'event_final',
             sequence: 5,
             kind: 'final_answer',
             payload: { resultId: 'result_large', lines: [] },
-          });
+          }, { connectionId: envelope.connectionId, surface: 'local' });
           return {
             requestId: envelope.requestId,
             idempotencyKey: envelope.idempotencyKey,

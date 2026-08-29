@@ -195,6 +195,27 @@ interface CommandAdmissionFile {
   readonly admissions: StoredCommandAdmission[];
 }
 
+interface LegacyStoredCommandAdmission {
+  readonly accountId: string;
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+  readonly requestId: string;
+  readonly principalId?: string;
+  readonly conversation: object;
+  readonly command: GatewayCommand;
+  readonly conversationId: string | null;
+  readonly state: CommandAdmissionState;
+  readonly receipt: CommandReceipt | null;
+  readonly uncertaintyReason: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface LegacyCommandAdmissionFile {
+  readonly version: 1;
+  readonly admissions: LegacyStoredCommandAdmission[];
+}
+
 const fileTails = new Map<string, Promise<void>>();
 
 export class FileCommandAdmissionStore implements CommandAdmissionStore {
@@ -361,10 +382,15 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
     try {
       const raw = await readFile(this.path(accountId), 'utf8');
       const parsed: unknown = JSON.parse(raw);
-      if (!isCommandAdmissionFile(parsed, accountId)) {
-        throw new Error(`Invalid command admission file: ${accountId}`);
+      if (isCommandAdmissionFile(parsed, accountId)) {
+        return parsed;
       }
-      return parsed;
+      if (isLegacyCommandAdmissionFile(parsed, accountId)) {
+        const migrated = migrateLegacyCommandAdmissionFile(parsed, accountId);
+        await this.write(accountId, migrated);
+        return migrated;
+      }
+      throw new Error(`Invalid command admission file: ${accountId}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return { version: 2, admissions: [] };
@@ -398,6 +424,70 @@ function isCommandAdmissionFile(value: unknown, accountId: string): value is Com
   return file.version === 2
     && Array.isArray(file.admissions)
     && file.admissions.every(item => isStoredCommandAdmission(item, accountId));
+}
+
+function isLegacyCommandAdmissionFile(
+  value: unknown,
+  accountId: string,
+): value is LegacyCommandAdmissionFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const file = value as Partial<LegacyCommandAdmissionFile>;
+  return file.version === 1
+    && Array.isArray(file.admissions)
+    && file.admissions.every(item => isLegacyStoredCommandAdmission(item, accountId));
+}
+
+function isLegacyStoredCommandAdmission(value: unknown, accountId: string): value is LegacyStoredCommandAdmission {
+  if (typeof value !== 'object' || value === null) return false;
+  const item = value as Partial<LegacyStoredCommandAdmission>;
+  return item.accountId === accountId
+    && typeof item.idempotencyKey === 'string'
+    && typeof item.fingerprint === 'string'
+    && typeof item.requestId === 'string'
+    && typeof item.conversation === 'object'
+    && item.conversation !== null
+    && typeof item.command === 'object'
+    && item.command !== null
+    && (item.conversationId === null || typeof item.conversationId === 'string')
+    && ['pending', 'submitted', 'terminal', 'uncertain'].includes(String(item.state))
+    && (item.receipt === null || typeof item.receipt === 'object')
+    && (item.uncertaintyReason === null || typeof item.uncertaintyReason === 'string')
+    && typeof item.createdAt === 'string'
+    && typeof item.updatedAt === 'string';
+}
+
+function migrateLegacyCommandAdmissionFile(
+  file: LegacyCommandAdmissionFile,
+  accountId: string,
+): CommandAdmissionFile {
+  if (file.admissions.some(item => item.state !== 'terminal')) {
+    throw new Error(`Unsafe nonterminal v1 command admission file: ${accountId}`);
+  }
+  if (file.admissions.some(item => !item.conversationId)) {
+    throw new Error(`Unsafe v1 command admission without Conversation identity: ${accountId}`);
+  }
+  return {
+    version: 2,
+    admissions: file.admissions.map(item => ({
+      accountId: item.accountId,
+      idempotencyKey: item.idempotencyKey,
+      fingerprint: item.fingerprint,
+      requestId: item.requestId,
+      connectionId: `legacy-${item.requestId}`,
+      ...(item.principalId !== undefined ? { principalId: item.principalId } : {}),
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: item.conversationId! },
+      },
+      command: item.command,
+      conversationId: item.conversationId,
+      state: item.state,
+      receipt: item.receipt,
+      uncertaintyReason: item.uncertaintyReason,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    })),
+  };
 }
 
 function isStoredCommandAdmission(value: unknown, accountId: string): value is StoredCommandAdmission {

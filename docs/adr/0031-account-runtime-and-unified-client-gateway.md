@@ -11,6 +11,7 @@
 - **Governed by**: ADR-0020
 - **Lifecycle amended by**: ADR-0034
 - **Workspace organization amended by**: ADR-0035
+- **Live delivery amended by**: ADR-0036
 
 ## Context
 
@@ -194,9 +195,12 @@ Conversations. TUI and future App clients may resume a Web or Feishu
 Conversation only through an explicit authorized attach flow.
 
 Each Conversation has one serialized input mailbox. Multiple connections may
-observe it concurrently, but only one user turn in that Conversation may be
-active at a time. Separate Conversations may run Planner turns concurrently;
-their account-mutating proposals still cross the account Kernel coordinator.
+submit to it without acquiring an owner or writer lease, but only one user turn
+in that Conversation may be active at a time. Separate Conversations may run
+Planner turns concurrently; their account-mutating proposals still cross the
+account Kernel coordinator. Detailed live observation is origin-scoped by
+ADR-0036; every authorized attachment recovers complete retained history
+through origin-unfiltered replay.
 
 ### 8. Versioned Gateway Command And Event Contracts
 
@@ -293,18 +297,30 @@ of ADR-0030 and must not leave dual-read or dual-write paths.
 ### 10. Event Routing And Delivery
 
 AccountRuntime publishes normalized account and conversation events to one
-Application-owned event hub. Gateway subscriptions filter these events by
-authorized Account and Conversation attachment.
+Application-owned event hub. Gateway subscriptions independently enforce
+Account/Conversation authorization and ADR-0036's origin-scoped detailed live
+delivery.
 
-Final answers and progress are routed by stored origin/attachment facts, not by
-reading a shared Session output buffer. A turn records the originating
-Conversation and request; Gateway may deliver it to all currently attached
-connections for that Conversation and to the durable origin target required by
-the platform.
+Every accepted command retains an internal, authenticated connection origin.
+Detailed turn events are delivered live only to that origin connection. The
+origin is internal delivery metadata: it is not public event payload, Account or
+Conversation authority, a Conversation owner, or a Planner/Task/Runtime input.
+A detailed recovery/background event without a retained live origin is durable
+history only rather than an all-attachment broadcast.
+
+All safe events are still appended once to the Account/Conversation journal.
+Authorized attach, refresh, switch, reconnect and explicit history reads replay
+all retained events without origin filtering. Attach subscribes before replay,
+buffers matching live events, releases only events newer than the replay
+watermark, and deduplicates by `eventId`. Workspace directory activity remains
+a bounded summary projection under ADR-0035 and is not a detailed Conversation
+stream.
 
 Feishu cards, WebSocket messages, TUI rendering and future push notifications
-are projections of the same event contract. Delivery failure is recorded as a
-delivery fact and does not rerun Planning, Kernel or Executor work.
+remain projections of the same public event contract, but their detailed live
+subscriptions claim only their own authenticated connection identity. Delivery
+failure is recorded as a delivery fact and does not rerun Planning, Kernel or
+Executor work.
 
 ### 11. Lifecycle
 

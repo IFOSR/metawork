@@ -325,6 +325,52 @@ describe('WebGatewaySessionRuntime', () => {
     expect(calls.at(-1)).toBe('detach-client');
   });
 
+  it('re-emits an in-flight turn when re-attaching to its Conversation', async () => {
+    const replay = {
+      lastSequence: 2,
+      snapshot: [],
+      deltas: [
+        turnStartedEvent('event_turn_started', 1, 'req_test', 'turn_1'),
+        traceDeltaEvent('event_trace', 2, 'turn_1'),
+      ],
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => ({
+          requestId: envelope.requestId,
+          idempotencyKey: envelope.idempotencyKey,
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+          workspaceId: 'workspace_repo',
+        }),
+        replay: async () => replay,
+      }),
+      createId: prefix => `${prefix}_test`,
+    });
+
+    const events: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => events.push(event));
+
+    await runtime.initializeClient('browser-a', {
+      workspaceHint: '/repo',
+      conversationId: 'conv_1',
+    });
+    // 提交一次以在内存中建立 requestId -> userInput 映射（模拟仍在执行的 turn）。
+    await runtime.submit('browser-a', 'hello');
+    events.length = 0;
+
+    // 切换会话（重新 attach）后，运行中的 turn 必须被重新下发。
+    await runtime.activateSession('browser-a', 'conv_1');
+
+    const kinds = events.map(event => event.type);
+    expect(kinds).toContain('turn_started');
+    expect(kinds).toContain('trace_delta');
+    const turnStarted = events.find(event => event.type === 'turn_started');
+    expect(turnStarted).toMatchObject({ turnId: 'turn_1', userInput: 'hello' });
+  });
+
   it('invalidates and detaches an attach that completes during dispose', async () => {
     const attached = deferred<() => void>();
     const calls: string[] = [];
@@ -499,6 +545,119 @@ describe('WebGatewaySessionRuntime', () => {
         completedAt: '2026-08-19T00:00:00.000Z',
       },
     ]);
+  });
+
+  it('keeps a background task command live after its immediate command result', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let appended = 0;
+    const projected: WebSessionRuntimeEvent[] = [];
+    const record = sessionRecord('conv_1', true);
+    const catalog = {
+      ...catalogForRecord(record),
+      appendTurn: async () => {
+        appended += 1;
+        return record;
+      },
+    } as unknown as WebSessionRuntimeCatalog;
+    const timeline: ExecutionTimeline = {
+      taskId: 'task_resume',
+      title: '恢复任务',
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [{
+          id: 'subtask_resume',
+          title: '重新执行天气查询',
+          status: 'running',
+          attempts: [],
+        }],
+      }],
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog,
+      gateway: {
+        attachClient: async () => () => undefined,
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+        replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+        submit: async (envelope: { requestId: string }) => ({
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_1',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        }),
+      } as unknown as WebGatewayAdapter,
+      projectExecutionTimeline: taskId => taskId === 'task_resume' ? timeline : null,
+      createId: prefix => `${prefix}_1`,
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', '/task resume task_resume');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'turn_started',
+      payload: { commandKind: 'slash_command' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'final_answer',
+      payload: {
+        lines: ['已发起任务恢复'],
+        backgroundWorkPending: true,
+      },
+    });
+    await Promise.resolve();
+
+    expect(appended).toBe(0);
+    listener!({
+      ...outputEvent('event_trace', 3, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        taskId: 'task_resume',
+        status: 'running',
+        events: [{
+          id: 'trace_executor',
+          sequence: 1,
+          occurredAt: '2026-08-19T00:00:02.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor dispatch started',
+          summary: '恢复任务已开始执行',
+          taskId: 'task_resume',
+          subtaskId: 'subtask_resume',
+          details: { taskId: 'task_resume', subtaskId: 'subtask_resume' },
+        }],
+      },
+    });
+
+    expect(projected).toContainEqual(expect.objectContaining({
+      type: 'final_answer',
+      lines: ['已发起任务恢复'],
+      backgroundWorkPending: true,
+    }));
+    expect(projected).toContainEqual(expect.objectContaining({
+      type: 'execution',
+      taskId: 'task_resume',
+      timeline,
+    }));
   });
 
   it('persists the durable trace and execution timeline in the historical turn', async () => {
@@ -1012,6 +1171,57 @@ function outputEvent(
     turnId: null,
     kind: 'conversation_snapshot',
     payload: { from: 0, lines },
+    occurredAt: '2026-08-19T00:00:00.000Z',
+  };
+}
+
+function turnStartedEvent(
+  eventId: string,
+  sequence: number,
+  requestId: string,
+  turnId: string,
+): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId,
+    sequence,
+    accountId: 'local-default',
+    conversationId: 'conv_1',
+    requestId,
+    turnId,
+    kind: 'turn_started',
+    payload: { commandKind: 'user_message' },
+    occurredAt: '2026-08-19T00:00:00.000Z',
+  };
+}
+
+function traceDeltaEvent(
+  eventId: string,
+  sequence: number,
+  turnId: string,
+): GatewayEventEnvelope {
+  return {
+    protocolVersion: 2,
+    eventId,
+    sequence,
+    accountId: 'local-default',
+    conversationId: 'conv_1',
+    requestId: 'req_test',
+    turnId,
+    kind: 'trace_delta',
+    payload: {
+      turnId,
+      status: 'running',
+      events: [{
+        id: 'trace_1',
+        sequence: 1,
+        kind: 'planner',
+        title: 'Planning',
+        summary: 'Planner parsed intent',
+        details: { phase: 'planner' },
+        occurredAt: '2026-08-19T00:00:00.000Z',
+      }],
+    },
     occurredAt: '2026-08-19T00:00:00.000Z',
   };
 }

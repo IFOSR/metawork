@@ -23,6 +23,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
 import { TrajectoryView } from './components/TrajectoryView';
 import { WorkspaceShell } from './components/WorkspaceShell';
+import { selectInitialSessionId } from './session-selection';
 import {
   ArtifactPreviewDrawer,
   type PreviewDrawerState,
@@ -158,11 +159,13 @@ export function App() {
           : current);
       },
       onConversationSnapshot: turn => setLiveTurn(turn),
-      onTurnStarted: (_requestId, turnId, userInput, startedAt) => {
+      onTurnStarted: (_requestId, turnId, userInput, startedAt, interactionKind) => {
         setLiveTurn({
           id: turnId,
           sessionId: activeConversationRef.current ?? 'active',
           userInput,
+          interactionKind: interactionKind
+            ?? (userInput.trim().startsWith('/') ? 'system_command' : 'ai_turn'),
           status: 'running',
           finalAnswer: null,
           taskId: null,
@@ -177,8 +180,8 @@ export function App() {
       onTraceSnapshot: trace => {
         setLiveTurn(current => mergeTraceSnapshot(current, trace));
       },
-      onTraceDelta: (turnId, _fromSequence, events) => {
-        setLiveTurn(current => mergeTraceDelta(current, turnId, events));
+      onTraceDelta: (turnId, _fromSequence, events, status, completedAt) => {
+        setLiveTurn(current => mergeTraceDelta(current, turnId, events, status, completedAt));
       },
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
       onExecution: (taskId, timeline) => {
@@ -186,13 +189,13 @@ export function App() {
           ? { ...current, taskId, executionTimeline: timeline }
           : current);
       },
-      onFinalAnswer: (_requestId, turnId, lines, completedAt) => {
+      onFinalAnswer: (_requestId, turnId, lines, completedAt, backgroundWorkPending) => {
         setLiveTurn(current => current && current.id === turnId
           ? {
             ...current,
-            status: 'completed',
+            status: backgroundWorkPending ? 'running' : 'completed',
             finalAnswer: lines.join('\n'),
-            completedAt,
+            completedAt: backgroundWorkPending ? null : completedAt,
           }
           : current);
       },
@@ -251,24 +254,31 @@ export function App() {
           ? await http.getConversations(workspaceCatalog.activeWorkspaceId)
           : null;
         const requestedConversationId = startupLaunchContext?.conversationId ?? null;
-        const requested = requestedConversationId
-          ? catalog?.conversations.find(session => session.id === requestedConversationId)
+        const initialSessionId = selectInitialSessionId(
+          catalog?.conversations ?? [],
+          requestedConversationId,
+          catalog?.activeConversationId ?? null,
+        );
+        const initialSession = initialSessionId
+          ? catalog?.conversations.find(session => session.id === initialSessionId)
           : undefined;
-        if (requested && requested.id !== catalog?.activeConversationId) {
-          await http.attachConversation(requested.id).catch(() => undefined);
+        let resolvedActiveSessionId = catalog?.activeConversationId ?? null;
+        if (initialSession && initialSession.id !== catalog?.activeConversationId) {
+          const activation = await http.attachConversation(initialSession.id).catch(() => null);
+          if (activation?.state === 'active') resolvedActiveSessionId = initialSession.id;
         }
         setSessions(catalog?.conversations ?? []);
         const activeInWorkspace = catalog?.conversations.some(
-          session => session.id === catalog.activeConversationId,
+          session => session.id === resolvedActiveSessionId,
         )
-          ? catalog.activeConversationId
+          ? resolvedActiveSessionId
           : null;
-        const initialSessionId = requested?.id ?? activeInWorkspace;
-        activeConversationRef.current = initialSessionId;
-        setActiveSessionId(initialSessionId);
-        setBrowsedSessionId(current => current ?? initialSessionId);
+        const resolvedSessionId = initialSessionId ?? activeInWorkspace;
+        activeConversationRef.current = activeInWorkspace;
+        setActiveSessionId(activeInWorkspace);
+        setBrowsedSessionId(current => current ?? resolvedSessionId);
         setConfigurationRuntime(config);
-        if (initialSessionId) loadRecord(initialSessionId);
+        if (activeInWorkspace) loadRecord(activeInWorkspace);
       })
       .catch(() => undefined);
     return () => ws.close();
@@ -319,17 +329,37 @@ export function App() {
         http.getWorkspaces(),
         http.getConversations(result.activeWorkspaceId),
       ]);
+      const workspaceActiveSessionId = catalog.conversations.some(
+        session => session.id === result.activeSessionId,
+      )
+        ? result.activeSessionId
+        : null;
+      const initialSessionId = selectInitialSessionId(
+        catalog.conversations,
+        null,
+        workspaceActiveSessionId,
+      );
+      let resolvedActiveSessionId = workspaceActiveSessionId;
+      if (initialSessionId && initialSessionId !== workspaceActiveSessionId) {
+        const activation = await http.attachConversation(initialSessionId).catch(() => null);
+        if (activation?.state === 'active') resolvedActiveSessionId = initialSessionId;
+      }
       setWorkspaces(workspaceCatalog.workspaces);
       setActiveWorkspaceId(result.activeWorkspaceId);
-      activeConversationRef.current = result.activeSessionId;
-      setActiveSessionId(result.activeSessionId);
+      activeConversationRef.current = resolvedActiveSessionId;
+      setActiveSessionId(resolvedActiveSessionId);
       setSessions(catalog.conversations);
-      setBrowsedSessionId(null);
+      setBrowsedSessionId(initialSessionId ?? resolvedActiveSessionId);
       setSelectedRecord(null);
       setLiveTurn(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
       setActivationNotice(null);
+      if (resolvedActiveSessionId) {
+        void http.getConversation(resolvedActiveSessionId)
+          .then(setSelectedRecord)
+          .catch(error => setActivationNotice((error as Error).message));
+      }
     } catch (error) {
       setActivationNotice(`Workspace 切换失败：${(error as Error).message}`);
     }
@@ -638,6 +668,7 @@ export function App() {
           : tab === 'conversation'
           ? (
             <ConversationView
+              sessionId={selectedId}
               turns={turns}
               running={running}
               onOpenArtifact={handleOpenArtifact}
@@ -697,12 +728,18 @@ function mergeTraceDelta(
   current: ConversationTurnProjection | null,
   turnId: string,
   events: InteractionTraceEvent[],
+  status?: InteractionTrace['status'],
+  completedAt?: string | null,
 ): ConversationTurnProjection | null {
   if (!current || current.id !== turnId) return current;
   const byId = new Map(current.traceEvents.map(event => [event.id, event]));
   for (const event of events) byId.set(event.id, event);
   return {
     ...current,
+    ...(status ? {
+      status,
+      completedAt: status === 'running' ? null : completedAt ?? current.completedAt,
+    } : {}),
     traceEvents: [...byId.values()].sort((left, right) => left.sequence - right.sequence),
   };
 }

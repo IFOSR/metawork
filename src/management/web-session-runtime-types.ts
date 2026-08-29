@@ -1,5 +1,8 @@
 import type { ExecutionTimeline } from './execution-projector.js';
-import type { InteractionTraceEvent } from './interaction-trace.js';
+import type {
+  InteractionTraceEvent,
+  InteractionTraceStatus,
+} from './interaction-trace.js';
 import type {
   ConversationTurnProjection,
   WebSessionActivationResult,
@@ -56,6 +59,7 @@ export type WebSessionRuntimeEvent =
     turnId: string;
     userInput: string;
     startedAt: string;
+    interactionKind?: 'system_command' | 'ai_turn';
   }
   | {
     type: 'final_answer';
@@ -63,6 +67,7 @@ export type WebSessionRuntimeEvent =
     turnId: string;
     lines: string[];
     completedAt: string;
+    backgroundWorkPending?: boolean;
   }
   | {
     type: 'terminal_error';
@@ -105,6 +110,8 @@ export type WebSessionRuntimeEvent =
     turnId: string;
     fromSequence: number;
     events: InteractionTraceEvent[];
+    status?: InteractionTraceStatus;
+    completedAt?: string | null;
   }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }

@@ -4,6 +4,8 @@ export interface CodexNonInteractiveArgsOptions {
   json?: boolean;
   outputLastMessagePath?: string;
   sandbox?: 'workspace-write' | 'danger-full-access';
+  modelId?: string;
+  providerRef?: string;
 }
 
 export function buildCodexNonInteractiveArgs(
@@ -15,6 +17,9 @@ export function buildCodexNonInteractiveArgs(
     ...((options.json ?? false) ? ['--json'] : []),
     '--sandbox',
     options.sandbox ?? 'workspace-write',
+    ...(options.providerRef && options.modelId
+      ? ['-c', `model="${options.modelId}"`, '-c', `model_provider="${options.providerRef}"`]
+      : []),
     '-c',
     'approval_policy="never"',
     '--skip-git-repo-check',

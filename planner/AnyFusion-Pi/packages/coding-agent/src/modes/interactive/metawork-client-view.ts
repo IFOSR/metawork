@@ -53,6 +53,10 @@ export function renderConversation(
 			lines.push("命令失败");
 			if (command.error) lines.push(command.error);
 		}
+		if (command.execution) {
+			lines.push("", "后台任务进度", renderStepper(command.execution.stage));
+			appendExecutionDetails(lines, command.execution);
+		}
 	} else if (turn) {
 		lines.push("任务进度", renderStepper(turn.stage));
 	}
@@ -78,6 +82,19 @@ export function renderConversation(
 	for (const notice of model.notices.slice(-3)) lines.push(notice.text);
 	lines.push("", `${connection} · ${turn?.status ?? command?.status ?? "idle"} · 输入 /help 查看命令`);
 	return lines.join("\n");
+}
+
+function appendExecutionDetails(
+	lines: string[],
+	turn: NonNullable<ConversationViewModel["currentTurn"]>,
+): void {
+	for (const subtask of Object.values(turn.subtasks)) {
+		lines.push(`  ${subtask.title}  ·  ${subtask.status}${subtask.progress ? `  ·  ${subtask.progress}` : ""}`);
+	}
+	for (const trace of turn.trace.slice(-5)) {
+		lines.push(`  ${trace.title}${trace.summary ? `  ·  ${trace.summary}` : ""}`);
+	}
+	if (turn.error) lines.push("", `后台任务失败  ${turn.error}`);
 }
 
 export function renderConversationViewport(

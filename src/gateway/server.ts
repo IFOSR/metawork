@@ -204,6 +204,7 @@ export class MetaclawGatewayServer {
       const nextUnsubscribe = this.deps.subscriptions.subscribe({
         accountId,
         conversationId: nextConversationId,
+        liveConnectionId: connectionId,
         listener: event => {
           if (replaying) buffered.push(event);
           else sendAttachedEvent(event);

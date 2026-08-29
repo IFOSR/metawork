@@ -93,6 +93,15 @@ SQLite；现有安装以 `local-default` Account 激活。参见
 [已批准设计](../plans/2026-08-18-account-runtime-unified-gateway-design.md)和
 [实施计划](../plans/2026-08-18-account-runtime-unified-gateway-implementation-plan.md)。
 
+Gateway 的详细实时投递按来源端隔离（ADR-0036）。一个 turn 的
+`turn_started`、trace、Task/执行投影、权限、产物、结果与终态事件只实时投递给
+发起该 turn 的已认证连接。Conversation snapshot 和 history page 是
+attach/replay/读取投影，而不是跨客户端实时通知。没有实时来源的详细事件——
+例如启动恢复投影或来源客户端断开后的后台事实——只是持久历史，绝不广播给所有
+已附着的客户端。replay 与显式历史读取始终按 Account/Conversation 完整且不过滤
+来源，因此 Web、飞书和 TUI 在 attach、刷新、切换或重连后都能恢复所有已授权
+turn。Workspace 目录活动仍然是有界共享摘要，不是详细 Conversation 流。
+
 ```mermaid
 flowchart LR
   User[用户] --> Surfaces[客户端入口<br/>TUI、CLI、Web、飞书]
@@ -420,14 +429,14 @@ Executor 扩展契约：
 
 - `name`：稳定的 Executor 名称，例如 `research-bot` 或 `finance-research-agent`。
 - `domains`：适用领域，例如 `research`、`finance`、`software`。
-- `capabilities`：能力标签，例如 `research`、`report_generation`、`multi_tool`、`coding`、`tests`。
+- `capabilities`：Executor 配置的擅长领域和路由偏好，例如 `research`、`report_generation`、`multi_tool`、`coding`、`tests`。未填写某个标签不代表物理上不能执行；真正的执行约束仍是 Provider/Model 可用性、Harness 兼容性、权限和 Runtime affordance。
 
 建议的路由字段：
 
 - `inputTypes`：支持输入类型，例如 `text`、`files`、`image`。
 - `outputTypes`：输出类型，例如 `markdown`、`report`、`code`、`patch`、`json`。
-- `primaryUseCases`：适合路由给它的典型任务。
-- `avoidUseCases`：不适合路由给它的任务。
+- `primaryUseCases`：应优先路由给它的典型任务。
+- `avoidUseCases`：对它优先级较低的任务，不代表操作被物理禁用。
 - `riskLevel`：`low`、`medium` 或 `high`。
 - `intentAffinity`：按 route intent 记录的 affinity，例如 `repo_execution`、`research_workflow`、`memory_agent_ops` 和 `general`。
 - `projectUrl`：项目仓库或文档地址。
@@ -568,6 +577,19 @@ metawork server start
 metawork server status
 ```
 
+如需从任意目录重新构建并激活所有最新组件，执行：
+
+```bash
+metawork server stop
+metawork build
+metawork server start
+```
+
+构建源码来自安装级 metadata，而不是用户当前的 Workspace。命令会重建 Runtime、
+Planner 和 Web，保留账号数据，并原子切换 `app/current`。Server 运行时构建会直接
+失败。Server、TUI 和 Web 连接前校验同一个 release identity，避免新旧版本静默
+混合运行。
+
 再独立启动任意 Client：
 
 ```bash
@@ -666,6 +688,12 @@ Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。Tr
 会给出有界、结构化的材料化诊断。显式恢复通过
 `task_resume_requested` 进入 Kernel，只有 Kernel 授权并应用
 `resume_task` 后才恢复 Task/Subtask 并再次 dispatch。
+
+`/task resume` 的命令结果投影首个权威 Kernel Decision，不做乐观确认。只有
+`resume_task` 才显示“恢复执行已开始”；`no_op`、`block_work` 和
+`park_for_replan` 必须明确说明没有启动新的 Executor，并保留安全的 Kernel 原因。
+`Command completed` 只代表命令处理结束，不代表 Task 已恢复或完成；真实后台工作
+继续通过 Task/Subtask/Executor trace 展示。
 
 账号启动恢复和显式 Resume 还会修复一种已知旧版 pre-apply 故障：system
 Conversation binding 缺少可选的 `onDecisionApplying` 展示回调，导致 replan

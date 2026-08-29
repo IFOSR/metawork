@@ -109,7 +109,7 @@ describe('independent client lifecycle integration', () => {
 
     clientA.socket.write(attach('tui_a', 'conv_shared'));
     await clientA.next(attachedTo('conv_shared'));
-    await fixture.publish('conv_shared', 'final_answer', { lines: ['private result'] });
+    await fixture.publish('conv_shared', 'final_answer', { lines: ['private result'] }, 'tui_a');
     await clientA.next(message => (
       message.type === 'output' && message.lines.includes('private result')
     ));
@@ -148,7 +148,7 @@ describe('independent client lifecycle integration', () => {
 
     clientA.socket.destroy();
     await waitForClose(clientA.socket);
-    await fixture.publish('conv_b', 'final_answer', { lines: ['client B remains live'] });
+    await fixture.publish('conv_b', 'final_answer', { lines: ['client B remains live'] }, 'tui_b');
     await expect(clientB.next(message => (
       message.type === 'output' && message.lines.includes('client B remains live')
     ))).resolves.toMatchObject({
@@ -172,6 +172,7 @@ async function createFixture() {
     conversationId: string,
     kind: GatewayEventKind,
     payload: unknown,
+    connectionId?: string,
   ) => {
     const event = await journal.append({
       protocolVersion: 2,
@@ -185,7 +186,9 @@ async function createFixture() {
       payload,
       occurredAt: new Date().toISOString(),
     });
-    subscriptions.publish(event);
+    subscriptions.publish(event, connectionId
+      ? { connectionId, surface: 'local' }
+      : undefined);
   };
 
   const gateway = {

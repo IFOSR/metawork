@@ -1055,7 +1055,11 @@ export class ControlKernel {
       return decision(event, { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null }, 'failure facts are incomplete');
     }
     if (event.attemptKind === 'contract_correction') {
-      return decision(event, { type: 'no_op' }, 'metadata correction failed; safe result remains awaiting decision');
+      return decision(
+        event,
+        { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null },
+        'metadata correction failed; safe result remains uncertified and requires explicit resolution',
+      );
     }
     if (event.attemptKind === 'merge_repair') {
       return decision(
@@ -1292,8 +1296,8 @@ export class ControlKernel {
     ) {
       return decision(
         event,
-        { type: 'no_op' },
-        'safe result remains awaiting decision because metadata correction is unavailable or exhausted',
+        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId },
+        'metadata correction is unavailable or exhausted; safe result remains uncertified and requires explicit resolution',
       );
     }
     return decision(event, singleDispatchBatch(
@@ -1636,7 +1640,6 @@ function resolveAuthorizedBindings(
       }
       const modelSelection = proposed.modelSelection;
       const preferredModelRef = resolvePreferredModelRef(modelSelection, agentClass.modelPolicy);
-      const requiredCapabilities = modelCapabilitiesForSubtask(subtask.requiredCapabilities);
       const candidates = projectConfigurationCandidates(
         configuration,
         proposed.agentClassRef,
@@ -1652,7 +1655,7 @@ function resolveAuthorizedBindings(
           candidates,
           preferredModelRef,
           requirements: {
-            requiredCapabilities,
+            preferredCapabilities: [],
             contextTokens: 1_024,
           },
         });
@@ -1677,18 +1680,6 @@ function resolveAuthorizedBindings(
   return errors.length > 0
     ? { ok: false, errors: errors.sort() }
     : { ok: true, bindingsBySubtask, routing };
-}
-
-function modelCapabilitiesForSubtask(
-  requiredCapabilities: readonly string[],
-): Array<'coding' | 'tools'> {
-  const capabilities = new Set<'coding' | 'tools'>();
-  if (requiredCapabilities.includes('workspace-engineering')) capabilities.add('coding');
-  if (requiredCapabilities.includes('workspace-engineering')
-    || requiredCapabilities.includes('current-web-research')) {
-    capabilities.add('tools');
-  }
-  return [...capabilities];
 }
 
 function resolveModelRef(

@@ -11,6 +11,7 @@ import { normalizeExecutorFailure } from './error-utils.js';
 import { kernelFailure } from '../core/kernel-failure.js';
 import type { HarnessDriver } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
+import type { ExecutorAffordanceId } from '../routing/types.js';
 
 export interface ContainerCompatibilityAdapterDependencies {
   agentClassId: string;
@@ -18,6 +19,7 @@ export interface ContainerCompatibilityAdapterDependencies {
   runtimeBinding: RuntimePrivateConfigurationBinding;
   authorizedBinding: AuthorizedExecutorBinding;
   modelId: string;
+  executorAffordances?: readonly ExecutorAffordanceId[];
   attemptsRoot: string;
   imageRef: string;
   backend: AttemptExecutionBackend;
@@ -34,6 +36,7 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
   private readonly runtimeBinding: RuntimePrivateConfigurationBinding;
   private readonly authorizedBinding: AuthorizedExecutorBinding;
   private readonly modelId: string;
+  private readonly executorAffordances?: readonly ExecutorAffordanceId[];
   private readonly attemptsRoot: string;
   private readonly imageRef: string;
   private readonly backend: AttemptExecutionBackend;
@@ -49,6 +52,7 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
     this.runtimeBinding = dependencies.runtimeBinding;
     this.authorizedBinding = dependencies.authorizedBinding;
     this.modelId = dependencies.modelId;
+    this.executorAffordances = dependencies.executorAffordances;
     this.attemptsRoot = dependencies.attemptsRoot;
     this.imageRef = dependencies.imageRef;
     this.backend = dependencies.backend;
@@ -80,6 +84,9 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
+        ...(this.executorAffordances
+          ? { executorAffordances: this.executorAffordances }
+          : {}),
       });
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(containerExecutorInput(input)),

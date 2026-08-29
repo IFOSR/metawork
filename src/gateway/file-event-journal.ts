@@ -5,11 +5,13 @@
  * eventId 幂等、有界保留。账户/会话 ID 经校验防止路径穿越。
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import {
+  GATEWAY_EVENT_KINDS,
   gatewayEventPayloadBytes,
   isTerminalGatewayEvent,
   MAX_GATEWAY_EVENT_PAYLOAD_BYTES,
@@ -20,9 +22,15 @@ import {
 import type { EventJournal } from './event-journal.js';
 
 interface JournalFile {
-  readonly version: 1;
+  readonly version: 2;
   lastSequence: number;
   events: GatewayEventEnvelope[];
+}
+
+interface StoredJournalFile {
+  readonly version: 1 | 2;
+  readonly lastSequence: number;
+  readonly events: unknown[];
 }
 
 const MAX_EVENTS_PER_CONVERSATION = 200;
@@ -39,6 +47,9 @@ export class FileEventJournal implements EventJournal {
 
   async appendBatch(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]> {
     if (events.length === 0) return [];
+    if (events.some(event => event.protocolVersion !== 2)) {
+      throw new Error('Gateway event protocol version must be 2');
+    }
     const first = events[0]!;
     if (events.some(event =>
       event.accountId !== first.accountId
@@ -134,22 +145,32 @@ export class FileEventJournal implements EventJournal {
   private async read(accountId: string, conversationId: string): Promise<JournalFile> {
     try {
       const raw = await readFile(this.path(accountId, conversationId), 'utf8');
-      const parsed = JSON.parse(raw) as Partial<JournalFile>;
-      if (parsed.version !== 1
-        || typeof parsed.lastSequence !== 'number'
-        || !Array.isArray(parsed.events)) {
+      const parsed: unknown = JSON.parse(raw);
+      if (!isStoredJournalFile(parsed)) {
         throw new Error(`Invalid journal file: ${accountId}/${conversationId}`);
       }
-      return {
-        version: 1,
+      const events = parsed.events.map(event => normalizeStoredEvent(
+        event,
+        accountId,
+        conversationId,
+      ));
+      if (events.some(event => event.sequence > parsed.lastSequence)) {
+        throw new Error(`Invalid journal file: ${accountId}/${conversationId}`);
+      }
+      const file: JournalFile = {
+        version: 2,
         lastSequence: parsed.lastSequence,
-        events: (parsed.events as GatewayEventEnvelope[]).map(event => {
+        events: events.map(event => {
           const payload = boundHistoricalPayload(sanitizeGatewayEventPayload(event.payload));
           return { ...event, payload };
         }),
       };
+      if (parsed.version === 1) {
+        await this.write(file, accountId, conversationId);
+      }
+      return file;
     } catch (error) {
-      if (isMissingFile(error)) return { version: 1, lastSequence: 0, events: [] };
+      if (isMissingFile(error)) return { version: 2, lastSequence: 0, events: [] };
       throw error;
     }
   }
@@ -161,7 +182,7 @@ export class FileEventJournal implements EventJournal {
   ): Promise<void> {
     const path = this.path(accountId, conversationId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const temporaryPath = `${path}.tmp-${process.pid}`;
+    const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
     await writeFile(
       temporaryPath,
       `${JSON.stringify(file, null, 2)}\n`,
@@ -169,6 +190,50 @@ export class FileEventJournal implements EventJournal {
     );
     await rename(temporaryPath, path);
   }
+}
+
+function isStoredJournalFile(value: unknown): value is StoredJournalFile {
+  if (!isRecord(value)) return false;
+  return (value.version === 1 || value.version === 2)
+    && typeof value.lastSequence === 'number'
+    && Number.isSafeInteger(value.lastSequence)
+    && value.lastSequence >= 0
+    && Array.isArray(value.events);
+}
+
+function normalizeStoredEvent(
+  value: unknown,
+  accountId: string,
+  conversationId: string,
+): GatewayEventEnvelope {
+  if (!isRecord(value)
+    || (value.protocolVersion !== 1 && value.protocolVersion !== 2)
+    || typeof value.eventId !== 'string'
+    || value.eventId.length === 0
+    || typeof value.sequence !== 'number'
+    || !Number.isSafeInteger(value.sequence)
+    || value.sequence <= 0
+    || value.accountId !== accountId
+    || value.conversationId !== conversationId
+    || (value.requestId !== null && typeof value.requestId !== 'string')
+    || (value.turnId !== null && typeof value.turnId !== 'string')
+    || !GATEWAY_EVENT_KINDS.includes(value.kind as never)
+    || !('payload' in value)
+    || typeof value.occurredAt !== 'string') {
+    throw new Error(`Invalid journal event: ${accountId}/${conversationId}`);
+  }
+  return {
+    protocolVersion: 2,
+    eventId: value.eventId,
+    sequence: value.sequence,
+    accountId,
+    conversationId,
+    requestId: value.requestId,
+    turnId: value.turnId,
+    kind: value.kind as GatewayEventEnvelope['kind'],
+    payload: value.payload,
+    occurredAt: value.occurredAt,
+  };
 }
 
 function isMissingFile(error: unknown): boolean {

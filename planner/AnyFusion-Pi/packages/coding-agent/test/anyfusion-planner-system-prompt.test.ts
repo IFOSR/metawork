@@ -46,6 +46,14 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).not.toContain('"name": "codex-cli"');
 	});
 
+	it("requires current runtime facts to override stale persisted planner history", () => {
+		const prompt = buildAnyFusionPlannerSystemPrompt();
+
+		expect(prompt).toContain("The latest `get_runtime_state` result is the current fact for the new turn.");
+		expect(prompt).toContain("Cancelled Tasks are not active or blocked");
+		expect(prompt).toContain("Never use stale Planner conversation history to claim a Task is active or blocked");
+	});
+
 	it("fails closed when the fixed Skill is missing", () => {
 		expect(() => buildAnyFusionPlannerSystemPrompt(join(tmpdir(), "missing-anyfusion-planner-skill.md"))).toThrow(
 			"fixed Skill is unavailable",

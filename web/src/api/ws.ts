@@ -31,12 +31,14 @@ export interface WsHandlers {
     turnId: string,
     userInput: string,
     startedAt: string,
+    interactionKind?: 'system_command' | 'ai_turn',
   ) => void;
   onFinalAnswer?: (
     requestId: string,
     turnId: string,
     lines: string[],
     completedAt: string,
+    backgroundWorkPending?: boolean,
   ) => void;
   onTerminalError?: (
     requestId: string,
@@ -67,7 +69,13 @@ export interface WsHandlers {
   onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
-  onTraceDelta?: (turnId: string, fromSequence: number, events: InteractionTraceEvent[]) => void;
+  onTraceDelta?: (
+    turnId: string,
+    fromSequence: number,
+    events: InteractionTraceEvent[],
+    status?: InteractionTraceStatus,
+    completedAt?: string | null,
+  ) => void;
   onConfigurationRuntimeState?: (state: ConfigurationRuntimeState) => void;
   onError?: (message: string) => void;
   onUnauthorized?: () => void;
@@ -129,6 +137,7 @@ export class WsClient {
             message.turnId,
             message.userInput,
             message.startedAt,
+            message.interactionKind,
           );
           break;
         case 'final_answer':
@@ -137,6 +146,7 @@ export class WsClient {
             message.turnId,
             message.lines,
             message.completedAt,
+            message.backgroundWorkPending,
           );
           break;
         case 'terminal_error':
@@ -183,7 +193,13 @@ export class WsClient {
           this.handlers.onTraceSnapshot?.(message.trace);
           break;
         case 'trace_delta':
-          this.handlers.onTraceDelta?.(message.turnId, message.fromSequence, message.events);
+          this.handlers.onTraceDelta?.(
+            message.turnId,
+            message.fromSequence,
+            message.events,
+            message.status,
+            message.completedAt,
+          );
           break;
         case 'configuration_runtime_state':
           this.handlers.onConfigurationRuntimeState?.(message.state);
