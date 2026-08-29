@@ -39,6 +39,13 @@ type CatalogDraft = {
 };
 type RoutingDraft = RoutingDraftMap;
 type RoutingFacts = Record<string, AgentClassRoutingFacts>;
+type RuntimePolicyDraft = {
+  maxConcurrentTasks: number;
+  maxConcurrentAttempts: number;
+  maxConcurrentAttemptsPerTask: number;
+  schedulingAgingMs: number;
+  sameConversationQueueLimit: number;
+};
 
 type RawRecord = Record<string, unknown>;
 
@@ -138,6 +145,21 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
   return { providers, models };
 }
 
+function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
+  const policy = asRecord(config.runtimePolicy);
+  return {
+    maxConcurrentTasks: typeof policy.maxConcurrentTasks === 'number' ? policy.maxConcurrentTasks : 2,
+    maxConcurrentAttempts: typeof policy.maxConcurrentAttempts === 'number' ? policy.maxConcurrentAttempts : 4,
+    maxConcurrentAttemptsPerTask: typeof policy.maxConcurrentAttemptsPerTask === 'number'
+      ? policy.maxConcurrentAttemptsPerTask
+      : 2,
+    schedulingAgingMs: typeof policy.schedulingAgingMs === 'number' ? policy.schedulingAgingMs : 300_000,
+    sameConversationQueueLimit: typeof policy.sameConversationQueueLimit === 'number'
+      ? policy.sameConversationQueueLimit
+      : 8,
+  };
+}
+
 function loadRoutingDraft(config: RawRecord): RoutingDraft {
   const rawAgentClasses = asRecord(config.agentClasses);
   const modelRefs = Object.keys(asRecord(config.models));
@@ -226,6 +248,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [draft, setDraft] = useState<RoutingDraft | null>(null);
   const [facts, setFacts] = useState<RoutingFacts | null>(null);
   const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
+  const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyDraft | null>(null);
   const [newModelIds, setNewModelIds] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ActivateResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -241,6 +264,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     setRevisionId(snapshot.revisionId);
     setRunningRevisionId(snapshot.runtimeRevisionId ?? snapshot.runningRevisionId);
     setCatalog(loadCatalog(config, completion));
+    setRuntimePolicy(loadRuntimePolicy(config));
     setDraft(loadRoutingDraft(config));
     setFacts(loadRoutingFacts(config));
   };
@@ -322,7 +346,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const editingDisabled = loading || activationState?.activationAllowed === false;
 
   const activate = async () => {
-    if (!http || !revisionId || !draft || !catalog || activationState?.activationAllowed === false) return;
+    if (!http || !revisionId || !draft || !catalog || !runtimePolicy || activationState?.activationAllowed === false) return;
     const missingCredentials = Object.values(catalog.providers)
       .filter(provider => provider.credentialState === '缺失' && !provider.apiKey)
       .map(provider => provider.providerRef);
@@ -422,6 +446,10 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
         providers,
         models,
         agentClasses,
+        runtimePolicy: {
+          ...asRecord(originalConfig.runtimePolicy),
+          ...runtimePolicy,
+        },
       }, activationSecrets);
       setResult(response);
       const revisionMismatch = response.issues?.some(issue => /revision mismatch|revision has changed/iu.test(issue));
@@ -627,8 +655,67 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           {loadError && <div className="result-banner result-error">加载失败：{loadError}</div>}
           {!draft && !loadError && <div className="empty-hint">加载配置中…</div>}
 
-          {draft && catalog && facts && (
+          {draft && catalog && facts && runtimePolicy && (
             <div className="settings-sections">
+              <section className="settings-section runtime-policy-section">
+                <div className="section-heading">
+                  <div>
+                    <div className="settings-eyebrow">00 / RUNTIME CAPACITY</div>
+                    <h3>并行与队列</h3>
+                    <p>不同 Conversation 可并行执行；同一 Conversation 的后续 Task 会排队。</p>
+                  </div>
+                </div>
+                <div className="runtime-policy-grid">
+                  <label className="settings-field">
+                    <span>最大并行 Task</span>
+                    <input className="text-input" type="number" min={1} max={8}
+                      value={runtimePolicy.maxConcurrentTasks}
+                      onChange={event => setRuntimePolicy(current => current ? {
+                        ...current, maxConcurrentTasks: Number(event.target.value),
+                      } : current)} />
+                    <small>账户同时占用的 Conversation Task slot 上限，默认 2。</small>
+                  </label>
+                  <label className="settings-field">
+                    <span>最大并行 Attempt</span>
+                    <input className="text-input" type="number" min={1} max={32}
+                      value={runtimePolicy.maxConcurrentAttempts}
+                      onChange={event => setRuntimePolicy(current => current ? {
+                        ...current, maxConcurrentAttempts: Number(event.target.value),
+                      } : current)} />
+                    <small>账户级 active attempt 上限，默认 4。</small>
+                  </label>
+                  <label className="settings-field">
+                    <span>每 Task 最大 Attempt</span>
+                    <input className="text-input" type="number" min={1} max={32}
+                      value={runtimePolicy.maxConcurrentAttemptsPerTask}
+                      onChange={event => setRuntimePolicy(current => current ? {
+                        ...current, maxConcurrentAttemptsPerTask: Number(event.target.value),
+                      } : current)} />
+                    <small>防止单个 DAG 吞占全部 Attempt 容量，默认 2。</small>
+                  </label>
+                  <label className="settings-field">
+                    <span>调度老化时间（毫秒）</span>
+                    <input className="text-input" type="number" min={0} max={86_400_000}
+                      value={runtimePolicy.schedulingAgingMs}
+                      onChange={event => setRuntimePolicy(current => current ? {
+                        ...current, schedulingAgingMs: Number(event.target.value),
+                      } : current)} />
+                    <small>可执行任务等待多久后获得老化优先级，默认 5 分钟。</small>
+                  </label>
+                  <label className="settings-field">
+                    <span>同会话排队上限</span>
+                    <input className="text-input" type="number" min={0} max={32}
+                      value={runtimePolicy.sameConversationQueueLimit}
+                      onChange={event => setRuntimePolicy(current => current ? {
+                        ...current, sameConversationQueueLimit: Number(event.target.value),
+                      } : current)} />
+                    <small>额外排队 Task 数量；设为 0 表示不接纳额外队列。</small>
+                  </label>
+                </div>
+                <div className="routing-section-note">
+                  降低上限不会取消当前运行中的 Task，只影响下一轮调度；配置激活仍遵守现有 revision 和运行中安全门。
+                </div>
+              </section>
               <section className="settings-section">
                 <div className="section-heading">
                   <div>

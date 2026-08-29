@@ -296,10 +296,22 @@ const PermissionProfileSchema = z.discriminatedUnion('profileId', [
 ]);
 
 const RuntimePolicySchema = z.object({
-  maxConcurrentAttempts: z.number().int().min(1).max(4).optional(),
+  maxConcurrentTasks: z.number().int().min(1).max(8).default(2),
+  maxConcurrentAttempts: z.number().int().min(1).max(32).default(4),
+  maxConcurrentAttemptsPerTask: z.number().int().min(1).max(32).default(2),
+  schedulingAgingMs: z.number().int().min(0).max(86_400_000).default(300_000),
+  sameConversationQueueLimit: z.number().int().min(0).max(32).default(8),
   attemptTimeoutMs: z.number().int().min(1_000).max(86_400_000).optional(),
   probeTimeoutMs: z.number().int().min(1_000).max(300_000).optional(),
-}).strict();
+}).strict().superRefine((policy, context) => {
+  if (policy.maxConcurrentAttemptsPerTask > policy.maxConcurrentAttempts) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['maxConcurrentAttemptsPerTask'],
+      message: 'maxConcurrentAttemptsPerTask must not exceed maxConcurrentAttempts',
+    });
+  }
+});
 
 const GatewayConfigSchema = z.object({
   enabled: z.boolean().optional(),

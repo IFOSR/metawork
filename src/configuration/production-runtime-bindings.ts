@@ -9,7 +9,11 @@ import type {
 
 export interface ProductionRuntimeBindings {
   runtimeConfiguration: ReturnType<typeof buildRuntimeConfigurationView>;
+  maxConcurrentTasks: number;
   maxConcurrentAttempts: number;
+  maxConcurrentAttemptsPerTask: number;
+  schedulingAgingMs: number;
+  sameConversationQueueLimit: number;
   getRuntimeConfiguration(
     revisionId: string,
   ): ReturnType<typeof buildRuntimeConfigurationView> | null;
@@ -33,8 +37,20 @@ export function createProductionRuntimeBindings(input: {
     get runtimeConfiguration() {
       return activeRuntimeConfiguration;
     },
+    get maxConcurrentTasks() {
+      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
+    },
     get maxConcurrentAttempts() {
       return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttempts ?? 4;
+    },
+    get maxConcurrentAttemptsPerTask() {
+      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttemptsPerTask ?? 2;
+    },
+    get schedulingAgingMs() {
+      return activeRuntimeConfiguration.runtimePolicy.schedulingAgingMs ?? 300_000;
+    },
+    get sameConversationQueueLimit() {
+      return activeRuntimeConfiguration.runtimePolicy.sameConversationQueueLimit ?? 8;
     },
     getRuntimeConfiguration: revisionId => {
       const snapshot = snapshots.get(revisionId);

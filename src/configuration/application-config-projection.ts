@@ -2,6 +2,10 @@ import type { Config } from '../core/types.js';
 import type { ConfigurationSnapshot, HarnessDefinition } from './types.js';
 
 const DEFAULT_MAX_CONCURRENT_ATTEMPTS = 4;
+const DEFAULT_MAX_CONCURRENT_TASKS = 2;
+const DEFAULT_MAX_CONCURRENT_ATTEMPTS_PER_TASK = 2;
+const DEFAULT_SCHEDULING_AGING_MS = 300_000;
+const DEFAULT_SAME_CONVERSATION_QUEUE_LIMIT = 8;
 
 export function buildApplicationConfig(snapshot: ConfigurationSnapshot): Config {
   return {
@@ -20,6 +24,18 @@ export function buildApplicationConfig(snapshot: ConfigurationSnapshot): Config 
       max_concurrent_attempts:
         snapshot.config.runtimePolicy.maxConcurrentAttempts
         ?? DEFAULT_MAX_CONCURRENT_ATTEMPTS,
+      max_concurrent_tasks:
+        snapshot.config.runtimePolicy.maxConcurrentTasks
+        ?? DEFAULT_MAX_CONCURRENT_TASKS,
+      max_concurrent_attempts_per_task:
+        snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
+        ?? DEFAULT_MAX_CONCURRENT_ATTEMPTS_PER_TASK,
+      scheduling_aging_ms:
+        snapshot.config.runtimePolicy.schedulingAgingMs
+        ?? DEFAULT_SCHEDULING_AGING_MS,
+      same_conversation_queue_limit:
+        snapshot.config.runtimePolicy.sameConversationQueueLimit
+        ?? DEFAULT_SAME_CONVERSATION_QUEUE_LIMIT,
     },
     ui: {
       language: 'zh-CN',

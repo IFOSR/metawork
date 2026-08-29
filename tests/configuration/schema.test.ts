@@ -116,7 +116,43 @@ function completeConfiguration() {
 
 describe('AnyFusion configuration schema v2', () => {
   it('accepts the complete empty v2 document shape', () => {
-    expect(AnyFusionConfigurationV2Schema.safeParse(minimalConfiguration()).success).toBe(true);
+    const parsed = AnyFusionConfigurationV2Schema.parse(minimalConfiguration());
+    expect(parsed.runtimePolicy).toMatchObject({
+      maxConcurrentTasks: 2,
+      maxConcurrentAttempts: 4,
+      maxConcurrentAttemptsPerTask: 2,
+      schedulingAgingMs: 300_000,
+      sameConversationQueueLimit: 8,
+    });
+  });
+
+  it('accepts configured parallel scheduling bounds', () => {
+    const result = AnyFusionConfigurationV2Schema.safeParse({
+      ...minimalConfiguration(),
+      runtimePolicy: {
+        maxConcurrentTasks: 8,
+        maxConcurrentAttempts: 32,
+        maxConcurrentAttemptsPerTask: 32,
+        schedulingAgingMs: 86_400_000,
+        sameConversationQueueLimit: 32,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid parallel scheduling values and inconsistent attempt caps', () => {
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...minimalConfiguration(),
+      runtimePolicy: { maxConcurrentTasks: 0 },
+    }).success).toBe(false);
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...minimalConfiguration(),
+      runtimePolicy: { sameConversationQueueLimit: 33 },
+    }).success).toBe(false);
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...minimalConfiguration(),
+      runtimePolicy: { maxConcurrentAttempts: 2, maxConcurrentAttemptsPerTask: 3 },
+    }).success).toBe(false);
   });
 
   it('accepts Auto objectives for Executors and model economics metadata', () => {

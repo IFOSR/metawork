@@ -140,6 +140,10 @@ export interface PermissionProfile {
 
 export interface RuntimePolicy {
   maxConcurrentAttempts?: number;
+  maxConcurrentTasks?: number;
+  maxConcurrentAttemptsPerTask?: number;
+  schedulingAgingMs?: number;
+  sameConversationQueueLimit?: number;
   attemptTimeoutMs?: number;
   probeTimeoutMs?: number;
 }

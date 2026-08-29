@@ -834,6 +834,18 @@ body {
     var(--bg-elevated);
 }
 
+.runtime-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.runtime-policy-grid small {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .section-heading {
   align-items: flex-end;
   margin-bottom: 16px;
@@ -979,6 +991,18 @@ body {
   margin: -4px 0 16px;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .runtime-policy-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .runtime-policy-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .model-catalog {
@@ -3197,31 +3221,35 @@ select {
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --surface-canvas: #f3f0e8;
-  --surface-sidebar: #e9e5da;
-  --surface-panel: #faf8f2;
+  /* Light-mode palette: clean cool-neutral surfaces with a clearly stepped
+    hierarchy and one confident emerald accent. Near-black body text, visible
+    hairlines, and a tinted selection so every state is unambiguous. */
+  --surface-canvas: #f4f5f7;
+  --surface-sidebar: #ebedf0;
+  --surface-panel: #ffffff;
   --surface-raised: #ffffff;
-  --surface-overlay: rgba(250, 248, 242, 0.94);
-  --line-subtle: #d2ccbf;
-  --text-primary: #20251f;
-  --text-secondary: #687066;
-  --status-success: #287a47;
-  --status-warning: #946814;
-  --status-danger: #b33d38;
-  --focus-ring: #39764d;
-  --surface-user-message: #e6eee4;
-  --line-user-message: #bdc9ba;
+  --surface-overlay: rgba(250, 251, 252, 0.96);
+  --line-subtle: #d3d7de;
+  --text-primary: #16181d;
+  --text-secondary: #525a63;
+  --status-success: #1c7a44;
+  --status-warning: #a16207;
+  --status-danger: #cf2f2b;
+  --focus-ring: #0e6a3c;
+  --accent-strong: #0a4f2c;
+  --surface-user-message: #eef1f6;
+  --line-user-message: #d2dbe6;
   --text-user-message: var(--text-primary);
-  --text-user-message-label: #56645a;
-  --surface-trajectory-panel: #faf8f2;
-  --surface-trajectory-control: #ffffff;
-  --surface-trajectory-header: #e6eee4;
-  --surface-trajectory-row-hover: #edf2eb;
-  --surface-trajectory-detail: #f2eee5;
-  --surface-trajectory-track: #e5e9e2;
-  --line-trajectory: #c8cfc5;
-  --line-trajectory-track: #c3cbc1;
-  --text-trajectory-muted: #56645a;
+  --text-user-message-label: #4a5560;
+  --surface-trajectory-panel: #ffffff;
+  --surface-trajectory-control: #f7f8fa;
+  --surface-trajectory-header: #eef1f6;
+  --surface-trajectory-row-hover: #f0f3f6;
+  --surface-trajectory-detail: #f5f7f9;
+  --surface-trajectory-track: #e9eef3;
+  --line-trajectory: #d3d7de;
+  --line-trajectory-track: #c6ccd4;
+  --text-trajectory-muted: #4a5560;
 }
 
 body {
@@ -4216,4 +4244,334 @@ button:active:not(:disabled) {
   .composer-footer {
     justify-content: flex-end;
   }
+}
+
+/* ─── Light-mode legibility refinement ────────────────────────────────────
+   Dark mode is left untouched. These rules only widen contrast, sharpen the
+   surface hierarchy, and make selected / hover / active states unambiguous
+   in light mode by remapping the muted tones that were chosen for a dark
+   backdrop and re-tinting selected modules against the light canvas. */
+
+:root[data-theme='light'] {
+  --surface-selected: #e3f2e9;
+  --line-selected: #0e6a3c;
+  --surface-hover: #edf0f3;
+  --surface-subtle: #f2f5f3;
+}
+
+/* Selected / active / hover module backgrounds */
+:root[data-theme='light'] .session-row[data-selected='true'],
+:root[data-theme='light'] .session-row[data-active='true'] {
+  background: var(--surface-selected);
+  border-color: var(--line-selected);
+  box-shadow: inset 3px 0 var(--accent);
+}
+:root[data-theme='light'] .session-row:hover:not([data-selected='true']):not([data-active='true']) {
+  background: var(--surface-hover);
+  border-color: var(--line-subtle);
+}
+:root[data-theme='light'] .session-row[data-selected='true'] .session-row-copy strong,
+:root[data-theme='light'] .session-row[data-active='true'] .session-row-copy strong {
+  color: var(--accent-strong);
+}
+:root[data-theme='light'] .session-row .continue-session {
+  color: var(--accent-strong);
+}
+
+:root[data-theme='light'] .workspace-tabs {
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .workspace-tabs button[data-active='true'] {
+  background: var(--surface-selected);
+  border-color: var(--line-selected);
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px var(--line-selected);
+}
+:root[data-theme='light'] .workspace-tabs button:not([data-active='true']):hover {
+  background: var(--surface-raised);
+}
+
+:root[data-theme='light'] .work-graph-node {
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .work-graph-node[data-runnable='true'] {
+  background: var(--surface-selected);
+  box-shadow: inset 3px 0 var(--accent);
+}
+:root[data-theme='light'] .work-graph-panel {
+  background: linear-gradient(135deg, #f6f7f2, #eef1ea);
+}
+
+:root[data-theme='light'] .executor-attempt,
+:root[data-theme='light'] .step-body,
+:root[data-theme='light'] .event-summary,
+:root[data-theme='light'] .subtask-fact,
+:root[data-theme='light'] .execution-card,
+:root[data-theme='light'] .live-execution-panel {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+
+/* Muted execution copy was tuned for a dark backdrop; restore contrast here. */
+:root[data-theme='light'] .executor-attempt li {
+  color: #3d463d;
+}
+:root[data-theme='light'] .executor-attempt li time,
+:root[data-theme='light'] .execution-step time {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .executor-attempt > header,
+:root[data-theme='light'] .step-details dt {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .executor-attempt > header {
+  border-bottom-color: var(--line-subtle);
+}
+:root[data-theme='light'] .executor-attempt[data-status='running'] {
+  border-color: #8fae8f;
+}
+
+:root[data-theme='light'] .step-body,
+:root[data-theme='light'] .subtask-fact {
+  background: var(--surface-subtle);
+}
+:root[data-theme='light'] .step-body {
+  border-top-color: #d2d9c9;
+  border-left-color: #7cab8a;
+}
+:root[data-theme='light'] .subtask-fact {
+  border-left-color: #7cab8a;
+}
+:root[data-theme='light'] .event-summary {
+  border-color: #cdd4c4;
+}
+
+:root[data-theme='light'] .execution-step time,
+:root[data-theme='light'] .executor-attempt li time {
+  color: var(--text-secondary);
+}
+
+:root[data-theme='light'] .execution-narrative {
+  border-left-color: #b7cdb0;
+}
+:root[data-theme='light'] .execution-narrative > header span,
+:root[data-theme='light'] .final-answer header span {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .final-answer {
+  border-top-color: #cfd6c6;
+}
+
+:root[data-theme='light'] .clarification-card {
+  border-color: #c8a05b;
+  background: linear-gradient(135deg, #f6eedc, #f3f5ee);
+}
+:root[data-theme='light'] .clarification-label {
+  color: #8a5c10;
+}
+
+:root[data-theme='light'] .session-row-copy small,
+:root[data-theme='light'] .delete-session,
+:root[data-theme='light'] .session-section-label,
+:root[data-theme='light'] .sidebar-empty,
+:root[data-theme='light'] .workspace-path {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .delete-session:hover {
+  color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
+}
+
+/* Slightly larger, darker micro-labels so small metadata stays readable. */
+:root[data-theme='light'] .user-message span,
+:root[data-theme='light'] .final-answer header span,
+:root[data-theme='light'] .execution-narrative > header span,
+:root[data-theme='light'] .session-section-label,
+:root[data-theme='light'] .workspace-kicker,
+:root[data-theme='light'] .eyebrow,
+:root[data-theme='light'] .work-graph-phase-label {
+  font-size: 10px;
+}
+:root[data-theme='light'] .workspace-title-block h1 {
+  color: var(--text-primary);
+}
+
+/* Open execution step & trace panels keep a dark wash in the base rules;
+   lift them onto the light surface without washing out the copy. */
+:root[data-theme='light'] .execution-step[open] {
+  border-color: var(--line-subtle);
+  background: var(--surface-subtle);
+}
+:root[data-theme='light'] .execution-step summary {
+  color: var(--text-primary);
+}
+:root[data-theme='light'] .step-actor {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .step-details {
+  border-top-color: var(--line-subtle);
+}
+:root[data-theme='light'] .step-details dt {
+  color: var(--text-secondary);
+}
+
+:root[data-theme='light'] .trace-query,
+:root[data-theme='light'] .trace-header-query {
+  background: var(--surface-raised);
+  border-color: var(--line-subtle);
+}
+:root[data-theme='light'] .trace-status-badge {
+  color: var(--text-secondary);
+  border-color: var(--line-subtle);
+}
+
+/* Workspace selector card & generated-artifact list rows were left as dark
+   washes in the base rules; lift them onto the light surface. */
+:root[data-theme='light'] .workspace-selector {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .workspace-selector label {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .workspace-selector select {
+  color: var(--text-primary);
+}
+:root[data-theme='light'] .workspace-selector-path code {
+  color: var(--text-secondary);
+}
+
+:root[data-theme='light'] .artifact-link {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .artifact-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line-subtle));
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .artifact-link-path {
+  color: var(--text-secondary);
+}
+
+/* Remaining dark washes: settings cards, empty/attach CTAs, composer notice,
+   trace event bodies and hover rollovers. Lift all of them onto the light
+   surface and give the CTAs an accent so they actually read as actions. */
+:root[data-theme='light'] .settings-intro,
+:root[data-theme='light'] .diagnostics-panel,
+:root[data-theme='light'] .settings-warning,
+:root[data-theme='light'] .credential-summary,
+:root[data-theme='light'] .route-policy-copy,
+:root[data-theme='light'] .route-policy-panel,
+:root[data-theme='light'] .provider-card,
+:root[data-theme='light'] .model-card,
+:root[data-theme='light'] .agent-route-card {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+
+:root[data-theme='light'] .workspace-home button,
+:root[data-theme='light'] .conversation-attach-prompt button {
+  border-color: var(--accent);
+  color: #ffffff;
+  background: var(--accent);
+}
+
+:root[data-theme='light'] .composer-notice {
+  border-color: #d8b868;
+  color: #8a5c10;
+  background: #f7efdd;
+}
+
+:root[data-theme='light'] .interaction-event article {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .interaction-event[data-status='running'] article {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-subtle));
+}
+
+:root[data-theme='light'] .execution-card.is-clickable:hover {
+  border-color: #7cab8a;
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .execution-detail-close {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .execution-detail-close:hover {
+  border-color: var(--line-selected);
+  background: var(--surface-hover);
+}
+
+/* Brand monogram, primary CTA buttons and the composer send button use the
+   emerald accent fill with white text so they read as actions; the dark-mode
+   variants carried near-black text that vanished against the green fill. */
+:root[data-theme='light'] .brand-mark {
+  border-color: var(--accent);
+  color: #ffffff;
+  background: var(--accent);
+}
+
+:root[data-theme='light'] .new-session-button {
+  border-color: var(--accent);
+  color: #ffffff;
+  background: var(--accent);
+}
+:root[data-theme='light'] .new-session-button:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+:root[data-theme='light'] .new-session-button span {
+  color: #ffffff;
+}
+
+:root[data-theme='light'] .session-search:focus-within {
+  border-color: var(--accent);
+}
+
+:root[data-theme='light'] .composer-footer button {
+  color: #ffffff;
+  background: var(--accent);
+}
+:root[data-theme='light'] .composer-footer span {
+  color: var(--text-secondary);
+}
+
+:root[data-theme='light'] .artifact-drawer-actions button,
+:root[data-theme='light'] .artifact-drawer-actions a {
+  border-color: var(--line-subtle);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .artifact-drawer-actions button:hover,
+:root[data-theme='light'] .artifact-drawer-actions a:hover {
+  border-color: var(--line-selected);
+  background: var(--surface-hover);
+}
+
+/* Remaining muted metadata text (tuned for dark) — darken for light. */
+:root[data-theme='light'] .workspace-kicker {
+  color: var(--accent);
+}
+:root[data-theme='light'] .workspace-tabs button {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .workspace-path span,
+:root[data-theme='light'] .workspace-path code {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .clear-sessions {
+  color: var(--text-secondary);
+}
+:root[data-theme='light'] .clear-sessions:hover {
+  color: var(--accent-strong);
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .secret-badge {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .execution-detail-kind {
+  color: var(--text-secondary);
+  border-color: var(--line-subtle);
 }

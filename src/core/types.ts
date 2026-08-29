@@ -463,6 +463,10 @@ export interface Config {
     blocked_recheck_enabled?: boolean;
     blocked_recheck_interval?: number;
     max_concurrent_attempts: number;
+    max_concurrent_tasks?: number;
+    max_concurrent_attempts_per_task?: number;
+    scheduling_aging_ms?: number;
+    same_conversation_queue_limit?: number;
   };
   ui: {
     language: string;
