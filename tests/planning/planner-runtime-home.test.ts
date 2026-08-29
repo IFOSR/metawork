@@ -46,6 +46,33 @@ describe('materializePlannerRuntimeHome', () => {
     expect((await stat(join(runtimeHome, 'settings.json'))).mode & 0o777).toBe(0o444);
     await writeFile(join(runtimeHome, 'trust.json.lock'), '');
   });
+
+  it('re-materializes an existing read-only home without EACCES', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-runtime-home-'));
+    roots.push(root);
+    const sourceHome = join(root, 'generated', 'revision-1', 'planner');
+    const runtimeRoot = join(root, 'planner-runtime');
+    await mkdir(sourceHome, { recursive: true, mode: 0o700 });
+    await writeFile(join(sourceHome, 'models.json'), '{"a":1}\n', { mode: 0o600 });
+    await chmod(sourceHome, 0o555);
+    await chmod(join(sourceHome, 'models.json'), 0o444);
+
+    const first = await materializePlannerRuntimeHome({
+      sourceHome,
+      runtimeRoot,
+      revisionId: 'revision-1',
+    });
+    expect((await stat(join(first, 'models.json'))).mode & 0o777).toBe(0o444);
+
+    // 第二次物化（目标已存在且只读）必须能覆盖，而不是 EACCES。
+    const second = await materializePlannerRuntimeHome({
+      sourceHome,
+      runtimeRoot,
+      revisionId: 'revision-1',
+    });
+    expect(second).toBe(first);
+    expect(await readFile(join(second, 'models.json'), 'utf8')).toBe('{"a":1}\n');
+  });
 });
 
 async function makeWritable(path: string): Promise<void> {

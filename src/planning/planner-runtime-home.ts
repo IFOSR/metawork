@@ -178,6 +178,8 @@ async function copyTree(source: string, target: string): Promise<void> {
     if (!entry.isFile()) {
       throw new Error(`Unsupported entry in Planner generated home: ${sourcePath}`);
     }
+    // 上次物化会按源权限把目标文件设为只读；重新物化前先移除，避免覆盖只读文件时 EACCES。
+    await rm(targetPath, { force: true });
     await copyFile(sourcePath, targetPath);
     const sourceInfo = await lstat(sourcePath);
     await chmod(targetPath, sourceInfo.mode & 0o777);
