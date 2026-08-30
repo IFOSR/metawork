@@ -1,7 +1,8 @@
 # Planner Direct Web Access Design
 
-> **Status:** Accepted; implementation in progress
+> **Status:** Delivered
 > **Design date:** 2026-08-30
+> **Completion date:** 2026-08-30
 > **Review owner:** Product / Architecture
 > **Scope:** AnyFusion-Pi semantic Planner tools and action routing
 > **Related authority:** ADR-0015, ADR-0020
@@ -81,3 +82,9 @@ added.
 - Prompt tests prove the `direct_reply` and Executor routing boundary is
   explicit.
 - Existing Planner, MetaWork planning, lint, and build gates remain green.
+
+## Completion
+
+Delivered in `baca776` (`feat(planner): add bounded direct web access`).
+Validation and live acceptance evidence are recorded in the implementation
+plan.

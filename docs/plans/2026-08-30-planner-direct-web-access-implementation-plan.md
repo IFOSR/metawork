@@ -2,9 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use test-driven-development and execute this plan task-by-task.
 
-**Status:** In progress
+**Status:** Completed
 
 **Plan date:** 2026-08-30
+
+**Completion date:** 2026-08-30
 
 **Design:** [Planner Direct Web Access Design](2026-08-30-planner-direct-web-access-design.md)
 
@@ -92,3 +94,34 @@ in Kernel, and side effects in Executors.
 4. Run the vendored Planner build.
 5. Record completion date, validation evidence, and closing commit after the
    change is committed.
+
+## Completion Record
+
+### Delivered Behavior
+
+- Semantic Planner RPC exposes bounded read-only `web_fetch` and `web_search`
+  alongside the proposal and seven authoritative MetaWork MCP tools.
+- `direct_reply` is limited to complete current-turn answers from dialogue and
+  available read-only tools. Shell, unavailable Workspace inspection,
+  file/Git/storage mutation, authenticated actions, side effects, durable
+  progress, monitoring, artifacts, and handoffs route through
+  `plan_work_graph` to a Kernel-authorized Executor.
+- Public Web requests pin validated addresses to the actual per-hop Undici
+  connection, bypass the global proxy dispatcher, reject private/special IPv4
+  and IPv6 targets, and apply one deadline across DNS through body consumption.
+
+### Validation
+
+- AnyFusion-Pi focused Planner tests: 28 passed.
+- AnyFusion-Pi coding-agent build passed.
+- MetaWork focused Planning/Kernel tests: 83 passed locally; independent review
+  also ran the broader Planning set with 104 passing tests.
+- `npm run lint`, `npm run build`, and `git diff --check` passed.
+- Real `web_fetch` returned HTTP 200 from the target GitHub repository.
+- Real `web_search` followed the public Bing redirect, returned 10 results, and
+  included the target GitHub repository.
+- Independent re-review reported no blocking correctness or security findings.
+
+### Closing Commit
+
+`baca776` (`feat(planner): add bounded direct web access`).
