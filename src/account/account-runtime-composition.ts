@@ -103,6 +103,7 @@ export function buildAccountRuntimeComposition(deps: {
   const repositories = buildAccountRepositories(deps.db);
   const workspaceServices = buildAccountWorkspaceServices(deps.db, deps.workspaceRoot);
   const conversationExecutionBinder = createAccountConversationExecutionBinder();
+  let startupRecovery!: AccountStartupRecoveryService;
   const taskServices = buildAccountTaskServices({
     taskEngine: deps.taskEngine,
     agentClasses: deps.stagedConfiguration.snapshot.config.agentClasses,
@@ -189,6 +190,9 @@ export function buildAccountRuntimeComposition(deps: {
     notifier: deps.notifier,
     maxConcurrentAttempts: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttempts
       ?? 4,
+    maxConcurrentAttemptsPerTask: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
+      ?? 2,
+    onTaskTerminal: taskId => startupRecovery?.onTaskTerminal(taskId),
     getConfigurationRevision: deps.getConfigurationRevision,
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
@@ -227,6 +231,7 @@ export function buildAccountRuntimeComposition(deps: {
     kernelExecutionCallbacks: conversationExecutionBinder.routedKernelCallbacks(),
     taskExecutionCallbacks: conversationExecutionBinder.routedTaskCallbacks(),
     sessionKernelCallbacks: conversationExecutionBinder.routedSessionKernelCallbacks(),
+    conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
   });
   conversationExecutionBinder.bindSharedServices(kernelExecutionServices);
   coordinatorServices.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
@@ -257,7 +262,7 @@ export function buildAccountRuntimeComposition(deps: {
           'resolve_recovery',
         ],
       });
-  const startupRecovery = new AccountStartupRecoveryService({
+  startupRecovery = new AccountStartupRecoveryService({
     db: deps.db,
     kernelServices,
     repositories,

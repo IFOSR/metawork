@@ -40,7 +40,7 @@ describe('Detailed conversation view', () => {
     expect(step).not.toContain('reasoningText');
     expect(styles).toMatch(/\.user-message\s*\{[^}]*background: var\(--surface-user-message\);/u);
     expect(styles).toMatch(/\.user-message\s*\{[^}]*color: var\(--text-user-message\);/u);
-    expect(styles).toContain('--surface-user-message: #e6eee4');
+    expect(styles).toContain('--surface-user-message: #eef1f6');
     expect(styles).toContain('--text-user-message: var(--text-primary)');
   });
 

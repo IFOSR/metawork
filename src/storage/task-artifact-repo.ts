@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+import { resolvePreviewKind, type ArtifactProjection } from '../delivery/user-artifact-types.js';
 
 export type TaskArtifactStatus = 'published' | 'unavailable';
 
@@ -189,6 +189,9 @@ export class TaskArtifactRepo {
   }
 
   toProjection(record: TaskArtifactRecord): ArtifactProjection {
+    const previewKind = record.status === 'unavailable'
+      ? 'unsupported'
+      : resolvePreviewKind(record.previewKind, record.mediaType);
     return {
       artifactId: record.artifactId,
       taskId: record.taskId,
@@ -196,9 +199,9 @@ export class TaskArtifactRepo {
       displayName: record.displayName,
       relativePath: record.relativePath,
       mediaType: record.mediaType,
-      previewKind: record.status === 'unavailable' ? 'unsupported' : record.previewKind,
+      previewKind,
       previewable: record.status === 'published'
-        && ['markdown', 'text', 'code'].includes(record.previewKind),
+        && ['markdown', 'text', 'code', 'image'].includes(previewKind),
       byteLength: record.byteLength,
       contentHash: record.contentHash,
       publishedAt: record.createdAt,

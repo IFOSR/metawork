@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { SubtaskStatus } from '../core/types.js';
+import type { Subtask, SubtaskStatus } from '../core/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import {
@@ -50,6 +50,9 @@ export interface AttemptTerminalLanding {
     publicationId: string;
     candidateCommit: string;
   };
+  subtaskResult?: string;
+  subtaskArtifacts?: string[];
+  subtaskVerification?: Subtask['verification'];
   now: string;
 }
 
@@ -115,7 +118,12 @@ export class AttemptTerminalService {
       if (!cancellationWon) {
         const changed = this.db.prepare(`
           UPDATE subtasks
-          SET status = ?, error = ?, updated_at = ?
+          SET status = ?,
+              result = COALESCE(?, result),
+              artifacts_json = COALESCE(?, artifacts_json),
+              verification_json = COALESCE(?, verification_json),
+              error = ?,
+              updated_at = ?
           WHERE id = ? AND task_id = ? AND status = ?
             AND EXISTS (
               SELECT 1 FROM tasks
@@ -123,6 +131,9 @@ export class AttemptTerminalService {
             )
         `).run(
           input.nextSubtaskStatus,
+          input.subtaskResult ?? null,
+          input.subtaskArtifacts ? JSON.stringify(input.subtaskArtifacts) : null,
+          input.subtaskVerification ? JSON.stringify(input.subtaskVerification) : null,
           input.subtaskError,
           input.now,
           input.receipt.subtaskId,

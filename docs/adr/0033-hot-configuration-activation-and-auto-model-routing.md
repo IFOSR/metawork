@@ -9,8 +9,11 @@
 ## Decision
 
 Provider and Model catalog facts, Provider credential references, AgentClass
-model policies, and Auto routing objectives are hot-activatable at the
-AccountRuntime boundary. Process artifacts remain restart-required: application
+model policies, Auto routing objectives, and AgentClass routing use-case hints
+(`primaryUseCases` / `avoidUseCases`) are hot-activatable at the AccountRuntime
+boundary. Use-case hints guide AgentClass choice and are re-resolved from the
+current active revision before each Planner turn, so they do not require a
+Server restart. Process artifacts remain restart-required: application
 release, SQLite schema, Harness command/driver/image/transport, Permission
 Profile semantics, Planner RPC protocol, and runtime directory protocol.
 

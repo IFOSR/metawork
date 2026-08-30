@@ -7,7 +7,7 @@
  * 或内部执行标识。
  */
 
-export type ArtifactPreviewKind = 'markdown' | 'text' | 'code' | 'unsupported';
+export type ArtifactPreviewKind = 'markdown' | 'text' | 'code' | 'image' | 'unsupported';
 
 export interface ArtifactProjection {
   artifactId: string;
@@ -26,6 +26,26 @@ export interface ArtifactProjection {
 /** 用户 Workspace 内固定的用户产物目录名（兼容既有 preview URL 与测试）。 */
 export const USER_ARTIFACTS_DIRECTORY = 'metaclaw-tasks';
 
+const PREVIEW_KINDS = new Set<ArtifactPreviewKind>(['markdown', 'text', 'code', 'image']);
+
+export function isPreviewableKind(kind: string): kind is ArtifactPreviewKind {
+  return PREVIEW_KINDS.has(kind as ArtifactPreviewKind);
+}
+
+/**
+ * 解析可预览类型。历史产物可能存储了旧的 `unsupported` 值（例如图片在
+ * 图片预览支持加入前发布），这里按 mediaType 兜底回退到 `image`，
+ * 使存量图片无需重新发布即可预览。
+ */
+export function resolvePreviewKind(
+  kind: string,
+  mediaType: string,
+): ArtifactPreviewKind {
+  if (isPreviewableKind(kind)) return kind;
+  if (mediaType.startsWith('image/')) return 'image';
+  return 'unsupported';
+}
+
 export function classifyPreviewKind(
   relativePath: string,
 ): ArtifactPreviewKind {
@@ -38,6 +58,7 @@ export function classifyPreviewKind(
     'c', 'h', 'cpp', 'hpp', 'sh', 'bash', 'zsh', 'sql', 'html', 'css',
     'toml', 'ini', 'xml',
   ].includes(extension)) return 'code';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(extension)) return 'image';
   return 'unsupported';
 }
 

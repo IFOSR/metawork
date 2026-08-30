@@ -49,6 +49,7 @@ import type { WorkspacePublicationRepo } from '../storage/workspace-publication-
 import type { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import { AttemptSupervisor, type AttemptSupervisorContext } from './attempt-supervisor.js';
 import type {
   CancellationReceipt,
@@ -59,7 +60,7 @@ import type {
   WorkspacePublicationOutcome,
 } from './workspace-publication-worker.js';
 import type { HistoricalResultUpgrader } from './historical-result-upgrader.js';
-import { formatExecutorProgress } from '../executor/error-utils.js';
+import { formatExecutorProgress, normalizeExecutorFailure } from '../executor/error-utils.js';
 import type { ExecutorAdapter, ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutionTraceAppendInput } from './execution-trace.js';
 import {
@@ -234,8 +235,10 @@ function resumeRecoveryCandidates(input: {
     }
   }
   const candidates = input.subtasks.flatMap(subtask => {
-    if (subtask.status !== 'awaiting_decision' || activeSubtaskIds.has(subtask.id)) return [];
-    if (deriveRecoverySafety(subtask.requiredCapabilities) === 'external_non_idempotent') return [];
+    if (
+      !['awaiting_decision', 'blocked'].includes(subtask.status)
+      || activeSubtaskIds.has(subtask.id)
+    ) return [];
     const receipt = latestReceiptBySubtask.get(subtask.id);
     if (
       !receipt
@@ -256,8 +259,15 @@ function resumeRecoveryCandidates(input: {
       : violation.code === 'completion_no_change_reason_mismatch'
         && violation.path === 'noChangeReason'
         ? 'completion_no_change_reason_mismatch' as const
+        : violation.code === 'completion_malformed' && violation.path === 'report'
+          ? 'completion_metadata_invalid' as const
         : null;
     if (!recoveryReason) return [];
+    const metadataCorrection = recoveryReason === 'completion_metadata_invalid';
+    if (
+      !metadataCorrection
+      && deriveRecoverySafety(subtask.requiredCapabilities) === 'external_non_idempotent'
+    ) return [];
     const workspace = input.workspaceRepository.findByIdentity(
       receipt.taskId,
       receipt.generationId,
@@ -280,6 +290,14 @@ function resumeRecoveryCandidates(input: {
         receipt.authorizedBinding.agentClassRef,
       ) ? 'native_session' as const : 'recovery_packet' as const,
       reason: recoveryReason,
+      ...(metadataCorrection ? {
+        attemptKind: 'contract_correction' as const,
+        attemptPayload: {
+          protocol: 'completion-correction-v2' as const,
+          completionContract: receipt.parsing.completionContract ?? {},
+          violations: receipt.verification.violations,
+        },
+      } : {}),
     }];
   });
   return candidates.length > 0 ? candidates : undefined;
@@ -287,11 +305,16 @@ function resumeRecoveryCandidates(input: {
 
 export function classifyResumeBlocker(
   reason: string | undefined,
+  latestFailure?: import('../core/kernel-failure.js').KernelFailure | null,
 ): import('../kernel/control-kernel.js').KernelResumeBlockerCategory {
   const normalized = reason?.toLowerCase() ?? '';
   // 启动恢复对“活跃但无 authorized dispatch”的 Subtask 只做 fail-closed 手动阻塞；
   // 描述里的 "authorized" 指 dispatch 授权，而不是缺材料/权限，不能归为 explicit_resource。
   if (normalized.includes('without authorized dispatch')) return 'manual';
+  if (
+    latestFailure?.kind === 'unknown'
+    && normalizeExecutorFailure(latestFailure.summary).kind === 'network'
+  ) return 'retry';
   if (normalized.includes('capacity') || normalized.includes('资源')) return 'capacity';
   if (
     normalized.includes('retry')
@@ -375,6 +398,9 @@ export interface KernelExecutionRuntimeDeps {
   kernelDecisionRepo?: Pick<KernelDecisionRepo, 'findById'>;
   dispatchItemRepo: KernelDispatchItemRepo;
   maxConcurrentAttempts: number;
+  maxConcurrentAttemptsPerTask?: number;
+  conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
+  onTaskTerminal?(taskId: string): void | Promise<void>;
   executionTraceHeartbeatMs?: number;
   publicationWorker: WorkspacePublicationWorker;
   publicationRepo: WorkspacePublicationRepo;
@@ -428,6 +454,7 @@ export class KernelExecutionRuntime {
     this.attemptSupervisor = new AttemptSupervisor(
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
+      deps.maxConcurrentAttemptsPerTask ?? deps.maxConcurrentAttempts,
     );
   }
 
@@ -716,10 +743,20 @@ export class KernelExecutionRuntime {
     try {
       await this.attemptSupervisor.drain(taskId);
       await this.deps.cancellationCoordinator.recover(taskId);
+      const task = this.deps.taskRuntimeService.findTask(taskId);
+      if (task?.status === 'cancelled'
+        && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0) {
+        await this.deps.onTaskTerminal?.(taskId);
+      }
       this.deps.callbacks.refreshRuntimeState();
       this.clearCancellationRetry(taskId);
-      const remainingTaskId = this.deps.cancellationCoordinator.findCleanupTaskId();
-      if (remainingTaskId) this.scheduleCancellationRetry(remainingTaskId);
+      const remainingTaskIds = this.deps.cancellationCoordinator.listCleanupTaskIds?.()
+        ?? [this.deps.cancellationCoordinator.findCleanupTaskId()].filter(
+          (taskId): taskId is string => Boolean(taskId),
+        );
+      for (const remainingTaskId of remainingTaskIds) {
+        this.scheduleCancellationRetry(remainingTaskId);
+      }
     } catch {
       // Durable cancelling rows retain capacity while the same process and startup
       // recovery both retry cleanup.
@@ -900,9 +937,20 @@ export class KernelExecutionRuntime {
     return {
       schemaVersion: 5,
       type: 'dispatch',
-      task: task ? { id: task.id, status: task.status } : null,
-      runningTaskId: this.deps.taskRuntimeService.getCurrentRunningTask()?.id
-        ?? this.deps.cancellationCoordinator.findCleanupTaskId(),
+      task: task ? {
+        id: task.id,
+        status: task.status,
+        ...(task.conversationId ? { conversationId: task.conversationId } : {}),
+        ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+      } : null,
+      activeTaskByConversation: this.deps.conversationTaskSchedulerRepo
+        ? Object.fromEntries(this.deps.taskRuntimeService.listTasks().map(candidate => {
+            const conversationId = candidate.conversationId ?? 'legacy-conversation';
+            return [conversationId, this.deps.conversationTaskSchedulerRepo!.getSlot(conversationId).activeTaskId];
+          }))
+        : undefined,
+      // Kept as a compatibility projection. Kernel policy uses the scoped map.
+      runningTaskId: task?.id ?? null,
       graphState,
       subtasks: subtasks.map(subtask => ({
         id: subtask.id,
@@ -1176,6 +1224,17 @@ export class KernelExecutionRuntime {
       if (current?.status === 'ready') this.deps.taskRuntimeService.transitionTask(task.id, 'running');
       this.deps.callbacks.refreshRuntimeState();
       if (action.recovery) {
+        const recoverySubtask = this.deps.subtaskRepo.findById(action.recovery.subtaskId);
+        if (
+          action.recovery.attemptKind === 'contract_correction'
+          && recoverySubtask?.status === 'blocked'
+        ) {
+          this.deps.subtaskRepo.updateStatus(
+            recoverySubtask.id,
+            'awaiting_decision',
+            { error: 'metadata-only completion correction authorized' },
+          );
+        }
         return this.eventFromDecision(decision, {
           type: 'dispatch_requested',
           taskId: action.taskId,
@@ -1188,6 +1247,9 @@ export class KernelExecutionRuntime {
             sourceAttemptId: action.recovery.sourceAttemptId,
             recoveryMode: action.recovery.recoveryMode,
             defaultResourceGrant: action.recovery.defaultResourceGrant,
+            ...(action.recovery.attemptPayload
+              ? { attemptPayload: action.recovery.attemptPayload }
+              : {}),
           },
         });
       }
@@ -1370,10 +1432,31 @@ export class KernelExecutionRuntime {
       });
     }
     if (action.type === 'block_work') {
-      if (action.subtaskId && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision') {
+      if (
+        action.subtaskId
+        && !action.preserveSubtaskState
+        && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision'
+      ) {
         this.deps.subtaskRepo.updateStatus(action.subtaskId, 'blocked', { error: decision.reason });
       }
       await this.blockTask(action.taskId, decision.reason, input.finishExecution);
+      this.appendExecutionTrace({
+        phase: 'verification',
+        actor: 'kernel',
+        kind: 'execution_blocked',
+        status: 'blocked',
+        title: 'Execution blocked',
+        summary: decision.reason,
+        details: {
+          decisionId: decision.id,
+          action: action.type,
+          taskId: action.taskId,
+          subtaskId: action.subtaskId,
+        },
+        eventKey: `${decision.id}:blocked`,
+        taskId: action.taskId,
+        traceStatus: 'blocked',
+      });
       return null;
     }
     if (action.type === 'park_for_replan') {
@@ -1556,7 +1639,9 @@ export class KernelExecutionRuntime {
       correlationId: decision.eventId,
       causationId: decision.id,
       occurredAt: new Date().toISOString(),
-      sessionId: this.sessionId,
+      ...this.ownerEnvelopeForTask(
+        'taskId' in event && typeof event.taskId === 'string' ? event.taskId : null,
+      ),
       ...event,
     } as KernelEvent;
   }
@@ -1955,6 +2040,23 @@ export class KernelExecutionRuntime {
       } as KernelEvent;
     }
     this.projectExecutorOutcome(item.authorizedBinding, outcome);
+    if (
+      item.attemptKind === 'contract_correction'
+      && outcome.outcome === 'completed'
+      && outcome.resultId
+    ) {
+      this.deps.callbacks.recordResultDelivery({
+        resultId: outcome.resultId,
+        content: outcome.output,
+        completeness: 'complete',
+        certification: 'certified',
+      });
+      this.deps.callbacks.appendOutput(
+        outcome.output,
+        '',
+        '原结果的完成认证已修复，任务继续收敛。',
+      );
+    }
     if (outcome.outcome === 'contract_failed') {
       if (outcome.output) {
         if (outcome.resultId && outcome.deliverability === 'deliverable') {
@@ -2016,12 +2118,26 @@ export class KernelExecutionRuntime {
       correlationId: item.decisionId,
       causationId: item.decisionId,
       occurredAt: new Date().toISOString(),
-      sessionId: this.sessionId,
+      ...this.ownerEnvelopeForTask(item.taskId),
       taskId: item.taskId,
       subtaskId: item.subtaskId,
       attemptId: item.attemptId,
       ...event,
     } as KernelEvent;
+  }
+
+  private ownerEnvelopeForTask(taskId: string | null): Pick<
+    KernelEvent,
+    'sessionId' | 'conversationId' | 'workspaceId'
+  > {
+    // A few recovery-only adapters intentionally expose no Task repository;
+    // durable production dispatches still resolve the immutable owner here.
+    const task = taskId ? this.deps.taskRuntimeService?.findTask(taskId) : null;
+    return {
+      sessionId: task?.ownerPlannerSessionId ?? this.sessionId,
+      ...(task?.conversationId ? { conversationId: task.conversationId } : {}),
+      ...(task?.workspaceId ? { workspaceId: task.workspaceId } : {}),
+    };
   }
 
   private launchFailureEvent(item: KernelDispatchItemRecord, error: unknown): KernelEvent {
@@ -2122,7 +2238,10 @@ export class KernelExecutionRuntime {
             ? 'parked'
             : retrySafeRecovery
               ? 'retry'
-              : classifyResumeBlocker(request.recoveryTrigger?.blockedReason),
+              : classifyResumeBlocker(
+                  request.recoveryTrigger?.blockedReason,
+                  this.deps.attemptReceiptRepo.listByTask(taskId)[0]?.failure,
+                ),
           sourceInputExcerpt: request.recoveryTrigger?.sourceInputExcerpt
             ?? request.userPrompt.slice(0, 500),
           newlyProvidedResources: [...(request.newlyProvidedResources ?? [])],
@@ -2781,6 +2900,7 @@ export class KernelExecutionRuntime {
     });
 
     await input.finishExecution(completionLines);
+    await this.deps.onTaskTerminal?.(input.taskId);
   }
 
   private projectExecutorOutcome(

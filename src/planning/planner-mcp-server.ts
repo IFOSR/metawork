@@ -18,6 +18,7 @@ export class PlannerDataReader {
     private readonly db: Database.Database,
     private readonly sessionId: string,
     private readonly getRoutingCatalog: () => ConfigurationRoutingCatalog,
+    private readonly conversationId = sessionId,
   ) {}
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -33,6 +34,8 @@ export class PlannerDataReader {
       clauses.push(`status IN (${statuses.map(() => '?').join(', ')})`);
       params.push(...statuses);
     }
+    clauses.push('conversation_id = ?');
+    params.push(this.conversationId);
     params.push(limit);
     const rows = this.db.prepare(`
       SELECT id, title, status, summary, priority_json, updated_at
@@ -60,8 +63,8 @@ export class PlannerDataReader {
              artifacts_json, dependencies_json, priority_json,
              last_scheduling_reason, last_interruption_reason, interruption_count,
              created_at, updated_at
-      FROM tasks WHERE id = ?
-    `).get(taskId) as Record<string, unknown> | undefined;
+      FROM tasks WHERE id = ? AND conversation_id = ?
+    `).get(taskId, this.conversationId) as Record<string, unknown> | undefined;
     if (!row) return { found: false, taskId };
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
@@ -160,16 +163,28 @@ export class PlannerDataReader {
 
   getRuntimeState() {
     const focus = this.db.prepare('SELECT * FROM session_state WHERE id = ?').get('global') as Record<string, unknown> | undefined;
-    const taskCounts = this.db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all() as Array<Record<string, unknown>>;
+    const focusTask = focus?.last_focused_task_id
+      ? this.db.prepare(`
+          SELECT id FROM tasks WHERE id = ? AND conversation_id = ?
+        `).get(focus.last_focused_task_id, this.conversationId) as { id: string } | undefined
+      : undefined;
+    const completedTask = focus?.last_completed_task_id
+      ? this.db.prepare(`
+          SELECT id FROM tasks WHERE id = ? AND conversation_id = ?
+        `).get(focus.last_completed_task_id, this.conversationId) as { id: string } | undefined
+      : undefined;
+    const taskCounts = this.db.prepare(
+      'SELECT status, COUNT(*) AS count FROM tasks WHERE conversation_id = ? GROUP BY status',
+    ).all(this.conversationId) as Array<Record<string, unknown>>;
     const activeTasks = this.db.prepare(`
       SELECT id, title, status, updated_at FROM tasks
-      WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')
+      WHERE conversation_id = ? AND status IN ('created', 'ready', 'running', 'parked', 'blocked')
       ORDER BY updated_at DESC LIMIT ?
-    `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
+    `).all(this.conversationId, MAX_RESULTS) as Array<Record<string, unknown>>;
     return {
       focus: focus ? {
-        taskId: focus.last_focused_task_id,
-        lastCompletedTaskId: focus.last_completed_task_id,
+        taskId: focusTask?.id ?? null,
+        lastCompletedTaskId: completedTask?.id ?? null,
         updatedAt: focus.updated_at,
       } : null,
       taskCounts: Object.fromEntries(taskCounts.map(row => [String(row.status), Number(row.count)])),
@@ -212,12 +227,13 @@ export class PlannerDataReader {
       LIMIT ?
     `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
     const pending = this.db.prepare(`
-      SELECT id, task_id, capability, resource_text, operation, reason, created_at
-      FROM permission_requests
-      WHERE status = 'pending'
-      ORDER BY created_at ASC
+      SELECT p.id, p.task_id, p.capability, p.resource_text, p.operation, p.reason, p.created_at
+      FROM permission_requests p
+      INNER JOIN tasks t ON t.id = p.task_id
+      WHERE p.status IN ('pending', 'escalated') AND t.conversation_id = ?
+      ORDER BY p.created_at ASC
       LIMIT 1
-    `).get() as Record<string, unknown> | undefined;
+    `).get(this.conversationId) as Record<string, unknown> | undefined;
     return {
       sessionId: this.sessionId,
       confirmedPreferences: preferences.map(row => ({
@@ -254,11 +270,13 @@ export class PlannerDataReader {
              e.event_type, e.state, e.message, e.created_at
       FROM work_unit_events e
       JOIN work_units w ON w.id = e.work_unit_id
+      LEFT JOIN tasks t ON t.id = e.task_id
       WHERE e.event_type = 'probe_failed'
+        AND (e.task_id IS NULL OR t.conversation_id = ?)
       ${classFilter}
       ORDER BY e.created_at DESC
       LIMIT ?
-    `).all(...params) as Array<Record<string, unknown>>;
+    `).all(this.conversationId, ...params) as Array<Record<string, unknown>>;
     return {
       count: rows.length,
       failures: rows.map(row => ({
@@ -326,6 +344,8 @@ export async function runPlannerMcpServer(): Promise<void> {
   const home = process.env.METACLAW_HOME;
   const sessionId = process.env.METACLAW_PLANNER_SESSION_ID;
   if (!sessionId) throw new Error('METACLAW_PLANNER_SESSION_ID is required');
+  const conversationId = process.env.METACLAW_PLANNER_CONVERSATION_ID;
+  if (!conversationId) throw new Error('METACLAW_PLANNER_CONVERSATION_ID is required');
   const paths = resolvePlannerMcpRuntimePaths({
     home,
     databasePath: process.env.METACLAW_DB_PATH,
@@ -340,7 +360,7 @@ export async function runPlannerMcpServer(): Promise<void> {
   );
   const routingCatalog = buildPlannerRoutingCatalog(snapshot);
   const server = createPlannerMcpServer(
-    new PlannerDataReader(db, sessionId, () => routingCatalog),
+    new PlannerDataReader(db, sessionId, () => routingCatalog, conversationId),
   );
   await server.connect(new StdioServerTransport());
 }

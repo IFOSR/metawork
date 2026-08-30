@@ -34,6 +34,32 @@ describe('configuration diff classification', () => {
     ]);
   });
 
+  it('classifies AgentClass routing use-case hints as hot activation', () => {
+    const result = classifyConfigurationDiff(
+      {
+        agentClasses: {
+          codex: { primaryUseCases: ['repository implementation', 'tests'] },
+        },
+      },
+      {
+        agentClasses: {
+          codex: {
+            primaryUseCases: ['repository implementation', 'tests', 'image generation', 'image editing'],
+            avoidUseCases: ['current public-web research'],
+          },
+        },
+      },
+    );
+
+    expect(result.classification).toBe<ConfigurationChangeClass>('hot');
+    expect(result.restartRequired).toBe(false);
+    expect(result.restartPaths).toEqual([]);
+    expect(result.entries.map(entry => entry.path)).toEqual([
+      'agentClasses.codex.avoidUseCases',
+      'agentClasses.codex.primaryUseCases',
+    ]);
+  });
+
   it('classifies Harness and Permission Profile changes as restart required', () => {
     const result = classifyConfigurationDiff(
       {

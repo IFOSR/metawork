@@ -2,6 +2,7 @@ import type { PlanningContext } from './planning-types.js';
 
 export interface PlanningContextBuilderDeps {
   sessionId: string;
+  conversationId?: string;
   requestSource: string;
   getTimeoutMs(): number;
   getPlannerConfiguration(): PlanningContext['configuration'];
@@ -24,6 +25,7 @@ export class PlanningContextBuilder {
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
       request: {
         sessionId: this.deps.sessionId,
+        ...(this.deps.conversationId ? { conversationId: this.deps.conversationId } : {}),
         source: this.deps.requestSource,
       },
       pendingAuthorizationRequest: input.pendingAuthorizationRequest ?? null,

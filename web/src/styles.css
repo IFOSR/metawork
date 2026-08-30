@@ -758,34 +758,12 @@ body {
   border-color: rgba(76, 141, 255, 0.7);
 }
 
-.settings-intro,
-.diagnostics-panel,
 .settings-warning,
 .credential-summary,
 .route-policy-copy {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(29, 33, 48, 0.62);
-}
-
-.settings-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
-  margin-bottom: 12px;
-}
-
-.settings-intro strong,
-.settings-intro span {
-  display: block;
-}
-
-.settings-intro span {
-  margin-top: 4px;
-  color: var(--text-dim);
-  line-height: 1.5;
 }
 
 .text-button {
@@ -799,21 +777,6 @@ body {
 
 .text-button:hover {
   text-decoration: underline;
-}
-
-.diagnostics-panel {
-  display: flex;
-  gap: 22px;
-  flex-wrap: wrap;
-  margin-bottom: 18px;
-  padding: 10px 14px;
-  color: var(--text-dim);
-  font-size: 11px;
-}
-
-.diagnostics-panel code {
-  color: var(--text);
-  overflow-wrap: anywhere;
 }
 
 .settings-sections,
@@ -1105,6 +1068,117 @@ body {
 .fact-chip-negative {
   color: var(--yellow);
   border-color: rgba(224, 178, 60, 0.35);
+}
+
+.fact-chip-muted {
+  color: var(--text-dim);
+  border-style: dashed;
+}
+
+.use-case-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.use-case-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.use-case-remove:hover {
+  background: rgba(255, 157, 157, 0.22);
+  color: #ff9d9d;
+}
+
+.use-case-editor {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.use-case-editor .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.use-case-editor .ghost-button {
+  flex-shrink: 0;
+}
+
+.use-case-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.suggestion-chip {
+  padding: 3px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.suggestion-chip:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.model-card-heading strong {
+  display: block;
+}
+
+.model-card-heading .mono {
+  display: block;
+  margin-top: 4px;
+}
+
+.capability-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.capability-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.capability-toggle input {
+  margin: 0;
+}
+
+.capability-toggle span {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.capability-toggle small {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 10px;
 }
 
 .fact-contract {
@@ -1861,14 +1935,6 @@ select {
   font-size: 10px;
 }
 
-.continue-session {
-  grid-column: 2;
-  width: fit-content;
-  margin-top: 6px;
-  color: var(--accent);
-  font-size: 10px;
-}
-
 .delete-session {
   position: absolute;
   top: 8px;
@@ -2024,47 +2090,6 @@ select {
 
 .workspace-home button:hover {
   border-color: var(--accent);
-}
-
-.conversation-attach-prompt {
-  display: grid;
-  place-items: start;
-  align-content: center;
-  width: min(100%, 720px);
-  min-height: 100%;
-  margin: 0 auto;
-  padding: 64px 20px;
-}
-
-.conversation-attach-prompt > span {
-  color: var(--accent);
-  font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-}
-
-.conversation-attach-prompt h2 {
-  margin: 12px 0 8px;
-  font-family: 'Iowan Old Style', 'Songti SC', serif;
-  font-size: clamp(28px, 4vw, 46px);
-  font-weight: 500;
-}
-
-.conversation-attach-prompt p {
-  max-width: 560px;
-  margin: 0;
-  color: var(--text-dim);
-  line-height: 1.7;
-}
-
-.conversation-attach-prompt button {
-  margin-top: 22px;
-  padding: 10px 16px;
-  border: 1px solid #45604c;
-  border-radius: 8px;
-  color: #dff3e3;
-  background: #172019;
-  cursor: pointer;
 }
 
 .workspace-tabs {
@@ -3616,6 +3641,21 @@ select:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.artifact-preview-image-wrap {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14px;
+}
+
+.artifact-preview-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  background: transparent;
+}
+
 .turn-artifacts header span,
 .live-execution-panel > header > span {
   color: #647068;
@@ -4274,10 +4314,6 @@ button:active:not(:disabled) {
 :root[data-theme='light'] .session-row[data-active='true'] .session-row-copy strong {
   color: var(--accent-strong);
 }
-:root[data-theme='light'] .session-row .continue-session {
-  color: var(--accent-strong);
-}
-
 :root[data-theme='light'] .workspace-tabs {
   background: var(--surface-hover);
 }
@@ -4456,8 +4492,6 @@ button:active:not(:disabled) {
 /* Remaining dark washes: settings cards, empty/attach CTAs, composer notice,
    trace event bodies and hover rollovers. Lift all of them onto the light
    surface and give the CTAs an accent so they actually read as actions. */
-:root[data-theme='light'] .settings-intro,
-:root[data-theme='light'] .diagnostics-panel,
 :root[data-theme='light'] .settings-warning,
 :root[data-theme='light'] .credential-summary,
 :root[data-theme='light'] .route-policy-copy,
@@ -4469,8 +4503,7 @@ button:active:not(:disabled) {
   background: var(--surface-raised);
 }
 
-:root[data-theme='light'] .workspace-home button,
-:root[data-theme='light'] .conversation-attach-prompt button {
+:root[data-theme='light'] .workspace-home button {
   border-color: var(--accent);
   color: #ffffff;
   background: var(--accent);

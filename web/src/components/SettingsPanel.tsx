@@ -15,6 +15,8 @@ import {
   invalidRoutingDrafts,
   humanizeAgentClassRef,
   humanizeProviderRef,
+  MODEL_CAPABILITY_IDS,
+  MODEL_CAPABILITY_LABELS,
   refsForModelIdentity,
   removeModelRefsFromRoutingDraft,
   ROUTING_CAPABILITY_CONTRACTS,
@@ -41,10 +43,6 @@ type RoutingDraft = RoutingDraftMap;
 type RoutingFacts = Record<string, AgentClassRoutingFacts>;
 type RuntimePolicyDraft = {
   maxConcurrentTasks: number;
-  maxConcurrentAttempts: number;
-  maxConcurrentAttemptsPerTask: number;
-  schedulingAgingMs: number;
-  sameConversationQueueLimit: number;
 };
 
 type RawRecord = Record<string, unknown>;
@@ -118,7 +116,11 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
   }
   const models = Object.fromEntries(Object.entries(rawModels).map(([ref, raw]) => {
     const model = asRecord(raw);
-    const capabilities = stringList(model.capabilities);
+    const rawCapabilities = stringList(model.capabilities);
+    const completedModel = completion?.models?.[ref];
+    const capabilities = rawCapabilities.length > 0
+      ? rawCapabilities
+      : stringList(completedModel?.capabilities);
     return [
       ref,
       {
@@ -149,14 +151,6 @@ function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
   const policy = asRecord(config.runtimePolicy);
   return {
     maxConcurrentTasks: typeof policy.maxConcurrentTasks === 'number' ? policy.maxConcurrentTasks : 2,
-    maxConcurrentAttempts: typeof policy.maxConcurrentAttempts === 'number' ? policy.maxConcurrentAttempts : 4,
-    maxConcurrentAttemptsPerTask: typeof policy.maxConcurrentAttemptsPerTask === 'number'
-      ? policy.maxConcurrentAttemptsPerTask
-      : 2,
-    schedulingAgingMs: typeof policy.schedulingAgingMs === 'number' ? policy.schedulingAgingMs : 300_000,
-    sameConversationQueueLimit: typeof policy.sameConversationQueueLimit === 'number'
-      ? policy.sameConversationQueueLimit
-      : 8,
   };
 }
 
@@ -197,6 +191,8 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
           || fallback.minimumQualityTier === 'medium'
           ? fallback.minimumQualityTier
           : 'low',
+        primaryUseCases: stringList(agentClass.primaryUseCases),
+        avoidUseCases: stringList(agentClass.avoidUseCases),
       },
     ];
   }));
@@ -244,7 +240,6 @@ function fieldStateLabel(state: ConfigurationFieldState): string {
 export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
-  const [runningRevisionId, setRunningRevisionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<RoutingDraft | null>(null);
   const [facts, setFacts] = useState<RoutingFacts | null>(null);
   const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
@@ -253,7 +248,6 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [result, setResult] = useState<ActivateResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const secretStatusVersion = useRef(0);
 
   const applyConfigSnapshot = (
@@ -262,7 +256,6 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   ) => {
     const config = snapshot.config as RawRecord;
     setRevisionId(snapshot.revisionId);
-    setRunningRevisionId(snapshot.runtimeRevisionId ?? snapshot.runningRevisionId);
     setCatalog(loadCatalog(config, completion));
     setRuntimePolicy(loadRuntimePolicy(config));
     setDraft(loadRoutingDraft(config));
@@ -319,26 +312,29 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
 
   useEffect(() => {
     if (!http) return;
-    void (async () => {
-      const [snapshot, completion] = await Promise.all([
-        http.getConfig(),
-        http.getConfigurationCompletion(),
-      ]);
-      const existence = await http.getSecretStatus(Object.keys(completion.providers))
-        .catch(() => ({} as Record<string, boolean>));
-      applyConfigSnapshot(snapshot, {
-        ...completion,
-        providers: Object.fromEntries(
-          Object.entries(completion.providers).map(([providerRef, provider]) => [
-            providerRef,
-            existence[providerRef]
-              ? { ...provider, credentialState: '已自动发现' as const }
-              : provider,
-          ]),
-        ),
-      });
-    })().catch(error => setLoadError((error as Error).message));
+    void refreshConfigurationCompletion().catch(error => setLoadError((error as Error).message));
   }, [http]);
+
+  const refreshConfigurationCompletion = async () => {
+    if (!http) return;
+    const [snapshot, completion] = await Promise.all([
+      http.getConfig(),
+      http.getConfigurationCompletion(),
+    ]);
+    const existence = await http.getSecretStatus(Object.keys(completion.providers))
+      .catch(() => ({} as Record<string, boolean>));
+    applyConfigSnapshot(snapshot, {
+      ...completion,
+      providers: Object.fromEntries(
+        Object.entries(completion.providers).map(([providerRef, provider]) => [
+          providerRef,
+          existence[providerRef]
+            ? { ...provider, credentialState: '已自动发现' as const }
+            : provider,
+        ]),
+      ),
+    });
+  };
 
   const draftValidationIssues = draft && catalog
     ? invalidRoutingDrafts(draft, Object.values(catalog.models))
@@ -426,6 +422,8 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
         const current = asRecord(originalAgentClasses[ref]);
         agentClasses[ref] = {
           ...current,
+          primaryUseCases: entry.primaryUseCases ?? [],
+          avoidUseCases: entry.avoidUseCases ?? [],
           modelPolicy: entry.mode === 'auto'
             ? {
               mode: 'auto',
@@ -470,17 +468,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
       if (response.ok && response.revisionId) {
         secretStatusVersion.current += 1;
         setRevisionId(response.revisionId);
-        setCatalog(current => current
-          ? {
-            ...current,
-            providers: Object.fromEntries(Object.entries(current.providers).map(([ref, provider]) => [
-              ref,
-              activationSecrets[ref]
-                ? { ...provider, apiKey: '', credentialState: '已自动发现' }
-                : provider,
-            ])),
-          }
-          : current);
+        await refreshConfigurationCompletion();
       }
     } catch (error) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
@@ -577,6 +565,30 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     });
   };
 
+  const toggleModelCapability = (modelRef: string, capability: string) => {
+    if (editingDisabled) return;
+    setCatalog(current => {
+      if (!current) return current;
+      const model = current.models[modelRef];
+      if (!model) return current;
+      const enabled = model.capabilities.includes(capability);
+      const capabilities = enabled
+        ? model.capabilities.filter(item => item !== capability)
+        : [...model.capabilities, capability].sort();
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [modelRef]: {
+            ...model,
+            capabilities,
+            capabilityState: capabilities.length > 0 ? '已自动发现' : '需要确认',
+          },
+        },
+      };
+    });
+  };
+
   const addCustomModel = (providerRef: string) => {
     const modelId = (newModelIds[providerRef] ?? '').trim();
     if (!modelId) {
@@ -631,22 +643,6 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
         </header>
 
         <div className="drawer-body settings-body">
-          <div className="settings-intro">
-            <div>
-              <strong>路由不是 Provider 的固定别名。</strong>
-              <span>Provider 模型目录提供候选集；Planner 手动固定模型；Codex 和 Pi 的 Auto 只在用户允许的候选中选择。</span>
-            </div>
-            <button className="text-button" onClick={() => setDiagnosticsOpen(open => !open)}>
-              {diagnosticsOpen ? '收起高级诊断' : '查看高级诊断'}
-            </button>
-          </div>
-          {diagnosticsOpen && (
-            <div className="diagnostics-panel">
-              <span>当前配置 revision：<code>{revisionId ?? '加载中…'}</code></span>
-              <span>运行时 revision：<code>{runningRevisionId ?? '加载中…'}</code></span>
-            </div>
-          )}
-
           {activationState && !activationState.activationAllowed && (
             <div className="result-banner result-error">
               当前不能激活：{activationState.blockingReasons?.map(reason => reason.message).join('；') || '运行时正在处理任务'}
@@ -662,54 +658,18 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                   <div>
                     <div className="settings-eyebrow">00 / RUNTIME CAPACITY</div>
                     <h3>并行与队列</h3>
-                    <p>不同 Conversation 可并行执行；同一 Conversation 的后续 Task 会排队。</p>
+                    <p>不同会话可并行执行；同一会话的后续 Task 会排队。</p>
                   </div>
                 </div>
                 <div className="runtime-policy-grid">
                   <label className="settings-field">
-                    <span>最大并行 Task</span>
+                    <span>同时运行任务数</span>
                     <input className="text-input" type="number" min={1} max={8}
                       value={runtimePolicy.maxConcurrentTasks}
                       onChange={event => setRuntimePolicy(current => current ? {
                         ...current, maxConcurrentTasks: Number(event.target.value),
                       } : current)} />
-                    <small>账户同时占用的 Conversation Task slot 上限，默认 2。</small>
-                  </label>
-                  <label className="settings-field">
-                    <span>最大并行 Attempt</span>
-                    <input className="text-input" type="number" min={1} max={32}
-                      value={runtimePolicy.maxConcurrentAttempts}
-                      onChange={event => setRuntimePolicy(current => current ? {
-                        ...current, maxConcurrentAttempts: Number(event.target.value),
-                      } : current)} />
-                    <small>账户级 active attempt 上限，默认 4。</small>
-                  </label>
-                  <label className="settings-field">
-                    <span>每 Task 最大 Attempt</span>
-                    <input className="text-input" type="number" min={1} max={32}
-                      value={runtimePolicy.maxConcurrentAttemptsPerTask}
-                      onChange={event => setRuntimePolicy(current => current ? {
-                        ...current, maxConcurrentAttemptsPerTask: Number(event.target.value),
-                      } : current)} />
-                    <small>防止单个 DAG 吞占全部 Attempt 容量，默认 2。</small>
-                  </label>
-                  <label className="settings-field">
-                    <span>调度老化时间（毫秒）</span>
-                    <input className="text-input" type="number" min={0} max={86_400_000}
-                      value={runtimePolicy.schedulingAgingMs}
-                      onChange={event => setRuntimePolicy(current => current ? {
-                        ...current, schedulingAgingMs: Number(event.target.value),
-                      } : current)} />
-                    <small>可执行任务等待多久后获得老化优先级，默认 5 分钟。</small>
-                  </label>
-                  <label className="settings-field">
-                    <span>同会话排队上限</span>
-                    <input className="text-input" type="number" min={0} max={32}
-                      value={runtimePolicy.sameConversationQueueLimit}
-                      onChange={event => setRuntimePolicy(current => current ? {
-                        ...current, sameConversationQueueLimit: Number(event.target.value),
-                      } : current)} />
-                    <small>额外排队 Task 数量；设为 0 表示不接纳额外队列。</small>
+                    <small>最多可同时运行多少个会话任务；同一会话内仍按顺序执行。</small>
                   </label>
                 </div>
                 <div className="routing-section-note">
@@ -850,7 +810,46 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
               <section className="settings-section">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">02 / AGENTCLASS ROUTING</div>
+                    <div className="settings-eyebrow">02 / MODEL CAPABILITIES</div>
+                    <h3>模型能力</h3>
+                    <p>为每个模型声明能力，用于路由能力基线筛选；勾选后保存并激活生效。</p>
+                  </div>
+                </div>
+                <div className="model-catalog">
+                  {Object.values(catalog.models).map(model => (
+                    <article className="model-card" key={model.ref}>
+                      <div className="model-card-heading">
+                        <div>
+                          <strong>{model.modelId}</strong>
+                          <span className="mono">{humanizeProviderRef(model.providerRef)}</span>
+                        </div>
+                        <span className={`state-badge ${model.capabilityState === '需要确认' ? 'state-badge-warning' : ''}`}>
+                          {fieldStateLabel(model.capabilityState)}
+                        </span>
+                      </div>
+                      <div className="capability-toggles">
+                        {MODEL_CAPABILITY_IDS.map(capability => (
+                          <label className="capability-toggle" key={capability}>
+                            <input
+                              type="checkbox"
+                              checked={model.capabilities.includes(capability)}
+                              disabled={editingDisabled}
+                              onChange={() => toggleModelCapability(model.ref, capability)}
+                            />
+                            <span>{capability}</span>
+                            <small>{MODEL_CAPABILITY_LABELS[capability]}</small>
+                          </label>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div className="section-heading">
+                  <div>
+                    <div className="settings-eyebrow">03 / AGENTCLASS ROUTING</div>
                     <h3>路由策略</h3>
                     <p>Planner 只能手动选择一个模型；Codex 和 Pi 可以使用 Fixed 或 Auto。</p>
                   </div>
@@ -881,7 +880,9 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                 ? result.restartRequired
                   ? `配置包含进程级变更，需要重启后生效：${result.restartPaths?.join('、') ?? ''}`
                   : '配置已热激活。新任务和下一轮 Planner 将使用新配置。'
-                : `激活失败（${result.code ?? 'unknown'}）`}
+                : result.code === 'restart_required'
+                  ? `此更改需要重启服务后生效：${result.restartPaths?.join('、') ?? '进程级配置变更'}`
+                  : `激活失败（${result.code ?? 'unknown'}）`}
               {result.issues && result.issues.length > 0 && (
                 <ul className="issues">
                   {result.issues.map((issue, index) => <li key={index}>{issue}</li>)}

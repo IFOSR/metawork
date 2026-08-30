@@ -38,13 +38,24 @@ export interface AttemptSupervisorContext {
 export class AttemptSupervisor {
   private readonly active = new Map<string, { taskId: string; promise: Promise<void> }>();
   private readonly contexts = new Map<string, AttemptSupervisorContext>();
+  private readonly taskIds = new Set<string>();
 
   constructor(
     private readonly repository: AttemptSupervisorRepository,
     private readonly maxConcurrentAttempts: number,
+    private readonly maxConcurrentAttemptsPerTask = maxConcurrentAttempts,
   ) {
     if (!Number.isInteger(maxConcurrentAttempts) || maxConcurrentAttempts <= 0) {
       throw new Error('maxConcurrentAttempts must be a positive integer');
+    }
+    if (
+      !Number.isInteger(maxConcurrentAttemptsPerTask)
+      || maxConcurrentAttemptsPerTask <= 0
+      || maxConcurrentAttemptsPerTask > maxConcurrentAttempts
+    ) {
+      throw new Error(
+        'maxConcurrentAttemptsPerTask must be a positive integer no greater than maxConcurrentAttempts',
+      );
     }
   }
 
@@ -57,14 +68,20 @@ export class AttemptSupervisor {
     now: string,
   ): void {
     this.repository.insertBatch(decision, bindingContext, now);
-    this.contexts.set(decision.action.taskId, context);
-    this.kick(decision.action.taskId);
+    this.taskIds.add(decision.action.taskId);
+    for (const item of decision.action.items) {
+      this.contexts.set(item.attemptId, context);
+    }
+    this.kickAll();
   }
 
   recover(taskId: string, context: AttemptSupervisorContext): void {
     this.repository.reconcileLaunching();
-    this.contexts.set(taskId, context);
-    this.kick(taskId);
+    this.taskIds.add(taskId);
+    for (const item of this.repository.listPending(taskId)) {
+      this.contexts.set(item.attemptId, context);
+    }
+    this.kickAll();
   }
 
   activeCount(taskId?: string): number {
@@ -88,21 +105,29 @@ export class AttemptSupervisor {
   }
 
   private kick(taskId: string): void {
-    const context = this.contexts.get(taskId);
-    if (!context) return;
-    const slots = this.maxConcurrentAttempts - this.active.size;
+    const slots = Math.min(
+      this.maxConcurrentAttempts - this.active.size,
+      this.maxConcurrentAttemptsPerTask - this.activeCount(taskId),
+    );
     if (slots <= 0) return;
     for (const pending of this.repository.listPending(taskId).slice(0, slots)) {
       if (this.active.has(pending.attemptId)) continue;
+      const context = this.contexts.get(pending.attemptId);
+      if (!context) continue;
       const claimed = this.repository.claimPending(pending.attemptId, new Date().toISOString());
       if (!claimed) continue;
       const promise = this.launch(claimed, context)
         .finally(() => {
           this.active.delete(claimed.attemptId);
-          this.kick(taskId);
+          this.contexts.delete(claimed.attemptId);
+          this.kickAll();
         });
       this.active.set(claimed.attemptId, { taskId, promise });
     }
+  }
+
+  private kickAll(): void {
+    for (const taskId of this.taskIds) this.kick(taskId);
   }
 
   private async launch(

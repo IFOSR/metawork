@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type {
   AgentClassRoutingDraft,
   AgentClassRoutingFacts,
@@ -8,6 +9,7 @@ import {
   describeRoutingObjective,
   evaluateModelCompatibility,
   humanizeProviderRef,
+  SUGGESTED_USE_CASES,
 } from '../settings-model';
 
 interface AgentClassConfigProps {
@@ -42,6 +44,18 @@ export function AgentClassConfig({
   const effectiveMode = facts.kind === 'planner' ? 'fixed' : draft.mode;
   const fixedModelAvailable = draft.mode === 'fixed'
     && enabledModels.some(model => model.ref === draft.modelRef);
+  const [primaryUseCaseInput, setPrimaryUseCaseInput] = useState('');
+  const [avoidUseCaseInput, setAvoidUseCaseInput] = useState('');
+
+  const addUseCase = (list: 'primaryUseCases' | 'avoidUseCases', value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || draft[list].includes(trimmed)) return;
+    onChange({ ...draft, [list]: [...draft[list], trimmed] });
+  };
+
+  const removeUseCase = (list: 'primaryUseCases' | 'avoidUseCases', value: string) => {
+    onChange({ ...draft, [list]: draft[list].filter(item => item !== value) });
+  };
 
   return (
     <article className="agent-route-card">
@@ -59,18 +73,90 @@ export function AgentClassConfig({
       <div className="agent-route-facts">
         <section>
           <span className="fact-label">适合做什么</span>
-          <div className="fact-list">
-            {(facts.primaryUseCases.length > 0 ? facts.primaryUseCases : ['未配置，系统不会据此自动路由']).map(item => (
-              <span className="fact-chip fact-chip-positive" key={item}>{item}</span>
+          <div className="fact-list use-case-list">
+            {draft.primaryUseCases.map(item => (
+              <span className="fact-chip fact-chip-positive use-case-chip" key={item}>
+                {item}
+                <button
+                  type="button"
+                  className="use-case-remove"
+                  aria-label={`移除 ${item}`}
+                  onClick={() => removeUseCase('primaryUseCases', item)}
+                >×</button>
+              </span>
             ))}
+            {draft.primaryUseCases.length === 0 && (
+              <span className="fact-chip fact-chip-muted">未配置，系统不会据此自动路由</span>
+            )}
+          </div>
+          <div className="use-case-editor">
+            <input
+              className="text-input"
+              value={primaryUseCaseInput}
+              placeholder="输入适用场景，如 image generation"
+              onChange={event => setPrimaryUseCaseInput(event.target.value)}
+            />
+            <button
+              className="ghost-button"
+              disabled={!primaryUseCaseInput.trim()}
+              onClick={() => { addUseCase('primaryUseCases', primaryUseCaseInput); setPrimaryUseCaseInput(''); }}
+            >添加</button>
+          </div>
+          <div className="use-case-suggestions">
+            {SUGGESTED_USE_CASES
+              .filter(item => !draft.primaryUseCases.includes(item))
+              .map(item => (
+                <button
+                  type="button"
+                  className="suggestion-chip"
+                  key={item}
+                  onClick={() => addUseCase('primaryUseCases', item)}
+                >+ {item}</button>
+              ))}
           </div>
         </section>
         <section>
           <span className="fact-label">不适合做什么</span>
-          <div className="fact-list">
-            {(facts.avoidUseCases.length > 0 ? facts.avoidUseCases : ['未配置']).map(item => (
-              <span className="fact-chip fact-chip-negative" key={item}>{item}</span>
+          <div className="fact-list use-case-list">
+            {draft.avoidUseCases.map(item => (
+              <span className="fact-chip fact-chip-negative use-case-chip" key={item}>
+                {item}
+                <button
+                  type="button"
+                  className="use-case-remove"
+                  aria-label={`移除 ${item}`}
+                  onClick={() => removeUseCase('avoidUseCases', item)}
+                >×</button>
+              </span>
             ))}
+            {draft.avoidUseCases.length === 0 && (
+              <span className="fact-chip fact-chip-muted">未配置</span>
+            )}
+          </div>
+          <div className="use-case-editor">
+            <input
+              className="text-input"
+              value={avoidUseCaseInput}
+              placeholder="输入不适用场景"
+              onChange={event => setAvoidUseCaseInput(event.target.value)}
+            />
+            <button
+              className="ghost-button"
+              disabled={!avoidUseCaseInput.trim()}
+              onClick={() => { addUseCase('avoidUseCases', avoidUseCaseInput); setAvoidUseCaseInput(''); }}
+            >添加</button>
+          </div>
+          <div className="use-case-suggestions">
+            {SUGGESTED_USE_CASES
+              .filter(item => !draft.avoidUseCases.includes(item))
+              .map(item => (
+                <button
+                  type="button"
+                  className="suggestion-chip"
+                  key={item}
+                  onClick={() => addUseCase('avoidUseCases', item)}
+                >+ {item}</button>
+              ))}
           </div>
         </section>
         <section>

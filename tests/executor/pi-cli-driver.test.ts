@@ -5,6 +5,73 @@ import { describe, expect, it, vi } from 'vitest';
 import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
 
 describe('PiCliDriver', () => {
+  it('retains an interrupted assistant text stream as provisional output', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const tracker = driver.createResultStreamTracker?.();
+    expect(tracker).toBeDefined();
+
+    tracker!.observe({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'turn_start', turnIndex: 2 }),
+    });
+    tracker!.observe({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'message_start', message: { role: 'assistant', content: [] } }),
+    });
+    tracker!.observe({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_update',
+        message: { role: 'assistant' },
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'hidden reasoning' },
+      }),
+    });
+    tracker!.observe({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'message_update',
+        message: { role: 'assistant' },
+        assistantMessageEvent: { type: 'text_delta', delta: 'Visible partial report' },
+      }),
+    });
+
+    expect(tracker!.snapshot()).toEqual({
+      output: 'Visible partial report',
+      provisional: true,
+      diagnostics: {
+        lastEventKind: 'message_update:text_delta',
+        turnIndex: 2,
+        assistantStreamOpen: true,
+        safeTextBytes: 22,
+      },
+    });
+  });
+
+  it('creates isolated result stream trackers for parallel Attempts', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const first = driver.createResultStreamTracker?.();
+    const second = driver.createResultStreamTracker?.();
+    const open = (tracker: NonNullable<typeof first>, text: string) => {
+      tracker.observe({
+        stream: 'stdout',
+        line: JSON.stringify({ type: 'message_start', message: { role: 'assistant' } }),
+      });
+      tracker.observe({
+        stream: 'stdout',
+        line: JSON.stringify({
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', delta: text },
+        }),
+      });
+    };
+
+    open(first!, 'first attempt');
+    open(second!, 'second attempt');
+
+    expect(first!.snapshot().output).toBe('first attempt');
+    expect(second!.snapshot().output).toBe('second attempt');
+  });
+
   it('launches with independent HOME and Pi directories', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     const launch = driver.buildLaunch({
@@ -34,6 +101,32 @@ describe('PiCliDriver', () => {
       },
     });
     expect(JSON.stringify(launch)).not.toContain('~/.pi');
+  });
+
+  it('builds a response-only launch with no tools and no durable session', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const launch = driver.buildLaunch({
+      prompt: 'return completion metadata only',
+      cwd: '/attempt/home',
+      runtimeHomePath: '/attempt/home',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+      responseOnly: true,
+    });
+
+    expect(driver.supportsResponseOnly).toBe(true);
+    expect(launch.args).toEqual([
+      '--mode',
+      'json',
+      '--no-session',
+      '--tools',
+      '',
+      '--provider',
+      'deepseek',
+      '--model',
+      'deepseek-v4-pro',
+      'return completion metadata only',
+    ]);
   });
 
   it('normalizes result output and redacts diagnostics', () => {

@@ -26,7 +26,9 @@ describe('Web workspace shell', () => {
     expect(shell).toContain('{composerVisible && (');
     expect(sidebar).toContain('新建会话');
     expect(sidebar).toContain('搜索会话');
-    expect(sidebar).toContain('继续此会话');
+    expect(sidebar).not.toContain('继续此会话');
+    expect(app).not.toContain('conversation-attach-prompt');
+    expect(app).not.toContain('历史只读视图');
     expect(sidebar).toContain('runningSessionId');
     expect(sidebar).toContain('activityLabel');
     expect(sidebar).not.toContain("active ? ' · 运行中' : ''");
@@ -45,6 +47,7 @@ describe('Web workspace shell', () => {
     expect(app).toContain('onTraceDelta');
     expect(app).toContain('activeWorkspace');
     expect(app).toContain('onWorkspaceChanged');
+    expect(app).toContain('retainLiveTurnForConversation(current, sessionId)');
     expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
     expect(app).toContain('workspace-home');
     expect(http).toContain('/api/workspaces');

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
@@ -24,6 +25,20 @@ export interface LocalCliChildProcessResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  diagnostics?: LocalCliProcessDiagnostics;
+}
+
+export interface LocalCliProcessDiagnostics {
+  startedAt: string;
+  completedAt: string;
+  lastStdoutAt: string | null;
+  lastStderrAt: string | null;
+  stdoutBytes: number;
+  stderrBytes: number;
+  terminationSource: 'process_exit' | 'process_error' | 'idle_watchdog' | 'abort';
+  sigtermSentAt: string | null;
+  sigkillSentAt: string | null;
+  exitCode: number | null;
 }
 
 export interface LocalCliChildProcessRunner {
@@ -117,6 +132,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         modelId: this.modelId,
       });
       let streamedOutput: string | null = null;
+      const streamTracker = this.driver.createResultStreamTracker?.();
       const rawResult = await this.processRunner.run({
         attemptId: executionBinding.attemptId,
         command: launch.command,
@@ -132,6 +148,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
         },
         onLine: (line, stream) => {
+          streamTracker?.observe({ line, stream });
           const resultLine = this.driver.parseResultLine?.({ line, stream });
           if (resultLine !== null && resultLine !== undefined) {
             streamedOutput = resultLine;
@@ -141,16 +158,33 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         },
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
       });
-      const result = this.driver.parseResult(streamedOutput === null
+      const streamSnapshot = streamTracker?.snapshot();
+      if (streamSnapshot?.output) streamedOutput = streamSnapshot.output;
+      const parsedResult = this.driver.parseResult(streamedOutput === null
         ? rawResult
         : { ...rawResult, streamedOutput });
+      const result = streamSnapshot?.provisional && parsedResult.success
+        ? {
+            success: false as const,
+            output: streamSnapshot.output ?? '',
+            error: 'Harness adapter assistant response stream ended before completion',
+          }
+        : parsedResult;
       const exitCode = rawResult.exitCode ?? (result.success ? 0 : 1);
+      const diagnostics = {
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
+        process: rawResult.diagnostics ?? null,
+        harness: streamSnapshot?.diagnostics ?? null,
+        provisionalOutput: streamSnapshot?.provisional ?? false,
+      };
       if (result.success) {
         return {
           success: true,
           output: result.output,
           exitCode,
           durationMs: Date.now() - startedAt,
+          diagnostics,
         };
       }
       return {
@@ -158,6 +192,82 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         output: result.output,
         error: result.error,
         failure: normalizeExecutorFailure(result.error),
+        exitCode,
+        durationMs: Date.now() - startedAt,
+        diagnostics,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        output: '',
+        error: message,
+        failure: normalizeExecutorFailure(message),
+        exitCode: 1,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  async executeResponseOnly(input: {
+    attemptId?: string;
+    prompt: string;
+    maxBytes: number;
+  }): Promise<ExecutorResult> {
+    const startedAt = Date.now();
+    if (!this.driver.supportsResponseOnly) {
+      return configurationFailure(
+        'Harness driver does not support response-only correction',
+        'response_only_unsupported',
+        startedAt,
+      );
+    }
+
+    const attemptId = input.attemptId ?? `response-only-${randomUUID()}`;
+    try {
+      const runtimeHome = await this.driver.materializeHome({
+        attemptId,
+        revisionId: this.runtimeBinding.revisionId,
+        agentClassId: this.name,
+        bindingFingerprint: this.runtimeBinding.bindingFingerprint,
+        attemptsRoot: this.attemptsRoot,
+        environment: this.runtimeBinding.environment ?? {},
+      });
+      const launch = this.driver.buildLaunch({
+        prompt: input.prompt,
+        cwd: runtimeHome.homePath,
+        runtimeHomePath: runtimeHome.homePath,
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
+        responseOnly: true,
+      });
+      const rawResult = await this.processRunner.run({
+        attemptId,
+        command: launch.command,
+        args: [...launch.args],
+        cwd: launch.cwd,
+        idleTimeoutMs: this.idleTimeoutMs,
+        environment: {
+          ...this.runtimeBinding.environment,
+          ...runtimeHome.environment,
+          ...launch.environment,
+        },
+      });
+      const parsed = this.driver.parseResult(rawResult);
+      const exitCode = rawResult.exitCode ?? (parsed.success ? 0 : 1);
+      if (Buffer.byteLength(parsed.output, 'utf8') > input.maxBytes) {
+        const message = `response-only correction exceeded ${input.maxBytes} bytes`;
+        return {
+          success: false,
+          output: '',
+          error: message,
+          failure: normalizeExecutorFailure(message),
+          exitCode,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+      return {
+        ...parsed,
         exitCode,
         durationMs: Date.now() - startedAt,
       };
@@ -198,7 +308,10 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
 }
 
 export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunner {
-  private readonly activeProcesses = new Map<string, ChildProcess>();
+  private readonly activeProcesses = new Map<string, {
+    child: ChildProcess;
+    abort(): void;
+  }>();
   private readonly spawnProcess: LocalCliSpawn;
   private readonly hostEnvironment: NodeJS.ProcessEnv;
   private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
@@ -227,13 +340,20 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         detached: process.platform !== 'win32',
         windowsHide: true,
       });
-      this.activeProcesses.set(input.attemptId, child);
+      const startedAt = new Date().toISOString();
       let stdout: Buffer = Buffer.alloc(0);
       let stderr: Buffer = Buffer.alloc(0);
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let lastStdoutAt: string | null = null;
+      let lastStderrAt: string | null = null;
       let stdoutLineBuffer = '';
       let stderrLineBuffer = '';
       let settled = false;
       let timedOut = false;
+      let terminationSource: LocalCliProcessDiagnostics['terminationSource'] = 'process_exit';
+      let sigtermSentAt: string | null = null;
+      let sigkillSentAt: string | null = null;
       let idleTimer: NodeJS.Timeout | null = null;
       let forceKillTimer: NodeJS.Timeout | null = null;
       const signalChild = (signal: NodeJS.Signals) => {
@@ -257,18 +377,31 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         clearWatchdogs();
         if (stdoutLineBuffer.trim()) input.onLine?.(stdoutLineBuffer, 'stdout');
         if (stderrLineBuffer.trim()) input.onLine?.(stderrLineBuffer, 'stderr');
-        if (this.activeProcesses.get(input.attemptId) === child) {
+        if (this.activeProcesses.get(input.attemptId)?.child === child) {
           this.activeProcesses.delete(input.attemptId);
         }
         resolve({
           exitCode,
           stdout: decodeBoundedCapture(stdout),
           stderr: decodeBoundedCapture(stderr),
+          diagnostics: {
+            startedAt,
+            completedAt: new Date().toISOString(),
+            lastStdoutAt,
+            lastStderrAt,
+            stdoutBytes,
+            stderrBytes,
+            terminationSource,
+            sigtermSentAt,
+            sigkillSentAt,
+            exitCode,
+          },
         });
       };
       const expireIdleWatchdog = () => {
         if (settled || timedOut) return;
         timedOut = true;
+        terminationSource = 'idle_watchdog';
         const diagnostic = 'executor idle timeout\n';
         stderr = appendBoundedTail(stderr, diagnostic);
         stderrLineBuffer = emitCompleteLines(
@@ -276,8 +409,10 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
           diagnostic,
           line => input.onLine?.(line, 'stderr'),
         );
+        sigtermSentAt = new Date().toISOString();
         signalChild('SIGTERM');
         forceKillTimer = setTimeout(() => {
+          sigkillSentAt = new Date().toISOString();
           signalChild('SIGKILL');
           finish(null);
         }, this.terminationGraceMs);
@@ -298,6 +433,8 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       };
       const appendStdout = (chunk: Buffer | string) => {
         resetIdleWatchdog();
+        stdoutBytes += Buffer.byteLength(chunk);
+        lastStdoutAt = new Date().toISOString();
         input.onRawChunk?.(chunk, 'stdout');
         stdout = appendBoundedTail(stdout, chunk);
         stdoutLineBuffer = emitCompleteLines(
@@ -308,6 +445,8 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       };
       const appendStderr = (chunk: Buffer | string) => {
         resetIdleWatchdog();
+        stderrBytes += Buffer.byteLength(chunk);
+        lastStderrAt = new Date().toISOString();
         input.onRawChunk?.(chunk, 'stderr');
         stderr = appendBoundedTail(stderr, chunk);
         stderrLineBuffer = emitCompleteLines(
@@ -320,27 +459,31 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       child.stdout?.on('data', appendStdout);
       child.stderr?.on('data', appendStderr);
       child.once('error', error => {
+        terminationSource = 'process_error';
         appendStderr(error instanceof Error ? error.message : String(error));
         finish(null);
       });
       child.once('exit', code => finish(code));
+      this.activeProcesses.set(input.attemptId, {
+        child,
+        abort: () => {
+          if (settled) return;
+          terminationSource = 'abort';
+          sigtermSentAt = new Date().toISOString();
+          signalChild('SIGTERM');
+        },
+      });
       resetIdleWatchdog();
     });
   }
 
   abort(attemptId?: string): void {
     const processes = attemptId
-      ? [this.activeProcesses.get(attemptId)].filter((child): child is ChildProcess => Boolean(child))
+      ? [this.activeProcesses.get(attemptId)].filter(
+          (entry): entry is { child: ChildProcess; abort(): void } => Boolean(entry),
+        )
       : [...this.activeProcesses.values()];
-    for (const child of processes) {
-      const pid = child.pid;
-      if (!pid) continue;
-      try {
-        this.signalProcess(process.platform === 'win32' ? pid : -pid, 'SIGTERM');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      }
-    }
+    for (const activeProcess of processes) activeProcess.abort();
   }
 }
 

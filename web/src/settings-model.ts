@@ -40,7 +40,40 @@ export interface AgentClassRoutingDraft {
   defaultModelRef: string;
   objective: RoutingObjective;
   minimumQualityTier: 'low' | 'medium' | 'high';
+  primaryUseCases: string[];
+  avoidUseCases: string[];
 }
+
+export const MODEL_CAPABILITY_IDS = [
+  'coding',
+  'long-context',
+  'planning',
+  'structured-output',
+  'tools',
+  'vision',
+] as const;
+
+export type ModelCapabilityId = typeof MODEL_CAPABILITY_IDS[number];
+
+export const MODEL_CAPABILITY_LABELS: Record<ModelCapabilityId, string> = {
+  coding: '代码',
+  'long-context': '长上下文',
+  planning: '规划',
+  'structured-output': '结构化输出',
+  tools: '工具调用',
+  vision: '视觉',
+};
+
+export const SUGGESTED_USE_CASES = [
+  'repository implementation',
+  'tests',
+  'engineering documentation',
+  'image generation',
+  'image editing',
+  'current public-web research',
+  'source verification',
+  'local artifacts',
+] as const;
 
 export type RoutingDraftMap = Record<string, AgentClassRoutingDraft>;
 

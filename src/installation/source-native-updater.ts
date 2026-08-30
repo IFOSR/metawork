@@ -79,13 +79,7 @@ export class SourceNativeUpdater {
 
       await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot, input.releaseId);
       const sourceSchema = readSchemaVersion(accountPaths.database);
-      if (
-        sourceSchema !== 30
-        && sourceSchema !== 31
-        && sourceSchema !== 32
-        && sourceSchema !== 33
-        && sourceSchema !== CURRENT_SCHEMA_VERSION
-      ) {
+      if (!isSupportedDatabaseSchema(sourceSchema)) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
       const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
@@ -364,12 +358,7 @@ function verifyCompatibleDatabase(path: string): void {
     const version = db.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     } | undefined;
-    if (
-      version?.version !== 30
-      && version?.version !== 31
-      && version?.version !== 32
-      && version?.version !== CURRENT_SCHEMA_VERSION
-    ) {
+    if (!isSupportedDatabaseSchema(version?.version)) {
       throw new Error(`rollback database schema is incompatible: ${version?.version ?? 'missing'}`);
     }
     const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
@@ -382,4 +371,11 @@ function verifyCompatibleDatabase(path: string): void {
   } finally {
     db.close();
   }
+}
+
+function isSupportedDatabaseSchema(version: number | undefined): boolean {
+  return version !== undefined
+    && Number.isInteger(version)
+    && version >= 30
+    && version <= CURRENT_SCHEMA_VERSION;
 }

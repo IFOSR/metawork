@@ -104,6 +104,7 @@ export interface PermissionRepositoryPort {
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord;
   findRequest(requestId: string): PermissionRequestRecord | null;
   findPendingForTask(taskId: string): PermissionRequestRecord | null;
+  findOldestPendingForConversation(conversationId: string): PermissionRequestRecord | null;
   findOldestPending(): PermissionRequestRecord | null;
   listEscalated(): PermissionRequestRecord[];
   countDistinctForAttempt(attemptId: string): number;

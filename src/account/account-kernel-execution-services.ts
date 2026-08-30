@@ -45,6 +45,7 @@ import type { ExecutionRuntime } from '../execution/execution-runtime.js';
 import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { RuntimeConfigurationView } from '../configuration/index.js';
+import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -59,6 +60,7 @@ export interface AccountKernelExecutionServices {
 export function buildAccountKernelExecutionServices(deps: {
   db: Database.Database;
   sessionId: string;
+  legacyCompatibility?: boolean;
   getSessionId?: () => string;
   accountId?: string;
   resultRoot: string;
@@ -66,6 +68,8 @@ export function buildAccountKernelExecutionServices(deps: {
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
   maxConcurrentAttempts: number;
+  maxConcurrentAttemptsPerTask?: number;
+  onTaskTerminal?: (taskId: string) => void | Promise<void>;
   getConfigurationRevision: () => string;
   getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   taskRuntimeService: TaskRuntimeService;
@@ -102,6 +106,7 @@ export function buildAccountKernelExecutionServices(deps: {
   kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
   taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
   sessionKernelCallbacks: SessionKernelRuntimeCallbacks;
+  conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
 }): AccountKernelExecutionServices {
   const kernelExecutionRuntime = new KernelExecutionRuntime({
     sessionId: deps.sessionId,
@@ -131,6 +136,9 @@ export function buildAccountKernelExecutionServices(deps: {
     kernelDecisionRepo: deps.kernelDecisionRepo,
     dispatchItemRepo: deps.dispatchItemRepo,
     maxConcurrentAttempts: deps.maxConcurrentAttempts,
+    maxConcurrentAttemptsPerTask: deps.maxConcurrentAttemptsPerTask,
+    conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
+    onTaskTerminal: deps.onTaskTerminal,
     publicationWorker: new WorkspacePublicationWorker({
       db: deps.db,
       sessionId: deps.sessionId,
@@ -170,12 +178,15 @@ export function buildAccountKernelExecutionServices(deps: {
 
   const sessionKernelRuntime = new SessionKernelRuntime({
     sessionId: deps.sessionId,
+    legacyCompatibility: deps.legacyCompatibility,
+    accountId: deps.accountId,
     taskRuntimeService: deps.taskRuntimeService,
     memoryContextService: deps.memoryContextService,
     orchestration: deps.orchestration,
     activeExecutions: deps.executionRuntime,
     presentation: deps.presentation,
     callbacks: deps.sessionKernelCallbacks,
+    conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
   });
 
   return { kernelExecutionRuntime, taskExecutionApplicationService, sessionKernelRuntime };

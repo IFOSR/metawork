@@ -111,6 +111,66 @@ describe('LocalCliExecutorAdapter', () => {
     expect(processRunner.run).not.toHaveBeenCalled();
   });
 
+  it('runs response-only correction in an isolated no-workspace process', async () => {
+    const driver = harnessDriver('pi-cli', {
+      success: true,
+      output: 'normalized output',
+    }, true);
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: 'raw metadata\n',
+        stderr: '',
+      })),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts',
+      processRunner,
+    });
+
+    const result = await adapter.executeResponseOnly?.({
+      attemptId: 'attempt-correction',
+      prompt: 'return completion metadata only',
+      maxBytes: 1024,
+    });
+
+    expect(adapter.executeResponseOnly).toBeDefined();
+    expect(driver.materializeHome).toHaveBeenCalledWith({
+      attemptId: 'attempt-correction',
+      revisionId: 'revision-10',
+      agentClassId: 'quality-beta',
+      bindingFingerprint: 'binding-fingerprint',
+      attemptsRoot: '/runtime/attempts',
+      environment: {},
+    });
+    expect(driver.buildLaunch).toHaveBeenCalledWith({
+      prompt: 'return completion metadata only',
+      cwd: '/runtime/attempts/attempt-correction/home',
+      runtimeHomePath: '/runtime/attempts/attempt-correction/home',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+      responseOnly: true,
+    });
+    expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt-correction',
+      cwd: '/runtime/attempts/attempt-correction/home',
+      environment: {
+        DRIVER_HOME: 'materialized',
+        DRIVER_LAUNCH: 'selected',
+      },
+    }));
+    expect(result).toMatchObject({
+      success: true,
+      output: 'normalized output',
+    });
+  });
+
   it('normalizes child-process failures through the selected driver and delegates abort', async () => {
     const driver = harnessDriver('custom-driver', {
       success: false,
@@ -220,6 +280,52 @@ describe('LocalCliExecutorAdapter', () => {
     expect(result).toMatchObject({
       success: true,
       output: 'Complete final answer',
+    });
+  });
+
+  it('never certifies an open provisional assistant stream as successful', async () => {
+    const driver = harnessDriver('pi-cli');
+    driver.createResultStreamTracker = () => ({
+      observe: vi.fn(),
+      snapshot: () => ({
+        output: 'Interrupted report body',
+        provisional: true,
+        diagnostics: {
+          lastEventKind: 'message_update:text_delta',
+          turnIndex: 3,
+          assistantStreamOpen: true,
+          safeTextBytes: 23,
+        },
+      }),
+    });
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        input.onLine?.('{"type":"message_update"}', 'stdout');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts',
+      processRunner,
+    });
+
+    const result = await adapter.execute(executorInput('attempt-open-stream'));
+
+    expect(result).toMatchObject({
+      success: false,
+      output: 'Interrupted report body',
+      error: 'Harness adapter assistant response stream ended before completion',
+      failure: {
+        kind: 'adapter',
+        code: 'executor_adapter_failed',
+      },
+      diagnostics: { provisionalOutput: true },
     });
   });
 
@@ -355,6 +461,13 @@ describe('LocalCliExecutorAdapter', () => {
       await expect(resultPromise).resolves.toMatchObject({
         exitCode: null,
         stderr: expect.stringContaining('executor idle timeout'),
+        diagnostics: {
+          terminationSource: 'idle_watchdog',
+          stdoutBytes: 0,
+          stderrBytes: expect.any(Number),
+          sigtermSentAt: expect.any(String),
+          exitCode: null,
+        },
       });
       expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
     } finally {
@@ -484,9 +597,11 @@ function harnessDriver(
     success: true,
     output: 'normalized output',
   },
+  supportsResponseOnly = false,
 ): HarnessDriver {
   return {
     id,
+    ...(supportsResponseOnly ? { supportsResponseOnly: true } : {}),
     probe: vi.fn(async () => ({ available: true })),
     materializeHome: vi.fn(async input => ({
       homePath: `${input.attemptsRoot}/${input.attemptId}/home`,

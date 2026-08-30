@@ -93,7 +93,7 @@ describe('SourceNativeInstaller', () => {
     expect(snapshot.config.agentClasses['pi-research']?.enabled).toBe(false);
 
     const db = new Database(accountPaths.database, { readonly: true });
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 34 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
     db.close();
     expect(statSync(accountPaths.database).mode & 0o777).toBe(0o600);
     for (const path of [

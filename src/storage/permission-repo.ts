@@ -137,6 +137,19 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
     return row ? requestFromRow(row) : null;
   }
 
+  findOldestPendingForConversation(conversationId: string): PermissionRequestRecord | null {
+    const row = this.db.prepare(`
+      SELECT permission_requests.*
+      FROM permission_requests
+      INNER JOIN tasks ON tasks.id = permission_requests.task_id
+      WHERE tasks.conversation_id = ?
+        AND permission_requests.status IN ('pending', 'escalated')
+      ORDER BY permission_requests.created_at, permission_requests.id
+      LIMIT 1
+    `).get(conversationId) as PermissionRequestRow | undefined;
+    return row ? requestFromRow(row) : null;
+  }
+
   findOldestPending(): PermissionRequestRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM permission_requests WHERE status IN ('pending', 'escalated')

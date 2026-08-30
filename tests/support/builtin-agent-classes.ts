@@ -13,7 +13,7 @@ export function builtinCodexAgentClass(): AgentClass {
     outputTypes: ['code', 'patch', 'markdown', 'review'],
     strengths: ['local repository editing', 'test execution', 'bug fixing', 'code review'],
     weaknesses: ['broad business workflow orchestration'],
-    primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'local artifacts'],
+    primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing', 'local artifacts'],
     avoidUseCases: ['current public-web research requiring source-backed delivery'],
     intentAffinity: { repo_execution: 1, technical_reasoning: 0.45, research_workflow: 0.15, general: 0.35 },
     riskLevel: 'medium',

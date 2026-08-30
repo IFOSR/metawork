@@ -257,7 +257,7 @@ function isInternalExecutorProgressNoise(raw: string): boolean {
 }
 
 function isNetworkFailure(raw: string): boolean {
-  return /failed to lookup address information|failed to connect to websocket|reconnecting\.\.\.|network is unreachable|temporary failure in name resolution|执行器网络连接失败/i.test(raw);
+  return /failed to lookup address information|failed to connect to websocket|reconnecting\.\.\.|network is unreachable|temporary failure in name resolution|connection error|connection refused|connection lost|fetch failed|socket hang up|econnreset|执行器网络连接失败/i.test(raw);
 }
 
 export function isPermissionFailure(raw: string): boolean {

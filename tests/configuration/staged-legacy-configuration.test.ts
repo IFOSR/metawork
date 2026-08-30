@@ -61,6 +61,38 @@ describe('buildStagedLegacyConfiguration', () => {
     })).toThrow(/content hash mismatch/u);
   });
 
+  it('accepts the exact legacy hash from before parallel policy defaults were added', () => {
+    const migratedSnapshot = migratedSnapshotFixture();
+    const {
+      maxConcurrentTasks: _maxConcurrentTasks,
+      maxConcurrentAttempts: _maxConcurrentAttempts,
+      maxConcurrentAttemptsPerTask: _maxConcurrentAttemptsPerTask,
+      schedulingAgingMs: _schedulingAgingMs,
+      sameConversationQueueLimit: _sameConversationQueueLimit,
+      ...legacyRuntimePolicy
+    } = migratedSnapshot.config.runtimePolicy;
+    const legacyCompiled = compileConfigurationRevision('legacy-runtime-policy', {
+      ...migratedSnapshot.config,
+      runtimePolicy: legacyRuntimePolicy,
+    });
+
+    const staged = buildStagedLegacyConfiguration({
+      migratedSnapshot: {
+        revisionId: 'revision-current',
+        contentHash: legacyCompiled.contentHash,
+        config: migratedSnapshot.config,
+      },
+    });
+
+    expect(staged.snapshot.config.runtimePolicy).toMatchObject({
+      maxConcurrentTasks: 2,
+      maxConcurrentAttempts: 4,
+      maxConcurrentAttemptsPerTask: 2,
+      schedulingAgingMs: 300_000,
+      sameConversationQueueLimit: 8,
+    });
+  });
+
   it('rejects an Auto Planner policy', () => {
     const migratedSnapshot = migratedSnapshotFixture();
     const config = structuredClone(migratedSnapshot.config);

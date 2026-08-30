@@ -10,6 +10,7 @@ import type {
 
 export interface ConversationExecutionBinding {
   readonly sessionId: string;
+  readonly conversationId?: string;
   readonly persistenceService: SessionPersistenceService;
   readonly presentation: SessionPresentationService;
   readonly kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
@@ -70,8 +71,11 @@ export function createAccountConversationExecutionBinder(): AccountConversationE
           shared.taskExecutionApplicationService,
         ),
         sessionKernelRuntime: {
-          forInput(userInput?: string) {
-            const runtime = shared!.sessionKernelRuntime.forInput(userInput);
+          forInput(userInput?: string, conversationId?: string) {
+            const runtime = shared!.sessionKernelRuntime.forInput(
+              userInput,
+              conversationId ?? input.conversationId ?? input.sessionId,
+            );
             return {
               apply: decision => storage.run(input, () => runtime.apply(decision)),
             };

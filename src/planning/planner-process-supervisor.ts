@@ -190,6 +190,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
 
   async runRpcTurn(input: {
     sessionId: string;
+    conversationId?: string;
     cwd?: string;
     prompt: string;
     context: PlanningContext;
@@ -198,6 +199,12 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }): Promise<PlannerRunResult> {
     if (input.context.request.sessionId !== input.sessionId) {
       throw new Error('Planner RPC sessionId must match PlanningContext');
+    }
+    if (
+      input.conversationId !== undefined
+      && input.context.request.conversationId !== input.conversationId
+    ) {
+      throw new Error('Planner RPC conversationId must match PlanningContext');
     }
     const sessionId = input.sessionId;
     this.assertSessionOpen(sessionId);
@@ -328,6 +335,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       context.request.source,
       context.configuration?.revisionId ?? this.currentConfigurationRevision,
       context.timeoutMs,
+      context.request.conversationId ?? context.request.sessionId,
     );
     if (context.configuration?.revisionId && !this.currentExpectedModel) {
       throw new Error(
@@ -684,6 +692,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     configurationRevision = this.currentConfigurationRevision
       ?? process.env.METACLAW_CONFIGURATION_REVISION,
     rpcTimeoutMs?: number,
+    conversationId = sessionId,
   ): Promise<{
     command: string;
     args: string[];
@@ -785,6 +794,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         ANYFUSION_PLANNER_SESSION_DIR: sessionDir,
         ANYFUSION_PLANNER_SESSION_ID: sessionId,
         METACLAW_PLANNER_SESSION_ID: sessionId,
+        METACLAW_PLANNER_CONVERSATION_ID: conversationId,
         ANYFUSION_PLANNER_REQUEST_SOURCE: requestSource,
         ANYFUSION_PLANNER_TURN_PURPOSE: purpose,
         ...(mode === 'rpc' && Number.isFinite(rpcTimeoutMs) && rpcTimeoutMs! > 0

@@ -65,6 +65,7 @@ export class ConversationGatewayRuntime {
   private readonly submissions = new Map<string, Promise<ConversationCommandReceipt>>();
   private readonly pendingAttachments = new Set<Promise<() => void>>();
   private readonly activeAttachments = new Set<Promise<void>>();
+  private readonly projectionTails = new Set<Promise<void>>();
   /** 每个 Conversation 最近一次 turn 的来源（ADR-0036），用于投影事件定向；
    *  命令返回后保留，供后台 Task/Executor 投影继续定向到发起来源，直到下一个 turn 覆盖。 */
   private readonly activeOrigins = new Map<string, GatewayTurnOrigin>();
@@ -188,12 +189,14 @@ export class ConversationGatewayRuntime {
       || this.completions.size > 0
       || this.pendingAttachments.size > 0
       || this.activeAttachments.size > 0
+      || this.projectionTails.size > 0
     ) {
       await Promise.allSettled([
         ...this.submissions.values(),
         ...[...this.completions.values()].map(completion => completion.promise),
         ...this.pendingAttachments,
         ...this.activeAttachments,
+        ...this.projectionTails,
       ]);
     }
   }
@@ -302,6 +305,18 @@ export class ConversationGatewayRuntime {
     let outputLength = initialOutput.length;
     let traceTurnId: string | null = null;
     let traceSequence = 0;
+    let projectionTail = Promise.resolve();
+    const enqueueProjection = (publish: () => Promise<unknown>): void => {
+      const next = projectionTail
+        .then(publish)
+        .then(() => undefined)
+        .catch(() => undefined);
+      projectionTail = next;
+      this.projectionTails.add(next);
+      void next.finally(() => {
+        this.projectionTails.delete(next);
+      });
+    };
     conversation.subscribe(snapshot => {
       accountRuntime?.setConversationPlannerActive?.(
         conversation.conversationId,
@@ -312,18 +327,18 @@ export class ConversationGatewayRuntime {
       const from = Math.min(outputLength, snapshot.output.length);
       const lines = snapshot.output.slice(from);
       outputLength = snapshot.output.length;
-      if (lines.length > 0) {
-        void this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
-          from,
-          lines,
-          currentTaskId: snapshot.currentTaskId,
-        }, activeOrigin());
-      }
-      void this.publish(conversation.conversationId, null, null, 'task_projection', {
+      enqueueProjection(() => this.publish(conversation.conversationId, null, null, 'task_projection', {
         currentTaskId: snapshot.currentTaskId,
         runtimeState: snapshot.runtimeState,
         plannerState: snapshot.plannerState,
-      }, activeOrigin());
+      }, activeOrigin()));
+      if (lines.length > 0) {
+        enqueueProjection(() => this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
+          from,
+          lines,
+          currentTaskId: snapshot.currentTaskId,
+        }, activeOrigin()));
+      }
     });
     conversation.subscribeInteractionTrace(trace => {
       if (!trace) return;
@@ -333,13 +348,13 @@ export class ConversationGatewayRuntime {
       traceTurnId = trace.turnId;
       traceSequence = trace.events.at(-1)?.sequence ?? 0;
       if (events.length > 0) {
-        void this.publish(conversation.conversationId, null, trace.turnId, 'trace_delta', {
+        enqueueProjection(() => this.publish(conversation.conversationId, null, trace.turnId, 'trace_delta', {
           turnId: trace.turnId,
           taskId: trace.taskId,
           status: trace.status,
           completedAt: trace.completedAt,
           events,
-        }, activeOrigin());
+        }, activeOrigin()));
       }
     });
   }

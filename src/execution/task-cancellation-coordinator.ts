@@ -327,6 +327,10 @@ export class TaskCancellationCoordinator {
   }
 
   findCleanupTaskId(): string | null {
+    return this.listCleanupTaskIds()[0] ?? null;
+  }
+
+  listCleanupTaskIds(): string[] {
     const row = this.deps.db.prepare(`
       SELECT task_id
       FROM (
@@ -338,9 +342,8 @@ export class TaskCancellationCoordinator {
           WHERE released_at IS NULL AND revocation_requested_at IS NOT NULL
       )
       ORDER BY created_at, task_id
-      LIMIT 1
-    `).get() as { task_id: string } | undefined;
-    return row?.task_id ?? null;
+    `).all() as Array<{ task_id: string }>;
+    return [...new Set(row.map(item => item.task_id))];
   }
 
   settlePartialCancellation(taskId: string): void {

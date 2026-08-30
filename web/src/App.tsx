@@ -30,6 +30,7 @@ import {
 } from './components/ArtifactPreviewDrawer';
 import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
+import { retainLiveTurnForConversation } from './conversation-live-turn';
 import { useThemePreference } from './theme';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
@@ -137,7 +138,7 @@ export function App() {
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setBrowsedSessionId(sessionId);
-        setLiveTurn(null);
+        setLiveTurn(current => retainLiveTurnForConversation(current, sessionId));
         setActivationNotice(null);
         // 切换会话后旧会话的预览与执行详情不得残留。
         setPreviewState({ status: 'closed' });
@@ -365,21 +366,6 @@ export function App() {
     }
   };
 
-  const handleSelectSession = (sessionId: string) => {
-    setBrowsedSessionId(sessionId);
-    setActivationNotice(null);
-    setPreviewState({ status: 'closed' });
-    setExecutionDetail(null);
-    if (sessionId === activeSessionId) {
-      void httpRef.current?.getConversation(sessionId)
-        .then(setSelectedRecord)
-        .catch(error => setActivationNotice((error as Error).message));
-    } else {
-      setSelectedRecord(null);
-      setLiveTurn(null);
-    }
-  };
-
   const handleOpenArtifact = (artifact: ArtifactProjection) => {
     const http = httpRef.current;
     if (!http) return;
@@ -422,11 +408,28 @@ export function App() {
       activeConversationRef.current = sessionId;
       setActiveSessionId(sessionId);
       setBrowsedSessionId(sessionId);
-      setLiveTurn(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
       setSelectedRecord(record);
     }
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    setBrowsedSessionId(sessionId);
+    setActivationNotice(null);
+    setPreviewState({ status: 'closed' });
+    setExecutionDetail(null);
+    if (sessionId === activeSessionId) {
+      void httpRef.current?.getConversation(sessionId)
+        .then(setSelectedRecord)
+        .catch(error => setActivationNotice((error as Error).message));
+      return;
+    }
+    setSelectedRecord(null);
+    setLiveTurn(current => retainLiveTurnForConversation(current, sessionId));
+    void handleActivation(sessionId).catch(error => {
+      setActivationNotice((error as Error).message);
+    });
   };
 
   const handleNewSession = async () => {
@@ -559,11 +562,10 @@ export function App() {
     else turns.push(liveTurn);
   }
   const latestTurn = turns.at(-1) ?? null;
-  const readOnly = Boolean(selectedId && selectedId !== activeSessionId);
   const running = Boolean(selectedId === activeSessionId && liveTurn?.status === 'running');
-  const composerDisabled = readOnly || !connected;
-  const composerBlockedReason = readOnly
-    ? '当前为历史只读视图。点击左侧“继续此会话”通过安全激活门。'
+  const composerDisabled = selectedId !== activeSessionId || !connected;
+  const composerBlockedReason = selectedId !== activeSessionId
+    ? '正在加载当前会话…'
     : !connected
       ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
       : activationNotice;
@@ -616,7 +618,6 @@ export function App() {
         onSelectWorkspace={workspace => void handleSelectWorkspace(workspace)}
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
-        onContinueSession={sessionId => void handleActivation(sessionId)}
         onDeleteSession={sessionId => void handleDeleteSession(sessionId)}
         onClearSessions={() => void handleClearSessions()}
         onSettings={() => setSettingsOpen(true)}
@@ -652,17 +653,6 @@ export function App() {
               {activeWorkspace && (
                 <button onClick={() => void handleNewSession()}>新建会话</button>
               )}
-            </div>
-          )
-          : readOnly && !selectedRecord
-          ? (
-            <div className="conversation-attach-prompt">
-              <span>CONVERSATION SUMMARY</span>
-              <h2>{selectedMetadata?.title ?? 'Conversation'}</h2>
-              <p>{selectedMetadata?.preview ?? '完整历史仅在 attach 后安全回放。'}</p>
-              <button onClick={() => void handleActivation(selectedId)}>
-                继续此会话
-              </button>
             </div>
           )
           : tab === 'conversation'

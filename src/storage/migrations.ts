@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export const CURRENT_SCHEMA_VERSION = 34;
+export const CURRENT_SCHEMA_VERSION = 36;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -16,7 +16,12 @@ CREATE TABLE tasks (
           injected_prefs_json TEXT DEFAULT '[]',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
-        , last_scheduling_reason TEXT DEFAULT '', last_interruption_reason TEXT DEFAULT '', interruption_count INTEGER DEFAULT 0, artifacts_json TEXT DEFAULT '[]');
+        , last_scheduling_reason TEXT DEFAULT '', last_interruption_reason TEXT DEFAULT '', interruption_count INTEGER DEFAULT 0, artifacts_json TEXT DEFAULT '[]',
+          account_id TEXT NOT NULL DEFAULT 'legacy-account',
+          conversation_id TEXT NOT NULL DEFAULT 'legacy-conversation',
+          workspace_id TEXT NOT NULL DEFAULT 'legacy-workspace',
+          owner_planner_session_id TEXT NOT NULL DEFAULT 'legacy-planner-session',
+          admitted_at TEXT NOT NULL DEFAULT '');
 
 CREATE TABLE preferences (
           id TEXT PRIMARY KEY,
@@ -771,8 +776,36 @@ CREATE TABLE workspace_merge_attempts (
             error_summary TEXT,
             created_at TEXT NOT NULL,
             UNIQUE(publication_id, ordinal),
-            FOREIGN KEY (publication_id) REFERENCES workspace_publications(id)
-          );
+          FOREIGN KEY (publication_id) REFERENCES workspace_publications(id)
+        );
+
+CREATE TABLE conversation_task_slots (
+          conversation_id TEXT PRIMARY KEY,
+          active_task_id TEXT,
+          state TEXT NOT NULL CHECK(state IN ('free', 'occupied', 'releasing', 'recovery_blocked')),
+          reservation_id TEXT,
+          fairness_sequence INTEGER NOT NULL DEFAULT 0,
+          last_served_at TEXT,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (active_task_id) REFERENCES tasks(id)
+        );
+
+CREATE TABLE task_schedule_entries (
+          task_id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('queued', 'eligible', 'reserved', 'running', 'terminal')),
+          enqueued_at TEXT NOT NULL,
+          eligible_since TEXT NOT NULL,
+          last_scheduled_at TEXT,
+          scheduling_reason TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+
+CREATE INDEX idx_tasks_conversation_status
+          ON tasks(conversation_id, status, updated_at, id);
+CREATE INDEX idx_task_schedule_conversation
+          ON task_schedule_entries(conversation_id, state, eligible_since, task_id);
 
 CREATE TABLE "kernel_dispatch_items" (
             attempt_id TEXT PRIMARY KEY,
@@ -1283,15 +1316,30 @@ export function runMigrations(
       migrateSchema31To32(db);
       migrateSchema32To33(db);
       migrateSchema33To34(db);
+      migrateSchema34To35(db);
+      migrateSchema35To36(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
       migrateSchema32To33(db);
       migrateSchema33To34(db);
+      migrateSchema34To35(db);
+      migrateSchema35To36(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 33) {
       migrateSchema33To34(db);
+      migrateSchema34To35(db);
+      migrateSchema35To36(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 34) {
+      migrateSchema34To35(db);
+      migrateSchema35To36(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 35) {
+      migrateSchema35To36(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1305,6 +1353,8 @@ export function runMigrations(
       migrateSchema31To32(db);
       migrateSchema32To33(db);
       migrateSchema33To34(db);
+      migrateSchema34To35(db);
+      migrateSchema35To36(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1331,6 +1381,61 @@ export function runMigrations(
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
+}
+
+function migrateSchema34To35(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const taskColumns = columnsOf(db, 'tasks');
+    if (!taskColumns.includes('account_id')) {
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN account_id TEXT NOT NULL DEFAULT 'legacy-account';
+        ALTER TABLE tasks ADD COLUMN conversation_id TEXT NOT NULL DEFAULT 'legacy-conversation';
+        ALTER TABLE tasks ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'legacy-workspace';
+        ALTER TABLE tasks ADD COLUMN owner_planner_session_id TEXT NOT NULL DEFAULT 'legacy-planner-session';
+        ALTER TABLE tasks ADD COLUMN admitted_at TEXT NOT NULL DEFAULT '';
+      `);
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_task_slots (
+        conversation_id TEXT PRIMARY KEY,
+        active_task_id TEXT,
+        state TEXT NOT NULL CHECK(state IN ('free', 'occupied', 'releasing', 'recovery_blocked')),
+        reservation_id TEXT,
+        fairness_sequence INTEGER NOT NULL DEFAULT 0,
+        last_served_at TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (active_task_id) REFERENCES tasks(id)
+      );
+      CREATE TABLE IF NOT EXISTS task_schedule_entries (
+        task_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('queued', 'eligible', 'reserved', 'running', 'terminal')),
+        enqueued_at TEXT NOT NULL,
+        eligible_since TEXT NOT NULL,
+        last_scheduled_at TEXT,
+        scheduling_reason TEXT NOT NULL DEFAULT '',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tasks_conversation_status
+        ON tasks(conversation_id, status, updated_at, id);
+      CREATE INDEX IF NOT EXISTS idx_task_schedule_conversation
+        ON task_schedule_entries(conversation_id, state, eligible_since, task_id);
+      UPDATE schema_version SET version = 35 WHERE version = 34;
+    `);
+  });
+  migrate();
+}
+
+function migrateSchema35To36(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const columns = columnsOf(db, 'task_schedule_entries');
+    if (!columns.includes('payload_json')) {
+      db.exec("ALTER TABLE task_schedule_entries ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    db.exec('UPDATE schema_version SET version = 36 WHERE version = 35');
+  });
+  migrate();
 }
 
 function migrateSchema30To31(

@@ -23,6 +23,22 @@ export interface HarnessProgressEvent {
   text: string;
 }
 
+export interface HarnessResultStreamSnapshot {
+  output: string | null;
+  provisional: boolean;
+  diagnostics: {
+    lastEventKind: string | null;
+    turnIndex: number | null;
+    assistantStreamOpen: boolean;
+    safeTextBytes: number;
+  };
+}
+
+export interface HarnessResultStreamTracker {
+  observe(input: HarnessProgressLineInput): void;
+  snapshot(): HarnessResultStreamSnapshot;
+}
+
 export type HarnessExecutorResult =
   | { success: true; output: string }
   | { success: false; output: string; error: string };
@@ -33,6 +49,7 @@ export interface HarnessLaunchInput {
   runtimeHomePath: string;
   providerRef?: string;
   modelId?: string;
+  responseOnly?: boolean;
 }
 
 export interface HarnessLaunchSpec {
@@ -70,6 +87,7 @@ export interface HarnessDriver {
   materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome>;
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec;
   parseResult(input: HarnessResultInput): HarnessExecutorResult;
+  createResultStreamTracker?(): HarnessResultStreamTracker;
   parseResultLine?(input: HarnessProgressLineInput): string | null;
   parseProgressLine?(input: HarnessProgressLineInput): HarnessProgressEvent | null;
 }

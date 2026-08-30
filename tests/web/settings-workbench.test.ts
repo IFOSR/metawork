@@ -235,6 +235,8 @@ describe('Settings workbench model semantics', () => {
         defaultModelRef: 'code-gpt-56',
         objective: 'balanced' as const,
         minimumQualityTier: 'low' as const,
+        primaryUseCases: [],
+        avoidUseCases: [],
       },
       'codex-cli': {
         mode: 'auto' as const,
@@ -243,6 +245,8 @@ describe('Settings workbench model semantics', () => {
         defaultModelRef: 'code-gpt-56',
         objective: 'balanced' as const,
         minimumQualityTier: 'low' as const,
+        primaryUseCases: ['repository implementation'],
+        avoidUseCases: [],
       },
     };
     const next = removeModelRefsFromRoutingDraft(draft, ['code-gpt-56']);
@@ -264,7 +268,7 @@ describe('Settings workbench model semantics', () => {
     const header = await readFile(new URL('components/WorkspaceHeader.tsx', webRoot), 'utf8');
     const styles = await readFile(new URL('styles.css', webRoot), 'utf8');
 
-    expect(panel).toContain('高级诊断');
+    expect(panel).not.toContain('高级诊断');
     expect(panel).not.toContain('../preset-providers');
     expect(panel).toContain('providerPresets.find');
     expect(panel).toContain('draftValidationIssues.length > 0');
@@ -275,5 +279,33 @@ describe('Settings workbench model semantics', () => {
     expect(header).not.toContain('rev ${revisionId}');
     expect(styles).toContain('settings-workbench');
     expect(styles).toContain('overflow-x: hidden');
+  });
+
+  it('exposes one user-facing parallel task limit and refreshes discovered models after activation', async () => {
+    const panel = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
+
+    expect(panel).toContain('同时运行任务数');
+    expect(panel).toContain('同一会话内仍按顺序执行');
+    expect(panel).not.toContain('最大并行 Attempt');
+    expect(panel).not.toContain('每 Task 最大 Attempt');
+    expect(panel).not.toContain('调度老化时间');
+    expect(panel).not.toContain('同会话排队上限');
+    expect(panel).toContain('await refreshConfigurationCompletion()');
+  });
+
+  it('edits and persists Model capabilities and AgentClass use cases', async () => {
+    const [panel, routing] = await Promise.all([
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
+    ]);
+
+    expect(panel).toContain('模型能力');
+    expect(panel).toContain('MODEL_CAPABILITY_IDS');
+    expect(panel).toContain('toggleModelCapability');
+    expect(panel).toContain('capabilities: model.capabilities');
+    expect(panel).toContain('primaryUseCases: entry.primaryUseCases');
+    expect(routing).toContain('SUGGESTED_USE_CASES');
+    expect(routing).toContain('addUseCase');
+    expect(routing).toContain('removeUseCase');
   });
 });

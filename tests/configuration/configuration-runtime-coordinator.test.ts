@@ -24,7 +24,13 @@ function snapshot(revisionId: string, config: Record<string, unknown>) {
       executor: { kind: 'executor', harnessRef: 'h', modelPolicy: { mode: 'fixed', modelRef: 'm' }, permissionProfileRef: 'workspace', routingCapabilities: ['workspace-engineering'], primaryUseCases: [], avoidUseCases: [], plannerAffordances: ['workspace-read-write', 'workspace-command-validation'], skills: [], mcpServers: [], plugins: [], generatedRuntimeRef: 'executor', enabled: true },
     },
     permissionProfiles: { workspace: { profileId: 'workspace-engineering', version: 1, parameters: {} } },
-    runtimePolicy: {},
+    runtimePolicy: {
+      maxConcurrentTasks: 2,
+      maxConcurrentAttempts: 4,
+      maxConcurrentAttemptsPerTask: 2,
+      schedulingAgingMs: 300_000,
+      sameConversationQueueLimit: 8,
+    },
     gateway: {},
   };
   return {

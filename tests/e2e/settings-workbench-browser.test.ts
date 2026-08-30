@@ -58,7 +58,7 @@ e2e('Settings workbench browser flow', () => {
             hasSuitability: document.body.innerText.includes('适合做什么'),
             hasRoutingExplanation: document.body.innerText.includes('为什么这样路由'),
             hasCandidateRejection: document.body.innerText.includes('排除 · 缺少'),
-            hasModelFactsSection: document.body.innerText.includes('模型事实'),
+            hasModelCapabilitiesSection: document.body.innerText.includes('模型能力'),
             diagnosticsHidden: !document.querySelector('.diagnostics-panel'),
             workspaceHeader: document.querySelector('.workspace-runtime')?.textContent ?? '',
           };
@@ -68,12 +68,12 @@ e2e('Settings workbench browser flow', () => {
           viewportWidth: 1440,
           panelFits: true,
           providerCards: 2,
-          modelCards: 0,
+          modelCards: 3,
           routeCards: 3,
           hasSuitability: true,
           hasRoutingExplanation: true,
           hasCandidateRejection: true,
-          hasModelFactsSection: false,
+          hasModelCapabilitiesSection: true,
           diagnosticsHidden: true,
         });
         expect((initial as { workspaceHeader: string }).workspaceHeader).not.toContain('rev');
@@ -92,7 +92,7 @@ e2e('Settings workbench browser flow', () => {
         })()`);
         expect(providerDirectory).toEqual({
           modelIds: ['gpt-5.6-sol', 'gpt-5.6-terra'],
-          hasModelFacts: false,
+          hasModelFacts: true,
         });
 
         const pool = await cdp.evaluate(`(() => {
@@ -170,12 +170,6 @@ e2e('Settings workbench browser flow', () => {
           !document.querySelector('.drawer-footer .primary-button').disabled
         `);
 
-        await cdp.evaluate(`document.querySelector('.settings-intro .text-button').click()`);
-        await waitForExpression(cdp, `Boolean(document.querySelector('.diagnostics-panel'))`);
-        const diagnostics = await cdp.evaluate(
-          `document.querySelector('.diagnostics-panel').innerText`,
-        );
-        expect(diagnostics).toContain('revision-browser-test');
         await cdp.evaluate(`document.querySelector('.drawer-footer .primary-button').click()`);
         await waitForExpression(cdp, `document.body.innerText.includes('配置已热激活')`);
         const activated = server.getActivationPayload() as {

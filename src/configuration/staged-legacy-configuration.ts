@@ -159,7 +159,7 @@ function buildTestSnapshot(): ConfigurationSnapshot {
         modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
         routingCapabilities: ['workspace-engineering'],
-        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation'],
+        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
         avoidUseCases: ['current public-web research requiring source-backed delivery'],
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
         skills: [],
@@ -212,12 +212,31 @@ function validateMigratedSnapshot(
 ): ConfigurationSnapshot {
   const config = AnyFusionConfigurationV2Schema.parse(snapshot.config);
   const compiled = compileConfigurationRevision(snapshot.revisionId, config);
-  if (compiled.contentHash !== snapshot.contentHash) {
+  if (compiled.contentHash === snapshot.contentHash) return snapshot;
+  if (legacyRuntimePolicyContentHash(snapshot.revisionId, config) !== snapshot.contentHash) {
     throw new Error(
       `migrated configuration snapshot content hash mismatch: ${snapshot.revisionId}`,
     );
   }
-  return snapshot;
+  return { ...snapshot, config };
+}
+
+function legacyRuntimePolicyContentHash(
+  revisionId: string,
+  config: ConfigurationSnapshot['config'],
+): string {
+  const {
+    maxConcurrentTasks: _maxConcurrentTasks,
+    maxConcurrentAttempts: _maxConcurrentAttempts,
+    maxConcurrentAttemptsPerTask: _maxConcurrentAttemptsPerTask,
+    schedulingAgingMs: _schedulingAgingMs,
+    sameConversationQueueLimit: _sameConversationQueueLimit,
+    ...legacyRuntimePolicy
+  } = config.runtimePolicy;
+  return compileConfigurationRevision(revisionId, {
+    ...config,
+    runtimePolicy: legacyRuntimePolicy,
+  }).contentHash;
 }
 
 function failMissingMigratedSnapshot(): never {

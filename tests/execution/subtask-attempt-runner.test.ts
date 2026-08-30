@@ -622,7 +622,7 @@ describe('SubtaskAttemptRunner', () => {
     `).get()).toEqual({ status: 'pending' });
   });
 
-  it('delivers a safe partial Executor result after a failed attempt without certifying it', async () => {
+  it('preserves timeout as the primary failure when a failed attempt has partial output', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockResolvedValueOnce({
       taskId: 'task_phase2',
@@ -640,6 +640,22 @@ describe('SubtaskAttemptRunner', () => {
       artifacts: [],
       subtaskResults: [],
       durationMs: 10,
+      diagnostics: {
+        providerRef: 'deepseek',
+        modelId: 'deepseek-v4-flash',
+        process: {
+          terminationSource: 'idle_watchdog',
+          stdoutBytes: 6_900_000,
+          stderrBytes: 0,
+        },
+        harness: {
+          lastEventKind: 'message_update:text_delta',
+          turnIndex: 7,
+          assistantStreamOpen: true,
+          safeTextBytes: 27,
+        },
+        provisionalOutput: true,
+      },
     });
 
     const outcome = await setupResult.runner.run({
@@ -653,8 +669,11 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     expect(outcome).toMatchObject({
-      outcome: 'contract_failed',
-      output: 'PARTIAL_RESULT_FROM_HARNESS',
+      outcome: 'executor_failed',
+      failure: {
+        kind: 'timeout',
+        code: 'executor_timeout',
+      },
     });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
       status: 'awaiting_decision',
@@ -663,21 +682,42 @@ describe('SubtaskAttemptRunner', () => {
       SELECT terminal_state, raw_response, parsing_json
       FROM executor_attempt_receipts WHERE attempt_id = 'attempt_partial'
     `).get()).toMatchObject({
-      terminal_state: 'uncertified_result',
+      terminal_state: 'executor_failed',
       raw_response: '',
     });
     const parsing = JSON.parse((setupResult.db.prepare(`
       SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_partial'
     `).get() as { parsing_json: string }).parsing_json) as {
       resultObjects: { businessResultId: string; safeProjectionId: string };
-      completionAssessment: { result: { kind: string } };
+      completionAssessment: { result: { kind: string } } | null;
     };
-    expect(parsing.completionAssessment.result.kind).toBe('partial');
+    expect(parsing.completionAssessment).toBeNull();
     expect(setupResult.resultObjectRepo.readRange(
-      parsing.resultObjects.safeProjectionId,
+      parsing.resultObjects.businessResultId,
       0,
-      setupResult.resultObjectRepo.findObject(parsing.resultObjects.safeProjectionId)!.byteLength,
+      setupResult.resultObjectRepo.findObject(parsing.resultObjects.businessResultId)!.byteLength,
     ).content).toBe('PARTIAL_RESULT_FROM_HARNESS');
+    const runtimeProgress = JSON.parse((setupResult.db.prepare(`
+      SELECT progress_json FROM executor_attempt_runtime WHERE attempt_id = 'attempt_partial'
+    `).get() as { progress_json: string }).progress_json) as {
+      history: unknown[];
+      diagnostics: Record<string, unknown>;
+    };
+    expect(runtimeProgress.history.length).toBeGreaterThan(0);
+    expect(runtimeProgress.diagnostics).toMatchObject({
+      providerRef: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      process: {
+        terminationSource: 'idle_watchdog',
+        stdoutBytes: 6_900_000,
+      },
+      harness: {
+        lastEventKind: 'message_update:text_delta',
+        turnIndex: 7,
+        assistantStreamOpen: true,
+      },
+      provisionalOutput: true,
+    });
   });
 
   it('persists an executor failure and releases the exact attempt claim when execution throws', async () => {
@@ -985,8 +1025,8 @@ describe('SubtaskAttemptRunner', () => {
       { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: '' },
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_integration',
-      result: '',
+      status: 'done',
+      result: originalBody,
     });
     const correctionReceipt = setupResult.db.prepare(`
       SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_correction'
@@ -1000,8 +1040,8 @@ describe('SubtaskAttemptRunner', () => {
       safeProjectionId: 'result_attempt_primary_safe',
     });
     expect(setupResult.db.prepare(`
-      SELECT source_attempt_id, status FROM workspace_publications
-    `).get()).toEqual({ source_attempt_id: 'attempt_correction', status: 'pending' });
+      SELECT COUNT(*) AS count FROM workspace_publications
+    `).get()).toEqual({ count: 0 });
     expect(setupResult.workflow.findEvent(
       'event_attempt_correction_execution_outcome',
     )).toMatchObject({

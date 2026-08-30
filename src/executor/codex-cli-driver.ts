@@ -37,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 export class CodexCliDriver implements HarnessDriver {
   readonly id = 'codex-cli';
+  readonly supportsResponseOnly = true;
   private readonly runProbe: ProbeCommandRunner;
   private readonly explicitHomeTemplateDir?: string;
   private readonly generatedRuntimeRoot?: string;
@@ -87,6 +88,7 @@ export class CodexCliDriver implements HarnessDriver {
       // read-only sandbox for `exec`, so workspace writes must be explicit.
       args: buildCodexNonInteractiveArgs(input.prompt, {
         json: true,
+        sandbox: input.responseOnly ? 'read-only' : 'workspace-write',
         ...(input.providerRef && input.modelId
           ? { providerRef: input.providerRef, modelId: input.modelId }
           : {}),

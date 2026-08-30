@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { InteractionTraceEvent } from '../api/types';
+import { executionElapsedEndMs } from '../execution-duration';
 import { ExecutionStep } from './ExecutionStep';
 
 const GROUPS: Array<{
@@ -96,7 +97,14 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
                         </span>
                         <strong className="executor-attempt-status">{attempt.displayStatus}</strong>
                         <time className="executor-attempt-duration">
-                          {formatElapsed(attempt.startedAt, nowMs)}
+                          {formatElapsed(
+                            attempt.startedAt,
+                            executionElapsedEndMs(
+                              attempt.displayStatus === '执行中',
+                              attempt.updatedAt,
+                              nowMs,
+                            ),
+                          )}
                         </time>
                       </header>
                       <ol>

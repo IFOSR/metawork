@@ -7,6 +7,12 @@ import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { Task } from '../core/types.js';
+import type {
+  ConversationTaskSchedulerRepo,
+  QueuedTaskPayload,
+} from '../storage/conversation-task-scheduler-repo.js';
+import { taskBelongsToConversation } from '../task/task-ownership.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -15,10 +21,16 @@ interface FocusContext {
 
 export interface SessionKernelRuntimeDeps {
   sessionId: string;
+  /** Immutable semantic owner used for Conversation-local task controls. */
+  conversationId?: string;
+  /** Only the retained MetaclawSession facade may read pre-owner legacy Tasks. */
+  legacyCompatibility?: boolean;
+  accountId?: string;
   taskRuntimeService: TaskRuntimeService;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
   activeExecutions: ActiveExecutionControl;
+  conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
@@ -38,16 +50,21 @@ export interface SessionKernelRuntimeDeps {
 export class SessionKernelRuntime {
   constructor(private readonly deps: SessionKernelRuntimeDeps) {}
 
-  forInput(userInput?: string): KernelRuntime {
+  forInput(userInput?: string, conversationId?: string): KernelRuntime {
     return {
       apply: decision => this.apply(
         decision,
         userInput ?? this.deps.callbacks.resolveRequestText(decision.eventId),
+        conversationId,
       ),
     };
   }
 
-  private async apply(decision: KernelDecision, userInput: string): Promise<KernelEvent | null> {
+  private async apply(
+    decision: KernelDecision,
+    userInput: string,
+    conversationId = this.deps.conversationId ?? this.deps.sessionId,
+  ): Promise<KernelEvent | null> {
     this.deps.callbacks.onDecisionApplying?.(decision);
     switch (decision.action.type) {
       case 'reject_request':
@@ -69,7 +86,7 @@ export class SessionKernelRuntime {
         this.deps.callbacks.refreshRuntimeState();
         return null;
       case 'authorize_task_control':
-        await this.applyTaskControl(decision, userInput);
+        await this.applyTaskControl(decision, userInput, conversationId);
         return null;
       case 'resume_task': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
@@ -131,18 +148,32 @@ export class SessionKernelRuntime {
   private async applyTaskControl(
     decision: Extract<KernelDecision, { action: { type: 'authorize_task_control' } }> | KernelDecision,
     userInput: string,
+    conversationId: string,
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_control') return;
     const taskCommand = decision.action.task;
     if (taskCommand.control === 'status_query') {
       const scope = normalizeStatusScope(taskCommand.scope);
+      const conversationTasks = this.deps.taskRuntimeService.listTasks()
+        .filter(task => taskBelongsToConversation(
+          task,
+          conversationId,
+          this.deps.legacyCompatibility,
+        ));
       this.deps.callbacks.appendOutput(this.deps.presentation.formatTaskStatus({
         scope,
-        blockedTasks: this.deps.orchestration.getBlockedTasks(),
-        runningTask: this.deps.taskRuntimeService.listTasksByStatus('running')[0] ?? null,
-        activeTasks: this.deps.taskRuntimeService.listActiveTasks(),
-        latestDone: this.deps.taskRuntimeService.listTasksByStatus('done')[0] ?? null,
-        dashboard: this.deps.orchestration.getDashboard(),
+        blockedTasks: this.deps.orchestration.getBlockedTasks()
+          .filter(task => taskBelongsToConversation(
+            task,
+            conversationId,
+            this.deps.legacyCompatibility,
+          )),
+        runningTask: conversationTasks.find(task => task.status === 'running') ?? null,
+        activeTasks: conversationTasks.filter(task => (
+          ['created', 'ready', 'running', 'parked', 'blocked'].includes(task.status)
+        )),
+        latestDone: conversationTasks.find(task => task.status === 'done') ?? null,
+        dashboard: scopeDashboard(this.deps.orchestration.getDashboard(), conversationTasks),
       }));
       this.deps.callbacks.refreshRuntimeState();
       return;
@@ -153,7 +184,9 @@ export class SessionKernelRuntime {
         ? ['created', 'ready', 'running', 'parked', 'blocked']
         : [scope];
       const candidates = this.deps.taskRuntimeService.listTasks()
-        .filter(task => statuses.includes(task.status));
+        .filter(task => statuses.includes(task.status) && (
+          taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)
+        ));
       for (const task of candidates) {
         await this.deps.callbacks.cancelTask(
           task.id,
@@ -208,6 +241,10 @@ export class SessionKernelRuntime {
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,
+          accountId: this.deps.accountId,
+          conversationId: decision.action.owner.conversationId,
+          workspaceId: decision.action.owner.workspaceId ?? undefined,
+          ownerPlannerSessionId: decision.action.owner.plannerSessionId,
         });
     if (!task) throw new Error(`task not found: ${command.taskId}`);
     if (command.priority) {
@@ -218,6 +255,60 @@ export class SessionKernelRuntime {
           semanticPriorityReason: command.priority.reason,
         },
       });
+    }
+    if (!command.taskId && this.deps.conversationTaskSchedulerRepo) {
+      const owner = decision.action.owner;
+      const now = new Date().toISOString();
+      const payload: QueuedTaskPayload = {
+        requestText: userInput.slice(0, 24_000),
+        generationId: decision.action.generationId,
+        graphRevision: decision.action.graphRevision,
+        workGraph: decision.action.workGraph,
+        authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
+        workspaceId: owner.workspaceId,
+        plannerSessionId: owner.plannerSessionId,
+        kernelDecisionId: decision.id,
+        proposalSource: decision.action.proposalSource,
+        includeRecentConversationContext: command.includeRecentConversationContext,
+        schedulingReason: decision.action.schedulingReason ?? decision.reason,
+      };
+      // Persist the authorized execution fact before attempting the slot claim.
+      // A failed claim therefore leaves a recoverable queue entry rather than a
+      // Task whose Planner proposal must be reconstructed later.
+      this.deps.conversationTaskSchedulerRepo.enqueueTask(
+        task.id,
+        owner.conversationId,
+        now,
+        payload,
+      );
+      const slot = this.deps.conversationTaskSchedulerRepo.getSlot(owner.conversationId);
+      const admitted = decision.action.scheduleState === 'eligible'
+        && (slot.activeTaskId === task.id
+          || this.deps.conversationTaskSchedulerRepo.claimSlot(
+            owner.conversationId,
+            task.id,
+            decision.id,
+            now,
+          ));
+      if (!admitted) {
+        this.deps.conversationTaskSchedulerRepo.enqueueTask(
+          task.id,
+          owner.conversationId,
+          now,
+          payload.schedulingReason ?? 'conversation_slot_occupied',
+          payload,
+        );
+        this.deps.callbacks.setCurrentTaskId(task.id);
+        this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
+        this.deps.callbacks.appendOutput(
+          decision.action.schedulingReason === 'account_task_capacity'
+            ? '任务已接纳，等待账户执行资源'
+            : '任务已加入当前会话队列；当前任务完成或释放后执行',
+        );
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
+      this.deps.conversationTaskSchedulerRepo.markRunning(task.id, now);
     }
     this.deps.callbacks.setCurrentTaskId(task.id);
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
@@ -235,6 +326,29 @@ export class SessionKernelRuntime {
       includeRecentConversationContext: command.includeRecentConversationContext,
     });
   }
+}
+
+function scopeDashboard(
+  dashboard: ReturnType<OrchestrationEngine['getDashboard']>,
+  tasks: Task[],
+): ReturnType<OrchestrationEngine['getDashboard']> {
+  const taskIds = new Set(tasks.map(task => task.id));
+  const scopedBlocked = dashboard.blockedTasks.filter(task => taskIds.has(task.id));
+  const scopedReady = dashboard.readyTasks.filter(task => taskIds.has(task.id));
+  const scopedActive = tasks.filter(task => ['created', 'ready', 'running', 'parked'].includes(task.status));
+  return {
+    ...dashboard,
+    summary: {
+      ...dashboard.summary,
+      active: scopedActive.length,
+      blocked: scopedBlocked.length,
+      parked: scopedActive.filter(task => task.status === 'parked').length,
+      done: tasks.filter(task => task.status === 'done').length,
+    },
+    priorityTask: scopedReady[0] ? { ...scopedReady[0], reasons: [] } : null,
+    blockedTasks: scopedBlocked,
+    readyTasks: scopedReady,
+  };
 }
 
 function buildExecutionRequest(input: {

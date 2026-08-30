@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
@@ -95,7 +95,16 @@ export interface AuthorizedAttemptIdentity {
 }
 
 export type SubtaskAttemptOutcome =
-  | { outcome: 'completed'; attemptId: string; output: string; artifacts: string[]; warnings: string[]; executorName: string; durationMs: number }
+  | {
+      outcome: 'completed';
+      attemptId: string;
+      output: string;
+      artifacts: string[];
+      warnings: string[];
+      executorName: string;
+      durationMs: number;
+      resultId?: string;
+    }
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
   | {
       outcome: 'contract_failed';
@@ -659,6 +668,13 @@ export class SubtaskAttemptRunner {
           input.onProgress?.(event, executor);
         },
       });
+      if (execution.diagnostics) {
+        this.attemptRuntimeRepo.recordDiagnostics(
+          attemptId,
+          execution.diagnostics,
+          new Date().toISOString(),
+        );
+      }
       rawResponse = execution.output;
       if (workspaceBaseline && workspace) {
         workspaceDelta = deriveWorkspaceDelta(
@@ -691,57 +707,20 @@ export class SubtaskAttemptRunner {
               workspaceDelta,
             })
           : null;
-        if (
+        const provisionalBody = (
           partialCompletion?.ok
           && partialCompletion.body
           && partialCompletion.assessment.deliverability.status === 'deliverable'
           && partialCompletion.assessment.safety.status === 'safe'
-        ) {
-          const partialAssessment: CompletionAssessment = {
-            ...partialCompletion.assessment,
-            result: { kind: 'partial' },
-            certification: {
-              status: 'uncertified',
-              violations: partialCompletion.assessment.certification.violations,
-            },
-          };
-          const resultObjects = this.persistAttemptResults({
-            attemptId,
-            taskId: task.id,
-            generationId: subtask.generationId,
-            subtaskId: subtask.id,
-            rawResponse,
-            body: partialCompletion.body,
-            completeness: 'partial',
-            rawResultWriter,
-          });
-          const partialOutcome = this.landContractFailure({
-            attemptId,
-            executionId: input.executionId,
-            taskId: task.id,
-            subtaskId: subtask.id,
-            workUnitId: claim.workUnit.id,
-            agentClassName,
-            startedAt,
-            rawResponse,
-            completionSchemaVersion: 4,
-            violations: partialCompletion.assessment.certification.violations,
-            errorCode: executionFailure?.code ?? 'executor_partial_result',
-            errorDetail: error,
-            completionContract: built.context.completionContract,
-            terminalState: 'uncertified_result',
-            output: this.readResultObject(resultObjects.safeProjectionId, partialCompletion.body),
-            assessment: partialAssessment,
-            resultObjects,
-          });
-          claim.markWaiting('partial business result delivered; completion certification pending');
-          return partialOutcome;
-        }
+        ) ? partialCompletion.body : null;
         this.persistNonSuccess({
           attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: execution.status === 'cancelled' ? 'cancelled_or_stale' : 'executor_failed', rawResponse,
-          errorCode: execution.status === 'cancelled' ? 'attempt_cancelled' : 'executor_failed', errorDetail: error,
+          errorCode: execution.status === 'cancelled'
+            ? 'attempt_cancelled'
+            : executionFailure?.code ?? 'executor_failed',
+          errorDetail: error,
           failure: executionFailure,
           resultObjects: this.persistAttemptResults({
             attemptId,
@@ -749,8 +728,8 @@ export class SubtaskAttemptRunner {
             generationId: subtask.generationId,
             subtaskId: subtask.id,
             rawResponse,
-            body: null,
-            completeness: 'incomplete',
+            body: provisionalBody,
+            completeness: provisionalBody ? 'partial' : 'incomplete',
             rawResultWriter,
           }),
         });
@@ -1200,7 +1179,6 @@ export class SubtaskAttemptRunner {
     const dispatch = this.requireAuthorizedDispatch(input);
     const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
-    const sourceRoot = input.sourceRoot ?? this.deps.sourceRoot;
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const source = this.receiptRepo.findByAttemptId(input.sourceAttemptId);
     const sourceRuntime = this.attemptRuntimeRepo.find(input.sourceAttemptId);
@@ -1248,6 +1226,7 @@ export class SubtaskAttemptRunner {
         dispatch.authorizedBinding,
         prompt,
         128 * 1024,
+        input.attemptId,
       );
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
@@ -1268,11 +1247,14 @@ export class SubtaskAttemptRunner {
         const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
         return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
       });
-      const gitWorkspace = await this.managedGitWorkspace.ensure({
-        taskId: task.id,
-        generationId: subtask.generationId,
-        subtaskId: subtask.id,
-      }, sourceRoot);
+      const sourceWorkspace = this.deps.workspaceRepository.findByIdentity(
+        task.id,
+        subtask.generationId,
+        subtask.id,
+      );
+      if (!sourceWorkspace || !sourceWorkspace.rootUri.startsWith('file:')) {
+        throw new Error(`response-only correction source workspace is unavailable: ${subtask.id}`);
+      }
       const correctionMarkerIndex = result.output.indexOf(COMPLETION_MARKER_V4);
       const correctedMetadata = correctionMarkerIndex >= 0
         ? result.output.slice(correctionMarkerIndex)
@@ -1281,7 +1263,7 @@ export class SubtaskAttemptRunner {
         rawResponse: `${sourceResult.body}\n\n${correctedMetadata}`,
         subtask,
         outgoingHandoffs,
-        workspaceRoot: gitWorkspace.filesPath,
+        workspaceRoot: fileURLToPath(sourceWorkspace.rootUri),
         workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
@@ -1373,12 +1355,7 @@ export class SubtaskAttemptRunner {
           failure: { ...failure, scope: 'task' },
         };
       }
-      const completedEnvelope = completion.envelope;
       const completedAt = new Date().toISOString();
-      const managedCommit = await this.managedGitWorkspace.commit(
-        gitWorkspace,
-        `feat: capture corrected ${subtask.id} result`,
-      );
       const dispatchItem = this.dispatchItemRepo.find(input.attemptId);
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
@@ -1393,26 +1370,13 @@ export class SubtaskAttemptRunner {
           completionContract: input.completionContract,
         }, completedAt),
         expectedSubtaskStatus: 'running',
-        nextSubtaskStatus: 'awaiting_integration',
+        nextSubtaskStatus: 'done',
         subtaskError: null,
-        publication: {
-          id: `publication_${input.attemptId}`,
-          taskId: task.id,
-          generationId: subtask.generationId,
-          subtaskId: subtask.id,
-          sourceAttemptId: input.attemptId,
-          agentClassName,
-          candidateCommit: managedCommit.commit,
-          completion: {
-            body: safeBody ?? '',
-            artifacts: completion.normalizedArtifacts,
-            warnings: completion.warnings,
-            handoffs: completedEnvelope.handoffs,
-            completionSchemaVersion: 4,
-          },
-          topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks),
-          firstDispatchOrder: dispatchItem.batchOrder,
-          createdAt: completedAt,
+        subtaskResult: safeBody ?? '',
+        subtaskArtifacts: completion.normalizedArtifacts,
+        subtaskVerification: {
+          warnings: completion.warnings,
+          completionSchemaVersion: 4,
         },
         event: {
           schemaVersion: 5,
@@ -1442,23 +1406,11 @@ export class SubtaskAttemptRunner {
           reason: 'Cancellation fence won before correction terminal landing',
         };
       }
-      const workspaceRecord = this.deps.workspaceRepository.findByIdentity(
-        task.id,
-        subtask.generationId,
-        subtask.id,
-      );
-      if (workspaceRecord) {
-        this.deps.workspaceRepository.upsert({
-          ...workspaceRecord,
-          headCommit: managedCommit.commit,
-          status: 'active',
-          updatedAt: completedAt,
-        });
-      }
       return {
         outcome: 'completed', attemptId: input.attemptId, output: safeBody ?? '',
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
         executorName: agentClassName, durationMs: result.durationMs,
+        resultId: sourceResult.safe.resultId,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -680,8 +680,9 @@ Codex CLI Executor 被拒绝。
 原始 `attemptId` 继续用于服务端幂等、恢复和关联，但不作为用户标签。
 Execution Narrative 根据 attempt kind 和序号显示“主执行”“继续执行”“回退执行”
 “结果修正”或“合并修复”，并把内部 lifecycle 状态转换为本地化用户状态。
-Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。Trajectory 是只读
-页面，不渲染 Composer；草稿和待上传附件仍由 App 持有，切回 Conversation
+Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。执行中的 Attempt
+使用当前时间计算耗时，终态 Attempt 则冻结在不可变 receipt 的 `completedAt`，
+不会在页面中继续增长。Trajectory 是只读页面，不渲染 Composer；草稿和待上传附件仍由 App 持有，切回 Conversation
 后恢复。Workspace Header 提供跟随系统、浅色和深色三态主题，偏好保存在
 `metawork.theme`，并在应用首屏渲染前通过语义颜色 token 生效。
 
@@ -690,6 +691,15 @@ Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。Tr
 会给出有界、结构化的材料化诊断。显式恢复通过
 `task_resume_requested` 进入 Kernel，只有 Kernel 授权并应用
 `resume_task` 后才恢复 Task/Subtask 并再次 dispatch。
+
+Adapter 会把 `Connection error.`、`fetch failed`、socket 断开和 connection
+reset 等通用 Provider 连接错误归一化为可重试的 `network` failure。仅在用户显式
+Resume 时，若旧版本把最新不可变 receipt 中的失败记成了 `unknown`，Runtime
+可以对该 receipt 的有界安全摘要重新执行当前归一化规则。只有摘要能够明确归一化
+为网络错误时，提交给 Kernel 的 blocker category 才改为 `retry`；历史 receipt
+和 Decision ledger 不会被改写，权限、材料、契约及外部副作用的恢复边界不会放宽，
+普通未知错误仍保持 fail-closed，最终仍由 ControlKernel 决定是否授权
+`resume_task`。
 
 `/task resume` 的命令结果投影首个权威 Kernel Decision，不做乐观确认。只有
 `resume_task` 才显示“恢复执行已开始”；`no_op`、`block_work` 和

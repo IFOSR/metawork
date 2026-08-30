@@ -3,7 +3,7 @@ export interface CodexNonInteractiveArgsOptions {
   ephemeral?: boolean;
   json?: boolean;
   outputLastMessagePath?: string;
-  sandbox?: 'workspace-write' | 'danger-full-access';
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   modelId?: string;
   providerRef?: string;
 }

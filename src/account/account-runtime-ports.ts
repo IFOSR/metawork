@@ -28,6 +28,7 @@ import type {
   ConfigurationActivationStatusSnapshot,
 } from '../configuration/configuration-activation-gate.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
+import type { ConversationTaskSlot } from '../storage/conversation-task-scheduler-repo.js';
 
 /** AccountRuntime 暴露给 Application Shell 的窄句柄。 */
 export interface AccountRuntimeHandle {
@@ -72,7 +73,7 @@ export interface ConversationRuntimePort {
     listCurrentKernelDecisions(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[];
     listExecutorStatuses(configurationRevision: string): RevisionedKernelExecutorStatusProjection[];
     listWorkGraphTaskIds(): string[];
-    findOldestPendingPermission(): PermissionRequestRecord | null;
+    findOldestPendingPermission(conversationId: string): PermissionRequestRecord | null;
     listIntegratedPublications(taskIds: string[]): WorkspacePublicationRecord[];
     listRecoveryApplications(taskId: string): KernelDecisionApplicationRecord[];
     findRecoveryApplication(recoveryItemId: string): KernelDecisionApplicationRecord | null;
@@ -81,6 +82,9 @@ export interface ConversationRuntimePort {
     findActiveWorkGraphRevision(taskId: string): WorkGraphRevisionRecord | null;
     listTaskEvidence(taskId: string, generationId: string): TaskEvidenceRecord[];
     listAttemptReceipts(taskId: string): ExecutorAttemptReceipt[];
+    getConversationTaskSlot(conversationId: string): ConversationTaskSlot;
+    listQueuedTaskIds(conversationId: string): string[];
+    listConversationTaskSlots(): ConversationTaskSlot[];
   };
   readonly commands: {
     submitKernel: AccountKernelCoordinator['submit'];

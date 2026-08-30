@@ -33,7 +33,6 @@ export function WorkspaceShell({
   onSelectWorkspace,
   onNewSession,
   onSelectSession,
-  onContinueSession,
   onDeleteSession,
   onClearSessions,
   onSettings,
@@ -70,7 +69,6 @@ export function WorkspaceShell({
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
-  onContinueSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onClearSessions: () => void;
   onSettings: () => void;
@@ -97,7 +95,6 @@ export function WorkspaceShell({
         onSelectWorkspace={onSelectWorkspace}
         onNewSession={onNewSession}
         onSelect={onSelectSession}
-        onContinue={onContinueSession}
         onDeleteSession={onDeleteSession}
         onClearSessions={onClearSessions}
         onSettings={onSettings}

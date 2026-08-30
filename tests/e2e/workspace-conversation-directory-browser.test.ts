@@ -18,7 +18,7 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Workspace Conversation directory browser flow', () => {
-  it('shares summaries across browsers and gates detail until attach', async () => {
+  it('shares summaries, attaches directly, and restores in-flight detail after switching', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const webDist = join(root, 'web', 'dist');
     await stat(join(webDist, 'index.html'));
@@ -49,25 +49,32 @@ e2e('Workspace Conversation directory browser flow', () => {
         second.cdp,
         `document.querySelector('.session-row')?.innerText.includes('执行中')`,
       );
-      expect(await second.cdp.evaluate(
-        `document.body.innerText.includes('DETAIL_RESULT')`,
-      )).toBe(false);
-
       await second.cdp.evaluate(`document.querySelector('.session-row').click()`);
       await waitForExpression(
         second.cdp,
-        `Boolean(document.querySelector('.conversation-attach-prompt'))`,
-      );
-      expect(await second.cdp.evaluate(
         `document.body.innerText.includes('DETAIL_RESULT')`,
-      )).toBe(false);
-      await second.cdp.evaluate(
-        `document.querySelector('.conversation-attach-prompt button').click()`,
       );
+
+      server.activateOtherConversationForSecondBrowser();
       await waitForExpression(
         second.cdp,
-        `document.body.innerText.includes('DETAIL_RESULT')`,
+        `document.body.innerText.includes('OTHER_RUNNING_TASK')`,
       );
+      await second.cdp.evaluate(`
+        [...document.querySelectorAll('.session-row')]
+          .find(row => row.innerText.includes('Shared workspace task')).click()
+      `);
+      await waitForExpression(
+        second.cdp,
+        `document.body.innerText.includes('ORIGINAL_RUNNING_STEP')`,
+      );
+      await delay(250);
+      expect(await second.cdp.evaluate(
+        `document.body.innerText.includes('ORIGINAL_RUNNING_STEP')`,
+      )).toBe(true);
+      expect(await second.cdp.evaluate(
+        `Boolean(document.querySelector('.workspace-empty'))`,
+      )).toBe(false);
 
       await first.cdp.evaluate(`(() => {
         const select = document.querySelector('#workspace-select');
@@ -105,6 +112,7 @@ e2e('Workspace Conversation directory browser flow', () => {
 async function startMockServer(webDist: string): Promise<{
   port: number;
   setRunning(): void;
+  activateOtherConversationForSecondBrowser(): void;
   close(): Promise<void>;
 }> {
   const sockets = new Map<Socket, string>();
@@ -114,6 +122,7 @@ async function startMockServer(webDist: string): Promise<{
   }>();
   let nextClientId = 0;
   let conversationCreated = false;
+  let otherConversationCreated = false;
   let running = false;
 
   const server = createServer((request, response) => {
@@ -210,7 +219,12 @@ async function startMockServer(webDist: string): Promise<{
         activeWorkspaceId: workspaceId,
         activeConversationId: state.activeConversationId,
         conversations: workspaceId === 'workspace-a' && conversationCreated
-          ? [conversationSummary(state.activeConversationId === 'conv-shared', running)]
+          ? [
+            conversationSummary(state.activeConversationId === 'conv-shared', running),
+            ...(otherConversationCreated
+              ? [otherConversationSummary(state.activeConversationId === 'conv-other')]
+              : []),
+          ]
           : [],
       });
       return;
@@ -231,7 +245,47 @@ async function startMockServer(webDist: string): Promise<{
       state.activeWorkspaceId = 'workspace-a';
       state.activeConversationId = 'conv-shared';
       sendClient(clientId, { type: 'active_session_changed', sessionId: 'conv-shared' });
+      sendClient(clientId, {
+        type: 'turn_started',
+        requestId: 'req-original-running',
+        turnId: 'turn-original-running',
+        userInput: 'ORIGINAL_RUNNING_TASK',
+        startedAt: '2026-08-27T08:03:00.000Z',
+      });
+      sendClient(clientId, {
+        type: 'trace_delta',
+        turnId: 'turn-original-running',
+        fromSequence: 1,
+        status: 'running',
+        events: [{
+          id: 'trace-original-running',
+          sequence: 1,
+          occurredAt: '2026-08-27T08:03:01.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress',
+          summary: 'ORIGINAL_RUNNING_STEP',
+          details: {
+            subtaskId: 'subtask-original-running',
+            subtaskTitle: 'Original running task',
+            stepKey: 'executor_progress',
+            stepLabel: 'ORIGINAL_RUNNING_STEP',
+          },
+        }],
+      });
+      await delay(50);
       json(response, { state: 'active', sessionId: 'conv-shared' });
+      return;
+    }
+    if (url.pathname === '/api/conversations/conv-other') {
+      if (state.activeConversationId !== 'conv-other') {
+        response.writeHead(404);
+        response.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      json(response, otherConversationRecord(true));
       return;
     }
     if (url.pathname === '/api/conversations/conv-shared') {
@@ -265,7 +319,12 @@ async function startMockServer(webDist: string): Promise<{
         activeWorkspaceId: 'workspace-a',
         activeSessionId: state.activeConversationId,
         sessions: conversationCreated
-          ? [conversationSummary(state.activeConversationId === 'conv-shared', running)]
+          ? [
+            conversationSummary(state.activeConversationId === 'conv-shared', running),
+            ...(otherConversationCreated
+              ? [otherConversationSummary(state.activeConversationId === 'conv-other')]
+              : []),
+          ]
           : [],
       });
     }
@@ -284,6 +343,23 @@ async function startMockServer(webDist: string): Promise<{
     port: address.port,
     setRunning() {
       running = true;
+      broadcastDirectory();
+    },
+    activateOtherConversationForSecondBrowser() {
+      otherConversationCreated = true;
+      const clientId = 'browser-2';
+      const state = clientState.get(clientId);
+      if (!state) throw new Error('second browser is not connected');
+      state.activeWorkspaceId = 'workspace-a';
+      state.activeConversationId = 'conv-other';
+      sendClient(clientId, { type: 'active_session_changed', sessionId: 'conv-other' });
+      sendClient(clientId, {
+        type: 'turn_started',
+        requestId: 'req-other-running',
+        turnId: 'turn-other-running',
+        userInput: 'OTHER_RUNNING_TASK',
+        startedAt: '2026-08-27T08:02:00.000Z',
+      });
       broadcastDirectory();
     },
     async close() {
@@ -361,6 +437,39 @@ function conversationRecord(active: boolean) {
       artifactRefs: [],
       artifacts: [],
     }],
+  };
+}
+
+function otherConversationSummary(active: boolean) {
+  return {
+    id: 'conv-other',
+    workspaceId: 'workspace-a',
+    title: 'Other running task',
+    createdAt: '2026-08-27T08:02:00.000Z',
+    updatedAt: '2026-08-27T08:02:00.000Z',
+    active,
+    archived: false,
+    preview: 'OTHER_RUNNING_TASK',
+    activity: {
+      state: 'executing',
+      taskId: 'task-other',
+      updatedAt: '2026-08-27T08:02:00.000Z',
+    },
+    workspace: null,
+  };
+}
+
+function otherConversationRecord(active: boolean) {
+  return {
+    version: 1,
+    session: {
+      ...otherConversationSummary(active),
+      workspace: {
+        path: '/repo/workspace-a',
+        selectedAt: '2026-08-27T08:00:00.000Z',
+      },
+    },
+    turns: [],
   };
 }
 

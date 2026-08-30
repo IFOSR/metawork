@@ -19,11 +19,21 @@ interface TaskRow {
   interruption_count: number | null;
   created_at: string;
   updated_at: string;
+  account_id: string;
+  conversation_id: string;
+  workspace_id: string;
+  owner_planner_session_id: string;
+  admitted_at: string;
 }
 
 function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
+    accountId: row.account_id,
+    conversationId: row.conversation_id,
+    workspaceId: row.workspace_id,
+    ownerPlannerSessionId: row.owner_planner_session_id,
+    admittedAt: row.admitted_at || row.created_at,
     title: row.title,
     goal: row.goal,
     status: row.status as TaskStatus,
@@ -54,8 +64,9 @@ export class TaskRepo {
     this.db.prepare(`
       INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
         dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
-        last_interruption_reason, interruption_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        last_interruption_reason, interruption_count, created_at, updated_at,
+        account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.goal, task.status, task.summary,
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
@@ -63,6 +74,9 @@ export class TaskRepo {
       JSON.stringify(task.dependencies), JSON.stringify(task.prioritySignals),
       JSON.stringify(task.injectedPreferences), task.lastSchedulingReason,
       task.lastInterruptionReason, task.interruptionCount, task.createdAt, task.updatedAt,
+      task.accountId ?? 'legacy-account', task.conversationId ?? 'legacy-conversation',
+      task.workspaceId ?? 'legacy-workspace', task.ownerPlannerSessionId ?? 'legacy-planner-session',
+      task.admittedAt ?? task.createdAt,
     );
     this.taskSearchIndexRepo?.indexTask(task);
   }
@@ -74,6 +88,13 @@ export class TaskRepo {
 
   findByStatus(status: TaskStatus): Task[] {
     const rows = this.db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY updated_at DESC').all(status) as TaskRow[];
+    return rows.map(rowToTask);
+  }
+
+  findByConversation(conversationId: string): Task[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM tasks WHERE conversation_id = ? ORDER BY updated_at DESC, id',
+    ).all(conversationId) as TaskRow[];
     return rows.map(rowToTask);
   }
 

@@ -361,10 +361,10 @@ describe('scripted session', () => {
       ),
     });
 
-    const runningTask = taskEngine.list().find(task => task.status === 'running');
-    expect(runningTask).toBeTruthy();
-    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', runningTask!.id, 'feishu-document.md');
-    expect(runningTask?.artifacts).not.toContain(fallbackArtifact);
+    const blockedTask = taskEngine.list().find(task => task.status === 'blocked');
+    expect(blockedTask).toBeTruthy();
+    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
+    expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
     const output = result.output.join('\n');
     expect(output).toContain('磊哥，我已开始调研');
     expect(output).toContain('结果已返回，任务完成认证待处理。');

@@ -14,6 +14,87 @@ const NOW = '2026-08-13T00:00:00.000Z';
 const AGENT_CLASS = 'codex-engineering';
 
 describe('KernelExecutionRuntime executor recovery', () => {
+  it('preserves an Executor timeout as a failed execution outcome for Kernel recovery', async () => {
+    const timeoutFailure = {
+      kind: 'timeout' as const,
+      scope: 'attempt' as const,
+      code: 'executor_timeout',
+      summary: 'Executor produced partial output, then became silent',
+    };
+    const runtime = new KernelExecutionRuntime({
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn().mockReturnValue(null),
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-timeout',
+          taskId: 'task-timeout',
+          title: 'Research report',
+          goal: 'Produce a source-backed report',
+          deliveryKind: 'report',
+          requiredCapabilities: ['public-web-research'],
+          acceptance: [],
+        }),
+      },
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({
+          id: 'task-timeout',
+          status: 'running',
+          ownerPlannerSessionId: 'session-timeout',
+          conversationId: 'conversation-timeout',
+          workspaceId: 'workspace-timeout',
+        }),
+        attachResource: vi.fn(),
+      },
+      attemptRunner: {
+        run: vi.fn().mockResolvedValue({
+          outcome: 'executor_failed',
+          attemptId: 'attempt-timeout',
+          agentClassName: AGENT_CLASS,
+          failure: timeoutFailure,
+        }),
+      },
+      presentation: {
+        formatExecutorDispatch: vi.fn().mockReturnValue([]),
+      },
+      callbacks: {
+        appendExecutionTrace: vi.fn(),
+        appendOutput: vi.fn(),
+        setRunningExecutorName: vi.fn(),
+        clearRunningExecutorName: vi.fn(),
+      },
+      kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const event = await (runtime as unknown as {
+      runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
+    }).runDispatchItem({
+      item: {
+        ...historicalDispatch(),
+        attemptId: 'attempt-timeout',
+        taskId: 'task-timeout',
+        subtaskId: 'subtask-timeout',
+        authorizedBinding: binding('revision-a'),
+        status: 'running',
+      },
+      executionId: 'execution-timeout',
+      request: {},
+      progressTracker: { onProgress: vi.fn() },
+    });
+
+    expect(event).toMatchObject({
+      type: 'execution_outcome',
+      terminalKind: 'failed',
+      taskId: 'task-timeout',
+      subtaskId: 'subtask-timeout',
+      attemptId: 'attempt-timeout',
+      failure: timeoutFailure,
+    });
+  });
+
   it('streams presentation-only heartbeats while an Executor is silent', async () => {
     let releaseAttempt!: () => void;
     const attemptReleased = new Promise<void>(resolve => {
@@ -139,6 +220,9 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const appendOutput = vi.fn();
     const runAttempt = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue(null),
+      },
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue({
           ...historicalReceipt(),
@@ -362,6 +446,96 @@ describe('KernelExecutionRuntime executor recovery', () => {
     );
   });
 
+  it('publishes a terminal blocked trace after applying a block_work decision', async () => {
+    const reason = 'metadata correction is unavailable or exhausted';
+    let taskStatus = 'running';
+    const updateStatus = vi.fn();
+    const blockTask = vi.fn(() => {
+      taskStatus = 'blocked';
+    });
+    const appendExecutionTrace = vi.fn();
+    const finishExecution = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockImplementation(() => ({
+          id: 'task-blocked',
+          status: taskStatus,
+        })),
+        blockTask,
+      },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-blocked',
+          taskId: 'task-blocked',
+          status: 'awaiting_decision',
+        }),
+        updateStatus,
+      },
+      callbacks: {
+        appendExecutionTrace,
+      },
+      taskEventRepo: {
+        insert: vi.fn(),
+      },
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const decision: KernelDecision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-a',
+      id: 'decision-block-work',
+      eventId: 'event-uncertified-result',
+      reason,
+      action: {
+        type: 'block_work',
+        taskId: 'task-blocked',
+        subtaskId: 'subtask-blocked',
+      },
+    };
+
+    await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-blocked',
+      request: {},
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution,
+    });
+
+    expect(updateStatus).toHaveBeenCalledWith(
+      'subtask-blocked',
+      'blocked',
+      { error: reason },
+    );
+    expect(blockTask).toHaveBeenCalled();
+    expect(appendExecutionTrace).toHaveBeenCalledWith({
+      phase: 'verification',
+      actor: 'kernel',
+      kind: 'execution_blocked',
+      status: 'blocked',
+      title: 'Execution blocked',
+      summary: reason,
+      details: {
+        decisionId: 'decision-block-work',
+        action: 'block_work',
+        taskId: 'task-blocked',
+        subtaskId: 'subtask-blocked',
+      },
+      eventKey: 'decision-block-work:blocked',
+      taskId: 'task-blocked',
+      traceStatus: 'blocked',
+    });
+    expect(blockTask.mock.invocationCallOrder[0]).toBeLessThan(
+      appendExecutionTrace.mock.invocationCallOrder.at(-1)!,
+    );
+    expect(finishExecution).toHaveBeenCalledWith([
+      `Execution blocked: ${reason}`,
+    ]);
+  });
+
   it('applies an authorized uncertified-result resume without clearing awaiting_decision', async () => {
     const updateStatus = vi.fn();
     const unblockTask = vi.fn();
@@ -544,6 +718,119 @@ describe('KernelExecutionRuntime executor recovery', () => {
       bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
       recoveryMode: 'native_session',
       reason: 'completion_no_change_reason_mismatch',
+    }]);
+  });
+
+  it('projects a malformed completion report from a legacy blocked Subtask as a repair candidate', () => {
+    const authorizedBinding = binding('revision-a');
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'blocked' }),
+        getCurrentRunningTask: vi.fn().mockReturnValue(null),
+      },
+      workGraphRevisionRepo: {
+        findActive: vi.fn().mockReturnValue({
+          taskId: 'task-resume',
+          generationId: 'generation-resume',
+          revision: 3,
+          configurationRevision: 'revision-a',
+        }),
+        countAutomaticReplans: vi.fn().mockReturnValue(0),
+      },
+      subtaskRepo: {
+        listActiveByTask: vi.fn().mockReturnValue([{
+          id: 'subtask-resume',
+          taskId: 'task-resume',
+          generationId: 'generation-resume',
+          graphRevision: 3,
+          title: 'Build HTML report',
+          goal: 'Publish the completed HTML report',
+          status: 'blocked',
+          dependencies: [],
+          requiredCapabilities: ['public-web-research'],
+          executorBindings: [authorizedBinding],
+        }]),
+      },
+      subtaskHandoffRepo: {
+        listByTask: vi.fn().mockReturnValue([]),
+      },
+      attemptReceiptRepo: {
+        listByTask: vi.fn().mockReturnValue([{
+          ...historicalReceipt(),
+          attemptId: 'attempt-uncertified',
+          taskId: 'task-resume',
+          subtaskId: 'subtask-resume',
+          generationId: 'generation-resume',
+          graphRevision: 3,
+          terminalState: 'uncertified_result',
+          failure: null,
+          configurationRevision: 'revision-a',
+          authorizedBinding,
+          bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
+          verification: {
+            warnings: [],
+            violations: [{
+              code: 'completion_malformed',
+              path: 'report',
+              message: 'completion report is not strict JSON',
+            }],
+          },
+        }]),
+      },
+      dispatchItemRepo: {
+        listByTask: vi.fn().mockReturnValue([]),
+      },
+      workspaceRepository: {
+        findByIdentity: vi.fn().mockReturnValue({
+          id: 'workspace-resume',
+          status: 'active',
+          rootUri: pathToFileURL(process.cwd()).href,
+        }),
+      },
+      resultObjectRepo: {},
+      publicationRepo: {
+        hasBlockingResidue: vi.fn().mockReturnValue(false),
+      },
+      generationReplanRepo: {
+        findActive: vi.fn().mockReturnValue(null),
+      },
+      cancellationCoordinator: {
+        findCleanupTaskId: vi.fn().mockReturnValue(null),
+        completionBlockedReasons: vi.fn().mockReturnValue([]),
+      },
+      taskEventRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    const snapshot = (runtime as unknown as {
+      buildDispatchSnapshot(
+        taskId: string,
+        graphState: 'ready',
+        stableFacts: Record<string, unknown>,
+      ): Extract<import('../../src/kernel/control-kernel.js').KernelSnapshot, { type: 'dispatch' }>;
+    }).buildDispatchSnapshot('task-resume', 'ready', {
+      executorStatuses: [],
+      correctionSupportedAgentClasses: [AGENT_CLASS],
+      nativeContinuationAgentClasses: [],
+    });
+
+    expect(snapshot.resumeRecoveryCandidates).toEqual([{
+      subtaskId: 'subtask-resume',
+      sourceAttemptId: 'attempt-uncertified',
+      authorizedBinding,
+      bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
+      recoveryMode: 'recovery_packet',
+      reason: 'completion_metadata_invalid',
+      attemptKind: 'contract_correction',
+      attemptPayload: {
+        protocol: 'completion-correction-v2',
+        completionContract: { protocol: 'v3' },
+        violations: [{
+          code: 'completion_malformed',
+          path: 'report',
+          message: 'completion report is not strict JSON',
+        }],
+      },
     }]);
   });
 

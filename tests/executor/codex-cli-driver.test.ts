@@ -55,6 +55,22 @@ describe('CodexCliDriver', () => {
     ]);
   });
 
+  it('builds a response-only launch in a read-only sandbox', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+    const launch = driver.buildLaunch({
+      prompt: 'return completion metadata only',
+      cwd: '/attempt/home',
+      runtimeHomePath: '/attempt/home',
+      providerRef: 'code-cli',
+      modelId: 'gpt-5.6-sol',
+      responseOnly: true,
+    });
+
+    expect(driver.supportsResponseOnly).toBe(true);
+    expect(launch.args).toContain('read-only');
+    expect(launch.args).not.toContain('workspace-write');
+  });
+
   it('normalizes result output', () => {
     const driver = new CodexCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 0, stdout: 'done\n', stderr: '' }))

@@ -27,6 +27,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
+import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
@@ -349,6 +350,56 @@ describe('AccountStartupRecoveryService production composition', () => {
     await expect(fixture.composition.accountRuntime.initialize())
       .rejects.toThrow(`startup recovery cannot resolve Conversation origin for Task ${task.id}`);
   });
+
+  it('reconciles a non-running Task when durable execution residue still owns it', async () => {
+    const fixture = createFixture('non-running-residue');
+    const task = createRunningTask(fixture, 'Reconcile residual ownership');
+    new TaskRepo(fixture.db).update(task.id, { status: 'ready' });
+    new WorkUnitRepo(fixture.db).upsert(
+      claimedWorkUnit(task.id, `${task.id}_execute`, 'attempt-non-running-residue'),
+    );
+
+    await expect(fixture.composition.accountRuntime.initialize())
+      .rejects.toThrow('startup orphan has no authorized dispatch identity: attempt-non-running-residue');
+  });
+
+  it('does not block an already blocked Task again when its Conversation slot is recovered', async () => {
+    const fixture = createFixture('blocked-slot-recovery');
+    const task = fixture.taskEngine.create({
+      title: 'Resume after a Provider connection failure',
+      goal: 'Resume after a Provider connection failure',
+      accountId: 'local-default',
+      conversationId: 'conversation-blocked',
+      workspaceId: 'workspace-blocked',
+      ownerPlannerSessionId: 'conversation-blocked',
+    });
+    seedPersistedWorkGraph(fixture.db, task.id, task.goal);
+    fixture.taskEngine.transition(task.id, 'ready');
+    fixture.taskEngine.transition(task.id, 'running');
+    fixture.taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: 'unknown requires explicit recovery',
+      status: 'waiting',
+    });
+    new ConversationTaskSchedulerRepo(fixture.db).claimSlot(
+      'conversation-blocked',
+      task.id,
+      'reservation-blocked',
+      '2026-08-30T02:53:51.000Z',
+    );
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-blocked');
+
+    await expect(fixture.composition.accountRuntime.initialize()).resolves.toBeUndefined();
+
+    expect(new TaskRepo(fixture.db).findById(task.id)).toMatchObject({
+      status: 'blocked',
+      dependencies: [expect.objectContaining({
+        description: 'unknown requires explicit recovery',
+        status: 'waiting',
+      })],
+    });
+  });
 });
 
 function createFixture(name: string, coordinator?: AccountKernelCoordinator) {
@@ -667,6 +718,53 @@ function seedDispatch(
     decision.configurationRevision,
     JSON.stringify([input.binding]),
     JSON.stringify([input.bindingFingerprint]),
+    now,
+  );
+}
+
+function seedTaskOriginDecision(
+  db: Database.Database,
+  taskId: string,
+  sessionId: string,
+): void {
+  const now = '2026-08-30T02:53:51.000Z';
+  const eventId = `event-origin-${taskId}`;
+  const decisionId = `decision-origin-${taskId}`;
+  db.prepare(`
+    INSERT INTO kernel_decisions (
+      id, schema_version, event_id, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+      decision_json, action, reason, configuration_revision,
+      authorized_bindings_json, binding_fingerprints_json, created_at
+    ) VALUES (?, 5, ?, 'dispatch_requested', ?, NULL, ?, ?, NULL, NULL, ?, ?, ?,
+      'no_op', 'persisted Task origin', 'revision-test', '[]', '[]', ?)
+  `).run(
+    decisionId,
+    eventId,
+    eventId,
+    sessionId,
+    taskId,
+    JSON.stringify({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      type: 'dispatch_requested',
+      id: eventId,
+      correlationId: eventId,
+      causationId: null,
+      occurredAt: now,
+      sessionId,
+      taskId,
+      reason: 'persisted Task origin',
+    }),
+    JSON.stringify({ schemaVersion: 5, type: 'invalid', reason: 'origin fixture' }),
+    JSON.stringify({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: decisionId,
+      eventId,
+      reason: 'persisted Task origin',
+      action: { type: 'no_op' },
+    }),
     now,
   );
 }

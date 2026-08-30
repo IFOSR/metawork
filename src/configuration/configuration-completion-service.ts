@@ -65,6 +65,7 @@ export class ConfigurationCompletionService {
     localProviders?: readonly ConfigurationCompletionProviderSource[];
     presets?: readonly ConfigurationCompletionPreset[];
     providerCatalog?: readonly ConfigurationCompletionProviderSource[];
+    modelCapabilities?: Readonly<Record<string, readonly string[]>>;
   } = {}) {}
 
   complete(input: ConfigurationCompletionInput): ConfigurationCompletionResult {
@@ -118,17 +119,22 @@ export class ConfigurationCompletionService {
     for (const [modelRef, configured] of Object.entries(input.models ?? {}).sort()) {
       const providerRef = text(configured.providerRef) ?? '';
       const modelId = text(configured.modelId) ?? modelRef;
-      const capabilities = listOfStrings(configured.capabilities);
-      const hasExplicitCapabilities = capabilities.length > 0;
+      const explicitCapabilities = listOfStrings(configured.capabilities);
       const providerModels = providers[providerRef]?.modelIds ?? [];
       const inferredModelId = providerModels.includes(modelId)
         ? modelId
         : undefined;
+      const catalogCapabilities = (this.deps.modelCapabilities?.[modelId] ?? [])
+        .filter((value): value is string => Boolean(value));
+      const capabilities = explicitCapabilities.length > 0
+        ? explicitCapabilities
+        : [...catalogCapabilities];
+      const hasResolvedCapabilities = capabilities.length > 0;
       models[modelRef] = {
         providerRef,
         modelId,
-        capabilities: hasExplicitCapabilities ? capabilities : [],
-        capabilityState: hasExplicitCapabilities
+        capabilities,
+        capabilityState: hasResolvedCapabilities
           ? (inferredModelId ? '已从 Provider 补全' : '已自动发现')
           : '需要确认',
         ...(numberValue(configured.contextLimit) !== undefined
@@ -143,7 +149,7 @@ export class ConfigurationCompletionService {
         ...(text(configured.latencyTier) ? { latencyTier: text(configured.latencyTier)! } : {}),
         ...(text(configured.qualityTier) ? { qualityTier: text(configured.qualityTier)! } : {}),
       };
-      if (!hasExplicitCapabilities) requiredFields.push(`models.${modelRef}.capabilities`);
+      if (!hasResolvedCapabilities) requiredFields.push(`models.${modelRef}.capabilities`);
     }
 
     return {

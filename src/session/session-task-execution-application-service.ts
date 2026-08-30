@@ -76,7 +76,7 @@ export class SessionTaskExecutionApplicationService {
       onInitialDecision: value => {
         if (decisionSettled) return;
         decisionSettled = true;
-        if (value.action.type === 'resume_task') {
+        if (value.action.type === 'resume_task' || value.action.type === 'park_for_replan') {
           this.appendExecutionGuidance(task, request);
         }
         resolveDecision(value);

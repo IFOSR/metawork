@@ -76,6 +76,8 @@ export interface PlanningContext {
   images?: PlannerImageAttachment[];
   request: {
     sessionId: string;
+    /** Semantic Conversation owner; distinct from the Planner session identity. */
+    conversationId?: string;
     source: string;
   };
   pendingAuthorizationRequest: {

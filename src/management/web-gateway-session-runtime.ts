@@ -276,8 +276,7 @@ class WebGatewayClientSession {
     this.activeWorkspaceId = workspaceId;
     this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
     this.followWorkspace(workspaceId);
-    await this.attach(sessionId);
-    this.emit({ type: 'active_session_changed', sessionId });
+    await this.attach(sessionId, true);
     this.emit({
       type: 'session_catalog',
       activeSessionId: sessionId,
@@ -332,17 +331,21 @@ class WebGatewayClientSession {
     return structuredClone(this.replayEvents);
   }
 
-  private attach(sessionId: string): Promise<void> {
+  private attach(sessionId: string, announceActive = false): Promise<void> {
     if (this.disposed) return Promise.reject(new Error('Web Gateway runtime is disposed'));
     const generation = this.attachGeneration += 1;
-    const attachment = this.attachOnce(sessionId, generation);
+    const attachment = this.attachOnce(sessionId, generation, announceActive);
     this.pendingAttaches.add(attachment);
     return attachment.finally(() => {
       this.pendingAttaches.delete(attachment);
     });
   }
 
-  private async attachOnce(sessionId: string, generation: number): Promise<void> {
+  private async attachOnce(
+    sessionId: string,
+    generation: number,
+    announceActive: boolean,
+  ): Promise<void> {
     const detachClient = await this.deps.gateway.attachClient(this.deps.accountId, sessionId);
     const detachOnce = once(detachClient);
     if (this.disposed) {
@@ -430,6 +433,7 @@ class WebGatewayClientSession {
     }
     if (!this.workspaces.has(sessionId)) this.workspaces.set(sessionId, null);
     replaying = false;
+    if (announceActive) this.emit({ type: 'active_session_changed', sessionId });
     this.emitInFlightTurns(sessionId);
   }
 
@@ -461,7 +465,11 @@ class WebGatewayClientSession {
         ...(state.completedAt !== null ? { completedAt: state.completedAt } : {}),
       });
       if (state.taskId && state.executionTimeline) {
-        this.emit({ type: 'execution', taskId: state.taskId, timeline: state.executionTimeline });
+        this.emit({
+          type: 'execution',
+          taskId: state.taskId,
+          timeline: state.executionTimeline,
+        });
       }
     }
   }

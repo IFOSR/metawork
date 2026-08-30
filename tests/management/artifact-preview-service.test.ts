@@ -179,6 +179,43 @@ describe('ArtifactPreviewService', () => {
     void service;
   });
 
+  it('returns image artifacts as a base64 data URL for same-origin preview', async () => {
+    const { taskDirectory, userWorkspaceRoot } = createFixture({});
+    const imagePath = join(taskDirectory, 'assets', 'shot.png');
+    mkdirSync(join(taskDirectory, 'assets'), { recursive: true });
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    writeFileSync(imagePath, pngBytes);
+
+    const service = new ArtifactPreviewService({
+      taskArtifactSource: {
+        findById: async artifactId => artifactId === 'artifact_image'
+          ? recordFixture({
+            publicationId: null,
+            displayName: 'shot.png',
+            relativePath: 'assets/shot.png',
+            publishedPath: imagePath,
+            mediaType: 'image/png',
+            previewKind: 'image',
+            contentHash: 'sha256:img',
+            byteLength: pngBytes.length,
+          })
+          : null,
+      },
+      query: { authorize: () => true, currentAccountId: () => 'local-default' },
+      userWorkspaceRoot,
+    });
+
+    const result: ArtifactPreviewResult = await service.readPreview('artifact_image');
+    expect(result).toMatchObject({ ok: true });
+    expect((result as { content: string }).content).toBe(
+      `data:image/png;base64,${pngBytes.toString('base64')}`,
+    );
+    await expect(service.getMetadata('artifact_image')).resolves.toMatchObject({
+      ok: true,
+      artifact: expect.objectContaining({ previewKind: 'image', previewable: true }),
+    });
+  });
+
   it('blocks symlinked and out-of-root published paths', async () => {
     const { root, taskDirectory } = createFixture({});
     const outsideFile = join(root, 'outside-secret.md');

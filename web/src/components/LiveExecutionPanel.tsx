@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent } from '../api/types';
+import { executionElapsedEndMs } from '../execution-duration';
 
 interface ExecutionCard {
   subtaskId: string;
@@ -90,7 +91,14 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
         {activityLabel(card.activityStatus, card.stepLabel)}
       </p>
       <footer>
-        <time>{formatElapsed(card.startedAt, Date.now())}</time>
+        <time>{formatElapsed(
+          card.startedAt,
+          executionElapsedEndMs(
+            !completed && isActiveActivity(card.activityStatus),
+            card.updatedAt,
+            Date.now(),
+          ),
+        )}</time>
         {completed
           ? <span className="execution-card-open-hint">查看执行详情 →</span>
           : card.progress !== null && <progress value={Math.min(1, card.progress)} max={1} />}
@@ -176,6 +184,10 @@ function activityStatusFor(event: InteractionTraceEvent): string {
   if (event.kind === 'capacity_wait') return 'capacity_wait';
   if (event.kind.includes('blocked') || event.status === 'blocked') return 'blocked';
   return event.status === 'running' ? 'active' : event.status;
+}
+
+function isActiveActivity(status: string): boolean {
+  return ['active', 'running', 'heartbeat', 'dependency_wait', 'capacity_wait'].includes(status);
 }
 
 function activityLabel(status: string, step: string): string {

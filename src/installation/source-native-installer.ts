@@ -296,7 +296,7 @@ function buildConfiguration(
         modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
         routingCapabilities: ['workspace-engineering'],
-        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation'],
+        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
         avoidUseCases: ['current public-web research requiring source-backed delivery'],
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
         skills: [],

@@ -135,6 +135,8 @@ import {
 } from '../configuration/configuration-runtime-coordinator.js';
 import { ConfigurationCompletionService } from '../configuration/configuration-completion-service.js';
 import { PUBLIC_PROVIDER_PRESETS } from '../configuration/public-provider-catalog.js';
+import { MODEL_CAPABILITY_CATALOG } from '../configuration/model-capability-catalog.js';
+import { buildProviderCompletionCatalog } from '../configuration/provider-model-discovery.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 import {
   classifyServerReadiness,
@@ -828,6 +830,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const interactionTraceStream = new InteractionTraceStream(conversationId);
     const planningContextBuilder = new PlanningContextBuilder({
       sessionId: conversationId,
+      conversationId,
       requestSource: 'session',
       getTimeoutMs: () => {
         const configured = Number(process.env.METACLAW_PLANNER_TIMEOUT_MS);
@@ -1364,28 +1367,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
         getCompletion: async () => {
           const snapshot = await configurationService.getActiveSnapshot();
-          const providerCatalog = await Promise.all(
-            Object.entries(snapshot.config.providers).map(async ([providerRef, provider]) => {
-              let credentialAvailable = false;
-              try {
-                assertSecretReference(provider.apiKeyRef);
-                credentialAvailable = (await secretStore.get(provider.apiKeyRef)).trim().length > 0;
-              } catch {
-                credentialAvailable = false;
-              }
-              return {
-                providerRef,
-                baseUrl: provider.baseUrl,
-                credentialAvailable,
-                modelIds: Object.values(snapshot.config.models)
-                  .filter(model => model.providerRef === providerRef)
-                  .map(model => model.modelId),
-              };
-            }),
-          );
+          const providerCatalog = await buildProviderCompletionCatalog({
+            providers: snapshot.config.providers,
+            models: snapshot.config.models,
+            readSecret: async reference => {
+              assertSecretReference(reference);
+              return secretStore.get(reference);
+            },
+          });
           return new ConfigurationCompletionService({
             providerCatalog,
             presets: PUBLIC_PROVIDER_PRESETS,
+            modelCapabilities: MODEL_CAPABILITY_CATALOG,
           }).complete({
             providers: Object.fromEntries(
               Object.entries(snapshot.config.providers).map(([providerRef, provider]) => [

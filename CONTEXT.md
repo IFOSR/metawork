@@ -79,7 +79,9 @@ model information is unavailable instead of exposing the internal ref.
 Public attempt timelines retain the internal `attemptId` only as a non-visible
 correlation key. Visible execution narrative uses attempt kind/ordinal labels
 such as `主执行` and localized display status such as `已完成`; raw statuses such
-as `terminal` are not presentation text. The Composer exists only in the
+as `terminal` are not presentation text. Active attempt duration advances from
+its start time; a settled attempt freezes at the immutable receipt completion
+time instead of continuing to grow in the UI. The Composer exists only in the
 Conversation tab, while App-owned draft and attachment state survives a switch
 to the read-only Trajectory tab. Web theme preference is client-only,
 persisted under `metawork.theme`, and supports system, light and dark modes
@@ -94,8 +96,16 @@ publication waits, while missing handoff/result/workspace state and identity
 mismatch produce bounded structured diagnostics. A blocked Task can resume only
 through the Kernel `task_resume_requested` event and `resume_task` decision;
 manual, material, contract and unknown blockers remain blocked until explicitly
-resolved. Task and Subtask state restoration is applied only with the Kernel
-decision. A legacy `authorize_task_plan` application made uncertain solely by
+resolved. Executor connection failures, including generic Provider messages
+such as `Connection error.`, normalize to a retryable network failure. During an
+explicit Resume only, Runtime may re-normalize the bounded safe summary from the
+latest immutable receipt when that receipt was stored by an older release as
+`unknown`. If and only if the summary now unambiguously normalizes to `network`,
+Runtime submits `task_resume_requested` with blocker category `retry`. It does
+not rewrite the receipt or Kernel ledger, does not relax permission, material,
+contract or external-effect recovery, and `ControlKernel` remains the sole
+authority for `resume_task`. Task and Subtask state restoration is applied only
+with the Kernel decision. A legacy `authorize_task_plan` application made uncertain solely by
 the former system-binding `onDecisionApplying` presentation callback defect is
 the one bounded exception to ordinary manual uncertainty handling. Startup
 recovery or an explicit Resume may submit a deterministic

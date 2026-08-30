@@ -26,9 +26,12 @@ import {
   isRetrySafeLegacySystemBindingReplan,
   legacySystemBindingRecoveryEvent,
 } from '../execution/kernel-application-recovery.js';
+import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
+  private readonly promotionInFlight = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
@@ -49,17 +52,79 @@ export class AccountStartupRecoveryService {
     readonly blockedRecheckIntervalMs: number;
   }) {}
 
+  async onTaskTerminal(taskId: string): Promise<void> {
+    const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    const conversationId = task?.conversationId;
+    if (!task || !conversationId) return;
+    if (this.deps.runtimeExecutionServices.dispatchItemRepo.hasBlockingResidue(taskId)
+      || this.deps.runtimeExecutionServices.publicationRepo.hasBlockingResidue(taskId)
+      || this.deps.coordinatorServices.workUnitClaimService.hasClaimedByTask(taskId)
+      || this.deps.runtimeExecutionServices.resourceLeaseService.findActive()
+        .some(lease => lease.taskId === taskId)) {
+      scheduler.releaseSlotAndPromote(conversationId, taskId, new Date().toISOString(), true);
+      return;
+    }
+    const occupiedOtherCount = scheduler.listSlots().filter(slot => (
+      slot.activeTaskId !== taskId
+      && (slot.state === 'occupied' || slot.state === 'releasing')
+    )).length;
+    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
+    const promotion = scheduler.releaseSlotAndPromote(
+      conversationId,
+      taskId,
+      new Date().toISOString(),
+      false,
+      occupiedOtherCount < maxConcurrentTasks,
+    );
+    if (!promotion) return;
+    await this.promoteConversationTask(promotion.taskId, conversationId);
+  }
+
+  private promoteConversationTask(taskId: string, conversationId: string): Promise<void> {
+    const existing = this.promotionInFlight.get(conversationId);
+    if (existing) return existing;
+    const work = this.startPromotedTask(taskId, conversationId)
+      .catch(() => {
+        this.deps.repositories.conversationTaskSchedulerRepo.markRecoveryBlocked(
+          conversationId,
+          taskId,
+          new Date().toISOString(),
+        );
+      })
+      .finally(() => {
+        if (this.promotionInFlight.get(conversationId) === work) {
+          this.promotionInFlight.delete(conversationId);
+        }
+      });
+    this.promotionInFlight.set(conversationId, work);
+    return work;
+  }
+
+  private async startPromotedTask(taskId: string, conversationId: string): Promise<void> {
+    const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+    const payload = this.deps.repositories.conversationTaskSchedulerRepo.getQueuedPayload(taskId);
+    if (!task || task.conversationId !== conversationId || !payload || !payload.generationId) {
+      throw new Error(`queued Task ${taskId} failed immutable owner/payload validation`);
+    }
+    this.deps.repositories.conversationTaskSchedulerRepo.markRunning(taskId, new Date().toISOString());
+    const request = promotedExecutionRequest(payload, taskId);
+    await this.withSystemBinding(task.ownerPlannerSessionId ?? payload.plannerSessionId, () => {
+      const started = this.deps.kernelExecutionServices.taskExecutionApplicationService
+        .prepareTaskExecution(taskId, request);
+      return started.completion;
+    });
+  }
+
   async recover(): Promise<void> {
     const now = new Date().toISOString();
     const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.deps.coordinatorServices.workUnitClaimService.listOrphanedClaims();
     const dispatchItems = this.deps.runtimeExecutionServices.dispatchItemRepo;
-    const runningTasks = this.deps.taskServices.taskRuntimeService.listTasksByStatus('running');
+    const recoveryTaskIds = this.collectRecoveryTaskIds(claimedOrphans);
     const requiresAttemptReconciliation = claimedOrphans.length > 0
       || this.deps.workspaceServices.attemptExecutionRepository.listActive().length > 0
-      || runningTasks.some(task => dispatchItems.listByTask(task.id).some(item =>
-        ['launching', 'running', 'cancelling', 'uncertain'].includes(item.status)
-      ));
+      || dispatchItems.listBlocking().length > 0;
 
     if (requiresAttemptReconciliation) {
       const checkpointIds = new Map<string, string | null>();
@@ -144,7 +209,9 @@ export class AccountStartupRecoveryService {
     await this.deliverPendingEffects(now);
     await this.recoverKernelCoordinator();
 
-    for (const task of runningTasks) {
+    for (const taskId of recoveryTaskIds) {
+      const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+      if (!task) continue;
       const taskClaims = claimedOrphans.filter(item => item.claimedTaskId === task.id);
       for (const workUnit of taskClaims) {
         if (!workUnit.claimedSubtaskId || !workUnit.claimedAttemptId) continue;
@@ -187,24 +254,31 @@ export class AccountStartupRecoveryService {
             && ['launching', 'running', 'uncertain'].includes(item.status)
           );
           if (!dispatch) {
-            this.deps.taskServices.taskRuntimeService.blockTask(task.id, {
-              taskId: task.id,
-              type: 'manual',
-              description: 'startup recovery found running work without authorized dispatch',
-              status: 'waiting',
-            });
-            continue;
+            // Recovery may discover this Task through its Conversation slot or
+            // may have blocked it while reconciling an earlier durable fact.
+            // Only a still-running orphan needs a new manual blocker.
+            const currentTask = this.deps.taskServices.taskRuntimeService.findTask(task.id);
+            if (currentTask?.status === 'running') {
+              this.deps.taskServices.taskRuntimeService.blockTask(task.id, {
+                taskId: task.id,
+                type: 'manual',
+                description: 'startup recovery found running work without authorized dispatch',
+                status: 'waiting',
+              });
+            }
+            if (currentTask?.status === 'running' || currentTask?.status === 'blocked') continue;
+          } else {
+            this.deps.kernelServices.kernelWorkflowRepo.enqueue(
+              startupOrphanEvent({
+                sessionId: this.originForDispatch(dispatch.decisionId),
+                taskId: task.id,
+                subtaskId: orphan.id,
+                attemptId: dispatch.attemptId,
+                dispatch,
+                occurredAt: now,
+              }),
+            );
           }
-          this.deps.kernelServices.kernelWorkflowRepo.enqueue(
-            startupOrphanEvent({
-              sessionId: this.originForDispatch(dispatch.decisionId),
-              taskId: task.id,
-              subtaskId: orphan.id,
-              attemptId: dispatch.attemptId,
-              dispatch,
-              occurredAt: now,
-            }),
-          );
         }
       }
       await this.recoverTask(task.id);
@@ -212,6 +286,45 @@ export class AccountStartupRecoveryService {
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       await this.recoverTask(task.id);
     }
+    for (const conversationId of this.deps.repositories.conversationTaskSchedulerRepo.listQueuedConversations()) {
+      const slot = this.deps.repositories.conversationTaskSchedulerRepo.getSlot(conversationId);
+      if (slot.state !== 'free' || slot.activeTaskId !== null) continue;
+      const occupied = this.deps.repositories.conversationTaskSchedulerRepo.listSlots()
+        .filter(candidate => candidate.state === 'occupied' && candidate.activeTaskId !== null).length;
+      if (occupied >= (this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2)) continue;
+      const promotion = this.deps.repositories.conversationTaskSchedulerRepo
+        .promoteNextQueued(conversationId, now);
+      if (promotion) await this.promoteConversationTask(promotion.taskId, conversationId);
+    }
+  }
+
+  private collectRecoveryTaskIds(claimedOrphans: ReturnType<
+    AccountStartupRecoveryService['deps']['coordinatorServices']['workUnitClaimService']['listOrphanedClaims']
+  >): string[] {
+    const taskIds = new Set<string>(
+      this.deps.taskServices.taskRuntimeService.listTasksByStatus('running').map(task => task.id),
+    );
+    for (const workUnit of claimedOrphans) {
+      if (workUnit.claimedTaskId) taskIds.add(workUnit.claimedTaskId);
+    }
+    for (const item of this.deps.runtimeExecutionServices.dispatchItemRepo.listBlocking()) {
+      taskIds.add(item.taskId);
+    }
+    for (const attempt of this.deps.workspaceServices.attemptExecutionRepository.listActive()) {
+      taskIds.add(attempt.taskId);
+    }
+    for (const lease of this.deps.runtimeExecutionServices.resourceLeaseService.findActive()) {
+      taskIds.add(lease.taskId);
+    }
+    for (const slot of this.deps.repositories.conversationTaskSchedulerRepo.listSlots()) {
+      if (slot.activeTaskId && slot.state !== 'free') taskIds.add(slot.activeTaskId);
+    }
+    const publications = this.deps.db.prepare(`
+      SELECT DISTINCT task_id FROM workspace_publications
+      WHERE status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+    `).all() as Array<{ task_id: string }>;
+    for (const publication of publications) taskIds.add(publication.task_id);
+    return [...taskIds].sort();
   }
 
   async recoverPeriodic(nowMs = Date.now()): Promise<boolean> {
@@ -321,9 +434,32 @@ export class AccountStartupRecoveryService {
         schemaVersion: 5,
         type: 'plan_admission',
         tasks: this.deps.taskServices.taskRuntimeService.listTasks()
-          .map(task => ({ id: task.id, status: task.status })),
-        runningTaskId: this.deps.kernelExecutionServices.kernelExecutionRuntime
-          .getSingleActiveTaskId(),
+          .map(task => ({
+            id: task.id,
+            status: task.status,
+            ...(task.conversationId ? { conversationId: task.conversationId } : {}),
+            ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+          })),
+        activeTaskByConversation: Object.fromEntries(
+          this.deps.repositories.conversationTaskSchedulerRepo.listSlots().map(slot => [
+            slot.conversationId,
+            slot.activeTaskId,
+          ]),
+        ),
+        occupiedConversationIds: this.deps.repositories.conversationTaskSchedulerRepo
+          .listSlots()
+          .filter(slot => slot.state !== 'free')
+          .map(slot => slot.conversationId),
+        queuedTaskCountByConversation: Object.fromEntries(
+          this.deps.repositories.conversationTaskSchedulerRepo.listSlots().map(slot => [
+            slot.conversationId,
+            this.deps.repositories.conversationTaskSchedulerRepo.countQueuedTasks(slot.conversationId),
+          ]),
+        ),
+        activeTaskCount: this.deps.repositories.conversationTaskSchedulerRepo
+          .listSlots()
+          .filter(slot => slot.state === 'occupied' || slot.state === 'releasing').length,
+        runningTaskId: null,
         plannerConfiguration: this.deps.plannerConfiguration,
         kernelConfiguration: this.deps.kernelConfiguration,
         executorStatuses: this.deps.repositories.kernelExecutorStatusRepo
@@ -339,7 +475,10 @@ export class AccountStartupRecoveryService {
           userInput: event.requestText,
         }),
         pendingAuthorizationRequest: (() => {
-          const pending = this.deps.workspaceServices.permissionRepository.findOldestPending();
+          const pending = this.deps.workspaceServices.permissionRepository
+            .findOldestPendingForConversation(
+              event.conversationId ?? event.sessionId,
+            );
           return pending
             ? { requestId: pending.request.id, taskId: pending.request.taskId }
             : null;
@@ -405,9 +544,12 @@ export class AccountStartupRecoveryService {
     }
     const source = this.deps.kernelServices.kernelWorkflowRepo.findEvent(decision.eventId);
     const userInput = source?.type === 'plan_proposed' ? source.requestText : '';
+    const task = source?.taskId
+      ? this.deps.taskServices.taskRuntimeService.findTask(source.taskId)
+      : null;
     return this.withSystemBinding(persisted.sessionId, () => (
       this.deps.kernelExecutionServices.sessionKernelRuntime
-        .forInput(userInput)
+        .forInput(userInput, task?.conversationId)
         .apply(decision)
     ));
   }
@@ -506,6 +648,26 @@ export class AccountStartupRecoveryService {
       }, () => new Date().toISOString());
     }
   }
+}
+
+function promotedExecutionRequest(payload: QueuedTaskPayload, taskId: string) {
+  return {
+    userPrompt: payload.requestText.slice(0, 24_000),
+    contextTaskId: taskId,
+    executionMode: payload.executionMode ?? 'fresh' as const,
+    origin: 'system' as const,
+    schedulingReason: payload.schedulingReason ?? 'queued Conversation Task promoted',
+    kernelDecisionId: payload.kernelDecisionId ?? null,
+    authorizedWorkGraph: payload.workGraph as import('../work-graph/types.js').WorkGraphProposal,
+    authorizedBindingsBySubtask: payload.authorizedBindingsBySubtask as Record<string, AuthorizedExecutorBinding[]>,
+    workGraphAuthorization: {
+      decisionId: payload.kernelDecisionId ?? `queued_${taskId}`,
+      generationId: payload.generationId,
+      revision: payload.graphRevision,
+      source: payload.proposalSource ?? 'initial' as const,
+      automaticReplan: false,
+    },
+  };
 }
 
 function startupOrphanEvent(input: {

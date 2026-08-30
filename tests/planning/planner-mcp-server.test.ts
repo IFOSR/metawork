@@ -12,7 +12,10 @@ import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 
-function createHarness(sessionId = 'sess_current') {
+function createHarness(
+  sessionId = 'sess_current',
+  conversationId = 'legacy-conversation',
+) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
@@ -39,7 +42,7 @@ function createHarness(sessionId = 'sess_current') {
         affordances: [],
         modelPolicy: { mode: 'fixed', modelRef: 'test-model' },
       }],
-    })),
+    }), conversationId),
   };
 }
 
@@ -106,6 +109,67 @@ describe('PlannerDataReader', () => {
     expect(result.count).toBe(20);
     expect(result.tasks).toHaveLength(20);
     expect(String(result.tasks[0]?.summary).length).toBeLessThanOrEqual(320);
+  });
+
+  it('never exposes another Conversation Task through Planner reads', () => {
+    const { taskEngine, reader } = createHarness('sess-a', 'conversation-a');
+    taskEngine.create({
+      id: 'task-a',
+      title: 'private A task',
+      goal: 'private A goal',
+      conversationId: 'conversation-a',
+    });
+    taskEngine.create({
+      id: 'task-b',
+      title: 'private B task',
+      goal: 'private B goal',
+      conversationId: 'conversation-b',
+    });
+
+    expect(reader.searchTasks({ query: 'private' }).tasks.map(task => task.id)).toEqual(['task-a']);
+    expect(reader.getTaskContext('task-b')).toEqual({ found: false, taskId: 'task-b' });
+    expect(reader.getRuntimeState().activeTasks.map(task => task.id)).toEqual(['task-a']);
+    expect(JSON.stringify(reader.getRuntimeState())).not.toContain('private B');
+  });
+
+  it('does not project foreign focus or pending permission into Planner context', () => {
+    const { db, taskEngine, reader } = createHarness('sess-a', 'conversation-a');
+    taskEngine.create({
+      id: 'task-a',
+      title: 'current task',
+      goal: 'current goal',
+      conversationId: 'conversation-a',
+    });
+    taskEngine.create({
+      id: 'task-b',
+      title: 'foreign task',
+      goal: 'foreign goal',
+      conversationId: 'conversation-b',
+    });
+    const now = '2026-08-29T00:00:00.000Z';
+    db.prepare(`
+      INSERT INTO session_state (
+        id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
+      ) VALUES ('global', 'task-b', 'task-b', 'sess-b', ?)
+    `).run(now);
+    db.prepare(`
+      INSERT INTO permission_requests (
+        id, fingerprint, task_id, generation_id, subtask_id, attempt_id,
+        agent_class_name, permission_profile_id, capability, resource_text,
+        partition_key, partition_json, operation, reason, suggested_scope,
+        distinct_request_ordinal, status, created_at
+      ) VALUES ('permission-b', 'fingerprint-b', 'task-b', 'generation-b', 'subtask-b', 'attempt-b',
+        'codex-cli', 'workspace-engineering', 'network', 'foreign.example',
+        'network:foreign.example', '{}', 'read', 'foreign permission', 'once', 1, 'pending', ?)
+    `).run(now);
+
+    expect(reader.getRuntimeState().focus).toEqual({
+      taskId: null,
+      lastCompletedTaskId: null,
+      updatedAt: now,
+    });
+    expect(reader.getPlanningContext().pendingAuthorizationRequest).toBeNull();
+    expect(JSON.stringify(reader.getPlanningContext())).not.toContain('foreign permission');
   });
 
   it('truncates model-generated priority reasons in planner task reads', () => {

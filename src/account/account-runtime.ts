@@ -216,6 +216,17 @@ export class AccountRuntime implements AccountRuntimeHandle {
     ].includes(item.status));
     const activeAttempts = this.deps.workspaceServices.attemptExecutionRepository.listActive();
     const activeLeases = this.deps.runtimeExecutionServices?.resourceLeaseService.findActive() ?? [];
+    const activeTaskIds = new Set<string>(activeTasks.map(task => task.id));
+    for (const item of activeDispatchItems) activeTaskIds.add(item.taskId);
+    for (const attempt of activeAttempts) activeTaskIds.add(attempt.taskId);
+    for (const lease of activeLeases) activeTaskIds.add(lease.taskId);
+    const occupiedConversationIds = new Set<string>();
+    for (const slot of this.deps.repositories.conversationTaskSchedulerRepo.listSlots()) {
+      if (slot.state === 'occupied' || slot.state === 'releasing') {
+        occupiedConversationIds.add(slot.conversationId);
+        if (slot.activeTaskId) activeTaskIds.add(slot.activeTaskId);
+      }
+    }
     const publicationPending = this.deps.runtimeExecutionServices?.publicationRepo
       .hasAnyBlockingResidue() ?? activeTasks.some(task => {
         const generation = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
@@ -225,7 +236,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
         ) ?? false;
       });
     return {
-      activeTaskId: activeTasks[0]?.id ?? dispatchItems[0]?.taskId ?? null,
+      activeTaskId: [...activeTaskIds].sort()[0] ?? null,
+      activeTaskIds: [...activeTaskIds].sort(),
+      activeConversationCount: occupiedConversationIds.size,
       plannerTurnActive: this.activeWorkCount > 0,
       activeAttemptCount: new Set([
         ...activeDispatchItems.map(item => item.attemptId),
@@ -299,8 +312,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
           this.deps.repositories.kernelExecutorStatusRepo.list(configurationRevision)
         ),
         listWorkGraphTaskIds: () => this.deps.repositories.subtaskRepo.listTaskIds(),
-        findOldestPendingPermission: () => (
-          this.deps.workspaceServices.permissionRepository.findOldestPending()
+        findOldestPendingPermission: conversationId => (
+          this.deps.workspaceServices.permissionRepository
+            .findOldestPendingForConversation(conversationId)
         ),
         listIntegratedPublications: taskIds => (
           this.deps.runtimeExecutionServices?.publicationRepo.listIntegratedByTaskIds(taskIds) ?? []
@@ -326,6 +340,15 @@ export class AccountRuntime implements AccountRuntimeHandle {
         ),
         listAttemptReceipts: taskId => (
           this.deps.repositories.attemptReceiptRepo.listByTask(taskId)
+        ),
+        getConversationTaskSlot: conversationId => (
+          this.deps.repositories.conversationTaskSchedulerRepo.getSlot(conversationId)
+        ),
+        listQueuedTaskIds: conversationId => (
+          this.deps.repositories.conversationTaskSchedulerRepo.listQueuedTasks(conversationId)
+        ),
+        listConversationTaskSlots: () => (
+          this.deps.repositories.conversationTaskSchedulerRepo.listSlots()
         ),
       },
       commands: {
@@ -361,6 +384,8 @@ export class AccountRuntime implements AccountRuntimeHandle {
   }
 
   private originConversationId(taskId: string): string | null {
+    const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
+    if (task?.conversationId) return task.conversationId;
     const decisions = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId);
     return decisions.find(decision => decision.sessionId)?.sessionId ?? null;
   }

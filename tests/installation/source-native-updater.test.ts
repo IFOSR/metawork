@@ -20,6 +20,7 @@ import { FileConfigurationRepository } from '../../src/configuration/file-config
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
 import { SourceNativeInstaller } from '../../src/installation/source-native-installer.js';
 import { SourceNativeUpdater } from '../../src/installation/source-native-updater.js';
+import { CURRENT_SCHEMA_VERSION } from '../../src/storage/migrations.js';
 
 const cleanup: string[] = [];
 
@@ -155,6 +156,43 @@ describe('SourceNativeUpdater', () => {
       }
     } finally {
       writer.close();
+    }
+  });
+
+  it('updates a schema 34 database through every supported migration', async () => {
+    const fixture = await installedFixture();
+    const sourceDatabase = new (await import('better-sqlite3')).default(
+      fixture.accountPaths.database,
+    );
+    try {
+      sourceDatabase.prepare('UPDATE schema_version SET version = 34').run();
+    } finally {
+      sourceDatabase.close();
+    }
+    const nextSource = join(fixture.home, 'source-schema-34-next');
+    const nextPlanner = join(fixture.home, 'planner-schema-34-next');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-schema-34\n', 'planner-schema-34\n');
+
+    await new SourceNativeUpdater({
+      paths: fixture.paths,
+      secretStore: fixture.secretStore,
+      detectCommand: async command => command === 'codex',
+      isServerRunning: async () => false,
+    }).update({
+      releaseId: '1.2.1-preview.0',
+      sourceRoot: nextSource,
+      plannerRoot: nextPlanner,
+    });
+
+    const migrated = new (await import('better-sqlite3')).default(
+      fixture.accountPaths.database,
+      { readonly: true, fileMustExist: true },
+    );
+    try {
+      expect(migrated.prepare('SELECT version FROM schema_version').get())
+        .toEqual({ version: CURRENT_SCHEMA_VERSION });
+    } finally {
+      migrated.close();
     }
   });
 

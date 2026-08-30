@@ -66,6 +66,18 @@ structured `no_op`/`block_work`. Runtime applies Task/Subtask restoration only
 after that Decision. Unknown, manual, material and contract blockers are not
 implicitly cleared.
 
+Generic Provider connection failures such as `Connection error.`, `fetch
+failed`, socket disconnects and connection resets normalize to retryable
+`network` failures. Explicit Resume has one bounded compatibility rule for
+receipts written before that normalization was complete: Runtime may inspect
+only the latest immutable receipt's bounded safe `KernelFailure` summary and
+re-run the current Adapter normalization. If and only if a persisted `unknown`
+failure now unambiguously normalizes to `network`, Runtime submits
+`task_resume_requested` with blocker category `retry`. The receipt and Decision
+ledger remain immutable, the rule does not apply to permission, material,
+contract or external-effect failures, and `ControlKernel` still decides whether
+to authorize `resume_task`. Generic unknown failures remain fail-closed.
+
 The released recovery implementation also contains one narrow legacy repair
 rule. Older account startup bindings could throw
 `Conversation execution callback is unavailable: onDecisionApplying` before an

@@ -6,14 +6,14 @@ import {
 } from '../../src/storage/migrations.js';
 
 describe('current SQLite baseline', () => {
-  it('creates schema 34 without requiring migration context on a fresh database', () => {
+  it('creates schema 35 with durable Conversation slots and scheduling entries', () => {
     const db = new Database(':memory:');
 
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 34 }]);
+      .toEqual([{ version: 36 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -39,6 +39,8 @@ describe('current SQLite baseline', () => {
       'planner_proposal_submissions',
       'result_objects',
       'result_references',
+      'conversation_task_slots',
+      'task_schedule_entries',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
     }
@@ -52,6 +54,20 @@ describe('current SQLite baseline', () => {
       expect(db.prepare(`PRAGMA table_info(${removed})`).all(), removed).toEqual([]);
     }
     expect(columns(db, 'subtasks')).toContain('executor_bindings_json');
+    expect(columns(db, 'tasks')).toEqual(expect.arrayContaining([
+      'account_id',
+      'conversation_id',
+      'workspace_id',
+      'owner_planner_session_id',
+      'admitted_at',
+    ]));
+    expect(columns(db, 'conversation_task_slots')).toEqual(expect.arrayContaining([
+      'conversation_id',
+      'active_task_id',
+      'state',
+      'reservation_id',
+      'fairness_sequence',
+    ]));
     expect(columns(db, 'subtasks')).not.toContain('preferred_agent_class_list_json');
     expect(columns(db, 'work_graph_revisions')).toEqual(expect.arrayContaining([
       'completion_kind',
@@ -244,7 +260,7 @@ describe('current SQLite baseline', () => {
     runMigrations(db, migrationContext());
     expect(() => runMigrations(db)).not.toThrow();
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 34 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
     expect(readJson(db, 'SELECT executor_bindings_json FROM subtasks WHERE id = ?', 'subtask'))
       .toEqual([{
         agentClassRef: 'codex-engineering',
@@ -422,7 +438,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 34',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 36',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

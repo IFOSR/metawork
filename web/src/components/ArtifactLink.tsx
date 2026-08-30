@@ -16,7 +16,7 @@ export function ArtifactLink({
       title={`${artifact.displayName} · ${formatBytes(artifact.byteLength)}`}
     >
       <span className="artifact-link-icon" aria-hidden>
-        {artifact.previewKind === 'markdown' ? '📝' : artifact.previewKind === 'code' ? '🧩' : artifact.previewKind === 'text' ? '📄' : '📦'}
+        {artifact.previewKind === 'markdown' ? '📝' : artifact.previewKind === 'code' ? '🧩' : artifact.previewKind === 'text' ? '📄' : artifact.previewKind === 'image' ? '🖼️' : '📦'}
       </span>
       <span className="artifact-link-name">{artifact.displayName}</span>
       <span className="artifact-link-path">{artifact.relativePath}</span>

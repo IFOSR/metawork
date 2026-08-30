@@ -708,12 +708,20 @@ export class WorkspacePublicationWorker {
           kind: 'safe_projection',
         });
     if (!result) return null;
+    const correctionSourceAttemptId = receipt.attemptKind === 'contract_correction'
+      ? receipt.sourceAttemptId
+      : null;
+    const attemptIdentityMatches = result.attemptId === publication.sourceAttemptId
+      || (
+        correctionSourceAttemptId !== null
+        && result.attemptId === correctionSourceAttemptId
+      );
     if (
       result.accountId !== (this.deps.accountId ?? 'local-default')
       || result.taskId !== publication.taskId
       || result.generationId !== publication.generationId
       || result.sourceSubtaskId !== publication.subtaskId
-      || result.attemptId !== publication.sourceAttemptId
+      || !attemptIdentityMatches
     ) {
       throw new Error(
         `safe projection identity mismatch for handoff publication: ${publication.sourceAttemptId}`,

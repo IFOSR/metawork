@@ -59,7 +59,7 @@ export interface ArtifactProjection {
   displayName: string;
   relativePath: string;
   mediaType: string;
-  previewKind: 'markdown' | 'text' | 'code' | 'unsupported';
+  previewKind: 'markdown' | 'text' | 'code' | 'image' | 'unsupported';
   previewable: boolean;
   byteLength: number;
   contentHash: string;

@@ -702,7 +702,9 @@ Attempt IDs remain durable correlation keys but are not visible labels.
 Execution narrative projects attempt kind and ordinal into `主执行`,
 `继续执行`, `回退执行`, `结果修正` or `合并修复`, and maps internal lifecycle
 states to localized user status. The three-part attempt header keeps label,
-status and duration non-overlapping on desktop and mobile. Trajectory is
+status and duration non-overlapping on desktop and mobile. Running duration
+uses the current time, while a settled Attempt freezes at its receipt
+`completedAt` projection. Trajectory is
 read-only and does not render the Composer; draft and pending attachments stay
 owned by the App and return with Conversation. The header also provides
 system/light/dark theme preference, persisted in `metawork.theme` and applied
@@ -714,6 +716,16 @@ as a bounded structured materialization diagnostic. Explicit Task resume enters
 the Kernel as `task_resume_requested`; only the resulting Kernel-authorized
 `resume_task` application may restore Task/Subtask readiness and dispatch a
 new attempt.
+
+Adapter normalization classifies generic Provider connection messages such as
+`Connection error.`, `fetch failed`, socket disconnects and connection resets
+as retryable network failures. For explicit Resume only, Runtime may re-run the
+current normalization against the latest immutable receipt's bounded safe
+summary when an older release stored that failure as `unknown`. Only an
+unambiguous network result changes the submitted blocker category to `retry`;
+the receipt and ledger are not rewritten, permissions and external effects are
+not broadened, generic unknown failures remain fail-closed, and ControlKernel
+still authorizes or rejects `resume_task`.
 
 The `/task resume` command result is a projection of the first authoritative
 Kernel Decision, not an optimistic acknowledgement. Only `resume_task` is

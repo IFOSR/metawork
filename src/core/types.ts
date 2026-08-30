@@ -54,6 +54,11 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
+  accountId?: string;
+  conversationId?: string;
+  workspaceId?: string;
+  ownerPlannerSessionId?: string;
+  admittedAt?: string;
   title: string;
   goal: string;
   status: TaskStatus;
@@ -255,6 +260,7 @@ export interface ExecutorResult {
   durationMs: number;
   interrupted?: boolean;
   failure?: import('./kernel-failure.js').KernelFailure;
+  diagnostics?: Record<string, unknown>;
 }
 
 // ─── 恢复摘要 ───

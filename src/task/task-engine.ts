@@ -39,11 +39,26 @@ export class TaskEngine {
   /**
    * 创建任务
    */
-  create(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
+  create(input: {
+    id?: string;
+    title: string;
+    goal: string;
+    resources?: string[];
+    accountId?: string;
+    conversationId?: string;
+    workspaceId?: string;
+    ownerPlannerSessionId?: string;
+    admittedAt?: string;
+  }): Task {
     const now = new Date().toISOString();
     const taskId = input.id?.trim() ? input.id : generateTaskId();
     const task: Task = {
       id: taskId,
+      ...(input.accountId ? { accountId: input.accountId } : {}),
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      ...(input.ownerPlannerSessionId ? { ownerPlannerSessionId: input.ownerPlannerSessionId } : {}),
+      ...(input.admittedAt ? { admittedAt: input.admittedAt } : {}),
       title: input.title,
       goal: input.goal,
       status: 'created',

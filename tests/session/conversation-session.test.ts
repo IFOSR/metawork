@@ -97,6 +97,30 @@ function makeSession(
 }
 
 describe('ConversationSession', () => {
+  it('projects runtime state from the current Conversation only', () => {
+    const session = makeSession('conversation-a', 'planner-a', 'local-default', makePort('local-default', {
+      queries: {
+        listTasks: () => [
+          {
+            id: 'task-b', title: 'foreign task', goal: 'foreign task', status: 'running',
+            conversationId: 'conversation-b',
+          },
+          {
+            id: 'task-a', title: 'local task', goal: 'local task', status: 'ready',
+            conversationId: 'conversation-a',
+          },
+        ] as never,
+      } as never,
+    }));
+
+    session.refreshRuntimeState();
+
+    expect(session.getSnapshot().runtimeState).toMatchObject({
+      runningTaskId: null,
+      readyTaskIds: ['task-a'],
+    });
+  });
+
   it('projects routing traces with the modelId from the binding revision', () => {
     const interactionTraceStream = new InteractionTraceStream('conv_routing_identity');
     interactionTraceStream.beginTurn({

@@ -51,7 +51,12 @@ function isHotPath(path: string): boolean {
   return path.startsWith('providers.')
     || path.startsWith('models.')
     || /^agentClasses\.[^.]+\.modelPolicy(?:\.|$)/u.test(path)
-    || /^agentClasses\.[^.]+\.enabled$/u.test(path);
+    || /^agentClasses\.[^.]+\.enabled$/u.test(path)
+    // Routing use-case hints guide AgentClass choice and are resolved from the
+    // current active revision before each Planner turn, so they are hot-safe
+    // (ADR-0033: a successful idle activation affects the next Planner turn).
+    || /^agentClasses\.[^.]+\.primaryUseCases$/u.test(path)
+    || /^agentClasses\.[^.]+\.avoidUseCases$/u.test(path);
 }
 
 function collectDiff(

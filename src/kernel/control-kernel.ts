@@ -77,6 +77,9 @@ export interface KernelEventEnvelope {
   causationId: string | null;
   occurredAt: string;
   sessionId: string;
+  /** Immutable semantic owner. Legacy events may omit it during migration. */
+  conversationId?: string;
+  workspaceId?: string;
   taskId?: string;
   subtaskId?: string;
   attemptId?: string;
@@ -109,6 +112,7 @@ export type KernelEvent =
         sourceAttemptId: string | null;
         recoveryMode: KernelRecoveryMode;
         defaultResourceGrant: ResourceClaim[];
+        attemptPayload?: KernelAttemptPayload;
       } | null;
     })
   | (KernelEventEnvelope & {
@@ -236,6 +240,8 @@ export type KernelEvent =
 export interface KernelTaskFact {
   id: string;
   status: KernelTaskStatus;
+  conversationId?: string;
+  workspaceId?: string;
 }
 
 export interface KernelSubtaskFact {
@@ -291,7 +297,12 @@ export interface KernelResumeRecoveryCandidate {
   authorizedBinding: AuthorizedExecutorBinding;
   bindingFingerprint: string;
   recoveryMode: Exclude<KernelRecoveryMode, 'fresh'>;
-  reason: 'completion_marker_missing' | 'completion_no_change_reason_mismatch';
+  reason:
+    | 'completion_marker_missing'
+    | 'completion_no_change_reason_mismatch'
+    | 'completion_metadata_invalid';
+  attemptKind?: 'continuation' | 'contract_correction';
+  attemptPayload?: KernelAttemptPayload;
 }
 
 export type KernelSnapshot =
@@ -299,6 +310,11 @@ export type KernelSnapshot =
       schemaVersion: 5;
       type: 'plan_admission';
       tasks: KernelTaskFact[];
+      /** Durable slot state keyed by semantic Conversation owner. */
+      activeTaskByConversation?: Record<string, string | null>;
+      occupiedConversationIds?: string[];
+      queuedTaskCountByConversation?: Record<string, number>;
+      activeTaskCount?: number;
       runningTaskId: string | null;
       plannerConfiguration: PlannerConfigurationView;
       kernelConfiguration: KernelConfigurationView;
@@ -311,6 +327,7 @@ export type KernelSnapshot =
       schemaVersion: 5;
       type: 'dispatch';
       task: KernelTaskFact | null;
+      activeTaskByConversation?: Record<string, string | null>;
       runningTaskId: string | null;
       graphState: 'ready' | 'missing' | 'conflict';
       subtasks: KernelSubtaskFact[];
@@ -427,6 +444,13 @@ export type KernelDecisionAction =
       taskId: string;
       task: KernelPlanProposal['task'];
       workGraph: WorkGraphProposal;
+      scheduleState: 'eligible' | 'queued';
+      schedulingReason?: 'conversation_slot_occupied' | 'account_task_capacity';
+      owner: {
+        conversationId: string;
+        workspaceId: string | null;
+        plannerSessionId: string;
+      };
       authorizedBindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
       generationId: string;
       graphRevision: number;
@@ -462,9 +486,10 @@ export type KernelDecisionAction =
         sourceAttemptId: string;
         authorizedBinding: AuthorizedExecutorBinding;
         bindingFingerprint: string;
-        attemptKind: 'continuation';
+        attemptKind: 'continuation' | 'contract_correction';
         recoveryMode: Exclude<KernelRecoveryMode, 'fresh'>;
         defaultResourceGrant: ResourceClaim[];
+        attemptPayload?: KernelAttemptPayload;
       };
     }
   | {
@@ -540,7 +565,12 @@ export type KernelDecisionAction =
       conflictChainId: string;
     }
   | { type: 'resolve_recovery'; taskId: string; recoveryItemId: string; resolution: 'assume_applied' | 'retry' }
-  | { type: 'block_work'; taskId: string; subtaskId: string | null }
+  | {
+      type: 'block_work';
+      taskId: string;
+      subtaskId: string | null;
+      preserveSubtaskState?: boolean;
+    }
   | { type: 'park_for_replan'; taskId: string }
   | { type: 'complete_task'; taskId: string }
   | {
@@ -695,8 +725,19 @@ export class ControlKernel {
       if ((proposal.task.control === 'resume_task' || proposal.task.control === 'recover_blocked') && !proposal.task.taskId) {
         return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? 'Which task should be resumed?' }, 'resume requires an explicit task');
       }
-      if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId && !['status_query', 'clear_tasks'].includes(proposal.task.control)) {
-        return decision(event, { type: 'reject_request' }, `single-active Task constraint: ${snapshot.runningTaskId}`);
+      if (!['status_query', 'clear_tasks'].includes(proposal.task.control)) {
+        const targetTask = proposal.task.taskId
+          ? snapshot.tasks.find(task => task.id === proposal.task.taskId)
+          : null;
+        const conversationId = event.conversationId ?? event.sessionId;
+        if (targetTask?.conversationId && targetTask.conversationId !== conversationId) {
+          return decision(event, { type: 'reject_request' }, 'task is owned by another Conversation');
+        }
+        const scopedActiveTaskId = snapshot.activeTaskByConversation?.[conversationId]
+          ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
+        if (scopedActiveTaskId && proposal.task.taskId !== scopedActiveTaskId) {
+          return decision(event, { type: 'reject_request' }, `Conversation execution slot is occupied by ${scopedActiveTaskId}`);
+        }
       }
       return decision(event, { type: 'authorize_task_control', task: proposal.task }, 'task control authorized');
     }
@@ -710,8 +751,31 @@ export class ControlKernel {
     if (event.proposalSource !== 'initial' && (!proposal.task.taskId || event.targetGraphRevision < 2)) {
       return decision(event, { type: 'reject_request' }, 'replan must target an existing Task and a later revision');
     }
-    if (snapshot.runningTaskId && proposal.task.taskId !== snapshot.runningTaskId) {
-      return decision(event, { type: 'reject_request' }, `single-active Task constraint: ${snapshot.runningTaskId}`);
+    const conversationId = event.conversationId ?? event.sessionId;
+    const activeTaskId = snapshot.activeTaskByConversation?.[conversationId]
+      ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
+    const accountCapacityReached = !activeTaskId
+      && event.proposalSource === 'initial'
+      && proposal.task.taskId === null
+      && (snapshot.activeTaskCount ?? snapshot.occupiedConversationIds?.length ?? 0)
+        >= (snapshot.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2);
+    const schedulingReason = activeTaskId
+      ? 'conversation_slot_occupied' as const
+      : accountCapacityReached
+        ? 'account_task_capacity' as const
+        : undefined;
+    if ((activeTaskId || accountCapacityReached) && proposal.task.taskId !== activeTaskId) {
+      // A new Task from the same Conversation is admitted durably but waits for
+      // the slot. Other Conversations are not blocked by this fact.
+      if (event.proposalSource === 'initial' && proposal.task.taskId === null) {
+        const queueCount = snapshot.queuedTaskCountByConversation?.[conversationId] ?? 0;
+        const limit = snapshot.kernelConfiguration.runtimePolicy.sameConversationQueueLimit ?? 8;
+        if (queueCount >= limit) {
+          return decision(event, { type: 'reject_request' }, `same-Conversation queue limit reached: ${limit}`);
+        }
+      } else if (event.proposalSource !== 'initial' || proposal.task.taskId !== null) {
+        return decision(event, { type: 'reject_request' }, `task ${proposal.task.taskId ?? ''} is not owned by the active Conversation slot`);
+      }
     }
     if (event.proposalSource === 'initial' && proposal.task.taskId && snapshot.v5WorkGraphTaskIds.includes(proposal.task.taskId)) {
       return decision(event, { type: 'reject_request' }, `task ${proposal.task.taskId} already has an active v5 work graph`);
@@ -721,7 +785,19 @@ export class ControlKernel {
       .map(contextRefKey)
       .filter(key => !eligible.has(key)));
     if (invalidRefs.length > 0) {
-      return decision(event, { type: 'request_clarification', question: 'The proposed context references are not available for this task.' }, `unqualified context refs: ${invalidRefs.join(', ')}`);
+      const kindHint = [...new Set(invalidRefs.map(key => key.split(':')[0]))]
+        .map(kind => ({
+          'current_user_input': '当前用户输入',
+          'interaction': '历史会话',
+          'task_resource': '任务资源',
+          'task_evidence': '任务证据',
+          'preference': '偏好设置',
+        }[kind] ?? kind))
+        .join('、');
+      return decision(event, {
+        type: 'request_clarification',
+        question: `计划引用了当前任务不可用的上下文（${kindHint}）。请重新说明需求，或明确引用会话中已有的具体内容后再提交。`,
+      }, `unqualified context refs: ${invalidRefs.join(', ')}`);
     }
     const resolved = resolveAuthorizedBindings(proposal.workGraph, snapshot.kernelConfiguration);
     if (!resolved.ok) {
@@ -763,6 +839,15 @@ export class ControlKernel {
       taskId: proposal.task.taskId ?? deterministicTaskId(event.id),
       task: proposal.task,
       workGraph: proposal.workGraph,
+      scheduleState: schedulingReason
+        ? 'queued'
+        : 'eligible',
+      ...(schedulingReason ? { schedulingReason } : {}),
+      owner: {
+        conversationId,
+        workspaceId: event.workspaceId ?? null,
+        plannerSessionId: event.sessionId,
+      },
       authorizedBindingsBySubtask: availableBindings,
       generationId: event.generationId,
       graphRevision: event.targetGraphRevision,
@@ -776,8 +861,13 @@ export class ControlKernel {
     if (snapshot.graphState !== 'ready') {
       return decision(event, { type: 'park_for_replan', taskId: event.taskId }, `work graph is ${snapshot.graphState}; replanning is required`);
     }
-    if (snapshot.runningTaskId && snapshot.runningTaskId !== event.taskId) {
-      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null }, `single-active Task constraint: ${snapshot.runningTaskId}`);
+    const conversationId = snapshot.task.conversationId
+      ?? event.conversationId
+      ?? event.sessionId;
+    const activeTaskId = snapshot.activeTaskByConversation?.[conversationId]
+      ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
+    if (activeTaskId && activeTaskId !== event.taskId) {
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null }, `Conversation execution slot is occupied by ${activeTaskId}`);
     }
     if (event.type === 'dispatch_requested' && event.recovery) {
       const subtask = event.subtaskId
@@ -785,7 +875,11 @@ export class ControlKernel {
         : null;
       if (
         !subtask
-        || subtask.status !== (event.recovery.attemptKind === 'primary' ? 'ready' : 'awaiting_decision')
+        || subtask.status !== (
+          event.recovery.attemptKind === 'primary'
+            ? 'ready'
+            : 'awaiting_decision'
+        )
         || event.recovery.bindingFingerprint !== authorizedExecutorBindingFingerprint(
           event.recovery.authorizedBinding,
         )
@@ -806,7 +900,7 @@ export class ControlKernel {
         event.recovery.sourceAttemptId,
         event.recovery.recoveryMode,
         event.recovery.defaultResourceGrant,
-        null,
+        event.recovery.attemptPayload ?? null,
       ), 'exact workspace recovery attempt authorized');
     }
     const subtasks = selectDispatchableSubtasks(snapshot);
@@ -894,7 +988,7 @@ export class ControlKernel {
     }
     const recovery = (snapshot.resumeRecoveryCandidates ?? []).find(candidate => {
       const subtask = snapshot.subtasks.find(item => item.id === candidate.subtaskId);
-      return subtask?.status === 'awaiting_decision'
+      return (subtask?.status === 'awaiting_decision' || subtask?.status === 'blocked')
         && candidate.bindingFingerprint === authorizedExecutorBindingFingerprint(
           candidate.authorizedBinding,
         )
@@ -910,6 +1004,10 @@ export class ControlKernel {
       recovery
       && !['manual', 'material', 'contract'].includes(event.blockerCategory)
     ) {
+      const recoveryAttemptKind = recovery.attemptKind
+        ?? (recovery.reason === 'completion_metadata_invalid'
+          ? 'contract_correction'
+          : 'continuation');
       return decision(event, {
         type: 'resume_task',
         taskId: event.taskId,
@@ -922,11 +1020,14 @@ export class ControlKernel {
           sourceAttemptId: recovery.sourceAttemptId,
           authorizedBinding: recovery.authorizedBinding,
           bindingFingerprint: recovery.bindingFingerprint,
-          attemptKind: 'continuation',
+          attemptKind: recoveryAttemptKind,
           recoveryMode: recovery.recoveryMode,
           defaultResourceGrant: resourceGrantForSubtask(snapshot, recovery.subtaskId),
+          ...(recovery.attemptPayload ? { attemptPayload: recovery.attemptPayload } : {}),
         },
-      }, 'Kernel authorized exact uncertified-result workspace recovery');
+      }, recoveryAttemptKind === 'contract_correction'
+        ? 'Kernel authorized metadata-only correction of the existing safe result'
+        : 'Kernel authorized exact uncertified-result workspace recovery');
     }
     if (snapshot.task.status === 'running') {
       return decision(event, { type: 'no_op' }, 'running Task has no exact recoverable Subtask');
@@ -1057,7 +1158,12 @@ export class ControlKernel {
     if (event.attemptKind === 'contract_correction') {
       return decision(
         event,
-        { type: 'block_work', taskId, subtaskId: event.subtaskId ?? null },
+        {
+          type: 'block_work',
+          taskId,
+          subtaskId: event.subtaskId ?? null,
+          preserveSubtaskState: true,
+        },
         'metadata correction failed; safe result remains uncertified and requires explicit resolution',
       );
     }
@@ -1296,7 +1402,12 @@ export class ControlKernel {
     ) {
       return decision(
         event,
-        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId },
+        {
+          type: 'block_work',
+          taskId: event.taskId,
+          subtaskId: event.subtaskId,
+          preserveSubtaskState: true,
+        },
         'metadata correction is unavailable or exhausted; safe result remains uncertified and requires explicit resolution',
       );
     }

@@ -145,6 +145,17 @@ function DrawerBody({ state }: { state: PreviewDrawerState }) {
   if (state.artifact.previewKind === 'markdown') {
     return <MarkdownContent value={state.content} />;
   }
+  if (state.artifact.previewKind === 'image') {
+    return (
+      <div className="artifact-preview-image-wrap">
+        <img
+          className="artifact-preview-image"
+          src={state.content}
+          alt={state.artifact.displayName}
+        />
+      </div>
+    );
+  }
   if (state.artifact.previewKind === 'code') {
     return (
       <pre className="artifact-preview-code"><code>{state.content}</code></pre>

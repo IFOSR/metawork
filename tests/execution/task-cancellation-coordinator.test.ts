@@ -32,6 +32,79 @@ const authorizedBinding: AuthorizedExecutorBinding = {
 };
 
 describe('TaskCancellationCoordinator', () => {
+  it('lists every Task with durable cancellation residue instead of selecting one account singleton', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    seedConfigurationRevision(db);
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metawork-task-cleanup-list');
+    const taskA = taskEngine.create({ id: 'task-cleanup-a', title: 'A', goal: 'A' });
+    const taskB = taskEngine.create({ id: 'task-cleanup-b', title: 'B', goal: 'B' });
+    const dispatch = new KernelDispatchItemRepo(db);
+    const subtasks = new SubtaskRepo(db);
+    const revisions = new WorkGraphRevisionRepo(db);
+    for (const task of [taskA, taskB]) {
+      const subtaskId = `${task.id}-subtask`;
+      revisions.activate({
+        id: `${task.id}-revision`,
+        taskId: task.id,
+        revision: 1,
+        generationId: 'generation-cancel-1',
+        configurationRevision: authorizedBinding.configurationRevision,
+        authorizedDecisionId: null,
+        proposalSource: 'initial',
+        automaticReplan: false,
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      });
+      subtasks.upsert(subtask(task.id, subtaskId, 'running'));
+      const decision = dispatchDecision(task.id);
+      decision.action.items = [decision.action.items[0]!];
+      const item = decision.action.items[0]!;
+      item.attemptId = `${task.id}-attempt`;
+      item.subtaskId = subtaskId;
+      item.bindingFingerprint = `sha256:${task.id}`;
+      dispatch.insertBatch(decision, {
+        generationId: 'generation-cancel-1',
+        configurationRevision: authorizedBinding.configurationRevision,
+        attempts: {
+          [item.attemptId]: {
+            authorizedBinding,
+            bindingFingerprint: `sha256:${task.id}`,
+          },
+        },
+      }, now);
+      dispatch.claimPending(item.attemptId, now);
+      dispatch.markRunning(item.attemptId, null, now);
+      dispatch.requestCancellation({
+        taskId: task.id,
+        generationId: 'generation-cancel-1',
+        subtaskIds: null,
+        decisionId: `cancel-${task.id}`,
+        now,
+      });
+    }
+    const coordinator = new TaskCancellationCoordinator({
+      db,
+      taskRuntimeService: new TaskRuntimeService({ taskEngine, taskRepo }),
+      subtaskRepo: subtasks,
+      taskEventRepo: new TaskEventRepo(db),
+      workGraphRevisionRepo: revisions,
+      dispatchItemRepo: dispatch,
+      publicationRepo: new WorkspacePublicationRepo(db),
+      generationReplanRepo: new GenerationReplanRequestRepo(db),
+      resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
+      workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
+      activeExecutions: { abortAttempt: vi.fn(), abortTask: vi.fn() },
+      attemptExecutionBackend: {} as AttemptExecutionBackend,
+      attemptExecutionRepository: new SqliteAttemptExecutionRepository(db),
+    });
+
+    expect(coordinator.listCleanupTaskIds()).toEqual(['task-cleanup-a', 'task-cleanup-b']);
+  });
+
   it('commits the Task fence first, then drains every attempt, publication, WorkUnit, lease, and execution backend', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

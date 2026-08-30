@@ -203,7 +203,7 @@ function agentClass(
       ? []
       : permissionProfileRef === 'public-web-research'
         ? ['current public-web research', 'source verification']
-        : ['repository implementation', 'tests', 'engineering documentation'],
+        : ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
     avoidUseCases: [],
     plannerAffordances: kind === 'planner'
       ? []

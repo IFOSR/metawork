@@ -299,6 +299,7 @@ describe('ExecutionProjector', () => {
       attemptKind,
       agentClassName: 'codex-cli',
       terminalState: index === 0 ? 'completed' : 'executor_failed',
+      completedAt: `2026-08-17T08:00:2${index}.000Z`,
       errorCode: null,
       errorDetail: null,
       verification: { warnings: [], violations: [] },
@@ -320,6 +321,7 @@ describe('ExecutionProjector', () => {
       '失败',
       '失败',
     ]);
+    expect(attempts[1]?.updatedAt).toBe('2026-08-17T08:00:20.000Z');
   });
 
   it('delivery 阶段 integrated 推导 done', () => {

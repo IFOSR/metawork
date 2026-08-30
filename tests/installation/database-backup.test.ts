@@ -16,7 +16,7 @@ describe('DatabaseBackup', () => {
 
     expect(existsSync(backupPath)).toBe(true);
     expect(result.backupPath).toBe(backupPath);
-    expect(result.schemaVersion).toBe(34);
+    expect(result.schemaVersion).toBe(36);
     expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
 
     unlinkSync(backupPath);

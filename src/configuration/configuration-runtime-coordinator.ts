@@ -65,6 +65,19 @@ export interface ConfigurationRuntimeCoordinatorDeps {
     | 'probeDraft'
     | 'activateDraft'
   > & {
+    activateDraft: (
+      revisionId: string,
+      expectedRevisionId: string | null,
+      reason?: 'activation' | 'rollback',
+      options?: { allowNestedActivation?: boolean },
+    ) => Promise<{
+      ok: true;
+      snapshot: ConfigurationSnapshot;
+    } | {
+      ok: false;
+      code: 'revision_conflict';
+      activeRevisionId: string | null;
+    }>;
     restoreActiveSnapshot?: (
       revisionId: string,
       expectedActiveRevisionId: string | null,

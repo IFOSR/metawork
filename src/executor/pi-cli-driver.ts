@@ -18,6 +18,8 @@ import type {
   HarnessProbeResult,
   HarnessProgressEvent,
   HarnessProgressLineInput,
+  HarnessResultStreamSnapshot,
+  HarnessResultStreamTracker,
   HarnessResultInput,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
@@ -34,9 +36,11 @@ import {
 } from './harness-driver.js';
 
 const execFileAsync = promisify(execFile);
+const MAX_PROVISIONAL_TEXT_BYTES = 1024 * 1024;
 
 export class PiCliDriver implements HarnessDriver {
   readonly id = 'pi-cli';
+  readonly supportsResponseOnly = true;
   private readonly runProbe: ProbeCommandRunner;
   private readonly explicitHomeTemplateDir?: string;
   private readonly generatedRuntimeRoot?: string;
@@ -100,6 +104,7 @@ export class PiCliDriver implements HarnessDriver {
       args: [
         '--mode',
         'json',
+        ...(input.responseOnly ? ['--no-session', '--tools', ''] : []),
         ...(input.providerRef && input.modelId
           ? ['--provider', input.providerRef, '--model', input.modelId]
           : []),
@@ -150,6 +155,10 @@ export class PiCliDriver implements HarnessDriver {
     const event = parseJsonLine(input.line);
     if (!event || !['message_end', 'turn_end'].includes(String(event.type))) return null;
     return assistantMessageText(event.message);
+  }
+
+  createResultStreamTracker(): HarnessResultStreamTracker {
+    return new PiResultStreamTracker();
   }
 
   parseProgressLine(input: HarnessProgressLineInput): HarnessProgressEvent | null {
@@ -242,6 +251,77 @@ export class PiCliDriver implements HarnessDriver {
     await copyFile(this.webExtensionSourcePath, target);
     await chmod(target, 0o600);
   }
+}
+
+class PiResultStreamTracker implements HarnessResultStreamTracker {
+  private completedOutput: string | null = null;
+  private provisionalOutput = '';
+  private assistantStreamOpen = false;
+  private lastEventKind: string | null = null;
+  private turnIndex: number | null = null;
+
+  observe(input: HarnessProgressLineInput): void {
+    if (input.stream !== 'stdout') return;
+    const event = parseJsonLine(input.line);
+    if (!event || typeof event.type !== 'string') return;
+    this.lastEventKind = event.type;
+    if (event.type === 'turn_start' && typeof event.turnIndex === 'number') {
+      this.turnIndex = event.turnIndex;
+      return;
+    }
+    if (event.type === 'message_start' && messageRole(event.message) === 'assistant') {
+      this.assistantStreamOpen = true;
+      this.provisionalOutput = '';
+      return;
+    }
+    if (event.type === 'message_update') {
+      const update = event.assistantMessageEvent;
+      if (!update || typeof update !== 'object' || Array.isArray(update)) return;
+      const assistantEvent = update as Record<string, unknown>;
+      if (assistantEvent.type !== 'text_delta' || typeof assistantEvent.delta !== 'string') return;
+      this.lastEventKind = 'message_update:text_delta';
+      this.assistantStreamOpen = true;
+      this.provisionalOutput = appendBoundedUtf8(
+        this.provisionalOutput,
+        assistantEvent.delta,
+        MAX_PROVISIONAL_TEXT_BYTES,
+      );
+      return;
+    }
+    if (
+      (event.type === 'message_end' || event.type === 'turn_end')
+      && messageRole(event.message) === 'assistant'
+    ) {
+      const output = assistantMessageText(event.message);
+      if (output) this.completedOutput = output;
+      this.provisionalOutput = '';
+      this.assistantStreamOpen = false;
+    }
+  }
+
+  snapshot(): HarnessResultStreamSnapshot {
+    const provisional = this.assistantStreamOpen && this.provisionalOutput.length > 0;
+    const output = provisional ? this.provisionalOutput : this.completedOutput;
+    return {
+      output,
+      provisional,
+      diagnostics: {
+        lastEventKind: this.lastEventKind,
+        turnIndex: this.turnIndex,
+        assistantStreamOpen: this.assistantStreamOpen,
+        safeTextBytes: Buffer.byteLength(output ?? '', 'utf8'),
+      },
+    };
+  }
+}
+
+function appendBoundedUtf8(current: string, delta: string, maxBytes: number): string {
+  const combined = current + delta;
+  const bytes = Buffer.from(combined, 'utf8');
+  if (bytes.length <= maxBytes) return combined;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8');
 }
 
 function hasWebResearchAffordances(

@@ -19,6 +19,8 @@ export interface ConfigurationActivationBlock {
 
 export interface ConfigurationActivationRuntimeFacts {
   activeTaskId: string | null;
+  activeTaskIds?: readonly string[];
+  activeConversationCount?: number;
   plannerTurnActive: boolean;
   activeAttemptCount: number;
   activeLeaseCount: number;
@@ -69,8 +71,13 @@ export class ConfigurationActivationGate {
     if (facts.activeTaskId) {
       blockingReasons.push({
         code: 'task_running',
-        message: `任务 ${facts.activeTaskId} 正在后台执行。`,
+        message: facts.activeTaskIds && facts.activeTaskIds.length > 1
+          ? `${facts.activeTaskIds.length} 个任务正在后台执行。`
+          : `任务 ${facts.activeTaskId} 正在后台执行。`,
         taskId: facts.activeTaskId,
+        ...(facts.activeTaskIds && facts.activeTaskIds.length > 1
+          ? { count: facts.activeTaskIds.length }
+          : {}),
       });
     }
     if (facts.activeAttemptCount > 0) {

@@ -258,6 +258,70 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('admits executable Tasks from different Conversations independently', () => {
+    const proposal = workGraphPlan({ goal: 'Run task B', capabilityClass: 'code_edit' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_conversation_b',
+      conversationId: 'conversation-b',
+      proposal,
+      generationId: 'generation_conversation_b',
+    }, {
+      ...snapshot,
+      activeTaskByConversation: { 'conversation-a': 'task-a' },
+      occupiedConversationIds: ['conversation-a'],
+      queuedTaskCountByConversation: { 'conversation-a': 0 },
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      scheduleState: 'eligible',
+    });
+  });
+
+  it('authorizes a second initial Task from one Conversation as queued', () => {
+    const proposal = workGraphPlan({ goal: 'Run task B', capabilityClass: 'code_edit' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_same_conversation_queued',
+      conversationId: 'conversation-a',
+      proposal,
+      generationId: 'generation_same_conversation_queued',
+    }, {
+      ...snapshot,
+      activeTaskByConversation: { 'conversation-a': 'task-a' },
+      occupiedConversationIds: ['conversation-a'],
+      queuedTaskCountByConversation: { 'conversation-a': 1 },
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      scheduleState: 'queued',
+    });
+  });
+
+  it('rejects same-Conversation admission when the durable queue is full', () => {
+    const proposal = workGraphPlan({ goal: 'Run task B', capabilityClass: 'code_edit' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_same_conversation_queue_full',
+      conversationId: 'conversation-a',
+      proposal,
+      generationId: 'generation_same_conversation_queue_full',
+    }, {
+      ...snapshot,
+      activeTaskByConversation: { 'conversation-a': 'task-a' },
+      occupiedConversationIds: ['conversation-a'],
+      queuedTaskCountByConversation: { 'conversation-a': 8 },
+    });
+
+    expect(decision.action).toEqual({ type: 'reject_request' });
+    expect(decision.reason).toContain('queue limit reached');
+  });
+
   it('resolves Codex Auto against GPT models from a different Provider', () => {
     const proposal = workGraphPlan({
       goal: 'Implement the requested change',
@@ -838,6 +902,34 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('keeps an unknown blocker fail-closed even for read-only work', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.subtasks[0]!.status = 'blocked';
+    snapshot.recoverySafety = 'read_only';
+    const result = new ControlKernel().decide({
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'task_resume_requested',
+      id: 'resume_event_read_only_unknown',
+      correlationId: 'resume_request_read_only_unknown',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      blockerCategory: 'unknown',
+      sourceInputExcerpt: 'continue',
+      newlyProvidedResources: [],
+      idempotencyKey: 'resume:task_1:read-only-unknown',
+    }, snapshot);
+
+    expect(result.action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: null,
+    });
+  });
+
   it('authorizes exact workspace continuation when a safe result only lacks the completion marker', () => {
     const snapshot = dispatchSnapshot([], 'awaiting_decision');
     snapshot.task = { id: 'task_1', status: 'running' };
@@ -885,6 +977,45 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('authorizes metadata-only repair for a legacy blocked uncertified result', () => {
+    const snapshot = dispatchSnapshot([], 'blocked');
+    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.resumeRecoveryCandidates = [{
+      subtaskId: 'subtask_1',
+      sourceAttemptId: 'attempt_uncertified',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      recoveryMode: 'recovery_packet',
+      reason: 'completion_metadata_invalid',
+    } as never];
+
+    const result = new ControlKernel().decide({
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'task_resume_requested',
+      id: 'resume_event_metadata_repair',
+      correlationId: 'resume_request_metadata_repair',
+      causationId: null,
+      occurredAt: '2026-07-20T00:00:00.000Z',
+      sessionId: 'session_1',
+      taskId: 'task_1',
+      blockerCategory: 'unknown',
+      sourceInputExcerpt: 'continue',
+      newlyProvidedResources: [],
+      idempotencyKey: 'resume:task_1:metadata-repair',
+    }, snapshot);
+
+    expect(result.action).toMatchObject({
+      type: 'resume_task',
+      taskId: 'task_1',
+      recovery: {
+        subtaskId: 'subtask_1',
+        sourceAttemptId: 'attempt_uncertified',
+        attemptKind: 'contract_correction',
+      },
+    });
+  });
+
   it('waits once for preferred infrastructure recovery, then falls back exactly once per remaining class', () => {
     const kernel = new ControlKernel();
     const firstFailure = executionFailure('attempt_1', codexBinding, 'primary', 'network');
@@ -919,6 +1050,23 @@ describe('ControlKernel', () => {
         sourceAttemptId: 'attempt_2',
         recoveryMode: 'recovery_packet',
       })],
+    });
+  });
+
+  it('waits for retry after a preferred Executor timeout instead of blocking work', () => {
+    const kernel = new ControlKernel();
+    const timeout = executionFailure('attempt_timeout', codexBinding, 'primary', 'timeout');
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.attempts = [attemptFact(timeout)];
+
+    expect(kernel.decide(timeout, snapshot).action).toEqual({
+      type: 'wait_for_retry',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      resumeAt: '2026-07-20T00:00:30.000Z',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      sourceAttemptId: 'attempt_timeout',
     });
   });
 
@@ -983,6 +1131,7 @@ describe('ControlKernel', () => {
       type: 'block_work',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
+      preserveSubtaskState: true,
     });
   });
 
@@ -1010,6 +1159,7 @@ describe('ControlKernel', () => {
       type: 'block_work',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
+      preserveSubtaskState: true,
     });
   });
 
@@ -1068,6 +1218,7 @@ describe('ControlKernel', () => {
       type: 'block_work',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
+      preserveSubtaskState: true,
     });
   });
 
@@ -1169,7 +1320,36 @@ describe('ControlKernel', () => {
     }).action).toEqual({ type: 'no_op' });
   });
 
-  it('rejects an execution request for a second active Task and fails closed on mismatched facts', () => {
+  it('allows dispatch when another Conversation owns the active slot', () => {
+    const kernel = new ControlKernel();
+    const result = kernel.decide(runtimeEvent({
+      type: 'dispatch_requested',
+      reason: 'start',
+      conversationId: 'conversation-b',
+    }), {
+      ...dispatchSnapshot(),
+      task: { id: 'task_1', status: 'running', conversationId: 'conversation-b' },
+      runningTaskId: 'task_other',
+      activeTaskByConversation: { 'conversation-a': 'task_other' },
+    });
+    expect(result.action.type).toBe('dispatch_batch');
+  });
+
+  it('blocks dispatch when the same Conversation slot owns another Task', () => {
+    const kernel = new ControlKernel();
+    expect(kernel.decide(runtimeEvent({
+      type: 'dispatch_requested',
+      reason: 'start',
+      conversationId: 'conversation-a',
+    }), {
+      ...dispatchSnapshot(),
+      task: { id: 'task_1', status: 'running', conversationId: 'conversation-a' },
+      runningTaskId: null,
+      activeTaskByConversation: { 'conversation-a': 'task_other' },
+    }).action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1' });
+  });
+
+  it('keeps the legacy single-active fence when owner facts are unavailable', () => {
     const kernel = new ControlKernel();
     expect(kernel.decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
       ...dispatchSnapshot(), runningTaskId: 'task_other',
@@ -1338,7 +1518,7 @@ function executionFailure(
   attemptId: string,
   authorizedBinding: AuthorizedExecutorBinding,
   attemptKind: 'primary' | 'continuation' | 'fallback',
-  kind: 'network' | 'task_failed',
+  kind: 'network' | 'timeout' | 'task_failed',
   sourceAttemptId: string | null = null,
 ): Extract<KernelEvent, { type: 'execution_outcome' }> {
   return runtimeEvent({

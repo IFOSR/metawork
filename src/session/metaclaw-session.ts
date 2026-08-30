@@ -154,6 +154,7 @@ import type { InteractionTrace, InteractionTraceStatus } from '../management/int
 import { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import type { PlannerRunProgress } from '../planning/planner-progress.js';
+import { taskBelongsToConversation } from '../task/task-ownership.js';
 
 export interface PlannerHostRegistrar {
   registerSession(sessionId: string, session: MetaclawSession): () => void;
@@ -383,6 +384,7 @@ export class MetaclawSession {
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
   private readonly sessionKernelRuntime: SessionKernelRuntime;
   private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  private readonly conversationTaskSchedulerRepo: AccountRepositories['conversationTaskSchedulerRepo'];
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
@@ -453,6 +455,7 @@ export class MetaclawSession {
     this.attemptReceiptRepo = repositories.attemptReceiptRepo;
     this.workGraphRuntimeService = repositories.workGraphRuntimeService;
     this.kernelExecutorStatusRepo = repositories.kernelExecutorStatusRepo;
+    this.conversationTaskSchedulerRepo = repositories.conversationTaskSchedulerRepo;
     const coordinatorServices = deps.accountCoordinatorServices ?? buildAccountCoordinatorServices({
       db: deps.db,
       executionRuntime: this.executionRuntime,
@@ -480,6 +483,7 @@ export class MetaclawSession {
     this.memoryContextService = plannerServices.memoryContextService;
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
+      conversationId: deps.sessionId,
       requestSource: 'session',
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
       getPlannerConfiguration: () => this.plannerConfiguration,
@@ -544,6 +548,7 @@ export class MetaclawSession {
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
       db: deps.db,
       sessionId: deps.sessionId,
+      legacyCompatibility: true,
       resultRoot: resultsRoot,
       sourceRoot,
       orchestration: deps.orchestration,
@@ -657,7 +662,7 @@ export class MetaclawSession {
   getSnapshot(): SessionSnapshot {
     this.reconcileLatestGuidance();
     const currentTaskId = this.getCurrentTaskId();
-    const currentTask = currentTaskId ? this.taskRuntimeService.findTask(currentTaskId) : null;
+    const currentTask = currentTaskId ? this.findLocalTask(currentTaskId) : null;
     return {
       output: [...this.output],
       currentTaskId,
@@ -719,7 +724,8 @@ export class MetaclawSession {
         plannerState: { ...snapshot.plannerState },
         recentOutput: snapshot.output.slice(-100),
       },
-      taskPool: this.taskRuntimeService.listTasks().slice(0, 100).map(task => ({
+      taskPool: this.listLocalTasks()
+        .slice(0, 100).map(task => ({
         id: task.id,
         title: task.title,
         goal: task.goal,
@@ -1135,7 +1141,7 @@ export class MetaclawSession {
       return;
     }
 
-    const task = this.taskRuntimeService.findTask(this.latestGuidance.taskId);
+    const task = this.findLocalTask(this.latestGuidance.taskId);
     if (!task || !['created', 'ready', 'running', 'parked', 'blocked'].includes(task.status)) {
       this.latestGuidance = null;
       return;
@@ -1281,7 +1287,9 @@ export class MetaclawSession {
       return false;
     }
 
-    const suggestions = this.deps.orchestration.generateSuggestions();
+    const localTaskIds = new Set(this.listLocalTasks().map(task => task.id));
+    const suggestions = this.deps.orchestration.generateSuggestions()
+      .filter(suggestion => localTaskIds.has(suggestion.taskId));
     if (suggestions.length === 0) {
       return false;
     }
@@ -1359,7 +1367,7 @@ export class MetaclawSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
-    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+    for (const task of this.listLocalTasksByStatus('blocked')) {
       if (await this.kernelExecutionRuntime.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
@@ -1411,10 +1419,9 @@ export class MetaclawSession {
       return false;
     }
 
-    const blockedTasks = this.taskRuntimeService.listTasks()
-      .filter(task => task.status === 'blocked');
-    const parkedTasks = this.taskRuntimeService.listTasks()
-      .filter(task => task.status === 'parked');
+    const localTasks = this.listLocalTasks();
+    const blockedTasks = localTasks.filter(task => task.status === 'blocked');
+    const parkedTasks = localTasks.filter(task => task.status === 'parked');
     if (blockedTasks.length === 0 && parkedTasks.length === 0) {
       return false;
     }
@@ -1448,7 +1455,7 @@ export class MetaclawSession {
   }
 
   private buildSuggestionTaskTitleSuffix(taskId: string): string {
-    const task = this.taskRuntimeService.findTask(taskId);
+    const task = this.findLocalTask(taskId);
     if (!task?.title) {
       return '';
     }
@@ -1463,7 +1470,7 @@ export class MetaclawSession {
     this.latestGuidance = this.presentation.buildGuidanceState(
       scene,
       suggestion,
-      this.taskRuntimeService.findTask(suggestion.taskId)?.title ?? '',
+      this.findLocalTask(suggestion.taskId)?.title ?? '',
     );
     return this.latestGuidance;
   }
@@ -1482,7 +1489,7 @@ export class MetaclawSession {
     this.appendOutput(...this.presentation.formatProposalBlock(
       scene,
       proposal,
-      proposal.taskId ? this.taskRuntimeService.findTask(proposal.taskId)?.title ?? '' : '',
+      proposal.taskId ? this.findLocalTask(proposal.taskId)?.title ?? '' : '',
     ));
     this.appendOutput('→ 操作提案已记录，不等待用户确认；满足执行条件的任务由调度器自动处理');
   }
@@ -1499,7 +1506,9 @@ export class MetaclawSession {
   }
 
   private buildPlanningContext(userInput: string, images?: PlannerImageAttachment[]): PlanningContext {
-    const pendingPermission = this.permissionRepository.findOldestPending();
+    const pendingPermission = this.permissionRepository.findOldestPendingForConversation(
+      this.deps.sessionId,
+    );
     return this.planningContextBuilder.build({
       userInput,
       images,
@@ -2090,8 +2099,37 @@ export class MetaclawSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: this.taskRuntimeService.listTasks().map(task => ({ id: task.id, status: task.status })),
-      runningTaskId: this.kernelExecutionRuntime.getSingleActiveTaskId(),
+      tasks: this.taskRuntimeService.listTasks().map(task => ({
+        id: task.id,
+        status: task.status,
+        ...(task.conversationId
+          ? {
+              conversationId: taskBelongsToConversation(task, this.deps.sessionId, true)
+                ? this.deps.sessionId
+                : task.conversationId,
+            }
+          : {}),
+        ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+      })),
+      activeTaskByConversation: Object.fromEntries(
+        this.taskRuntimeService.listTasks().map(task => {
+          const conversationId = task.conversationId ?? this.deps.sessionId;
+          return [conversationId, this.conversationTaskSchedulerRepo.getSlot(conversationId).activeTaskId];
+        }),
+      ),
+      occupiedConversationIds: this.conversationTaskSchedulerRepo.listSlots()
+        .filter(slot => slot.state !== 'free')
+        .map(slot => slot.conversationId),
+      queuedTaskCountByConversation: Object.fromEntries(
+        this.conversationTaskSchedulerRepo.listSlots().map(slot => [
+          slot.conversationId,
+          this.conversationTaskSchedulerRepo.countQueuedTasks(slot.conversationId),
+        ]),
+      ),
+      activeTaskCount: this.conversationTaskSchedulerRepo
+        .listSlots()
+        .filter(slot => slot.state === 'occupied' || slot.state === 'releasing').length ?? 0,
+      runningTaskId: this.taskRuntimeService.getCurrentRunningTask()?.id ?? null,
       plannerConfiguration,
       kernelConfiguration: this.kernelConfiguration,
       executorStatuses: this.kernelExecutorStatusRepo.list(
@@ -2100,7 +2138,9 @@ export class MetaclawSession {
       v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
       pendingAuthorizationRequest: (() => {
-        const pending = this.permissionRepository.findOldestPending();
+        const pending = this.permissionRepository.findOldestPendingForConversation(
+          event.conversationId ?? this.deps.sessionId,
+        );
         return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
       })(),
     };
@@ -2189,7 +2229,7 @@ export class MetaclawSession {
   }
 
   private refreshRuntimeState(): void {
-    const tasks = this.taskRuntimeService.listTasks();
+    const tasks = this.listLocalTasks();
     this.workspaceRetentionService.reconcileTaskStatuses(tasks);
     this.triggerWorkspaceRetentionSweep();
     const runningTask = tasks.find(task => task.status === 'running') ?? null;
@@ -2225,7 +2265,7 @@ export class MetaclawSession {
 
   private buildTaskQueueSnapshotEntries() {
     return this.presentation.buildTaskQueueSnapshotEntries({
-      tasks: this.taskRuntimeService.listTasks(),
+      tasks: this.listLocalTasks(),
       runningTaskId: this.runtimeState.runningTaskId,
       evaluateTask: task => this.deps.orchestration.evaluateTask(task),
     });
@@ -2239,14 +2279,32 @@ export class MetaclawSession {
     this.sessionStateRepo.upsert(changes);
   }
 
+  /**
+   * The retained MetaclawSession is the only surface that can present tasks
+   * migrated before explicit Conversation ownership existed. Account-level
+   * scheduling still uses the unfiltered TaskRuntimeService directly.
+   */
+  private listLocalTasks(): Task[] {
+    return this.taskRuntimeService.listTasks()
+      .filter(task => taskBelongsToConversation(task, this.deps.sessionId, true));
+  }
+
+  private listLocalTasksByStatus(status: Task['status']): Task[] {
+    return this.taskRuntimeService.listTasksByStatus(status)
+      .filter(task => taskBelongsToConversation(task, this.deps.sessionId, true));
+  }
+
+  private findLocalTask(taskId: string): Task | null {
+    const task = this.taskRuntimeService.findTask(taskId);
+    return task && taskBelongsToConversation(task, this.deps.sessionId, true) ? task : null;
+  }
+
   private async handleCommand(userInput: string): Promise<boolean> {
     if (/^\/task\s+(resume|recover|recovery)\b/iu.test(userInput)) {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
     }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
-    if (!(result.type === 'directive' && result.directive.kind === 'resume-task')) {
-      this.appendOutput(result.content);
-    }
+    this.appendOutput(result.content);
     if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
     }
@@ -2258,7 +2316,7 @@ export class MetaclawSession {
 
     if (result.type === 'directive' && result.directive.kind === 'resume-task') {
       const directive = result.directive;
-      const resumedTask = this.taskRuntimeService.findTask(directive.taskId);
+      const resumedTask = this.findLocalTask(directive.taskId);
       if (resumedTask) {
         this.setCurrentTaskId(resumedTask.id);
         const started = this.prepareTaskExecution(resumedTask.id, {
@@ -2691,7 +2749,7 @@ export class MetaclawSession {
     }
     if (recoveryBlockedReason) {
       const blocked: Task[] = [];
-      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+      for (const task of this.listLocalTasksByStatus('running')) {
         try {
           this.taskRuntimeService.blockTask(task.id, {
             taskId: task.id,
@@ -2702,7 +2760,7 @@ export class MetaclawSession {
         } catch {
           // Keep the in-memory recovery fence even if persistence is unavailable.
         }
-        const current = this.taskRuntimeService.findTask(task.id);
+        const current = this.findLocalTask(task.id);
         if (current) blocked.push(current);
       }
       this.appendOutput(
@@ -2745,7 +2803,7 @@ export class MetaclawSession {
     );
     const recovered: Task[] = [];
     try {
-      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+      for (const task of this.listLocalTasksByStatus('running')) {
       const activeSubtasks = this.subtaskRepo.listActiveByTask(task.id);
       const subtasks = activeSubtasks.length > 0 ? activeSubtasks : this.subtaskRepo.listByTask(task.id);
       const taskClaims = claimedOrphans.filter(workUnit => workUnit.claimedTaskId === task.id);
@@ -2803,13 +2861,13 @@ export class MetaclawSession {
         }
       }
       await this.kernelExecutionRuntime.recoverDue(task.id, 'startup durable recovery');
-      const current = this.taskRuntimeService.findTask(task.id);
+      const current = this.findLocalTask(task.id);
       if (current) recovered.push(current);
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const blocked: Task[] = [];
-      for (const task of this.taskRuntimeService.listTasksByStatus('running')) {
+      for (const task of this.listLocalTasksByStatus('running')) {
         try {
           this.taskRuntimeService.blockTask(task.id, {
             taskId: task.id,
@@ -2820,7 +2878,7 @@ export class MetaclawSession {
         } catch {
           // Preserve durable attempt ownership if even the diagnostic Task update fails.
         }
-        const current = this.taskRuntimeService.findTask(task.id);
+        const current = this.findLocalTask(task.id);
         if (current) blocked.push(current);
       }
       this.appendOutput(
@@ -2829,7 +2887,7 @@ export class MetaclawSession {
       );
       return blocked;
     }
-    for (const task of this.taskRuntimeService.listTasksByStatus('blocked')) {
+    for (const task of this.listLocalTasksByStatus('blocked')) {
       if (recovered.some(item => item.id === task.id)) continue;
       await this.kernelExecutionRuntime.recoverDue(task.id, 'startup due-event drain');
     }

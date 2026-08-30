@@ -11,7 +11,11 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { USER_ARTIFACTS_DIRECTORY, type ArtifactProjection } from '../delivery/user-artifact-types.js';
+import {
+  USER_ARTIFACTS_DIRECTORY,
+  resolvePreviewKind,
+  type ArtifactProjection,
+} from '../delivery/user-artifact-types.js';
 
 export interface TaskArtifactSource {
   findById(artifactId: string):
@@ -19,7 +23,6 @@ export interface TaskArtifactSource {
     | null
     | Promise<LoadedArtifactRecord | null>;
 }
-
 export interface ArtifactPreviewQuery {
   /** 归属校验：artifact 必须属于当前授权账户与存在的任务。 */
   authorize(accountId: string, taskId: string): boolean;
@@ -64,6 +67,8 @@ type LoadedArtifact =
   | { ok: false; reason: ArtifactPreviewFailure };
 
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES = 16 * 1024 * 1024;
+const IMAGE_PREVIEW_KINDS = new Set(['image']);
 
 export class ArtifactPreviewService {
   constructor(private readonly deps: {
@@ -88,7 +93,7 @@ export class ArtifactPreviewService {
     if (!loaded.ok) return loaded;
     const { record: data, projection } = loaded;
     if (data.status !== 'published') return { ok: false, reason: 'unavailable' };
-    if (!['markdown', 'text', 'code'].includes(projection.previewKind)) {
+    if (!['markdown', 'text', 'code', 'image'].includes(projection.previewKind)) {
       return { ok: false, reason: 'unsupported' };
     }
     let safePath: string;
@@ -97,12 +102,23 @@ export class ArtifactPreviewService {
     } catch {
       return { ok: false, reason: 'unavailable' };
     }
-    if (projection.byteLength > MAX_PREVIEW_BYTES) {
+    const sizeLimit = IMAGE_PREVIEW_KINDS.has(projection.previewKind)
+      ? MAX_IMAGE_PREVIEW_BYTES
+      : MAX_PREVIEW_BYTES;
+    if (projection.byteLength > sizeLimit) {
       return { ok: false, reason: 'unsupported' };
     }
     const stat = await lstat(safePath);
-    if (!stat.isFile() || stat.size > MAX_PREVIEW_BYTES) {
+    if (!stat.isFile() || stat.size > sizeLimit) {
       return { ok: false, reason: 'unavailable' };
+    }
+    if (IMAGE_PREVIEW_KINDS.has(projection.previewKind)) {
+      const bytes = await readFile(safePath);
+      return {
+        ok: true,
+        artifact: projection,
+        content: `data:${data.mediaType};base64,${bytes.toString('base64')}`,
+      };
     }
     const content = await readFile(safePath, 'utf8');
     return { ok: true, artifact: projection, content };
@@ -134,6 +150,7 @@ export class ArtifactPreviewService {
     ) {
       return { ok: false, reason: 'unauthorized' };
     }
+    const previewKind = resolvePreviewKind(record.previewKind, record.mediaType);
     return {
       ok: true,
       record,
@@ -144,9 +161,9 @@ export class ArtifactPreviewService {
         displayName: record.displayName,
         relativePath: record.relativePath,
         mediaType: record.mediaType,
-        previewKind: normalizePreviewKind(record.previewKind),
+        previewKind,
         previewable: record.status === 'published'
-          && ['markdown', 'text', 'code'].includes(record.previewKind),
+          && ['markdown', 'text', 'code', 'image'].includes(previewKind),
         byteLength: record.byteLength,
         contentHash: record.contentHash,
         publishedAt: record.createdAt,
@@ -182,10 +199,4 @@ export class ArtifactPreviewService {
     }
     throw new Error('published path escapes the user artifacts root');
   }
-}
-
-function normalizePreviewKind(value: string): ArtifactProjection['previewKind'] {
-  return value === 'markdown' || value === 'text' || value === 'code'
-    ? value
-    : 'unsupported';
 }

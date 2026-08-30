@@ -22,7 +22,7 @@ describe('runtime database opening', () => {
 
     const db = createDatabase(databasePath);
     try {
-      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 34 });
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
     } finally {
       db.close();
     }

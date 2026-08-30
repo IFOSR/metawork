@@ -76,6 +76,20 @@ describe('normalizeExecutorFailure', () => {
       kind: 'permission', scope: 'task', code: 'permission_denied',
     });
   });
+
+  it('classifies generic provider connection failures as retryable network failures', () => {
+    for (const error of [
+      'Connection error.',
+      'fetch failed',
+      'socket hang up',
+      'read ECONNRESET',
+    ]) {
+      expect(normalizeExecutorFailure(error)).toMatchObject({
+        kind: 'network', scope: 'agent_class', code: 'network_failure',
+      });
+      expect(isRecoverableExecutorFailure(error)).toBe(true);
+    }
+  });
 });
 
 describe('normalizeDependencyMaterializationFailure', () => {

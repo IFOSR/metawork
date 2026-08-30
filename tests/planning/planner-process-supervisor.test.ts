@@ -93,6 +93,26 @@ function completeRpcTurn(
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('rejects a Planner RPC when its explicit Conversation owner disagrees with the context', async () => {
+    const supervisor = new PlannerProcessSupervisor();
+
+    await expect(supervisor.runRpcTurn({
+      sessionId: 'planner-session-a',
+      conversationId: 'conversation-b',
+      prompt: 'plan this',
+      context: {
+        timeoutMs: 1_000,
+        request: {
+          sessionId: 'planner-session-a',
+          conversationId: 'conversation-a',
+          source: 'gateway',
+        },
+        configuration: { revisionId: 'revision-test' },
+      } as never,
+      purpose: 'validation',
+    })).rejects.toThrow('Planner RPC conversationId must match PlanningContext');
+  });
+
   it('uses the vendored Planner CLI for direct source-tree starts', async () => {
     const child = fakeProcess();
     completeRpcTurn(child);

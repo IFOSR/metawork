@@ -34,7 +34,7 @@ export class TaskRuntimeService {
     return this.deps.taskRepo.findById(taskId);
   }
 
-  createTask(input: { id?: string; title: string; goal: string; resources?: string[] }): Task {
+  createTask(input: Parameters<TaskEngine['create']>[0]): Task {
     return this.deps.taskEngine.create(input);
   }
 

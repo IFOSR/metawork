@@ -1,4 +1,5 @@
 // Resolves executor adapters and runs claimed subtask specs through the execution result normalization path.
+import { randomUUID } from 'node:crypto';
 import type {
   ExecutorAdapter,
   ExecutorInput,
@@ -38,6 +39,7 @@ export interface ExecutionResult {
   userPrompt: string;
   preferences: ResolvedPreference[];
   context: SubtaskExecutionContext;
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface ExecutorRegistryDeps {
@@ -265,10 +267,11 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     binding: AuthorizedExecutorBinding,
     prompt: string,
     maxBytes: number,
+    attemptId = `response-only-${randomUUID()}`,
   ) {
     const executor = await this.registry.resolve(binding);
     if (!executor?.executeResponseOnly) return null;
-    return executor.executeResponseOnly({ prompt, maxBytes });
+    return executor.executeResponseOnly({ attemptId, prompt, maxBytes });
   }
 
   inspectExecutorRegistration(name: string): ExecutorRegistrationInspection {
@@ -431,6 +434,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       userPrompt: input.input.executorInput.context.currentSubtask.goal,
       preferences: [],
       context: input.input.executorInput.context,
+      ...(input.result.diagnostics ? { diagnostics: input.result.diagnostics } : {}),
     };
   }
 

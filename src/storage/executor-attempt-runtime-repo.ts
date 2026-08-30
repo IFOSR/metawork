@@ -75,6 +75,19 @@ export class ExecutorAttemptRuntimeRepo {
     `).run(JSON.stringify(progress), now, attemptId);
   }
 
+  recordDiagnostics(
+    attemptId: string,
+    diagnostics: Record<string, unknown>,
+    now: string,
+  ): void {
+    const current = this.find(attemptId);
+    if (!current) return;
+    this.recordProgress(attemptId, {
+      ...current.progress,
+      diagnostics,
+    }, now);
+  }
+
   appendProgress(
     attemptId: string,
     progress: { kind: string; text: string },

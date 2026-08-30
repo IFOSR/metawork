@@ -202,7 +202,7 @@ export class ExecutionProjector {
                 : dispatch?.status ?? 'running',
               status: dispatch?.status,
               startedAt: dispatch?.launchStartedAt ?? dispatch?.createdAt,
-              updatedAt: dispatch?.updatedAt ?? runtime?.updatedAt,
+              updatedAt: receipt?.completedAt ?? dispatch?.updatedAt ?? runtime?.updatedAt,
               error: receipt?.errorDetail
                 ?? receipt?.errorCode
                 ?? dispatch?.errorSummary

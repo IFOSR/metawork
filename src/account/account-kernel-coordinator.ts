@@ -7,11 +7,9 @@
  * 消除了多个 per-conversation `DurableKernelWorkflow` 竞争同一 `kernel_events`
  * 表导致的跨会话抢占。
  *
- * 会话级 `buildSnapshot` 与 `runtime` 随每次 `submit`/`recover` 通过 context
- * 提供（它们依赖具体 turn 的输入与上下文），协调器用可变引用在 drain 期间
- * 读取最新值。当前 local-default 单会话下 submit 由 ConversationInputMailbox
- * 串行化，无并发覆盖；多会话并发提交需在未来的多账户 ADR 中引入按事件
- * 存储 context 的更严谨排队。
+ * 每个提交事件的 snapshot/runtime context 按事件 ID 保存，应用时再按 decision
+ * 的 eventId 解析。后台 drain 不得使用“最后一次绑定”的 Conversation context，
+ * 否则 A/B 两个 Conversation 交错时会把 A 的决策应用到 B。
  */
 
 import type {
@@ -47,8 +45,7 @@ export interface AccountKernelCoordinator {
 export class AccountKernelCoordinator implements AccountKernelCoordinator {
   private readonly deps: AccountKernelCoordinatorDeps;
   private workflow: DurableKernelWorkflow | null = null;
-  private buildSnapshotRef: ((event: KernelEvent) => KernelSnapshot) | null = null;
-  private runtimeRef: KernelRuntime | null = null;
+  private readonly contexts = new Map<string, AccountKernelCoordinatorSubmitContext>();
   private tail: Promise<void> = Promise.resolve();
 
   constructor(deps: AccountKernelCoordinatorDeps) {
@@ -60,22 +57,19 @@ export class AccountKernelCoordinator implements AccountKernelCoordinator {
     context: AccountKernelCoordinatorSubmitContext,
   ): Promise<KernelWorkflowResult> {
     return this.enqueue(async () => {
-      this.bind(context);
+      this.contexts.set(event.id, context);
       return this.ensureWorkflow().submit(event);
     });
   }
 
   recover(context: AccountKernelCoordinatorSubmitContext): Promise<KernelRecoveryReport> {
     return this.enqueue(async () => {
-      this.bind(context);
+      this.recoveryContext = context;
       return this.ensureWorkflow().recover();
     });
   }
 
-  private bind(context: AccountKernelCoordinatorSubmitContext): void {
-    this.buildSnapshotRef = context.buildSnapshot;
-    this.runtimeRef = context.runtime;
-  }
+  private recoveryContext: AccountKernelCoordinatorSubmitContext | null = null;
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.tail.then(operation, operation);
@@ -88,14 +82,21 @@ export class AccountKernelCoordinator implements AccountKernelCoordinator {
       this.workflow = new DurableKernelWorkflow({
         kernel: this.deps.kernel,
         buildSnapshot: event => {
-          if (!this.buildSnapshotRef) throw new Error('kernel coordinator is not bound to a snapshot builder');
-          return this.buildSnapshotRef(event);
+          const context = this.contexts.get(event.id) ?? this.recoveryContext;
+          if (!context) throw new Error(`kernel coordinator has no context for event ${event.id}`);
+          return context.buildSnapshot(event);
         },
         store: this.deps.store,
         runtime: {
-          apply: decision => {
-            if (!this.runtimeRef) throw new Error('kernel coordinator is not bound to a runtime');
-            return this.runtimeRef.apply(decision);
+          apply: async decision => {
+            const context = this.contexts.get(decision.eventId) ?? this.recoveryContext;
+            if (!context) throw new Error(`kernel coordinator has no context for decision ${decision.id}`);
+            const observation = await context.runtime.apply(decision);
+            // Follow-up Kernel events are emitted by Runtime after applying the
+            // decision. They must inherit the immutable owner/application route
+            // of the decision that caused them.
+            if (observation) this.contexts.set(observation.id, context);
+            return observation;
           },
         },
         clock: this.deps.clock,

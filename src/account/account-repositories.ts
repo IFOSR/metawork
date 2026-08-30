@@ -15,6 +15,7 @@ import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js'
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
 import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 
 export interface AccountRepositories {
   readonly executionProgressService: ExecutionProgressService;
@@ -26,6 +27,7 @@ export interface AccountRepositories {
   readonly attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   readonly workGraphRuntimeService: WorkGraphRuntimeService;
   readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  readonly conversationTaskSchedulerRepo: ConversationTaskSchedulerRepo;
 }
 
 export function buildAccountRepositories(db: Database.Database): AccountRepositories {
@@ -52,5 +54,6 @@ export function buildAccountRepositories(db: Database.Database): AccountReposito
     attemptReceiptRepo,
     workGraphRuntimeService,
     kernelExecutorStatusRepo: new KernelExecutorStatusRepo(db),
+    conversationTaskSchedulerRepo: new ConversationTaskSchedulerRepo(db),
   };
 }

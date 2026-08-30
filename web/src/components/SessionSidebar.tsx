@@ -1,4 +1,5 @@
 import type { WebSessionMetadata, WorkspaceSummary } from '../api/session-types';
+import { resolveSessionActivity } from '../session-activity';
 import { WorkspaceSelector } from './WorkspaceSelector';
 
 export function SessionSidebar({
@@ -13,7 +14,6 @@ export function SessionSidebar({
   onSelectWorkspace,
   onNewSession,
   onSelect,
-  onContinue,
   onDeleteSession,
   onClearSessions,
   onSettings,
@@ -29,7 +29,6 @@ export function SessionSidebar({
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
   onNewSession: () => void;
   onSelect: (sessionId: string) => void;
-  onContinue: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onClearSessions: () => void;
   onSettings: () => void;
@@ -78,7 +77,7 @@ export function SessionSidebar({
           const active = session.id === activeSessionId;
           const running = session.id === runningSessionId;
           const selected = session.id === selectedSessionId;
-          const activity = session.activity?.state ?? (running ? 'executing' : 'idle');
+          const activity = resolveSessionActivity(session.activity?.state, running);
           return (
             <button
               className="session-row"
@@ -99,19 +98,6 @@ export function SessionSidebar({
                   {active ? ' · 当前' : ''}
                 </small>
               </span>
-              {!active && selected && (
-                <span
-                  className="continue-session"
-                  role="button"
-                  tabIndex={0}
-                  onClick={event => {
-                    event.stopPropagation();
-                    onContinue(session.id);
-                  }}
-                >
-                  继续此会话
-                </span>
-              )}
               {!active && (
                 <span
                   className="delete-session"

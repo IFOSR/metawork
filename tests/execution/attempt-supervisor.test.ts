@@ -165,6 +165,77 @@ function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
 }
 
 describe('AttemptSupervisor', () => {
+  it('kicks a queued Task when another Task releases the account slot', async () => {
+    const repository = new MemoryDispatchItems();
+    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    let releaseA!: () => void;
+    const gateA = new Promise<void>(resolve => { releaseA = resolve; });
+    let taskBStarted!: () => void;
+    const bStarted = new Promise<void>(resolve => { taskBStarted = resolve; });
+    const decisionA = batchDecisionForTask('task-a', 'attempt-a');
+    const decisionB = batchDecisionForTask('task-b', 'attempt-b');
+
+    supervisor.enqueue(decisionA, bindingContext(decisionA, 'generation-a'), {
+      run: async item => {
+        await gateA;
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+    supervisor.enqueue(decisionB, bindingContext(decisionB, 'generation-b'), {
+      run: async item => {
+        taskBStarted();
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+
+    expect(supervisor.activeCount()).toBe(1);
+    releaseA();
+    await bStarted;
+    expect(supervisor.activeCount('task-b')).toBe(1);
+    await Promise.all([supervisor.drain('task-a'), supervisor.drain('task-b')]);
+  });
+
+  it('enforces the per-Task attempt cap while allowing other Tasks to run', async () => {
+    const repository = new MemoryDispatchItems();
+    const supervisor = new AttemptSupervisor(repository, 3, 1);
+    let maximumTaskARunning = 0;
+    let taskARunning = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const decisionA = batchDecisionForTask('task-a', 'attempt-a');
+    decisionA.action.items.push({
+      ...decisionA.action.items[0]!,
+      attemptId: 'attempt-a-2',
+      subtaskId: 'subtask-a-2',
+    });
+    supervisor.enqueue(decisionA, bindingContext(decisionA, 'generation-a'), {
+      run: async item => {
+        taskARunning += 1;
+        maximumTaskARunning = Math.max(maximumTaskARunning, taskARunning);
+        await gate;
+        taskARunning -= 1;
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+    const decisionB = batchDecisionForTask('task-b', 'attempt-b');
+    supervisor.enqueue(decisionB, bindingContext(decisionB, 'generation-b'), {
+      run: async item => outcomeEvent(item),
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(maximumTaskARunning).toBe(1);
+    release();
+    await Promise.all([supervisor.drain('task-a'), supervisor.drain('task-b')]);
+  });
+
   it('runs up to the configured capacity and does not cancel siblings after one launch fails', async () => {
     const repository = new MemoryDispatchItems();
     const supervisor = new AttemptSupervisor(repository, 2);
@@ -231,7 +302,69 @@ describe('AttemptSupervisor', () => {
     expect(launched).toEqual([]);
     expect(repository.records.get('attempt-a')?.status).toBe('cancelling');
   });
+
+  it('keeps each attempt bound to the context of its dispatch batch', async () => {
+    const repository = new MemoryDispatchItems();
+    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    let releaseBlocker!: () => void;
+    const blocker = new Promise<void>(resolve => { releaseBlocker = resolve; });
+    const observed: string[] = [];
+    const blockerDecision = batchDecisionForTask('blocker', 'attempt-blocker');
+    supervisor.enqueue(blockerDecision, bindingContext(blockerDecision, 'generation-blocker'), {
+      run: async item => {
+        await blocker;
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, '2026-08-29T00:00:00.000Z');
+
+    const firstDecision = batchDecisionForTask('same-task', 'attempt-first');
+    supervisor.enqueue(firstDecision, bindingContext(firstDecision, 'generation-first'), {
+      run: async item => {
+        observed.push(`first:${item.attemptId}`);
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, '2026-08-29T00:00:01.000Z');
+    const secondDecision = batchDecisionForTask('same-task', 'attempt-second');
+    supervisor.enqueue(secondDecision, bindingContext(secondDecision, 'generation-second'), {
+      run: async item => {
+        observed.push(`second:${item.attemptId}`);
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, '2026-08-29T00:00:02.000Z');
+
+    releaseBlocker();
+    await Promise.all([
+      supervisor.drain('blocker'),
+      supervisor.drain('same-task'),
+    ]);
+
+    expect(observed).toEqual(['first:attempt-first', 'second:attempt-second']);
+  });
 });
+
+function batchDecisionForTask(taskId: string, attemptId: string): ReturnType<typeof batchDecision> {
+  const decision = batchDecision();
+  return {
+    ...decision,
+    id: `decision-${taskId}`,
+    eventId: `event-${taskId}`,
+    action: {
+      ...decision.action,
+      taskId,
+      items: [{
+        ...decision.action.items[0]!,
+        attemptId,
+        subtaskId: `subtask-${taskId}`,
+      }],
+    },
+  };
+}
 
 function bindingContext(
   decision: ReturnType<typeof batchDecision>,

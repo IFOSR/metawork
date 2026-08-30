@@ -23,4 +23,15 @@ describe('classifyResumeBlocker', () => {
     expect(classifyResumeBlocker('executor capacity exhausted')).toBe('capacity');
     expect(classifyResumeBlocker('network retry required')).toBe('retry');
   });
+
+  it('repairs a legacy unknown blocker only when its latest receipt is clearly a network failure', () => {
+    expect(classifyResumeBlocker(
+      'unknown requires explicit recovery',
+      { kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary: 'Connection error.' },
+    )).toBe('retry');
+    expect(classifyResumeBlocker(
+      'unknown requires explicit recovery',
+      { kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary: 'executor failed' },
+    )).toBe('unknown');
+  });
 });

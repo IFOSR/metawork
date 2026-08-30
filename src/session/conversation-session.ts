@@ -395,7 +395,9 @@ export class ConversationSession {
     images?: PlannerImageAttachment[],
   ): PlanningContext | null {
     if (!this.deps.planningContextBuilder) return null;
-    const pendingPermission = this.deps.runtimePort.queries.findOldestPendingPermission();
+    const pendingPermission = this.deps.runtimePort.queries.findOldestPendingPermission(
+      this.deps.conversationId,
+    );
     return this.deps.planningContextBuilder.build({
       userInput,
       ...(images && images.length > 0 ? { images } : {}),
@@ -430,6 +432,23 @@ export class ConversationSession {
       schemaVersion: 5,
       type: 'plan_admission',
       tasks: port.queries.listTasks().map(task => ({ id: task.id, status: task.status })),
+      activeTaskByConversation: {
+        [event.conversationId ?? this.deps.conversationId]: port.queries.getConversationTaskSlot?.(
+          event.conversationId ?? this.deps.conversationId,
+        )?.activeTaskId ?? null,
+      },
+      occupiedConversationIds: port.queries.getConversationTaskSlot?.(
+        event.conversationId ?? this.deps.conversationId,
+      )?.state === 'free'
+        ? []
+        : [event.conversationId ?? this.deps.conversationId],
+      queuedTaskCountByConversation: {
+        [event.conversationId ?? this.deps.conversationId]: port.queries.listQueuedTaskIds?.(
+          event.conversationId ?? this.deps.conversationId,
+        ).length ?? 0,
+      },
+      activeTaskCount: port.queries.listConversationTaskSlots?.()
+        .filter(slot => slot.state === 'occupied' || slot.state === 'releasing').length ?? 0,
       runningTaskId: this.kernelExecutionRuntime?.getSingleActiveTaskId() ?? null,
       plannerConfiguration,
       kernelConfiguration,
@@ -440,7 +459,7 @@ export class ConversationSession {
         event.requestText,
       ),
       pendingAuthorizationRequest: (() => {
-        const pending = port.queries.findOldestPendingPermission();
+        const pending = port.queries.findOldestPendingPermission(this.deps.conversationId);
         return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
       })(),
     };
@@ -538,6 +557,8 @@ export class ConversationSession {
       causationId: null,
       occurredAt: new Date().toISOString(),
       sessionId: this.deps.plannerSessionId,
+      conversationId: this.deps.conversationId,
+      workspaceId: (await this.getWorkspace())?.workspaceId,
       taskId: plan.task.taskId ?? undefined,
       proposal: plan,
       requestText: userInput.slice(0, 24_000),
@@ -676,7 +697,8 @@ export class ConversationSession {
   }
 
   refreshRuntimeState(): void {
-    const tasks = this.deps.runtimePort.queries.listTasks();
+    const tasks = this.deps.runtimePort.queries.listTasks()
+      .filter(task => task.conversationId === this.deps.conversationId);
     const runningTask = tasks.find(task => task.status === 'running') ?? null;
     this.runtimeState = {
       runningTaskId: runningTask?.id ?? null,
@@ -797,7 +819,9 @@ export class ConversationSession {
         plannerState: snapshot.plannerState,
         recentOutput: snapshot.output.slice(-100),
       },
-      taskPool: port.queries.listTasks().slice(0, 100).map(task => ({
+      taskPool: port.queries.listTasks()
+        .filter(task => task.conversationId === this.deps.conversationId)
+        .slice(0, 100).map(task => ({
         id: task.id,
         title: task.title,
         goal: task.goal,

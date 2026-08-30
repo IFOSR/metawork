@@ -365,10 +365,14 @@ describe('WebGatewaySessionRuntime', () => {
     await runtime.activateSession('browser-a', 'conv_1');
 
     const kinds = events.map(event => event.type);
+    expect(kinds.indexOf('active_session_changed')).toBeLessThan(kinds.indexOf('turn_started'));
     expect(kinds).toContain('turn_started');
     expect(kinds).toContain('trace_delta');
     const turnStarted = events.find(event => event.type === 'turn_started');
     expect(turnStarted).toMatchObject({ turnId: 'turn_1', userInput: 'hello' });
+    expect(runtime.getReplayEvents('browser-a').filter(
+      event => event.type === 'turn_started' && event.turnId === 'turn_1',
+    )).toHaveLength(1);
   });
 
   it('invalidates and detaches an attach that completes during dispose', async () => {
@@ -658,6 +662,110 @@ describe('WebGatewaySessionRuntime', () => {
       taskId: 'task_resume',
       timeline,
     }));
+  });
+
+  it('persists a background task as blocked with the Kernel blocker reason', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let appended: WebSessionRecord['turns'][number] | null = null;
+    const record = sessionRecord('conv_1', true);
+    const reason = 'metadata correction is unavailable or exhausted';
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogForRecord(record),
+        appendTurn: async (_sessionId, turn) => {
+          appended = structuredClone(turn);
+          return record;
+        },
+      },
+      gateway: {
+        attachClient: async () => () => undefined,
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+        replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+        submit: async (envelope: { requestId: string }) => ({
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_1',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        }),
+      } as unknown as WebGatewayAdapter,
+      createId: prefix => `${prefix}_1`,
+    });
+
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', '/task resume task_blocked');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_blocked',
+      kind: 'turn_started',
+      payload: { commandKind: 'slash_command' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: 'req_1',
+      turnId: 'turn_blocked',
+      kind: 'final_answer',
+      payload: {
+        lines: ['已发起任务恢复'],
+        backgroundWorkPending: true,
+      },
+    });
+    listener!({
+      ...outputEvent('event_blocked', 3, []),
+      requestId: 'req_1',
+      turnId: 'turn_blocked',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_blocked',
+        taskId: 'task_blocked',
+        status: 'blocked',
+        completedAt: '2026-08-19T00:10:00.000Z',
+        events: [{
+          id: 'trace_execution_blocked',
+          cursor: 'turn_blocked:1',
+          eventKey: 'decision-block-work:blocked',
+          sequence: 1,
+          occurredAt: '2026-08-19T00:10:00.000Z',
+          phase: 'verification',
+          actor: 'kernel',
+          kind: 'execution_blocked',
+          status: 'blocked',
+          title: 'Execution blocked',
+          summary: reason,
+          taskId: 'task_blocked',
+          subtaskId: 'subtask_blocked',
+          attemptId: null,
+          details: {
+            decisionId: 'decision-block-work',
+            action: 'block_work',
+            taskId: 'task_blocked',
+            subtaskId: 'subtask_blocked',
+          },
+        }],
+      },
+      occurredAt: '2026-08-19T00:10:00.000Z',
+    });
+
+    await waitFor(() => appended !== null);
+    expect(appended).toMatchObject({
+      id: 'turn_blocked',
+      status: 'blocked',
+      taskId: 'task_blocked',
+      completedAt: '2026-08-19T00:10:00.000Z',
+      traceEvents: [expect.objectContaining({
+        kind: 'execution_blocked',
+        status: 'blocked',
+        summary: reason,
+      })],
+    });
   });
 
   it('persists the durable trace and execution timeline in the historical turn', async () => {

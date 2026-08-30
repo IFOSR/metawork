@@ -157,12 +157,14 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     const refreshRuntimeState = vi.fn();
     const runtime = new KernelExecutionRuntime({
       taskEventRepo: {},
+      taskRuntimeService: { findTask: vi.fn().mockReturnValue(null) },
       dispatchItemRepo: {
         listPending: vi.fn().mockReturnValue([]),
       },
       maxConcurrentAttempts: 4,
       cancellationCoordinator: {
         recover,
+        listCleanupTaskIds: vi.fn().mockReturnValue([]),
         findCleanupTaskId,
       },
       callbacks: { refreshRuntimeState },
@@ -177,7 +179,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       expect(recover).toHaveBeenCalledTimes(2);
-      expect(findCleanupTaskId).toHaveBeenCalled();
+      expect(findCleanupTaskId).not.toHaveBeenCalled();
       expect(refreshRuntimeState).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();

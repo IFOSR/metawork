@@ -60,7 +60,11 @@ export interface ExecutorAdapter {
   readonly name: string;
   readonly supportsContinuation?: boolean;
   execute(input: ExecutorInput): Promise<ExecutorResult>;
-  executeResponseOnly?(input: { prompt: string; maxBytes: number }): Promise<ExecutorResult>;
+  executeResponseOnly?(input: {
+    attemptId?: string;
+    prompt: string;
+    maxBytes: number;
+  }): Promise<ExecutorResult>;
   probe(previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult>;
   abort(attemptId?: string): void;
 }
