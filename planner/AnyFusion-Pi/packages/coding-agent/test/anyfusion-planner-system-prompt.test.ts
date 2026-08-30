@@ -54,6 +54,22 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).toContain("Never use stale Planner conversation history to claim a Task is active or blocked");
 	});
 
+	it("keeps direct replies read-only and routes side effects to Executor work", () => {
+		const prompt = buildAnyFusionPlannerSystemPrompt();
+
+		expect(prompt).toContain(
+			"Use `web_search` or `web_fetch` before a real-time or source-dependent factual `direct_reply`",
+		);
+		expect(prompt).toContain("Shell execution, file or Git mutation, storage mutation");
+		expect(prompt).toContain("must use `plan_work_graph`");
+		expect(prompt).toContain("Workspace inspection unavailable to the semantic Planner");
+		expect(prompt).toContain("authenticated external action");
+		expect(prompt).toContain("durable progress or artifacts");
+		expect(prompt).toContain("Do not choose actions from keywords");
+		expect(prompt).toContain("A Web tool failure is not a missing user decision");
+		expect(prompt).toContain("report the failure accurately in `direct_reply`");
+	});
+
 	it("fails closed when the fixed Skill is missing", () => {
 		expect(() => buildAnyFusionPlannerSystemPrompt(join(tmpdir(), "missing-anyfusion-planner-skill.md"))).toThrow(
 			"fixed Skill is unavailable",

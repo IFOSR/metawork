@@ -151,6 +151,17 @@ Every natural-language input becomes `plan_proposed`; deterministic commands bec
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
+Semantic RPC also exposes Pi-native read-only `web_fetch` and `web_search` for
+bounded credential-free public HTTP(S) information. `direct_reply` is restricted
+to answers the Planner can complete in the current turn from dialogue and
+available read-only tools without schedulable work or side effects;
+real-time/source-dependent facts require a Web tool call. Shell execution,
+unavailable Workspace inspection, file/Git/storage mutation, authenticated
+external actions, other side effects, durable progress, monitoring, artifacts
+and downstream handoffs require `plan_work_graph` and the Kernel-authorized
+Executor path. This is Planner-owned semantic routing, not a Session/Kernel
+keyword router.
+
 Planner provider/model activation is revision-pinned at the process boundary.
 The supervisor selects `generated/agent-runtime/<configurationRevision>/planner`
 before legacy home variables, injects the selected Provider credential from

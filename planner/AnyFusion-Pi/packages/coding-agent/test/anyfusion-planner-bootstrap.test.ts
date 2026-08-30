@@ -19,9 +19,13 @@ describe("AnyFusion Planner bootstrap", () => {
 		expect(tui.systemPrompt).toBe(rpc.systemPrompt);
 		expect(tui.activeToolNames).toEqual([...PLANNER_ACTIVE_TOOL_NAMES]);
 		expect(rpc.activeToolNames).toEqual(tui.activeToolNames);
-		expect(tui.customTools.map((tool) => tool.name)).toEqual(["submit_planning_proposal"]);
-		expect(tui.customTools[0]?.description).toContain("PlanningAgentPlan v8");
-		expect(tui.customTools[0]?.promptSnippet).toContain("PlanningAgentPlan v8");
+		expect(tui.customTools.map((tool) => tool.name)).toEqual(["web_fetch", "web_search", "submit_planning_proposal"]);
+		expect(tui.customTools.find((tool) => tool.name === "submit_planning_proposal")?.description).toContain(
+			"PlanningAgentPlan v8",
+		);
+		expect(tui.customTools.find((tool) => tool.name === "submit_planning_proposal")?.promptSnippet).toContain(
+			"PlanningAgentPlan v8",
+		);
 		expect(tui.extensionFactories).toHaveLength(1);
 		expect(rpc.extensionFactories).toHaveLength(1);
 	});

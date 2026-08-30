@@ -1,7 +1,7 @@
 ---
 status: accepted
 amended_by: ADR-0017, ADR-0018, ADR-0020, ADR-0021, ADR-0022, ADR-0023
-last_updated: 2026-08-05
+last_updated: 2026-08-30
 ---
 
 # Planner-Owned Semantics And Tool-Mediated Context
@@ -192,3 +192,33 @@ transient native Selector. Arrival, dismissal, closure, and resolution are not
 conversation messages or semantic turns and never enter the Pi branch or LLM
 context. RPC, Feishu, and Session Planner surfaces retain exact natural-language
 authorization under the existing request-ID and Task validation contract.
+
+## Amendment: direct public Web access and action boundary (2026-08-30)
+
+Semantic Planner turns expose two additional Pi-native read-only tools:
+`web_fetch` for one bounded credential-free public HTTP(S) target and
+`web_search` for bounded public search results. Each redirect target is
+revalidated; loopback, link-local and private-network targets are rejected.
+The validated public IP set is pinned to the actual Undici connection for that
+redirect hop, preserving the original hostname for HTTP Host and TLS SNI while
+bypassing the process-global proxy dispatcher. One deadline covers DNS,
+connection setup, every redirect and response-body consumption. The tools
+permit only fixed `GET` requests with bounded redirect, response-byte and
+output-text budgets. They do not accept request bodies, cookies, credentials,
+model-supplied headers or authenticated/private-system access.
+
+This amendment changes the Planner information surface, not execution
+authority. The Planner may use `direct_reply` only when it can produce the
+complete answer in the current turn from dialogue and tools that are actually
+available to that turn, without schedulable work or side effects. Real-time or
+source-dependent factual direct replies must first use `web_search` or
+`web_fetch`.
+
+Requests requiring shell execution, Workspace inspection unavailable to the
+semantic Planner, file or Git mutation, storage mutation, authenticated
+external action, other external side effects, durable progress, monitoring,
+artifacts or downstream handoff must use `plan_work_graph` and the existing
+Kernel-authorized Executor path. Explicit Task control remains `task_control`.
+The Planner decides this boundary semantically from required capabilities and
+effects; Session, Kernel and validators do not add keyword routing or a second
+semantic router.

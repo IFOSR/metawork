@@ -90,13 +90,18 @@ describe("AnyFusion Planner policy", () => {
 
 		expect(parsed.noBuiltinTools).toBe(true);
 		expect(parsed.tools).toEqual(
-			PLANNER_ACTIVE_TOOL_NAMES.filter((tool) => !PLANNER_ALLOWED_BUILTIN_TOOLS.includes(
-				tool as (typeof PLANNER_ALLOWED_BUILTIN_TOOLS)[number],
-			)),
+			PLANNER_ACTIVE_TOOL_NAMES.filter(
+				(tool) => !PLANNER_ALLOWED_BUILTIN_TOOLS.includes(tool as (typeof PLANNER_ALLOWED_BUILTIN_TOOLS)[number]),
+			),
 		);
 		expect(parsed.tools).not.toContain("read");
 		expect(parsed.tools).not.toContain("grep");
 		expect(parsed.tools).not.toContain("find");
 		expect(parsed.tools).not.toContain("ls");
+		expect(parsed.tools).toContain("web_fetch");
+		expect(parsed.tools).toContain("web_search");
+		expect(parsed.tools).not.toContain("bash");
+		expect(parsed.tools).not.toContain("edit");
+		expect(parsed.tools).not.toContain("write");
 	});
 });

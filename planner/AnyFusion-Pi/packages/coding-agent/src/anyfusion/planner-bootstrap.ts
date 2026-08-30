@@ -10,6 +10,7 @@ import { PLANNER_ACTIVE_TOOL_NAMES } from "./planner-policy.ts";
 import { createPlannerProposalGate } from "./planner-proposal-gate.ts";
 import { createPlanningProposalTool } from "./planner-proposal-tool.ts";
 import { buildAnyFusionPlannerSystemPrompt } from "./planner-system-prompt.ts";
+import { createPlannerWebTools } from "./planner-web-tools.ts";
 
 export interface AnyFusionPlannerBootstrapOptions {
 	cwd?: string;
@@ -40,6 +41,9 @@ export function createAnyFusionPlannerBootstrap(options: AnyFusionPlannerBootstr
 		systemPrompt: buildAnyFusionPlannerSystemPrompt(options.skillPath),
 		activeToolNames: [...PLANNER_ACTIVE_TOOL_NAMES],
 		extensionFactories: [createPlannerMcpExtensionFactory(extensionOptions)],
-		customTools: [createPlanningProposalTool(options.schemaPath, proposalGate)] as ToolDefinition[],
+		customTools: [
+			...createPlannerWebTools(),
+			createPlanningProposalTool(options.schemaPath, proposalGate),
+		] as ToolDefinition[],
 	};
 }

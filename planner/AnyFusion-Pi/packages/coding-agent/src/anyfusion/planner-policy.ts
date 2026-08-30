@@ -11,6 +11,7 @@ export const ANYFUSION_PLANNER_PROTOCOL_VERSION = 1;
 
 /** Built-in tools that are safe for Planner read/query behavior. */
 export const PLANNER_ALLOWED_BUILTIN_TOOLS = ["read", "grep", "find", "ls"] as const;
+export const PLANNER_WEB_TOOL_NAMES = ["web_fetch", "web_search"] as const;
 export const PLANNER_PROPOSAL_TOOL_NAME = "submit_planning_proposal";
 export const PLANNER_MCP_TOOL_NAMES = [
 	"search_tasks",
@@ -23,6 +24,7 @@ export const PLANNER_MCP_TOOL_NAMES = [
 ] as const;
 export const PLANNER_ACTIVE_TOOL_NAMES = [
 	...PLANNER_ALLOWED_BUILTIN_TOOLS,
+	...PLANNER_WEB_TOOL_NAMES,
 	PLANNER_PROPOSAL_TOOL_NAME,
 	...PLANNER_MCP_TOOL_NAMES,
 ] as const;
@@ -116,7 +118,7 @@ export function applyPlannerResourcePolicy(parsed: {
 	semanticRpc?: boolean;
 } = {}): void {
 	const activeTools = options.semanticRpc
-		? [PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES]
+		? [...PLANNER_WEB_TOOL_NAMES, PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES]
 		: PLANNER_ACTIVE_TOOL_NAMES;
 	parsed.noTools = false;
 	parsed.noBuiltinTools = options.semanticRpc === true;
