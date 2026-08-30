@@ -1,5 +1,8 @@
 # Multi-Conversation Task Parallelism Implementation Plan
 
+> **Status:** Completed on 2026-08-30
+> **Closing commit:** `6b1559d`
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Allow top-level Tasks from different Conversations in one AccountRuntime to execute concurrently while strictly serializing Tasks within each Conversation and preserving context, recovery and publication isolation.
@@ -77,3 +80,19 @@
 2. Run focused tests after each seam, then `npm run lint`, `npm test` and required Docker SQLite/POSIX tests.
 3. Update plan status with delivered behavior, validation and closing commit; update ADR/technical docs only for verified behavior.
 4. Commit as `test: verify multi-conversation parallel task lifecycle`.
+
+## Completion Record
+
+Delivered the durable Conversation slot and queue, pure account scheduler,
+immutable Task/Conversation execution routing, owner-scoped projections,
+Provider model discovery, recovery fixes, and Web execution-state repairs.
+
+Validation completed on 2026-08-30:
+
+- `git diff --check`
+- `npm run lint`
+- `npm test`: 371 files and 1,815 tests passed; 8 files and 20 tests skipped
+  under existing browser/Docker environment gates
+- `npm run build`, including the Web production build
+
+The implementation closed in commit `6b1559d`.
