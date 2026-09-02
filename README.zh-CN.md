@@ -32,6 +32,9 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
 - **能力驱动路由：** 每个 Executor 都有独立的中文 Skill-style 能力说明书。
   说明书由当前选择的模型、模型能力证据、Executor 运行支撑条件和用户自然语言定义
   统一编译；Planner 使用最终说明书做语义匹配，机器可读的路由投影用于校验和模型选择。
+- **上下文连续：** Planner 通过持久化的 Pi session 理解“这张图片”“刚才生成的报告”
+  等自然表达；MetaWork 的 Context Bridge 提供有界的 Conversation 事实，验证选中的历史
+  Artifact，并只向 Executor 物化已授权的输入。
 - **显式恢复：** retry、fallback、continuation、merge repair、cancel 和 resume
   都由 ControlKernel 决策。
 
@@ -227,6 +230,24 @@ Client
 Planner 负责自然语言理解和任务拆解，不直接修改 Task、不授权执行、不直接访问存储，也不
 执行 shell。Kernel 是唯一负责调度、选择获批模型 binding、处理恢复以及启动 Executor attempt
 的权威。
+
+### Planner、MetaWork 与 Executor 的上下文连续性
+
+上下文连续性遵循一条单向桥接链路：
+
+```text
+Pi session 历史 + 用户输入
+  -> Planner 理解并选择上下文
+  -> MetaWork Context Bridge 提供并验证 Artifact 事实
+  -> Runtime 物化已授权输入
+  -> Executor 执行当前 Subtask
+```
+
+历史图片、文档、HTML、文本和 Executor 结果使用明确的 Artifact 引用，不通过猜测文件名
+或私有路径获取。MetaWork 会在 Artifact 进入 attempt 前校验 Conversation 与 Workspace
+归属、发布状态、普通文件安全性和内容哈希。Executor 只接收当前 Subtask 与 attempt-local
+输入，不直接读取 Conversation 历史或 Artifact 存储。这样可以保持 Planner 负责语义理解、
+MetaWork 负责确定性校验、Executor 负责执行。
 
 ### Pi Agent 与图片执行
 

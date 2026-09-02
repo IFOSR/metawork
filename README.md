@@ -39,6 +39,11 @@ executing, recovering, and delivering agent work.
   guidance. Planner uses the final manual for semantic matching, while its
   machine-readable routing projection is used for validation and model
   selection.
+- **Context continuity:** Planner uses its persisted Pi session to understand
+  references such as "this image" or "the report just produced". MetaWork's
+  Context Bridge provides bounded Conversation facts, validates selected
+  historical Artifacts, and materializes only authorized inputs for the
+  Executor.
 - **Explicit recovery:** retry, fallback, continuation, merge repair,
   cancellation, and resume remain ControlKernel decisions.
 
@@ -246,6 +251,27 @@ The Planner owns natural-language interpretation and decomposition. It does not
 mutate Tasks, authorize execution, access storage directly, or execute shell
 commands. The Kernel is the only authority that schedules work, selects an
 authorized Model binding, handles recovery, and admits an Executor attempt.
+
+### Planner, MetaWork, and Executor context continuity
+
+Context continuity follows one directional bridge:
+
+```text
+Pi session history + user input
+  -> Planner understands and selects context
+  -> MetaWork Context Bridge provides and validates Artifact facts
+  -> Runtime materializes authorized inputs
+  -> Executor runs the current Subtask
+```
+
+Historical images, documents, HTML, text, and Executor results use explicit
+Artifact references rather than guessed filenames or private paths. MetaWork
+checks Conversation and Workspace ownership, publication status, regular-file
+safety, and content hashes before an Artifact can enter an attempt. The
+Executor receives only the current Subtask and attempt-local inputs; it does
+not inspect Conversation history or the Artifact store directly. This keeps
+semantic understanding in Planner, deterministic validation in MetaWork, and
+execution in the Executor.
 
 ### Pi Agent and image execution
 
