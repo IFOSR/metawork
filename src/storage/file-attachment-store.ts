@@ -1,6 +1,15 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  AttachmentInputError,
+  AttachmentTypeError,
+} from '../gateway/attachment-store-port.js';
+
+export {
+  AttachmentInputError,
+  AttachmentTypeError,
+} from '../gateway/attachment-store-port.js';
 
 /**
  * Web 会话附件存储（图片 + 文本类）。
@@ -11,9 +20,7 @@ import { join, resolve } from 'node:path';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u;
 const SAFE_NAME_PATTERN = /^[^/\\<>:"|?*\x00-\x1f]{1,180}$/u;
-
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-export const MAX_TEXT_BYTES = 5 * 1024 * 1024;
+const SIGNATURE_BYTES = 12;
 
 export type AttachmentKind = 'image' | 'text';
 
@@ -34,18 +41,10 @@ export interface SaveAttachmentInput {
   readonly bytes: Buffer;
 }
 
-export class AttachmentTypeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AttachmentTypeError';
-  }
-}
-
-export class AttachmentTooLargeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AttachmentTooLargeError';
-  }
+export interface SaveAttachmentStreamInput {
+  readonly sessionId: string;
+  readonly name: string;
+  readonly source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
 }
 
 interface SniffResult {
@@ -91,9 +90,6 @@ const TEXT_EXTENSIONS: Record<string, string> = {
 };
 
 export class FileAttachmentStore {
-  static readonly MAX_IMAGE_BYTES = MAX_IMAGE_BYTES;
-  static readonly MAX_TEXT_BYTES = MAX_TEXT_BYTES;
-
   readonly rootDir: string;
 
   constructor(rootDir: string) {
@@ -105,40 +101,93 @@ export class FileAttachmentStore {
   }
 
   async saveAttachment(input: SaveAttachmentInput): Promise<AttachmentMetadata> {
+    return this.saveAttachmentStream({
+      sessionId: input.sessionId,
+      name: input.name,
+      source: [input.bytes],
+    });
+  }
+
+  async saveAttachmentStream(input: SaveAttachmentStreamInput): Promise<AttachmentMetadata> {
     if (!SESSION_ID_PATTERN.test(input.sessionId)) {
-      throw new Error(`Invalid session ID: ${input.sessionId}`);
+      throw new AttachmentInputError(`Invalid session ID: ${input.sessionId}`);
     }
     if (!input.name || !SAFE_NAME_PATTERN.test(input.name)) {
-      throw new Error(`Invalid attachment name: ${JSON.stringify(input.name)}`);
+      throw new AttachmentInputError(`Invalid attachment name: ${JSON.stringify(input.name)}`);
     }
 
-    const sniffed = this.sniffOrThrow(input.name, input.bytes);
     const attachmentId = `att_${randomBytes(10).toString('base64url')}`;
     const directory = this.sessionDirectory(input.sessionId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-
-    const metadata: AttachmentMetadata = {
-      attachmentId,
-      sessionId: input.sessionId,
-      name: input.name,
-      mime: sniffed.mime,
-      kind: sniffed.kind,
-      size: input.bytes.byteLength,
-      sha256: createHash('sha256').update(input.bytes).digest('hex'),
-      createdAt: new Date().toISOString(),
-    };
-
     const extension = normalizedExtension(input.name);
     const safeName = sanitizeFileName(input.name);
     const suffix = safeName.toLowerCase().endsWith(extension) ? '' : extension;
     const targetPath = join(directory, `${attachmentId}__${safeName}${suffix}`);
-    await writeFile(targetPath, input.bytes, { mode: 0o600 });
-    await writeFile(
-      `${targetPath}.meta.json`,
-      `${JSON.stringify(metadata, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 },
-    );
-    return metadata;
+    const metadataPath = `${targetPath}.meta.json`;
+    const temporaryPath = join(directory, `.${attachmentId}.uploading`);
+    const temporaryMetadataPath = `${temporaryPath}.meta.json`;
+    const hash = createHash('sha256');
+    const signatureChunks: Buffer[] = [];
+    let signatureSize = 0;
+    let size = 0;
+    let dataPublished = false;
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    try {
+      try {
+        for await (const value of input.source) {
+          const chunk = Buffer.from(value);
+          if (chunk.byteLength === 0) continue;
+          size += chunk.byteLength;
+          hash.update(chunk);
+          if (signatureSize < SIGNATURE_BYTES) {
+            const prefix = chunk.subarray(0, SIGNATURE_BYTES - signatureSize);
+            signatureChunks.push(prefix);
+            signatureSize += prefix.byteLength;
+          }
+          let written = 0;
+          while (written < chunk.byteLength) {
+            const result = await handle.write(chunk.subarray(written));
+            if (result.bytesWritten === 0) {
+              throw new Error('Attachment storage made no progress while writing upload data');
+            }
+            written += result.bytesWritten;
+          }
+        }
+      } finally {
+        await handle.close();
+      }
+
+      const sniffed = this.sniffOrThrow(
+        input.name,
+        Buffer.concat(signatureChunks, signatureSize),
+      );
+      const metadata: AttachmentMetadata = {
+        attachmentId,
+        sessionId: input.sessionId,
+        name: input.name,
+        mime: sniffed.mime,
+        kind: sniffed.kind,
+        size,
+        sha256: hash.digest('hex'),
+        createdAt: new Date().toISOString(),
+      };
+      await writeFile(
+        temporaryMetadataPath,
+        `${JSON.stringify(metadata, null, 2)}\n`,
+        { encoding: 'utf8', mode: 0o600, flag: 'wx' },
+      );
+      await rename(temporaryPath, targetPath);
+      dataPublished = true;
+      await rename(temporaryMetadataPath, metadataPath);
+      return metadata;
+    } catch (error) {
+      await Promise.all([
+        rm(temporaryPath, { force: true }),
+        rm(temporaryMetadataPath, { force: true }),
+        ...(dataPublished ? [rm(targetPath, { force: true })] : []),
+      ]);
+      throw error;
+    }
   }
 
   async readAttachment(sessionId: string, attachmentId: string): Promise<{
@@ -223,22 +272,12 @@ export class FileAttachmentStore {
   private sniffOrThrow(name: string, bytes: Buffer): SniffResult {
     for (const signature of IMAGE_SIGNATURES) {
       if (signature.test(bytes)) {
-        if (bytes.byteLength > MAX_IMAGE_BYTES) {
-          throw new AttachmentTooLargeError(
-            `Image exceeds ${MAX_IMAGE_BYTES} bytes limit`,
-          );
-        }
         return { kind: 'image', mime: signature.mime };
       }
     }
 
     const extension = normalizedExtension(name);
     if (extension in TEXT_EXTENSIONS) {
-      if (bytes.byteLength > MAX_TEXT_BYTES) {
-        throw new AttachmentTooLargeError(
-          `Text file exceeds ${MAX_TEXT_BYTES} bytes limit`,
-        );
-      }
       return { kind: 'text', mime: TEXT_EXTENSIONS[extension]! };
     }
 

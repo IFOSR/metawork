@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { CURRENT_SCHEMA_VERSION, runMigrations } from '../../src/storage/migrations.js';
 import { DatabaseBackup } from '../../src/installation/database-backup.js';
 
 describe('DatabaseBackup', () => {
@@ -16,7 +16,7 @@ describe('DatabaseBackup', () => {
 
     expect(existsSync(backupPath)).toBe(true);
     expect(result.backupPath).toBe(backupPath);
-    expect(result.schemaVersion).toBe(36);
+    expect(result.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
 
     unlinkSync(backupPath);

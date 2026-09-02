@@ -7,7 +7,8 @@ import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
 import type { WorkGraphPresentationProjection } from './work-graph-presentation-projector.js';
 import {
-  MAX_ATTACHMENT_IMAGE_BYTES,
+  AttachmentInputError,
+  AttachmentTypeError,
   type GatewayAttachmentStore,
 } from '../gateway/attachment-store-port.js';
 import type { ConfigurationRuntimeState } from '../configuration/configuration-runtime-coordinator.js';
@@ -361,20 +362,18 @@ export class ManagementServer {
       this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
       return;
     }
-    const maxBytes = MAX_ATTACHMENT_IMAGE_BYTES + 1;
-    const bytes = await readRawBody(request, maxBytes);
-    if (bytes === null) {
-      this.sendJson(response, 413, { error: 'attachment too large' });
-      return;
-    }
     try {
-      const metadata = await store.saveAttachment({ sessionId, name, bytes });
+      const metadata = await store.saveAttachmentStream({
+        sessionId,
+        name,
+        source: request,
+      });
       this.sendJson(response, 201, metadata);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = /too large|size limit/iu.test(message)
-        ? 413
-        : /type|mime|image|text/iu.test(message) ? 415 : 400;
+      const status = error instanceof AttachmentTypeError
+        ? 415
+        : error instanceof AttachmentInputError ? 400 : 500;
       this.sendJson(response, status, { error: message });
     }
   }
@@ -1151,34 +1150,6 @@ interface WebSocketDiagnostic {
 
 function clientAddressOf(request: IncomingMessage): string {
   return request.socket.remoteAddress ?? 'unknown';
-}
-
-function readRawBody(
-  request: IncomingMessage,
-  maxBytes: number,
-): Promise<Buffer | null> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let overflow = false;
-    request.on('data', (chunk: Buffer) => {
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        overflow = true;
-        request.destroy();
-        resolve(null);
-        return;
-      }
-      chunks.push(chunk);
-    });
-    request.on('end', () => {
-      if (!overflow) resolve(Buffer.concat(chunks));
-    });
-    request.on('error', error => {
-      if (overflow) resolve(null);
-      else reject(error as Error);
-    });
-  });
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

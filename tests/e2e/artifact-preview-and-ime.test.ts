@@ -54,7 +54,7 @@ function turnFixture() {
       sessionId: 'session-1',
       userInput: '生成季度报告',
       status: 'completed' as const,
-      finalAnswer: '报告已完成。',
+      finalAnswer: '报告已完成。\n\n产物：report.md',
       taskId: 'task_e2e001',
       startedAt: '2026-08-24T01:00:00.000Z',
       completedAt: '2026-08-24T01:05:00.000Z',
@@ -118,6 +118,10 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
           `document.body.innerText.includes('历史请求（无 artifacts 字段）')`,
         )).toBe(true);
         await waitForExpression(cdp, `document.querySelectorAll('.artifact-link').length >= 2`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('[data-artifact-reference="artifact_aaa"]'))`);
+        expect(await cdp.evaluate(
+          `document.querySelector('[data-artifact-reference="artifact_aaa"]')?.textContent ?? ''`,
+        )).toContain('report.md');
 
         // Composer 只属于对话页；切换轨迹不会清空草稿。
         await cdp.evaluate(`
@@ -145,6 +149,9 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         );
         expect(String(firstContent)).toContain('正文内容');
         expect(String(firstContent)).not.toContain('#');
+        expect(await cdp.evaluate(
+          `document.querySelector('.final-answer')?.textContent ?? ''`,
+        )).not.toContain('artifacts/');
         // 抽屉打开时无全局横向滚动。
         expect(await cdp.evaluate(
           `document.documentElement.scrollWidth <= window.innerWidth`,

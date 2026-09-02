@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export const CURRENT_SCHEMA_VERSION = 36;
+export const CURRENT_SCHEMA_VERSION = 37;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -1116,7 +1116,7 @@ CREATE TABLE task_artifacts (
             relative_path TEXT NOT NULL,
             published_path TEXT NOT NULL,
             media_type TEXT NOT NULL,
-            preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'unsupported')),
+            preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'image', 'unsupported')),
             content_hash TEXT NOT NULL,
             byte_length INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('published', 'unavailable')),
@@ -1318,6 +1318,7 @@ export function runMigrations(
       migrateSchema33To34(db);
       migrateSchema34To35(db);
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
@@ -1325,6 +1326,7 @@ export function runMigrations(
       migrateSchema33To34(db);
       migrateSchema34To35(db);
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 33) {
@@ -1336,10 +1338,16 @@ export function runMigrations(
     if (versions.length === 1 && versions[0]?.version === 34) {
       migrateSchema34To35(db);
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 35) {
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 36) {
+      migrateSchema36To37(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1355,6 +1363,7 @@ export function runMigrations(
       migrateSchema33To34(db);
       migrateSchema34To35(db);
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1434,6 +1443,53 @@ function migrateSchema35To36(db: Database.Database): void {
       db.exec("ALTER TABLE task_schedule_entries ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'");
     }
     db.exec('UPDATE schema_version SET version = 36 WHERE version = 35');
+  });
+  migrate();
+}
+
+function migrateSchema36To37(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE task_artifacts_v37 (
+        artifact_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        generation_id TEXT,
+        subtask_id TEXT,
+        publication_id TEXT,
+        display_name TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        published_path TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'image', 'unsupported')),
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('published', 'unavailable')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account_id, task_id, relative_path, content_hash),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+      INSERT INTO task_artifacts_v37 (
+        artifact_id, account_id, task_id, generation_id, subtask_id,
+        publication_id, display_name, relative_path, published_path,
+        media_type, preview_kind, content_hash, byte_length, status,
+        created_at, updated_at
+      )
+      SELECT
+        artifact_id, account_id, task_id, generation_id, subtask_id,
+        publication_id, display_name, relative_path, published_path,
+        media_type, preview_kind, content_hash, byte_length, status,
+        created_at, updated_at
+      FROM task_artifacts;
+      DROP TABLE task_artifacts;
+      ALTER TABLE task_artifacts_v37 RENAME TO task_artifacts;
+      CREATE INDEX idx_task_artifacts_task
+        ON task_artifacts(task_id, created_at);
+      CREATE INDEX idx_task_artifacts_publication
+        ON task_artifacts(publication_id);
+      UPDATE schema_version SET version = 37 WHERE version = 36;
+    `);
   });
   migrate();
 }

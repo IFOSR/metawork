@@ -168,6 +168,7 @@ export function contextRefKey(ref: ContextRef): string {
   switch (ref.kind) {
     case 'current_user_input': return ref.kind;
     case 'interaction': return `${ref.kind}:${ref.interactionId}:${ref.side}`;
+    case 'artifact': return `${ref.kind}:${ref.artifactId}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
     case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
     case 'preference': return `${ref.kind}:${ref.preferenceId}`;

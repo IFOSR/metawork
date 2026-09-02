@@ -21,6 +21,14 @@ function input(): ExecutorInput {
       incomingHandoffs: [],
       outgoingHandoffRequirements: [{ toSubtaskId: 'internal-downstream-id', requiredItems: [{ key: 'secret_handoff_key', type: 'text' as const, description: 'summary' }] }],
       selectedEvidence: [{ ref: { kind: 'current_user_input' as const }, evidenceId: 'internal-evidence-id', title: 'Current input', content: 'selected evidence only', truncated: false }],
+      selectedArtifacts: [{
+        ref: { kind: 'artifact', artifactId: 'internal-artifact-id' },
+        artifactId: 'internal-artifact-id',
+        displayName: 'generated-image.jpg',
+        relativeInputPath: '01-generated-image.jpg',
+        mediaType: 'image/jpeg',
+        contentHash: 'sha256:image',
+      }],
       outOfScopeSiblings: [{ id: 'internal-sibling-id', title: 'B' }],
       workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: ['/repo/out'] },
       identity: { executionId: 'internal-execution-id', taskId: 'internal-task-id', subtaskId: 'internal-subtask-id', attemptId: 'internal-attempt-id', workUnitId: 'internal-work-unit-id' },
@@ -60,6 +68,16 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('internal-sibling-id');
     expect(prompt).not.toContain('conversationHistory');
     expect(prompt).not.toContain('executionContextBundle');
+  });
+
+  it('renders authorized historical artifact inputs without exposing their source identity', () => {
+    const prompt = buildExecutorContextPrompt(input());
+
+    expect(prompt).toContain('Planner-selected artifact inputs');
+    expect(prompt).toContain('01-generated-image.jpg');
+    expect(prompt).toContain('generated-image.jpg');
+    expect(prompt).not.toContain('internal-artifact-id');
+    expect(prompt).not.toContain('sha256:image');
   });
 
   it('renders ResultReference metadata without copying the upstream body', () => {
@@ -113,6 +131,10 @@ describe('Subtask execution prompt layering', () => {
     const prompt = buildExecutorContextPrompt(input());
     expect(prompt).toContain('{"evidence":["<evidence that the work and checks succeeded>"],"noChangeReason":null}');
     expect(prompt).toContain('Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities');
+    expect(prompt).toContain('The workspace is the primary task and publication context, not a read-only boundary');
+    expect(prompt).toContain('You may read and write ordinary user-space files outside it when useful for the task');
+    expect(prompt).not.toContain('the workspace must remain unchanged');
+    expect(prompt).not.toContain('Work only within the default authorized workspace boundary');
     for (const internalValue of [
       'internal-task-id',
       'internal-subtask-id',

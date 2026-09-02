@@ -1,5 +1,5 @@
-import { join, resolve } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { basename, extname, join, resolve } from 'node:path';
+import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -472,6 +472,7 @@ export class SubtaskAttemptRunner {
       const inputsPath = join(workspace.rootPath, 'inputs');
       const handoffsPath = join(workspace.rootPath, 'handoffs');
       await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
+      await materializeImageTaskResources(task.resources, subtask, inputsPath);
       const startCheckpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
         reason: 'attempt_start', attemptId,
       });
@@ -532,6 +533,7 @@ export class SubtaskAttemptRunner {
           workingDirectory: workspace.filesPath,
           targetPaths: [targetPath],
         },
+        inputFilesPath: inputsPath,
         evidenceToolsAvailable,
         currentSubtaskOverride: mergeRepair ? {
           title: `Repair merge conflicts for ${subtask.title}`,
@@ -1708,6 +1710,43 @@ export class SubtaskAttemptRunner {
   }
 }
 
+async function materializeImageTaskResources(
+  taskResources: readonly string[],
+  subtask: Subtask,
+  inputsPath: string,
+): Promise<void> {
+  if (!subtask.requiredCapabilities.includes('image-editing')) return;
+  const selectedResources = subtask.contextRefs.flatMap(ref =>
+    ref.kind === 'task_resource' ? [ref.locator] : [],
+  );
+  const resources = [...new Set(selectedResources.length > 0 ? selectedResources : taskResources)];
+  const artifactInputCount = subtask.contextRefs.filter(ref => ref.kind === 'artifact').length;
+  await chmod(inputsPath, 0o755);
+  for (const [index, locator] of resources.entries()) {
+    if (!taskResources.includes(locator)) continue;
+    if (!IMAGE_RESOURCE_EXTENSIONS.has(extname(locator).toLowerCase())) continue;
+    const info = await lstat(locator).catch(() => null);
+    if (!info?.isFile() || info.isSymbolicLink()) continue;
+    const name = safeInputResourceName(
+      basename(locator),
+      artifactInputCount + index,
+    );
+    const destination = join(inputsPath, name);
+    await copyFile(locator, destination);
+    await chmod(destination, 0o644);
+  }
+}
+
+const IMAGE_RESOURCE_EXTENSIONS = new Set(['.gif', '.jpeg', '.jpg', '.png', '.webp']);
+
+function safeInputResourceName(name: string, index: number): string {
+  const normalized = name.normalize('NFC')
+    .replace(/[^A-Za-z0-9._-]+/gu, '_')
+    .replace(/^\.{1,2}$/u, '_')
+    .slice(-160);
+  return `input-${String(index + 1).padStart(2, '0')}-${normalized || 'resource'}`;
+}
+
 function summarizeHandoffUsage(handoffs: Array<{ items: PersistedSubtaskHandoffItem[] }>): {
   textCharacters: number;
   artifactPaths: number;
@@ -1881,9 +1920,9 @@ function correctionGuidance(code: CompletionContractViolation['code']): string {
     case 'completion_artifact_invalid':
       return 'Do not declare artifact paths; Runtime derives changed files from the authoritative workspace delta.';
     case 'completion_no_change_reason_mismatch':
-      return 'Use null when files changed or for report delivery; for a zero-change edit provide a concise non-empty reason.';
+      return 'Use null when files changed; for a zero-change edit provide a concise non-empty reason. Workspace changes are allowed for report delivery.';
     case 'completion_report_workspace_changed':
-      return 'The report changed the workspace and cannot be corrected by response formatting; return a structured failure.';
+      return 'This is a historical validation code. New attempts allow Workspace changes for report delivery.';
     case 'completion_workspace_delta_uncertain':
       return 'The workspace delta is not authoritative and cannot be repaired in the response; return a structured failure.';
     case 'completion_budget_exceeded':

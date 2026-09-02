@@ -6,14 +6,14 @@ import {
 } from '../../src/storage/migrations.js';
 
 describe('current SQLite baseline', () => {
-  it('creates schema 35 with durable Conversation slots and scheduling entries', () => {
+  it('creates the current schema with durable Conversation slots and image artifacts', () => {
     const db = new Database(':memory:');
 
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 36 }]);
+      .toEqual([{ version: 37 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -133,6 +133,11 @@ describe('current SQLite baseline', () => {
       'updated_at',
     ]));
     expect(db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task_artifacts'
+    `).get()).toEqual(expect.objectContaining({
+      sql: expect.stringContaining("'image'"),
+    }));
+    expect(db.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'index' AND name IN ('idx_task_artifacts_task', 'idx_task_artifacts_publication')
       ORDER BY name
@@ -171,6 +176,61 @@ describe('current SQLite baseline', () => {
     `).run()).toThrow('configuration_revisions are immutable');
     expectSchema31Contracts(db);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('upgrades schema 36 task artifacts to allow image preview kinds', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+      INSERT INTO schema_version VALUES (36);
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL
+      );
+      INSERT INTO tasks VALUES ('task-image', 'account', 'conversation', 'workspace');
+      CREATE TABLE task_artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        generation_id TEXT,
+        subtask_id TEXT,
+        publication_id TEXT,
+        display_name TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        published_path TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        preview_kind TEXT NOT NULL CHECK(preview_kind IN ('markdown', 'text', 'code', 'unsupported')),
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('published', 'unavailable')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account_id, task_id, relative_path, content_hash),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+      INSERT INTO task_artifacts VALUES (
+        'artifact-image', 'account', 'task-image', NULL, NULL, NULL,
+        'image.jpg', 'image.jpg', '/tmp/image.jpg', 'image/jpeg',
+        'unsupported', 'sha256:image', 10, 'published', 'now', 'now'
+      );
+    `);
+
+    runMigrations(db);
+
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 37 });
+    expect(() => db.prepare(`
+      INSERT INTO task_artifacts (
+        artifact_id, account_id, task_id, display_name, relative_path,
+        published_path, media_type, preview_kind, content_hash, byte_length,
+        status, created_at, updated_at
+      ) VALUES (
+        'artifact-image-2', 'account', 'task-image', 'image-2.jpg', 'image-2.jpg',
+        '/tmp/image-2.jpg', 'image/jpeg', 'image', 'sha256:image-2', 10,
+        'published', 'now', 'now'
+      )
+    `).run()).not.toThrow();
   });
 
   it('upgrades schema 30 recoverable records with one imported revision and preserves terminal ledgers byte-for-byte', () => {
@@ -260,7 +320,7 @@ describe('current SQLite baseline', () => {
     runMigrations(db, migrationContext());
     expect(() => runMigrations(db)).not.toThrow();
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 37 });
     expect(readJson(db, 'SELECT executor_bindings_json FROM subtasks WHERE id = ?', 'subtask'))
       .toEqual([{
         agentClassRef: 'codex-engineering',
@@ -438,7 +498,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 36',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 37',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

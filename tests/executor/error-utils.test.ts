@@ -90,6 +90,18 @@ describe('normalizeExecutorFailure', () => {
       expect(isRecoverableExecutorFailure(error)).toBe(true);
     }
   });
+
+  it('classifies child-process NUL environment errors as invalid task input', () => {
+    expect(normalizeExecutorFailure(
+      "The property 'options.env['METACLAW_IMAGE_PROMPT']' must be a string without null bytes",
+    )).toMatchObject({
+      kind: 'configuration',
+      scope: 'task',
+      code: 'invalid_task_input',
+    });
+    expect(formatExecutorError('The property must be a string without null bytes'))
+      .toBe('图片任务包含无效的二进制输入，请重新选择图片附件');
+  });
 });
 
 describe('normalizeDependencyMaterializationFailure', () => {

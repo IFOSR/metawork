@@ -152,6 +152,35 @@ describe('UserArtifactPublicationService', () => {
     expect(existsSync(join(service.userWorkspaceRoot, USER_ARTIFACTS_DIRECTORY))).toBe(true);
   });
 
+  it('reactivates a previously superseded artifact when the same content is published again', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-reactivate-'));
+    roots.push(root);
+    const service = createService(root, ['task_reactivate']);
+    const workspaceRoot = seedIntegratedWorkspace(root);
+    const input = {
+      accountId: 'local-default',
+      taskId: 'task_reactivate',
+      taskTitle: 'reactivate',
+      generationId: null,
+      subtaskId: null,
+      publicationId: null,
+      integratedWorkspaceRoot: workspaceRoot,
+      sources: [{ sourceRelativePath: 'report.md' }],
+    };
+
+    const first = await service.publishIntegratedArtifacts(input);
+    writeFileSync(join(workspaceRoot, 'report.md'), '# Report v2\n');
+    await service.publishIntegratedArtifacts(input);
+    writeFileSync(join(workspaceRoot, 'report.md'), '# Report\n\nfinal');
+    const third = await service.publishIntegratedArtifacts(input);
+
+    expect(third.projections[0]?.artifactId).toBe(first.projections[0]?.artifactId);
+    expect(service.taskArtifactRepo.listByTask('task_reactivate'))
+      .toHaveLength(2);
+    expect(service.taskArtifactRepo.findById(first.projections[0]!.artifactId)?.status)
+      .toBe('published');
+  });
+
   it('rejects symbolic links and path traversal without blocking other artifacts', async () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-sec-'));
     roots.push(root);

@@ -468,6 +468,7 @@ export class AccountStartupRecoveryService {
         eligibleContextRefKeys: buildEligibleContextRefKeys({
           db: this.deps.db,
           sessionId: event.sessionId,
+          conversationId: event.conversationId ?? event.sessionId,
           refs: event.proposal.workGraph?.subtasks.flatMap(subtask => subtask.contextRefs) ?? [],
           targetTask: event.proposal.task.taskId
             ? this.deps.taskServices.taskRuntimeService.findTask(event.proposal.task.taskId)

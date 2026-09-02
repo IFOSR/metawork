@@ -75,6 +75,7 @@ export type CompletionContractErrorCode =
   | 'completion_handoff_mismatch'
   | 'completion_malformed'
   | 'completion_no_change_reason_mismatch'
+  /** @deprecated Retained for historical receipt compatibility; never emitted for new attempts. */
   | 'completion_report_workspace_changed'
   | 'completion_subtask_mismatch'
   | 'completion_workspace_delta_uncertain';
@@ -427,20 +428,8 @@ function validateWorkspaceDelivery(
     return [];
   }
   if (subtask.deliveryKind === 'report') {
-    if (delta.changed.length > 0) {
-      violations.push(contractViolation(
-        'completion_report_workspace_changed',
-        'workspaceDelta.changed',
-        'report delivery must not change the workspace',
-      ));
-    }
-    if (noChangeReason !== null) {
-      violations.push(contractViolation(
-        'completion_no_change_reason_mismatch',
-        'noChangeReason',
-        'report delivery requires noChangeReason to be null',
-      ));
-    }
+    // Delivery kind describes the primary result channel, not filesystem
+    // permissions. Research commonly persists intermediate material.
     validateImageArtifactContract(subtask, [], violations);
     return [];
   }
@@ -592,8 +581,7 @@ function formatViolation(violation: CompletionContractViolation): string {
 }
 
 function isSafetyViolation(violation: CompletionContractViolation): boolean {
-  return violation.code === 'completion_artifact_invalid'
-    || violation.code === 'completion_report_workspace_changed';
+  return violation.code === 'completion_artifact_invalid';
 }
 
 function compareViolation(left: CompletionContractViolation, right: CompletionContractViolation): number {

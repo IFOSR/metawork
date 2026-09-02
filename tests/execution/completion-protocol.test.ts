@@ -160,16 +160,27 @@ describe('Completion Protocol result-first assessment', () => {
     ['created', { path: 'new.md', beforeHash: null, afterHash: 'new' }],
     ['modified', { path: 'existing.md', beforeHash: 'old', afterHash: 'new' }],
     ['deleted', { path: 'removed.md', beforeHash: 'old', afterHash: null }],
-  ] as const)('rejects report delivery when a file is %s', (_label, change) => {
+  ] as const)('accepts report delivery when a workspace file is %s', (_label, change) => {
     const result = validate({ workspaceDelta: delta([change]) });
-    expect(result.ok ? [] : result.violations.map(item => item.code))
-      .toContain('completion_report_workspace_changed');
+    expect(result).toMatchObject({
+      ok: true,
+      normalizedArtifacts: [],
+      assessment: {
+        deliverability: { status: 'deliverable', violations: [] },
+        certification: { status: 'certified', violations: [] },
+        safety: { status: 'safe', violations: [] },
+      },
+    });
   });
 
-  it('requires report noChangeReason to be null', () => {
+  it('does not apply edit-only noChangeReason semantics to report delivery', () => {
     const result = validate({ rawResponse: response(report({ noChangeReason: 'nothing needed' })) });
-    expect(result.assessment.certification.violations.map(item => item.code))
-      .toContain('completion_no_change_reason_mismatch');
+    expect(result).toMatchObject({
+      ok: true,
+      assessment: {
+        certification: { status: 'certified', violations: [] },
+      },
+    });
   });
 
   it('derives edit artifacts from created and modified files while retaining deletion only in the delta', () => {

@@ -3838,6 +3838,28 @@ select:focus-visible {
   background: #18211a;
 }
 
+.artifact-aware-markdown {
+  display: block;
+}
+
+.artifact-reference-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 0.15rem;
+  padding: 0.12rem 0.45rem;
+  border: 1px solid #4b6047;
+  border-radius: 999px;
+  color: #b8e0bd;
+  background: #18211a;
+  cursor: pointer;
+  font: inherit;
+}
+
+.artifact-reference-link:hover {
+  background: #203022;
+}
+
 .artifact-link-name {
   flex-shrink: 0;
   font-weight: 600;
@@ -4627,6 +4649,14 @@ button:active:not(:disabled) {
 }
 :root[data-theme='light'] .artifact-link:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line-subtle));
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .artifact-reference-link {
+  border-color: var(--line-subtle);
+  color: var(--accent);
+  background: var(--surface-raised);
+}
+:root[data-theme='light'] .artifact-reference-link:hover {
   background: var(--surface-hover);
 }
 :root[data-theme='light'] .artifact-link-path {

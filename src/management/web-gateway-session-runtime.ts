@@ -380,6 +380,7 @@ class WebGatewayClientSession {
         executionTimeline: structuredClone(turn.executionTimeline),
         interactionKind: turn.interactionKind ?? interactionKindForInput(turn.userInput),
         backgroundWorkPending: false,
+        artifacts: structuredClone(turn.artifacts ?? []),
       });
     }
     const buffered: GatewayEventEnvelope[] = [];
@@ -471,6 +472,14 @@ class WebGatewayClientSession {
           timeline: state.executionTimeline,
         });
       }
+      if (state.taskId && state.artifacts.length > 0) {
+        this.emit({
+          type: 'artifacts',
+          turnId: state.id,
+          taskId: state.taskId,
+          artifacts: state.artifacts,
+        });
+      }
     }
   }
 
@@ -482,6 +491,11 @@ class WebGatewayClientSession {
     }
     const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
     const state = this.rememberTurnEvent(event, userInput);
+    const artifacts = state ? this.projectArtifactsFromState(state) : null;
+    if (artifacts) {
+      if (replay) this.replayEvents.push(artifacts);
+      else this.emit(artifacts);
+    }
     const presentationEvent = event.kind === 'trace_delta' && state
       ? traceEventWithNormalizedPresentation(event, state.traceEvents)
       : event;
@@ -667,6 +681,7 @@ class WebGatewayClientSession {
       executionTimeline: null,
       interactionKind: interactionKindForEvent(event),
       backgroundWorkPending: false,
+      artifacts: [],
     };
     if (userInput && !state.userInput) state.userInput = userInput;
     state.taskId ??= inferTaskId(state.userInput);
@@ -744,8 +759,11 @@ class WebGatewayClientSession {
       ? this.deps.projectExecutionTimeline?.(taskId) ?? state.executionTimeline
       : state.executionTimeline;
     const artifacts = taskId
-      ? this.deps.projectTaskArtifacts?.(taskId) ?? []
-      : [];
+      ? mergeArtifacts(
+        state.artifacts,
+        this.deps.projectTaskArtifacts?.(taskId) ?? [],
+      )
+      : state.artifacts;
     const appended = await this.deps.catalog.appendTurn(event.conversationId, {
       id: state.id,
       sessionId: event.conversationId,
@@ -794,6 +812,27 @@ class WebGatewayClientSession {
           artifactsByTask,
         );
       }),
+    };
+  }
+
+  private projectArtifactsFromState(
+    state: RuntimeTurnState,
+  ): WebSessionRuntimeEvent | null {
+    if (!state.taskId || !this.deps.projectTaskArtifacts) return null;
+    let projected: ArtifactProjection[];
+    try {
+      projected = this.deps.projectTaskArtifacts(state.taskId);
+    } catch {
+      return null;
+    }
+    const artifacts = mergeArtifacts(state.artifacts, projected);
+    if (artifactListsEqual(state.artifacts, artifacts)) return null;
+    state.artifacts = artifacts;
+    return {
+      type: 'artifacts',
+      turnId: state.id,
+      taskId: state.taskId,
+      artifacts,
     };
   }
 
@@ -915,7 +954,7 @@ class WebGatewayClientSession {
       traceEvents: state.traceEvents,
       executionTimeline: state.executionTimeline,
       artifactRefs: [],
-      artifacts: [],
+      artifacts: state.artifacts,
     });
     return {
       ...state,
@@ -1223,6 +1262,7 @@ interface RuntimeTurnState {
   executionTimeline: ExecutionTimeline | null;
   interactionKind: 'system_command' | 'ai_turn';
   backgroundWorkPending: boolean;
+  artifacts: ArtifactProjection[];
 }
 
 function interactionKindForEvent(
@@ -1291,4 +1331,14 @@ function mergeArtifacts(
     (left, right) => left.publishedAt.localeCompare(right.publishedAt)
       || left.artifactId.localeCompare(right.artifactId),
   );
+}
+
+function artifactListsEqual(
+  left: ArtifactProjection[],
+  right: ArtifactProjection[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((artifact, index) => (
+    JSON.stringify(artifact) === JSON.stringify(right[index])
+  ));
 }

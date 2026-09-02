@@ -1,4 +1,16 @@
-import { existsSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  copyFileSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs';
+import { basename, extname, isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Subtask, Task, WorkspaceContext } from '../core/types.js';
 import { PreferenceRepo } from '../storage/preference-repo.js';
@@ -19,6 +31,7 @@ import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import {
   ScopedExecutionResultReferencePort,
 } from './execution-result-reference-port.js';
+import { TaskArtifactRepo, hashContent } from '../storage/task-artifact-repo.js';
 
 export interface SelectedExecutionEvidence {
   ref: ContextRef;
@@ -26,6 +39,15 @@ export interface SelectedExecutionEvidence {
   title: string;
   content: string;
   truncated: boolean;
+}
+
+export interface SelectedExecutionArtifact {
+  ref: Extract<ContextRef, { kind: 'artifact' }>;
+  artifactId: string;
+  displayName: string;
+  relativeInputPath: string;
+  mediaType: string;
+  contentHash: string;
 }
 
 export interface SubtaskExecutionContext {
@@ -37,6 +59,7 @@ export interface SubtaskExecutionContext {
   incomingHandoffs: PersistedSubtaskHandoff[];
   outgoingHandoffRequirements: Array<{ toSubtaskId: string; requiredItems: WorkGraphRequiredItem[] }>;
   selectedEvidence: SelectedExecutionEvidence[];
+  selectedArtifacts?: SelectedExecutionArtifact[];
   outOfScopeSiblings: Array<{ id: string; title: string }>;
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
@@ -66,6 +89,7 @@ export class SubtaskExecutionContextBuilder {
   private readonly preferenceRepo: PreferenceRepo;
 
   private readonly resultObjectRepo: ResultObjectRepo;
+  private readonly artifactRepo: TaskArtifactRepo;
 
   constructor(
     private readonly db: Database.Database,
@@ -78,6 +102,7 @@ export class SubtaskExecutionContextBuilder {
       db,
       options.resultRoot,
     );
+    this.artifactRepo = new TaskArtifactRepo(db);
     this.accountId = options.accountId ?? 'local-default';
   }
 
@@ -92,6 +117,7 @@ export class SubtaskExecutionContextBuilder {
     workUnitId: string;
     sessionId: string;
     workspaceContext: WorkspaceContext;
+    inputFilesPath?: string;
     evidenceToolsAvailable: boolean;
     currentSubtaskOverride?: Partial<SubtaskExecutionContext['currentSubtask']>;
     completionContractOverride?: SubtaskExecutionContext['completionContract'];
@@ -116,8 +142,11 @@ export class SubtaskExecutionContextBuilder {
       return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
     });
     const selectedEvidence = this.resolveSelectedEvidence(input);
+    const selectedArtifacts = this.resolveSelectedArtifacts(input);
     const exactEvidenceIds = new Set(selectedEvidence
-      .filter(item => item.ref.kind === 'interaction' && item.ref.side === 'assistant')
+      .filter((item): item is SelectedExecutionEvidence & {
+        ref: Extract<ContextRef, { kind: 'interaction'; side: 'assistant' }>;
+      } => item.ref.kind === 'interaction' && item.ref.side === 'assistant')
       .map(item => item.evidenceId));
     const evidenceCapability = new ScopedExecutionEvidencePort(
       this.evidenceRepo,
@@ -162,6 +191,7 @@ export class SubtaskExecutionContextBuilder {
         incomingHandoffs,
         outgoingHandoffRequirements,
         selectedEvidence,
+        selectedArtifacts,
         outOfScopeSiblings: input.allSubtasks
           .filter(candidate => candidate.id !== input.subtask.id)
           .map(candidate => ({ id: candidate.id, title: candidate.title })),
@@ -236,9 +266,81 @@ export class SubtaskExecutionContextBuilder {
     subtask: Subtask;
     sessionId: string;
   }): SelectedExecutionEvidence[] {
-    const refs = [...input.subtask.contextRefs].sort((left, right) => contextRefKey(left).localeCompare(contextRefKey(right)));
+    const refs = [...input.subtask.contextRefs]
+      .filter((ref): ref is Exclude<ContextRef, { kind: 'artifact' }> => ref.kind !== 'artifact')
+      .sort((left, right) => contextRefKey(left).localeCompare(contextRefKey(right)));
     const perRefBudget = Math.min(4_000, refs.length > 0 ? Math.floor(24_000 / refs.length) : 4_000);
     return refs.map(ref => this.resolveEvidenceRef(ref, input.task, input.sessionId, perRefBudget));
+  }
+
+  private resolveSelectedArtifacts(input: {
+    task: Task;
+    subtask: Subtask;
+    inputFilesPath?: string;
+  }): SelectedExecutionArtifact[] {
+    const refs = input.subtask.contextRefs
+      .filter((ref): ref is Extract<ContextRef, { kind: 'artifact' }> => ref.kind === 'artifact')
+      .sort((left, right) => contextRefKey(left).localeCompare(contextRefKey(right)));
+    if (refs.length === 0) return [];
+    if (!input.task.accountId || !input.task.conversationId) {
+      throw new Error('artifact_context_task_identity_missing');
+    }
+
+    return refs.map((ref, index) => {
+      const artifact = this.artifactRepo.findById(ref.artifactId);
+      if (!artifact) throw new Error(`artifact_context_not_found: ${ref.artifactId}`);
+      if (artifact.status !== 'published') {
+        throw new Error(`artifact_context_unavailable: ${ref.artifactId}`);
+      }
+      const sourceTask = this.db.prepare(`
+        SELECT account_id, conversation_id, workspace_id
+        FROM tasks WHERE id = ?
+      `).get(artifact.taskId) as {
+        account_id: string;
+        conversation_id: string;
+        workspace_id: string;
+      } | undefined;
+      if (
+        !sourceTask
+        || sourceTask.account_id !== input.task.accountId
+        || sourceTask.conversation_id !== input.task.conversationId
+        || (
+          input.task.workspaceId
+          && sourceTask.workspace_id !== input.task.workspaceId
+        )
+      ) {
+        throw new Error(`artifact_context_wrong_conversation: ${ref.artifactId}`);
+      }
+      if (!isAbsolute(artifact.publishedPath)) {
+        throw new Error(`artifact_context_source_invalid: ${ref.artifactId}`);
+      }
+      const sourceInfo = lstatSync(artifact.publishedPath, { throwIfNoEntry: false });
+      if (!sourceInfo?.isFile() || sourceInfo.isSymbolicLink()) {
+        throw new Error(`artifact_context_source_invalid: ${ref.artifactId}`);
+      }
+      const bytes = readFileSync(artifact.publishedPath);
+      const actualHash = hashContent(bytes);
+      if (actualHash !== artifact.contentHash) {
+        throw new Error(`artifact_context_content_hash_mismatch: ${ref.artifactId}`);
+      }
+      const relativeInputPath = safeInputArtifactName(artifact.displayName, index);
+      if (input.inputFilesPath) {
+        mkdirSync(input.inputFilesPath, { recursive: true });
+        materializeArtifactFile(
+          artifact.publishedPath,
+          join(input.inputFilesPath, relativeInputPath),
+          actualHash,
+        );
+      }
+      return {
+        ref,
+        artifactId: artifact.artifactId,
+        displayName: artifact.displayName,
+        relativeInputPath,
+        mediaType: artifact.mediaType,
+        contentHash: actualHash,
+      };
+    });
   }
 
   private resolveEvidenceRef(
@@ -276,7 +378,7 @@ export class SubtaskExecutionContextBuilder {
       evidenceId = row.id;
       title = row.title;
       content = row.content;
-    } else {
+    } else if (ref.kind === 'interaction') {
       evidenceId = createEvidenceId(`${ref.side}_interaction`, ref.interactionId);
       const materialized = this.evidenceRepo.findForTask(task.id, evidenceId);
       if (materialized) {
@@ -313,6 +415,8 @@ export class SubtaskExecutionContextBuilder {
         createdAt: row.created_at,
       });
       }
+    } else {
+      throw new Error(`context_ref_not_supported: ${ref.kind}`);
     }
     const truncated = content.length > budget;
     const preview = truncated
@@ -325,9 +429,65 @@ export class SubtaskExecutionContextBuilder {
 function readTaskResource(locator: string): string {
   if (!existsSync(locator)) return locator;
   try {
-    return readFileSync(locator, 'utf8');
+    const info = statSync(locator);
+    if (!info.isFile()) return `[任务资源不是普通文件：${locator}]`;
+    const sample = Buffer.alloc(Math.min(info.size, 8 * 1024));
+    const handle = openSync(locator, 'r');
+    let bytesRead = 0;
+    try {
+      bytesRead = readSync(handle, sample, 0, sample.length, 0);
+    } finally {
+      closeSync(handle);
+    }
+    if (isBinaryTaskResource(locator, sample.subarray(0, bytesRead))) {
+      return `[二进制任务资源，未注入文本提示词：${locator}]`;
+    }
+    return readFileSync(locator, 'utf8').replace(/\u0000/gu, '');
   } catch {
     return `[Resource is not readable as UTF-8 text: ${locator}]`;
+  }
+}
+
+function safeInputArtifactName(name: string, index: number): string {
+  const normalized = basename(name).normalize('NFC')
+    .replace(/[^A-Za-z0-9._-]+/gu, '_')
+    .replace(/^\.{1,2}$/u, '_')
+    .slice(-160);
+  return `input-${String(index + 1).padStart(2, '0')}-${normalized || 'artifact'}`;
+}
+
+function materializeArtifactFile(
+  sourcePath: string,
+  destinationPath: string,
+  expectedHash: string,
+): void {
+  if (existsSync(destinationPath)) {
+    const existing = lstatSync(destinationPath, { throwIfNoEntry: false });
+    if (!existing?.isFile() || existing.isSymbolicLink()) {
+      throw new Error(`artifact_context_destination_invalid: ${destinationPath}`);
+    }
+    if (hashContent(readFileSync(destinationPath)) !== expectedHash) {
+      throw new Error(`artifact_context_destination_hash_mismatch: ${destinationPath}`);
+    }
+    return;
+  }
+  copyFileSync(sourcePath, destinationPath, constants.COPYFILE_EXCL);
+}
+
+const BINARY_RESOURCE_EXTENSIONS = new Set([
+  '.7z', '.avi', '.bmp', '.doc', '.docx', '.gif', '.gz', '.ico', '.jpeg', '.jpg',
+  '.mov', '.mp3', '.mp4', '.mpeg', '.pdf', '.png', '.ppt', '.pptx', '.rar', '.tar',
+  '.tif', '.tiff', '.wav', '.webm', '.webp', '.xls', '.xlsx', '.zip',
+]);
+
+function isBinaryTaskResource(locator: string, sample: Buffer): boolean {
+  if (BINARY_RESOURCE_EXTENSIONS.has(extname(locator).toLowerCase())) return true;
+  if (sample.includes(0)) return true;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(sample);
+    return false;
+  } catch {
+    return true;
   }
 }
 

@@ -37,6 +37,10 @@ export function formatExecutorError(raw?: string): string | undefined {
   const normalized = raw.trim();
   if (!normalized) return undefined;
 
+  if (isNullByteFailure(normalized)) {
+    return '图片任务包含无效的二进制输入，请重新选择图片附件';
+  }
+
   if (isNetworkFailure(normalized)) {
     return '执行器网络连接失败，请检查网络或代理配置';
   }
@@ -88,6 +92,9 @@ export function isRecoverableExecutorFailure(raw?: string): boolean {
 export function normalizeExecutorFailure(raw?: string, interrupted = false): KernelFailure {
   const summary = formatExecutorError(raw) ?? raw ?? 'unknown executor failure';
   if (interrupted) return kernelFailure({ kind: 'cancelled', scope: 'attempt', code: 'execution_interrupted', summary });
+  if (raw && isNullByteFailure(raw)) {
+    return kernelFailure({ kind: 'configuration', scope: 'task', code: 'invalid_task_input', summary });
+  }
   if (raw && isNetworkFailure(raw)) return kernelFailure({ kind: 'network', scope: 'agent_class', code: 'network_failure', summary });
   if (/executor idle timeout|timed out|timeout/i.test(raw ?? '')) {
     return kernelFailure({ kind: 'timeout', scope: 'agent_class', code: 'executor_timeout', summary });
@@ -106,6 +113,10 @@ export function normalizeExecutorFailure(raw?: string, interrupted = false): Ker
     return kernelFailure({ kind: 'adapter', scope: 'agent_class', code: 'executor_adapter_failed', summary });
   }
   return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary });
+}
+
+function isNullByteFailure(raw: string): boolean {
+  return /(without null bytes?|null bytes?|\bNUL\b)/iu.test(raw);
 }
 
 export type DependencyMaterializationFailureCode =

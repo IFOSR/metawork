@@ -8,7 +8,7 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 
 > 当前实现基线（2026-08-21）：PlanningAgentPlan v8、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
-> 以及支持事务式 30→31→32→33 升级路径的 SQLite schema v33。`KernelWorkflow` 串行完成
+> 以及支持事务式 31→32→33→34→35→36→37 升级路径的 SQLite schema v37。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0037 已将顶层 Task 并行扩展为
 > Conversation 级单 slot：不同 Conversation 可并行，同一 Conversation 的后续
@@ -152,6 +152,24 @@ flowchart LR
 所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；MetaWork 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 MetaWork 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
+
+上下文连续性遵循统一的 Context Bridge 契约：
+
+```text
+Pi session 历史 + 当前用户输入
+  -> Planner 理解自然指代并选择 contextRefs
+  -> MetaWork Context Bridge 提供有界事实
+  -> ControlKernel 验证 Artifact 身份、归属、状态和哈希
+  -> Runtime 将选中的文件物化到 attempt-local 输入目录
+  -> Executor 只消费当前 Subtask 和已物化输入
+```
+
+现有 `get_current_session_context` 会返回有界的 interaction、Task、
+Executor result 和当前 Conversation Artifact 事实。它是事实目录，不是语义
+检索器，也不是第二个路由器。历史图片、报告、HTML 和文本使用
+`ContextRef.kind = "artifact"`；`task_resource` 继续只表示当前 Task 资源。
+Context Bridge 不返回私有发布路径、绝对 Workspace 路径或凭据。只有来源仍是
+普通文件且内容哈希与持久记录一致的已发布 Artifact，才会标记为可用。
 
 语义 RPC 额外开放 Pi 原生只读 `web_fetch` 与 `web_search`，用于有界、
 无凭据的公开 HTTP(S) 实时信息。新语义 Planner turn 不得使用
@@ -729,6 +747,14 @@ Attempt header 在桌面和移动端都稳定分隔标签、状态和耗时。�
 后恢复。Workspace Header 提供跟随系统、浅色和深色三态主题，偏好保存在
 `metawork.theme`，并在应用首屏渲染前通过语义颜色 token 生效。
 
+Web 附件上传会把浏览器 `File` 直接经由 Management 流式写入
+Conversation 作用域下的 `.uploading` 临时文件。存储层增量计算文件大小和
+SHA-256，只保留用于签名识别的前导字节，并在流成功结束后原子发布数据文件和
+元数据。应用上传入口不再执行原先固定的 10 MiB 图片或 5 MiB 文本限制；文件系统
+容量、部署配额以及下游 Provider/模型限制仍会作为明确错误返回。语义 Planner RPC
+仍会把完整图片放入 prompt 输入，但会从会话事件回显中脱敏图片数据，避免大附件被
+重复写入 JSONL 控制帧。
+
 依赖 publication 尚未完成时，Kernel/Runtime 会记录等待事实，不会错误地产生
 普通用户阻塞；缺少 handoff、Result Object、workspace 状态或身份不匹配时，
 会给出有界、结构化的材料化诊断。显式恢复通过
@@ -984,7 +1010,7 @@ MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。A
 自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定配置 revision 并携带完整 Executor bindings；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
 - `clarification`、`task_control` 或 `no_action`：不应 claim executor work unit；历史 `direct_reply` 只用于兼容回放，新的语义提案入口会拒绝它。
-- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。
+- `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。`edit` 表示主要交付 Workspace/文件变化，`report` 表示主要交付报告/回答；两者都不代表只读权限，调研缓存、临时文件和普通用户态中间结果都可以产生。
 
 `ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和执行后端恢复。
 
@@ -996,9 +1022,9 @@ MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。A
 
 MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一次性塞给一个 executor。图没有 single/multi execution mode；Planner 只在受控能力交接或必要交付边界建立多个 Subtasks。每条 `dependencies` 边同时是拓扑与 keyed `text`/`artifact` handoff contract。
 
-`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；路径逃逸、未授权写入、秘密暴露和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
+`SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；普通 Workspace 和用户态文件操作允许 Executor 按任务需要执行，系统控制面、凭据、提权、设备、Docker 控制面和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v33，支持事务式 30→31→32→33 升级路径，unsupported older schema 会拒绝启动。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、Planner proposal configuration-revision pin 和结果分块交付事实。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v37，支持事务式 31→32→33→34→35→36→37 升级路径，unsupported older schema 会拒绝启动。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

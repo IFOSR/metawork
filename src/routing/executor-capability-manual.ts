@@ -375,7 +375,7 @@ function renderDelivery(
   if (userTopics.has('delivery')) return [];
   return [
     '- `edit`：Subtask 需要修改工作区或生成文件产物时使用。',
-    '- `report`：Subtask 只需要交付只读分析或回答时使用。',
+    '- `report`：Subtask 主要交付报告或回答；执行过程中仍可生成调研缓存、临时文件和其他普通用户态文件。',
     `- Harness：\`${agentClass.harnessRef}\`。`,
     `- Skills：${agentClass.skills.length > 0 ? agentClass.skills.join('、') : '未声明'}。`,
     `- MCP Servers：${agentClass.mcpServers.length > 0 ? agentClass.mcpServers.join('、') : '未声明'}。`,

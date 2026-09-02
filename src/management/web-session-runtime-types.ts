@@ -15,6 +15,7 @@ import type {
 } from './web-session-types.js';
 import type { WebLaunchContextInput } from './web-launch-context.js';
 import type { WorkspaceSummary } from '../workspace/workspace-directory-service.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 
 export interface WebSessionRuntimeCatalog {
   initialize(): Promise<void>;
@@ -114,6 +115,12 @@ export type WebSessionRuntimeEvent =
     completedAt?: string | null;
   }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
+  | {
+    type: 'artifacts';
+    turnId: string;
+    taskId: string;
+    artifacts: ArtifactProjection[];
+  }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
   | {
     type: 'workspace_changed';

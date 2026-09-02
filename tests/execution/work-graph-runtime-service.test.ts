@@ -128,6 +128,52 @@ describe('WorkGraphRuntimeService', () => {
     });
   });
 
+  it('persists historical artifact context refs across graph materialization and reload', () => {
+    const db = createDb();
+    const taskRecord = task('task_artifact_context');
+    new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_artifact_context', taskRecord.id);
+    const artifactGraph: WorkGraphProposal = {
+      ...graph(taskRecord.id),
+      subtasks: [{
+        ...graph(taskRecord.id).subtasks[0]!,
+        contextRefs: [{ kind: 'artifact', artifactId: 'artifact_history_1' }],
+      }],
+    };
+
+    const runtime = service(db);
+    const applied = runtime.apply({
+      task: taskRecord,
+      userPrompt: 'continue the historical artifact',
+      authorizedWorkGraph: artifactGraph,
+      authorizedBindingsBySubtask: authorizedBindingsBySubtask(),
+      authorization: {
+        decisionId: 'decision_artifact_context',
+        generationId: 'generation_artifact_context',
+        revision: 1,
+        source: 'initial',
+        automaticReplan: false,
+      },
+    });
+
+    expect(applied).toMatchObject({ outcome: 'applied' });
+    expect(new SubtaskRepo(db).findById(`${taskRecord.id}_r1_execute`)).toMatchObject({
+      contextRefs: [{ kind: 'artifact', artifactId: 'artifact_history_1' }],
+    });
+    expect(runtime.apply({
+      task: taskRecord,
+      userPrompt: 'recover',
+      authorizedWorkGraph: null,
+    })).toMatchObject({
+      outcome: 'recovered',
+      workGraph: {
+        subtasks: [{
+          contextRefs: [{ kind: 'artifact', artifactId: 'artifact_history_1' }],
+        }],
+      },
+    });
+  });
+
   it('rejects an authorized binding from a different configuration revision', () => {
     const db = createDb();
     const taskRecord = task('task_revision_mismatch');

@@ -18,7 +18,7 @@ describe('CodexCliDriver', () => {
       args: [
         'exec',
         '--json',
-        '--sandbox', 'workspace-write',
+        '--sandbox', 'danger-full-access',
         '-c', 'approval_policy="never"',
         '--skip-git-repo-check',
         '--ephemeral',
@@ -44,7 +44,7 @@ describe('CodexCliDriver', () => {
     expect(launch.args).toEqual([
       'exec',
       '--json',
-      '--sandbox', 'workspace-write',
+      '--sandbox', 'danger-full-access',
       '-c', 'model="gpt-5.6-sol"',
       '-c', 'model_provider="code-cli"',
       '-c', 'approval_policy="never"',
@@ -69,6 +69,7 @@ describe('CodexCliDriver', () => {
     expect(driver.supportsResponseOnly).toBe(true);
     expect(launch.args).toContain('read-only');
     expect(launch.args).not.toContain('workspace-write');
+    expect(launch.args).not.toContain('danger-full-access');
   });
 
   it('normalizes result output', () => {

@@ -201,14 +201,14 @@ export class HttpClient {
   async uploadAttachment(
     sessionId: string,
     name: string,
-    bytes: Uint8Array,
+    body: Blob | Uint8Array,
   ): Promise<AttachmentMetadata> {
     const params = new URLSearchParams({ sessionId, name });
     const response = await fetch(`/api/attachments?${params.toString()}`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: bytes as unknown as BodyInit,
+      body: body as BodyInit,
     });
     if (!response.ok) {
       const body = await response.text();

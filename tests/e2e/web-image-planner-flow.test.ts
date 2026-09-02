@@ -35,7 +35,7 @@ describe('Web image to Planner end-to-end path', () => {
 
     const imageBytes = Buffer.concat([
       Buffer.from([0xff, 0xd8, 0xff]),
-      Buffer.alloc(900 * 1024, 0x5a),
+      Buffer.alloc(10 * 1024 * 1024 + 1, 0x5a),
     ]);
     const image = await attachmentStore.saveAttachment({
       sessionId: 'conv_e2e_image',
@@ -230,7 +230,7 @@ function largeImagePlannerProcess(onPromptImage: (data: string) => void): FakePl
           type: 'message_start',
           message: {
             role: 'user',
-            content: [{ type: 'image', data, mimeType: 'image/jpeg' }],
+            content: [{ type: 'image', data: '', mimeType: 'image/jpeg' }],
           },
         })}\n`);
         child.stdout.write(`${JSON.stringify({

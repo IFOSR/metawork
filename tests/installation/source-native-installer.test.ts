@@ -20,6 +20,7 @@ import { FileConfigurationRepository } from '../../src/configuration/file-config
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
 import { SourceNativeInstaller } from '../../src/installation/source-native-installer.js';
+import { CURRENT_SCHEMA_VERSION } from '../../src/storage/migrations.js';
 
 const cleanup: string[] = [];
 
@@ -95,7 +96,8 @@ describe('SourceNativeInstaller', () => {
     expect(snapshot.config.agentClasses['pi-research']?.enabled).toBe(false);
 
     const db = new Database(accountPaths.database, { readonly: true });
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
+    expect(db.prepare('SELECT version FROM schema_version').get())
+      .toEqual({ version: CURRENT_SCHEMA_VERSION });
     db.close();
     expect(statSync(accountPaths.database).mode & 0o777).toBe(0o600);
     for (const path of [

@@ -1,10 +1,27 @@
-export const MAX_ATTACHMENT_IMAGE_BYTES = 10 * 1024 * 1024;
+export class AttachmentInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AttachmentInputError';
+  }
+}
+
+export class AttachmentTypeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AttachmentTypeError';
+  }
+}
 
 export interface GatewayAttachmentStore {
   saveAttachment(input: {
     sessionId: string;
     name: string;
     bytes: Buffer;
+  }): Promise<unknown>;
+  saveAttachmentStream(input: {
+    sessionId: string;
+    name: string;
+    source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
   }): Promise<unknown>;
   readAttachment(sessionId: string, attachmentId: string): Promise<{
     metadata: {

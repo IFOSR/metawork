@@ -244,6 +244,7 @@ export interface ExecutorSummary {
 
 // WebSocket 消息协议
 import type {
+  ArtifactProjection,
   ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionMetadata,
@@ -324,6 +325,12 @@ export type ServerMessage =
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }
   | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
+  | {
+    type: 'artifacts';
+    turnId: string;
+    taskId: string;
+    artifacts: ArtifactProjection[];
+  }
   | { type: 'trace_snapshot'; trace: InteractionTrace }
   | { type: 'configuration_runtime_state'; state: ConfigurationRuntimeState }
   | {

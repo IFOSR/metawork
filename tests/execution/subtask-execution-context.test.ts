@@ -1,4 +1,8 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
@@ -7,6 +11,8 @@ import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-exec
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import type { Subtask, Task } from '../../src/core/types.js';
 import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
+import { TaskRepo } from '../../src/storage/task-repo.js';
+import { TaskEngine } from '../../src/task/task-engine.js';
 
 function node(id: string, title: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -243,4 +249,152 @@ describe('SubtaskExecutionContextBuilder', () => {
       evidenceToolsAvailable: false,
     })).toThrow('dependency_result_object_missing');
   });
+
+  it('does not decode binary task resources into text evidence', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        last_interruption_reason, interruption_count, created_at, updated_at
+      ) VALUES ('task_context_binary', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+    `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
+    seedWorkGraphRevision(db, {
+      taskId: 'task_context_binary',
+      generationId: 'generation_context_binary',
+      configurationRevision: 'revision_context_binary',
+    });
+
+    const root = mkdtempSync(join(tmpdir(), 'metawork-binary-evidence-'));
+    const resource = join(root, 'black-sausage.jpg');
+    writeFileSync(resource, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x10, 0x00, 0xff]));
+    try {
+      const subtask = node('binary', 'Binary');
+      subtask.taskId = 'task_context_binary';
+      subtask.generationId = 'generation_context_binary';
+      subtask.contextRefs = [{ kind: 'task_resource', locator: resource }];
+      subtask.executorBindings = [testExecutorBinding({ configurationRevision: 'revision_context_binary' })];
+      const task: Task = {
+        id: 'task_context_binary',
+        title: 'Task',
+        goal: 'Goal',
+        status: 'running',
+        summary: '',
+        snapshots: [],
+        resources: [resource],
+        artifacts: [],
+        dependencies: [],
+        prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
+        injectedPreferences: [],
+        lastSchedulingReason: '',
+        lastInterruptionReason: '',
+        interruptionCount: 0,
+        createdAt: '2026-07-17T00:00:00.000Z',
+        updatedAt: '2026-07-17T00:00:00.000Z',
+      };
+
+      const built = new SubtaskExecutionContextBuilder(db, {
+        accountId: 'local-default',
+        resultRoot: join(root, 'results'),
+      }).build({
+        executionId: 'exec',
+        task,
+        subtask,
+        allSubtasks: [subtask],
+        attemptId: 'attempt',
+        workUnitId: 'work-unit',
+        sessionId: 'session',
+        workspaceContext: { allowFilesystem: true, workingDirectory: root, targetPaths: [root] },
+        evidenceToolsAvailable: false,
+      });
+
+      expect(built.context.selectedEvidence[0]?.content).not.toContain('\u0000');
+      expect(built.context.selectedEvidence[0]?.content).toContain('二进制任务资源');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a Planner-selected historical artifact into the attempt input directory', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'metawork-artifact-source-'));
+    const inputRoot = mkdtempSync(join(tmpdir(), 'metawork-artifact-input-'));
+    const sourcePath = join(sourceRoot, 'generated-image.jpg');
+    writeFileSync(sourcePath, Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02]));
+    try {
+      const task = new TaskEngine(new TaskRepo(db), join(sourceRoot, 'snapshots')).create({
+        id: 'task_historical_artifact',
+        title: '历史图片编辑',
+        goal: '修改历史图片',
+        accountId: 'local-default',
+        conversationId: 'conversation_historical_artifact',
+        workspaceId: 'workspace_historical_artifact',
+      });
+      const subtask = node('edit', 'Edit');
+      subtask.taskId = task.id;
+      subtask.generationId = 'generation_historical_artifact';
+      subtask.contextRefs = [{ kind: 'artifact', artifactId: 'artifact_historical_image' }];
+      db.prepare(`
+        INSERT INTO task_artifacts (
+          artifact_id, account_id, task_id, generation_id, subtask_id,
+          publication_id, display_name, relative_path, published_path,
+          media_type, preview_kind, content_hash, byte_length, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+      `).run(
+        'artifact_historical_image',
+        'local-default',
+        task.id,
+        'generation_source',
+        'source-subtask',
+        'generated-image.jpg',
+        'assets/generated-image.jpg',
+        sourcePath,
+        'image/jpeg',
+        'unsupported',
+        'sha256:placeholder',
+        5,
+        '2026-08-31T00:00:00.000Z',
+        '2026-08-31T00:00:00.000Z',
+      );
+      const artifactHash = requireArtifactHash(sourcePath);
+      db.prepare('UPDATE task_artifacts SET content_hash = ? WHERE artifact_id = ?')
+        .run(artifactHash, 'artifact_historical_image');
+
+      const built = new SubtaskExecutionContextBuilder(db, {
+        accountId: 'local-default',
+        resultRoot: join(sourceRoot, 'results'),
+      }).build({
+        executionId: 'exec',
+        task,
+        subtask,
+        allSubtasks: [subtask],
+        attemptId: 'attempt',
+        workUnitId: 'work-unit',
+        sessionId: 'session',
+        inputFilesPath: inputRoot,
+        workspaceContext: { allowFilesystem: true, workingDirectory: sourceRoot, targetPaths: [sourceRoot] },
+        evidenceToolsAvailable: false,
+      });
+
+      expect(built.context.selectedArtifacts).toEqual([expect.objectContaining({
+        artifactId: 'artifact_historical_image',
+        displayName: 'generated-image.jpg',
+        contentHash: artifactHash,
+        relativeInputPath: 'input-01-generated-image.jpg',
+      })]);
+      expect(readFileSync(join(inputRoot, 'input-01-generated-image.jpg'))).toEqual(
+        readFileSync(sourcePath),
+      );
+    } finally {
+      rmSync(sourceRoot, { recursive: true, force: true });
+      rmSync(inputRoot, { recursive: true, force: true });
+    }
+  });
 });
+
+function requireArtifactHash(path: string): string {
+  return `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
+}

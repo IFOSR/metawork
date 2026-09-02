@@ -63,8 +63,7 @@ import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
 import { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.js';
-import { contextRefKey } from '../work-graph/index.js';
-import { isEligibleInteractionRef } from './assistant-reference-eligibility.js';
+import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
@@ -2168,43 +2167,15 @@ export class MetaclawSession {
   }
 
   private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
-    const refs = (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs);
     const targetTask = plan.task.taskId ? this.taskRuntimeService.findTask(plan.task.taskId) : null;
-    const eligible = new Set<string>();
-    for (const ref of refs) {
-      if (ref.kind === 'current_user_input') {
-        eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (ref.kind === 'task_resource') {
-        if (targetTask?.resources.includes(ref.locator) || (!targetTask && userInput.includes(ref.locator))) {
-          eligible.add(contextRefKey(ref));
-        }
-        continue;
-      }
-      if (ref.kind === 'preference') {
-        const row = this.deps.db.prepare('SELECT status FROM preferences WHERE id = ?').get(ref.preferenceId) as { status: string } | undefined;
-        if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (ref.kind === 'task_evidence') {
-        const row = this.deps.db.prepare(`
-          SELECT id FROM task_execution_evidence WHERE id = ? AND task_id = ? AND kind = 'task_evidence'
-        `).get(ref.evidenceId, targetTask?.id ?? '') as { id: string } | undefined;
-        if (row) eligible.add(contextRefKey(ref));
-        continue;
-      }
-      if (isEligibleInteractionRef({
-        db: this.deps.db,
-        sessionId: this.deps.sessionId,
-        ref,
-        targetTaskId: targetTask?.id ?? null,
-        userInput,
-      })) {
-        eligible.add(contextRefKey(ref));
-      }
-    }
-    return [...eligible];
+    return buildEligibleContextRefKeys({
+      db: this.deps.db,
+      sessionId: this.deps.sessionId,
+      conversationId: this.deps.sessionId,
+      refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
+      targetTask,
+      userInput,
+    });
   }
 
   private appendPlanningClarification(plan: PlanningAgentPlan): void {

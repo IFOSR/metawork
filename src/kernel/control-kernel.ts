@@ -791,6 +791,7 @@ export class ControlKernel {
         .map(kind => ({
           'current_user_input': '当前用户输入',
           'interaction': '历史会话',
+          'artifact': '历史产物',
           'task_resource': '任务资源',
           'task_evidence': '任务证据',
           'preference': '偏好设置',

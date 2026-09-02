@@ -221,7 +221,7 @@ retains its authorized `workspaceId` and canonical path.
 
 Executor path invariant: the Planner-projected `workingDirectory` and `targetPaths` identify the task-owned Git worktree, while each Executor also needs a private runtime home for provider configuration, tools, and sessions. These are separate path contracts. A future Executor registration entry must declare or derive both contracts and must let the adapter materialize them before process launch; it must never rely on a CLI's implicit `HOME` discovery. For Pi, the adapter must set `HOME`, `PI_CODING_AGENT_DIR`, and `PI_CODING_AGENT_SESSION_DIR` and pre-create the session directory. For Codex, the adapter must set an isolated `CODEX_HOME` containing the rewritten provider config. The child process `cwd` remains the Planner-assigned worktree. Startup should fail with a path-specific diagnostic if either the worktree or private runtime home is missing. On native and worktree-container launches the drivers seed that private home from the operator-managed templates (`METACLAW_EXECUTOR_CODEX_HOME`, `METACLAW_EXECUTOR_PI_HOME`) and inject provider credentials from the assigned env files (`METACLAW_CODEX_EXECUTOR_ENV_FILE`, `METACLAW_PI_EXECUTOR_ENV_FILE`); the host environment whitelist never forwards `OPENAI_*` on its own.
 
-The unreleased product uses SQLite schema version 33. Fresh databases start at v33; schema 30, 31, and 32 are upgraded transactionally on a verified clone while unsupported older schemas are refused. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
+The unreleased product uses SQLite schema version 37. Fresh databases start at v37; supported pre-release databases migrate transactionally through v31→v32→v33→v34→v35→v36→v37 on a verified clone while unsupported older schemas are refused. Schema v37 permits image preview kinds in the durable `task_artifacts` table. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
@@ -439,6 +439,16 @@ one Account and optionally one Conversation. Disconnect does not destroy the
 Conversation or AccountRuntime.
 _Avoid_: Conversation, Planner session, Account
 
+**Web Attachment**:
+An authenticated, Conversation-scoped image or text upload. The Web client sends
+the `File` directly to Management; Management streams it into a temporary
+file, computes size and SHA-256 incrementally, sniffs only the leading
+signature bytes, and atomically publishes the data plus metadata after the
+stream completes. There is no fixed 10 MiB image or 5 MiB text application
+limit. Filesystem capacity, deployment quotas, and downstream Provider or
+model limits may still reject a later operation explicitly.
+_Avoid_: Planner RPC event payload, Workspace mutation, Provider upload
+
 **Gateway**:
 The sole accepted user-message connectivity plane under ADR-0031. It
 authenticates a Principal, resolves Account and Conversation identity, admits a
@@ -521,12 +531,21 @@ The runtime lifecycle vocabulary for work units: starting, idle, claimed, runnin
 _Avoid_: task state, subtask state
 
 **Work Graph**:
-The sole execution-structure fact for one task generation: a v7 revisioned DAG pinned to one configuration revision, with capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every node declares whether it may change the workspace (`edit`) or must remain read-only (`report`) and carries ordered complete Executor bindings rather than free-form class preferences. Every edge has one to twelve keyed `text` or `artifact` items; only published direct-edge handoffs and controlled task evidence enter downstream context. A pure function derives the runnable frontier without persisting an execution layer. Kernel may authorize up to four independent nodes in one deterministic batch; retry, fallback, continuation, merge repair and bounded replans remain Kernel policy.
+The sole execution-structure fact for one task generation: a v7 revisioned DAG pinned to one configuration revision, with capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every node declares its primary delivery channel (`edit` for Workspace/file delivery, `report` for report/answer delivery); both kinds may create ordinary user-space files, including Workspace files and research intermediates. It carries ordered complete Executor bindings rather than free-form class preferences. Every edge has one to twelve keyed `text` or `artifact` items; only published direct-edge handoffs and controlled task evidence enter downstream context. A pure function derives the runnable frontier without persisting an execution layer. Kernel may authorize up to four independent nodes in one deterministic batch; retry, fallback, continuation, merge repair and bounded replans remain Kernel policy.
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:
-The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing requirements, Planner-selected evidence, sibling titles marked out of scope, workspace boundaries, the completion-report contract, and evidence-tool availability. Runtime retains Task/Subtask/attempt/WorkUnit identities and all acceptance/handoff keys outside model output.
+The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing requirements, Planner-selected evidence, Planner-selected historical Artifact inputs, sibling titles marked out of scope, workspace boundaries, the completion-report contract, and evidence-tool availability. Historical `artifact` ContextRefs are selected by Planner semantics, validated by MetaWork against Account/Conversation/Workspace/status/source/hash facts, and materialized into the attempt-local input directory before execution. Runtime retains Task/Subtask/attempt/WorkUnit identities and all acceptance/handoff keys outside model output.
 _Avoid_: Task prompt passthrough, conversation history, task-level memory bundle, sibling goals
+
+**Planner Context Bridge**:
+A bounded, read-only MetaWork projection exposed through the existing Planner MCP
+queries. It supplies current Conversation facts about interactions, Tasks,
+Executor results and published Artifacts; it does not perform semantic search,
+resolve natural-language references or choose a ContextRef. Pi session history
+owns semantic continuity, Planner selects stable references, MetaWork validates
+identity/availability/hash, and Runtime materializes only selected inputs.
+_Avoid_: semantic router, vector search, transcript replay, Executor database access
 
 **Completion Protocol**:
 The active Executor response contract is Completion Protocol v4. A non-empty
@@ -536,8 +555,10 @@ malformed marker/trailer, evidence cardinality/length, ordinary duration and
 physical transport limits may leave a safe body `partial` and `uncertified`;
 they must not discard it. Runtime computes one authoritative workspace delta
 before certification, retains internal identities outside model output, and
-derives artifacts from created/modified files. Path escape, unauthorized writes,
-secret exposure and unauthorized ResultReference access remain fail-closed.
+derives artifacts from created/modified files. Ordinary Workspace and user-space
+file operations are allowed for Executor work; system-control access, credential
+exposure, privilege changes, device or Docker control-plane access and
+unauthorized ResultReference access remain fail-closed.
 Image generation and editing Subtasks require `deliveryKind: edit` and at least
 one PNG, JPEG, WebP, or GIF artifact whose bounded signature read matches its
 extension; `report`, missing, unreadable, or forged image outputs cannot certify.

@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
+import { rmSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
@@ -304,6 +306,173 @@ describe('PlannerDataReader', () => {
     expect(result.interactions).toHaveLength(1);
     expect(result.interactions[0]?.userInput).toBe('continue this task');
     expect(JSON.stringify(result)).not.toContain('secret other session');
+  });
+
+  it('projects same-Conversation historical artifacts and executor results as bounded context facts', () => {
+    const { db, taskEngine, reader } = createHarness('sess-artifacts', 'conversation-artifacts');
+    const publishedPath = '/tmp/metawork-planner-product-image.jpg';
+    const imageBytes = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
+    writeFileSync(publishedPath, imageBytes);
+    const task = taskEngine.create({
+      id: 'task-image-history',
+      title: '生成商品图',
+      goal: '生成并发布商品图片',
+      conversationId: 'conversation-artifacts',
+      workspaceId: 'workspace-artifacts',
+    });
+    db.prepare(`
+      INSERT INTO interactions (
+        id, task_id, session_id, user_input, system_output, executor_used, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'interaction-image-result',
+      task.id,
+      'sess-artifacts',
+      '生成一张商品图',
+      '已生成商品主图。',
+      'pi-agent',
+      '2026-08-31T00:00:00.000Z',
+    );
+    try {
+      db.prepare(`
+        INSERT INTO task_artifacts (
+          artifact_id, account_id, task_id, generation_id, subtask_id,
+          publication_id, display_name, relative_path, published_path,
+          media_type, preview_kind, content_hash, byte_length, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'artifact-product-image',
+        'local-default',
+        task.id,
+        'generation-image',
+        'generate-image',
+        'publication-image',
+        '商品主图.jpg',
+        'assets/product.jpg',
+        publishedPath,
+        'image/jpeg',
+        'unsupported',
+        `sha256:${createHash('sha256').update(imageBytes).digest('hex')}`,
+        imageBytes.byteLength,
+        'published',
+        '2026-08-31T00:00:01.000Z',
+        '2026-08-31T00:00:01.000Z',
+      );
+
+      const result = reader.getCurrentSessionContext(20);
+
+      expect(result.artifacts).toEqual([expect.objectContaining({
+        artifactId: 'artifact-product-image',
+        taskId: task.id,
+        displayName: '商品主图.jpg',
+        relativePath: 'assets/product.jpg',
+        mediaType: 'image/jpeg',
+        availability: 'available',
+        contentHash: `sha256:${createHash('sha256').update(imageBytes).digest('hex')}`,
+      })]);
+      expect(result.executorResults).toEqual([expect.objectContaining({
+        resultId: 'interaction-image-result',
+        taskId: task.id,
+        artifactIds: ['artifact-product-image'],
+      })]);
+      expect(JSON.stringify(result)).not.toContain(publishedPath);
+    } finally {
+      rmSync(publishedPath, { force: true });
+    }
+  });
+
+  it('projects unavailable and foreign artifacts without making them eligible candidates', () => {
+    const { db, taskEngine, reader } = createHarness(
+      'sess-artifact-boundaries',
+      'conversation-artifact-boundaries',
+    );
+    const currentTask = taskEngine.create({
+      id: 'task-current-artifacts',
+      title: '当前任务',
+      goal: '验证产物边界',
+      conversationId: 'conversation-artifact-boundaries',
+      workspaceId: 'workspace-artifact-boundaries',
+    });
+    const foreignTask = taskEngine.create({
+      id: 'task-foreign-artifacts',
+      title: '其他会话任务',
+      goal: '不应被看见',
+      conversationId: 'conversation-foreign',
+      workspaceId: 'workspace-foreign',
+    });
+    const availablePath = '/tmp/metawork-planner-available.txt';
+    const bytes = Buffer.from('available artifact');
+    writeFileSync(availablePath, bytes);
+    try {
+      const insert = db.prepare(`
+        INSERT INTO task_artifacts (
+          artifact_id, account_id, task_id, generation_id, subtask_id,
+          publication_id, display_name, relative_path, published_path,
+          media_type, preview_kind, content_hash, byte_length, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run(
+        'artifact-available',
+        'local-default',
+        currentTask.id,
+        'available.txt',
+        'available.txt',
+        availablePath,
+        'text/plain; charset=utf-8',
+        'text',
+        `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        bytes.byteLength,
+        'published',
+        '2026-08-31T00:00:00.000Z',
+        '2026-08-31T00:00:00.000Z',
+      );
+      insert.run(
+        'artifact-unavailable',
+        'local-default',
+        currentTask.id,
+        'unavailable.txt',
+        'unavailable.txt',
+        '/tmp/missing-artifact.txt',
+        'text/plain; charset=utf-8',
+        'text',
+        'sha256:missing',
+        7,
+        'unavailable',
+        '2026-08-31T00:00:01.000Z',
+        '2026-08-31T00:00:01.000Z',
+      );
+      insert.run(
+        'artifact-foreign',
+        'local-default',
+        foreignTask.id,
+        'foreign.txt',
+        'foreign.txt',
+        '/tmp/foreign-artifact.txt',
+        'text/plain; charset=utf-8',
+        'text',
+        'sha256:foreign',
+        7,
+        'published',
+        '2026-08-31T00:00:02.000Z',
+        '2026-08-31T00:00:02.000Z',
+      );
+
+      const result = reader.getCurrentSessionContext(20);
+
+      expect(result.artifacts.map(artifact => ({
+        artifactId: artifact.artifactId,
+        availability: artifact.availability,
+      }))).toEqual([
+        { artifactId: 'artifact-available', availability: 'available' },
+        { artifactId: 'artifact-unavailable', availability: 'unavailable' },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('artifact-foreign');
+      expect(JSON.stringify(result)).not.toContain('/tmp/missing-artifact.txt');
+    } finally {
+      rmSync(availablePath, { force: true });
+    }
   });
 
   it('exposes bounded Planner-owned facts through MCP instead of prompt injection', () => {

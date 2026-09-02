@@ -61,17 +61,18 @@ ADR-0024 delivers the deferred workspace contract. Each Task generation + Subtas
 
 ### Work Graph v6 and identity-free Completion Protocol v3 amendment (2026-08-03)
 
-PlanningAgentPlan hard-upgrades to v7 and the Work Graph contract baseline to v6. `expectedOutput` is removed and every Subtask declares `deliveryKind: edit | report`. The Work Graph wire object does not gain its own schema-version field. Acceptance remains structured; Runtime no longer infers delivery semantics from patch/artifact/analysis/review text categories.
+PlanningAgentPlan hard-upgrades to v7 and the Work Graph contract baseline to v6. `expectedOutput` is removed and every Subtask declares `deliveryKind: edit | report`. `edit` means that the primary deliverable is a Workspace/file change; `report` means that the primary deliverable is a report or answer. Both kinds may read and write ordinary user-space files, including Workspace files, research caches, temporary files and generated HTML/TXT material. The Work Graph wire object does not gain its own schema-version field. Acceptance remains structured; Runtime no longer infers delivery semantics from patch/artifact/analysis/review text categories.
 
 The model-facing Completion Protocol hard-upgrades to v3. A successful report contains only bounded `evidence` strings and nullable `noChangeReason`; a failed report retains the controlled `failure` object. The model does not emit artifacts, schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or outgoing handoff identities and keys.
 
-After a successful Executor response and before completion validation, Runtime computes and persists one authoritative workspace delta. `report` requires zero created/modified/deleted paths and null `noChangeReason`; changed `edit` requires a null reason; zero-delta `edit` requires a non-empty reason. Runtime derives artifacts from created/modified files only, while deletions remain visible in delta/evidence. Truncated or indeterminate delta fails closed, and response-only correction reuses the source attempt's persisted delta. Runtime then materializes authoritative acceptance and handoff identities. Completion v2, the original v1 blocking-code set, patch/artifact heuristics, and old output-kind execution paths are historical only and are rejected rather than dual-read or repaired.
+After a successful Executor response and before completion validation, Runtime computes and persists one authoritative workspace delta for every delivery kind. A `report` does not fail because the Executor created, modified or deleted ordinary Workspace files, and `noChangeReason` is not a report-specific prohibition. For `edit`, a changed Workspace requires a null reason and a zero-delta result requires a non-empty reason. Runtime derives publishable artifacts from created/modified files only, while deletions remain visible in delta/evidence. Truncated or indeterminate delta fails closed, and response-only correction reuses the source attempt's persisted delta. Runtime then materializes authoritative acceptance and handoff identities. Completion v2, the original v1 blocking-code set, patch/artifact heuristics, and old output-kind execution paths are historical only and are rejected rather than dual-read or repaired.
 
 ## Consequences
 
 - Existing non-terminal v3 graphs cannot be executed under the new handoff contract and must be parked for natural-language replanning.
 - Executor Adapters become transport-only and consume the same Subtask context semantics.
 - Completion formatting is now a strict execution contract; malformed output is a deterministic blocked result rather than best-effort text.
+- `deliveryKind` is a delivery preference, not a filesystem permission mode. Research and reporting Executors may persist intermediate Workspace files without being treated as unsafe merely because the primary result is a report.
 - Storage gains v3 audit, normalized handoff, attempt receipt, and attempt-aware WorkUnit projections.
 
 ### Result-first delivery amendment (2026-08-21, ADR-0032)

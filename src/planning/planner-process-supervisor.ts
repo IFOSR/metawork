@@ -31,8 +31,9 @@ import {
   type PlannerToolCallTrace,
 } from './planner-audit-contract.js';
 
-// A 10 MiB attachment expands to roughly 13.4 MiB when base64 encoded and
-// wrapped in the Planner RPC message event. Keep headroom for JSON metadata.
+// Bound individual Planner JSONL output records to protect the control plane.
+// Attachment upload itself has no fixed application size limit; semantic Pi
+// RPC redacts image data from session event echoes before this check.
 const MAX_RPC_LINE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_PROCESSING_CYCLES = 8;
 const DEFAULT_MAX_NON_PROPOSAL_TOOL_CALLS = 12;

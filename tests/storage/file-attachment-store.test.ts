@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   FileAttachmentStore,
   AttachmentTypeError,
-  AttachmentTooLargeError,
 } from '../../src/storage/file-attachment-store.js';
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -89,20 +88,41 @@ describe('FileAttachmentStore', () => {
     })).rejects.toBeInstanceOf(AttachmentTypeError);
   });
 
-  it('rejects oversized images and text files', async () => {
+  it('stores images and text files larger than the retired fixed limits', async () => {
     const { store } = await createStore();
+    const legacyImageLimit = 10 * 1024 * 1024;
+    const legacyTextLimit = 5 * 1024 * 1024;
 
-    await expect(store.saveAttachment({
+    const image = await store.saveAttachment({
       sessionId: 's',
       name: 'big.png',
-      bytes: pngBytes(FileAttachmentStore.MAX_IMAGE_BYTES + 1),
-    })).rejects.toBeInstanceOf(AttachmentTooLargeError);
+      bytes: pngBytes(legacyImageLimit + 1),
+    });
 
-    await expect(store.saveAttachment({
+    const text = await store.saveAttachment({
       sessionId: 's',
       name: 'big.md',
-      bytes: Buffer.alloc(FileAttachmentStore.MAX_TEXT_BYTES + 1, 97),
-    })).rejects.toBeInstanceOf(AttachmentTooLargeError);
+      bytes: Buffer.alloc(legacyTextLimit + 1, 97),
+    });
+
+    expect(image.size).toBe(legacyImageLimit + 1);
+    expect(text.size).toBe(legacyTextLimit + 1);
+  });
+
+  it('removes temporary files when a streaming upload fails', async () => {
+    const { store, root } = await createStore();
+    async function* failingSource(): AsyncGenerator<Buffer> {
+      yield PNG_MAGIC;
+      throw new Error('client disconnected');
+    }
+
+    await expect(store.saveAttachmentStream({
+      sessionId: 's',
+      name: 'interrupted.png',
+      source: failingSource(),
+    })).rejects.toThrow('client disconnected');
+
+    expect(await readdir(join(root, 'attachments', 's'))).toEqual([]);
   });
 
   it('rejects path traversal in session id or file name', async () => {

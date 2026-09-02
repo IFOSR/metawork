@@ -198,3 +198,27 @@ export function plannerRpcCommandError(command: unknown): string | undefined {
 	}
 	return undefined;
 }
+
+/**
+ * Keep large image inputs out of Planner event echoes.
+ *
+ * Semantic RPC sends the original image in the prompt, but the session also
+ * emits user messages and completed message lists. Repeating the base64 data in
+ * those events can exceed the JSONL control-frame budget without adding
+ * information needed by MetaWork.
+ */
+export function redactPlannerImageData(value: object): object;
+export function redactPlannerImageData(value: unknown): unknown;
+export function redactPlannerImageData(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map((entry) => redactPlannerImageData(entry));
+	if (!value || typeof value !== "object") return value;
+
+	const record = value as Record<string, unknown>;
+	const copy: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(record)) {
+		copy[key] = record.type === "image" && key === "data"
+			? ""
+			: redactPlannerImageData(entry);
+	}
+	return copy;
+}

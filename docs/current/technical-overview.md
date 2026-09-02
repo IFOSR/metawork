@@ -13,7 +13,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v33 with transactional 30→31→32→33 upgrade support.
+> and SQLite schema v37 with transactional 31→32→33→34→35→36→37 upgrade support.
 
 > ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
 > Plane, generation-scoped AgentClass/Model/Harness binding, future
@@ -150,6 +150,26 @@ flowchart LR
 Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
+
+Planner continuity follows one explicit Context Bridge contract:
+
+```text
+Pi session history + current user input
+  -> Planner understands natural references and chooses contextRefs
+  -> MetaWork Context Bridge supplies bounded facts
+  -> ControlKernel validates Artifact identity, ownership, status and hash
+  -> Runtime materializes selected files into attempt-local inputs
+  -> Executor consumes only the current Subtask and materialized inputs
+```
+
+The existing `get_current_session_context` projection includes bounded
+interactions, Tasks, Executor results and same-Conversation Artifact facts.
+It is a fact directory, not a semantic searcher or a second router. Historical
+images, reports, HTML and text use `ContextRef.kind = "artifact"`; the older
+`task_resource` kind remains limited to current Task resources. Context Bridge
+never returns private published paths, absolute Workspace paths or credentials.
+Published Artifact facts are marked available only when their source is a
+regular file and its content hash still matches the durable record.
 
 Semantic RPC also exposes Pi-native read-only `web_fetch` and `web_search` for
 bounded credential-free public HTTP(S) information. Historical `direct_reply`
@@ -761,6 +781,17 @@ owned by the App and return with Conversation. The header also provides
 system/light/dark theme preference, persisted in `metawork.theme` and applied
 before the first application render through semantic color tokens.
 
+Web attachment uploads are streamed from the browser `File` through
+Management into a Conversation-scoped `.uploading` file. The store computes
+size and SHA-256 incrementally, retains only the leading bytes needed for
+signature sniffing, and atomically publishes the data and metadata after a
+successful stream. The retired fixed 10 MiB image and 5 MiB text limits are
+not enforced at the application upload boundary. Filesystem capacity,
+deployment quotas, and downstream Provider or model limits remain explicit
+failure conditions. Semantic Planner RPC keeps the original image in the
+prompt input but redacts image data from session event echoes, so a large
+attachment is not duplicated into JSONL control frames.
+
 Pending dependency publication is a wait fact, not an ordinary user blocker.
 Missing handoff, Result Object, workspace state or identity mismatch is exposed
 as a bounded structured materialization diagnostic. Explicit Task resume enters
@@ -1084,11 +1115,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v33 and supports transactional 30→31→32→33 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, and Planner proposal configuration-revision pins for safe replay. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v37 and supports transactional 31→32→33→34→35→36→37 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
-`SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; unsupported Adapters receive only selected previews.
+`SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
-Every Executor response is assessed by Completion Protocol v4 on result deliverability, completion certification and safety disposition. A safe body may be delivered as `partial` and `uncertified` when metadata is missing or malformed, or when a physical transport boundary requires chunking; it cannot certify the Subtask or release downstream work. Runtime stores raw stream, business body and safe projection as immutable Result Objects, streams the safe projection through `result_delivery_available` / `result_chunk` / `result_completed`, and uses edge-scoped ResultReferences for authorized downstream reads. Workspace containment, permission and secret boundaries remain fail-closed. Certified results persist the terminal receipt and candidate commit, then enter `awaiting_integration`; publication later atomically publishes authorized handoffs, artifacts, workspace state and `done`. Correction repairs metadata only and never discards a safe body or repeats the business task.
+Every Executor response is assessed by Completion Protocol v4 on result deliverability, completion certification and safety disposition. A safe body may be delivered as `partial` and `uncertified` when metadata is missing or malformed, or when a physical transport boundary requires chunking; it cannot certify the Subtask or release downstream work. Runtime stores raw stream, business body and safe projection as immutable Result Objects, streams the safe projection through `result_delivery_available` / `result_chunk` / `result_completed`, and uses edge-scoped ResultReferences for authorized downstream reads. Ordinary Workspace and user-space file operations are allowed for Executor work, including report research caches and intermediate output; system-control access, credentials, privilege changes, devices, Docker control-plane access and unsafe ResultReference access remain fail-closed. Certified results persist the terminal receipt and candidate commit, then enter `awaiting_integration`; publication later atomically publishes authorized handoffs, artifacts, workspace state and `done`. Correction repairs metadata only and never discards a safe body or repeats the business task.
 
 Image generation and editing nodes require `deliveryKind: edit`. Certification
 requires at least one changed PNG, JPEG, WebP, or GIF whose extension and

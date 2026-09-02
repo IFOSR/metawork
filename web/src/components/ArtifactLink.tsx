@@ -24,6 +24,27 @@ export function ArtifactLink({
   );
 }
 
+export function ArtifactReferenceLink({
+  artifact,
+  onOpen,
+}: {
+  artifact: ArtifactProjection;
+  onOpen: (artifact: ArtifactProjection) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="artifact-reference-link"
+      data-artifact-reference={artifact.artifactId}
+      onClick={() => onOpen(artifact)}
+      title={`打开预览：${artifact.displayName}`}
+    >
+      <span aria-hidden>↗</span>
+      <span>{artifact.displayName}</span>
+    </button>
+  );
+}
+
 export function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size <= 0) return '0 B';
   if (size < 1024) return `${size} B`;

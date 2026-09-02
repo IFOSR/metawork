@@ -190,6 +190,19 @@ export function App() {
           ? { ...current, taskId, executionTimeline: timeline }
           : current);
       },
+      onArtifacts: (turnId, taskId, artifacts) => {
+        setLiveTurn(current => current && current.id === turnId
+          ? {
+            ...current,
+            taskId,
+            artifactRefs: [...new Set([
+              ...current.artifactRefs,
+              ...artifacts.map(artifact => artifact.relativePath),
+            ])],
+            artifacts: mergeArtifacts(current.artifacts, artifacts),
+          }
+          : current);
+      },
       onFinalAnswer: (_requestId, turnId, lines, completedAt, backgroundWorkPending) => {
         setLiveTurn(current => current && current.id === turnId
           ? {
@@ -484,11 +497,10 @@ export function App() {
         break;
       }
       try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
         const metadata = await httpRef.current.uploadAttachment(
           activeSessionId,
           file.name,
-          bytes,
+          file,
         );
         setPendingAttachments(current => [...current, metadata]);
       } catch (error) {
@@ -732,6 +744,18 @@ function mergeTraceDelta(
     } : {}),
     traceEvents: [...byId.values()].sort((left, right) => left.sequence - right.sequence),
   };
+}
+
+function mergeArtifacts(
+  current: ArtifactProjection[],
+  incoming: ArtifactProjection[],
+): ArtifactProjection[] {
+  const byId = new Map(current.map(artifact => [artifact.artifactId, artifact]));
+  for (const artifact of incoming) byId.set(artifact.artifactId, artifact);
+  return [...byId.values()].sort(
+    (left, right) => left.publishedAt.localeCompare(right.publishedAt)
+      || left.artifactId.localeCompare(right.artifactId),
+  );
 }
 
 function activationMessage(result: WebSessionActivationResult): string | null {

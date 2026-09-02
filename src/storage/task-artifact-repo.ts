@@ -174,6 +174,18 @@ export class TaskArtifactRepo {
     `).run(now, artifactId);
   }
 
+  markPublished(
+    artifactId: string,
+    publishedPath: string,
+    now: string,
+  ): void {
+    this.db.prepare(`
+      UPDATE task_artifacts
+      SET published_path = ?, status = 'published', updated_at = ?
+      WHERE artifact_id = ?
+    `).run(publishedPath, now, artifactId);
+  }
+
   /** 同名文件被新内容覆盖后，旧记录标记为不可用，不再进入用户投影。 */
   markSupersededExcept(
     taskId: string,

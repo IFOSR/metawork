@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/storage/database.js';
-import { createSchema30MigrationContext } from '../../src/storage/migrations.js';
+import {
+  CURRENT_SCHEMA_VERSION,
+  createSchema30MigrationContext,
+} from '../../src/storage/migrations.js';
 
 const cleanup: string[] = [];
 
@@ -22,7 +25,8 @@ describe('runtime database opening', () => {
 
     const db = createDatabase(databasePath);
     try {
-      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 36 });
+      expect(db.prepare('SELECT version FROM schema_version').get())
+        .toEqual({ version: CURRENT_SCHEMA_VERSION });
     } finally {
       db.close();
     }

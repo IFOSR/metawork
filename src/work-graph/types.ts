@@ -18,6 +18,7 @@ export interface WorkGraphDependency {
 export type ContextRef =
   | { kind: 'current_user_input' }
   | { kind: 'interaction'; interactionId: string; side: 'user' | 'assistant' }
+  | { kind: 'artifact'; artifactId: string }
   | { kind: 'task_resource'; locator: string }
   | { kind: 'task_evidence'; evidenceId: string }
   | { kind: 'preference'; preferenceId: string };

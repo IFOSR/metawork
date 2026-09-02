@@ -570,11 +570,63 @@ describe('ManagementServer WebSocket authentication', () => {
       );
       expect(badType.status).toBe(415);
 
+      const legacyOversizedBytes = Buffer.concat([
+        Buffer.from([0xff, 0xd8, 0xff, 0xe1]),
+        Buffer.alloc(10 * 1024 * 1024, 0xff),
+      ]);
+      const largeUpload = await fetch(
+        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=large.jpg`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/octet-stream' },
+          body: legacyOversizedBytes,
+        },
+      );
+      expect(largeUpload.status).toBe(201);
+      await expect(largeUpload.json()).resolves.toMatchObject({
+        kind: 'image',
+        mime: 'image/jpeg',
+        size: legacyOversizedBytes.byteLength,
+      });
+
       const listed = await store.listAttachments('sess_web_abc');
       expect(listed).toHaveLength(1);
     } finally {
       await server.stop();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not misclassify unexpected attachment storage failures as media errors', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      attachmentStore: {
+        saveAttachment: async () => {
+          throw new Error('unused');
+        },
+        saveAttachmentStream: async () => {
+          throw new Error('image storage filesystem unavailable');
+        },
+        readAttachment: async () => null,
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=photo.jpg`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/octet-stream',
+          },
+          body: Buffer.from([0xff, 0xd8, 0xff]),
+        },
+      );
+      expect(response.status).toBe(500);
+    } finally {
+      await server.stop();
     }
   });
 

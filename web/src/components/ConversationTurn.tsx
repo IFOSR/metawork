@@ -1,7 +1,7 @@
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import type { ReactNode } from 'react';
 import { ExecutionNarrative } from './ExecutionNarrative';
-import { MarkdownContent } from './MarkdownContent';
+import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
 import { ArtifactLink } from './ArtifactLink';
 
 export function ConversationTurnView({
@@ -33,15 +33,23 @@ export function ConversationTurnView({
       {isSystemCommand && turn.finalAnswer && (
         <section className="system-command-result">
           <header><span>COMMAND RESULT</span></header>
-          <MarkdownContent value={turn.finalAnswer} />
+          <ArtifactAwareMarkdownContent
+            value={turn.finalAnswer}
+            artifacts={artifacts}
+            onOpenArtifact={onOpenArtifact}
+          />
         </section>
       )}
       {!isSystemCommand && turn.status !== 'running' && turn.finalAnswer && (
         <section className="final-answer">
-          <MarkdownContent value={turn.finalAnswer} />
+          <ArtifactAwareMarkdownContent
+            value={turn.finalAnswer}
+            artifacts={artifacts}
+            onOpenArtifact={onOpenArtifact}
+          />
         </section>
       )}
-      {turn.status !== 'running' && onOpenArtifact && artifacts.length > 0 && (
+      {onOpenArtifact && artifacts.length > 0 && (
         <section className="turn-artifacts" aria-label="任务产物">
           <header><span>ARTIFACTS</span></header>
           <div className="artifact-link-list">

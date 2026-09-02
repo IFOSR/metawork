@@ -98,6 +98,22 @@ describe('PlanningAgent plan schemas', () => {
     }).success).toBe(true);
   });
 
+  it('accepts a stable historical artifact reference without a filesystem path', () => {
+    const valid = outputPlan();
+    const parsed = PlanningAgentPlanSchema.safeParse({
+      ...valid,
+      workGraph: {
+        ...valid.workGraph,
+        subtasks: [{
+          ...valid.workGraph.subtasks[0],
+          contextRefs: [{ kind: 'artifact', artifactId: 'artifact_generated_image_1' }],
+        }],
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it('strictly rejects missing nested fields instead of applying semantic defaults', () => {
     const valid = outputPlan();
     const parsed = PlanningAgentPlanSchema.safeParse({

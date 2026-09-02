@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
 import {
   ImageApiExecutorAdapter,
+  buildImagePrompt,
   type ImageApiRunner,
 } from '../../src/executor/image-api-executor-adapter.js';
 
@@ -50,6 +51,28 @@ describe('ImageApiExecutorAdapter', () => {
     expect(run.mock.calls[0]![0].prompt).toContain('操作类型：图片生成');
     expect(run.mock.calls[0]![0].prompt).not.toContain('fingerprint');
     expect(run.mock.calls[0]![0].prompt).not.toContain('completion:v4');
+  });
+
+  it('removes NUL characters before the prompt reaches a child process environment', () => {
+    const value = {
+      ...input(['image-generation']),
+      context: {
+        ...input(['image-generation']).context,
+        selectedEvidence: [{
+          ref: { kind: 'current_user_input' },
+          evidenceId: 'evidence-1',
+          title: 'binary attachment',
+          content: 'before\u0000after',
+          truncated: false,
+        }],
+      },
+    } as ExecutorInput;
+
+    const prompt = buildImagePrompt(value);
+
+    expect(prompt).toBeTruthy();
+    expect(prompt).not.toContain('\u0000');
+    expect(prompt).toContain('beforeafter');
   });
 });
 

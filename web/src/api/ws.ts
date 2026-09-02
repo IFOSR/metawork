@@ -7,6 +7,7 @@ import type {
   ConfigurationRuntimeState,
 } from './types';
 import type {
+  ArtifactProjection,
   ConversationWorkspaceProjection,
   ConversationTurnProjection,
   WebSessionMetadata,
@@ -68,6 +69,7 @@ export interface WsHandlers {
   ) => void;
   onOutput?: (lines: string[], from: number) => void;
   onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
+  onArtifacts?: (turnId: string, taskId: string, artifacts: ArtifactProjection[]) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
   onTraceDelta?: (
     turnId: string,
@@ -188,6 +190,9 @@ export class WsClient {
           break;
         case 'execution':
           this.handlers.onExecution?.(message.taskId, message.timeline);
+          break;
+        case 'artifacts':
+          this.handlers.onArtifacts?.(message.turnId, message.taskId, message.artifacts);
           break;
         case 'trace_snapshot':
           this.handlers.onTraceSnapshot?.(message.trace);

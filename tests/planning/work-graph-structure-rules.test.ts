@@ -132,6 +132,17 @@ describe('Work Graph v7 structural rules', () => {
     ]));
   });
 
+  it('deduplicates historical artifact references by stable artifact identity', () => {
+    const invalid = subtask('a');
+    invalid.contextRefs = [
+      { kind: 'artifact', artifactId: 'artifact_1' },
+      { kind: 'artifact', artifactId: 'artifact_1' },
+    ];
+
+    expect(validateWorkGraph({ subtasks: [invalid] }).map(item => item.code))
+      .toContain('duplicate_context_ref');
+  });
+
   it('rejects unknown dependencies and cycles', () => {
     expect(validateWorkGraph({ subtasks: [subtask('a', [edge('missing')])] }).map(item => item.code))
       .toEqual(expect.arrayContaining(['missing_entry_node', 'unknown_dependency']));

@@ -158,13 +158,17 @@ export function buildImagePrompt(input: ExecutorInput): string {
     .map(item => item.content.trim())
     .filter(Boolean)
     .join('\n');
-  return [
+  return sanitizeImagePrompt([
     `操作类型：${operation}`,
     `操作目标：${current.goal.trim()}`,
     acceptance ? `验收要求：\n${acceptance}` : '',
     handoffText ? `上游明确要求：\n${handoffText}` : '',
     evidence ? `必要参考信息：\n${evidence}` : '',
-  ].filter(Boolean).join('\n\n').slice(0, 32 * 1024);
+  ].filter(Boolean).join('\n\n')).slice(0, 32 * 1024);
+}
+
+function sanitizeImagePrompt(value: string): string {
+  return value.replace(/\u0000/gu, '');
 }
 
 function failure(message: string, code: string, startedAt: number): ExecutorResult {

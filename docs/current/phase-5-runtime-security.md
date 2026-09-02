@@ -96,7 +96,7 @@ projected onto classes that were not checked.
 ## Mount and persistence contract
 
 - Worktree mode starts the child with `cwd` set to `/data/metaclaw/workspace-store/workspaces/<task>/<generation>/<subtask>` and does not mount a second workspace. Canonical Codex uses `danger-full-access` in this mode so its tools operate directly in that worktree without a nested CLI sandbox.
-- Docker mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs`, `/handoffs` and a Git worktree's `/workspace/.git` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
+- Native worktree mode does not jail the Executor to `/workspace`: ordinary user-space files outside the managed Workspace may be read or written for research downloads, caches and intermediate output. Docker compatibility mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs`, `/handoffs` and a Git worktree's `/workspace/.git` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
 - Canonical Codex Docker attempts also run their own `workspace-write` sandbox with fail-closed non-interactive approval. Only the pinned canonical Codex image receives `seccomp=unconfined` so that nested user namespaces work; every other Docker restriction remains active, and custom images cannot request this exception.
 - Workspaces persist under `${METACLAW_HOME}/workspace-store/workspaces/<task>/<generation>/<subtask>`; only the child process or compatibility container is disposable.
 - Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
@@ -104,13 +104,24 @@ projected onto classes that were not checked.
 
 ## Runtime permission and audit flow
 
-Default profile operations do not request permission. An Executor calls `request_capability` only for a concrete out-of-profile operation. Runtime canonicalizes and persists the request, pauses the attempt, checkpoints the now-quiescent workspace, and submits `permission_requested` to the durable Kernel workflow. The Kernel returns grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are attempt-bound and budgeted; user authorization is a durable fact from `/permission approve|deny <requestId>`, a gateway action, or a precise Planner interpretation.
+Default profile operations do not request permission. In Native worktree mode,
+ordinary Workspace and user-space file operations are part of normal Executor
+work rather than capability escalation. An Executor calls `request_capability`
+only for a concrete controlled operation such as system-control access,
+credential use, privilege changes, device or Docker control-plane access, or a
+high-impact external effect. Runtime canonicalizes and persists the request,
+pauses the attempt, checkpoints the now-quiescent workspace, and submits
+`permission_requested` to the durable Kernel workflow. The Kernel returns
+grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are
+attempt-bound and budgeted; user authorization is a durable fact from
+`/permission approve|deny <requestId>`, a gateway action, or a precise Planner
+interpretation.
 
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree demo attempts use the Runtime's normal network namespace. No profile rule permits secrets, external mutation or repository promotion.
+The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants when a controlled resource claim is required. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree attempts use the Runtime's normal network namespace. No profile rule permits secrets, privilege changes, system-control resources, Docker/host control sockets, devices, host namespaces, external mutation or repository promotion.
 
 A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
 
-This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
+This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Native user-space file authority is intentionally broad and follows the MetaWork process identity. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
 
 ## Verification
 

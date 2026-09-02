@@ -1574,6 +1574,7 @@ export class ConversationSession {
     return buildEligibleContextRefKeys({
       db: this.deps.db ?? null,
       sessionId: this.deps.plannerSessionId,
+      conversationId: this.deps.conversationId,
       refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
       targetTask: plan.task.taskId
         ? this.deps.runtimePort.queries.findTask(plan.task.taskId)

@@ -85,11 +85,11 @@ export class CodexCliDriver implements HarnessDriver {
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     return {
       command: 'codex',
-      // The attempt worktree is the trust boundary; codex still defaults to a
-      // read-only sandbox for `exec`, so workspace writes must be explicit.
+      // Native attempts are trusted user-space processes. Runtime still gates
+      // system-control and high-impact external capabilities separately.
       args: buildCodexNonInteractiveArgs(input.prompt, {
         json: true,
-        sandbox: input.responseOnly ? 'read-only' : 'workspace-write',
+        sandbox: input.responseOnly ? 'read-only' : 'danger-full-access',
         ...(input.providerRef && input.modelId
           ? { providerRef: input.providerRef, modelId: input.modelId }
           : {}),

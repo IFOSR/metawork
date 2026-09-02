@@ -62,6 +62,10 @@ const ContextRefSchema = z.union([
     interactionId: z.string().trim().min(1),
     side: z.enum(['user', 'assistant']),
   }).strict(),
+  z.object({
+    kind: z.literal('artifact'),
+    artifactId: z.string().trim().min(1).max(240),
+  }).strict(),
   z.object({ kind: z.literal('task_resource'), locator: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('task_evidence'), evidenceId: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('preference'), preferenceId: z.string().trim().min(1) }).strict(),
@@ -112,7 +116,7 @@ const SubtaskSchema = z.object({
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_IDS)).min(1),
   executorBindings: z.array(ExecutorBindingSchema).min(1).max(32),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
-    'edit: the subtask creates or modifies files in the workspace; report: read-only analysis or answer that must not change the workspace',
+    'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
   ),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),

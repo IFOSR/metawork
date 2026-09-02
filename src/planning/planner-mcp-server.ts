@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { lstatSync, readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -8,10 +9,12 @@ import type {
   ConfigurationRoutingCatalog,
 } from '../routing/types.js';
 import type { PlannerExecutorCapabilityManual } from '../configuration/types.js';
+import { resolvePreviewKind } from '../delivery/user-artifact-types.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { buildPlannerConfigurationView } from '../configuration/projections.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { truncateText } from '../utils/truncate-text.js';
+import { hashContent } from '../storage/task-artifact-repo.js';
 
 const MAX_RESULTS = 20;
 const DEFAULT_RESULTS = 10;
@@ -25,6 +28,7 @@ export class PlannerDataReader {
     private readonly getRoutingCatalog: () => ConfigurationRoutingCatalog,
     private readonly conversationId = sessionId,
     private readonly getExecutorCapabilityManuals: () => readonly PlannerExecutorCapabilityManual[] = () => [],
+    private readonly accountId = 'local-default',
   ) {}
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -115,6 +119,58 @@ export class PlannerDataReader {
     const recentPlanningDecisions = decisions
       .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
       .slice(-Math.min(5, bounded));
+    const artifacts = this.db.prepare(`
+      SELECT a.artifact_id, a.task_id, a.subtask_id, a.display_name,
+             a.relative_path, a.media_type, a.preview_kind, a.content_hash,
+             a.byte_length, a.status, a.published_path, a.created_at,
+             t.conversation_id, t.workspace_id
+      FROM task_artifacts a
+      JOIN tasks t ON t.id = a.task_id
+      WHERE t.conversation_id = ? AND a.account_id = ?
+      ORDER BY a.created_at DESC, a.artifact_id DESC
+      LIMIT ?
+    `).all(this.conversationId, this.accountId, bounded) as Array<Record<string, unknown>>;
+    const artifactFacts = artifacts.reverse().map(row => ({
+      artifactId: String(row.artifact_id),
+      taskId: String(row.task_id),
+      subtaskId: row.subtask_id ? String(row.subtask_id) : null,
+      displayName: truncateText(String(row.display_name ?? ''), 240),
+      relativePath: truncateText(String(row.relative_path ?? ''), 320),
+      mediaType: String(row.media_type ?? 'application/octet-stream'),
+      previewKind: resolvePreviewKind(
+        String(row.preview_kind ?? 'unsupported'),
+        String(row.media_type ?? 'application/octet-stream'),
+      ),
+      contentHash: String(row.content_hash ?? ''),
+      byteLength: Number(row.byte_length ?? 0),
+      availability: row.status === 'published'
+        && isMaterializableArtifact(
+          String(row.published_path ?? ''),
+          String(row.content_hash ?? ''),
+        )
+        ? 'available'
+        : 'unavailable',
+      sourceLabel: 'Executor result artifact',
+      workspaceId: row.workspace_id ? String(row.workspace_id) : null,
+      createdAt: row.created_at,
+    }));
+    const artifactIdsByTask = new Map<string, string[]>();
+    for (const artifact of artifactFacts) {
+      const ids = artifactIdsByTask.get(artifact.taskId) ?? [];
+      ids.push(artifact.artifactId);
+      artifactIdsByTask.set(artifact.taskId, ids);
+    }
+    const executorResults = interactions
+      .filter(row => row.executor_used && String(row.system_output ?? '').trim())
+      .reverse()
+      .map(row => ({
+        resultId: String(row.id),
+        taskId: row.task_id ? String(row.task_id) : null,
+        summary: truncateText(String(row.system_output ?? ''), 500),
+        contentHash: null,
+        createdAt: row.created_at,
+        artifactIds: row.task_id ? (artifactIdsByTask.get(String(row.task_id)) ?? []) : [],
+      }));
     return {
       sessionId: this.sessionId,
       interactions: interactions.reverse().map(row => ({
@@ -145,6 +201,8 @@ export class PlannerDataReader {
           createdAt: row.created_at,
         };
       }),
+      artifacts: artifactFacts,
+      executorResults,
     };
   }
 
@@ -374,6 +432,7 @@ export async function runPlannerMcpServer(): Promise<void> {
       () => routingCatalog,
       conversationId,
       () => plannerView.executorCapabilityManuals ?? [],
+      process.env.METACLAW_ACCOUNT_ID ?? 'local-default',
     ),
   );
   await server.connect(new StdioServerTransport());
@@ -405,6 +464,20 @@ export async function loadPlannerConfigurationSnapshot(
     throw new Error('METACLAW_CONFIGURATION_REVISION is required');
   }
   return repository.readSnapshot(normalizedRevisionId);
+}
+
+function isMaterializableArtifact(publishedPath: string, expectedHash: string): boolean {
+  if (!publishedPath || !expectedHash) return false;
+  try {
+    const info = lstatSync(publishedPath, { throwIfNoEntry: false });
+    return Boolean(
+      info?.isFile()
+      && !info.isSymbolicLink()
+      && hashContent(readFileSync(publishedPath)) === expectedHash,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function toolResult(value: unknown) {

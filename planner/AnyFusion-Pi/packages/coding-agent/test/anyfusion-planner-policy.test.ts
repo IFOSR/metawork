@@ -6,6 +6,7 @@ import {
 	PLANNER_ACTIVE_TOOL_NAMES,
 	PLANNER_ALLOWED_BUILTIN_TOOLS,
 	plannerRpcCommandError,
+	redactPlannerImageData,
 	validatePlannerInvocation,
 } from "../src/anyfusion/planner-policy.ts";
 
@@ -103,5 +104,31 @@ describe("AnyFusion Planner policy", () => {
 		expect(parsed.tools).not.toContain("bash");
 		expect(parsed.tools).not.toContain("edit");
 		expect(parsed.tools).not.toContain("write");
+	});
+
+	it("redacts image payloads from semantic RPC event echoes", () => {
+		const event = {
+			type: "agent_end",
+			messages: [{
+				role: "user",
+				content: [{
+					type: "image",
+					data: "a".repeat(32),
+					mimeType: "image/jpeg",
+				}],
+			}],
+		};
+
+		expect(redactPlannerImageData(event)).toEqual({
+			type: "agent_end",
+			messages: [{
+				role: "user",
+				content: [{
+					type: "image",
+					data: "",
+					mimeType: "image/jpeg",
+				}],
+			}],
+		});
 	});
 });

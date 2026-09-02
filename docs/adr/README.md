@@ -77,6 +77,13 @@ amends the foreground-surface implementation evidence in ADR-0031 without
 changing ADR-0031's AccountRuntime, Conversation, Gateway, identity, or
 account-isolation domain ownership.
 
+ADR-0038 governs Planner/MetaWork/Executor context continuity. Pi session
+history remains the semantic continuity owner; the existing Planner MCP
+Context Bridge provides bounded facts; `artifact` ContextRefs are the formal
+historical-result input; MetaWork validates ownership, availability, source
+regularity and content hash; Runtime materializes only authorized inputs; and
+Executors never inspect Conversation history or guess artifact paths.
+
 ADR-0035 makes Workspace a first-class Account-scoped product container with
 an immutable `workspaceId`. Clients select a Workspace before discovering or
 creating Conversations; `/workspace` changes that Client selection and never
@@ -109,6 +116,7 @@ summaries.
 | Future remote Executor transport | [ADR-0029](0029-executor-transport-and-a2a-boundary.md) | A2A transport-only boundary, authorized envelope and explicit deferral from the current release |
 | Native release trust and upgrade transaction | [ADR-0030](0030-native-release-trust-and-upgrade-transaction.md) | Signed manifest trust, update locking, quiescence, database backup/migration, activation, health checks and rollback |
 | Multi-Conversation Task parallelism | [ADR-0037](0037-multi-conversation-task-parallelism.md) | Conversation slots, same-Conversation queueing, cross-Conversation scheduling, immutable routing, recovery isolation and bounded summaries |
+| Planner/MetaWork/Executor context continuity | [ADR-0038](0038-planner-metawork-executor-context-bridge.md) | Pi semantic continuity, bounded Context Bridge facts, historical `artifact` refs, ownership/status/hash validation and attempt-local materialization |
 | Single-Task concurrency and Git publication | [ADR-0025](0025-single-task-concurrency-and-git-publication.md) | Runnable frontier, dispatch batches, attempt supervision, Git workspace ownership, publication gate and conflict repair, extended by ADR-0037 across top-level Tasks |
 | Phase 6 reliability closure | [ADR-0026](0026-phase-6-single-task-reliability-closure.md) | Task termination and multi-attempt recovery/completion fences, extended by ADR-0037 to multiple Conversation-owned Tasks |
 | Resource partitions and sandboxed attempts | [ADR-0024](0024-resource-partition-sandbox-and-runtime-elevation.md) | Partition identity/conflicts, persistent workspace, Docker attempt boundary, leases, elevation and recovery |

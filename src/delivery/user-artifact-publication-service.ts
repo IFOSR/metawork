@@ -171,7 +171,11 @@ export class UserArtifactPublicationService {
       sourceRelativePath,
       contentHash,
     );
-    if (existing && existsSync(existing.publishedPath)) {
+    if (
+      existing
+      && existing.status === 'published'
+      && await isPublishedArtifactIntact(existing.publishedPath, contentHash)
+    ) {
       return this.taskArtifactRepo.toProjection(existing);
     }
 
@@ -188,27 +192,32 @@ export class UserArtifactPublicationService {
       throw error;
     }
 
-    const record = this.taskArtifactRepo.insert({
-      accountId: input.accountId || this.deps.accountId || 'local-default',
-      taskId: input.taskId,
-      generationId: input.generationId,
-      subtaskId: input.subtaskId,
-      publicationId: input.publicationId,
-      displayName: basename(sourceRelativePath),
-      relativePath: sourceRelativePath,
-      publishedPath: targetPath,
-      mediaType: mediaTypeForRelativePath(sourceRelativePath),
-      previewKind: classifyPreviewKind(sourceRelativePath),
-      contentHash,
-      byteLength: bytes.byteLength,
-      status: 'published',
-      now: this.now(),
-    });
+    const now = this.now();
+    const record = existing
+      ? (this.taskArtifactRepo.markPublished(existing.artifactId, targetPath, now),
+        this.taskArtifactRepo.findById(existing.artifactId))
+      : this.taskArtifactRepo.insert({
+          accountId: input.accountId || this.deps.accountId || 'local-default',
+          taskId: input.taskId,
+          generationId: input.generationId,
+          subtaskId: input.subtaskId,
+          publicationId: input.publicationId,
+          displayName: basename(sourceRelativePath),
+          relativePath: sourceRelativePath,
+          publishedPath: targetPath,
+          mediaType: mediaTypeForRelativePath(sourceRelativePath),
+          previewKind: classifyPreviewKind(sourceRelativePath),
+          contentHash,
+          byteLength: bytes.byteLength,
+          status: 'published',
+          now,
+        });
+    if (!record) throw new Error(`artifact record disappeared: ${sourceRelativePath}`);
     this.taskArtifactRepo.markSupersededExcept(
       input.taskId,
       sourceRelativePath,
       record.artifactId,
-      this.now(),
+      now,
     );
     return this.taskArtifactRepo.toProjection(record);
   }
@@ -227,5 +236,18 @@ export class UserArtifactPublicationService {
       throw new Error(`artifact path escapes the workspace root: ${relativePath}`);
     }
     return resolved;
+  }
+}
+
+async function isPublishedArtifactIntact(
+  publishedPath: string,
+  expectedHash: string,
+): Promise<boolean> {
+  try {
+    const info = await lstat(publishedPath);
+    if (info.isSymbolicLink() || !info.isFile()) return false;
+    return hashContent(await readFile(publishedPath)) === expectedHash;
+  } catch {
+    return false;
   }
 }

@@ -1,10 +1,10 @@
 import type Database from 'better-sqlite3';
+import { lstatSync, readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import type { Task } from '../core/types.js';
 import type { ContextRef } from './types.js';
 import { contextRefKey } from './validation.js';
-
-const EXPLICIT_QUOTE_MIN_LENGTH = 12;
-const RECENT_INTERACTION_LIMIT = 20;
+import { hashContent } from '../storage/task-artifact-repo.js';
 
 interface InteractionReferenceRow {
   id: string;
@@ -16,6 +16,9 @@ interface InteractionReferenceRow {
 export function buildEligibleContextRefKeys(input: {
   db: Database.Database | null;
   sessionId: string;
+  conversationId?: string;
+  accountId?: string;
+  workspaceId?: string;
   refs: ContextRef[];
   targetTask: Task | null;
   userInput: string;
@@ -29,6 +32,18 @@ export function buildEligibleContextRefKeys(input: {
     if (ref.kind === 'task_resource') {
       if (input.targetTask?.resources.includes(ref.locator)
         || (!input.targetTask && input.userInput.includes(ref.locator))) {
+        eligible.add(contextRefKey(ref));
+      }
+      continue;
+    }
+    if (ref.kind === 'artifact') {
+      if (input.db && isEligibleArtifactRef({
+        db: input.db,
+        artifactId: ref.artifactId,
+        accountId: input.accountId ?? input.targetTask?.accountId,
+        conversationId: input.conversationId ?? input.targetTask?.conversationId,
+        workspaceId: input.workspaceId ?? input.targetTask?.workspaceId,
+      })) {
         eligible.add(contextRefKey(ref));
       }
       continue;
@@ -77,33 +92,54 @@ export function isEligibleInteractionRef(input: {
   if (!row || row.session_id !== input.sessionId) return false;
   if (input.targetTaskId && row.task_id !== input.targetTaskId) return false;
   if (input.ref.side === 'user') return true;
-
-  if (input.userInput.includes(input.ref.interactionId)) return true;
-
-  const recentRows = input.db.prepare(`
-    SELECT id, task_id, session_id, system_output
-    FROM interactions
-    WHERE session_id = ? AND TRIM(COALESCE(system_output, '')) <> ''
-    ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(input.sessionId, RECENT_INTERACTION_LIMIT) as InteractionReferenceRow[];
-  if (!recentRows.some(candidate => candidate.id === row.id)) return false;
-
-  const normalizedInput = normalize(input.userInput);
-  const matches = recentRows.filter(candidate => {
-    if (input.targetTaskId && candidate.task_id !== input.targetTaskId) return false;
-    return containsExplicitExcerpt(normalizedInput, normalize(candidate.system_output));
-  });
-  return matches.length === 1 && matches[0]!.id === row.id;
+  return row.system_output.trim().length > 0;
 }
 
-function containsExplicitExcerpt(normalizedInput: string, normalizedOutput: string): boolean {
-  for (let index = 0; index + EXPLICIT_QUOTE_MIN_LENGTH <= normalizedOutput.length; index += EXPLICIT_QUOTE_MIN_LENGTH) {
-    if (normalizedInput.includes(normalizedOutput.slice(index, index + EXPLICIT_QUOTE_MIN_LENGTH))) return true;
+function isEligibleArtifactRef(input: {
+  db: Database.Database;
+  artifactId: string;
+  accountId?: string;
+  conversationId?: string;
+  workspaceId?: string;
+}): boolean {
+  const row = input.db.prepare(`
+    SELECT a.artifact_id, a.account_id, a.status,
+           a.published_path, a.content_hash,
+           t.conversation_id, t.workspace_id
+    FROM task_artifacts a
+    JOIN tasks t ON t.id = a.task_id
+    WHERE a.artifact_id = ?
+  `).get(input.artifactId) as {
+    artifact_id: string;
+    account_id: string;
+    status: string;
+    published_path: string;
+    content_hash: string;
+    conversation_id: string | null;
+    workspace_id: string | null;
+  } | undefined;
+  if (
+    !row
+    || row.status !== 'published'
+    || !row.content_hash
+    || !isAbsolute(row.published_path)
+    || !isMaterializableArtifact(row.published_path, row.content_hash)
+  ) return false;
+  if (input.accountId && row.account_id !== input.accountId) return false;
+  if (input.conversationId && row.conversation_id !== input.conversationId) return false;
+  if (input.workspaceId && row.workspace_id !== input.workspaceId) return false;
+  return true;
+}
+
+function isMaterializableArtifact(publishedPath: string, expectedHash: string): boolean {
+  try {
+    const info = lstatSync(publishedPath, { throwIfNoEntry: false });
+    return Boolean(
+      info?.isFile()
+      && !info.isSymbolicLink()
+      && hashContent(readFileSync(publishedPath)) === expectedHash,
+    );
+  } catch {
+    return false;
   }
-  return false;
-}
-
-function normalize(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
 }

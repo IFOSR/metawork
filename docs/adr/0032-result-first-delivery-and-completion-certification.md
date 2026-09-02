@@ -53,8 +53,11 @@ an invalid business result.
 
 File delivery is separate from text delivery. An uncertain workspace delta may
 hold file publication and file handoff, but must not suppress an independently
-safe text result. Path escape, unauthorized writes, secret exposure, unsafe
-internal data, and unauthorized ResultReference access remain fail-closed.
+safe text result. Ordinary Workspace and user-space file writes are not unsafe
+merely because a Subtask uses `report` delivery. System-control access,
+credential exposure, privilege changes, device or Docker control-plane access,
+unsafe internal data, and unauthorized ResultReference access remain
+fail-closed.
 
 ## Result Objects And Handoffs
 

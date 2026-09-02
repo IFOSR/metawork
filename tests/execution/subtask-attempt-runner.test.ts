@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
@@ -358,6 +358,50 @@ describe('SubtaskAttemptRunner', () => {
     }));
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
       state: 'idle', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+    });
+  });
+
+  it('publishes a report that persists research files in the task workspace', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding!.workspacePath, 'research-notes.html'),
+        '<!doctype html><html><body>research notes</body></html>',
+      );
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_report_workspace',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: validResponse(),
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_report_workspace',
+      executionId: 'exec_report_workspace',
+      taskId: 'task_phase2',
+      subtaskId: setupResult.a.id,
+      ...attemptIdentity(),
+      executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: 'completed',
+      attemptId: 'attempt_report_workspace',
+    });
+    expect(setupResult.db.prepare(`
+      SELECT status FROM workspace_publications WHERE source_attempt_id = ?
+    `).get('attempt_report_workspace')).toEqual({ status: 'pending' });
+    expect(setupResult.db.prepare(`
+      SELECT verification_json FROM executor_attempt_receipts WHERE attempt_id = ?
+    `).get('attempt_report_workspace')).toMatchObject({
+      verification_json: expect.not.stringContaining('completion_report_workspace_changed'),
     });
   });
 
@@ -1159,6 +1203,149 @@ describe('SubtaskAttemptRunner', () => {
     expect(outcome).toMatchObject({ outcome: 'completed' });
     expect(permissionResult).toMatchObject({ status: 'granted' });
     expect(permissionResult?.grantId).toMatch(/^permission_grant_/u);
+  });
+
+  it('materializes image task resources into the image Executor inputs directory', async () => {
+    const setupResult = setup(validResponse());
+    const resourceRoot = `/tmp/metawork-image-resource-${randomUUID()}`;
+    const imagePath = join(resourceRoot, 'black-sausage.jpg');
+    mkdirSync(resourceRoot, { recursive: true });
+    writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x10, 0x00, 0xff]));
+    setupResult.db.prepare('UPDATE tasks SET resources_json = ? WHERE id = ?')
+      .run(JSON.stringify([imagePath]), 'task_phase2');
+    setupResult.a.requiredCapabilities = ['image-editing'];
+    setupResult.a.contextRefs = [{ kind: 'task_resource', locator: imagePath }];
+    setupResult.subtaskRepo.upsert(setupResult.a);
+    let inputFiles: string[] = [];
+    let inputBytes: Buffer | null = null;
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      const inputsPath = input.executorInput.executionBinding!.inputsPath;
+      inputFiles = readdirSync(inputsPath);
+      inputBytes = readFileSync(join(inputsPath, inputFiles[0]!));
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_image_resource',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: validResponse(),
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+
+    try {
+      await setupResult.runner.run({
+        attemptId: 'attempt_image_resource',
+        executionId: 'exec_image_resource',
+        taskId: 'task_phase2',
+        subtaskId: setupResult.a.id,
+        ...attemptIdentity(),
+        executionMode: 'fresh',
+        defaultResourceGrant: setupResult.defaultResourceGrant,
+      });
+
+      expect(inputFiles).toHaveLength(1);
+      expect(inputFiles[0]).toMatch(/\.jpg$/u);
+      expect(inputBytes).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x10, 0x00, 0xff]));
+    } finally {
+      rmSync(resourceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('combines a historical artifact and current task image resource without exposing the published path', async () => {
+    const setupResult = setup(validResponse());
+    const resourceRoot = `/tmp/metawork-image-context-${randomUUID()}`;
+    const currentImagePath = join(resourceRoot, 'current-reference.jpg');
+    const historicalImagePath = join(resourceRoot, 'historical-output.jpg');
+    mkdirSync(resourceRoot, { recursive: true });
+    writeFileSync(currentImagePath, Buffer.from([0xff, 0xd8, 0xff, 0x10]));
+    writeFileSync(historicalImagePath, Buffer.from([0xff, 0xd8, 0xff, 0x20]));
+    setupResult.db.prepare(`
+      UPDATE tasks
+      SET account_id = 'local-default',
+          conversation_id = 'conversation-image-context',
+          workspace_id = 'workspace-image-context'
+      WHERE id = 'task_phase2'
+    `).run();
+    setupResult.db.prepare('UPDATE tasks SET resources_json = ? WHERE id = ?')
+      .run(JSON.stringify([currentImagePath]), 'task_phase2');
+    setupResult.db.prepare(`
+      INSERT INTO task_artifacts (
+        artifact_id, account_id, task_id, generation_id, subtask_id,
+        publication_id, display_name, relative_path, published_path,
+        media_type, preview_kind, content_hash, byte_length, status,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+    `).run(
+      'artifact-historical-output',
+      'local-default',
+      'task_phase2',
+      'generation-previous',
+      'subtask-previous',
+      'publication-previous',
+      'historical-output.jpg',
+      'metaclaw-tasks/previous/historical-output.jpg',
+      historicalImagePath,
+      'image/jpeg',
+      'image',
+      'sha256:placeholder',
+      4,
+      '2026-08-31T00:00:00.000Z',
+      '2026-08-31T00:00:00.000Z',
+    );
+    const historicalHash = `sha256:${createHash('sha256').update(readFileSync(historicalImagePath)).digest('hex')}`;
+    setupResult.db.prepare('UPDATE task_artifacts SET content_hash = ? WHERE artifact_id = ?')
+      .run(historicalHash, 'artifact-historical-output');
+    setupResult.a.requiredCapabilities = ['image-editing'];
+    setupResult.a.contextRefs = [
+      { kind: 'artifact', artifactId: 'artifact-historical-output' },
+      { kind: 'task_resource', locator: currentImagePath },
+    ];
+    setupResult.subtaskRepo.upsert(setupResult.a);
+    let inputFiles: string[] = [];
+    let inputBytes: Buffer[] = [];
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      const inputsPath = input.executorInput.executionBinding!.inputsPath;
+      inputFiles = readdirSync(inputsPath).sort();
+      inputBytes = inputFiles.map(name => readFileSync(join(inputsPath, name)));
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_image_context',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: validResponse(),
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+
+    try {
+      await setupResult.runner.run({
+        attemptId: 'attempt_image_context',
+        executionId: 'exec_image_context',
+        taskId: 'task_phase2',
+        subtaskId: setupResult.a.id,
+        ...attemptIdentity(),
+        executionMode: 'fresh',
+        defaultResourceGrant: setupResult.defaultResourceGrant,
+      });
+
+      expect(inputFiles).toEqual([
+        'input-01-historical-output.jpg',
+        'input-02-current-reference.jpg',
+      ]);
+      expect(inputBytes).toEqual([
+        Buffer.from([0xff, 0xd8, 0xff, 0x20]),
+        Buffer.from([0xff, 0xd8, 0xff, 0x10]),
+      ]);
+      expect(JSON.stringify(inputFiles)).not.toContain(historicalImagePath);
+    } finally {
+      rmSync(resourceRoot, { recursive: true, force: true });
+    }
   });
 
   it('wires public network rules only for the public-web-research AgentClass profile', async () => {

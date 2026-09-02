@@ -1091,6 +1091,68 @@ describe('WebGatewaySessionRuntime', () => {
     expect(artifactProjectionCount).toBe(1);
   });
 
+  it('streams newly published artifacts to the active turn', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    const artifact = {
+      artifactId: 'artifact_live',
+      taskId: 'task_live',
+      publicationId: 'publication_live',
+      displayName: '调研报告.md',
+      relativePath: 'docs/调研报告.md',
+      mediaType: 'text/markdown; charset=utf-8',
+      previewKind: 'markdown' as const,
+      previewable: true,
+      byteLength: 128,
+      contentHash: 'sha256:live',
+      publishedAt: '2026-08-24T01:00:00.000Z',
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+      projectTaskArtifacts: taskId => taskId === artifact.taskId ? [artifact] : [],
+    });
+    const events: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => events.push(event));
+
+    await attachBrowser(runtime);
+    listener!(turnStartedEvent('event_started', 1, 'req_live', 'turn_live'));
+    listener!({
+      ...traceDeltaEvent('event_trace', 2, 'turn_live'),
+      requestId: 'req_live',
+      payload: {
+        turnId: 'turn_live',
+        status: 'running',
+        events: [{
+          id: 'trace_live',
+          sequence: 1,
+          kind: 'execution',
+          title: '执行中',
+          summary: '已生成调研报告',
+          details: { taskId: artifact.taskId },
+          taskId: artifact.taskId,
+          occurredAt: '2026-08-24T01:00:00.000Z',
+        }],
+      },
+    });
+
+    expect(events).toContainEqual({
+      type: 'artifacts',
+      turnId: 'turn_live',
+      taskId: artifact.taskId,
+      artifacts: [artifact],
+    });
+  });
+
   it('streams and reassembles result chunks before the terminal answer', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
     const projected: unknown[] = [];

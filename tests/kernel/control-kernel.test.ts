@@ -1267,9 +1267,9 @@ describe('ControlKernel', () => {
       bindingFingerprint: codexFingerprint,
       contract: { schemaVersion: 4 },
       violations: [{
-        code: 'completion_report_workspace_changed',
-        path: 'workspaceDelta',
-        message: 'report changed the workspace',
+        code: 'completion_artifact_invalid',
+        path: 'artifacts',
+        message: 'artifact escaped the authorized publication boundary',
       }],
       receiptCount: 1,
       responseBytes: 100,

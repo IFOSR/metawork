@@ -34,7 +34,7 @@ retained only during bounded automatic Kernel/Planner review; waiting for a user
 or replan checkpoints the workspace, terminates the runtime instance and
 releases active leases.
 
-The original repository, Task evidence and dependency inputs are read-only. The private workspace and `/tmp` are writable. Git executions use a MetaClaw-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
+The original repository, Task evidence and dependency inputs are read-only sources for reproducibility. The private workspace and `/tmp` are writable, and Native worktree attempts may also read and write ordinary user-space paths outside the managed Workspace when the Executor needs caches, downloaded pages, generated files or other intermediate material. Git executions use a MetaWork-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
 
 Docker compatibility attempt containers are non-root with read-only root
 filesystem, dropped Linux capabilities, no-new-privileges, bounded
@@ -44,22 +44,25 @@ not receive a Docker Engine endpoint. The trusted Runtime uses the existing
 Docker Engine adapter only when the compatibility backend is selected.
 
 The generic lifecycle seam is named `AttemptExecutionBackend`. Worktree is a
-trusted process backend, not a security sandbox. The word sandbox is reserved
-for the Docker container boundary, Codex's nested sandbox, and explicit sandbox
-security policy. Schema-v30 physical names such as `attempt_sandboxes` and the
-persisted `sandbox_lost` event remain unchanged for durable compatibility.
+trusted process backend, not a security sandbox. Native execution therefore
+does not impose a Workspace-only filesystem jail: ordinary user-space file
+operations are allowed subject to the operating-system identity of the
+MetaWork process. The word sandbox is reserved for the Docker container
+boundary, Codex's nested sandbox, and explicit sandbox security policy.
+Schema-v30 physical names such as `attempt_sandboxes` and the persisted
+`sandbox_lost` event remain unchanged for durable compatibility.
 
-Provider credentials also remain in the trusted Runtime. Each attempt receives only a random attempt-scoped token and a fixed internal model-gateway URL; the gateway binds the token to the configured provider endpoint and process lifetime. In worktree mode canonical Codex uses `danger-full-access` inside the already-trusted Runtime process, so there is no second CLI sandbox beyond the managed worktree boundary. Docker compatibility attempts keep Codex's nested `workspace-write` sandbox and non-interactive fail-closed approval policy. Because that nested Linux sandbox requires user-namespace syscalls, the Docker adapter may add `seccomp=unconfined` only for the pinned canonical Codex attempt image; non-root UID, read-only rootfs, dropped capabilities, no-new-privileges, internal networking and all mount boundaries remain mandatory. No custom image inherits this exception.
+Provider credentials also remain in the trusted Runtime. Each attempt receives only a random attempt-scoped token and a fixed internal model-gateway URL; the gateway binds the token to the configured provider endpoint and process lifetime. In worktree mode canonical Codex uses `danger-full-access` inside the already-trusted Runtime process, so it can perform ordinary user-space operations outside the Workspace without requiring a Workspace permission escalation. Docker compatibility attempts retain their container and nested `workspace-write` boundaries; this is a backend compatibility limitation, not the semantic meaning of `deliveryKind`. Because that nested Linux sandbox requires user-namespace syscalls, the Docker adapter may add `seccomp=unconfined` only for the pinned canonical Codex attempt image; non-root UID, read-only rootfs, dropped capabilities, no-new-privileges, internal networking and all mount boundaries remain mandatory. No custom image inherits this exception.
 
 ### Default profiles and permission audit
 
 Default authority is an AgentClass fact, not a Planner field. Canonical definitions own immutable execution image and permission profile bindings. Custom AgentClasses must provide a resolvable immutable image and controlled profile; missing or drifted images are configuration failures and never fall back to host execution. Permission details are excluded from the Planner-safe catalog.
 
-Runtime materializes a versioned explicit rule set from that profile and the current Task bindings. `permission-profile-v1` permits additional-read requests only for exact Task-registered partitions, and permits normalized public HTTP(S) target requests only for `public-web-research`. The other profiles receive no network allow rule. No profile rule approves secrets, external mutation or repository promotion.
+Runtime materializes a versioned explicit rule set from that profile and the current Task bindings. Ordinary Workspace and user-space file operations are not permission requests in Native worktree mode. Exact Task-registered partitions may still receive `additional_read_resource` grants where a controlled resource claim is required, and only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; worktree demo attempts use the Runtime's normal network namespace. No profile rule permits secrets, privilege changes, system-control resources, Docker/host control sockets, devices, host namespaces, external mutation or repository promotion.
 
 The capability request protocol is deliberately small: capability, resource, operation, reason and suggested once/attempt scope. Runtime canonicalizes and binds identity. Read/network grants are attempt-bound with policy TTL/use/byte budgets; sensitive requests remain one-shot. A granted request returns an opaque grant ID but does not itself widen execution authority or container sandbox policy. `use_capability` records and atomically consumes attempt identity, TTL, call and byte budgets for the supplied operation payload. Stable fingerprints make request, Decision, grant and budget consumption idempotent.
 
-The initial product guarantee ends at the selected execution backend, permission profile and this authorization/audit budget. It does not claim operation-specific broker mediation or fine-grained Runtime enforcement for every file, network or external mutation. In particular, consuming a grant is not proof that an arbitrary native tool operation was mediated. Platform escape, Docker socket/device/host namespace access, proxy bypass, system credential probing, cross-Task access and persistent security weakening remain non-overridable denials; container-specific denials are enforced at the container sandbox/profile boundary. A future provider adapter may add a separately specified mediated effect, but this ADR does not treat such an adapter as generally implemented.
+The initial product guarantee ends at the selected execution backend, permission profile and this authorization/audit budget. It does not claim operation-specific broker mediation or fine-grained Runtime enforcement for every file, network or external mutation. In particular, consuming a grant is not proof that an arbitrary native tool operation was mediated. Ordinary user-space file work is intentionally broad; requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. A future provider adapter may add a separately specified mediated effect, but this ADR does not treat such an adapter as generally implemented.
 
 ### User authorization
 
